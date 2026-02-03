@@ -95,13 +95,35 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_logs_parse(args: argparse.Namespace) -> int:
+    # Future-proof: use getattr with defaults in case caller doesn't define these
+    log_file = getattr(args, "log_file", None)
+    source = getattr(args, "source", "auto")
+    
     try:
-        events_out, stats_out, stats = parse_auth_log_file(args.data_dir, args.log_file)
+        events_out, stats_out, stats = parse_auth_log_file(
+            args.data_dir,
+            log_file,
+            source
+        )
     except RuntimeError as e:
         print(f"[KRATOS] ERROR: {e}")
         return 1
 
-    print(f"[KRATOS] Parsed auth log -> events: {events_out.name}, stats: {stats_out.name}")
+    # Check if user-provided file was not found
+    if "_warn_explicit_file_not_found" in stats:
+        not_found_path = stats["_warn_explicit_file_not_found"]
+        print(f"[KRATOS] WARN: Provided --log-file not found: {not_found_path} (continuing with auto-detect)")
+
+    source_info = stats.get("source", "unknown")
+    
+    # Check if no logs were found
+    if source_info == "none":
+        print(f"[KRATOS] No supported auth log source found (auth.log/secure/journald).")
+        print(f"[KRATOS] Generated empty outputs: events: {events_out.name}, stats: {stats_out.name}")
+        return 0
+    
+    print(f"[KRATOS] Parsed auth log -> source: {source_info}")
+    print(f"[KRATOS] Output files: events: {events_out.name}, stats: {stats_out.name}")
     print(f"[KRATOS] Total events: {stats.get('total_events', 0)}")
 
     # nice quick summary
@@ -185,38 +207,123 @@ def cmd_findings_generate(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """
+    Run the full pipeline as a single transaction.
+    Each step passes its outputs directly to the next step (no "latest file" lookups).
+    """
     # 1) scan + parse
-    rc = cmd_scan(args)
-    if rc != 0:
-        return rc
-    rc = cmd_scan_parse(args)
-    if rc != 0:
-        return rc
+    try:
+        nmap_xml = run_nmap_scan(args.data_dir, args.target)
+        print(f"[KRATOS] Scan complete -> {nmap_xml}")
+        
+        parsed = parse_nmap_xml_to_dict(nmap_xml)
+        parsed_json = write_parsed_json(args.data_dir, parsed)
+        
+        host_count = len(parsed["hosts"])
+        open_ports_total = sum(len(h["open_ports"]) for h in parsed["hosts"])
+        print(f"[KRATOS] Parsed scan: {nmap_xml.name}")
+        print(f"[KRATOS] Hosts: {host_count}, total open ports: {open_ports_total}")
+        print(f"[KRATOS] JSON written -> {parsed_json}")
+    except RuntimeError as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
 
     # 2) logs + patterns
-    rc = cmd_logs_parse(args)
-    if rc != 0:
-        return rc
+    log_file = getattr(args, "log_file", None)
+    source = getattr(args, "source", "auto")
     
-    # Automatically set events_file for logs-patterns
-    latest_events = latest_file(args.data_dir / "logs", "auth_events_*.json")
-    if not latest_events:
-        print("[KRATOS] ERROR: No auth_events file found after logs-parse.")
+    try:
+        events_out, stats_out, stats = parse_auth_log_file(
+            args.data_dir,
+            log_file,
+            source
+        )
+    except RuntimeError as e:
+        print(f"[KRATOS] ERROR: {e}")
         return 1
-    args.events_file = latest_events
+
+    # Check if user-provided file was not found
+    if "_warn_explicit_file_not_found" in stats:
+        not_found_path = stats["_warn_explicit_file_not_found"]
+        print(f"[KRATOS] WARN: Provided --log-file not found: {not_found_path} (continuing with auto-detect)")
+
+    source_info = stats.get("source", "unknown")
     
-    rc = cmd_logs_patterns(args)
-    if rc != 0:
-        return rc
+    # Check if no logs were found
+    if source_info == "none":
+        print(f"[KRATOS] No supported auth log source found (auth.log/secure/journald).")
+        print(f"[KRATOS] Generated empty outputs: events: {events_out.name}, stats: {stats_out.name}")
+    else:
+        print(f"[KRATOS] Parsed auth log -> source: {source_info}")
+        print(f"[KRATOS] Output files: events: {events_out.name}, stats: {stats_out.name}")
+        print(f"[KRATOS] Total events: {stats.get('total_events', 0)}")
+
+        # nice quick summary
+        by_type = stats.get("events_by_type", {})
+        if by_type:
+            print("[KRATOS] Event types:")
+            for k, v in sorted(by_type.items(), key=lambda x: (-x[1], x[0])):
+                print(f"  - {k}: {v}")
+
+        top_ips = stats.get("top_failed_login_ips", [])
+        if top_ips:
+            print("[KRATOS] Top failed-login IPs:")
+            for item in top_ips:
+                print(f"  - {item['ip']}: {item['count']}")
+    
+    # Run patterns analysis using the events file we just created
+    if events_out:
+        try:
+            patterns_out = analyze_auth_patterns(
+                data_dir=args.data_dir,
+                events_file=events_out,
+                event_types=getattr(args, "event_types", None),
+                window_minutes=getattr(args, "window_minutes", 5),
+                threshold=getattr(args, "threshold", 3),
+            )
+            print(f"[KRATOS] Patterns written -> {patterns_out}")
+        except RuntimeError as e:
+            print(f"[KRATOS] WARNING: Pattern detection failed: {e}, continuing pipeline.")
+            patterns_out = None
+    else:
+        patterns_out = None
 
     # 3) context
-    rc = cmd_context_collect(args)
-    if rc != 0:
-        return rc
+    try:
+        context_out = write_system_context(args.data_dir)
+        print(f"[KRATOS] System context written -> {context_out}")
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
 
-    # 4) findings
-    rc = cmd_findings_generate(args)
-    return rc
+    # 4) findings (uses the files we just created in this run)
+    try:
+        out_json, out_md = write_findings_report(
+            data_dir=args.data_dir,
+            nmap_parsed_file=parsed_json,
+            auth_stats_file=stats_out,
+            auth_patterns_file=patterns_out,
+            system_context_file=context_out,
+            auth_trends_file=None,  # trends not generated in run (optional)
+        )
+        print(f"[KRATOS] Findings JSON -> {out_json}")
+        print(f"[KRATOS] Findings MD   -> {out_md}")
+        
+        # Show which context snapshot was used for traceability
+        import json
+        data = json.loads(out_json.read_text(encoding="utf-8", errors="replace"))
+        ctx_file = data.get("inputs", {}).get("system_context")
+        if ctx_file:
+            print(f"[KRATOS] Context snapshot used -> {ctx_file}")
+        
+        # Extract timestamp from any output file to show artifact set tag
+        artifact_tag = parsed_json.stem.split('_', 1)[1] if '_' in parsed_json.stem else "unknown"
+        print(f"[KRATOS] Run artifact set: {artifact_tag} (all files use this timestamp)")
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+    
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -238,8 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
     runp.add_argument(
         "--log-file",
         type=Path,
-        default=Path("/var/log/auth.log"),
-        help="Path to auth log file (default: /var/log/auth.log)",
+        default=None,
+        help="Path to auth log file (optional, auto-detect if not provided)",
+    )
+    runp.add_argument(
+        "--source",
+        choices=["auto", "file", "journald"],
+        default="auto",
+        help="Auth log source (default: auto)",
     )
     runp.add_argument("--threshold", type=int, default=3, help="Burst threshold (default: 3)")
     runp.add_argument("--window-minutes", type=int, default=5, help="Burst window in minutes (default: 5)")
@@ -263,10 +376,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     logs_parse = sub.add_parser("logs-parse", help="Parse auth.log into normalized events + stats")
     logs_parse.add_argument(
+        "--source",
+        choices=["auto", "file", "journald"],
+        default="auto",
+        help="Auth log source: auto-detect (default), file, or journald",
+    )
+    logs_parse.add_argument(
         "--log-file",
         type=Path,
-        default=Path("/var/log/auth.log"),
-        help="Path to auth log file (default: /var/log/auth.log)",
+        default=None,
+        help="Path to auth log file (default: auto-detect /var/log/auth.log or /var/log/secure)",
     )
     logs_parse.set_defaults(func=cmd_logs_parse)
     

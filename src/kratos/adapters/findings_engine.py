@@ -56,6 +56,17 @@ def _nmap_has_ssh_exposed(nmap_parsed: dict[str, Any] | None) -> bool:
                 return True
     return False
 
+def _context_has_ssh_exposed(system_context: dict[str, Any] | None) -> bool:
+    """Check if SSH is running/listening based on system context."""
+    if not system_context:
+        return False
+    ssh_info = system_context.get("ssh", {})
+    # SSH is exposed if service is active OR listening on port 22
+    if ssh_info.get("service_active"):
+        return True
+    listening_ports = ssh_info.get("listening_ports", [])
+    return 22 in listening_ports or len(listening_ports) > 0
+
 def _bursts_of(auth_patterns: dict[str, Any] | None, event_types: tuple[str, ...]) -> list[dict[str, Any]]:
     if not auth_patterns or not isinstance(auth_patterns.get("bursts"), list):
         return []
@@ -405,6 +416,77 @@ def generate_findings(
             )
         )
 
+    # CORR-SSH-001: SSH open + failed-login burst => HIGH
+    # Check exposure from both nmap and system context
+    ssh_from_nmap = _nmap_has_ssh_exposed(nmap_parsed)
+    ssh_from_context = False
+    ssh_ports = []
+    
+    if system_context and "ssh" in system_context:
+        ssh_ctx = system_context["ssh"]
+        if ssh_ctx.get("listening_ports"):
+            ssh_from_context = True
+            ssh_ports = ssh_ctx.get("listening_ports", [])
+    
+    ssh_exposed = ssh_from_nmap or ssh_from_context
+    ssh_failed_bursts = _bursts_of(auth_patterns, ("ssh_failed_login",))
+    
+    if ssh_exposed and len(ssh_failed_bursts) > 0:
+        # Build evidence based on what detected SSH
+        evidence = []
+        if ssh_from_nmap and ssh_from_context:
+            exposure_msg = f"ssh exposed (nmap + context), ports: {ssh_ports if ssh_ports else [22]}"
+        elif ssh_from_nmap:
+            exposure_msg = "ssh exposed (nmap scan detected port 22 open)"
+        else:
+            exposure_msg = f"ssh exposed (context: listening on ports {ssh_ports})"
+        
+        evidence.append(exposure_msg)
+        evidence.append(f"ssh_failed_login bursts detected = {len(ssh_failed_bursts)}")
+        
+        # Summarize burst evidence (keep it minimal)
+        b0 = ssh_failed_bursts[0]
+        evidence.append(f"example burst: {b0.get('count', 0)} events between {b0.get('start')} and {b0.get('end')}")
+        
+        findings.append(
+            Finding(
+                id="CORR-SSH-001",
+                title="SSH exposed with failed-login burst activity observed",
+                severity="high",
+                evidence=evidence,
+                recommendation=[
+                    "Confirm SSH is required on this host.",
+                    "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+                    "Prefer key-based authentication; disable password auth if possible.",
+                    "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban).",
+                ],
+                playbooks=[
+                    {
+                        "title": "Inspect recent SSH authentication activity",
+                        "commands": [
+                            "journalctl _COMM=sshd --since '2 hours ago' --no-pager | tail -n 120",
+                            "grep -n 'Failed password' /var/log/auth.log | tail -n 80",
+                            "grep -n 'Failed publickey' /var/log/auth.log | tail -n 80",
+                        ],
+                        "notes": [
+                            "Confirm whether failures are expected (testing) or suspicious (repeated / unknown IPs)."
+                        ],
+                    },
+                    {
+                        "title": "Verify SSH exposure and listeners",
+                        "commands": [
+                            "ss -lntp | grep ':22 '",
+                            "sudo ufw status verbose || true",
+                            "systemctl status sshd --no-pager || systemctl status ssh --no-pager",
+                        ],
+                        "notes": [
+                            "If SSH is not needed publicly, restrict access."
+                        ],
+                    }
+                ]
+            )
+        )
+
     # AUTH-TREND-001: Increasing authentication failures trend
     if auth_trends:
         summary = auth_trends.get("summary", {})
@@ -412,8 +494,8 @@ def generate_findings(
             direction = summary.get("direction", "unknown")
             delta = summary.get("delta", 0)
             files_compared = summary.get("files_compared", 0)
-            first_val = summary.get("first", 0)
-            last_val = summary.get("last", 0)
+            first_val = summary.get("first_value", 0)
+            last_val = summary.get("last_value", 0)
             
             findings.append(
                 Finding(
@@ -460,8 +542,32 @@ def generate_findings(
 # ---------------------------
 # Report writing
 # ---------------------------
-def write_findings_report(data_dir: Path) -> tuple[Path, Path]:
-    inputs = find_latest_inputs(data_dir)
+def write_findings_report(
+    data_dir: Path,
+    nmap_parsed_file: Path | None = None,
+    auth_stats_file: Path | None = None,
+    auth_patterns_file: Path | None = None,
+    system_context_file: Path | None = None,
+    auth_trends_file: Path | None = None,
+) -> tuple[Path, Path]:
+    """
+    Generate findings report.
+    
+    When called from `kratos run`, explicit file paths from the current transaction are passed.
+    When called from manual `findings-generate`, uses latest files (backwards compatible).
+    """
+    # If explicit files not provided, fall back to "latest file" lookup
+    if not all([nmap_parsed_file, auth_stats_file, auth_patterns_file, system_context_file]):
+        inputs = find_latest_inputs(data_dir)
+    else:
+        # Use the explicit paths provided (transaction mode)
+        inputs = {
+            "nmap_parsed": nmap_parsed_file,
+            "auth_stats": auth_stats_file,
+            "auth_patterns": auth_patterns_file,
+            "system_context": system_context_file,
+            "auth_trends": auth_trends_file,
+        }
 
     missing = [k for k, v in inputs.items() if v is None]
     # We allow partial reports; still generate report but mark missing inputs.

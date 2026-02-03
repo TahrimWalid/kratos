@@ -50,9 +50,22 @@ def cmd_findings_show(args) -> int:
 
     if not match:
         print(f"[KRATOS] Finding ID not found: {fid}")
+        
+        # Provide diagnostic hints for common correlation findings
+        if fid == "CORR-SSH-001":
+            print("")
+            print("Diagnostic hint: CORR-SSH-001 requires both:")
+            print("  1. SSH exposed (detected via nmap scan or system context)")
+            print("  2. ssh_failed_login burst activity (threshold: 3+ events in 5min window)")
+            print("")
+            print("Check your data:")
+            print("  - Run: kratos logs-patterns-show     # Look for ssh_failed_login bursts")
+            print("  - Run: kratos run --target <host>    # Re-run scan to check SSH exposure")
+        
         ids = [f.get("id") for f in findings if f.get("id")]
         if ids:
-            print("Available IDs:")
+            print("")
+            print("Available findings in this report:")
             for i in ids:
                 print(f" - {i}")
         return 1

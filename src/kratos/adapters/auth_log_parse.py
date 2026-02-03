@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from collections import Counter
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -43,6 +45,12 @@ _PROGRAM_PREFIX = re.compile(
 # --- SSH patterns (common on Ubuntu/Debian) ---
 _RE_SSH_FAIL = re.compile(
     r"Failed password for (?:invalid user\s+)?(?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)"
+)
+_RE_SSH_PUBLICKEY_FAIL = re.compile(
+    r"Failed publickey for (?:invalid user\s+)?(?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)"
+)
+_RE_SSH_AUTH_FAILURE = re.compile(
+    r"authentication failure.*?user=(?P<user>\S+).*?rhost=(?P<ip>\d+\.\d+\.\d+\.\d+)"
 )
 _RE_SSH_ACCEPT = re.compile(
     r"Accepted \S+ for (?P<user>\S+) from (?P<ip>\d+\.\d+\.\d+\.\d+)"
@@ -138,21 +146,37 @@ def iter_auth_events(lines: Iterable[str]) -> list[AuthEvent]:
 
         # --- SSH related ---
         if program and "sshd" in program:
+            # Check for failed password
             mm = _RE_SSH_FAIL.search(msg)
             if mm:
                 events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
                 continue
 
+            # Check for failed publickey
+            mm = _RE_SSH_PUBLICKEY_FAIL.search(msg)
+            if mm:
+                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
+                continue
+            
+            # Check for generic authentication failure
+            mm = _RE_SSH_AUTH_FAILURE.search(msg)
+            if mm:
+                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
+                continue
+
+            # Check for accepted login
             mm = _RE_SSH_ACCEPT.search(msg)
             if mm:
                 events.append(AuthEvent(ts, host, program, "ssh_success_login", mm["user"], mm["ip"], line))
                 continue
 
+            # Check for invalid user (treat as failed login for correlation)
             mm = _RE_SSH_INVALID_USER.search(msg)
             if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_invalid_user", mm["user"], mm["ip"], line))
+                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
                 continue
 
+            # Check for disconnect
             mm = _RE_SSH_DISCONNECT.search(msg)
             if mm:
                 events.append(AuthEvent(ts, host, program, "ssh_disconnect", None, mm["ip"], line))
@@ -272,16 +296,148 @@ def compute_basic_stats(events: list[AuthEvent]) -> dict[str, Any]:
     }
 
 
-def parse_auth_log_file(data_dir: Path, log_path: Path) -> tuple[Path, Path, dict[str, Any]]:
+def detect_auth_log_source(explicit_log_file: Path | None = None) -> tuple[str, Path | None, bool]:
+    """
+    Auto-detect which auth log source to use.
+    
+    Returns: (source_type, path_or_none, explicit_file_not_found)
+    - source_type: "file", "journald", or "none"
+    - path_or_none: Path if file, None otherwise
+    - explicit_file_not_found: True if user provided a file that doesn't exist
+    """
+    # If user explicitly provided a log file
+    if explicit_log_file:
+        if explicit_log_file.exists():
+            return ("file", explicit_log_file, False)
+        else:
+            # User provided a file but it doesn't exist - we'll fall back but flag it
+            explicit_not_found = True
+    else:
+        explicit_not_found = False
+    
+    # Try common log file locations
+    for candidate in [Path("/var/log/auth.log"), Path("/var/log/secure")]:
+        if candidate.exists():
+            return ("file", candidate, explicit_not_found)
+    
+    # Check if journalctl is available
+    if shutil.which("journalctl"):
+        return ("journald", None, explicit_not_found)
+    
+    # No source found
+    return ("none", None, explicit_not_found)
+
+
+def collect_journald_lines() -> tuple[list[str], list[str]]:
+    """
+    Collect auth-related logs from journald (sudo + sshd).
+    Uses short-iso format for better timestamp consistency.
+    
+    Returns: (lines, units_collected)
+    """
+    lines = []
+    units = []
+    
+    # Collect sudo logs
+    try:
+        result = subprocess.run(
+            ["journalctl", "--no-pager", "-o", "short-iso", "_COMM=sudo"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines.extend(result.stdout.splitlines())
+            units.append("sudo")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    # Collect sshd logs
+    try:
+        result = subprocess.run(
+            ["journalctl", "--no-pager", "-o", "short-iso", "_COMM=sshd"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines.extend(result.stdout.splitlines())
+            units.append("sshd")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    
+    return lines, units
+
+
+def parse_auth_log_file(
+    data_dir: Path,
+    log_path: Path | None = None,
+    source: str = "auto"
+) -> tuple[Path, Path, dict[str, Any]]:
+    """
+    Parse authentication logs from various sources.
+    
+    Args:
+        data_dir: Where to write output files
+        log_path: Explicit log file path (optional)
+        source: "auto", "file", "journald", or "none"
+    
+    Returns: (events_file, stats_file, stats_dict)
+    """
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    if not log_path.exists():
-        raise RuntimeError(f"Log file not found: {log_path}")
-
-    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    events = iter_auth_events(lines)
-    stats = compute_basic_stats(events)
+    lines: list[str] = []
+    source_info = ""
+    source_details: dict[str, Any] = {}
+    warn_explicit_not_found = False
+    explicit_file_path = None
+    
+    # Determine source
+    if source == "auto":
+        detected_source, detected_path, explicit_not_found = detect_auth_log_source(log_path)
+        if explicit_not_found:
+            warn_explicit_not_found = True
+            explicit_file_path = log_path
+        source = detected_source
+        if detected_path:
+            log_path = detected_path
+    
+    # Collect lines based on source
+    if source == "file":
+        if not log_path or not log_path.exists():
+            source = "none"  # Fallback if file doesn't exist
+        else:
+            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            source_info = f"file:{log_path}"
+            source_details["file_path"] = str(log_path)
+    
+    elif source == "journald":
+        lines, units = collect_journald_lines()
+        source_info = "journald"
+        if units:
+            source_details["journald_units"] = units
+    
+    # If no source found, create empty outputs
+    if source == "none" or not lines:
+        events = []
+        stats = {
+            "source": "none",
+            "total_events": 0,
+            "events_by_type": {},
+            "top_failed_login_ips": [],
+            "top_failed_login_users": [],
+            "top_sudo_users": [],
+            "top_sudo_auth_fail_users": [],
+            "top_sudo_pam_auth_fail_users": [],
+        }
+        source_info = "none"
+    else:
+        events = iter_auth_events(lines)
+        stats = compute_basic_stats(events)
+        stats["source"] = source_info
+        if source_details:
+            stats["source_details"] = source_details
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     events_out = logs_dir / f"auth_events_{ts}.json"
@@ -289,5 +445,9 @@ def parse_auth_log_file(data_dir: Path, log_path: Path) -> tuple[Path, Path, dic
 
     events_out.write_text(json.dumps([asdict(e) for e in events], indent=2), encoding="utf-8")
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+
+    # Return warning flag for CLI to display
+    if warn_explicit_not_found:
+        stats["_warn_explicit_file_not_found"] = str(explicit_file_path)
 
     return events_out, stats_out, stats

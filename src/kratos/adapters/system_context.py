@@ -79,6 +79,54 @@ def collect_system_context() -> dict[str, Any]:
         "interfaces": ip.splitlines() if ip else [],
     }
 
+    # --- SSH exposure detection ---
+    ssh_info: dict[str, Any] = {
+        "service_active": False,
+        "listening_ports": [],
+        "methods": []
+    }
+    
+    # Check if SSH service is active
+    ssh_active = _run(["systemctl", "is-active", "ssh"])
+    if not ssh_active:
+        ssh_active = _run(["systemctl", "is-active", "sshd"])
+    
+    if ssh_active in ("active", "activating"):
+        ssh_info["service_active"] = True
+        ssh_info["methods"].append("systemctl")
+    
+    # Check listening ports (works even without systemd)
+    ss_output = _run(["ss", "-lntp"])
+    if not ss_output:
+        ss_output = _run(["netstat", "-lntp"])
+        if ss_output:
+            ssh_info["methods"].append("netstat")
+    else:
+        ssh_info["methods"].append("ss")
+    
+    # Parse listening ports for SSH (port 22 or sshd)
+    if ss_output:
+        for line in ss_output.splitlines():
+            if ":22 " in line or "sshd" in line.lower():
+                # Extract port number
+                parts = line.split()
+                for part in parts:
+                    if ":22" in part or (":2" in part and "sshd" in line.lower()):
+                        # Try to extract port
+                        try:
+                            if ":" in part:
+                                port_str = part.split(":")[-1].split()[0]
+                                port = int(port_str)
+                                if port not in ssh_info["listening_ports"]:
+                                    ssh_info["listening_ports"].append(port)
+                        except (ValueError, IndexError):
+                            pass
+                # Default to 22 if we found sshd but couldn't parse port
+                if "sshd" in line.lower() and 22 not in ssh_info["listening_ports"]:
+                    ssh_info["listening_ports"].append(22)
+    
+    context["ssh"] = ssh_info
+
     context["collected_at"] = datetime.now().isoformat(timespec="seconds")
     return context
 
