@@ -60,7 +60,7 @@ LLAMA_TOP_K = 40
 # Timeouts and Limits
 REQUEST_TIMEOUT_SECONDS = 120   # CPU inference is slower
 MAX_TOKENS = 1024
-MAX_TOKENS_QUESTION = 256  # Shorter answers for -q mode
+MAX_TOKENS_QUESTION = 512  # Shorter answers for -q mode
 STARTUP_TIMEOUT_SECONDS = 30
 
 # ---------------------------------------------------------------------------
