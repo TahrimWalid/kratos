@@ -2,7 +2,6 @@
 LLM Interface - Offline Qwen2.5-Coder 7B Integration
 """
 from __future__ import annotations
-import socket
 import subprocess
 import sys
 import time
@@ -43,11 +42,15 @@ from kratos.llm_config import (
 
 
 def _is_server_running() -> bool:
-    """Quick TCP check: is llama-cpp-python server already up on port 8686?"""
+    """Check if server is up AND model is loaded (GET /v1/models -> 200).
+    More reliable than TCP check — avoids false positives during model load.
+    """
+    if requests is None:
+        return False
     try:
-        with socket.create_connection((LLAMA_SERVER_HOST, LLAMA_SERVER_PORT), timeout=1):
-            return True
-    except OSError:
+        resp = requests.get(f"{LLAMA_SERVER_URL}/v1/models", timeout=1)
+        return resp.status_code == 200
+    except Exception:
         return False
 
 
