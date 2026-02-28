@@ -8,7 +8,13 @@ version = "0.1.0"
 description = "Kratos — Offline AI Security Assistant (thesis prototype)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "requests",
+    "uvicorn",
+    "fastapi",
+    "sse-starlette",
+    "pydantic-settings",
+]
 
 [project.scripts]
 kratos = "kratos.cli.app:main"
