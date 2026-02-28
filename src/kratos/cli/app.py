@@ -19,6 +19,7 @@ from kratos.cli.logs_patterns_show import cmd_logs_patterns_show
 from kratos.cli.findings_show import cmd_findings_show
 from kratos.cli.baseline import cmd_baseline_create, cmd_baseline_compare
 from kratos.cli.bundle import cmd_prepare_bundle
+from kratos.llm_interface import analyze_findings, shutdown_llm
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = Path("data")
@@ -143,10 +144,64 @@ def cmd_logs_parse(args: argparse.Namespace) -> int:
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
-    question = args.question or "What are the biggest risks?"
-    print("[KRATOS] chat (placeholder)")
-    print(f"Q: {question}")
-    print("A: (LLM not integrated yet) I will summarize scan/log/context results here.")
+    """
+    AI-powered analysis of Kratos security findings using Qwen2.5-Coder 7B.
+    Loads the latest prepared bundle and explains findings in plain language.
+    """
+    data_dir: Path = args.data_dir
+    mode = getattr(args, "mode", "summary").lower()
+    question = getattr(args, "question", None)
+
+    # Locate latest bundle; auto-generate if missing
+    reports_dir = data_dir / "reports"
+    bundle_path = latest_file(reports_dir, "bundle_*.txt")
+
+    if not bundle_path:
+        print("[KRATOS] No prepared bundle found. Generating one now...", flush=True)
+        class _BundleArgs:
+            def __init__(self, d):
+                self.data_dir = d
+                self.max_words = 1000
+        ret = cmd_prepare_bundle(_BundleArgs(data_dir))
+        if ret != 0:
+            print("[KRATOS] ERROR: Could not generate bundle. Run: kratos findings-generate first", flush=True)
+            return 1
+        bundle_path = latest_file(reports_dir, "bundle_*.txt")
+        if not bundle_path:
+            print("[KRATOS] ERROR: Bundle generation failed.", flush=True)
+            return 1
+
+    try:
+        bundle_text = bundle_path.read_text(encoding="utf-8", errors="replace")
+    except Exception as e:
+        print(f"[KRATOS] ERROR reading bundle: {e}", flush=True)
+        return 1
+
+    # Build prompt
+    if question:
+        prompt = (
+            f"Based on this security data, answer the following question:\n\n"
+            f"{question}\n\nData:\n{bundle_text}\n\n"
+            f"Be specific and grounded in the provided data only. If information is missing, say so."
+        )
+        response = analyze_findings(bundle_text=prompt, mode="summary")
+    else:
+        response = analyze_findings(bundle_text=bundle_text, mode=mode)
+
+    if response is None:
+        print("[KRATOS-LLM] ERROR: LLM analysis failed. Check model is in llm/models/ and disk has space.", flush=True)
+        shutdown_llm()
+        return 1
+
+    print("\n" + "=" * 70, flush=True)
+    print("KRATOS SECURITY ANALYSIS  (Qwen2.5-Coder 7B - offline)", flush=True)
+    print("=" * 70, flush=True)
+    print(flush=True)
+    print(response, flush=True)
+    print("\n" + "=" * 70, flush=True)
+    print("[KRATOS-LLM] Analysis complete. Verify recommendations with actual system inspection.", flush=True)
+
+    shutdown_llm()
     return 0
 
 
@@ -457,8 +512,14 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.set_defaults(func=cmd_analyze)
 
 
-    chat = sub.add_parser("chat", help="Ask questions about findings (placeholder)")
-    chat.add_argument("--question", "-q", default=None, help="Question to ask")
+    chat = sub.add_parser("chat", help="AI analysis of findings via Qwen2.5-Coder 7B (offline)")
+    chat.add_argument(
+        "--mode",
+        choices=["summary", "deep"],
+        default="summary",
+        help="summary = executive overview, deep = attack chains + blind spots (default: summary)",
+    )
+    chat.add_argument("--question", "-q", default=None, help="Ask a specific question about the findings")
     chat.set_defaults(func=cmd_chat)
 
     return p
