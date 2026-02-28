@@ -153,18 +153,34 @@ def cmd_chat(args: argparse.Namespace) -> int:
     mode = getattr(args, "mode", "summary").lower()
     question = getattr(args, "question", None)
 
-    # Locate latest bundle; auto-generate if missing
+    # Locate latest bundle; auto-generate if missing or stale
     reports_dir = data_dir / "reports"
     bundle_path = latest_file(reports_dir, "bundle_*.txt")
 
+    class _BundleArgs:
+        def __init__(self, d):
+            self.data_dir = d
+            self.max_words = 1000
+
+    def _regen_bundle() -> bool:
+        ret = cmd_prepare_bundle(_BundleArgs(data_dir))
+        return ret == 0
+
+    # Check if findings are newer than the bundle (stale bundle guard)
+    findings_path = latest_file(reports_dir, "findings_*.json")
+    if bundle_path and findings_path:
+        bundle_mtime = bundle_path.stat().st_mtime
+        findings_mtime = findings_path.stat().st_mtime
+        if findings_mtime > bundle_mtime:
+            print("[KRATOS] Findings are newer than bundle — regenerating bundle...", flush=True)
+            if _regen_bundle():
+                bundle_path = latest_file(reports_dir, "bundle_*.txt")
+            else:
+                print("[KRATOS] WARNING: Bundle regeneration failed — using stale bundle.", flush=True)
+
     if not bundle_path:
         print("[KRATOS] No prepared bundle found. Generating one now...", flush=True)
-        class _BundleArgs:
-            def __init__(self, d):
-                self.data_dir = d
-                self.max_words = 1000
-        ret = cmd_prepare_bundle(_BundleArgs(data_dir))
-        if ret != 0:
+        if not _regen_bundle():
             print("[KRATOS] ERROR: Could not generate bundle. Run: kratos findings-generate first", flush=True)
             return 1
         bundle_path = latest_file(reports_dir, "bundle_*.txt")
