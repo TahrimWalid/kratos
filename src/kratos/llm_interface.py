@@ -2,6 +2,7 @@
 LLM Interface - Offline Qwen2.5-Coder 7B Integration
 """
 from __future__ import annotations
+import socket
 import subprocess
 import sys
 import time
@@ -39,6 +40,42 @@ from kratos.llm_config import (
     MSG_NO_SERVER,
     MSG_TIMEOUT,
 )
+
+
+def _is_server_running() -> bool:
+    """Quick TCP check: is llama-cpp-python server already up on port 8686?"""
+    try:
+        with socket.create_connection((LLAMA_SERVER_HOST, LLAMA_SERVER_PORT), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[str]:
+    """Send a chat completions request to the running llama-cpp-python server."""
+    if requests is None:
+        return None
+    try:
+        resp = requests.post(
+            f"{LLAMA_SERVER_URL}/v1/chat/completions",
+            json={
+                "model": "qwen2.5-coder",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+                "temperature": LLAMA_TEMP,
+                "top_p": LLAMA_TOP_P,
+                "seed": LLAMA_SEED,
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"[KRATOS-LLM] Server query error: {e}", file=sys.stderr)
+        return None
 
 
 class LLMServer:
@@ -138,14 +175,23 @@ def analyze_findings(
     Returns:
         LLM analysis text, or None if failed
     """
-    server = get_llm_server()
-    if not server.is_ready and not server.start():
-        return None
-
     if mode == "deep":
         prompt = PROMPT_DEEP_ANALYSIS.format(bundle_text=bundle_text)
     else:
         prompt = PROMPT_SUMMARIZE_FINDINGS.format(bundle_text=bundle_text)
+
+    # Fast path: use running llm-serve server (model already loaded)
+    if _is_server_running():
+        print("[KRATOS-LLM] Using running LLM server (fast path)...", file=sys.stderr)
+        result = _query_server(prompt, system_prompt, max_tokens)
+        if result is not None:
+            return result
+        print("[KRATOS-LLM] Server query failed — falling back to direct load.", file=sys.stderr)
+
+    # Slow path: load model directly (cold start ~2 min)
+    server = get_llm_server()
+    if not server.is_ready and not server.start():
+        return None
 
     return server.infer(prompt, system_prompt, max_tokens)
 

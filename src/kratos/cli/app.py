@@ -1,4 +1,5 @@
 import argparse
+import sys
 from pathlib import Path
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
@@ -141,6 +142,47 @@ def cmd_logs_parse(args: argparse.Namespace) -> int:
         for item in top_ips:
             print(f"  - {item['ip']}: {item['count']}")
 
+    return 0
+
+
+def cmd_llm_serve(args: argparse.Namespace) -> int:
+    """
+    Start the Qwen2.5-Coder LLM server (model loaded once, stays in memory).
+    Run this in a dedicated terminal before using kratos chat for fast responses.
+    """
+    import subprocess
+    from kratos.llm_config import (
+        MODEL_PATH, LLAMA_SERVER_HOST, LLAMA_SERVER_PORT,
+        LLAMA_N_CTX, LLAMA_N_THREADS, LLAMA_SEED,
+    )
+
+    if not MODEL_PATH.exists():
+        print(f"[KRATOS-LLM] Model not found: {MODEL_PATH}", flush=True)
+        print(f"[KRATOS-LLM] Set KRATOS_LLM_MODEL_PATH or download the model first.", flush=True)
+        return 1
+
+    print(f"[KRATOS-LLM] Starting LLM server (Qwen2.5-Coder 7B)...", flush=True)
+    print(f"[KRATOS-LLM] Host : {LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}", flush=True)
+    print(f"[KRATOS-LLM] Model: {MODEL_PATH}", flush=True)
+    print(f"[KRATOS-LLM] Keep this terminal open. Run 'kratos chat' in another terminal.", flush=True)
+    print(f"[KRATOS-LLM] Press Ctrl+C to stop the server.", flush=True)
+    print(flush=True)
+
+    cmd = [
+        sys.executable, "-m", "llama_cpp.server",
+        "--model",     str(MODEL_PATH),
+        "--host",      LLAMA_SERVER_HOST,
+        "--port",      str(LLAMA_SERVER_PORT),
+        "--n_ctx",     str(LLAMA_N_CTX),
+        "--n_threads", str(LLAMA_N_THREADS),
+        "--seed",      str(LLAMA_SEED),
+        "--verbose",   "false",
+    ]
+
+    try:
+        subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print("\n[KRATOS-LLM] Server stopped.", flush=True)
     return 0
 
 
@@ -548,6 +590,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chat.add_argument("--question", "-q", default=None, help="Ask a specific question about the findings")
     chat.set_defaults(func=cmd_chat)
+
+    llm_serve = sub.add_parser(
+        "llm-serve",
+        help="Start the LLM server (loads model once — run in a separate terminal for fast kratos chat)"
+    )
+    llm_serve.set_defaults(func=cmd_llm_serve)
 
     return p
 
