@@ -49,7 +49,7 @@ LLAMA_SERVER_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 # LLAMA_TEMP = 0.1  (low) → near-deterministic output, reproducible for thesis
 # LLAMA_SEED = 42   → fixed seed ensures same input → same output every run
 # ---------------------------------------------------------------------------
-LLAMA_N_CTX = 1024          # Context window (1024 sufficient for focused bundles)
+LLAMA_N_CTX = 2048          # Context window (2048 needed for full bundle + prompt)
 LLAMA_N_GPU_LAYERS = 0       # 0 = CPU-only (no GPU required)
 LLAMA_N_THREADS = min(os.cpu_count() or 4, 8)  # Use all vCPUs (capped at 8)
 LLAMA_TEMP = 0.1             # Low: reproducible outputs (thesis requirement)
