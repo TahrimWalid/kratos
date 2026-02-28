@@ -1,262 +1,319 @@
-Kratos
+# Kratos — Offline AI Security Assistant
 
-Kratos is an offline security analysis assistant developed as a Bachelor’s thesis prototype.
-It is designed to run fully locally on Linux systems (including edge devices) and focuses on collecting, normalizing, and correlating security-relevant data without any cloud dependency.
+> Bachelor's thesis prototype · v0.1 · February 2026
 
-This repository represents **v0.1** (February 2026 milestone) of the thesis implementation.
+Kratos is a fully offline Linux security analysis tool that collects,
+correlates, and explains security findings using a local LLM — no cloud,
+no internet, no external APIs required.
 
-## Why Kratos?
+It is designed for administrators and security-conscious developers who need
+meaningful, explainable security insights on systems that cannot or should
+not phone home. The LLM layer bridges the gap between raw machine findings
+and plain-language recommendations that a junior administrator can act on.
 
-**Unlike traditional security tools that dump raw alerts**, Kratos correlates findings across multiple data sources:
+---
 
-- **CORR-001**: Detects SSH exposure combined with authentication bursts
-- **CORR-002**: Identifies single-user sudo abuse patterns (concentrated privilege escalation attempts)
-- **OBS-001**: Flags authentication failures when logging services are inactive (blind spots)
-- **Baseline mode**: Tracks configuration drift over time (sudo membership, service state, open ports)
+## How It Works
 
-**Air-gapped ready**: No cloud APIs, no external dependencies, full audit trail with timestamped outputs.
+Kratos runs a five-stage pipeline entirely on the local machine:
 
-**Thesis-driven design**: Prioritizes traceability, explainability, and reproducibility over feature completeness.
+```
+[Scan]──►[Logs]──►[Context]──►[Findings]──►[LLM Chat]
+  nmap     auth.log   OS/users    correlate    Qwen2.5-Coder 7B
+  XML      parsing    services    + baseline   explains in plain English
+```
 
-Project goals (current scope)
+1. **Scan** — Runs `nmap -sV` against a target IP and saves structured output
+2. **Logs** — Parses `/var/log/auth.log` into structured events + detects
+   burst patterns (e.g. 22 failed SSH logins in 4 minutes)
+3. **Context** — Snapshots the system: OS, kernel, active services, sudo
+   users, network interfaces, environment type (native/WSL/VM)
+4. **Findings** — Correlates data across all sources using built-in rules
+   and generates a severity-ranked report (JSON + Markdown)
+5. **Chat** — Loads the findings into a local Qwen2.5-Coder 7B model and
+   produces structured, grounded analysis in plain language
 
-Kratos aims to demonstrate that meaningful security insights can be generated locally by combining:
+All outputs are timestamped and stored in `data/` for full traceability.
 
-Network scan results
+---
 
-Authentication and system logs
+## Correlation Rules
 
-System context (users, services, environment state)
+Kratos detects the following finding types automatically:
 
-The project intentionally avoids:
+| ID | Severity | What it detects |
+|----|----------|----------------|
+| `CORR-SSH-001` | HIGH | SSH exposed on network + active failed-login burst |
+| `CORR-001` | MEDIUM | SSH in latest scan correlated with auth burst activity |
+| `CORR-002` | MEDIUM | Privileged auth bursts concentrated on a single sudo user |
+| `OBS-001` | MEDIUM | Auth failures present but logging services appear inactive |
+| `AUTH-TREND-001` | MEDIUM | Failed login count increasing across recent runs |
+| `AUTH-001` | LOW | Sudo authentication failures observed |
+| `NET-002` | varies | Open ports detected (attack surface enumeration) |
+| `AUTH-003` | INFO | Sudo session activity observed |
+| `AUTH-004` | INFO | Burst activity present in auth failure events |
+| `CTX-001` | INFO | Sudo-capable users identified on system |
 
-Real-time intrusion prevention
+Baseline drift detection runs separately and flags changes in:
+- sudo group membership
+- service additions / removals
+- service state changes (active ↔ inactive)
+- open port additions / removals
 
-Signature-based malware detection
+---
 
-Cloud-hosted AI or external APIs
+## Requirements
 
-Instead, the focus is on traceability, explainability, and offline operation, which are evaluated in the thesis.
+**System:**
+- Linux (tested: Ubuntu 22.04+, WSL2)
+- Python 3.10+
+- `nmap` installed (`sudo apt install nmap`)
+- Read access to `/var/log/auth.log`
 
-Current capabilities (v0.1)
-Data collection
+**Hardware (for LLM chat):**
+- 8 GB RAM minimum (16 GB recommended for comfortable operation)
+- ~5 GB free disk space (model file)
+- CPU-only — no GPU required
 
-Run safe Nmap scans and store results locally
+**Python dependencies** (installed automatically via `pip install -e .`):
+- `llama-cpp-python` — local LLM inference
+- `requests` — HTTP client for daemon mode
 
-Parse Linux authentication logs (auth.log)
+---
 
-Collect system context:
+## Installation
 
-OS and kernel
+```bash
+git clone https://github.com/TahrimWalid/kratos.git
+cd kratos
 
-active services
-
-sudo users
-
-network interfaces
-
-environment type (e.g. WSL vs native Linux)
-
-Data processing
-
-Normalize raw outputs into structured JSON
-
-Detect authentication event bursts using a rolling time window
-
-Extract contextual log excerpts for detected patterns
-
-Correlation & findings
-
-Generate structured security findings with:
-
-- **severity** (critical, high, medium, low, info)
-- **evidence** (timestamped, traceable)
-- **recommendations** (actionable next steps)
-
-**Active correlation rules**:
-
-- **CORR-001**: SSH exposure + authentication bursts
-- **CORR-002**: Single-user sudo abuse patterns
-- **OBS-001**: Auth failures with inactive logging services
-- **Baseline drift detection**: sudo membership, service state, open ports
-
-Each finding includes the tool version and environment context (production vs development)
-
-Reporting & usability
-
-Human-readable Markdown reports
-
-CLI helpers for viewing latest results
-
-LLM-ready “clean room” text bundles (optional, offline)
-
-Project structure (simplified)
-src/kratos/
-  cli/          # CLI commands and argument parsing
-  adapters/     # Parsers, collectors, findings engine
-  core/         # Shared logic and utilities
-
-data/
-  scans/        # Nmap XML + parsed scan JSON
-  logs/         # Auth events, stats, patterns, excerpts
-  context/      # System context snapshots
-  baseline/     # Baseline snapshots
-  reports/      # Findings, baseline compare, bundles
-
-
-All outputs are timestamped to preserve traceability.
-
-Installation (development)
-
-Create and activate a virtual environment, then install dependencies:
-
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -e .
+pip install llama-cpp-python requests
+```
 
+**Download the LLM model** (~4.5 GB, required for `kratos chat`):
 
-Ensure required system tools are available:
+```bash
+mkdir -p llm/models
+wget -O llm/models/qwen2.5-coder-7b-q4_k_m.gguf \
+  https://huggingface.co/Qwen/Qwen2.5-Coder-7B-GGUF/resolve/main/qwen2.5-coder-7b-q4_k_m.gguf
+```
 
-nmap
+Or point to a custom model path:
 
-systemctl (or compatible service manager)
+```bash
+export KRATOS_LLM_MODEL_PATH=/path/to/your/model.gguf
+```
 
-Access to /var/log/auth.log (read permissions)
+---
+
+## Quick Start
+
+**Run the full pipeline in one command:**
+
+```bash
+kratos run --target 127.0.0.1
+```
+
+This scans the target, parses auth logs, collects system context, and
+generates a correlated findings report. Then ask the AI to explain it:
+
+```bash
+kratos chat --mode summary
+```
+
+That's it. Two commands from zero to plain-language security analysis.
+
+---
+
+## Full Workflow
+
+### Option A — One-shot (simple)
+
+```bash
+kratos run --target <IP>      # full pipeline
+kratos chat --mode summary    # AI explains findings (~2 min cold start)
+kratos chat --mode deep       # attack chains + blind spots
+kratos chat -q "why is SSH high risk here?"   # ask a specific question
+```
+
+### Option B — With daemon mode (fast repeated queries)
+
+Run the LLM server once in a dedicated terminal — the model loads into RAM
+and stays there. All subsequent `kratos chat` calls respond in ~10-20s
+instead of ~2 minutes.
+
+```bash
+# Terminal 1 — leave running
+kratos llm-serve
+
+# Terminal 2 — instant responses
+kratos run --target <IP>
+kratos chat --mode summary
+kratos chat -q "what is the most urgent thing to fix?"
+kratos chat --mode deep
+```
+
+`kratos chat` automatically detects whether the server is running and uses
+it if available — no configuration needed. If the server is stopped, it
+falls back to direct model loading.
+
+---
+
+## All Commands
+
+| Command | Description |
+|---------|-------------|
+| `kratos run` | Full pipeline: scan → logs → context → findings |
+| `kratos scan --target <IP>` | Run nmap scan |
+| `kratos scan-parse` | Parse latest nmap XML to JSON |
+| `kratos scan-summary` | Summarise latest scan |
+| `kratos logs-parse` | Parse auth.log into structured events |
+| `kratos logs-patterns` | Detect burst patterns in auth events |
+| `kratos logs-patterns-show` | Display latest pattern analysis |
+| `kratos logs-trends` | Compare auth stats across recent runs |
+| `kratos context-collect` | Snapshot OS, users, services, network |
+| `kratos findings-generate` | Run correlation rules, write report |
+| `kratos findings-show` | Display latest findings |
+| `kratos findings-show --id CORR-SSH-001` | Filter by finding ID |
+| `kratos baseline-create` | Save a baseline configuration snapshot |
+| `kratos baseline-compare` | Detect drift from baseline |
+| `kratos prepare-bundle` | Build compact LLM-ready text bundle |
+| `kratos chat --mode summary` | AI executive summary of findings |
+| `kratos chat --mode deep` | AI deep analysis: attack chains + blind spots |
+| `kratos chat -q "<question>"` | Ask a specific question about findings |
+| `kratos llm-serve` | Start LLM server (keeps model in RAM) |
+
+---
 
 ## Example Output
 
-Kratos generates actionable, correlated findings with evidence and recommendations:
+### Findings report (`kratos findings-show`)
 
 ```
-[MEDIUM] OBS-001 — Authentication failures detected but log collection services appear inactive
+[HIGH] CORR-SSH-001: SSH exposed with failed-login burst activity observed
+  evidence: ssh exposed (nmap + context), ports: [22]
 
-Evidence:
-  - auth failure events = 2
-  - rsyslog.service active = false
-  - systemd-journald.service active = false
-  - context snapshot = 2026-02-02T04:14:42
+[MEDIUM] CORR-001: SSH exposure correlated with failed-login burst activity
+  evidence: SSH detected on port 22, burst of 22 failures in 4 min window
 
-Recommendations:
-  - Verify that system logging is enabled (rsyslog or journald) so security-relevant events are recorded.
-  - If this is an embedded/stripped environment, document logging limitations.
+[MEDIUM] OBS-001: Auth failures detected but logging services appear inactive
+  evidence: auth failure events = 2, rsyslog.service = inactive
 ```
 
+### AI chat output (`kratos chat --mode summary`)
+
 ```
-[MEDIUM] CORR-002 — Privileged authentication bursts observed on a single sudo user
+SYSTEM STATE
+The system has SSH exposed on port 22 with an active brute-force pattern
+(22 failed logins in a 4-minute window from external IPs).
 
-Evidence:
-  - sudo user: admin
-  - sudo failure events: 5
-  - time window: 30 seconds
+Finding 1: Active SSH brute-force
+- Observation: 22 failed ssh_failed_login events in a 4-minute burst
+- Evidence: "ssh_failed_login: 22 (11:13:33 → 11:17:56)"
+- Risk: Ongoing credential stuffing attack — successful login possible if
+  passwords are weak
+- Action: sudo ufw deny from <attacker-IP> to any port 22
 
-Recommendations:
-  - Investigate whether this user's credentials are compromised.
-  - Consider enforcing MFA for privileged access.
+OVERALL RISK LEVEL: HIGH
+Rationale: Active brute-force (22 events/4 min) on externally exposed SSH.
 ```
 
-Quick start (recommended demo)
+---
 
-Run the full analysis pipeline with one command:
+## Project Structure
 
-kratos run --target 127.0.0.1 --threshold 1
+```
+kratos/
+├── src/kratos/
+│   ├── cli/
+│   │   ├── app.py              # All CLI commands
+│   │   └── bundle.py           # LLM bundle generator
+│   ├── adapters/
+│   │   ├── findings_engine.py  # Correlation rules engine
+│   │   ├── auth_log_patterns.py# Burst detection (sliding window)
+│   │   ├── baseline.py         # Drift detection
+│   │   ├── nmap_parser.py      # Scan XML → JSON
+│   │   └── system_context.py   # OS/service/user snapshot
+│   ├── llm_config.py           # Model path, inference params, prompts
+│   └── llm_interface.py        # LLM server client + direct inference
+├── llm/
+│   └── models/                 # Place model file here
+├── data/
+│   ├── scans/                  # nmap XML + parsed JSON
+│   ├── logs/                   # auth events, stats, patterns
+│   ├── context/                # system context snapshots
+│   ├── baseline/               # baseline snapshots
+│   └── reports/                # findings, bundles
+└── pyproject.toml
+```
 
+---
 
-This performs, in order:
+## Design Decisions
 
-Network scan
+**Why offline?**
+Security tools sending data to external APIs create their own attack
+surface. Kratos is designed for air-gapped or privacy-sensitive environments
+where no data leaves the machine.
 
-Scan parsing
+**Why Qwen2.5-Coder 7B?**
+Purpose-built for technical reasoning over structured data (logs, configs,
+code). Outperforms general-purpose models on security-adjacent tasks.
+Q4_K_M quantisation keeps it at ~4.5 GB — usable on edge hardware.
 
-Log parsing
+**Why not real-time?**
+Continuous monitoring with autonomous response is a different threat model.
+Kratos targets the "periodic review" use case: run it, understand what
+happened, decide what to do. No automated changes, no false confidence.
 
-Pattern detection
+**Why structured output format?**
+The `Observation → Evidence → Risk → Action` format forces the LLM to cite
+actual bundle values rather than producing generic advice. Every claim is
+traceable to the source data.
 
-System context collection
+---
 
-Findings generation
+## Known Limitations
 
-View results:
+- **Cold start**: Loading the 7B model takes ~2 minutes on CPU. Use
+  `kratos llm-serve` for repeated queries to avoid reloading.
+- **Single host**: Kratos analyses one target at a time. Multi-host
+  correlation is out of scope for v0.1.
+- **Log coverage**: Currently parses `/var/log/auth.log` only.
+  Application logs, syslog, and journald are not yet supported.
+- **No real-time monitoring**: Designed for periodic analysis, not
+  continuous alerting.
+- **Development environment**: Primary development on CSC OpenStack VM
+  (Ubuntu 22.04, 8 vCPU, 77 GB). Target deployment: Mixtile Blade 3
+  (Ubuntu, 16 GB RAM, 128 GB storage). Performance numbers from target
+  hardware will be recorded in the thesis appendix.
 
-kratos findings-show
-kratos findings-show --id CORR-002
-kratos logs-patterns-show
+---
 
-Manual step-by-step usage (advanced)
-Network scanning
-kratos scan --target <host-or-ip>
-kratos scan-summary
-kratos scan-parse
+## Thesis Context
 
-Log analysis
-kratos logs-parse
-kratos logs-patterns --threshold 1
-kratos logs-patterns-show
+Developed as a Bachelor's thesis prototype (February 2026).
 
-System context
-kratos context-collect
+The research question: *Can meaningful, explainable security insights be
+generated entirely locally on resource-constrained hardware, without cloud
+services or internet connectivity?*
 
-Findings
-kratos findings-generate
-kratos findings-show
-kratos findings-show --id <FINDING_ID>
+Kratos demonstrates that the answer is yes — by combining lightweight
+rule-based correlation with a quantised local LLM, a system can move from
+raw telemetry to plain-language actionable advice with no external
+dependencies.
 
-Baseline mode (configuration drift)
+All design decisions prioritise traceability, reproducibility, and
+evaluability over feature completeness.
 
-Create a baseline snapshot:
-
-kratos baseline-create
-
-
-Later, compare current state to baseline:
-
-kratos baseline-compare
-
-
-This detects:
-
-sudo membership changes
-
-service additions/removals
-
-service state changes (active ↔ inactive)
-
-open-port drift
-
-LLM-ready summary (optional)
-
-Generate a compact, noise-free summary (offline):
-
-kratos prepare-bundle
-
-
-This produces a single text file under 500 words, suitable for:
-
-manual review
-
-future local LLM integration
-
-appendix material in the thesis
-
-Limitations (intentional)
-
-No real-time monitoring
-
-No automatic remediation
-
-No cloud connectivity
-
-No SSH exposure detection yet (planned for next phase)
-
-These constraints are by design and are discussed explicitly in the thesis.
+---
 
 ## Status
 
-- **Version**: v0.1 (February 2026 milestone)
-- **State**: Feature-complete for Phase 1 — all core correlation rules implemented
-- **Correlation engine**: 3 active rules (CORR-001, CORR-002, OBS-001)
-- **Next phase**: SSH configuration analysis on real network hosts (March 2026)
-
-Thesis context
-
-This project is developed as part of a Bachelor’s thesis in software / systems engineering.
-All design decisions prioritize clarity, reproducibility, and evaluability over production completeness.
+- **Version**: v0.1 (February 2026)
+- **Correlation rules**: 10 active finding types
+- **LLM integration**: Qwen2.5-Coder 7B, fully offline, daemon mode supported
+- **Baseline drift**: sudo / services / ports
