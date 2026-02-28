@@ -189,12 +189,18 @@ def cmd_chat(args: argparse.Namespace) -> int:
         response = analyze_findings(bundle_text=bundle_text, mode=mode)
 
     if response is None:
-        print("[KRATOS-LLM] ERROR: LLM analysis failed. Check model is in llm/models/ and disk has space.", flush=True)
+        print("[KRATOS-LLM] LLM unavailable — showing raw findings instead.", flush=True)
+        print("\n" + "=" * 70, flush=True)
+        print("  KRATOS RAW FINDINGS  (LLM offline — no AI interpretation)", flush=True)
+        print("=" * 70, flush=True)
+        print(bundle_text, flush=True)
+        print("=" * 70, flush=True)
+        print("[KRATOS] Tip: ensure model file exists and disk has 1 GB+ free.", flush=True)
         shutdown_llm()
-        return 1
+        return 2  # 2 = partial success: findings shown, LLM unavailable
 
     print("\n" + "=" * 70, flush=True)
-    print("KRATOS SECURITY ANALYSIS  (Qwen2.5-Coder 7B - offline)", flush=True)
+    print("KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)", flush=True)
     print("=" * 70, flush=True)
     print(flush=True)
     print(response, flush=True)
