@@ -20,6 +20,7 @@ from kratos.cli.findings_show import cmd_findings_show
 from kratos.cli.baseline import cmd_baseline_create, cmd_baseline_compare
 from kratos.cli.bundle import cmd_prepare_bundle
 from kratos.llm_interface import analyze_findings, shutdown_llm
+from kratos.llm_config import MAX_TOKENS_QUESTION
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = Path("data")
@@ -179,12 +180,16 @@ def cmd_chat(args: argparse.Namespace) -> int:
 
     # Build prompt
     if question:
+        # Focused bundle for -q: strip boilerplate INPUT FILES section
+        import re
+        focused = re.sub(r"INPUT FILES.*?\n\n", "", bundle_text, flags=re.DOTALL).strip()
         prompt = (
             f"Based on this security data, answer the following question:\n\n"
-            f"{question}\n\nData:\n{bundle_text}\n\n"
+            f"{question}\n\nData:\n{focused}\n\n"
             f"Be specific and grounded in the provided data only. If information is missing, say so."
         )
-        response = analyze_findings(bundle_text=prompt, mode="summary")
+        response = analyze_findings(bundle_text=prompt, mode="summary",
+                                    max_tokens=MAX_TOKENS_QUESTION)
     else:
         response = analyze_findings(bundle_text=bundle_text, mode=mode)
 

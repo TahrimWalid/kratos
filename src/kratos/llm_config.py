@@ -23,6 +23,7 @@ WHY QWEN2.5-CODER:
 
 from __future__ import annotations
 
+import os
 import os as _os
 from pathlib import Path
 
@@ -48,8 +49,9 @@ LLAMA_SERVER_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 # LLAMA_TEMP = 0.1  (low) → near-deterministic output, reproducible for thesis
 # LLAMA_SEED = 42   → fixed seed ensures same input → same output every run
 # ---------------------------------------------------------------------------
-LLAMA_N_CTX = 2048          # Context window
+LLAMA_N_CTX = 1024          # Context window (1024 sufficient for focused bundles)
 LLAMA_N_GPU_LAYERS = 0       # 0 = CPU-only (no GPU required)
+LLAMA_N_THREADS = min(os.cpu_count() or 4, 8)  # Use all vCPUs (capped at 8)
 LLAMA_TEMP = 0.1             # Low: reproducible outputs (thesis requirement)
 LLAMA_SEED = 42              # Fixed seed for determinism
 LLAMA_TOP_P = 0.9
@@ -58,6 +60,7 @@ LLAMA_TOP_K = 40
 # Timeouts and Limits
 REQUEST_TIMEOUT_SECONDS = 120   # CPU inference is slower
 MAX_TOKENS = 1024
+MAX_TOKENS_QUESTION = 256  # Shorter answers for -q mode
 STARTUP_TIMEOUT_SECONDS = 30
 
 # ---------------------------------------------------------------------------

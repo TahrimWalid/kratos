@@ -22,10 +22,12 @@ from kratos.llm_config import (
     LLAMA_N_GPU_LAYERS,
     LLAMA_TEMP,
     LLAMA_SEED,
+    LLAMA_N_THREADS,
     LLAMA_TOP_P,
     LLAMA_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
     MAX_TOKENS,
+    MAX_TOKENS_QUESTION,
     STARTUP_TIMEOUT_SECONDS,
     SYSTEM_PROMPT_ANALYST,
     PROMPT_SUMMARIZE_FINDINGS,
@@ -59,7 +61,7 @@ class LLMServer:
                 model_path=str(MODEL_PATH),
                 n_ctx=LLAMA_N_CTX,
                 n_gpu_layers=LLAMA_N_GPU_LAYERS,
-                n_threads=4,
+                n_threads=LLAMA_N_THREADS,
                 seed=LLAMA_SEED,
                 verbose=False,
             )
@@ -123,6 +125,7 @@ def analyze_findings(
     bundle_text: str,
     mode: str = "summary",
     system_prompt: str = SYSTEM_PROMPT_ANALYST,
+    max_tokens: int = MAX_TOKENS,
 ) -> Optional[str]:
     """
     Analyze Kratos findings bundle with Qwen2.5-Coder.
@@ -144,7 +147,7 @@ def analyze_findings(
     else:
         prompt = PROMPT_SUMMARIZE_FINDINGS.format(bundle_text=bundle_text)
 
-    return server.infer(prompt, system_prompt)
+    return server.infer(prompt, system_prompt, max_tokens)
 
 
 def shutdown_llm():
