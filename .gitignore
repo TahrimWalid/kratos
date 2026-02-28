@@ -24,3 +24,7 @@ data/
 
 # Local configs
 .env
+
+# LLM model files (large binaries — download separately)
+llm/models/
+*.gguf
