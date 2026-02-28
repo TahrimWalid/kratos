@@ -21,6 +21,7 @@ from kratos.llm_config import (
     LLAMA_N_CTX,
     LLAMA_N_GPU_LAYERS,
     LLAMA_TEMP,
+    LLAMA_SEED,
     LLAMA_TOP_P,
     LLAMA_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
@@ -59,6 +60,7 @@ class LLMServer:
                 n_ctx=LLAMA_N_CTX,
                 n_gpu_layers=LLAMA_N_GPU_LAYERS,
                 n_threads=4,
+                seed=LLAMA_SEED,
                 verbose=False,
             )
             print(MSG_READY, file=sys.stderr)
