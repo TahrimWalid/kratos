@@ -28,3 +28,10 @@ data/
 # LLM model files (large binaries — download separately)
 llm/models/
 *.gguf
+
+# Scratch / temp files
+Hello!
+can
+llm/not
+llm/notes
+llm/work/
