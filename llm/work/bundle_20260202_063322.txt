@@ -1,0 +1,42 @@
+KRATOS PREPARED BUNDLE (offline / LLM-ready)
+Generated: 2026-02-02T06:33:05
+Environment: wsl2
+
+INPUT FILES (latest)
+- findings: findings_20260202_063305.json
+- patterns: auth_patterns_20260202_032943.json
+- nmap_parsed: parsed_20260202_032943.json
+- system_context: system_context_20260202_041442.json
+- baseline: baseline_20260202_042511.json
+- auth_trends: auth_trends_20260202_062033.json
+
+TOP FINDINGS (ordered by severity)
+- [MEDIUM] CORR-002: Privileged authentication bursts observed on a single sudo user
+  evidence: sudo group members = walid000
+- [LOW] AUTH-001: Sudo authentication failures observed
+  evidence: sudo_pam_auth_failure events = 1
+- [INFO] AUTH-003: Sudo session activity observed
+  evidence: sudo_session_open events = 5
+- [INFO] AUTH-004: Burst activity detected in authentication failures
+  evidence: Source: auth_events_20260202_032943.json
+- [INFO] CTX-001: Sudo-capable users identified
+  evidence: sudo group line: sudo:x:27:walid000
+- [INFO] ENV-001: Environment appears to be WSL2 (development context)
+  evidence: kernel release: 5.15.90.1-microsoft-standard-WSL2
+- [INFO] NET-001: No open TCP ports detected in latest scan
+  evidence: Source: nmap_127.0.0.1_20260202_032942.xml
+
+KEY CONTEXT
+- sudo members: walid000
+- network: No open TCP ports detected.
+
+LOG PATTERNS SUMMARY
+Bursts detected: 2
+- sudo_pam_auth_failure: 1 (2026-02-01T18:54:52.363981+02:00 → 2026-02-01T18:54:52.363981+02:00)
+- sudo_auth_failure: 1 (2026-02-01T18:56:57.976846+02:00 → 2026-02-01T18:56:57.976846+02:00)
+
+AUTH TRENDS SUMMARY
+- Direction: stable
+- Delta: 0 (from 0 to 0)
+- Files compared: 0
+- AUTH-TREND-001 trigger: False

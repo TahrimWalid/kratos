@@ -1,0 +1,43 @@
+KRATOS PREPARED BUNDLE (offline / LLM-ready)
+Generated: 2026-02-07T22:06:19
+Environment: linux
+
+INPUT FILES (latest)
+- findings: findings_20260207_220619.json
+- patterns: auth_patterns_20260207_220619.json
+- nmap_parsed: parsed_20260207_220619.json
+- system_context: system_context_20260207_220619.json
+- baseline: baseline_20260202_042511.json
+- auth_trends: auth_trends_20260203_221905.json
+
+TOP FINDINGS (ordered by severity)
+- [HIGH] CORR-SSH-001: SSH exposed with failed-login burst activity observed
+  evidence: ssh exposed (nmap + context), ports: [22]
+- [MEDIUM] CORR-001: SSH exposure correlated with failed-login burst activity
+  evidence: SSH appears exposed in latest scan (port 22 and/or ssh service detected).
+- [MEDIUM] NET-002: Open ports detected (attack surface present)
+  evidence: Source: nmap_127.0.0.1_20260207_220606.xml
+- [INFO] AUTH-003: Sudo session activity observed
+  evidence: sudo_session_open events = 0
+- [INFO] AUTH-004: Burst activity detected in authentication failures
+  evidence: Source: auth_events_20260207_220619.json
+- [INFO] CTX-001: Sudo-capable users identified
+  evidence: sudo group line: sudo:x:27:ubuntu
+
+KEY CONTEXT
+- sudo members: ubuntu
+- network: Open ports total: 4. unknown: 22/tcp ssh, 80/tcp http, 443/tcp http, 8000/tcp http-alt
+
+LOG PATTERNS SUMMARY
+Bursts detected: 28
+- ssh_failed_login: 9 (2026-02-03T02:39:01.859071+00:00 → 2026-02-03T02:39:14.709354+00:00)
+- ssh_failed_login: 5 (2026-02-03T11:08:15.445875+00:00 → 2026-02-03T11:13:10.341971+00:00)
+- ssh_failed_login: 22 (2026-02-03T11:13:33.911591+00:00 → 2026-02-03T11:17:56.371842+00:00)
+- ssh_failed_login: 13 (2026-02-03T11:18:39.963179+00:00 → 2026-02-03T11:20:07.459608+00:00)
+- ssh_failed_login: 10 (2026-02-03T12:17:16.132584+00:00 → 2026-02-03T12:21:55.831609+00:00)
+
+AUTH TRENDS SUMMARY
+- Direction: decreasing
+- Delta: -7 (from 9 to 2)
+- Files compared: 5
+- AUTH-TREND-001 trigger: False
