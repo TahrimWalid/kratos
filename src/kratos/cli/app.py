@@ -194,23 +194,31 @@ def cmd_chat(args: argparse.Namespace) -> int:
     data_dir: Path = args.data_dir
     mode = getattr(args, "mode", "summary").lower()
     question = getattr(args, "question", None)
+    since = getattr(args, "since", None)
+    until = getattr(args, "until", None)
 
     # Locate latest bundle; auto-generate if missing or stale
     reports_dir = data_dir / "reports"
     bundle_path = latest_file(reports_dir, "bundle_*.txt")
 
     class _BundleArgs:
-        def __init__(self, d):
+        def __init__(self, d, since_date=None, until_date=None):
             self.data_dir = d
             self.max_words = 1000
+            self.since = since_date
+            self.until = until_date
 
     def _regen_bundle() -> bool:
-        ret = cmd_prepare_bundle(_BundleArgs(data_dir))
+        ret = cmd_prepare_bundle(_BundleArgs(data_dir, since_date=since, until_date=until))
         return ret == 0
 
     # Check if findings are newer than the bundle (stale bundle guard)
     findings_path = latest_file(reports_dir, "findings_*.json")
-    if bundle_path and findings_path:
+    
+    # Force regenerate if date-range filtering is requested (to ensure correct date range)
+    force_regen = since or until
+    
+    if bundle_path and findings_path and not force_regen:
         bundle_mtime = bundle_path.stat().st_mtime
         findings_mtime = findings_path.stat().st_mtime
         if findings_mtime > bundle_mtime:
@@ -219,6 +227,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
                 bundle_path = latest_file(reports_dir, "bundle_*.txt")
             else:
                 print("[KRATOS] WARNING: Bundle regeneration failed — using stale bundle.", flush=True)
+    elif force_regen and bundle_path:
+        print("[KRATOS] Date-range filter requested — regenerating bundle for specified interval...", flush=True)
+        if _regen_bundle():
+            bundle_path = latest_file(reports_dir, "bundle_*.txt")
+        else:
+            print("[KRATOS] WARNING: Date-filtered bundle regeneration failed — using most recent bundle.", flush=True)
 
     if not bundle_path:
         print("[KRATOS] No prepared bundle found. Generating one now...", flush=True)
@@ -297,6 +311,8 @@ def cmd_logs_trends(args: argparse.Namespace) -> int:
             data_dir=args.data_dir,
             last_n=args.last,
             min_delta=args.min_delta,
+            since=getattr(args, "since", None),
+            until=getattr(args, "until", None),
         )
     except RuntimeError as e:
         print(f"[KRATOS] ERROR: {e}")
@@ -549,6 +565,8 @@ def build_parser() -> argparse.ArgumentParser:
     trends = sub.add_parser("logs-trends", help="Run-to-run trend analysis over recent auth_stats files")
     trends.add_argument("--last", type=int, default=5, help="How many recent stats files to compare (default: 5)")
     trends.add_argument("--min-delta", type=int, default=2, help="Minimum increase (last-first) to trigger trend (default: 2)")
+    trends.add_argument("--since", type=str, default=None, help="Start date in YYYYMMDD format (e.g., 20260201)")
+    trends.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
     trends.set_defaults(func=cmd_logs_trends)
 
     context = sub.add_parser(
@@ -575,6 +593,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     bundle = sub.add_parser("prepare-bundle", help="Create a clean, short text bundle for offline LLM input")
     bundle.add_argument("--max-words", type=int, default=500, help="Max words in the bundle (default: 500)")
+    bundle.add_argument("--since", type=str, default=None, help="Start date in YYYYMMDD format (e.g., 20260201)")
+    bundle.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
     bundle.set_defaults(func=cmd_prepare_bundle)
 
     analyze = sub.add_parser("analyze", help="Analyze scan/log/context data (placeholder)")
@@ -589,6 +609,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="summary = executive overview, deep = attack chains + blind spots (default: summary)",
     )
     chat.add_argument("--question", "-q", default=None, help="Ask a specific question about the findings")
+    chat.add_argument("--since", type=str, default=None, help="Start date in YYYYMMDD format (e.g., 20260201)")
+    chat.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
     chat.set_defaults(func=cmd_chat)
 
     llm_serve = sub.add_parser(
