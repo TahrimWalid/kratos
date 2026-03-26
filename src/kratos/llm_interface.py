@@ -28,6 +28,10 @@ from kratos.llm_config import (
     REQUEST_TIMEOUT_SECONDS,
     MAX_TOKENS,
     MAX_TOKENS_QUESTION,
+<<<<<<< HEAD
+=======
+    FALLBACK_TO_DIRECT_LOAD,
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
     STARTUP_TIMEOUT_SECONDS,
     SYSTEM_PROMPT_ANALYST,
     PROMPT_SUMMARIZE_FINDINGS,
@@ -189,6 +193,16 @@ def analyze_findings(
         result = _query_server(prompt, system_prompt, max_tokens)
         if result is not None:
             return result
+<<<<<<< HEAD
+=======
+        if not FALLBACK_TO_DIRECT_LOAD:
+            print(
+                "[KRATOS-LLM] Server query failed and direct fallback is disabled. "
+                "Increase KRATOS_LLM_REQUEST_TIMEOUT_SECONDS or reduce max tokens.",
+                file=sys.stderr,
+            )
+            return None
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
         print("[KRATOS-LLM] Server query failed — falling back to direct load.", file=sys.stderr)
 
     # Slow path: load model directly (cold start ~2 min)

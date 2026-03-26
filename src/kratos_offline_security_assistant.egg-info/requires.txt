@@ -1,0 +1,6 @@
+requests
+uvicorn
+fastapi
+sse-starlette
+pydantic-settings
+starlette-context

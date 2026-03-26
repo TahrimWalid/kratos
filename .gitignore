@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Python
 __pycache__/
 *.pyc
@@ -52,3 +53,17 @@ PSEUDOCODES_CHAPTER4_SIMPLIFIED.md
 
 # Shell scripts
 *.sh
+=======
+# Ignore the massive AI models
+llm/
+# Ignore private scan data and logs
+data/
+# Ignore Python environment and cache
+venv/
+__pycache__/
+.env
+# Ignore large binary build files
+build/
+can
+*.pyc
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
