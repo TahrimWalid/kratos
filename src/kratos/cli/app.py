@@ -1,5 +1,6 @@
 import argparse
 import sys
+import json
 from pathlib import Path
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
@@ -16,12 +17,16 @@ from kratos.adapters.auth_log_patterns import analyze_auth_patterns
 from kratos.adapters.system_context import write_system_context
 from kratos.adapters.findings_engine import write_findings_report
 from kratos.adapters.logs_trends import build_auth_trends_report
+from kratos.adapters.network_capture import capture_traffic
+from kratos.adapters.network_aggregator import build_anomaly_report
+from kratos.adapters.security_report import generate_daily_report, generate_weekly_report
 from kratos.cli.logs_patterns_show import cmd_logs_patterns_show
 from kratos.cli.findings_show import cmd_findings_show
 from kratos.cli.baseline import cmd_baseline_create, cmd_baseline_compare
 from kratos.cli.bundle import cmd_prepare_bundle
 from kratos.llm_interface import analyze_findings, shutdown_llm
 from kratos.llm_config import MAX_TOKENS_QUESTION
+from kratos.storage.anomaly_store import AnomalyStore
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = Path("data")
@@ -261,7 +266,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
             f"Be specific and grounded in the provided data only. If information is missing, say so."
         )
         response = analyze_findings(bundle_text=prompt, mode="summary",
-                                    max_tokens=MAX_TOKENS_QUESTION)
+                                    max_tokens=MAX_TOKENS_QUESTION, is_custom_question=True)
     else:
         response = analyze_findings(bundle_text=bundle_text, mode=mode)
 
@@ -466,6 +471,109 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+# ============================================================================
+# PHASE 2 - Network Anomaly Detection (Tier 2 Aggregator)
+# ============================================================================
+
+def cmd_network_capture(args: argparse.Namespace) -> int:
+    """Capture network traffic passively."""
+    try:
+        duration = getattr(args, "duration", 60)
+        interface = getattr(args, "interface", "any")
+        
+        out_file = capture_traffic(
+            duration_seconds=duration,
+            interface=interface,
+        )
+        
+        if out_file:
+            print(f"[KRATOS] Network capture saved -> {out_file}")
+            return 0
+        else:
+            print("[KRATOS] ERROR: Network capture failed (tcpdump not available?)")
+            return 1
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+
+
+def cmd_network_anomalies(args: argparse.Namespace) -> int:
+    """Correlate Nmap + tcpdump to find anomalies."""
+    try:
+        out_file, report = build_anomaly_report(
+            data_dir=args.data_dir,
+        )
+        
+        if out_file:
+            print(f"[KRATOS] Anomaly report saved -> {out_file}")
+            return 0
+        else:
+            print("[KRATOS] ERROR: Anomaly report failed")
+            return 1
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+
+
+# ============================================================================
+# PHASE 3 - Reporting & Persistence
+# ============================================================================
+
+def cmd_daily_report(args: argparse.Namespace) -> int:
+    """Generate a daily security briefing."""
+    try:
+        db_path = args.data_dir / "kratos.db"
+        store = AnomalyStore(db_path)
+        
+        report_path = generate_daily_report(args.data_dir, store)
+        print(f"[KRATOS] Daily report generated -> {report_path}")
+        return 0
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+
+
+def cmd_weekly_report(args: argparse.Namespace) -> int:
+    """Generate a comprehensive weekly report."""
+    try:
+        db_path = args.data_dir / "kratos.db"
+        store = AnomalyStore(db_path)
+        
+        report_path = generate_weekly_report(args.data_dir, store)
+        print(f"[KRATOS] Weekly report generated -> {report_path}")
+        return 0
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+
+
+def cmd_store_anomalies(args: argparse.Namespace) -> int:
+    """Store anomalies in time-series database."""
+    try:
+        from kratos.utils.latest_file import latest_file
+        
+        db_path = args.data_dir / "kratos.db"
+        store = AnomalyStore(db_path)
+        
+        # Find latest anomaly report
+        anomaly_file = latest_file(args.data_dir / "reports", "network_anomalies_*.json")
+        if not anomaly_file:
+            print("[KRATOS] No anomaly report found. Run: kratos network-anomalies first")
+            return 1
+        
+        report = json.loads(anomaly_file.read_text(encoding="utf-8", errors="replace"))
+        anomalies = report.get("anomalies", [])
+        
+        count = store.store_anomalies(anomalies)
+        store.update_daily_summary()
+        
+        print(f"[KRATOS] Stored {count} anomalies in database -> {db_path}")
+        return 0
+    except Exception as e:
+        print(f"[KRATOS] ERROR: {e}")
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=PROJECT_NAME,
@@ -612,6 +720,25 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--since", type=str, default=None, help="Start date in YYYYMMDD format (e.g., 20260201)")
     chat.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
     chat.set_defaults(func=cmd_chat)
+
+    # ====== PHASE 2: Network Anomaly Detection ======
+    net_capture = sub.add_parser("network-capture", help="Passively capture network traffic (requires tcpdump)")
+    net_capture.add_argument("--duration", type=int, default=60, help="Capture duration in seconds (default: 60)")
+    net_capture.add_argument("--interface", default="any", help="Network interface to capture on (default: any)")
+    net_capture.set_defaults(func=cmd_network_capture)
+
+    net_anomalies = sub.add_parser("network-anomalies", help="Correlate Nmap + tcpdump → detect anomalies")
+    net_anomalies.set_defaults(func=cmd_network_anomalies)
+
+    # ====== PHASE 3: Reporting & Persistence ======
+    store_anom = sub.add_parser("store-anomalies", help="Save anomalies to time-series database")
+    store_anom.set_defaults(func=cmd_store_anomalies)
+
+    daily_rep = sub.add_parser("daily-report", help="Generate daily security briefing (HTML)")
+    daily_rep.set_defaults(func=cmd_daily_report)
+
+    weekly_rep = sub.add_parser("weekly-report", help="Generate weekly security report (HTML)")
+    weekly_rep.set_defaults(func=cmd_weekly_report)
 
     llm_serve = sub.add_parser(
         "llm-serve",
