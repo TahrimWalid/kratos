@@ -8,8 +8,9 @@ set -e  # Exit on any error
 # CONFIGURATION
 # ============================================================================
 
-LAB_SUBNET="192.168.1.0/24"          # CHANGE THIS to your lab subnet
-LAB_INTERFACE="eth0"                 # Network interface connected to SPAN port
+LAB_SUBNET="10.6.0.0/22"             # ICTLab subnet
+LAB_INTERFACE="enP2p36s0"            # Network interface connected to switch
+LAB_IP="10.6.0.123"                  # Static IP assigned by lab
 DATA_DIR="/home/ubuntu/kratos/lab_data"
 VENV_PATH="/home/ubuntu/kratos/venv"
 KRATOS_SRC="/home/ubuntu/kratos/src"
@@ -294,8 +295,10 @@ summary = {
     "total_reports": len(reports),
     "total_log_entries": len(logs),
     "data_directory": data_dir,
-    "study_duration": "5 days",
-    "lab_subnet": "192.168.1.0/24"
+    "study_duration": "2 days (Wed 16:20 - Fri 17:00)",
+    "lab_subnet": "10.6.0.0/22",
+    "lab_interface": "enP2p36s0",
+    "lab_ip": "10.6.0.123"
 }
 
 summary_file = f"{data_dir}/LAB_STUDY_SUMMARY.json"
