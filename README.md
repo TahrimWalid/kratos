@@ -13,6 +13,45 @@ and plain-language recommendations that a junior administrator can act on.
 
 ---
 
+## Why Kratos
+
+**Explainability** — All findings come from transparent, rule-based correlation.
+Every security alert cites specific evidence: which ports are exposed, which
+files show the patterns, what changed since baseline. No ML black boxes.
+
+**Offline-First** — Zero external API calls. Works on air-gapped networks,
+privacy-critical environments, and systems where data leaving the machine is
+a compliance violation. Model and all dependencies are local.
+
+**Edge Deployment** — Runs on resource-constrained hardware (8 GB RAM, CPU-only).
+Successfully tested on Mixtile Blade 3 (ARM64, 16 GB). Suitable for edge
+security, IoT gateways, and embedded threat detection.
+
+**Reproducible** — Deterministic output. Same input + same seed = same findings.
+Built for security audits, compliance reviews, and malware analysis where
+repeatability matters.
+
+**Full Audit Trail** — All artifacts timestamped and stored in `data/` directory.
+Every report is traceable to the specific scan, logs, and context snapshots
+used to generate it. No hidden derivations.
+
+---
+
+## Use Cases
+
+- **Periodic security reviews** on infrastructure where manual log analysis is
+  too slow or error-prone
+- **Edge device monitoring** — SSH monitoring and breach detection on remote
+  hardware without shipping logs to a central server
+- **Compliance audits** — Generate timestamped, reproducible security reports
+  with full evidence chain
+- **Air-gapped systems** — Security analysis that never touches the internet or
+  external APIs
+- **Security awareness training** — Learn how correlation rules work by running
+  them on synthetic or lab scenarios
+
+---
+
 ## How It Works
 
 Kratos runs a five-stage pipeline entirely on the local machine:
