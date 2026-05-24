@@ -1,0 +1,326 @@
+"""
+Security Report Generation
+==========================
+Generates daily/weekly executive summaries and detailed technical reports.
+HTML output suitable for stakeholders.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from datetime import datetime, timedelta
+from typing import Any, Optional
+import json
+
+from kratos.storage.anomaly_store import AnomalyStore
+from kratos.utils.latest_file import latest_file
+
+
+def generate_daily_report(
+    data_dir: Path,
+    store: AnomalyStore,
+) -> Path:
+    """Generate a daily security brief."""
+    
+    reports_dir = data_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = reports_dir / f"daily_report_{ts}.html"
+    
+    # Gather data
+    today_anomalies = store.get_anomalies_by_severity("HIGH", days=1)
+    weekly_summary = store.get_weekly_summary(weeks=1)
+    
+    high_count = len(today_anomalies)
+    med_count = len(store.get_anomalies_by_severity("MEDIUM", days=1))
+    low_count = len(store.get_anomalies_by_severity("LOW", days=1))
+    
+    # Risk assessment
+    if high_count > 0:
+        risk_level = "CRITICAL"
+        risk_color = "red"
+    elif med_count > 2:
+        risk_level = "HIGH"
+        risk_color = "orange"
+    else:
+        risk_level = "NORMAL"
+        risk_color = "green"
+    
+    # HTML template
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Kratos Daily Security Report - {datetime.now().strftime('%Y-%m-%d')}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+            .header {{ background: #{risk_color}; color: white; padding: 20px; border-radius: 5px; }}
+            .header h1 {{ margin: 0; }}
+            .section {{ background: white; margin: 20px 0; padding: 15px; border-radius: 5px; }}
+            .section h2 {{ color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }}
+            .anomaly {{ background: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #ff6b6b; }}
+            .high {{ border-left-color: #ff6b6b; }}
+            .medium {{ border-left-color: #ffa500; }}
+            .low {{ border-left-color: #87ceeb; }}
+            table {{ width: 100%; border-collapse: collapse; }}
+            th, td {{ padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }}
+            th {{ background: #f0f0f0; font-weight: bold; }}
+            .number {{ font-weight: bold; font-size: 24px; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>🛡️ Kratos Security Report</h1>
+            <p>Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            <p style="font-size: 20px;">Risk Level: <strong>{risk_level}</strong></p>
+        </div>
+        
+        <div class="section">
+            <h2>Today's Summary</h2>
+            <p><span class="number" style="color: #ff6b6b;">{high_count}</span> HIGH severity anomalies</p>
+            <p><span class="number" style="color: #ffa500;">{med_count}</span> MEDIUM severity anomalies</p>
+            <p><span class="number" style="color: #87ceeb;">{low_count}</span> LOW severity anomalies</p>
+        </div>
+        
+        <div class="section">
+            <h2>Top Anomalies Today</h2>
+    """
+    
+    if today_anomalies:
+        for anom in today_anomalies[:5]:
+            severity_class = anom["severity"].lower()
+            html += f"""
+            <div class="anomaly {severity_class}">
+                <strong>[{anom['severity']}]</strong> {anom['src_ip']} ({anom.get('device_type', 'unknown')})
+                <br>→ {anom['dst_ip']}:{anom['dst_port']} ({anom['protocol']})
+                <br>Score: {anom['score']} | {anom.get('recommendation', 'Monitor')}
+            </div>
+            """
+    else:
+        html += "<p style='color: green;'>✓ No HIGH severity anomalies today</p>"
+    
+    html += """
+        </div>
+        
+        <div class="section">
+            <h2>Weekly Trend</h2>
+            <table>
+                <tr>
+                    <th>Date</th>
+                    <th>High</th>
+                    <th>Medium</th>
+                    <th>Low</th>
+                    <th>Unique Devices</th>
+                </tr>
+    """
+    
+    for day in reversed(weekly_summary):
+        html += f"""
+        <tr>
+            <td>{day['date']}</td>
+            <td style="color: #ff6b6b;">{day['high_anomalies']}</td>
+            <td style="color: #ffa500;">{day['medium_anomalies']}</td>
+            <td style="color: #87ceeb;">{day['low_anomalies']}</td>
+            <td>{day['unique_devices']}</td>
+        </tr>
+        """
+    
+    html += """
+        </table>
+        </div>
+        
+        <div class="section" style="border-top: 2px solid #ddd; padding-top: 20px; color: #666;">
+            <p style="font-size: 12px;">
+                Report generated by Kratos on Mixtile Blade 3
+                <br>Offline AI Security Analysis | No cloud data transmission
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    report_path.write_text(html, encoding="utf-8")
+    print(f"[KRATOS-REPORT] Daily report written -> {report_path}", flush=True)
+    
+    return report_path
+
+
+def generate_weekly_report(
+    data_dir: Path,
+    store: AnomalyStore,
+) -> Path:
+    """Generate a comprehensive weekly security report."""
+    
+    reports_dir = data_dir / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = reports_dir / f"weekly_report_{ts}.html"
+    
+    # Gather data
+    weekly_summary = store.get_weekly_summary(weeks=1)
+    high_all_week = store.get_anomalies_by_severity("HIGH", days=7)
+    medium_all_week = store.get_anomalies_by_severity("MEDIUM", days=7)
+    
+    # Calculate metrics
+    total_high = len(high_all_week)
+    total_medium = len(medium_all_week)
+    unique_ips = len(set(a["src_ip"] for a in high_all_week))
+    
+    # Determine trend
+    if len(weekly_summary) >= 2:
+        today = int(weekly_summary[0].get("high_anomalies", 0))
+        last_week_avg = sum(d.get("high_anomalies", 0) for d in weekly_summary[1:]) / len(weekly_summary[1:]) if len(weekly_summary) > 1 else 0
+        trend = "↑ INCREASING" if today > (last_week_avg * 1.2) else ("↓ DECREASING" if today < (last_week_avg * 0.8) else "→ STABLE")
+        trend_color = "#ff6b6b" if "↑" in trend else ("#87ceeb" if "↓" in trend else "#ffa500")
+    else:
+        trend = "→ STABLE (insufficient data)"
+        trend_color = "#ffa500"
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Kratos Weekly Security Report</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 5px; }}
+            .header h1 {{ margin: 0; font-size: 32px; }}
+            .section {{ background: white; margin: 20px 0; padding: 20px; border-radius: 5px; }}
+            .section h2 {{ color: #333; border-bottom: 3px solid #667eea; padding-bottom: 10px; }}
+            .metrics {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }}
+            .metric-card {{ background: #f9f9f9; padding: 20px; border-radius: 5px; text-align: center; }}
+            .metric-number {{ font-size: 36px; font-weight: bold; }}
+            .metric-label {{ color: #666; font-size: 14px; }}
+            .stats-table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
+            .stats-table th, .stats-table td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
+            .stats-table th {{ background: #f0f0f0; }}
+            .positive {{ color: #27ae60; }}
+            .negative {{ color: #e74c3c; }}
+            .timestamp {{ color: #999; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>📊 Kratos Weekly Security Report</h1>
+            <p class="timestamp">Week of {(datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')} to {datetime.now().strftime('%Y-%m-%d')}</p>
+        </div>
+        
+        <div class="section">
+            <h2>Week Overview</h2>
+            <div class="metrics">
+                <div class="metric-card">
+                    <div class="metric-number" style="color: #ff6b6b;">{total_high}</div>
+                    <div class="metric-label">HIGH Anomalies</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-number" style="color: #ffa500;">{total_medium}</div>
+                    <div class="metric-label">MEDIUM Anomalies</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-number" style="color: #667eea;">{unique_ips}</div>
+                    <div class="metric-label">Affected Devices</div>
+                </div>
+            </div>
+            <div style="margin-top: 20px; padding: 15px; background: #ecf0f1; border-left: 4px solid {trend_color};">
+                <strong>Trend:</strong> <span style="color: {trend_color};">{trend}</span>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>Daily Breakdown</h2>
+            <table class="stats-table">
+                <tr>
+                    <th>Date</th>
+                    <th style="color: #ff6b6b;">HIGH</th>
+                    <th style="color: #ffa500;">MEDIUM</th>
+                    <th style="color: #87ceeb;">LOW</th>
+                    <th>Devices</th>
+                </tr>
+    """
+    
+    for day in reversed(weekly_summary):
+        html += f"""
+        <tr>
+            <td><strong>{day['date']}</strong></td>
+            <td style="color: #ff6b6b; font-weight: bold;">{day['high_anomalies']}</td>
+            <td style="color: #ffa500;">{day['medium_anomalies']}</td>
+            <td style="color: #87ceeb;">{day['low_anomalies']}</td>
+            <td>{day['unique_devices']}</td>
+        </tr>
+        """
+    
+    html += """
+        </table>
+        </div>
+        
+        <div class="section">
+            <h2>Top Offending Devices</h2>
+            <table class="stats-table">
+                <tr>
+                    <th>Device IP</th>
+                    <th>Type</th>
+                    <th>HIGH</th>
+                    <th>MEDIUM</th>
+                    <th>Total</th>
+                </tr>
+    """
+    
+    # Group by source IP
+    device_summary = {}
+    for anom in high_all_week + medium_all_week:
+        ip = anom["src_ip"]
+        if ip not in device_summary:
+            device_summary[ip] = {"HIGH": 0, "MEDIUM": 0, "type": anom.get("device_type", "unknown")}
+        device_summary[ip][anom["severity"]] += 1
+    
+    for ip in sorted(device_summary.keys(), key=lambda x: device_summary[x]["HIGH"], reverse=True)[:10]:
+        summary = device_summary[ip]
+        html += f"""
+        <tr>
+            <td><strong>{ip}</strong></td>
+            <td>{summary['type']}</td>
+            <td style="color: #ff6b6b;">{summary['HIGH']}</td>
+            <td style="color: #ffa500;">{summary['MEDIUM']}</td>
+            <td><strong>{summary['HIGH'] + summary['MEDIUM']}</strong></td>
+        </tr>
+        """
+    
+    html += """
+        </table>
+        </div>
+        
+        <div class="section">
+            <h2>Recommendations</h2>
+            <ul>
+    """
+    
+    if total_high > 5:
+        html += "<li><strong style='color: #ff6b6b;'>⚠️ URGENT:</strong> Multiple HIGH severity anomalies detected. Review and isolate affected devices immediately.</li>"
+    
+    if unique_ips > 5:
+        html += "<li><strong style='color: #ffa500;'>⚠️ WARNING:</strong> Anomalies span multiple devices. Consider network segmentation or additional monitoring.</li>"
+    
+    if "↑" in trend:
+        html += "<li><strong style='color: #ffa500;'>⚠️ TREND:</strong> Anomaly count is increasing. Deploy additional detection measures.</li>"
+    
+    html += """
+            </ul>
+        </div>
+        
+        <div class="section" style="background: #f0f0f0; border-top: 2px solid #ddd; color: #666;">
+            <p style="font-size: 12px;">
+                <strong>Generated by:</strong> Kratos Security System (Mixtile Blade 3)<br>
+                <strong>Architecture:</strong> Offline 3-Tier NDR (Active Sensors → Aggregation → AI Analysis)<br>
+                <strong>Privacy:</strong> 100% Offline - No cloud data transmission
+            </p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    report_path.write_text(html, encoding="utf-8")
+    print(f"[KRATOS-REPORT] Weekly report written -> {report_path}", flush=True)
+    
+    return report_path
