@@ -1,0 +1,482 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\optimus_3.0> ssh ubuntu@10.251.63.45
+ubuntu@10.251.63.45's password:
+Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 5.10.160-rockchip aarch64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Sat Apr 25 08:55:59 PM UTC 2026
+
+  System load:                      0.23
+  Usage of /:                       13.1% of 114.07GB
+  Memory usage:                     2%
+  Swap usage:                       0%
+  Temperature:                      37.9 C
+  Processes:                        213
+  Users logged in:                  1
+  IPv4 address for wlx782051033809: 10.251.63.45
+  IPv6 address for wlx782051033809: 2001:14bb:a7:3e14:f479:3b64:78c1:2ed7
+  IPv6 address for wlx782051033809: 2001:14bb:a7:3e14:7f73:8c10:58f0:50f6
+
+Expanded Security Maintenance for Applications is not enabled.
+
+51 updates can be applied immediately.
+40 of these updates are standard security updates.
+To see these additional updates run: apt list --upgradable
+
+1 additional security update can be applied with ESM Apps.
+Learn more about enabling ESM Apps service at https://ubuntu.com/esm
+
+
+Last login: Sat Apr 25 20:51:55 2026 from 10.251.63.73
+ubuntu@ubuntu:~$ cd kratos
+ubuntu@ubuntu:~/kratos$ source venv/bin/activate
+(venv) ubuntu@ubuntu:~/kratos$ set -a; source .env; set +a
+(venv) ubuntu@ubuntu:~/kratos$ kratos run --target 192.168.1.1
+[KRATOS] Running: nmap -sV -oX data/scans/nmap_192.168.1.1_20260425_205736.xml 192.168.1.1
+Starting Nmap 7.80 ( https://nmap.org ) at 2026-04-25 20:57 UTC
+Nmap scan report for home (192.168.1.1)
+Host is up (0.015s latency).
+Not shown: 988 closed ports
+PORT      STATE SERVICE      VERSION
+21/tcp    open  ftp
+22/tcp    open  ssh          (protocol 2.0)
+23/tcp    open  telnet
+53/tcp    open  domain       (generic dns response: NOTIMP)
+80/tcp    open  http
+139/tcp   open  netbios-ssn  Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+443/tcp   open  ssl/https
+445/tcp   open  netbios-ssn  Samba smbd 3.X - 4.X (workgroup: WORKGROUP)
+2601/tcp  open  zebra?
+3517/tcp  open  802-11-iapp?
+49152/tcp open  unknown
+49153/tcp open  unknown
+9 services unrecognized despite returning data. If you know the service/version, please submit the following fingerprints at https://nmap.org/cgi-bin/submit.cgi?new-service :
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port21-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC7%P=aarch64-unknown-linux-gnu%
+SF:r(NULL,FE,"220----------\x20Welcome\x20to\x20FTP\x20Server\x20---------
+SF:-\r\n220-You\x20are\x20user\x20number\x201\x20of\x2050\x20allowed\.\r\n
+SF:220-Local\x20time\x20is\x20now\x2023:57\.\x20Server\x20port:\x2021\.\r\
+SF:n220-IPv6\x20connections\x20are\x20also\x20welcome\x20on\x20this\x20ser
+SF:ver\.\r\n220\x20You\x20will\x20be\x20disconnected\x20after\x2015\x20min
+SF:utes\x20of\x20inactivity\.\r\n")%r(GenericLines,10C,"220----------\x20W
+SF:elcome\x20to\x20FTP\x20Server\x20----------\r\n220-You\x20are\x20user\x
+SF:20number\x201\x20of\x2050\x20allowed\.\r\n220-Local\x20time\x20is\x20no
+SF:w\x2023:57\.\x20Server\x20port:\x2021\.\r\n220-IPv6\x20connections\x20a
+SF:re\x20also\x20welcome\x20on\x20this\x20server\.\r\n220\x20You\x20will\x
+SF:20be\x20disconnected\x20after\x2015\x20minutes\x20of\x20inactivity\.\r\
+SF:n500\x20\?\r\n500\x20\?\r\n")%r(Help,145,"220----------\x20Welcome\x20t
+SF:o\x20FTP\x20Server\x20----------\r\n220-You\x20are\x20user\x20number\x2
+SF:01\x20of\x2050\x20allowed\.\r\n220-Local\x20time\x20is\x20now\x2023:57\
+SF:.\x20Server\x20port:\x2021\.\r\n220-IPv6\x20connections\x20are\x20also\
+SF:x20welcome\x20on\x20this\x20server\.\r\n220\x20You\x20will\x20be\x20dis
+SF:connected\x20after\x2015\x20minutes\x20of\x20inactivity\.\r\n214\x20The
+SF:\x20following\x20SITE\x20commands\x20are\x20recognized\r\n\x20CHMOD\r\n
+SF:\x20IDLE\r\n\x20UTIME\r\n")%r(SSLSessionReq,105,"220----------\x20Welco
+SF:me\x20to\x20FTP\x20Server\x20----------\r\n220-You\x20are\x20user\x20nu
+SF:mber\x201\x20of\x2050\x20allowed\.\r\n220-Local\x20time\x20is\x20now\x2
+SF:023:57\.\x20Server\x20port:\x2021\.\r\n220-IPv6\x20connections\x20are\x
+SF:20also\x20welcome\x20on\x20this\x20server\.\r\n220\x20You\x20will\x20be
+SF:\x20disconnected\x20after\x2015\x20minutes\x20of\x20inactivity\.\r\n500
+SF:\x20\?\r\n")%r(SMBProgNeg,FE,"220----------\x20Welcome\x20to\x20FTP\x20
+SF:Server\x20----------\r\n220-You\x20are\x20user\x20number\x201\x20of\x20
+SF:50\x20allowed\.\r\n220-Local\x20time\x20is\x20now\x2023:58\.\x20Server\
+SF:x20port:\x2021\.\r\n220-IPv6\x20connections\x20are\x20also\x20welcome\x
+SF:20on\x20this\x20server\.\r\n220\x20You\x20will\x20be\x20disconnected\x2
+SF:0after\x2015\x20minutes\x20of\x20inactivity\.\r\n");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port22-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC7%P=aarch64-unknown-linux-gnu%
+SF:r(NULL,16D,"SSH-2\.0-ssh\r\n\0\0\x01\\\x07\x14\"\xbe\xed\^F\x1e\xcf\xc0
+SF:\xb5\xfb\xc1\xb6\x07\xa8\x8a\xa8\0\0\0\xbbcurve25519-sha256,curve25519-
+SF:sha256@libssh\.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nist
+SF:p256,diffie-hellman-group14-sha256,diffie-hellman-group14-sha1,kexguess
+SF:2@matt\.ucc\.asn\.au\0\0\0\x0fssh-rsa,ssh-dss\0\0\0\x15aes128-ctr,aes25
+SF:6-ctr\0\0\0\x15aes128-ctr,aes256-ctr\0\0\0\rhmac-sha2-256\0\0\0\rhmac-s
+SF:ha2-256\0\0\0\x04none\0\0\0\x04none\0\0\0\0\0\0\0\0\0\0\0\0\0\xd8s\x18\
+SF:xad\xc5\xb1\xdd");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port23-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC7%P=aarch64-unknown-linux-gnu%
+SF:r(NULL,26,"\xff\xfd\x01\xff\xfd\x1f\xff\xfb\x01\xff\xfb\x03\r\r\nVMG362
+SF:5-T50B\x20Username:\x20")%r(GenericLines,58,"\xff\xfd\x01\xff\xfd\x1f\x
+SF:ff\xfb\x01\xff\xfb\x03\r\r\nVMG3625-T50B\x20Username:\x20\r\n\r\nVMG362
+SF:5-T50B\x20Username:\x20VMG3625-T50B\x20Username:\x20")%r(tn3270,37,"\xf
+SF:f\xfd\x01\xff\xfd\x1f\xff\xfb\x01\xff\xfb\x03\r\r\n\^@IBM-3279-4-E\xfb\
+SF:^YVMG3625-T50B\x20Username:\x20")%r(GetRequest,38,"\xff\xfd\x01\xff\xfd
+SF:\x1f\xff\xfb\x01\xff\xfb\x03\r\r\nGET\x20/\x20HTTP/1\.0\r\n\r\nVMG3625-
+SF:T50B\x20Username:\x20")%r(RPCCheck,F,"\xff\xfd\x01\xff\xfd\x1f\xff\xfb\
+SF:x01\xff\xfb\x03\r\r\n")%r(Help,2C,"\xff\xfd\x01\xff\xfd\x1f\xff\xfb\x01
+SF:\xff\xfb\x03\r\r\nHELP\r\nVMG3625-T50B\x20Username:\x20")%r(SIPOptions,
+SF:105,"\xff\xfd\x01\xff\xfd\x1f\xff\xfb\x01\xff\xfb\x03\r\r\nOPTIONS\x20s
+SF:ip:nm\x20SIP/2\.0\r\nVia:\x20SIP/2\.0/TCP\x20nm;branch=foo\r\nFrom:\x20
+SF:<sip:nm@nm>;tag=root\r\nTo:\x20<sip:nm2@nm2>\r\nCall-ID:\x2050000\r\nCS
+SF:eq:\x2042\x20OPTIONS\r\nMax-Forwards:\x2070\r\nContent-Length:\x200\r\n
+SF:Contact:\x20<sip:nm@nm>\r\nAccept:\x20application/sdp\r\n\r\nVMG3625-T5
+SF:0B\x20Username:\x20")%r(NCP,47,"\xff\xfd\x01\xff\xfd\x1f\xff\xfb\x01\xf
+SF:f\xfb\x03\r\r\nDmdT\^@\^@\^@\x08\x20\x08\x08\x20\x08\x08\x20\x08\x08\x2
+SF:0\x08\x08\x20\x08\x08\x20\x08\x08\x20\x08\x08\x20\x08\x08\x20\x08\x08\x
+SF:20\x08\^@\^@\^@\^A\^@\^@\^@\^@");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port53-TCP:V=7.80%I=7%D=4/25%Time=69ED2ACC%P=aarch64-unknown-linux-gnu%
+SF:r(DNSVersionBindReqTCP,20,"\0\x1e\0\x06\x81\x85\0\x01\0\0\0\0\0\0\x07ve
+SF:rsion\x04bind\0\0\x10\0\x03")%r(DNSStatusRequestTCP,E,"\0\x0c\0\0\x90\x
+SF:04\0\0\0\0\0\0\0\0");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port80-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC7%P=aarch64-unknown-linux-gnu%
+SF:r(GetRequest,6CC,"HTTP/1\.1\x20200\x20OK\r\nContent-Type:\x20text/html\
+SF:r\nCache-Control:\x20no-cache\r\nLast-Modified:\x20Thu,\x2021\x20Jul\x2
+SF:02022\x2018:41:24\x20GMT\r\nContent-Length:\x201422\r\nDate:\x20Sat,\x2
+SF:025\x20Apr\x202026\x2020:57:43\x20GMT\r\nX-Frame-Options:\x20sameorigin
+SF:\r\nContent-Security-Policy:\x20frame-ancestors\x20'self'\r\nX-Content-
+SF:Type-Options:\x20nosniff\r\nX-XSS-Protection:\x201;\x20mode=block\r\n\r
+SF:\n<!DOCTYPE\x20html><html><head><meta\x20charset=utf-8><meta\x20http-eq
+SF:uiv=Cache-Control\x20content=no-store><meta\x20http-equiv=cache-control
+SF:\x20content=no-cache><meta\x20http-equiv=cache-control\x20content=\"max
+SF:-age=0\"><meta\x20name=viewport\x20content=\"width=device-width,initial
+SF:-scale=1,minimum-scale=1,maximum-scale=1\"><title>\.::Welcome\x20to\x20
+SF:the\x20Web-Based\x20Configurator::\.</title><link\x20rel=stylesheet\x20
+SF:href=\./static/plugins/bootstrap-4\.0\.0/bootstrap\.min\.css><link\x20r
+SF:el=stylesheet\x20href=\./static/plugins/glyphicons/glyphicons\.css><lin
+SF:k\x20type=text/css\x20href=\./static/plugins/zyxel-icon/styles\.css\x20
+SF:rel=stylesheet><link\x20re")%r(HTTPOptions,6CC,"HTTP/1\.1\x20200\x20OK\
+SF:r\nContent-Type:\x20text/html\r\nCache-Control:\x20no-cache\r\nLast-Mod
+SF:ified:\x20Thu,\x2021\x20Jul\x202022\x2018:41:24\x20GMT\r\nContent-Lengt
+SF:h:\x201422\r\nDate:\x20Sat,\x2025\x20Apr\x202026\x2020:57:43\x20GMT\r\n
+SF:X-Frame-Options:\x20sameorigin\r\nContent-Security-Policy:\x20frame-anc
+SF:estors\x20'self'\r\nX-Content-Type-Options:\x20nosniff\r\nX-XSS-Protect
+SF:ion:\x201;\x20mode=block\r\n\r\n<!DOCTYPE\x20html><html><head><meta\x20
+SF:charset=utf-8><meta\x20http-equiv=Cache-Control\x20content=no-store><me
+SF:ta\x20http-equiv=cache-control\x20content=no-cache><meta\x20http-equiv=
+SF:cache-control\x20content=\"max-age=0\"><meta\x20name=viewport\x20conten
+SF:t=\"width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1\
+SF:"><title>\.::Welcome\x20to\x20the\x20Web-Based\x20Configurator::\.</tit
+SF:le><link\x20rel=stylesheet\x20href=\./static/plugins/bootstrap-4\.0\.0/
+SF:bootstrap\.min\.css><link\x20rel=stylesheet\x20href=\./static/plugins/g
+SF:lyphicons/glyphicons\.css><link\x20type=text/css\x20href=\./static/plug
+SF:ins/zyxel-icon/styles\.css\x20rel=stylesheet><link\x20re");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port443-TCP:V=7.80%T=SSL%I=7%D=4/25%Time=69ED2ADD%P=aarch64-unknown-lin
+SF:ux-gnu%r(RTSPRequest,6CC,"HTTP/1\.1\x20200\x20OK\r\nContent-Type:\x20te
+SF:xt/html\r\nCache-Control:\x20no-cache\r\nLast-Modified:\x20Thu,\x2021\x
+SF:20Jul\x202022\x2018:41:24\x20GMT\r\nContent-Length:\x201422\r\nDate:\x2
+SF:0Sat,\x2025\x20Apr\x202026\x2020:58:00\x20GMT\r\nX-Frame-Options:\x20sa
+SF:meorigin\r\nContent-Security-Policy:\x20frame-ancestors\x20'self'\r\nX-
+SF:Content-Type-Options:\x20nosniff\r\nX-XSS-Protection:\x201;\x20mode=blo
+SF:ck\r\n\r\n<!DOCTYPE\x20html><html><head><meta\x20charset=utf-8><meta\x2
+SF:0http-equiv=Cache-Control\x20content=no-store><meta\x20http-equiv=cache
+SF:-control\x20content=no-cache><meta\x20http-equiv=cache-control\x20conte
+SF:nt=\"max-age=0\"><meta\x20name=viewport\x20content=\"width=device-width
+SF:,initial-scale=1,minimum-scale=1,maximum-scale=1\"><title>\.::Welcome\x
+SF:20to\x20the\x20Web-Based\x20Configurator::\.</title><link\x20rel=styles
+SF:heet\x20href=\./static/plugins/bootstrap-4\.0\.0/bootstrap\.min\.css><l
+SF:ink\x20rel=stylesheet\x20href=\./static/plugins/glyphicons/glyphicons\.
+SF:css><link\x20type=text/css\x20href=\./static/plugins/zyxel-icon/styles\
+SF:.css\x20rel=stylesheet><link\x20re");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port2601-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC1%P=aarch64-unknown-linux-gn
+SF:u%r(NULL,19,"Vty\x20password\x20isn't\x20set\.\r\n");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port49152-TCP:V=7.80%I=7%D=4/25%Time=69ED2AC7%P=aarch64-unknown-linux-g
+SF:nu%r(FourOhFourRequest,BD,"HTTP/1\.0\x20404\x20Not\x20Found\r\nSERVER:\
+SF:x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UPnP\
+SF:x20devices\r\nCONTENT-LENGTH:\x2048\r\nCONTENT-TYPE:\x20text/html\r\n\r
+SF:\n<html><body><h1>404\x20Not\x20Found</h1></body></html>")%r(GetRequest
+SF:,BD,"HTTP/1\.0\x20404\x20Not\x20Found\r\nSERVER:\x20Ubknown/Ubknown,\x2
+SF:0UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UPnP\x20devices\r\nCONTENT-
+SF:LENGTH:\x2048\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>404\
+SF:x20Not\x20Found</h1></body></html>")%r(HTTPOptions,C9,"HTTP/1\.0\x20501
+SF:\x20Not\x20Implemented\r\nSERVER:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\
+SF:x20Portable\x20SDK\x20for\x20UPnP\x20devices\r\nCONTENT-LENGTH:\x2054\r
+SF:\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>501\x20Not\x20Imple
+SF:mented</h1></body></html>")%r(RPCCheck,C1,"HTTP/0\.0\x20400\x20Bad\x20R
+SF:equest\r\nSERVER:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x20Portable\x20S
+SF:DK\x20for\x20UPnP\x20devices\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\
+SF:x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20Request</h1></body></
+SF:html>")%r(LDAPSearchReq,C1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVE
+SF:R:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UP
+SF:nP\x20devices\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\
+SF:n\r\n<html><body><h1>400\x20Bad\x20Request</h1></body></html>");
+==============NEXT SERVICE FINGERPRINT (SUBMIT INDIVIDUALLY)==============
+SF-Port49153-TCP:V=7.80%I=7%D=4/25%Time=69ED2AD1%P=aarch64-unknown-linux-g
+SF:nu%r(GetRequest,BD,"HTTP/1\.0\x20404\x20Not\x20Found\r\nSERVER:\x20Ubkn
+SF:own/Ubknown,\x20UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UPnP\x20devi
+SF:ces\r\nCONTENT-LENGTH:\x2048\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html
+SF:><body><h1>404\x20Not\x20Found</h1></body></html>")%r(HTTPOptions,C9,"H
+SF:TTP/1\.0\x20501\x20Not\x20Implemented\r\nSERVER:\x20Ubknown/Ubknown,\x2
+SF:0UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UPnP\x20devices\r\nCONTENT-
+SF:LENGTH:\x2054\r\nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>501\
+SF:x20Not\x20Implemented</h1></body></html>")%r(RPCCheck,C1,"HTTP/0\.0\x20
+SF:400\x20Bad\x20Request\r\nSERVER:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x
+SF:20Portable\x20SDK\x20for\x20UPnP\x20devices\r\nCONTENT-LENGTH:\x2050\r\
+SF:nCONTENT-TYPE:\x20text/html\r\n\r\n<html><body><h1>400\x20Bad\x20Reques
+SF:t</h1></body></html>")%r(FourOhFourRequest,BD,"HTTP/1\.0\x20404\x20Not\
+SF:x20Found\r\nSERVER:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x20Portable\x2
+SF:0SDK\x20for\x20UPnP\x20devices\r\nCONTENT-LENGTH:\x2048\r\nCONTENT-TYPE
+SF::\x20text/html\r\n\r\n<html><body><h1>404\x20Not\x20Found</h1></body></
+SF:html>")%r(LDAPSearchReq,C1,"HTTP/0\.0\x20400\x20Bad\x20Request\r\nSERVE
+SF:R:\x20Ubknown/Ubknown,\x20UPnP/Ubknown,\x20Portable\x20SDK\x20for\x20UP
+SF:nP\x20devices\r\nCONTENT-LENGTH:\x2050\r\nCONTENT-TYPE:\x20text/html\r\
+SF:n\r\n<html><body><h1>400\x20Bad\x20Request</h1></body></html>");
+Service Info: Host: ---------
+
+Service detection performed. Please report any incorrect results at https://nmap.org/submit/ .
+Nmap done: 1 IP address (1 host up) scanned in 139.41 seconds
+[KRATOS] Scan complete -> data/scans/nmap_192.168.1.1_20260425_205736.xml
+[KRATOS] Parsed scan: nmap_192.168.1.1_20260425_205736.xml
+[KRATOS] Hosts: 1, total open ports: 12
+[KRATOS] JSON written -> data/scans/parsed_20260425_205956.json
+[KRATOS] Parsed auth log -> source: file:/var/log/auth.log
+[KRATOS] Output files: events: auth_events_20260425_205956.json, stats: auth_stats_20260425_205956.json
+[KRATOS] Total events: 429
+[KRATOS] Event types:
+  - auth_other: 215
+  - ssh_other: 74
+  - sudo_session_close: 38
+  - sudo_command: 33
+  - sudo_session_open: 33
+  - ssh_success_login: 19
+  - sudo_other: 12
+  - ssh_failed_login: 5
+[KRATOS] Top failed-login IPs:
+  - 10.186.35.73: 3
+  - 10.6.0.123: 2
+[KRATOS] Patterns written -> data/logs/auth_patterns_20260425_205956.json
+[KRATOS] System context written -> data/context/system_context_20260425_205956.json
+[KRATOS] Findings JSON -> data/reports/findings_20260425_205956.json
+[KRATOS] Findings MD   -> data/reports/findings_20260425_205956.md
+[KRATOS] Context snapshot used -> system_context_20260425_205956.json
+[KRATOS] Run artifact set: 20260425_205956 (all files use this timestamp)
+(venv) ubuntu@ubuntu:~/kratos$ ^C
+(venv) ubuntu@ubuntu:~/kratos$ client_loop: send disconnect: Connection reset
+PS C:\Users\optimus_3.0> ssh ubuntu@10.251.63.45
+ubuntu@10.251.63.45's password:
+Welcome to Ubuntu 22.04.5 LTS (GNU/Linux 5.10.160-rockchip aarch64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/pro
+
+ System information as of Sat Apr 25 09:02:29 PM UTC 2026
+
+  System load:                      0.0
+  Usage of /:                       13.1% of 114.07GB
+  Memory usage:                     3%
+  Swap usage:                       0%
+  Temperature:                      37.0 C
+  Processes:                        217
+  Users logged in:                  1
+  IPv4 address for wlx782051033809: 10.251.63.45
+  IPv6 address for wlx782051033809: 2001:14bb:a7:3e14:f479:3b64:78c1:2ed7
+  IPv6 address for wlx782051033809: 2001:14bb:a7:3e14:7f73:8c10:58f0:50f6
+
+Expanded Security Maintenance for Applications is not enabled.
+
+51 updates can be applied immediately.
+40 of these updates are standard security updates.
+To see these additional updates run: apt list --upgradable
+
+1 additional security update can be applied with ESM Apps.
+Learn more about enabling ESM Apps service at https://ubuntu.com/esm
+
+
+Last login: Sat Apr 25 20:56:00 2026 from 10.251.63.73
+ubuntu@ubuntu:~$ kratos findings-show
+-bash: kratos: command not found
+ubuntu@ubuntu:~$ cd kratos
+ubuntu@ubuntu:~/kratos$ source venv/bin/activate
+(venv) ubuntu@ubuntu:~/kratos$ set -a; source .env; set +a
+(venv) ubuntu@ubuntu:~/kratos$ kratos findings-show
+[KRATOS] Latest findings file: findings_20260425_205956.json
+Generated at: 2026-04-25T20:59:56
+Context snapshot: system_context_20260425_205956.json
+
+[HIGH] CORR-SSH-001 — SSH exposed with failed-login burst activity observed
+[MEDIUM] NET-002 — Open ports detected (attack surface present)
+[MEDIUM] CORR-001 — SSH exposure correlated with failed-login burst activity
+[INFO] CTX-001 — Sudo-capable users identified
+[INFO] AUTH-003 — Sudo session activity observed
+[INFO] AUTH-004 — Burst activity detected in authentication failures
+(venv) ubuntu@ubuntu:~/kratos$ time kratos chat --mode summary
+[KRATOS] No prepared bundle found. Generating one now...
+[KRATOS] Bundle written -> data/reports/bundle_20260425_210537.txt
+[KRATOS] Words: 167 (limit: 1000)
+[KRATOS-LLM] Using running LLM server (fast path)...
+
+======================================================================
+KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)
+======================================================================
+
+**SYSTEM STATE**: The system appears to be a Linux machine with 12 open ports, including SSH on port 22. Sudo session activity has been observed, and there are indications of authentication failure bursts.
+
+**TOP FINDINGS**
+
+Finding 1: **SSH exposed with failed-login burst activity observed**
+- Observation: SSH is exposed (nmap + context), ports: [22]
+- Evidence: "ssh exposed" from nmap scan.
+- Risk: Exposing SSH increases the risk of unauthorized access, especially when combined with repeated failed login attempts which can lead to brute-force attacks.
+- Action: Disable SSH if not needed or restrict access to trusted IP addresses using `iptables`.
+
+Finding 2: **SSH exposure correlated with failed-login burst activity**
+- Observation: SSH appears exposed in latest scan (port 22 and/or ssh service detected).
+- Evidence: "ssh exposed" from nmap scan.
+- Risk: Similar to Finding 1, exposing SSH increases the risk of unauthorized access due to potential brute-force attacks.
+- Action: Implement rate limiting for SSH logins using `fail2ban` or similar tools.
+
+Finding 3: **Open ports detected (attack surface present)**
+- Observation: Open ports total: 12. unknown: 21/tcp ftp, 22/tcp ssh, 23/tcp telnet, 53/tcp domain, 80/tcp http, 139/tcp netbios-ssn, 443/tcp https, 445/tcp netbios-ssn, 2601/tcp zebra, 3517/tcp 802-11-iapp, 49152/tcp unknown, 49153/tcp unknown
+- Evidence: "Open ports total: 12" from nmap scan.
+- Risk: Having multiple open ports increases the attack surface, making the system more vulnerable to exploitation.
+- Action: Close unnecessary ports using `iptables` or a firewall management tool.
+
+**OVERALL RISK LEVEL**: MEDIUM
+Rationale: The presence of exposed SSH and multiple open ports significantly increases the risk of unauthorized access.
+
+======================================================================
+[KRATOS-LLM] Analysis complete. Verify recommendations with actual system inspection.
+
+real    5m4.722s
+user    0m0.183s
+sys     0m0.024s
+(venv) ubuntu@ubuntu:~/kratos$ time What is the most urgent thing to fix?
+-bash: What: command not found
+
+real    0m0.002s
+user    0m0.001s
+sys     0m0.001s
+(venv) ubuntu@ubuntu:~/kratos$ time kratos chat -q "What is the most urgent thing to fix?"
+[KRATOS-LLM] Using running LLM server (fast path)...
+
+======================================================================
+KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)
+======================================================================
+
+The most urgent thing to fix is the **SSH exposure with failed-login burst activity observed** (CORR-SSH-001).
+
+### Explanation:
+1. **High Severity**: The finding is marked as HIGH severity, indicating a significant risk.
+2. **Failed-Login Burst Activity**: There are multiple failed login attempts on port 22, which could indicate an attempt to breach the system.
+3. **Open Ports**: Although there are other open ports (e.g., FTP, Telnet), SSH being exposed is particularly concerning because it's a common target for attackers.
+
+### Immediate Actions:
+1. **Disable Telnet and FTP**: Since these services are also exposed, consider disabling them if they are not essential.
+2. **Implement Two-Factor Authentication (2FA)**: For SSH access, enable 2FA to add an extra layer of security.
+3. **Change Default SSH Port**: Change the default SSH port from 22 to a non-standard port to reduce the attack surface.
+4. **Update and Patch Systems**: Ensure all systems are up-to-date with the latest security patches.
+5. **Monitor and Audit**: Increase monitoring on SSH access and authentication events.
+
+By addressing the SSH exposure, you mitigate the most immediate risk of unauthorized access to your system.
+
+======================================================================
+[KRATOS-LLM] Analysis complete. Verify recommendations with actual system inspection.
+
+real    2m53.348s
+user    0m0.183s
+sys     0m0.021s
+(venv) ubuntu@ubuntu:~/kratos$ time kratos chat -q "Explain the Failed-Login Burst Activity risk in simple terms"
+[KRATOS-LLM] Using running LLM server (fast path)...
+
+======================================================================
+KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)
+======================================================================
+
+### Failed-Login Burst Activity Risk Explanation
+
+**What is Failed-Login Burst Activity?**
+
+Failed-login burst activity refers to a rapid succession of failed login attempts on a system. This can be caused by someone trying to guess passwords or by an automated script attempting to breach the system.
+
+**Why is this risky?**
+
+When there are multiple failed login attempts in a short period, it indicates that someone is actively trying to gain unauthorized access to your system. If successful, they could potentially take control of your server and perform malicious activities such as stealing data, installing malware, or disrupting services.
+
+**How does this relate to the provided data?**
+
+1. **SSH Exposed with Failed-Login Burst Activity (CORR-SSH-001)**
+   - The system is exposed to SSH on port 22.
+   - There were three failed login attempts within a short period (3 minutes).
+
+2. **SSH Exposure Correlated with Failed-Login Burst Activity (CORR-001)**
+   - SSH appears to be exposed in the latest scan, and there are multiple failed login attempts.
+
+3. **Open Ports Detected (NET-002)**
+   - The system has several open ports, including port 22 for SSH.
+   - Open ports increase the attack surface of your system, making it more vulnerable to attacks.
+
+4. **Burst Activity Detected in Authentication Failures (AUTH-004)**
+   - There is evidence of multiple authentication failures, which could be part of a brute-force attack.
+
+5. **Sudo-Capable Users Identified (CTX-001)**
+   - The user "ubuntu" has sudo privileges, meaning they can perform administrative tasks.
+   - If an attacker gains access to this account, they could escalate their privileges further.
+
+**What should you do?**
+
+1. **Investigate the Failed Logins:**
+   - Check the authentication logs to see which accounts were targeted and why the logins failed.
+   - Look for any patterns or repeated attempts from the same IP address.
+
+2. **Change Passwords:**
+   - Change the passwords for all sudo-capable users, especially "ubuntu."
+   - Consider implementing a password policy that requires strong, unique passwords.
+
+3. **Restrict SSH Access:**
+   - Limit SSH access to trusted IP addresses.
+   - Use SSH key-based authentication instead of password-based authentication to reduce the risk of brute-force attacks.
+
+4. **Monitor System Activity:**
+   - Set up alerts for any unusual activity on your system.
+   - Regularly review logs and security events to detect and respond to potential threats.
+
+By taking these steps, you can mitigate the risks associated with failed-login burst activity and enhance the overall security of your system.
+
+======================================================================
+[KRATOS-LLM] Analysis complete. Verify recommendations with actual system inspection.
+
+real    4m17.960s
+user    0m0.188s
+sys     0m0.017s
+(venv) ubuntu@ubuntu:~/kratos$ time kratos chat -q "What attacker could do if I don't investigate this Failed-Login Burst Activity?"
+[KRATOS-LLM] Using running LLM server (fast path)...
+
+======================================================================
+KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)
+======================================================================
+
+If you don't investigate this Failed-Login Burst Activity, the attacker could potentially gain unauthorized access to your system. Here's why:
+
+1. **SSH Exposed**: The data shows that SSH is exposed on port 22, which is a common target for attackers. A failed-login burst activity indicates multiple login attempts in a short period, which can be used by an attacker to try and guess passwords or use brute-force attacks.
+
+2. **Failed-Login Burst Activity**: The specific evidence provided includes three failed SSH login attempts between 12:56:48 and 12:57:11 on April 21, 2026. This could be the beginning of a brute-force attack where an attacker is trying to guess valid usernames andpasswords.
+
+3. **Open Ports**: The system has multiple open ports, including SSH (port 22), FTP (port 21), HTTP (port 80), HTTPS (port 443), andothers. This increased attack surface makes it easier for an attacker to find vulnerabilities or exploit weaknesses.
+
+### Potential Actions by the Attacker:
+- **Brute-Force Attack**: The failed-login burst activity suggests that the attacker is using a brute-force method to guess passwords. If you don't investigate, they might succeed in guessing a password and gain access.
+
+- **Exploit Vulnerabilities**: With multiple open ports, there are likely vulnerabilities on some of these services. An attacker could exploit one of these vulnerabilities to gain unauthorized access.
+
+### Recommendations:
+1. **Investigate the Failed-Login Burst Activity**: Look into the specific login attempts and see if any patterns or repeated usernames emerge. This can help you identify potential brute-force attacks.
+
+2. **Check SSH Logs**: Review the SSH logs for more details on the failed login attempts. This might provide clues about the attacker's methods or the types of passwords they are trying.
+
+3. **Update and Patch Systems**: Ensure that all systems, especially those exposed to the internet (like SSH), are up-to-date with the latest security patches.
+
+4. **Implement Two-Factor Authentication (2FA)**: Adding an extra layer of security can significantly reduce the risk of unauthorized access even if a password is guessed or stolen.
+
+5. **Monitor Network Traffic**: Use network monitoring tools to keep an eye on any unusual activity that could indicate further attacks.
+
+By taking these steps, you can mitigate the risks associated with the failed-login burst activity and protect your system from potential breaches.
+
+======================================================================
+[KRATOS-LLM] Analysis complete. Verify recommendations with actual system inspection.
+
+real    4m8.380s
+user    0m0.183s
+sys     0m0.024s
+(venv) ubuntu@ubuntu:~/kratos$
