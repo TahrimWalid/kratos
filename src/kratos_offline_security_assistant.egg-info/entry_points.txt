@@ -1,2 +1,0 @@
-[console_scripts]
-kratos = kratos.cli.app:main
