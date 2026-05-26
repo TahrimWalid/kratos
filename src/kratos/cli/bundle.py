@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from kratos.utils.latest_file import latest_file
+from kratos.utils.latest_file import latest_file, files_in_date_range
 
 
 _SEV_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}
@@ -29,16 +29,43 @@ def cmd_prepare_bundle(args) -> int:
     ctx_dir = data_dir / "context"
     baseline_dir = data_dir / "baseline"
 
-    findings_path = latest_file(reports_dir, "findings_*.json")
+    # Support date-range filtering
+    since = getattr(args, "since", None)
+    until = getattr(args, "until", None)
+    
+    # Get findings (required) — respect date range if provided
+    if since or until:
+        findings_files = files_in_date_range(reports_dir, "findings_*.json", since=since, until=until)
+        findings_path = findings_files[-1] if findings_files else None
+    else:
+        findings_path = latest_file(reports_dir, "findings_*.json")
+    
     if not findings_path:
         print("[KRATOS] No findings found. Run: kratos findings-generate (or kratos run)")
         return 1
 
-    patterns_path = latest_file(logs_dir, "auth_patterns_*.json")
-    nmap_parsed_path = latest_file(scans_dir, "parsed_*.json")
-    system_context_path = latest_file(ctx_dir, "system_context_*.json")
-    baseline_path = latest_file(baseline_dir, "baseline_*.json")
-    trends_path = latest_file(reports_dir, "auth_trends_*.json")
+    # Get optional supporting files — respect date range if provided
+    if since or until:
+        patterns_files = files_in_date_range(logs_dir, "auth_patterns_*.json", since=since, until=until)
+        patterns_path = patterns_files[-1] if patterns_files else None
+        
+        nmap_files = files_in_date_range(scans_dir, "parsed_*.json", since=since, until=until)
+        nmap_parsed_path = nmap_files[-1] if nmap_files else None
+        
+        ctx_files = files_in_date_range(ctx_dir, "system_context_*.json", since=since, until=until)
+        system_context_path = ctx_files[-1] if ctx_files else None
+        
+        baseline_files = files_in_date_range(baseline_dir, "baseline_*.json", since=since, until=until)
+        baseline_path = baseline_files[-1] if baseline_files else None
+        
+        trends_files = files_in_date_range(reports_dir, "auth_trends_*.json", since=since, until=until)
+        trends_path = trends_files[-1] if trends_files else None
+    else:
+        patterns_path = latest_file(logs_dir, "auth_patterns_*.json")
+        nmap_parsed_path = latest_file(scans_dir, "parsed_*.json")
+        system_context_path = latest_file(ctx_dir, "system_context_*.json")
+        baseline_path = latest_file(baseline_dir, "baseline_*.json")
+        trends_path = latest_file(reports_dir, "auth_trends_*.json")
 
     findings = json.loads(findings_path.read_text(encoding="utf-8", errors="replace"))
     findings_list = findings.get("findings") or []

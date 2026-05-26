@@ -28,6 +28,10 @@ from kratos.llm_config import (
     REQUEST_TIMEOUT_SECONDS,
     MAX_TOKENS,
     MAX_TOKENS_QUESTION,
+<<<<<<< HEAD
+=======
+    FALLBACK_TO_DIRECT_LOAD,
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
     STARTUP_TIMEOUT_SECONDS,
     SYSTEM_PROMPT_ANALYST,
     PROMPT_SUMMARIZE_FINDINGS,
@@ -166,19 +170,24 @@ def analyze_findings(
     mode: str = "summary",
     system_prompt: str = SYSTEM_PROMPT_ANALYST,
     max_tokens: int = MAX_TOKENS,
+    is_custom_question: bool = False,
 ) -> Optional[str]:
     """
     Analyze Kratos findings bundle with Qwen2.5-Coder.
 
     Args:
-        bundle_text: Prepared bundle from kratos prepare-bundle
+        bundle_text: Prepared bundle from kratos prepare-bundle, or custom question+data
         mode: "summary" (executive) or "deep" (attack chains + blind spots)
         system_prompt: Override default system prompt if needed
+        is_custom_question: If True, use bundle_text as-is (don't apply template)
 
     Returns:
         LLM analysis text, or None if failed
     """
-    if mode == "deep":
+    if is_custom_question:
+        # Use the question directly without templating
+        prompt = bundle_text
+    elif mode == "deep":
         prompt = PROMPT_DEEP_ANALYSIS.format(bundle_text=bundle_text)
     else:
         prompt = PROMPT_SUMMARIZE_FINDINGS.format(bundle_text=bundle_text)
@@ -189,6 +198,16 @@ def analyze_findings(
         result = _query_server(prompt, system_prompt, max_tokens)
         if result is not None:
             return result
+<<<<<<< HEAD
+=======
+        if not FALLBACK_TO_DIRECT_LOAD:
+            print(
+                "[KRATOS-LLM] Server query failed and direct fallback is disabled. "
+                "Increase KRATOS_LLM_REQUEST_TIMEOUT_SECONDS or reduce max tokens.",
+                file=sys.stderr,
+            )
+            return None
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
         print("[KRATOS-LLM] Server query failed — falling back to direct load.", file=sys.stderr)
 
     # Slow path: load model directly (cold start ~2 min)

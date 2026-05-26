@@ -49,7 +49,11 @@ LLAMA_SERVER_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 # LLAMA_TEMP = 0.1  (low) → near-deterministic output, reproducible for thesis
 # LLAMA_SEED = 42   → fixed seed ensures same input → same output every run
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
 LLAMA_N_CTX = 2048          # Context window (2048 needed for full bundle + prompt)
+=======
+LLAMA_N_CTX = int(os.environ.get("KRATOS_LLM_N_CTX", "2048"))
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
 LLAMA_N_GPU_LAYERS = 0       # 0 = CPU-only (no GPU required)
 LLAMA_N_THREADS = min(os.cpu_count() or 4, 8)  # Use all vCPUs (capped at 8)
 LLAMA_TEMP = 0.1             # Low: reproducible outputs (thesis requirement)
@@ -58,11 +62,23 @@ LLAMA_TOP_P = 0.9
 LLAMA_TOP_K = 40
 
 # Timeouts and Limits
+<<<<<<< HEAD
 REQUEST_TIMEOUT_SECONDS = 120   # CPU inference is slower
 MAX_TOKENS = 1024
 MAX_TOKENS_QUESTION = 512  # Shorter answers for -q mode
 STARTUP_TIMEOUT_SECONDS = 30
 
+=======
+REQUEST_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_LLM_REQUEST_TIMEOUT_SECONDS", "120"))
+MAX_TOKENS = int(os.environ.get("KRATOS_LLM_MAX_TOKENS", "1024"))
+MAX_TOKENS_QUESTION = int(os.environ.get("KRATOS_LLM_MAX_TOKENS_QUESTION", "512"))
+STARTUP_TIMEOUT_SECONDS = 30
+
+# If True, when server fast-path fails, Kratos tries loading model directly in-process.
+# On low-power hardware this can look like a hang. Set to 0 to disable fallback.
+FALLBACK_TO_DIRECT_LOAD = os.environ.get("KRATOS_LLM_FALLBACK_TO_DIRECT_LOAD", "1") == "1"
+
+>>>>>>> 41c3549 (Initialize Blade 3 feature branch with edge-optimized config)
 # ---------------------------------------------------------------------------
 # System Prompt
 # ---------------------------------------------------------------------------

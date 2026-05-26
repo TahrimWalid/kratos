@@ -6,6 +6,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kratos.utils.latest_file import files_in_date_range
+
 
 @dataclass
 class TrendPoint:
@@ -47,16 +49,27 @@ def build_auth_trends_report(
     data_dir: Path,
     last_n: int = 5,
     min_delta: int = 2,
+    since: str | None = None,
+    until: str | None = None,
 ) -> tuple[Path, Path, dict[str, Any]]:
     logs_dir = data_dir / "logs"
     reports_dir = data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    stat_files = sorted(logs_dir.glob("auth_stats_*.json"))
+    # If date range specified, use it; otherwise use last_n files
+    if since or until:
+        stat_files = files_in_date_range(logs_dir, "auth_stats_*.json", since=since, until=until)
+    else:
+        stat_files = sorted(logs_dir.glob("auth_stats_*.json"))
+    
     if len(stat_files) < 2:
         raise RuntimeError(f"Not enough auth_stats files for trends (found {len(stat_files)}). Run logs-parse a few times first.")
 
-    chosen = stat_files[-last_n:]
+    # If date range not specified, use last_n files
+    if not (since or until):
+        chosen = stat_files[-last_n:]
+    else:
+        chosen = stat_files
 
     points: list[TrendPoint] = []
     for f in chosen:
