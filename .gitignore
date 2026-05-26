@@ -35,3 +35,8 @@ can
 llm/not
 llm/notes
 llm/work/
+
+# Shell scripts and markdown (except README)
+*.sh
+*.md
+!README.md
