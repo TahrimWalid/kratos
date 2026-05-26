@@ -36,7 +36,8 @@ llm/not
 llm/notes
 llm/work/
 
-# Shell scripts and markdown (except README)
+# Shell scripts, markdown, and text files (except README)
 *.sh
 *.md
+*.txt
 !README.md
