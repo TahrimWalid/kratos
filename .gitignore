@@ -22,12 +22,29 @@ venv/
 data/
 *.log
 
+# Self-writing loop: staged tool candidates (Part A output) -- never live,
+# never TOOL_REGISTRY-reachable, disposable by design. See
+# src/kratos/agent/self_write.py and docs/sprint2_self_writing_loop_design.md.
+sandbox_staging/
+
+# Self-writing loop: APPROVED, live tool source + persisted requires_approval
+# metadata (Part D output). Runtime-generated per-installation state, not
+# source code -- same class as data/, not something to track. See
+# src/kratos/agent/self_write_loop.py.
+kept_tools/
+
 # Local configs
 .env
 
 # LLM model files (large binaries — download separately)
 llm/models/
 *.gguf
+
+# vulscan NSE script + CVE database (large, periodically-updated data --
+# download separately, same class as llm/models/. See
+# src/kratos/adapters/vuln_scan.py and vulscan/README.md for the install
+# step and directory layout nmap's own script/data resolution requires.)
+vulscan/
 
 # Scratch / temp files
 Hello!

@@ -1,0 +1,447 @@
+"""
+Scripted-mock tests for agent/loop.py's 3 structural final_answer guards
+(correlate_findings-required, file-integrity contradiction, dismissive-verdict
+contradiction), driven through the REAL run_agent() loop.
+
+Unlike tests/agent_scenarios.py (which is explicitly real-LLM-only by design,
+see its module docstring), these tests need fully deterministic, instant
+control over both the "model"'s responses AND the tool results the guards
+check answers against -- so this is a different file, not an addition to
+agent_scenarios.py. Two things are mocked:
+
+  1. agent_chat (patched on kratos.agent.loop, where it was imported via
+     `from kratos.llm_interface import agent_chat`) -- returns a scripted
+     queue of raw JSON-string responses, one per call, via ScriptedChat.
+  2. TOOL_REGISTRY["check_file_integrity"]/["correlate_findings"].handler --
+     swapped for canned handlers so a diff/finding exists to contradict
+     without touching a real SSH target or real baseline files.
+
+Everything else (execute_tool_call, the 3 guards, retry/reject-count
+bookkeeping, force-accept + [NOTE:...] tagging) runs unmodified.
+
+IMPORTANT finding baked into this file's scenario choice: the literally
+requested "all 3 guards violated by one final_answer" is impossible to
+construct. Guard 1 (correlate_findings_called == False) and Guard 3 (requires
+last_correlate_findings to hold a real HIGH/CRITICAL finding) are mutually
+exclusive by construction -- last_correlate_findings is only ever populated
+inside the same `if tool_name == "correlate_findings":` block that sets
+correlate_findings_called = True (agent/loop.py, current version around
+lines 535-544), and that flag is never reset. A final_answer cannot both
+"never called correlate_findings" and "contradict a correlate_findings
+result" in the same investigation. The scenarios below instead cover both
+FEASIBLE pairs (guard2+guard3, guard1+guard2), which is the real worst case
+reachable in practice.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from kratos.agent import loop as agent_loop
+from kratos.agent.tools import TOOL_REGISTRY
+
+FILE_INTEGRITY_DIFF = {
+    "changed": [{"path": "/etc/ssh/sshd_config", "old_hash": "aaa111", "new_hash": "bbb222"}],
+    "added": [],
+    "removed": [],
+}
+
+HIGH_FINDING = {
+    "id": "CORR-SSH-001",
+    "title": "SSH exposed with failed-login burst activity observed",
+    "severity": "high",
+    "evidence": ["mocked evidence: ssh exposed + failed-login burst"],
+    "recommendation": ["mocked recommendation"],
+}
+
+# Deliberately trips BOTH the file-integrity guard's phrase set (Guard 2:
+# "not ... tampered with", "integrity remains intact") AND the
+# dismissive-verdict guard's phrase set (Guard 3: "no suspicious activity",
+# "appears secure") in one answer, without mentioning "correlat"/"rule
+# engine" (which would matter for Guard 1 if it were still open).
+DISMISSIVE_AND_FILE_CLEAN_ANSWER = (
+    "No suspicious activity was detected on this system; overall the system appears secure. "
+    "Critical configuration files such as sshd_config have not been tampered with, and "
+    "integrity remains intact."
+)
+
+# Fixes both violations: acknowledges the real HIGH finding and the real
+# file-integrity diff instead of contradicting them.
+CORRECTED_ANSWER = (
+    "A HIGH-severity finding (CORR-SSH-001: SSH exposed with failed-login burst activity) was "
+    "identified and requires attention. Additionally, /etc/ssh/sshd_config has changed since "
+    "the last baseline (aaa111 -> bbb222), which should be treated as a possible tampering or "
+    "persistence indicator and investigated. Recommend restricting SSH access and reviewing the "
+    "modified sshd_config file immediately."
+)
+
+# Guard1 (never called correlate_findings) + Guard2 (contradicts a real file
+# diff) -- deliberately omits "correlat"/"rule engine" so Guard 1 stays
+# violated, and omits the Guard-3 dismissive phrase set (irrelevant here
+# since correlate_findings was never called, so Guard 3 can't fire anyway).
+NO_CORRELATION_AND_FILE_CLEAN_ANSWER = (
+    "Based on the checks performed, critical configuration files have not been modified and "
+    "integrity is intact. The investigation is complete."
+)
+
+CORRECTED_NO_CORRELATION_ANSWER = (
+    "concluding without correlate_findings because the investigation only needed the "
+    "file-integrity check for this goal. /etc/ssh/sshd_config has changed since baseline "
+    "(aaa111 -> bbb222) and should be investigated as a possible tampering indicator."
+)
+
+
+def _tool_json(tool: str, args: dict[str, Any] | None = None, reasoning: str = "calling tool") -> str:
+    return json.dumps({"reasoning": reasoning, "tool": tool, "args": args or {}})
+
+
+def _final_json(text: str, reasoning: str = "concluding") -> str:
+    return json.dumps({"reasoning": reasoning, "final_answer": text})
+
+
+class ScriptedChat:
+    """Replaces agent_chat: returns queued responses in order, one per call."""
+
+    def __init__(self, responses: list[str]):
+        self.responses = list(responses)
+        self.calls: list[str] = []
+
+    def __call__(self, system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
+        self.calls.append(user_prompt)
+        if not self.responses:
+            raise AssertionError(
+                f"ScriptedChat exhausted after {len(self.calls)} calls -- scenario ran longer "
+                "than scripted (check the guard reject-count budget assumptions)"
+            )
+        return self.responses.pop(0)
+
+
+def _mock_check_file_integrity(**kwargs: Any) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "diff": FILE_INTEGRITY_DIFF,
+        "baseline_name": kwargs.get("baseline_name", "default"),
+        "checked_at": "mock",
+    }
+
+
+def _mock_correlate_findings(**kwargs: Any) -> dict[str, Any]:
+    return {
+        "findings_json_file": "mock_findings.json",
+        "findings_md_file": "mock_findings.md",
+        "inputs_used": {},
+        "missing_inputs": [],
+        "input_errors": {},
+        "findings": [HIGH_FINDING],
+        "count": 1,
+    }
+
+
+# The real 2026-07-15 failure this mock reproduces: correlate_findings's
+# actual handler validates that any EXPLICIT file-path arg exists on disk
+# and returns this exact shape (a domain-level error result, not a raised
+# exception) for a guessed/hallucinated one -- see
+# adapters/findings_engine.py's real validation and its real error text,
+# quoted (abridged) here.
+CORRELATE_FINDINGS_GUESSED_PATH_ERROR = (
+    "These file paths do not exist on disk: nmap_parsed_file='data_dir/scans/10.136.28.168_nmap.json'. "
+    "Do not guess file paths -- use the exact path from a previous tool's Observation "
+    "(e.g. run_nmap_scan's parsed_json_file, collect_system_context's context_file, "
+    "parse_auth_log's stats_file), or omit the argument entirely to auto-discover the "
+    "latest file in data_dir."
+)
+
+
+class _CorrelateFindingsFailsOnGuessedPath:
+    """
+    Stateful mock: an explicit nmap_parsed_file arg (simulating a
+    hallucinated/guessed path, exactly what the real 2026-07-15 run's model
+    did) returns a real-shaped domain-level error; omitting it (simulating
+    a corrected retry that lets auto-discovery take over, or a real path)
+    succeeds. Tracks every call's kwargs so a test can assert on what the
+    "model" actually retried with.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(kwargs)
+        if kwargs.get("nmap_parsed_file"):
+            return {"status": "error", "observation": CORRELATE_FINDINGS_GUESSED_PATH_ERROR}
+        return _mock_correlate_findings(**kwargs)
+
+
+# Deliberately avoids both Guard 2's phrase set (no file-integrity claim) and
+# Guard 3's dismissive-verdict phrase set ("no suspicious activity", "clean",
+# "secure", etc.) so this scenario isolates Guard 1 only -- whether it's
+# violated is driven purely by whether correlate_findings has SUCCEEDED, not
+# by any other guard's text-matching.
+RAW_OBSERVATIONS_ANSWER = (
+    "SSH is exposed on port 22 with failed-login burst activity observed in recent auth data."
+)
+
+
+def _old_guard1_correlate_missing(correlate_findings_called: bool) -> bool:
+    """
+    Literal reproduction of the REMOVED pre-2026-07-15 Guard 1 formula
+    (agent/loop.py, before the fix): `correlate_missing = not
+    correlate_findings_called`. Attempt alone satisfied it, regardless of
+    whether the call succeeded or failed -- that's exactly the gap the fix
+    closed. Kept only here, not in production code, so a test can show a
+    concrete before/after on the same real (mocked) scenario instead of
+    asserting the difference in a comment alone.
+    """
+    return not correlate_findings_called
+
+
+@pytest.fixture
+def data_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "kratos_data"
+    for sub in ("scans", "logs", "context", "reports", "baseline"):
+        (d / sub).mkdir(parents=True, exist_ok=True)
+    return d
+
+
+@pytest.fixture
+def mocked_tools(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(TOOL_REGISTRY["check_file_integrity"], "handler", _mock_check_file_integrity)
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_findings)
+
+
+def _print_transcript(transcript: list[dict[str, Any]]) -> None:
+    print()
+    for step in transcript:
+        it = step.get("iteration")
+        if step.get("tool"):
+            print(f"  iter {it}: tool={step['tool']}")
+        elif step.get("status") == "final_answer_rejected":
+            print(f"  iter {it}: REJECTED violations={step.get('violations')}")
+        elif "final_answer" in step:
+            note_count = step["final_answer"].count("[NOTE:")
+            print(f"  iter {it}: ACCEPTED final_answer ({note_count} [NOTE:...] tag(s))")
+        else:
+            print(f"  iter {it}: status={step.get('status')}")
+
+
+def test_guard2_and_guard3_stubborn_model_force_accepts_with_both_notes(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Worst-case reachable combo (Guard1+Guard3 is impossible, see module
+    docstring): correlate_findings returns a real HIGH finding AND
+    check_file_integrity shows a real diff, then the "model" submits the
+    SAME answer -- contradicting both -- three times in a row without ever
+    fixing it (MAX_..._REJECTIONS=2 for each guard). Expect: both guards'
+    corrections are combined into ONE observation per rejected attempt (not
+    one iteration per guard), both reject budgets exhaust in lockstep, and
+    the 3rd submission is force-accepted with BOTH [NOTE:...] tags present
+    -- i.e. force-accept can happen with genuine unresolved contradictions,
+    just visibly labeled rather than silently accepted as clean.
+    """
+    chat = ScriptedChat([
+        _tool_json("check_file_integrity"),
+        _tool_json("correlate_findings"),
+        _final_json(DISMISSIVE_AND_FILE_CLEAN_ANSWER),  # attempt 1: rejected (both guards)
+        _final_json(DISMISSIVE_AND_FILE_CLEAN_ANSWER),  # attempt 2: rejected (both guards, budget now exhausted)
+        _final_json(DISMISSIVE_AND_FILE_CLEAN_ANSWER),  # attempt 3: force-accepted with both NOTEs
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer", f"Expected clean termination, got {result['status']}"
+    assert len(chat.calls) == 5, f"Expected exactly 5 LLM calls to resolution, got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 2, f"Expected 2 rejected attempts, got {len(rejected_steps)}"
+    for step in rejected_steps:
+        assert set(step["violations"]) == {"file_integrity_contradiction", "dismissive_verdict_contradiction"}, (
+            "Expected BOTH guard2 and guard3 combined into one rejection observation "
+            f"(not one gate at a time), got: {step['violations']}"
+        )
+
+    final_answer = result["final_answer"]
+    assert final_answer.count("[NOTE:") == 2, (
+        f"Expected the force-accepted answer to carry both unresolved-violation NOTE tags, "
+        f"got {final_answer.count('[NOTE:')}: {final_answer!r}"
+    )
+    assert "file/config integrity" in final_answer
+    assert "HIGH/CRITICAL" in final_answer
+
+
+def test_guard2_and_guard3_self_correcting_model_converges_cleanly(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Same setup, but the model fixes BOTH contradictions on its very next
+    attempt after the combined rejection observation. Confirms the combined-
+    feedback mechanism actually lets a compliant model clear both guards in
+    a single retry (1 rejected attempt, not 2 -- one per guard).
+    """
+    chat = ScriptedChat([
+        _tool_json("check_file_integrity"),
+        _tool_json("correlate_findings"),
+        _final_json(DISMISSIVE_AND_FILE_CLEAN_ANSWER),  # attempt 1: rejected (both guards)
+        _final_json(CORRECTED_ANSWER),                  # attempt 2: clean, accepted
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer"
+    assert len(chat.calls) == 4, f"Expected exactly 4 LLM calls to resolution, got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 1
+    assert set(rejected_steps[0]["violations"]) == {"file_integrity_contradiction", "dismissive_verdict_contradiction"}
+
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+def test_guard1_rejects_failed_attempt_then_accepts_after_real_retry(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    2026-07-15 fix verification (Sprint 2 closing regression): Guard 1's
+    pass condition changed from "correlate_findings was attempted" to
+    "correlate_findings actually succeeded". Reproduces the real failure
+    mode -- a correlate_findings call with a guessed/hallucinated file path,
+    which fails with a real domain-level error, not an exception -- and
+    proves two things in one scenario:
+
+    1. A final_answer submitted right after that FAILED attempt is now
+       REJECTED (violations includes "missing_correlation") purely because
+       the call never succeeded. Under the OLD attempt-only guard,
+       correlate_findings_called would already be True at this point and
+       this exact same final_answer would have been silently ACCEPTED --
+       the real gap this fix closes.
+    2. Once the model retries with a corrected call (no guessed path, so
+       the mock's auto-discovery branch succeeds), the SAME final_answer
+       text is accepted cleanly, with last_correlate_findings genuinely
+       populated -- confirming the guard isn't just stricter, it correctly
+       recognizes a real subsequent success.
+    """
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _CorrelateFindingsFailsOnGuessedPath())
+    mock = TOOL_REGISTRY["correlate_findings"].handler
+
+    chat = ScriptedChat([
+        _tool_json("correlate_findings", {"nmap_parsed_file": "data_dir/scans/10.136.28.168_nmap.json"}),
+        _final_json(RAW_OBSERVATIONS_ANSWER),  # attempt 1: REJECTED (failed attempt, not success)
+        _tool_json("correlate_findings"),      # corrected retry: no guessed path -> succeeds
+        _final_json(RAW_OBSERVATIONS_ANSWER),  # attempt 2: ACCEPTED (now a real success exists)
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer", f"Expected clean termination, got {result['status']}"
+    assert len(chat.calls) == 4, f"Expected exactly 4 LLM calls to resolution, got {len(chat.calls)}"
+
+    # Point 1: the failed-attempt final_answer was really rejected, not
+    # silently accepted the way the old attempt-only guard would have.
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 1, f"Expected exactly 1 rejected attempt, got {len(rejected_steps)}"
+    assert rejected_steps[0]["violations"] == ["missing_correlation"]
+
+    # Concrete OLD-vs-NEW comparison on this SAME real scenario (not just
+    # asserted in a docstring): by the time the first final_answer was
+    # submitted, correlate_findings HAD been called once (real, observed
+    # via mock.calls below) -- under the OLD formula that alone would have
+    # made correlate_missing False, i.e. guard 1 NOT violated, i.e. the old
+    # code would have silently ACCEPTED this exact final_answer despite the
+    # real failure above. The NEW code, observed one line above, actually
+    # rejected it.
+    assert len(mock.calls) >= 1, "correlate_findings must have really been called for this comparison to mean anything"
+    old_correlate_missing = _old_guard1_correlate_missing(correlate_findings_called=True)
+    assert old_correlate_missing is False, (
+        "OLD Guard 1 formula on this real scenario: correlate_findings_called=True after the "
+        "first (failed) attempt -> correlate_missing=False -> guard1_violated=False -> the old "
+        "attempt-only code would NOT have rejected this final_answer -- it would have been "
+        "silently accepted despite the real hallucinated-path failure. The new code (asserted "
+        "above) actually rejected it: this is the real behavior divergence the fix closes."
+    )
+
+    # The rejection's real error text (not a generic message) must have
+    # actually reached the model, matching the retry pattern proven to work
+    # for the real YARA timeout self-correction.
+    assert any(CORRELATE_FINDINGS_GUESSED_PATH_ERROR in prompt for prompt in chat.calls[2:]), (
+        "Expected the real correlate_findings error text to be fed back into a later prompt"
+    )
+    assert any("Do not guess a new path" in prompt for prompt in chat.calls[2:])
+
+    # Point 2: the corrected retry really succeeded and the final_answer
+    # went through clean -- no [NOTE:...] tag, since Guard 1 is no longer
+    # violated once a real success exists.
+    assert mock.calls[0].get("nmap_parsed_file"), "First call should be the guessed-path attempt"
+    assert not mock.calls[1].get("nmap_parsed_file"), "Retry should be the corrected (no guessed path) call"
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+def test_guard1_no_friction_when_correlate_findings_succeeds_first_try(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Regression check for the common/expected case (Verification item 5):
+    when correlate_findings succeeds on the very first real attempt (as it
+    did in Sprint 2's first closing-regression run, real CORR-SSH-001), the
+    new success-based Guard 1 must add ZERO extra friction -- no rejection,
+    no [NOTE:...] tag, straight to an accepted final_answer. Isolated from
+    the other guards (no check_file_integrity call, neutral answer text) so
+    this is purely a Guard 1 measurement.
+    """
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(RAW_OBSERVATIONS_ANSWER),  # first attempt: correlate_findings already succeeded -> accepted immediately
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer"
+    assert len(chat.calls) == 2, f"Expected exactly 2 LLM calls (no rejection round-trip), got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert rejected_steps == [], f"Expected zero rejections for a first-try success, got {rejected_steps}"
+
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+def test_guard1_and_guard2_self_correcting_model_converges_cleanly(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The OTHER feasible pair: correlate_findings is never called (Guard 1)
+    while the model also contradicts a real file-integrity diff (Guard 2).
+    Confirms this pair also combines into one rejection observation and
+    converges within budget once the model self-corrects.
+    """
+    chat = ScriptedChat([
+        _tool_json("check_file_integrity"),
+        _final_json(NO_CORRELATION_AND_FILE_CLEAN_ANSWER),  # attempt 1: rejected (guard1 + guard2)
+        _final_json(CORRECTED_NO_CORRELATION_ANSWER),        # attempt 2: clean, accepted
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer"
+    assert len(chat.calls) == 3, f"Expected exactly 3 LLM calls to resolution, got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 1
+    assert set(rejected_steps[0]["violations"]) == {"missing_correlation", "file_integrity_contradiction"}
+
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"

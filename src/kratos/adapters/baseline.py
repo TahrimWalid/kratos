@@ -253,3 +253,109 @@ def diff_baseline(baseline: dict[str, Any], current: BaselineSnapshot) -> dict[s
         },
         "service_state_changes": service_state_changes,
     }
+
+
+# ---------------------------------------------------------------------------
+# File integrity baselines (SSH target file hashes)
+#
+# A separate, simpler concept from BaselineSnapshot above: one named baseline
+# per target/config, storing a single {path: sha256_or_None} manifest rather
+# than a timestamped history. "Added"/"removed" here means a tracked path
+# transitioned between present and missing, not that the tracked path list
+# itself changed (it's a fixed set of critical paths).
+# ---------------------------------------------------------------------------
+def _integrity_baseline_path(data_dir: Path, baseline_name: str) -> Path:
+    safe_name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in baseline_name) or "default"
+    return data_dir / "baseline" / f"file_integrity_{safe_name}.json"
+
+
+def save_file_integrity_baseline(
+    data_dir: Path,
+    baseline_name: str,
+    target: str,
+    hashes: dict[str, str | None],
+) -> Path:
+    path = _integrity_baseline_path(data_dir, baseline_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "baseline_name": baseline_name,
+        "target": target,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "hashes": hashes,
+    }
+    path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    return path
+
+
+def load_file_integrity_baseline(data_dir: Path, baseline_name: str) -> dict[str, Any] | None:
+    path = _integrity_baseline_path(data_dir, baseline_name)
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def diff_file_integrity(
+    baseline_hashes: dict[str, str | None],
+    current_hashes: dict[str, str | None],
+) -> dict[str, Any]:
+    all_paths = sorted(set(baseline_hashes) | set(current_hashes))
+    changed: list[dict[str, str]] = []
+    added: list[dict[str, str]] = []
+    removed: list[dict[str, str]] = []
+    unchanged_count = 0
+
+    for path in all_paths:
+        base_hash = baseline_hashes.get(path)
+        cur_hash = current_hashes.get(path)
+        if base_hash is None and cur_hash is None:
+            continue
+        if base_hash is None and cur_hash is not None:
+            added.append({"path": path, "hash": cur_hash})
+        elif base_hash is not None and cur_hash is None:
+            removed.append({"path": path, "baseline_hash": base_hash})
+        elif base_hash != cur_hash:
+            changed.append({"path": path, "baseline_hash": base_hash, "current_hash": cur_hash})
+        else:
+            unchanged_count += 1
+
+    return {
+        "changed": changed,
+        "added": added,
+        "removed": removed,
+        "unchanged_count": unchanged_count,
+    }
+
+
+def save_file_integrity_diff(
+    data_dir: Path,
+    baseline_name: str,
+    target: str,
+    diff: dict[str, Any],
+) -> Path:
+    """
+    Persists a computed diff_file_integrity() result to disk, in
+    data_dir/baseline (co-located with the baseline it was checked against)
+    -- so correlate_findings can auto-discover it the same way it already
+    auto-discovers auth/nmap/context data, instead of the diff only ever
+    existing transiently in a tool's returned observation (which
+    correlate_findings has no way to see). See findings_engine.py's
+    find_latest_inputs and generate_findings for the consuming side.
+    """
+    baseline_dir = data_dir / "baseline"
+    baseline_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in baseline_name) or "default"
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = baseline_dir / f"file_integrity_diff_{safe_name}_{ts}.json"
+    out.write_text(
+        json.dumps(
+            {
+                "baseline_name": baseline_name,
+                "target": target,
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "diff": diff,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return out

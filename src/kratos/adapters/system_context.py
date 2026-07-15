@@ -21,6 +21,13 @@ def _run(cmd: list[str]) -> str:
 def collect_system_context() -> dict[str, Any]:
     context: dict[str, Any] = {}
 
+    # Explicit scope tag: this entire function inspects the machine Kratos
+    # itself runs on (platform.*, local subprocess calls) -- never the SSH
+    # target. correlate_findings/findings_engine reads this to label any
+    # finding derived from system_context, so a report can't silently present
+    # local-Kratos-host state as if it were the monitored target's state.
+    context["scope"] = "local_host"
+
     # --- OS & kernel ---
     context["os"] = {
         "system": platform.system(),

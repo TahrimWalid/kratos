@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+import shutil
 from pathlib import Path
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
@@ -27,6 +28,8 @@ from kratos.cli.bundle import cmd_prepare_bundle
 from kratos.llm_interface import analyze_findings, shutdown_llm
 from kratos.llm_config import MAX_TOKENS_QUESTION
 from kratos.storage.anomaly_store import AnomalyStore
+from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
+from kratos.agent.self_write_loop import load_kept_tools
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = Path("data")
@@ -156,39 +159,196 @@ def cmd_llm_serve(args: argparse.Namespace) -> int:
     Run this in a dedicated terminal before using kratos chat for fast responses.
     """
     import subprocess
+    import os as _os
     from kratos.llm_config import (
-        MODEL_PATH, LLAMA_SERVER_HOST, LLAMA_SERVER_PORT,
-        LLAMA_N_CTX, LLAMA_N_THREADS, LLAMA_SEED,
+        MODEL_PATH, LLM_BACKEND, LLM_OPENAI_BASE_URL, OLLAMA_BIN, OLLAMA_QUIET, OLLAMA_DETACH,
+        LLAMA_SERVER_HOST, LLAMA_SERVER_PORT,
+        LLAMA_N_CTX, LLAMA_N_THREADS, LLAMA_SEED, STARTUP_TIMEOUT_SECONDS,
     )
 
-    if not MODEL_PATH.exists():
+    # 2026-07-15 regression fix: the old native Ollama /api/chat call sent
+    # "num_ctx" per-request; the OpenAI-compatible /v1/chat/completions
+    # endpoint (the ONLY query path now, see "LLM backend refactor" in
+    # CLAUDE.md) does not honor a per-request context-length override at
+    # all -- confirmed real via /api/ps showing context_length=4096 (the
+    # bare Ollama default) even after a request explicitly passed
+    # options.num_ctx=6144. Context length is a model-load-time concept for
+    # Ollama, not a per-completion-request one in the OpenAI API shape, so
+    # the only real fix is Ollama's own server-level OLLAMA_CONTEXT_LENGTH
+    # env var, set here when KRATOS ITSELF starts the process (only place
+    # Kratos controls Ollama's environment -- an already-running Ollama
+    # instance Kratos didn't start, like this sandbox's systemd service,
+    # needs a manual restart with this var set to pick it up).
+    _ollama_env_ctx = _os.environ.get("OLLAMA_CONTEXT_LENGTH", str(LLAMA_N_CTX))
+
+    backend = (LLM_BACKEND or "auto").strip().lower()
+    local_model_ready = MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 0
+    attach = getattr(args, "attach", False)
+
+    # This subcommand only ever manages a LOCAL Ollama process (there's
+    # nothing to "start" for a remote/cloud endpoint) -- derive the URL to
+    # health-check/wait-on from LLM_BASE_URL itself (stripping the /v1
+    # OpenAI-compat suffix, since Ollama's own native /api/tags health
+    # endpoint is used below) rather than a second, independently
+    # configurable host/port that could silently drift out of sync with it.
+    OLLAMA_URL = LLM_OPENAI_BASE_URL.rstrip("/")
+    if OLLAMA_URL.endswith("/v1"):
+        OLLAMA_URL = OLLAMA_URL[: -len("/v1")]
+
+    if local_model_ready and backend != "openai_compatible":
+        print(f"[KRATOS-LLM] Starting LLM server (Qwen2.5-Coder 7B)...", flush=True)
+        print(f"[KRATOS-LLM] Host : {LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}", flush=True)
+        print(f"[KRATOS-LLM] Model: {MODEL_PATH}", flush=True)
+        print(f"[KRATOS-LLM] Keep this terminal open. Run 'kratos chat' in another terminal.", flush=True)
+        print(f"[KRATOS-LLM] Press Ctrl+C to stop the server.", flush=True)
+        print(flush=True)
+
+        cmd = [
+            sys.executable, "-m", "llama_cpp.server",
+            "--model",     str(MODEL_PATH),
+            "--host",      LLAMA_SERVER_HOST,
+            "--port",      str(LLAMA_SERVER_PORT),
+            "--n_ctx",     str(LLAMA_N_CTX),
+            "--n_threads", str(LLAMA_N_THREADS),
+            "--seed",      str(LLAMA_SEED),
+            "--verbose",   "false",
+        ]
+
+        try:
+            subprocess.run(cmd)
+        except KeyboardInterrupt:
+            print("\n[KRATOS-LLM] Server stopped.", flush=True)
+        return 0
+
+    if backend == "openai_compatible" or (backend == "auto" and not local_model_ready):
+        ollama_bin = shutil.which("ollama") or (OLLAMA_BIN if Path(OLLAMA_BIN).exists() else None)
+        if ollama_bin is None:
+            print("[KRATOS-LLM] Ollama is not installed or not on PATH.", flush=True)
+            return 1
+
+        try:
+            import requests
+
+            resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1)
+            if resp.status_code == 200:
+                print(f"[KRATOS-LLM] Ollama already running at {OLLAMA_URL}", flush=True)
+                # If user requested to attach, try to tail known log file(s)
+                if attach:
+                    logs_dir = Path.home() / ".local" / "ollama" / "logs"
+                    possible = [
+                        logs_dir / "kratos-ollama.out.log",
+                        logs_dir / "kratos-ollama.err.log",
+                    ]
+                    existing = [p for p in possible if p.exists()]
+                    if existing:
+                        # Use tail -f if available, else fallback to blocking read
+                        tail_bin = shutil.which("tail")
+                        if tail_bin:
+                            try:
+                                subprocess.run([tail_bin, "-f"] + [str(p) for p in existing])
+                                return 0
+                            except KeyboardInterrupt:
+                                return 0
+                        else:
+                            # Simple Python follow: stream file growth
+                            try:
+                                for p in existing:
+                                    print(f"[KRATOS-LLM] Tailing log: {p}", flush=True)
+                                files = [open(p, "r", errors="replace") for p in existing]
+                                for f in files:
+                                    f.seek(0, 2)
+                                import time
+                                while True:
+                                    for f in files:
+                                        line = f.readline()
+                                        if line:
+                                            print(line, end="", flush=True)
+                                    time.sleep(0.25)
+                            except KeyboardInterrupt:
+                                return 0
+                    else:
+                        print("[KRATOS-LLM] No Ollama log files found to attach to.", flush=True)
+                        print("Start Ollama in foreground with: KRATOS_OLLAMA_DETACH=0 kratos llm-serve", flush=True)
+                        return 0
+                return 0
+        except Exception:
+            pass
+
+        print("[KRATOS-LLM] Starting LLM server (Ollama fallback)...", flush=True)
+        print(f"[KRATOS-LLM] Ollama URL: {OLLAMA_URL}", flush=True)
+        print(f"[KRATOS-LLM] Context length: {_ollama_env_ctx} (OLLAMA_CONTEXT_LENGTH)", flush=True)
+        print("[KRATOS-LLM] Keep this terminal open. Run 'kratos chat' in another terminal.", flush=True)
+
+        # By default we run Ollama in the foreground so the terminal remains
+        # attached and users can Ctrl+C to stop it. If OLLAMA_DETACH is True
+        # we start it as a detached background process and redirect logs.
+        try:
+            if OLLAMA_DETACH:
+                log_out = None
+                log_err = None
+                if OLLAMA_QUIET:
+                    logs_dir = Path.home() / ".local" / "ollama" / "logs"
+                    try:
+                        logs_dir.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        pass
+                    log_out = open(logs_dir / "kratos-ollama.out.log", "ab")
+                    log_err = open(logs_dir / "kratos-ollama.err.log", "ab")
+
+                detached_env = dict(**_os.environ)
+                detached_env["OLLAMA_CONTEXT_LENGTH"] = _ollama_env_ctx
+                proc = subprocess.Popen(
+                    [ollama_bin, "serve"],
+                    stdout=log_out if log_out is not None else None,
+                    stderr=log_err if log_err is not None else None,
+                    start_new_session=True,
+                    env=detached_env,
+                )
+
+                # Wait for Ollama to report readiness via the /api/tags endpoint
+                import time
+                import requests
+
+                deadline = time.time() + STARTUP_TIMEOUT_SECONDS
+                started = False
+                while time.time() < deadline:
+                    try:
+                        resp = requests.get(f"{OLLAMA_URL}/api/tags", timeout=1)
+                        if resp.status_code == 200:
+                            print(f"[KRATOS-LLM] Ollama started at {OLLAMA_URL}", flush=True)
+                            started = True
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
+
+                if not started:
+                    print("[KRATOS-LLM] Timeout waiting for Ollama to start.", flush=True)
+
+                return 0
+            else:
+                # Foreground mode: run Ollama directly so its logs appear here.
+                # When OLLAMA_QUIET is enabled, reduce Ollama's own verbosity
+                # by setting its debug env vars to a higher threshold.
+                try:
+                    env = dict(**_os.environ)
+                    if OLLAMA_QUIET:
+                        env["OLLAMA_DEBUG"] = env.get("OLLAMA_DEBUG", "ERROR")
+                        env["OLLAMA_DEBUG_LOG_REQUESTS"] = env.get("OLLAMA_DEBUG_LOG_REQUESTS", "false")
+                    env["OLLAMA_CONTEXT_LENGTH"] = _ollama_env_ctx
+
+                    subprocess.run([ollama_bin, "serve"], env=env)
+                except KeyboardInterrupt:
+                    print("\n[KRATOS-LLM] Server stopped.", flush=True)
+                return 0
+        except KeyboardInterrupt:
+            print("\n[KRATOS-LLM] Server stopped.", flush=True)
+            return 0
+
+    if not local_model_ready:
         print(f"[KRATOS-LLM] Model not found: {MODEL_PATH}", flush=True)
         print(f"[KRATOS-LLM] Set KRATOS_LLM_MODEL_PATH or download the model first.", flush=True)
         return 1
-
-    print(f"[KRATOS-LLM] Starting LLM server (Qwen2.5-Coder 7B)...", flush=True)
-    print(f"[KRATOS-LLM] Host : {LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}", flush=True)
-    print(f"[KRATOS-LLM] Model: {MODEL_PATH}", flush=True)
-    print(f"[KRATOS-LLM] Keep this terminal open. Run 'kratos chat' in another terminal.", flush=True)
-    print(f"[KRATOS-LLM] Press Ctrl+C to stop the server.", flush=True)
-    print(flush=True)
-
-    cmd = [
-        sys.executable, "-m", "llama_cpp.server",
-        "--model",     str(MODEL_PATH),
-        "--host",      LLAMA_SERVER_HOST,
-        "--port",      str(LLAMA_SERVER_PORT),
-        "--n_ctx",     str(LLAMA_N_CTX),
-        "--n_threads", str(LLAMA_N_THREADS),
-        "--seed",      str(LLAMA_SEED),
-        "--verbose",   "false",
-    ]
-
-    try:
-        subprocess.run(cmd)
-    except KeyboardInterrupt:
-        print("\n[KRATOS-LLM] Server stopped.", flush=True)
-    return 0
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
@@ -574,6 +734,104 @@ def cmd_store_anomalies(args: argparse.Namespace) -> int:
         return 1
 
 
+# ============================================================================
+# PHASE 4 - ReAct Agent (experimental, additive -- does not replace `kratos run`)
+# ============================================================================
+
+def cmd_investigate(args: argparse.Namespace) -> int:
+    """
+    ReAct-style investigation: the LLM picks which Kratos tool to call next
+    (see agent/loop.py, agent/tools.py) instead of running the fixed
+    scan -> logs -> context -> findings pipeline that `kratos run` uses.
+    Reuses the exact same adapters as the other subcommands, unmodified.
+    """
+    goal = args.goal
+    max_iters = args.max_iters if args.max_iters is not None else DEFAULT_MAX_ITERS
+
+    print(f"[KRATOS-AGENT] Investigation goal: {goal}")
+    print(f"[KRATOS-AGENT] Max iterations: {max_iters}")
+    print("=" * 70, flush=True)
+
+    def _print_step(step: dict) -> None:
+        iteration = step.get("iteration")
+
+        if step.get("status") == "llm_unavailable":
+            print(f"\n[KRATOS-AGENT] Iteration {iteration}: LLM unavailable, aborting.", flush=True)
+            return
+
+        if step.get("status") == "parse_error":
+            print(f"\n[KRATOS-AGENT] Iteration {iteration}: model response was not valid JSON -- asking it to retry.", flush=True)
+            return
+
+        if step.get("status") == "final_iteration_tool_call_ignored":
+            print(
+                f"\n[KRATOS-AGENT] Iteration {iteration}: tried to call '{step.get('attempted_tool')}' on the "
+                "final iteration -- not executed, synthesizing a fallback answer instead.",
+                flush=True,
+            )
+            return
+
+        if step.get("status") == "final_answer_rejected":
+            # One or more structural guards violated at once (correlate_findings
+            # missing / file-integrity contradiction / dismissive-verdict
+            # contradiction) -- agent/loop.py now combines all co-firing guards
+            # into a single rejection + retry rather than one per guard.
+            violation_labels = {
+                "missing_correlation": "did not call correlate_findings",
+                "file_integrity_contradiction": "contradicted check_file_integrity's actual result",
+                "dismissive_verdict_contradiction": "dismissive verdict contradicted a real HIGH/CRITICAL finding",
+            }
+            violations = step.get("violations", [])
+            reasons = "; ".join(violation_labels.get(v, v) for v in violations)
+            print(
+                f"\n[KRATOS-AGENT] Iteration {iteration}: final answer rejected ({reasons}) "
+                "-- forcing it to reconsider.",
+                flush=True,
+            )
+            print(f"  Reasoning          : {step.get('reasoning', '')}", flush=True)
+            print(f"  Attempted answer   : {step.get('attempted_final_answer', '')}", flush=True)
+            return
+
+        if "final_answer" in step:
+            print(f"\n[KRATOS-AGENT] Iteration {iteration} -- concluding", flush=True)
+            print(f"  Reasoning: {step.get('reasoning', '')}", flush=True)
+            return
+
+        obs_text = json.dumps(step.get("observation"), indent=2, default=str)
+        if len(obs_text) > 800:
+            obs_text = obs_text[:800] + f"\n  ...[truncated, {len(obs_text) - 800} more chars]"
+
+        print(f"\n[KRATOS-AGENT] Iteration {iteration}", flush=True)
+        print(f"  Reasoning  : {step.get('reasoning', '')}", flush=True)
+        print(f"  Tool       : {step.get('tool')}", flush=True)
+        print(f"  Args       : {step.get('args')}", flush=True)
+        print(f"  Observation: {obs_text}", flush=True)
+
+    result = run_agent(goal, args.data_dir, max_iters=max_iters, on_step=_print_step)
+
+    print("\n" + "=" * 70, flush=True)
+    if result["status"] == "final_answer":
+        print("KRATOS INVESTIGATION -- FINAL ANSWER", flush=True)
+        print("=" * 70, flush=True)
+        print(result["final_answer"], flush=True)
+        return 0
+
+    if result["status"] == "llm_unavailable":
+        print("[KRATOS-AGENT] ERROR: LLM unavailable. Check `kratos llm-serve` / your model config.", flush=True)
+        return 2
+
+    if result["status"] == "max_iters_reached" and result.get("final_answer"):
+        print("KRATOS INVESTIGATION -- INCOMPLETE (iteration limit reached)", flush=True)
+        print("=" * 70, flush=True)
+        print("The agent did not reach its own conclusion in time. Best-effort summary:", flush=True)
+        print(flush=True)
+        print(result["final_answer"], flush=True)
+        return 1
+
+    print(f"[KRATOS-AGENT] Investigation stopped: {result['status']} (no final answer reached).", flush=True)
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=PROJECT_NAME,
@@ -744,7 +1002,26 @@ def build_parser() -> argparse.ArgumentParser:
         "llm-serve",
         help="Start the LLM server (loads model once — run in a separate terminal for fast kratos chat)"
     )
+    llm_serve.add_argument(
+        "--attach",
+        action="store_true",
+        help="If Ollama is already running, attach and tail its logs instead of returning immediately",
+    )
     llm_serve.set_defaults(func=cmd_llm_serve)
+
+    # ====== PHASE 4: ReAct Agent (experimental, additive) ======
+    investigate = sub.add_parser(
+        "investigate",
+        help="ReAct-style agent investigation: the LLM picks which Kratos tool to call next (experimental; does not replace `kratos run`)",
+    )
+    investigate.add_argument("goal", help="Natural-language investigation goal, e.g. 'check for suspicious activity on this system'")
+    investigate.add_argument(
+        "--max-iters",
+        type=int,
+        default=None,
+        help=f"Max agent iterations before stopping (default: {DEFAULT_MAX_ITERS})",
+    )
+    investigate.set_defaults(func=cmd_investigate)
 
     return p
 
@@ -754,4 +1031,18 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Re-register any previously-APPROVED self-written tools (Part D,
+    # agent/self_write_loop.py) into TOOL_REGISTRY for this process, on top
+    # of the built-in tools' own @register_tool decorators -- those already
+    # ran as an import-time side effect of the `from kratos.agent.loop
+    # import run_agent, ...` above, before main() ever runs, so this always
+    # layers kept tools on top of the built-ins, never before/instead of
+    # them. One call site, shared by every subcommand (kratos investigate,
+    # kratos run, everything else) -- they all go through this same main()
+    # dispatch, so there's no second entry point to separately wire up.
+    # Safe on a fresh install with no kept_tools/ directory at all: returns
+    # an empty list, no error.
+    load_kept_tools()
+
     return int(args.func(args))

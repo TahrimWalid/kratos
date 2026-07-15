@@ -15,7 +15,11 @@ dependencies = [
     "sse-starlette",
     "pydantic-settings",
     "starlette-context",
+    "python-dotenv",
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.scripts]
 kratos = "kratos.cli.app:main"
@@ -25,4 +29,11 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "agent_llm: hits a real LLM backend and the real (not mocked) agent loop -- expensive (roughly 1-2 min/scenario on Gemini, 10-20 min/scenario on local qwen2.5:7b). Excluded from a bare `pytest` run; opt in with -m agent_llm.",
+]
+addopts = "-m 'not agent_llm'"
 

@@ -19,6 +19,7 @@ def find_latest_inputs(data_dir: Path) -> dict[str, Path | None]:
     logs_dir = data_dir / "logs"
     ctx_dir = data_dir / "context"
     reports_dir = data_dir / "reports"
+    baseline_dir = data_dir / "baseline"
 
     return {
         "nmap_parsed": latest_file(scans_dir, "parsed_*.json"),
@@ -26,6 +27,7 @@ def find_latest_inputs(data_dir: Path) -> dict[str, Path | None]:
         "auth_patterns": latest_file(logs_dir, "auth_patterns_*.json"),
         "system_context": latest_file(ctx_dir, "system_context_*.json"),
         "auth_trends": latest_file(reports_dir, "auth_trends_*.json"),
+        "file_integrity": latest_file(baseline_dir, "file_integrity_diff_*.json"),
     }
 
 
@@ -71,6 +73,26 @@ def _bursts_of(auth_patterns: dict[str, Any] | None, event_types: tuple[str, ...
     if not auth_patterns or not isinstance(auth_patterns.get("bursts"), list):
         return []
     return [b for b in auth_patterns["bursts"] if b.get("event_type") in event_types]
+
+
+_SCOPE_LABELS = {
+    "local_host": "LOCAL KRATOS HOST (not the monitored target)",
+}
+
+
+def _system_context_scope_note(system_context: dict[str, Any] | None) -> str | None:
+    """
+    One-line evidence tag identifying which host system_context actually
+    describes. Older context files (or a manually-constructed dict without a
+    'scope' field) have no scope tag -- reported as 'unlabeled/unknown' rather
+    than silently assumed to be the target, since collect_system_context has
+    only ever inspected Kratos's own local host.
+    """
+    if not system_context:
+        return None
+    scope = system_context.get("scope")
+    label = _SCOPE_LABELS.get(scope, f"unlabeled/unknown scope ({scope!r})" if scope else "unlabeled/unknown scope")
+    return f"system_context scope: {label}"
 
 
 def _is_service_active(system_context: dict[str, Any] | None, unit_name: str) -> bool:
@@ -119,6 +141,7 @@ def generate_findings(
     auth_patterns: dict[str, Any] | None,
     system_context: dict[str, Any] | None,
     auth_trends: dict[str, Any] | None = None,
+    file_integrity: dict[str, Any] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -187,6 +210,7 @@ def generate_findings(
                     title="Sudo-capable users identified",
                     severity="info",
                     evidence=[
+                        _system_context_scope_note(system_context),
                         f"sudo group line: {sudo_line}",
                         f"sudo members: {', '.join(members)}",
                     ],
@@ -262,17 +286,26 @@ def generate_findings(
         journald_ok = _is_service_active(system_context, "systemd-journald.service")
 
         if not (rsyslog_ok or journald_ok):
+            obs_001_evidence = [
+                f"auth failure events = {failures}",
+                "rsyslog.service active = false",
+                "systemd-journald.service active = false",
+                f"context snapshot = {(system_context or {}).get('collected_at', 'unknown')}",
+            ]
+            scope_note = _system_context_scope_note(system_context)
+            if scope_note:
+                obs_001_evidence.append(scope_note)
+            else:
+                obs_001_evidence.append(
+                    "system_context: not provided in this investigation -- 'inactive' here may "
+                    "simply mean service state could not be checked, not that logging is actually off"
+                )
             findings.append(
                 Finding(
                     id="OBS-001",
                     title="Authentication failures detected but log collection services appear inactive",
                     severity="medium",
-                    evidence=[
-                        f"auth failure events = {failures}",
-                        "rsyslog.service active = false",
-                        "systemd-journald.service active = false",
-                        f"context snapshot = {system_context.get('collected_at', 'unknown')}",
-                    ],
+                    evidence=obs_001_evidence,
                     recommendation=[
                         "Verify that system logging is enabled (rsyslog or journald) so security-relevant events are recorded.",
                         "If this is an embedded/stripped environment, document logging limitations in the deployment section.",
@@ -379,6 +412,7 @@ def generate_findings(
                 title="Privileged authentication bursts observed on a single sudo user",
                 severity="medium",
                 evidence=[
+                    _system_context_scope_note(system_context),
                     f"sudo group members = {', '.join(sudo_members)}",
                     f"Sudo failure bursts detected = {len(sudo_fail_bursts)}",
                     *[
@@ -442,6 +476,15 @@ def generate_findings(
             exposure_msg = f"ssh exposed (context: listening on ports {ssh_ports})"
         
         evidence.append(exposure_msg)
+        if ssh_from_context:
+            # system_context's "ssh" info reflects whatever host
+            # collect_system_context inspected (Kratos's own local host as of
+            # this writing) -- flag that explicitly whenever it contributed
+            # to this SSH-exposure verdict, so "context: listening on ports"
+            # is never mistaken for the monitored target's own SSH exposure.
+            scope_note = _system_context_scope_note(system_context)
+            if scope_note:
+                evidence.append(f"NOTE: the 'context' exposure signal above is from {scope_note}")
         evidence.append(f"ssh_failed_login bursts detected = {len(ssh_failed_bursts)}")
         
         # Summarize burst evidence (keep it minimal)
@@ -517,6 +560,39 @@ def generate_findings(
                 )
             )
 
+    # INTEG-001: File/config integrity changes (from check_file_integrity's baseline diff)
+    if file_integrity and isinstance(file_integrity.get("diff"), dict):
+        diff = file_integrity["diff"]
+        changed = diff.get("changed") or []
+        added = diff.get("added") or []
+        removed = diff.get("removed") or []
+
+        if changed or added or removed:
+            evidence = [f"Source: {file_integrity.get('checked_at', 'unknown')} (baseline: {file_integrity.get('baseline_name', 'default')})"]
+            if changed:
+                evidence.append(f"Changed = {len(changed)}")
+                evidence.extend(f"  changed: {c.get('path')}" for c in changed[:10])
+            if added:
+                evidence.append(f"Added = {len(added)}")
+                evidence.extend(f"  added: {a.get('path')}" for a in added[:10])
+            if removed:
+                evidence.append(f"Removed = {len(removed)}")
+                evidence.extend(f"  removed: {r.get('path')}" for r in removed[:10])
+
+            findings.append(
+                Finding(
+                    id="INTEG-001",
+                    title="Tracked file(s) changed since baseline",
+                    severity="medium",
+                    evidence=evidence,
+                    recommendation=[
+                        "Confirm whether this change was an authorized/expected admin action.",
+                        "If unexpected, treat as a possible tampering or persistence indicator and investigate further (recent auth activity, running processes).",
+                        "Re-baseline (check_file_integrity) once the change is confirmed legitimate, so future diffs are measured from the new known-good state.",
+                    ],
+                )
+            )
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -526,7 +602,7 @@ def generate_findings(
                     id="ENV-001",
                     title="Environment appears to be WSL2 (development context)",
                     severity="info",
-                    evidence=[f"kernel release: {rel}"],
+                    evidence=[_system_context_scope_note(system_context), f"kernel release: {rel}"],
                     recommendation=[
                         "Document this environment in the thesis evaluation (some services/log formats differ from standard Linux).",
                         "Validate core functionality on a non-WSL Linux host or SBC during the deployment/testing phase if possible.",
@@ -549,35 +625,80 @@ def write_findings_report(
     auth_patterns_file: Path | None = None,
     system_context_file: Path | None = None,
     auth_trends_file: Path | None = None,
+    file_integrity_file: Path | None = None,
 ) -> tuple[Path, Path]:
     """
     Generate findings report.
-    
-    When called from `kratos run`, explicit file paths from the current transaction are passed.
-    When called from manual `findings-generate`, uses latest files (backwards compatible).
-    """
-    # If explicit files not provided, fall back to "latest file" lookup
-    if not all([nmap_parsed_file, auth_stats_file, auth_patterns_file, system_context_file]):
-        inputs = find_latest_inputs(data_dir)
-    else:
-        # Use the explicit paths provided (transaction mode)
-        inputs = {
-            "nmap_parsed": nmap_parsed_file,
-            "auth_stats": auth_stats_file,
-            "auth_patterns": auth_patterns_file,
-            "system_context": system_context_file,
-            "auth_trends": auth_trends_file,
-        }
 
-    missing = [k for k, v in inputs.items() if v is None]
-    # We allow partial reports; still generate report but mark missing inputs.
+    Input resolution is PER-ARGUMENT, not all-or-nothing: for each of
+    nmap_parsed_file, auth_stats_file, auth_patterns_file, system_context_file
+    -- an explicitly-provided value is used EXACTLY as given and is never
+    silently swapped for an auto-discovered file. Only arguments left as None
+    are auto-discovered via find_latest_inputs(data_dir), independently of
+    whether sibling arguments were also given. If an explicitly-provided path
+    does not exist on disk, that specific input is recorded in the written
+    report's "input_errors" (and left out of "missing_inputs"/the generated
+    findings for that input) rather than silently falling back to a different
+    file for that slot.
+
+    auth_trends_file and file_integrity_file keep different semantics from
+    the core four above: when all four core fields are given explicitly (the
+    "transaction" pattern `kratos run` uses), an omitted auth_trends_file /
+    file_integrity_file means "none for this report" -- not "please look one
+    up" -- since `kratos run`'s legacy pipeline never generates either of
+    these. When called with those four omitted (the plain `findings-generate`
+    / agent-loop pattern), a None auth_trends_file / file_integrity_file IS
+    auto-discovered like the others, preserving that existing behavior.
+    """
+    explicit = {
+        "nmap_parsed": nmap_parsed_file,
+        "auth_stats": auth_stats_file,
+        "auth_patterns": auth_patterns_file,
+        "system_context": system_context_file,
+    }
+    auto = find_latest_inputs(data_dir)
+
+    inputs: dict[str, Path | None] = {}
+    input_errors: dict[str, str] = {}
+    for key, explicit_value in explicit.items():
+        if explicit_value is None:
+            inputs[key] = auto.get(key)
+            continue
+        path = Path(explicit_value)
+        if path.exists():
+            inputs[key] = path
+        else:
+            input_errors[key] = f"Explicit path does not exist: {path}"
+            inputs[key] = None
+
+    all_required_explicit = all(v is not None for v in explicit.values())
+
+    def _resolve_optional(key: str, explicit_value: Path | None) -> None:
+        if explicit_value is not None:
+            path = Path(explicit_value)
+            if path.exists():
+                inputs[key] = path
+            else:
+                input_errors[key] = f"Explicit path does not exist: {path}"
+                inputs[key] = None
+        elif all_required_explicit:
+            inputs[key] = None
+        else:
+            inputs[key] = auto.get(key)
+
+    _resolve_optional("auth_trends", auth_trends_file)
+    _resolve_optional("file_integrity", file_integrity_file)
+
+    missing = [k for k, v in inputs.items() if v is None and k not in input_errors]
+    # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
     auth_patterns = _read_json(inputs["auth_patterns"]) if inputs["auth_patterns"] else None
     system_context = _read_json(inputs["system_context"]) if inputs["system_context"] else None
     auth_trends = _read_json(inputs["auth_trends"]) if inputs["auth_trends"] else None
+    file_integrity = _read_json(inputs["file_integrity"]) if inputs["file_integrity"] else None
 
-    findings = generate_findings(nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends)
+    findings = generate_findings(nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity)
 
     # Environment detection
     env_label = "linux"
@@ -590,8 +711,13 @@ def write_findings_report(
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "tool": {"name": "kratos", "version": KRATOS_VERSION},
         "environment": {"label": env_label},
+        # Explicit, report-level flag for which host system_context describes --
+        # a findings report must never present local-Kratos-host state as if
+        # it were the monitored target's state without this being visible.
+        "system_context_scope": (system_context or {}).get("scope") if system_context else None,
         "inputs": {k: (v.name if v else None) for k, v in inputs.items()},
         "missing_inputs": missing,
+        "input_errors": input_errors,
         "findings": [asdict(f) for f in findings],
     }
 

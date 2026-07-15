@@ -17,7 +17,13 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     safe_target = target.replace("/", "_").replace(":", "_")
     out_xml = scans_dir / f"nmap_{safe_target}_{ts}.xml"
 
-    cmd = ["nmap", "-sV", "-oX", str(out_xml), target]
+    # -Pn: skip host-discovery ping probes and treat the target as up. Without
+    # this, a firewalled target that drops ICMP/discovery probes but has real
+    # listening TCP ports (e.g. ufw default-deny-incoming with only 22/tcp
+    # allowed) is reported as "0 hosts up" -- a false-negative empty scan,
+    # not an accurate "nothing exposed" result. Harmless against a host that
+    # does respond to discovery probes; -sV still probes exactly the same.
+    cmd = ["nmap", "-sV", "-Pn", "-oX", str(out_xml), target]
 
     print(f"[KRATOS] Running: {' '.join(cmd)}")
     try:

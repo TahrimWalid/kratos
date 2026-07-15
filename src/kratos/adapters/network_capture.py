@@ -15,6 +15,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
+# Matches DEFAULT_DATA_DIR in kratos.cli.app. Not imported from there directly:
+# adapters must not depend on cli (that would invert the module layering).
+_DEFAULT_DATA_DIR = Path("data")
+
 
 def _parse_tcpdump_line(line: str) -> dict[str, Any] | None:
     """
@@ -60,11 +64,9 @@ def capture_traffic(
     Returns:
         Path to output JSON file, or None if capture failed
     """
-    from kratos.llm_config import DEFAULT_DATA_DIR
-    
     # Default output location
     if output_file is None:
-        logs_dir = DEFAULT_DATA_DIR / "logs"
+        logs_dir = _DEFAULT_DATA_DIR / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = logs_dir / f"conn_summary_{ts}.json"
@@ -80,27 +82,38 @@ def capture_traffic(
         temp_pcap = output_file.with_suffix('.pcap')
         
         cmd = [
-            "sudo", "tcpdump",
+            "sudo", "-n", "tcpdump",  # -n: fail fast instead of blocking on a sudo password prompt
             "-nn",
             "-l",
             "-i", interface,
             "-w", str(temp_pcap),
             "-G", str(duration_seconds),  # Rotate/quit after N seconds
         ]
-        
+
         result = subprocess.run(
             cmd,
             capture_output=True,
             timeout=duration_seconds + 10,
             text=True,
         )
-        
-        # If tcpdump not available or no permissions, return None gracefully
-        if result.returncode != 0 and "command not found" in result.stderr.lower():
-            print(f"[KRATOS-NET] Warning: tcpdump not found or permission denied", flush=True)
-            print(f"[KRATOS-NET] Install with: sudo apt-get install tcpdump", flush=True)
+
+        # Any non-zero exit (missing binary, permission denied, no passwordless
+        # sudo, bad interface, etc.) means we did NOT actually capture anything.
+        # Reporting success with an empty result here would be a false negative
+        # in a security tool -- worse than surfacing the failure.
+        if result.returncode != 0 or not temp_pcap.exists():
+            stderr = result.stderr.strip()
+            print(f"[KRATOS-NET] Capture failed (exit {result.returncode}): {stderr}", flush=True)
+            if "command not found" in stderr.lower():
+                print(f"[KRATOS-NET] Install with: sudo apt-get install tcpdump", flush=True)
+            elif "password is required" in stderr.lower() or "no tty present" in stderr.lower():
+                print(
+                    "[KRATOS-NET] sudo needs a password/TTY to run tcpdump. "
+                    "Configure passwordless sudo for tcpdump, or run kratos with sufficient privileges.",
+                    flush=True,
+                )
             return None
-        
+
         # Parse pcap file using tcpdump text output
         conn_summary = _parse_pcap_to_summary(temp_pcap)
         
@@ -149,7 +162,8 @@ def _parse_pcap_to_summary(pcap_file: Path) -> list[dict[str, Any]]:
                 connections[key]["packets"] += 1
         
         return list(connections.values())
-    except Exception:
+    except Exception as e:
+        print(f"[KRATOS-NET] Warning: failed to parse captured pcap ({e}); reporting zero connections.", flush=True)
         return []
 
 

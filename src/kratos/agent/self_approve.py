@@ -1,0 +1,334 @@
+"""
+Sprint 2 self-writing loop -- APPROVAL-TO-KEEP step only (Part C of
+write -> test -> human-approve -> keep, per docs/sprint2_self_writing_loop_design.md
+and our follow-up decisions on this gate specifically).
+
+Takes a Part A staged candidate + its Part B SandboxTestResult, and asks the
+human ONE question at a time via agent/tools.py::request_approval (reused
+unmodified, not replaced) -- first whether to keep the candidate at all,
+then (only if kept) whether it should require per-call approval on future
+invocations. Returns a structured KeepDecision. Does NOT write to
+TOOL_REGISTRY, does not move the candidate out of staging, does not persist
+anything beyond the returned decision record -- that's Part D's job
+(registry persistence), which doesn't exist yet.
+
+Two decisions this module makes, and why:
+
+1. No force-accept, ever, on the keep decision. Unlike the 3 structural
+   final_answer guards in agent/loop.py (which force-accept after ~2
+   retries with a [NOTE:...] tag once a bounded budget is exhausted -- an
+   acceptable tradeoff for a one-off report conclusion), a keep decision
+   persists a NEW CAPABILITY into the tool registry. An unanswered, denied,
+   or interrupted approval-to-keep prompt always resolves to permanent
+   reject -- no retry budget, no eventual auto-accept path. See
+   docs/sprint2_self_writing_loop_design.md Sec 5 for the full reasoning;
+   this module just implements it.
+
+2. Per-tool requires_approval, decided HERE at keep-time (like Claude
+   Code's per-tool permission model), not a global setting and not
+   hardcoded. Framed as an INVERTED question ("allow this to run WITHOUT
+   approval?") specifically so request_approval's existing fail-safe
+   behavior (anything other than an exact 'y' -- including no input,
+   EOFError, or KeyboardInterrupt -- resolves to False) does the right
+   thing for free: a non-'y' answer to "allow unattended?" means
+   requires_approval=True, the correct fail-safe default, with ZERO changes
+   to request_approval's own code. See _ask_requires_approval.
+
+The refusal gate (Sec 2 of the task this module implements) is structural,
+not conventional: request_keep_approval computes the refusal reason FIRST,
+unconditionally, as its very first statement, and only calls the internal
+prompting helper if that reason is None. The prompting helper additionally
+re-checks the same condition as its own first statement and RAISES if it
+somehow doesn't hold -- so even a future code path that calls the prompting
+helper directly, bypassing request_keep_approval, fails loudly instead of
+quietly offering an approval prompt it should never offer.
+
+tool_name is a REQUIRED, non-Optional str parameter here, sourced from
+whoever staged the candidate (Part A's WriteResult.tool_name) rather than
+re-derived by this module from the file's source text. Part A now
+guarantees (see agent/self_write.py's _validate_candidate) that a staged
+candidate always has a statically-resolved literal tool name -- a second,
+independent parser here re-guessing the same thing from raw source (this
+module used to do exactly that, via regex) would be the "second, different
+parsing mechanism" this whole pipeline has deliberately avoided everywhere
+else, and could in principle disagree with Part A's own AST-based answer.
+"""
+from __future__ import annotations
+
+import re
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from kratos.agent.tools import request_approval
+from kratos.agent.self_test import SandboxTestResult
+from kratos.agent.self_review_flags import scan_review_flags, format_review_flags_for_display
+
+# Phase 3b.7: shown verbatim on EVERY approval prompt, not just as a design-
+# doc note -- directly encodes the two real, confirmed lessons from Phase
+# 3b.2 (hardcoded IP silently reclassifying events, undisclosed in the
+# description) and 3b.3 case 3 (an ordinary, non-adversarial goal produced
+# an invented, overfit filter heuristic that was honestly disclosed but
+# whose description overstated its reliability). Deliberately guidance, not
+# a gate -- see this module's no-force-accept design; nothing here blocks.
+REVIEWER_GUIDANCE = (
+    "Any invented filter/suppression heuristic should be distrusted regardless of how "
+    "well-commented it is -- verify it matches what the tool's description claims, not just what "
+    "the test data happened to include. A tool's description is not proof of its behavior -- "
+    "check that stated behavior and actual conditional logic agree."
+)
+
+_SUBTEST_LINE_RE = re.compile(r'^.*::\S+\s+(PASSED|FAILED|ERROR|SKIPPED)\b.*$', re.MULTILINE)
+
+# Display-only cap (this module's own choice for Phase 2 -- the design doc
+# deferred the exact value). Larger than agent/loop.py's OBSERVATION_CHAR_CAP
+# (1500) since a code review needs more room than a tool observation does.
+DISPLAY_CHAR_CAP = 4000
+
+
+class CandidateNotApprovable(Exception):
+    """
+    Raised only if _prompt_for_keep_decision is ever invoked directly for a
+    non-passing SandboxTestResult -- defense in depth on top of
+    request_keep_approval's own unconditional early-return guard. Should be
+    structurally unreachable in normal use; its existence is the point.
+    """
+
+
+@dataclass
+class AttemptRecord:
+    """
+    One write/test attempt in a candidate's history. Part D (retry
+    orchestration, bounded ~2x per our earlier decision) doesn't exist yet
+    -- this is a stubbed-but-ready data contract so Part D can start
+    populating real attempt_history lists the moment it exists, without
+    this module or its approval-prompt display logic needing to change. A
+    candidate that passed on its first attempt has a history of exactly one
+    AttemptRecord (nothing failed to reach that first pass).
+    """
+    attempt_number: int
+    staging_path: Path
+    test_result: SandboxTestResult
+    write_feedback: str | None = None  # feedback fed back into Part A's retry prompt, if any
+
+
+@dataclass
+class KeepDecision:
+    candidate_path: Path
+    tool_name: str                    # sourced from Part A's WriteResult.tool_name, always a real name
+    approved: bool
+    requires_approval: bool           # fail-safe default True; only meaningful when approved=True
+    approved_at: str                  # ISO timestamp of THIS decision (approve, deny, OR refusal -- not only a successful approval)
+    refused: bool                     # True if this never reached a human prompt at all (see refusal_reason)
+    refusal_reason: str | None = None
+    test_result: SandboxTestResult | None = None
+    attempt_history: list[AttemptRecord] = field(default_factory=list)
+
+
+def _cap_for_display(text: str, limit: int = DISPLAY_CHAR_CAP) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated, {len(text) - limit} more chars -- see {DISPLAY_CHAR_CAP=} in agent/self_approve.py]"
+
+
+def _subtest_summary(stdout: str) -> str:
+    matches = _SUBTEST_LINE_RE.finditer(stdout)
+    summary_lines = [m.group(0).strip() for m in matches]
+    if not summary_lines:
+        return "(harness did not report per-sub-test PASSED/FAILED lines -- only pass/fail + exit_code available)"
+    return "\n".join(summary_lines)
+
+
+def _refusal_reason(test_result: SandboxTestResult) -> str | None:
+    """
+    The single source of truth for "is this candidate even eligible for a
+    keep prompt" -- both request_keep_approval's early-return guard and
+    _prompt_for_keep_decision's defensive re-check call this SAME function,
+    so the two can never disagree.
+    """
+    if test_result.infra_error is not None:
+        return (
+            "SANDBOX INFRASTRUCTURE ERROR (not a candidate test failure) -- the sandbox itself "
+            f"did not run cleanly, so its result says nothing about the candidate's correctness: "
+            f"{test_result.infra_error}"
+        )
+    if not test_result.passed:
+        kind = "TIMED OUT" if test_result.timed_out else "FAILED"
+        return (
+            f"CANDIDATE TEST {kind} (exit_code={test_result.exit_code}) -- refusing to offer a "
+            "keep decision. A failing/timed-out candidate must go back through Part A/B "
+            "(write + sandbox test), not be presented to a human for approval."
+        )
+    return None
+
+
+def _format_attempt_history(attempt_history: list[AttemptRecord]) -> str:
+    if not attempt_history:
+        return "(none -- this candidate was staged and tested without any prior failed attempts)"
+    lines = []
+    for a in attempt_history:
+        r = a.test_result
+        outcome = "PASSED" if r.passed else ("TIMED OUT" if r.timed_out else "FAILED")
+        lines.append(
+            f"  attempt {a.attempt_number}: {outcome} (exit_code={r.exit_code}, "
+            f"duration={r.duration_seconds:.2f}s) -- {a.staging_path.name}"
+            + (f"\n    write feedback given to next attempt: {a.write_feedback}" if a.write_feedback else "")
+        )
+    return "\n".join(lines)
+
+
+def _ask_requires_approval(tool_name: str) -> bool:
+    """
+    Returns requires_approval. Deliberately asks the INVERTED question ("run
+    WITHOUT approval?") so request_approval's existing fail-safe behavior --
+    anything other than an exact 'y' resolves to False -- produces the
+    correct fail-safe default (requires_approval=True) on any non-'y'
+    answer, including no answer, EOFError, or KeyboardInterrupt. No changes
+    to request_approval itself.
+    """
+    allow_unattended = request_approval(
+        f"UNATTENDED EXECUTION: {tool_name}",
+        {
+            "question": (
+                "Allow this tool to execute WITHOUT a human approval prompt on every future "
+                "invocation?"
+            ),
+            "note": (
+                "Answer 'y' ONLY if you want this tool to run unattended from now on. Anything "
+                "else -- including no answer, an interrupted prompt, or any input other than "
+                "exactly 'y' -- leaves it requiring approval on every future call. This is the "
+                "fail-safe default: when in doubt, this tool keeps requiring approval."
+            ),
+        },
+    )
+    return not allow_unattended
+
+
+def _prompt_for_keep_decision(
+    candidate_path: Path,
+    tool_name: str,
+    test_result: SandboxTestResult,
+    attempt_history: list[AttemptRecord],
+    decided_at: str,
+) -> KeepDecision:
+    if _refusal_reason(test_result) is not None:
+        raise CandidateNotApprovable(
+            "_prompt_for_keep_decision called with a non-passing SandboxTestResult -- this is "
+            "structurally unreachable via request_keep_approval and indicates a bug in a caller "
+            "that invoked this helper directly."
+        )
+
+    source_code = candidate_path.read_text(encoding="utf-8")
+    label = tool_name
+
+    # Phase 3b.7: a coarse, non-blocking static pre-scan surfaced BEFORE the
+    # raw source -- directs attention, never replaces reading the full
+    # source below (which stays complete and unredacted, unchanged from
+    # before this phase). See agent/self_review_flags.py for what each
+    # check looks for and why; see REVIEWER_GUIDANCE above for the
+    # accompanying textual guidance shown on every prompt.
+    review_flags = scan_review_flags(source_code)
+
+    details: dict[str, Any] = {
+        "candidate_file": str(candidate_path),
+        "tool_name": label,
+        "review_flags (READ THIS FIRST)": _cap_for_display(format_review_flags_for_display(review_flags)),
+        "reviewer_guidance": REVIEWER_GUIDANCE,
+        "source_code (new file -- diff against nothing)": _cap_for_display(source_code),
+        "sub_test_results": _cap_for_display(_subtest_summary(test_result.stdout)),
+        "exit_code": test_result.exit_code,
+        "duration_seconds": round(test_result.duration_seconds, 2),
+        "attempt_history": _cap_for_display(_format_attempt_history(attempt_history)),
+        "action": (
+            "Approve KEEPING this candidate as a registered Kratos tool? This does NOT run it "
+            "now and does NOT grant unattended execution by itself -- it only persists the file "
+            "and marks it for registration (Part D) plus one follow-up question about future "
+            "approval requirements. 'y' = keep, anything else (including no answer or an "
+            "interrupted prompt) = permanently discard."
+        ),
+    }
+
+    approved = request_approval(f"KEEP CANDIDATE: {label}", details)
+
+    if not approved:
+        print(f"[KRATOS-SELF-APPROVE] DENIED -- candidate not kept: {candidate_path}", file=sys.stderr)
+        return KeepDecision(
+            candidate_path=candidate_path, tool_name=tool_name, approved=False,
+            requires_approval=True, approved_at=decided_at, refused=False,
+            test_result=test_result, attempt_history=attempt_history,
+        )
+
+    requires_approval = _ask_requires_approval(label)
+    print(
+        f"[KRATOS-SELF-APPROVE] APPROVED -- candidate kept: {candidate_path} "
+        f"(requires_approval={requires_approval})",
+        file=sys.stderr,
+    )
+    return KeepDecision(
+        candidate_path=candidate_path, tool_name=tool_name, approved=True,
+        requires_approval=requires_approval, approved_at=decided_at, refused=False,
+        test_result=test_result, attempt_history=attempt_history,
+    )
+
+
+def request_keep_approval(
+    candidate_path: Path,
+    tool_name: str,
+    test_result: SandboxTestResult,
+    attempt_history: list[AttemptRecord] | None = None,
+) -> KeepDecision:
+    """
+    The only public entry point. Structurally cannot reach a human approval
+    prompt unless test_result.passed is True and test_result.infra_error is
+    None -- the refusal check below is this function's first statement,
+    unconditional, with no parameter or flag that skips it. See module
+    docstring for why this is structural, not conventional.
+
+    tool_name comes from the caller (Part A's WriteResult.tool_name in
+    practice) -- see module docstring for why this module deliberately does
+    not re-derive it from candidate_path itself.
+
+    Never writes to TOOL_REGISTRY, never moves/deletes candidate_path, never
+    touches anything on disk beyond printing to stderr -- denial, refusal,
+    and approval are all pure no-ops on the candidate's filesystem state.
+    Persisting an approved candidate is Part D's job.
+    """
+    attempt_history = attempt_history or []
+    decided_at = datetime.now().isoformat(timespec="seconds")
+
+    reason = _refusal_reason(test_result)
+    if reason is not None:
+        print(f"[KRATOS-SELF-APPROVE] REFUSED (no approval prompt offered) -- {reason}", file=sys.stderr)
+        return KeepDecision(
+            candidate_path=candidate_path, tool_name=tool_name, approved=False,
+            requires_approval=True, approved_at=decided_at, refused=True, refusal_reason=reason,
+            test_result=test_result, attempt_history=attempt_history,
+        )
+
+    # Phase 3b.6 (Case 3 fix): request_approval's OWN try/except (agent/
+    # tools.py) only wraps its input() call -- confirmed via a real SIGINT
+    # (Phase 3b.5) that an interrupt landing EARLIER, e.g. during
+    # _prompt_for_keep_decision's print() calls before input() is ever
+    # reached, propagates as an uncaught KeyboardInterrupt instead of
+    # resolving to a denial. Deliberately fixed HERE, one level up, rather
+    # than widening request_approval's own try block: this wraps the WHOLE
+    # prompting sequence (both questions, and everything between/before
+    # them), catches exactly what request_approval's own fail-safe already
+    # treats as a denial (EOFError, KeyboardInterrupt) so the two stay
+    # consistent, and leaves request_approval's already-verified internal
+    # logic completely untouched.
+    try:
+        return _prompt_for_keep_decision(candidate_path, tool_name, test_result, attempt_history, decided_at)
+    except (KeyboardInterrupt, EOFError) as e:
+        print(
+            f"[KRATOS-SELF-APPROVE] DENIED -- interrupted ({type(e).__name__}) before or during the "
+            "approval prompt -- fail-safe: treating as a clean denial, nothing persisted.",
+            file=sys.stderr,
+        )
+        return KeepDecision(
+            candidate_path=candidate_path, tool_name=tool_name, approved=False,
+            requires_approval=True, approved_at=decided_at, refused=False,
+            test_result=test_result, attempt_history=attempt_history,
+        )

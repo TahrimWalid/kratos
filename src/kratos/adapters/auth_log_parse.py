@@ -117,6 +117,95 @@ def _extract_prefix(line: str) -> tuple[str, str | None, str, bool]:
     return datetime.now().isoformat(timespec="seconds"), None, line, False
 
 
+def classify_auth_message(
+    ts: str,
+    host: str | None,
+    program: str | None,
+    msg: str,
+    raw: str,
+) -> AuthEvent:
+    """
+    Core auth-event classification (SSH/sudo regex rules), factored out of
+    iter_auth_events so it can be reused for input shapes that don't need
+    (or don't have) the raw-syslog-line prefix parsing this module also
+    does -- e.g. structured journalctl entries fetched over SSH from the
+    monitored target already have timestamp/program/message split out, and
+    re-serializing them into fake syslog text just to re-parse them would
+    be pointless round-tripping. See iter_auth_events (local raw log
+    lines) and adapters/ssh_remote.py's journalctl fetchers (structured
+    entries from the remote target) for the two callers.
+    """
+    # --- SSH related ---
+    if program and "sshd" in program:
+        mm = _RE_SSH_FAIL.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], raw)
+
+        mm = _RE_SSH_PUBLICKEY_FAIL.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], raw)
+
+        mm = _RE_SSH_AUTH_FAILURE.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], raw)
+
+        mm = _RE_SSH_ACCEPT.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_success_login", mm["user"], mm["ip"], raw)
+
+        # Invalid user is treated as a failed login for correlation purposes.
+        mm = _RE_SSH_INVALID_USER.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], raw)
+
+        mm = _RE_SSH_DISCONNECT.search(msg)
+        if mm:
+            return AuthEvent(ts, host, program, "ssh_disconnect", None, mm["ip"], raw)
+
+        return AuthEvent(ts, host, program, "ssh_other", None, None, raw)
+
+    # --- sudo related ---
+    if program == "sudo":
+        # 1) PAM auth failure (often appears before "incorrect password attempts" or standalone)
+        pf = _RE_SUDO_PAM_AUTH_FAIL.search(msg)
+        if pf:
+            return AuthEvent(ts, host, program, "sudo_pam_auth_failure", pf["user"], None, raw)
+
+        # 2) incorrect password attempts
+        bm = _RE_SUDO_BADPW.search(msg)
+        if bm:
+            return AuthEvent(
+                ts, host, program, "sudo_auth_failure", bm["invoker"], None,
+                f"{raw} | INCORRECT_PASSWORD_ATTEMPTS={bm['count']}",
+            )
+
+        # 3) session opened
+        so = _RE_SUDO_SESSION_OPEN.search(msg)
+        if so:
+            return AuthEvent(
+                ts, host, program, "sudo_session_open", None, None,
+                f"{raw} | TARGET_USER={so['target']} | BY_UID={so['by_uid']}",
+            )
+
+        # 4) session closed
+        sc = _RE_SUDO_SESSION_CLOSE.search(msg)
+        if sc:
+            return AuthEvent(ts, host, program, "sudo_session_close", None, None, f"{raw} | TARGET_USER={sc['target']}")
+
+        # 5) normal sudo command
+        sm = _RE_SUDO_CMD.search(msg)
+        if sm:
+            return AuthEvent(
+                ts, host, program, "sudo_command", sm["invoker"], None,
+                f"{raw} | TARGET_USER={sm['target']} | COMMAND={sm['cmd'].strip()}",
+            )
+
+        return AuthEvent(ts, host, program, "sudo_other", None, None, raw)
+
+    # Anything else in auth.log (still valuable)
+    return AuthEvent(ts, host, program, "auth_other", None, None, raw)
+
+
 def iter_auth_events(lines: Iterable[str]) -> list[AuthEvent]:
     events: list[AuthEvent] = []
 
@@ -144,133 +233,7 @@ def iter_auth_events(lines: Iterable[str]) -> list[AuthEvent]:
         program = pm["program"] if pm else None
         msg = pm["msg"] if pm else rest
 
-        # --- SSH related ---
-        if program and "sshd" in program:
-            # Check for failed password
-            mm = _RE_SSH_FAIL.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
-                continue
-
-            # Check for failed publickey
-            mm = _RE_SSH_PUBLICKEY_FAIL.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
-                continue
-            
-            # Check for generic authentication failure
-            mm = _RE_SSH_AUTH_FAILURE.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
-                continue
-
-            # Check for accepted login
-            mm = _RE_SSH_ACCEPT.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_success_login", mm["user"], mm["ip"], line))
-                continue
-
-            # Check for invalid user (treat as failed login for correlation)
-            mm = _RE_SSH_INVALID_USER.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_failed_login", mm["user"], mm["ip"], line))
-                continue
-
-            # Check for disconnect
-            mm = _RE_SSH_DISCONNECT.search(msg)
-            if mm:
-                events.append(AuthEvent(ts, host, program, "ssh_disconnect", None, mm["ip"], line))
-                continue
-
-            events.append(AuthEvent(ts, host, program, "ssh_other", None, None, line))
-            continue
-
-        # --- sudo related ---
-        if program == "sudo":
-            # 1) PAM auth failure (often appears before "incorrect password attempts" or standalone)
-            pf = _RE_SUDO_PAM_AUTH_FAIL.search(msg)
-            if pf:
-                user = pf["user"]
-                events.append(
-                    AuthEvent(
-                        ts, host, program,
-                        "sudo_pam_auth_failure",
-                        user,
-                        None,
-                        line,
-                    )
-                )
-                continue
-
-            # 2) incorrect password attempts (your bonus improvement)
-            bm = _RE_SUDO_BADPW.search(msg)
-            if bm:
-                invoker = bm["invoker"]
-                count = bm["count"]
-                events.append(
-                    AuthEvent(
-                        ts, host, program,
-                        "sudo_auth_failure",
-                        invoker,
-                        None,
-                        f"{line} | INCORRECT_PASSWORD_ATTEMPTS={count}",
-                    )
-                )
-                continue
-
-            # 3) session opened
-            so = _RE_SUDO_SESSION_OPEN.search(msg)
-            if so:
-                target = so["target"]
-                by_uid = so["by_uid"]
-                events.append(
-                    AuthEvent(
-                        ts, host, program,
-                        "sudo_session_open",
-                        None,
-                        None,
-                        f"{line} | TARGET_USER={target} | BY_UID={by_uid}",
-                    )
-                )
-                continue
-
-            # 4) session closed
-            sc = _RE_SUDO_SESSION_CLOSE.search(msg)
-            if sc:
-                target = sc["target"]
-                events.append(
-                    AuthEvent(
-                        ts, host, program,
-                        "sudo_session_close",
-                        None,
-                        None,
-                        f"{line} | TARGET_USER={target}",
-                    )
-                )
-                continue
-
-            # 5) normal sudo command
-            sm = _RE_SUDO_CMD.search(msg)
-            if sm:
-                invoker = sm["invoker"]
-                target = sm["target"]
-                cmd = sm["cmd"].strip()
-                events.append(
-                    AuthEvent(
-                        ts, host, program,
-                        "sudo_command",
-                        invoker,
-                        None,
-                        f"{line} | TARGET_USER={target} | COMMAND={cmd}",
-                    )
-                )
-                continue
-
-            events.append(AuthEvent(ts, host, program, "sudo_other", None, None, line))
-            continue
-
-        # Anything else in auth.log (still valuable)
-        events.append(AuthEvent(ts, host, program, "auth_other", None, None, line))
+        events.append(classify_auth_message(ts, host, program, msg, line))
 
     return events
 
@@ -294,6 +257,43 @@ def compute_basic_stats(events: list[AuthEvent]) -> dict[str, Any]:
         "top_sudo_auth_fail_users": [{"user": u, "count": c} for u, c in by_user_sudo_fail.most_common(5)],
         "top_sudo_pam_auth_fail_users": [{"user": u, "count": c} for u, c in by_user_sudo_pam_fail.most_common(5)],
     }
+
+
+def _reject_if_structured_json(path: Path, text: str) -> None:
+    """
+    Guard against feeding parse_auth_log its own (or anyone else's)
+    normalized JSON output as if it were a raw auth log. Without this,
+    iter_auth_events happily runs its syslog/ISO prefix regexes over JSON
+    lines, matches nothing, and silently emits a pile of
+    unparsed_auth_line garbage events instead of failing loudly. Mirrors
+    the explicit-path validation findings_engine.py's correlate_findings
+    already does for a similar "wrong kind of file" class of mistake.
+
+    Cheap structural check only (first-char peek + one json.loads), not a
+    log-format validator -- a real auth log's first non-whitespace
+    character is never '{' or '[', so this can't false-positive on
+    legitimate log content.
+    """
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in "{[":
+        return
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return
+
+    hint = ""
+    if isinstance(parsed, list) and parsed and isinstance(parsed[0], dict) and "event_type" in parsed[0]:
+        hint = " (this looks like parse_auth_log's own auth_events_*.json output)"
+    elif isinstance(parsed, dict) and "events_by_type" in parsed:
+        hint = " (this looks like parse_auth_log's own auth_stats_*.json output)"
+
+    raise RuntimeError(
+        f"'{path}' looks like structured/normalized JSON, not a raw auth log file{hint}. "
+        "parse_auth_log expects a raw log file (e.g. /var/log/auth.log or journalctl text), "
+        "not JSON that parse_auth_log or another tool already produced. Do not feed a "
+        "previous tool's output file back in as log_path."
+    )
 
 
 def detect_auth_log_source(explicit_log_file: Path | None = None) -> tuple[str, Path | None, bool]:
@@ -408,7 +408,9 @@ def parse_auth_log_file(
         if not log_path or not log_path.exists():
             source = "none"  # Fallback if file doesn't exist
         else:
-            lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+            _reject_if_structured_json(log_path, text)
+            lines = text.splitlines()
             source_info = f"file:{log_path}"
             source_details["file_path"] = str(log_path)
     
