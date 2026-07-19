@@ -28,6 +28,7 @@ from kratos.agent.tools import (
     approval_log_length,
     approval_was_recorded,
 )
+from kratos.kratos_config import get_active_target
 from kratos.llm_interface import agent_chat
 from kratos.llm_config import MAX_TOKENS_QUESTION
 
@@ -74,6 +75,27 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 # looks like. Deliberately narrow (catches the confirmed pattern, not a
 # full IP/hostname syntax validator), matching this file's other guards.
 _IMPLAUSIBLE_TARGET_RE = re.compile(r"[A-Z_]")
+
+# execute_tool_call's target-MISMATCH guard (2026-07-19, real incident): the
+# guard above only catches an OBVIOUSLY fake placeholder -- it does nothing
+# for a plausible-looking but WRONG real IP. Confirmed live via MCP: a
+# kratos_investigate call with target=10.136.28.168 (the real, configured
+# active target) resulted in the model calling run_nmap_scan with a
+# hallucinated target=192.168.1.50 instead -- a real, valid-shaped IP that
+# simply isn't the host the investigation was ever about. The tool ran
+# without error and the final answer described the wrong host. Pre-existing
+# in the CLI/REPL path too (nothing here is MCP-specific), fixed at this one
+# shared dispatch point so every entry point benefits.
+#
+# The ONE legitimate exception, not invented here -- run_nmap_scan's own
+# description already documents it ("pass target explicitly only to check a
+# different host, e.g. '127.0.0.1' for Kratos's own local host specifically
+# (self-monitoring, not the default)"): scanning Kratos's own loopback
+# address on purpose. Allowing exactly this and nothing else closes the real
+# hallucination gap (192.168.1.50 is neither the active target nor a
+# self-reference) without breaking the one override this tool already
+# promises is valid.
+_LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 
 
 def build_system_prompt() -> str:
@@ -201,6 +223,27 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                     f"'{target_value}' does not look like a real IP address or hostname -- it "
                     "looks like a placeholder. Use the real target IP/hostname, or omit the "
                     "'target' argument entirely to use the configured default."
+                ),
+            }
+        active_target = get_active_target()
+        if target_value != active_target and target_value not in _LOOPBACK_SELF_TARGETS:
+            # See _LOOPBACK_SELF_TARGETS above for why 127.0.0.1/localhost/::1
+            # are the one allowed exception, not this codebase inventing a new
+            # policy. Reject (not silently override) -- Kratos should never
+            # scan/inspect a host the investigation wasn't asked about without
+            # that being surfaced clearly, matching the same "not a real tool
+            # name"/"looks like a placeholder" rejection shape already used
+            # above rather than a silent correction the model (or a human
+            # reading the transcript) would never see.
+            return {
+                "status": "error",
+                "observation": (
+                    f"target={target_value!r} does not match the configured active target "
+                    f"({active_target!r}) and is not a recognized self-monitoring reference "
+                    "(127.0.0.1/localhost/::1). Kratos does not scan or inspect a host the "
+                    f"investigation wasn't asked about -- omit the 'target' argument to use "
+                    f"{active_target!r}, or pass one of the loopback values above only if you "
+                    "specifically intend to check Kratos's own host."
                 ),
             }
 
