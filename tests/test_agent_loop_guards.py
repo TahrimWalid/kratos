@@ -1,7 +1,8 @@
 """
-Scripted-mock tests for agent/loop.py's 3 structural final_answer guards
+Scripted-mock tests for agent/loop.py's 4 structural final_answer guards
 (correlate_findings-required, file-integrity contradiction, dismissive-verdict
-contradiction), driven through the REAL run_agent() loop.
+contradiction, staleness-vs-claimed-timeframe contradiction), driven through
+the REAL run_agent() loop.
 
 Unlike tests/agent_scenarios.py (which is explicitly real-LLM-only by design,
 see its module docstring), these tests need fully deterministic, instant
@@ -135,9 +136,45 @@ def _mock_correlate_findings(**kwargs: Any) -> dict[str, Any]:
         "inputs_used": {},
         "missing_inputs": [],
         "input_errors": {},
+        "staleness_warning": None,
         "findings": [HIGH_FINDING],
         "count": 1,
     }
+
+
+# Real staleness_warning shape (adapters/findings_engine.py::_staleness_warning),
+# the exact text pattern from the real 2026-07-17 incident this guard fixes.
+MOCK_STALENESS_WARNING = (
+    "Auto-discovered inputs span 101.3h (> 24h threshold): 'auth_patterns' is from "
+    "2026-07-17T01:18:25, 'system_context' is from 2026-07-12T20:14:21. This correlation "
+    "mixes fresher and staler data -- treat any finding that depends on the older input(s) "
+    "as reflecting that input's collection time, not necessarily the current state."
+)
+
+
+def _mock_correlate_findings_stale(**kwargs: Any) -> dict[str, Any]:
+    return {
+        "findings_json_file": "mock_findings.json",
+        "findings_md_file": "mock_findings.md",
+        "inputs_used": {},
+        "missing_inputs": [],
+        "input_errors": {},
+        "staleness_warning": MOCK_STALENESS_WARNING,
+        "findings": [],
+        "count": 0,
+    }
+
+
+# Real incident text (2026-07-17): a specific timeframe claim on top of an
+# unrelated headline number -- deliberately doesn't touch guards 1-3's
+# phrase sets so this isolates guard 4 only.
+TIMEFRAME_CLAIM_ANSWER = "There were 200 sudo activities observed in the last 24 hours."
+
+# Fixes the violation by dropping the specific timeframe claim.
+TIMEFRAME_CORRECTED_ANSWER = (
+    "There were 125 sudo session-open events recorded, though the underlying data spans a wider, "
+    "uncertain window rather than a confirmed last-24-hours snapshot."
+)
 
 
 # The real 2026-07-15 failure this mock reproduces: correlate_findings's
@@ -210,6 +247,11 @@ def data_dir(tmp_path: Path) -> Path:
 def mocked_tools(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(TOOL_REGISTRY["check_file_integrity"], "handler", _mock_check_file_integrity)
     monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_findings)
+
+
+@pytest.fixture
+def mocked_tools_stale(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_findings_stale)
 
 
 def _print_transcript(transcript: list[dict[str, Any]]) -> None:
@@ -442,6 +484,104 @@ def test_guard1_and_guard2_self_correcting_model_converges_cleanly(
     rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert len(rejected_steps) == 1
     assert set(rejected_steps[0]["violations"]) == {"missing_correlation", "file_integrity_contradiction"}
+
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+def test_guard4_stubborn_model_force_accepts_with_note(
+    data_dir: Path, mocked_tools_stale, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Real-incident reproduction (2026-07-17): correlate_findings succeeds and
+    returns a real staleness_warning (inputs span 101.3h, not 24h), and the
+    model states "in the last 24 hours" anyway, three times in a row without
+    ever dropping the claim (MAX_STALENESS_TIMEFRAME_REJECTIONS=2). Expect:
+    2 rejections, then force-accept with the [NOTE:...] tag visibly present
+    -- same worst-case shape as guards 2/3's stubborn-model test.
+    """
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(TIMEFRAME_CLAIM_ANSWER),  # attempt 1: rejected (guard4)
+        _final_json(TIMEFRAME_CLAIM_ANSWER),  # attempt 2: rejected (guard4, budget now exhausted)
+        _final_json(TIMEFRAME_CLAIM_ANSWER),  # attempt 3: force-accepted with NOTE
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer", f"Expected clean termination, got {result['status']}"
+    assert len(chat.calls) == 4, f"Expected exactly 4 LLM calls to resolution, got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 2, f"Expected 2 rejected attempts, got {len(rejected_steps)}"
+    for step in rejected_steps:
+        assert step["violations"] == ["staleness_timeframe_contradiction"]
+
+    final_answer = result["final_answer"]
+    assert final_answer.count("[NOTE:") == 1, (
+        f"Expected the force-accepted answer to carry the unresolved-violation NOTE tag, "
+        f"got {final_answer.count('[NOTE:')}: {final_answer!r}"
+    )
+    assert MOCK_STALENESS_WARNING in final_answer
+    # The bogus "200"/timeframe claim itself is untouched by the NOTE prefix
+    # (same "flag, don't silently rewrite" philosophy as the other 3 guards).
+    assert TIMEFRAME_CLAIM_ANSWER in final_answer
+
+
+def test_guard4_self_correcting_model_converges_cleanly(
+    data_dir: Path, mocked_tools_stale, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same setup, but the model drops the specific timeframe claim on its
+    very next attempt -- confirms the rejection message alone is enough for
+    a compliant model to converge within 1 retry, no [NOTE:...] tag."""
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(TIMEFRAME_CLAIM_ANSWER),      # attempt 1: rejected (guard4)
+        _final_json(TIMEFRAME_CORRECTED_ANSWER),  # attempt 2: clean, accepted
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer"
+    assert len(chat.calls) == 3, f"Expected exactly 3 LLM calls to resolution, got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected_steps) == 1
+    assert rejected_steps[0]["violations"] == ["staleness_timeframe_contradiction"]
+
+    final_answer = result["final_answer"]
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+def test_guard4_no_friction_when_no_staleness_warning(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Regression check (Verification item, mirrors guard 1's no-friction
+    test): a final_answer stating a specific timeframe when
+    correlate_findings' staleness_warning is None (mocked_tools' default,
+    the common/expected case) must add ZERO extra friction -- guard 4 is
+    architecturally incapable of firing without a real staleness_warning
+    present, regardless of how the answer is phrased.
+    """
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(TIMEFRAME_CLAIM_ANSWER),  # states a timeframe, but no staleness_warning exists
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    _print_transcript(result["transcript"])
+
+    assert result["status"] == "final_answer"
+    assert len(chat.calls) == 2, f"Expected exactly 2 LLM calls (no rejection round-trip), got {len(chat.calls)}"
+
+    rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert rejected_steps == [], f"Expected zero rejections when there's no staleness_warning, got {rejected_steps}"
 
     final_answer = result["final_answer"]
     assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"

@@ -132,6 +132,35 @@ def _severity_rank(sev: str) -> int:
     return {"info": 0, "low": 1, "medium": 2, "high": 3}.get(sev, 0)
 
 
+# Sprint 3 Phase 2 (CLI overhaul, presentation-only): plain-language, one-line
+# summary per rule ID, keyed to every id="..." literal used by
+# generate_findings() below. Template-based rather than LLM-generated per the
+# design doc's own decision (docs/sprint3_phase1_cli_overhaul_design.md §9) --
+# these rule IDs are deterministic and finite, so a static map avoids a
+# non-deterministic extra LLM call for something formulaic. Kept here, next
+# to the rule definitions, so a new id="..." added below is a visible,
+# one-line diff away from also getting a template; GENERIC_FINDING_SUMMARY is
+# the deliberate fallback for anything missed, so a forgotten template is a
+# blander sentence, never a crash or a blank summary.
+FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
+    "NET-001": "No open network ports were found in the latest scan.",
+    "NET-002": "Open network ports were found — this is the system's attack surface.",
+    "CTX-001": "One or more accounts with admin (sudo) rights were identified.",
+    "AUTH-001": "Failed attempts to gain admin (sudo) rights were observed.",
+    "AUTH-003": "Admin (sudo) session activity was observed.",
+    "OBS-001": "Login failures were seen, but the services that collect logs appear to be off — some activity may be going unrecorded.",
+    "AUTH-004": "A burst of login failures was observed in a short window.",
+    "CORR-001": "A network-exposed SSH service combined with a burst of failed logins — a pattern consistent with a brute-force attempt.",
+    "CORR-002": "A burst of failed admin (sudo) logins concentrated on a single account.",
+    "CORR-SSH-001": "SSH is exposed to the network and a burst of failed logins was observed — looks like a brute-force attempt.",
+    "AUTH-TREND-001": "Login failures have been trending upward across recent runs.",
+    "INTEG-001": "One or more tracked files have changed since the last known-good baseline.",
+    "ENV-001": "This looks like a development environment (WSL2), not a production system.",
+}
+
+GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
+
+
 # ---------------------------
 # Core: generate findings
 # ---------------------------
@@ -227,6 +256,23 @@ def generate_findings(
         sudo_fail_count = int(by_type.get("sudo_auth_failure", 0))
         sudo_pam_fail_count = int(by_type.get("sudo_pam_auth_failure", 0))
 
+        # Real fix (2026-07-17): auth_stats['since'] is only ever populated
+        # for target-fetched data (agent/tools.py::_persist_target_auth_
+        # correlation_data now stamps whatever `since` the model's
+        # read_journalctl call used, or None if unstated) -- absent
+        # entirely for locally-parsed auth_stats (parse_auth_log has no
+        # time-window concept). Either way, state it plainly in the
+        # evidence rather than letting a reader (human or the model itself)
+        # silently assume these counts are scoped to whatever the
+        # investigation goal asked about. This is the concrete fix for the
+        # real incident where a final_answer confidently said "in the last
+        # 24 hours" about a count that was actually an unscoped snapshot.
+        since_value = auth_stats.get("since")
+        time_window_note = (
+            f"Time window: since {since_value!r}" if since_value
+            else "Time window: unscoped (no time window was requested/applied to this data)"
+        )
+
         if (sudo_fail_count + sudo_pam_fail_count) > 0:
             findings.append(
                 Finding(
@@ -237,6 +283,7 @@ def generate_findings(
                         f"sudo_pam_auth_failure events = {sudo_pam_fail_count}",
                         f"sudo_auth_failure events = {sudo_fail_count}",
                         "Source: latest auth_stats",
+                        time_window_note,
                     ],
                     recommendation=[
                         "If this was a mistyped password, no action needed.",
@@ -271,6 +318,7 @@ def generate_findings(
                         f"sudo_session_open events = {sudo_open}",
                         f"sudo_session_close events = {sudo_close}",
                         "Source: latest auth_stats",
+                        time_window_note,
                     ],
                     recommendation=[
                         "If this corresponds to expected admin tasks (updates/installs), no action needed.",
@@ -616,6 +664,74 @@ def generate_findings(
 
 
 # ---------------------------
+# Auto-discovered input staleness (Sprint 3 cleanup, 2026-07-16)
+# ---------------------------
+# Reference pattern: adapters/vuln_scan.py::check_vulscan_db_staleness /
+# STALENESS_THRESHOLD_DAYS -- same non-blocking, mtime-based, "round number,
+# stated as such" philosophy, applied here to a different question (spread
+# BETWEEN several auto-discovered inputs' timestamps, not one file's age
+# against now).
+#
+# Confirmed via real reproduction (the correlate_findings path-hallucination
+# investigation) that find_latest_inputs() picks the latest file per
+# category independently, with no check on how far apart those files
+# actually are -- a real run silently correlated a 2-4-day-old nmap scan and
+# system-context snapshot against same-day auth data, status "done", no
+# warning at all. Not cosmetic: correlate_findings's own value proposition
+# is corroborating a finding ACROSS data types (e.g. CORR-SSH-001 combines
+# "SSH is exposed" with "a failed-login burst happened"), which only means
+# what it claims if those inputs are roughly contemporaneous -- a stale
+# nmap/context input mixed with fresh auth data can make a finding look
+# corroborated when it's really "exposed at some point in the past, burst
+# happening now," a materially weaker claim.
+#
+# A single, uniform threshold (not category-aware): auth data is
+# effectively continuous while nmap/context data changes far less often, but
+# there's no real usage data yet to calibrate a per-category-pair matrix
+# against, and the codebase's own precedent (vulscan's threshold) is a
+# single round number stated as operationally reasonable, not precisely
+# derived -- matching that rather than inventing new machinery. 24 hours:
+# short enough to catch the real multi-day-stale scenario that surfaced
+# this, long enough that a single investigation collecting different
+# categories a few hours apart (normal, not a problem) doesn't get flagged.
+STALENESS_SPREAD_THRESHOLD_HOURS = 24
+
+
+def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
+    """
+    None if fewer than 2 auto-discovered inputs are present (nothing to
+    compare), or if the spread between the oldest and newest auto-discovered
+    input is within STALENESS_SPREAD_THRESHOLD_HOURS. Explicitly-pinned
+    inputs (in `inputs` but not in `auto_discovered_keys`) are never
+    considered here -- an explicit path is the caller's own informed choice,
+    not something this warning second-guesses (see module docstring above).
+    """
+    mtimes: dict[str, float] = {}
+    for key in auto_discovered_keys:
+        path = inputs.get(key)
+        if path is not None:
+            mtimes[key] = path.stat().st_mtime
+
+    if len(mtimes) < 2:
+        return None
+
+    newest_key = max(mtimes, key=lambda k: mtimes[k])
+    oldest_key = min(mtimes, key=lambda k: mtimes[k])
+    spread_hours = (mtimes[newest_key] - mtimes[oldest_key]) / 3600
+    if spread_hours <= STALENESS_SPREAD_THRESHOLD_HOURS:
+        return None
+
+    newest_ts = datetime.fromtimestamp(mtimes[newest_key]).isoformat(timespec="seconds")
+    oldest_ts = datetime.fromtimestamp(mtimes[oldest_key]).isoformat(timespec="seconds")
+    return (
+        f"Auto-discovered inputs span {spread_hours:.1f}h (> {STALENESS_SPREAD_THRESHOLD_HOURS}h "
+        f"threshold): '{newest_key}' is from {newest_ts}, '{oldest_key}' is from {oldest_ts}. This "
+        "correlation mixes fresher and staler data -- treat any finding that depends on the older "
+        "input(s) as reflecting that input's collection time, not necessarily the current state."
+    )
+
+
+# ---------------------------
 # Report writing
 # ---------------------------
 def write_findings_report(
@@ -660,9 +776,12 @@ def write_findings_report(
 
     inputs: dict[str, Path | None] = {}
     input_errors: dict[str, str] = {}
+    auto_discovered_keys: set[str] = set()
     for key, explicit_value in explicit.items():
         if explicit_value is None:
             inputs[key] = auto.get(key)
+            if inputs[key] is not None:
+                auto_discovered_keys.add(key)
             continue
         path = Path(explicit_value)
         if path.exists():
@@ -685,11 +804,14 @@ def write_findings_report(
             inputs[key] = None
         else:
             inputs[key] = auto.get(key)
+            if inputs[key] is not None:
+                auto_discovered_keys.add(key)
 
     _resolve_optional("auth_trends", auth_trends_file)
     _resolve_optional("file_integrity", file_integrity_file)
 
     missing = [k for k, v in inputs.items() if v is None and k not in input_errors]
+    staleness_warning = _staleness_warning(inputs, auto_discovered_keys)
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -718,6 +840,7 @@ def write_findings_report(
         "inputs": {k: (v.name if v else None) for k, v in inputs.items()},
         "missing_inputs": missing,
         "input_errors": input_errors,
+        "staleness_warning": staleness_warning,
         "findings": [asdict(f) for f in findings],
     }
 
@@ -739,6 +862,8 @@ def write_findings_report(
         md_lines.append(f"  - {k}: {v}")
     if missing:
         md_lines.append(f"\n> Note: Missing inputs: {', '.join(missing)}\n")
+    if staleness_warning:
+        md_lines.append(f"\n> **Staleness warning**: {staleness_warning}\n")
 
     md_lines.append("\n## Findings\n")
     if not findings:

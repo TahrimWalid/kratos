@@ -17,7 +17,7 @@ SETUP INSTRUCTIONS:
    server (`ollama serve`, which speaks this same API):
     export LLM_BASE_URL=http://127.0.0.1:11434/v1   # default if unset
     export LLM_API_KEY=ollama                        # default if unset -- Ollama ignores the value
-    export LLM_MODEL=qwen2.5-coder:7b                 # default if unset
+    export LLM_MODEL=qwen2.5:7b                       # default if unset
    Swapping to a different local server or a cloud provider (Gemini, etc.)
    is just swapping these same 3 values -- no other config changes needed.
    Explicitly select this backend (skipping local-GGUF auto-detection) with:
@@ -40,11 +40,17 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+# Exported (not just inline) so adapters/llm_profiles.py's /model
+# implementation reads/writes the exact same .env file this module loads
+# from, rather than independently recomputing the repo-root path and
+# risking drift if the directory layout ever changes.
+ENV_FILE_PATH = Path(__file__).parent.parent.parent / ".env"
+
 # Load .env (repo root) if present -- real secrets (e.g. LLM_API_KEY below)
 # live there, gitignored, never in tracked config files. Safe to call even
 # if .env doesn't exist or the vars are already set in the real environment
 # (load_dotenv does not override existing env vars by default).
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(ENV_FILE_PATH)
 
 # ---------------------------------------------------------------------------
 # Model path — portable, no hardcoded user/hostname
@@ -162,7 +168,55 @@ FALLBACK_TO_DIRECT_LOAD = os.environ.get("KRATOS_LLM_FALLBACK_TO_DIRECT_LOAD", "
 # ---------------------------------------------------------------------------
 LLM_OPENAI_BASE_URL = os.environ.get("LLM_BASE_URL", "http://127.0.0.1:11434/v1")
 LLM_OPENAI_API_KEY = os.environ.get("LLM_API_KEY", "ollama")
-LLM_OPENAI_MODEL = os.environ.get("LLM_MODEL", "qwen2.5-coder:7b")
+LLM_OPENAI_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:7b")
+
+# ---------------------------------------------------------------------------
+# Live LLM-profile override (/model, 2026-07-18) -- same pattern as
+# get_active_target()/set_active_target() in kratos_config.py (/target's
+# live-switch mechanism), applied to the LLM backend instead of the SSH
+# target. The LLM_OPENAI_*/LLM_BACKEND constants above stay frozen at their
+# .env-load-time values (still correct as "what this process started
+# with"); every ACTUAL query call site must read through the get_active_*
+# functions below instead, so a mid-session /model switch takes effect on
+# the very next LLM call, not just at the next process launch.
+#
+# Real bug this deliberately avoids reproducing (the exact failure class
+# this task's own prompt named): llm_interface.py's from-import bindings
+# (`from kratos.llm_config import LLM_OPENAI_MODEL`) are independent names
+# in llm_interface's OWN module namespace -- reassigning llm_config's
+# module-level constant would NOT be seen by llm_interface's already-bound
+# copy. Function-based getters (called fresh on every use, not imported as
+# frozen values) are the only correct fix -- confirmed by how /target's own
+# earlier real bug ("investigations silently kept hitting the global
+# default" -- see CLAUDE.md) was actually fixed, not a new pattern invented
+# here.
+_active_llm_override: dict[str, str] | None = None
+
+
+def get_active_llm_base_url() -> str:
+    return (_active_llm_override or {}).get("LLM_BASE_URL") or LLM_OPENAI_BASE_URL
+
+
+def get_active_llm_api_key() -> str:
+    return (_active_llm_override or {}).get("LLM_API_KEY") or LLM_OPENAI_API_KEY
+
+
+def get_active_llm_model() -> str:
+    return (_active_llm_override or {}).get("LLM_MODEL") or LLM_OPENAI_MODEL
+
+
+def get_active_llm_backend() -> str:
+    return (_active_llm_override or {}).get("KRATOS_LLM_BACKEND") or LLM_BACKEND
+
+
+def set_active_llm_profile(values: dict[str, str]) -> None:
+    """`values` keyed exactly like adapters/llm_profiles.py's EnvProfile.values
+    (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND) -- no re-keying
+    needed between parsing a .env profile and activating it."""
+    global _active_llm_override
+    _active_llm_override = dict(values)
+
+
 # ---------------------------------------------------------------------------
 # System Prompt
 # ---------------------------------------------------------------------------
@@ -235,6 +289,6 @@ MSG_NO_MODEL = (
     "default -- no config needed if Ollama is already running on the "
     "default port):\n"
     "  ollama serve\n"
-    "  export LLM_MODEL=qwen2.5-coder:7b   # only if you want a model other than the default"
+    "  export LLM_MODEL=qwen2.5:7b   # only if you want a model other than the default"
 )
 MSG_NO_FINDINGS = "[KRATOS-LLM] No findings to analyze. Run: kratos findings-generate"

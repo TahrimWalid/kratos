@@ -25,7 +25,7 @@ The LLM advises. It never acts. All mitigation decisions stay with the human ope
 
 ```
 [Scan] ──► [Logs] ──► [Context] ──► [Findings] ──► [LLM Chat]
-  nmap      auth.log    OS/users      correlate       Qwen2.5-Coder 7B
+  nmap      auth.log    OS/users      correlate       Qwen2.5 7B
   XML       parsing     services      + baseline      plain-English analysis
 ```
 
@@ -167,7 +167,7 @@ provider later is just changing `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`):
 
 ```bash
 ollama serve
-ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5:7b
 ```
 
 Run it:
@@ -341,6 +341,6 @@ Developed as a Bachelor's thesis prototype at Tampere University of Applied Scie
 
 - **Version:** v0.1 (May 2026)
 - **Correlation rules:** 10 active finding types
-- **LLM integration:** Qwen2.5-Coder 7B, fully offline, daemon mode
+- **LLM integration:** Qwen2.5 7B, fully offline, daemon mode
 - **Baseline drift:** sudo / services / ports
 - **Tested hardware:** Mixtile Blade 3 (RK3588 ARM64), CSC OpenStack VM, WSL2

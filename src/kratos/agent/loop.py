@@ -68,6 +68,13 @@ FINAL_ITERATION_NUDGE = (
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
+# execute_tool_call's target-arg guard (2026-07-18, real incident): no real
+# IP address or hostname contains an uppercase letter or an underscore --
+# both are exactly what a hallucinated placeholder like "THE_TARGET_IP"
+# looks like. Deliberately narrow (catches the confirmed pattern, not a
+# full IP/hostname syntax validator), matching this file's other guards.
+_IMPLAUSIBLE_TARGET_RE = re.compile(r"[A-Z_]")
+
 
 def build_system_prompt() -> str:
     tools_desc = render_tools_for_prompt()
@@ -89,6 +96,10 @@ To call a tool:
 
 To finish, once you have enough evidence to answer the goal:
 {{"reasoning": "<one sentence: why you're done>", "final_answer": "<your answer, grounded only in Observations you received>"}}
+
+To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
+{{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
+This does NOT end the investigation -- after proposing, continue with a tool call or a final_answer as normal. The proposal is surfaced to a human; you never build it yourself and never need to mention it again.
 
 INVESTIGATION SCOPE:
 Treat any investigation goal as a request for a reasonably thorough security check, not a literal keyword match. "Check for suspicious activity", "has anyone tried to break in", "run a full security check", and "is my server okay" are substantively the same underlying request phrased differently -- a human analyst would not skip network exposure just because the user said "break in" instead of "scan", or skip login activity just because the user said "okay" instead of "auth". Before concluding, briefly consider whether each of these categories is relevant to the goal, even if the wording doesn't mention it directly:
@@ -155,8 +166,43 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
         }
 
     call_args = dict(args or {})
-    if "data_dir" in tool.parameters and "data_dir" not in call_args:
+    if "data_dir" in tool.parameters:
+        # ALWAYS the real value, even if the model already supplied its own
+        # -- real incident, 2026-07-17: the system prompt already says "you
+        # do not need to supply data_dir", but a prompt instruction alone
+        # doesn't stop a hallucinated override from silently winning. The
+        # model passed data_dir="/data" (a real filesystem-root path Kratos
+        # has no permission to write to), producing a real PermissionError
+        # that had nothing to do with the target at all -- confirmed via a
+        # real transcript, not hypothetical. There is no legitimate reason
+        # for the model to ever need to set this itself (unlike `target`
+        # below, which has a real override use case), so this is a
+        # structural override, not just a fill-in-if-missing default.
         call_args["data_dir"] = data_dir
+
+    if "target" in tool.parameters and call_args.get("target") is not None:
+        # Real incident, same turn as the data_dir bug above: the model
+        # also invented a placeholder target ("THE_TARGET_IP") that isn't a
+        # real IP/hostname -- the call raised no exception, silently
+        # scanning nothing and returning a wrong, empty result (0 open
+        # ports, vs. a real 1 open port minutes earlier in the same
+        # session) that would have gone unnoticed had the data_dir error
+        # above not also forced the model to explain itself. Unlike
+        # data_dir, `target` has a real legitimate override (scanning a
+        # specific different host on purpose), so it can't be force-
+        # overridden the same way -- reject an OBVIOUSLY fake value before
+        # it runs instead, same "not a real tool name" rejection shape used
+        # above for an invented tool_name.
+        target_value = str(call_args["target"])
+        if _IMPLAUSIBLE_TARGET_RE.search(target_value):
+            return {
+                "status": "error",
+                "observation": (
+                    f"'{target_value}' does not look like a real IP address or hostname -- it "
+                    "looks like a placeholder. Use the real target IP/hostname, or omit the "
+                    "'target' argument entirely to use the configured default."
+                ),
+            }
 
     # Backstop for tools marked requires_approval=True: don't rely solely on
     # the tool's own in-handler request_approval() call being present and
@@ -334,6 +380,31 @@ def run_agent(
         re.IGNORECASE,
     )
 
+    # Structural guard against a fourth, distinct hallucination pattern found
+    # in real usage (2026-07-17): a final_answer confidently stating a
+    # specific claimed timeframe ("last 24 hours") while correlate_findings'
+    # own staleness_warning (adapters/findings_engine.py::_staleness_warning)
+    # says the auto-discovered inputs it just correlated span FAR more than
+    # that -- a real transcript showed the model see this exact warning and
+    # answer "in the last 24 hours" anyway, no caveat. Same narrow,
+    # phrase-matched philosophy as guards 2/3, not a general time-window
+    # verifier: correlate_findings has no per-event time-window filtering at
+    # all (find_latest_inputs just grabs whichever file is newest on disk),
+    # so this guard can only catch "claims a specific recency window AND the
+    # engine's own contemporaneity check already flagged a real problem" --
+    # it cannot verify the claimed window is otherwise accurate. Tracks the
+    # LATEST correlate_findings call's staleness_warning only (mirrors
+    # last_file_integrity_diff's "latest wins" pattern below) -- a later,
+    # fresher call genuinely clearing the warning must un-arm this guard.
+    last_staleness_warning: str | None = None
+    staleness_timeframe_reject_count = 0
+    MAX_STALENESS_TIMEFRAME_REJECTIONS = 2
+    _TIMEFRAME_CLAIM_RE = re.compile(
+        r"\b(?:last|past|over\s+the\s+last|over\s+the\s+past|within\s+the\s+last|within\s+the\s+past)"
+        r"\s+(?:\d+\s*)?(?:hours?|days?|weeks?|months?)\b",
+        re.IGNORECASE,
+    )
+
     def _record(entry: dict[str, Any]) -> None:
         transcript.append(entry)
         if on_step is not None:
@@ -441,6 +512,20 @@ def run_agent(
                 and dismissive_contradiction_reject_count < MAX_DISMISSIVE_CONTRADICTION_REJECTIONS
             )
 
+            # --- Guard 4: staleness-vs-claimed-timeframe contradiction ---
+            # Deliberately narrow (fixed timeframe-phrase regex, only fires
+            # when correlate_findings' OWN staleness_warning is non-null) --
+            # see the tracking-var comment above for the real incident and
+            # scope limits.
+            guard4_violated = bool(last_staleness_warning) and bool(
+                _TIMEFRAME_CLAIM_RE.search(final_answer_text)
+            )
+            guard4_can_reject = (
+                guard4_violated
+                and not is_final_iteration
+                and staleness_timeframe_reject_count < MAX_STALENESS_TIMEFRAME_REJECTIONS
+            )
+
             corrections: list[str] = []
             violations: list[str] = []
 
@@ -496,6 +581,19 @@ def run_agent(
                     f"{finding_summary}. Revise your final_answer so its overall characterization "
                     "is consistent with these findings -- do not describe the investigation as "
                     "clean/unsuspicious while also citing evidence that contradicts that."
+                )
+
+            if guard4_can_reject:
+                staleness_timeframe_reject_count += 1
+                violations.append("staleness_timeframe_contradiction")
+                corrections.append(
+                    "REJECTED (staleness-vs-timeframe contradiction): this final_answer states a "
+                    "specific recency window (e.g. 'in the last 24 hours'), but correlate_findings' "
+                    f"own staleness_warning from THIS investigation says: {last_staleness_warning!r} "
+                    "-- the data you correlated is not actually known to be confined to that window. "
+                    "Revise your final_answer to either drop the specific timeframe claim, or "
+                    "explicitly caveat that the underlying data spans a wider/uncertain window than "
+                    "what was asked."
                 )
 
             if corrections:
@@ -556,12 +654,82 @@ def run_agent(
                     "framing above as unreliable.]\n\n" + final_answer_text
                 )
 
+            if guard4_violated:
+                final_answer_text = (
+                    "[NOTE: this answer states a specific recency window, but correlate_findings' "
+                    f"own staleness_warning from this investigation says: {last_staleness_warning!r} "
+                    "-- the underlying data is not actually confirmed to be confined to that window. "
+                    "Treat the claimed timeframe as unreliable.]\n\n" + final_answer_text
+                )
+
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
                 "final_answer": final_answer_text,
             })
             return {"status": "final_answer", "final_answer": final_answer_text, "transcript": transcript}
+
+        if "tool_proposal" in parsed:
+            # Evo-loop auto-suggest (2026-07-18): a structured, reliably
+            # parseable signal distinct from ordinary prose -- same
+            # reliability principle as the [NOTE:...] guards above (a
+            # known, code-recognized shape, not a fragile string match on
+            # final_answer text), but implemented as its own top-level
+            # JSON key rather than a text-embedded tag, since [NOTE:...]
+            # itself is a one-way DISPLAY string (confirmed via a real
+            # audit: nothing anywhere re-parses the literal "[NOTE:" text)
+            # and a proposal needs to be a real, structured object a
+            # caller (cli/repl.py) can act on, not just show. Never ends
+            # the investigation and never invokes anything on its own --
+            # auto-suggest only, per this project's standing no-auto-
+            # escalation principle; /evolve (cli/repl.py) is the only
+            # thing that can ever actually start evo-loop.
+            proposal = parsed.get("tool_proposal") or {}
+            proposal_name = str(proposal.get("name") or "").strip()
+            proposal_description = str(proposal.get("description") or "").strip()
+
+            if is_final_iteration:
+                # Same treatment as a tool call attempted on the final
+                # iteration (see the tool-call branch below) -- there's no
+                # next iteration for the human-facing surfacing to matter
+                # for THIS run, and the loop must still conclude with a
+                # real final_answer now.
+                fallback = _synthesize_fallback_answer(transcript)
+                _record({
+                    "iteration": i,
+                    "reasoning": parsed.get("reasoning", ""),
+                    "status": "final_iteration_tool_proposal_ignored",
+                    "attempted_tool_proposal": proposal,
+                    "final_answer": fallback,
+                })
+                return {"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript}
+
+            if not proposal_name or not proposal_description:
+                # Same "don't silently accept a broken structure" stance
+                # as a parse_error -- tell the model precisely what's
+                # missing and let it retry, rather than surfacing a
+                # half-empty suggestion to the human.
+                correction = (
+                    "ERROR: a tool_proposal needs both a non-empty 'name' and 'description'. Respond "
+                    'with {"reasoning": "...", "tool_proposal": {"name": "...", "description": "..."}} '
+                    "or continue the investigation with a tool call / final_answer instead."
+                )
+                _record({"iteration": i, "status": "tool_proposal_malformed", "raw_response": raw})
+                conversation += f"\nAssistant: {raw}\nObservation: {correction}\n"
+                continue
+
+            _record({
+                "iteration": i,
+                "reasoning": parsed.get("reasoning", ""),
+                "tool_proposal": {"name": proposal_name, "description": proposal_description},
+            })
+            conversation += (
+                f"\nAssistant: {json.dumps(parsed)}\n"
+                f"Observation: Tool proposal noted ({proposal_name!r}) -- this has been surfaced to "
+                "the human; you do not need to build it or mention it again. Continue the "
+                "investigation and reach a final_answer when ready.\n"
+            )
+            continue
 
         tool_name = parsed.get("tool")
         args = parsed.get("args") or {}
@@ -597,6 +765,13 @@ def run_agent(
             if isinstance(inner_result, dict) and isinstance(inner_result.get("findings"), list):
                 last_correlate_findings = inner_result["findings"]
                 last_correlate_findings_error = None
+                # "Latest wins" -- see guard 4's tracking-var comment above.
+                # Not nested under the findings check specifically for any
+                # other reason; a successful call always has this key (None
+                # when there's nothing stale to warn about), so this is the
+                # correct place to read it regardless of whether findings
+                # happened to be empty.
+                last_staleness_warning = inner_result.get("staleness_warning")
             else:
                 # Real error text, from whichever layer it surfaced at:
                 # execute_tool_call's own top-level error (bad tool name/

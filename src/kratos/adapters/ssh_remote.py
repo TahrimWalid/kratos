@@ -7,6 +7,19 @@ processes, file hashes, config audit) built on top of it. All commands here
 are fixed and parameterized (never an arbitrary caller-supplied shell
 string) -- the same trust class as adapters/nmap_scan.py, not the generic
 command-runner tool.
+
+run_remote_command/run_remote_script below are deliberately NEVER wrapped as
+their own agent-callable @register_tool, and that is permanent, not a "just
+needs wrapping" TODO -- see CLAUDE.md's "Permanent boundary: Kratos never
+executes or changes state on the monitored target" for the full rationale.
+Kratos must never have the capability to autonomously execute commands or
+change state on the target, in any form, generic or narrowly-scoped, even
+behind human approval-gating. These two functions exist ONLY to be called
+internally by other tools' fixed, read-only actions (journalctl, file
+hashes, config audit, etc.) -- every one of which only ever reads state,
+never changes it. Do not add a general-purpose "run this command on the
+target" tool on top of these; that would violate the boundary regardless of
+how the tool is scoped or gated.
 """
 from __future__ import annotations
 
@@ -20,14 +33,28 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kratos import kratos_config as _kconfig
 from kratos.kratos_config import (
-    SSH_TARGET_HOST,
     SSH_TARGET_USER,
     SSH_TARGET_KEY_PATH,
     SSH_CONNECT_TIMEOUT_SECONDS,
     SSH_COMMAND_TIMEOUT_SECONDS,
     YARA_SCAN_TIMEOUT_SECONDS,
+    get_active_target,
 )
+
+
+def _journalctl_prefix() -> list[str]:
+    """`["sudo", "-n"]` (default) or `[]` -- see
+    kratos_config.py::JOURNALCTL_USE_SUDO. Reads `_kconfig.JOURNALCTL_USE_SUDO`
+    via the module itself, not a `from...import`-frozen copy -- a plain
+    `from kratos.kratos_config import JOURNALCTL_USE_SUDO` binds the value at
+    import time and would never see a later `monkeypatch.setattr(kratos_config,
+    ...)` (a real bug class this project already hit and fixed twice for
+    live-switchable settings -- see /model and /target in CLAUDE.md). No live
+    REPL command flips this flag today, but there's no reason to reintroduce
+    the same footgun for a value tests need to toggle mid-process."""
+    return ["sudo", "-n"] if _kconfig.JOURNALCTL_USE_SUDO else []
 
 
 @dataclass
@@ -39,7 +66,7 @@ class SSHResult:
 
 
 def target_label() -> str:
-    return f"{SSH_TARGET_USER}@{SSH_TARGET_HOST}"
+    return f"{SSH_TARGET_USER}@{get_active_target()}"
 
 
 def _base_ssh_argv() -> list[str]:
@@ -49,7 +76,7 @@ def _base_ssh_argv() -> list[str]:
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
         "-o", "StrictHostKeyChecking=accept-new",
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
-        f"{SSH_TARGET_USER}@{SSH_TARGET_HOST}",
+        f"{SSH_TARGET_USER}@{get_active_target()}",
     ]
 
 
@@ -106,15 +133,19 @@ def _parse_journal_entry(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def fetch_journalctl_entries(unit: str | None, since: str | None, lines: int) -> SSHResult | list[dict[str, Any]]:
-    # sudo -n: without it, journald's default per-user ACL silently hides
-    # privileged entries (e.g. PAM/sshd authentication-failure lines) from
-    # an unprivileged user's query -- confirmed live: a plain `journalctl
-    # _COMM=sshd` from the SSH user returned zero "Failed password" lines
-    # for a real, just-run attack, while the identical query with sudo
-    # returned them correctly. -n (non-interactive): fail fast rather than
-    # hang if passwordless sudo isn't configured, matching this file's
-    # existing convention (see run_config_audit_checks's `sudo -n sshd -T`).
-    parts = ["sudo", "-n", "journalctl", "--no-pager", "-o", "json"]
+    # sudo -n (default) or nothing at all if the target's SSH user is in the
+    # systemd-journal group instead (see _journalctl_prefix, kratos_config.py
+    # ::JOURNALCTL_USE_SUDO, adapters/target_setup.py). Either way, PLAIN
+    # unprivileged journalctl with neither is the broken case: journald's
+    # default per-user ACL silently hides privileged entries (e.g. PAM/sshd
+    # authentication-failure lines) -- confirmed live: a plain `journalctl
+    # _COMM=sshd` from an SSH user with neither sudo nor journal-group access
+    # returned zero "Failed password" lines for a real, just-run attack,
+    # while the identical query with sudo returned them correctly. -n
+    # (non-interactive, sudo path only): fail fast rather than hang if
+    # passwordless sudo isn't configured, matching this file's existing
+    # convention (see run_config_audit_checks's `sudo -n sshd -T`).
+    parts = _journalctl_prefix() + ["journalctl", "--no-pager", "-o", "json"]
     if unit:
         # Plain `-u <unit>` filters on _SYSTEMD_UNIT only -- but daemons like
         # sshd are commonly logged under a per-connection scope unit (e.g.
@@ -178,7 +209,9 @@ def _parse_journal_entry_for_auth(raw: dict[str, Any]) -> tuple[str, str | None,
     return timestamp, identifier, raw.get("MESSAGE") or ""
 
 
-def fetch_journalctl_auth_entries(max_lines_per_identifier: int = 500) -> tuple[list[tuple[str, str | None, str]], list[str]]:
+def fetch_journalctl_auth_entries(
+    max_lines_per_identifier: int = 500, since: str | None = None
+) -> tuple[list[tuple[str, str | None, str]], list[str]]:
     """
     Fetches sshd + sudo journal entries from the target over SSH, mirroring
     adapters/auth_log_parse.py::collect_journald_lines's local equivalent
@@ -187,6 +220,21 @@ def fetch_journalctl_auth_entries(max_lines_per_identifier: int = 500) -> tuple[
     service noise on a busy target (confirmed in Kratos's own live
     attack-detection testing: a 200-entry general query returned mostly
     systemd startup noise, zero sshd lines).
+
+    `since` (real fix, 2026-07-17): a journalctl `--since` value (e.g. "24
+    hours ago"), applied to BOTH per-identifier queries alongside the
+    existing `-n` line cap -- journalctl combines the two as "the most
+    recent N entries since <since>", the same semantic
+    fetch_journalctl_entries already uses for the model's own primary
+    query. None (the default) preserves the exact prior behavior --
+    unscoped, most-recent-N-lines-only -- so a goal with no stated time
+    window is unaffected. Real incident this closes: a user asked "how many
+    sudo activities in the last 24 hours" and read_journalctl's PRIMARY
+    query correctly honored `since="24 hours ago"`, but this auth-
+    correlation fetch (triggered as this same tool call's background
+    side-effect, feeding correlate_findings) always ignored `since`
+    entirely, silently correlating a ~500-line snapshot of unknown real
+    age against a question specifically about the last 24 hours.
 
     Returns (entries, errors):
     - entries: (timestamp, identifier, message) tuples, ready for
@@ -201,11 +249,17 @@ def fetch_journalctl_auth_entries(max_lines_per_identifier: int = 500) -> tuple[
     entries: list[tuple[str, str | None, str]] = []
     errors: list[str] = []
     for identifier in ("sshd", "sudo"):
-        # sudo -n: see fetch_journalctl_entries above -- without it, journald's
-        # per-user ACL silently hides privileged entries (confirmed live: a
-        # real attack's "Failed password" lines were completely invisible to
-        # an unprivileged query despite being well within the fetched window).
-        result = run_remote_command(f"sudo -n journalctl --no-pager -o json _COMM={identifier} -n {int(max_lines_per_identifier)}")
+        # _journalctl_prefix(): see fetch_journalctl_entries above -- without
+        # sudo OR systemd-journal group membership, journald's per-user ACL
+        # silently hides privileged entries (confirmed live: a real attack's
+        # "Failed password" lines were completely invisible to an
+        # unprivileged query despite being well within the fetched window).
+        prefix = " ".join(_journalctl_prefix())
+        cmd = f"{prefix} journalctl --no-pager -o json _COMM={identifier}".strip()
+        if since:
+            cmd += f" --since {shlex.quote(since)}"
+        cmd += f" -n {int(max_lines_per_identifier)}"
+        result = run_remote_command(cmd)
         if not result.ok:
             errors.append(f"{identifier}: {(result.stderr or result.stdout).strip()}")
             continue
@@ -418,6 +472,94 @@ fi
 
 def run_config_audit_checks() -> SSHResult | list[dict[str, str]]:
     result = run_remote_script(_CONFIG_AUDIT_SCRIPT)
+    if not result.ok:
+        return result
+
+    checks = []
+    for line in result.stdout.strip().splitlines():
+        cols = line.split("\t", 2)
+        if len(cols) != 3:
+            continue
+        check_id, status, detail = cols
+        checks.append({"check": check_id, "status": status, "detail": detail})
+    return checks
+
+
+# ---------------------------------------------------------------------------
+# Target setup probe (2026-07-18) -- read-only companion to
+# adapters/target_setup.py::generate_target_setup_checklist. Same trust
+# class as run_config_audit_checks above (status-only commands, nothing
+# mutates target state): confirms what a human actually accomplished by
+# running the checklist's commands, rather than Kratos silently discovering
+# a missing capability mid-investigation. Deliberately one round trip (one
+# script, like _CONFIG_AUDIT_SCRIPT) instead of one SSH call per check --
+# each real SSH connection setup has real, measurable latency, and this
+# runs synchronously in the middle of a REPL command, not the background.
+# ---------------------------------------------------------------------------
+_TARGET_PROBE_SCRIPT = r"""
+printf 'ssh_reachable\tPASS\tConnected as %s\n' "$(whoami)"
+
+if groups | tr ' ' '\n' | grep -qx systemd-journal; then
+  printf 'journalctl_access\tPASS\tIn systemd-journal group -- no sudo needed for journalctl\n'
+elif sudo -n journalctl -n 1 >/dev/null 2>&1; then
+  printf 'journalctl_access\tPASS\tsudo -n journalctl works\n'
+else
+  printf 'journalctl_access\tFAIL\tNeither systemd-journal group membership nor sudo -n journalctl works -- read_journalctl will silently miss privileged entries\n'
+fi
+
+if sudo -n sshd -T >/dev/null 2>&1; then
+  printf 'sudo_sshd_config\tPASS\tsudo -n sshd -T works\n'
+else
+  printf 'sudo_sshd_config\tFAIL\tsudo -n sshd -T not permitted -- run_config_audit will report ssh_root_login/ssh_password_auth as UNKNOWN\n'
+fi
+
+if sudo -n ufw status >/dev/null 2>&1 || sudo -n nft list ruleset >/dev/null 2>&1 || sudo -n iptables -L -n >/dev/null 2>&1; then
+  printf 'sudo_firewall_status\tPASS\tPasswordless sudo works for the installed firewall tool\n'
+else
+  printf 'sudo_firewall_status\tFAIL\tNo passwordless sudo for ufw/nft/iptables status -- run_config_audit will report firewall as UNKNOWN\n'
+fi
+
+if command -v fail2ban-client >/dev/null 2>&1; then
+  f2b_err=$(sudo -n fail2ban-client status 2>&1 >/dev/null)
+  f2b_rc=$?
+  if [ "$f2b_rc" -eq 0 ]; then
+    printf 'sudo_fail2ban\tPASS\tsudo -n fail2ban-client works\n'
+  elif printf '%s' "$f2b_err" | grep -qi 'password is required\|not allowed to run\|sorry, user'; then
+    printf 'sudo_fail2ban\tFAIL\tsudo -n fail2ban-client not permitted -- run_config_audit will report fail2ban_status incompletely\n'
+  else
+    printf 'sudo_fail2ban\tFAIL\tsudo -n fail2ban-client IS permitted, but the command itself failed (fail2ban service is likely installed but not running -- try: sudo systemctl enable --now fail2ban) -- run_config_audit will report fail2ban_status incompletely\n'
+  fi
+else
+  printf 'sudo_fail2ban\tUNKNOWN\tfail2ban-client not found on target\n'
+fi
+
+if command -v yara >/dev/null 2>&1; then
+  printf 'yara_installed\tPASS\tyara found on target\n'
+else
+  printf 'yara_installed\tFAIL\tyara not installed -- run_yara_scan will fail\n'
+fi
+
+if command -v lsof >/dev/null 2>&1; then
+  printf 'lsof_installed\tPASS\tlsof found on target\n'
+else
+  printf 'lsof_installed\tFAIL\tlsof not installed -- list_open_files will fail\n'
+fi
+"""
+
+
+def run_target_probe_checks() -> SSHResult | list[dict[str, str]]:
+    """Read-only capability check for the CURRENTLY ACTIVE target (resolved
+    via get_active_target(), same chokepoint as every other fetcher in this
+    file -- no separate target parameter needed). Returns SSHResult on
+    connection failure (target unreachable at all -- port 22 blocked, wrong
+    host, etc.), else a list of {check, status, detail} dicts, same shape as
+    run_config_audit_checks. Note the fail2ban `ignoreip` requirement from
+    adapters/target_setup.py's checklist is NOT checked here -- verifying it
+    needs guessing a jail name and adds fragility for one line of a larger
+    checklist; left as a manual step, called out with extra emphasis in the
+    checklist text itself given it's a real, previously-hit failure mode
+    (Kratos's own SSH traffic getting itself banned mid-investigation)."""
+    result = run_remote_script(_TARGET_PROBE_SCRIPT)
     if not result.ok:
         return result
 

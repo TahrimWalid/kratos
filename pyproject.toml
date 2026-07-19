@@ -16,6 +16,8 @@ dependencies = [
     "pydantic-settings",
     "starlette-context",
     "python-dotenv",
+    "rich",
+    "prompt_toolkit",
 ]
 
 [project.optional-dependencies]

@@ -56,12 +56,12 @@ else, and could in principle disagree with Part A's own AST-based answer.
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from kratos.agent import console as _console
 from kratos.agent.tools import request_approval
 from kratos.agent.self_test import SandboxTestResult
 from kratos.agent.self_review_flags import scan_review_flags, format_review_flags_for_display
@@ -253,7 +253,7 @@ def _prompt_for_keep_decision(
     approved = request_approval(f"KEEP CANDIDATE: {label}", details)
 
     if not approved:
-        print(f"[KRATOS-SELF-APPROVE] DENIED -- candidate not kept: {candidate_path}", file=sys.stderr)
+        _console.render_note(_console.get_stderr_console(), f"DENIED -- candidate not kept: {candidate_path}")
         return KeepDecision(
             candidate_path=candidate_path, tool_name=tool_name, approved=False,
             requires_approval=True, approved_at=decided_at, refused=False,
@@ -261,10 +261,9 @@ def _prompt_for_keep_decision(
         )
 
     requires_approval = _ask_requires_approval(label)
-    print(
-        f"[KRATOS-SELF-APPROVE] APPROVED -- candidate kept: {candidate_path} "
-        f"(requires_approval={requires_approval})",
-        file=sys.stderr,
+    _console.render_success(
+        _console.get_stderr_console(),
+        f"APPROVED -- candidate kept: {candidate_path} (requires_approval={requires_approval})",
     )
     return KeepDecision(
         candidate_path=candidate_path, tool_name=tool_name, approved=True,
@@ -300,7 +299,7 @@ def request_keep_approval(
 
     reason = _refusal_reason(test_result)
     if reason is not None:
-        print(f"[KRATOS-SELF-APPROVE] REFUSED (no approval prompt offered) -- {reason}", file=sys.stderr)
+        _console.render_error(_console.get_stderr_console(), f"REFUSED (no approval prompt offered) -- {reason}")
         return KeepDecision(
             candidate_path=candidate_path, tool_name=tool_name, approved=False,
             requires_approval=True, approved_at=decided_at, refused=True, refusal_reason=reason,
@@ -322,10 +321,10 @@ def request_keep_approval(
     try:
         return _prompt_for_keep_decision(candidate_path, tool_name, test_result, attempt_history, decided_at)
     except (KeyboardInterrupt, EOFError) as e:
-        print(
-            f"[KRATOS-SELF-APPROVE] DENIED -- interrupted ({type(e).__name__}) before or during the "
-            "approval prompt -- fail-safe: treating as a clean denial, nothing persisted.",
-            file=sys.stderr,
+        _console.render_note(
+            _console.get_stderr_console(),
+            f"DENIED -- interrupted ({type(e).__name__}) before or during the approval prompt -- "
+            "fail-safe: treating as a clean denial, nothing persisted.",
         )
         return KeepDecision(
             candidate_path=candidate_path, tool_name=tool_name, approved=False,

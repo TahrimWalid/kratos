@@ -88,6 +88,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from kratos.agent import console as _console
 from kratos.agent.self_write import write_candidate_tool, WriteRequest, WriteResult
 from kratos.agent.self_test import run_sandbox_test, SandboxTestResult
 from kratos.agent.self_approve import request_keep_approval, KeepDecision, AttemptRecord
@@ -293,10 +294,10 @@ def _persist_kept_tool(keep_decision: KeepDecision, kept_tools_dir: Path = KEPT_
 
         _write_metadata(kept_tools_dir, keep_decision.tool_name, dest, keep_decision.requires_approval)
 
-    print(
-        f"[KRATOS-SELF-WRITE-LOOP] PERSISTED -- '{keep_decision.tool_name}' is now live in "
-        f"TOOL_REGISTRY (requires_approval={keep_decision.requires_approval}), source at {dest}",
-        file=sys.stderr,
+    _console.render_success(
+        _console.get_stderr_console(),
+        f"PERSISTED -- '{keep_decision.tool_name}' is now live in TOOL_REGISTRY "
+        f"(requires_approval={keep_decision.requires_approval}), source at {dest}",
     )
     return dest
 
@@ -405,10 +406,10 @@ def run_self_write_loop(request: WriteRequest, max_attempts: int = MAX_ATTEMPTS)
                 write_result.staging_path, write_result.tool_name, test_result, attempt_history,
             )
             if not keep_decision.approved:
-                print(
-                    f"[KRATOS-SELF-WRITE-LOOP] NOT APPROVED (refused={keep_decision.refused}) -- "
+                _console.render_note(
+                    _console.get_stderr_console(),
+                    f"NOT APPROVED (refused={keep_decision.refused}) -- "
                     "nothing persisted, candidate remains in sandbox_staging/ only.",
-                    file=sys.stderr,
                 )
                 return LoopOutcome(status="denied", keep_decision=keep_decision, attempt_history=attempt_history)
 

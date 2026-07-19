@@ -7,8 +7,10 @@ backend (SSH target details, ntfy topic).
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -47,6 +49,96 @@ SSH_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_COMMAND_TIMEOUT", "
 # message instead of the previous generic/misleading SSH_COMMAND_TIMEOUT
 # error, per CLAUDE.md's Sprint 2 closing regression findings (2026-07-14).
 YARA_SCAN_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_YARA_SCAN_TIMEOUT", "180"))
+
+# journalctl access mode (2026-07-18) -- see adapters/target_setup.py for the
+# full target-onboarding checklist this feeds into. Default True preserves
+# the original, always-worked `sudo -n journalctl` path unconditionally --
+# zero regression risk for any target set up before this flag existed. Set
+# to "0" only after confirming (via the target-setup probe,
+# adapters/ssh_remote.py::run_target_probe_checks) that the SSH user is
+# really in the target's systemd-journal group -- that group grants
+# journal-read access without sudo at all, a smaller blast radius than
+# passwordless sudo if the SSH key ever leaks (group membership can only
+# ever grant read access, never a path to root). Sudo still works fine even
+# if the user is ALSO in that group, so this flag is purely a preference,
+# never a requirement -- both mechanisms are supported indefinitely, not
+# one deprecating the other.
+JOURNALCTL_USE_SUDO = os.environ.get("KRATOS_JOURNALCTL_USE_SUDO", "1") == "1"
+
+# ---------------------------------------------------------------------------
+# Active target override -- session-lifetime, in-process only, never
+# persisted by itself. Fixes a real bug (2026-07-16): the REPL's `/target`
+# command used to only store/display a value in session_state and the
+# session DB, while every SSH-based tool (via adapters/ssh_remote.py) and
+# run_nmap_scan/run_vuln_scan kept reading the frozen SSH_TARGET_HOST above
+# regardless. get_active_target() is now the single chokepoint every
+# target-facing tool resolves its host through -- SSH_TARGET_HOST remains
+# the unconditional fallback (and the unchanged, only value non-REPL entry
+# points like `kratos investigate`/`kratos scan` ever see, no regression for
+# the common case).
+#
+# Why a mutable module global, not an explicit parameter threaded through
+# run_agent()/execute_tool_call(): audited every target-facing tool
+# (2026-07-16) -- run_nmap_scan/run_vuln_scan already accept their own
+# `target` argument, but read_journalctl/list_open_files/list_processes/
+# check_file_integrity/run_config_audit/run_yara_scan have NO target
+# parameter at all today; they all reach the target exclusively through
+# ssh_remote.py's target_label()/_base_ssh_argv(). Threading an explicit
+# override through every one of those signatures plus run_agent()/
+# execute_tool_call() would touch ~8 call chains for equivalent behavior.
+# Fixing ssh_remote.py's own resolution point instead (see that module)
+# covers all of them through the ONE existing shared chokepoint they already
+# funnel through -- a scoped, session-lifetime config override, per the
+# task's own documented fallback. Safe under this architecture because each
+# `kratos` process runs exactly one REPL session serially (never multiple
+# concurrent investigations in one process) -- this mutable state has zero
+# visibility across separate `kratos` processes, so it cannot leak into the
+# already-concurrency-tested session DB or interact with it in any way.
+# ---------------------------------------------------------------------------
+_active_target_override: str | None = None
+
+
+def get_active_target() -> str:
+    return _active_target_override or SSH_TARGET_HOST
+
+
+def set_active_target(host: str | None) -> None:
+    global _active_target_override
+    _active_target_override = host
+
+
+# ---------------------------------------------------------------------------
+# Directory-scoped local config -- first-run trust record + persisted
+# default target (Sprint 3, 2026-07-16). One JSON file under the resolved
+# data_dir (already the existing per-installation persistent storage
+# location -- the session DB lives next to it), not a second, disconnected
+# persistence scheme. The persisted "default_target" is what seeds
+# get_active_target() above at REPL startup (see cli/repl.py::run_session)
+# -- /target then overrides it further for the rest of that session, same
+# mechanism, not a competing one.
+# ---------------------------------------------------------------------------
+_LOCAL_CONFIG_FILENAME = "kratos_local_config.json"
+
+
+def _local_config_path(data_dir: Path) -> Path:
+    return data_dir / _LOCAL_CONFIG_FILENAME
+
+
+def load_local_config(data_dir: Path) -> dict:
+    path = _local_config_path(data_dir)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_local_config(data_dir: Path, **updates: Any) -> None:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    config = load_local_config(data_dir)
+    config.update(updates)
+    _local_config_path(data_dir).write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 # ---------------------------------------------------------------------------
 # Notifications (ntfy.sh)

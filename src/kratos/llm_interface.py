@@ -15,7 +15,6 @@ except ImportError:
 
 from kratos.llm_config import (
     MODEL_PATH,
-    LLM_BACKEND,
     LLAMA_SERVER_HOST,
     LLAMA_SERVER_PORT,
     LLAMA_SERVER_URL,
@@ -38,9 +37,10 @@ from kratos.llm_config import (
     MSG_READY,
     MSG_THINKING,
     MSG_NO_MODEL,
-    LLM_OPENAI_BASE_URL,
-    LLM_OPENAI_API_KEY,
-    LLM_OPENAI_MODEL,
+    get_active_llm_base_url,
+    get_active_llm_api_key,
+    get_active_llm_model,
+    get_active_llm_backend,
 )
 from kratos.utils.redact import redact_secrets
 
@@ -64,18 +64,57 @@ def _running_backend() -> Optional[str]:
     return None
 
 
+def check_endpoint_reachable(base_url: str, api_key: str, timeout: float = 3) -> tuple[bool, Optional[str]]:
+    """Real reachability probe for an OpenAI-compatible /models endpoint --
+    generalized (2026-07-18) from what used to be _is_openai_compatible_running's
+    own inline logic, so cli/repl.py's /model can probe a CANDIDATE profile
+    BEFORE switching to it, not just whatever's already active. Returns
+    (reachable, detail) -- detail is None on success, a short human-
+    readable reason on failure (status code / timeout / connection error),
+    never a raw exception dump (redacted the same way
+    _query_openai_compatible's own error path already is, since a raw dump
+    could otherwise embed the key).
+
+    Sends the same Authorization header _query_openai_compatible's real
+    call uses -- real bug, not hypothetical (found live, 2026-07-16): a
+    profile pointed at Gemini with a real, working key (confirmed directly
+    via curl: an authenticated GET to this exact endpoint returns 200) still
+    failed here, because this probe sent no auth header at all and Gemini's
+    endpoint returns 404 (not a timeout, not 401/403) for an unauthenticated
+    /models request -- so agent_chat/analyze_findings concluded "unreachable"
+    and never even attempted the real, would-have-succeeded query. Harmless
+    for local Ollama (no auth required there), which is why this went
+    unnoticed until a real cloud profile was actually exercised end-to-end.
+    """
+    if requests is None:
+        return False, "the `requests` package is not installed"
+    try:
+        resp = requests.get(
+            f"{base_url.rstrip('/')}/models",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            return True, None
+        return False, f"HTTP {resp.status_code}"
+    except requests.exceptions.Timeout:
+        return False, f"timed out after {timeout}s"
+    except requests.exceptions.ConnectionError:
+        return False, "connection refused/unreachable"
+    except Exception as e:
+        return False, redact_secrets(str(e), api_key)
+
+
 def _is_openai_compatible_running() -> bool:
     """Same check as _is_llama_server_running, generalized to whatever
     endpoint LLM_BASE_URL points at (local Ollama by default, or anything
     else) -- Ollama, like llama.cpp's own server, implements the OpenAI
-    /models list endpoint alongside its native API."""
-    if requests is None:
-        return False
-    try:
-        resp = requests.get(f"{LLM_OPENAI_BASE_URL.rstrip('/')}/models", timeout=1)
-        return resp.status_code == 200
-    except Exception:
-        return False
+    /models list endpoint alongside its native API. Thin wrapper around
+    check_endpoint_reachable, always against the CURRENTLY ACTIVE profile
+    -- see that function's own docstring for the real-bug history behind
+    the auth header."""
+    reachable, _ = check_endpoint_reachable(get_active_llm_base_url(), get_active_llm_api_key())
+    return reachable
 
 
 def _local_model_ready() -> bool:
@@ -83,7 +122,7 @@ def _local_model_ready() -> bool:
 
 
 def _resolved_backend() -> str:
-    backend = (LLM_BACKEND or "auto").strip().lower()
+    backend = (get_active_llm_backend() or "auto").strip().lower()
     if backend in {"llama_cpp", "openai_compatible"}:
         return backend
     if _local_model_ready():
@@ -99,7 +138,7 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
         resp = requests.post(
             f"{LLAMA_SERVER_URL}/v1/chat/completions",
             json={
-                "model": "qwen2.5-coder",
+                "model": MODEL_PATH.stem,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": prompt},
@@ -118,6 +157,69 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
         return None
 
 
+# Retry/backoff for transient failures only (2026-07-16, real A/B test
+# finding -- see docs/history for the interleaved-payload-size test that
+# found this): a single 503/429/connection blip used to kill the entire
+# call with zero resilience, and large system prompts (e.g. the ~4,200-token
+# investigate prompt vs. a ~170-token routing prompt) were confirmed
+# empirically far more likely to hit one -- consistent with provider-side
+# load-shedding of the more expensive request, not random flakiness. This
+# is NOT backend-specific: the same one-shot-no-retry gap exists for the
+# local Ollama path too, it's just far less likely to hit a transient
+# connection error there in practice.
+#
+# 3 total attempts (initial + 2 retries): matches this project's existing
+# retry-budget convention elsewhere (self_write_loop's MAX_ATTEMPTS=3,
+# agent/loop.py's guard retries ~2x) rather than picking a new number --
+# enough to ride out a single transient blip without materially extending
+# a genuinely-down backend's failure latency. Short fixed backoff (1s, 2s)
+# between attempts -- long enough to not hammer an already-loaded endpoint,
+# short enough not to meaningfully add to real per-call latency (already
+# tens of seconds) on the common single-retry-then-succeeds case.
+_MAX_LLM_ATTEMPTS = 3
+_LLM_RETRY_BACKOFF_SECONDS = (1, 2)
+_RETRYABLE_HTTP_STATUS_CODES = {429, 503}
+
+
+def _describe_retryable_error(exc: Exception) -> str:
+    if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "timeout"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "connection error"
+    return type(exc).__name__
+
+
+def _is_retryable_llm_error(exc: Exception) -> bool:
+    if isinstance(exc, requests.exceptions.HTTPError):
+        status = exc.response.status_code if exc.response is not None else None
+        return status in _RETRYABLE_HTTP_STATUS_CODES
+    # Connection-level errors (refused/reset/DNS) and timeouts are always
+    # transient by nature -- retrying is the whole point. Anything else
+    # (JSON decode errors, KeyError on a malformed 200 body, etc.) is left
+    # non-retryable: a malformed response isn't fixed by asking again, and
+    # retrying it would just add latency to a real error, same as a 4xx.
+    return isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout))
+
+
+def _render_retry_note(attempt: int, exc: Exception) -> None:
+    """Visible, dim retry status via the shared console renderer -- retries
+    must never be silent (2026-07-16 requirement). Lazy import: avoids any
+    module-load-order assumption between llm_interface.py and agent/console.py,
+    and this path only runs on the (uncommon) retry case."""
+    try:
+        from kratos.agent import console as _console
+
+        _console.render_note(
+            _console.get_console(),
+            f"LLM call failed ({_describe_retryable_error(exc)}) -- "
+            f"retrying ({attempt + 1}/{_MAX_LLM_ATTEMPTS})...",
+        )
+    except Exception:
+        pass
+
+
 def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -> Optional[str]:
     """
     Query LLM_OPENAI_BASE_URL, the one real query mechanism (2026-07-15) --
@@ -126,10 +228,19 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
     replaced a separate Ollama-native /api/chat code path -- Ollama already
     speaks this same OpenAI-compatible API, so there is now exactly one
     query mechanism regardless of which endpoint LLM_BASE_URL points at.
+
+    Retries transient failures (HTTP 429/503, connection errors, timeouts)
+    up to _MAX_LLM_ATTEMPTS total attempts with a short fixed backoff --
+    see _MAX_LLM_ATTEMPTS's own comment for why. Non-transient errors (4xx
+    other than 429, a malformed response body) fail on the first attempt,
+    unchanged from before.
     """
     if requests is None:
         return None
-    if not (LLM_OPENAI_BASE_URL and LLM_OPENAI_API_KEY and LLM_OPENAI_MODEL):
+    base_url = get_active_llm_base_url()
+    api_key = get_active_llm_api_key()
+    model = get_active_llm_model()
+    if not (base_url and api_key and model):
         print(
             "[KRATOS-LLM] LLM_BASE_URL/LLM_API_KEY/LLM_MODEL are not all set (check .env) -- "
             "these have defaults pointing at a local Ollama server, so this normally only "
@@ -137,60 +248,69 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
             file=sys.stderr,
         )
         return None
-    try:
-        resp = requests.post(
-            f"{LLM_OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-            headers={"Authorization": f"Bearer {LLM_OPENAI_API_KEY}"},
-            json={
-                "model": LLM_OPENAI_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": max_tokens,
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        resp.raise_for_status()
-        choice = resp.json()["choices"][0]
-        content = choice.get("message", {}).get("content")
-        if content is None:
-            # Confirmed real failure mode (Phase 3b.3, originally found
-            # against Gemini 2.5 Pro but applies to any reasoning-capable
-            # model behind this same endpoint): a reasoning model can spend
-            # its entire max_tokens budget on hidden "thinking" tokens
-            # before producing any visible output -- HTTP 200,
-            # finish_reason="length", completion_tokens=0, and a message
-            # dict with no "content" key at all. Left unhandled, the
-            # dict-index access above raised a bare `KeyError: 'content'`
-            # that gave no indication WHY -- indistinguishable from a real
-            # network/API failure. Surface the actual cause instead.
-            finish_reason = choice.get("finish_reason")
-            if finish_reason == "length":
-                print(
-                    "[KRATOS-LLM] openai_compatible query error: generation truncated by "
-                    f"max_tokens (max_tokens={max_tokens}) -- no output produced, likely because "
-                    "hidden reasoning tokens consumed the entire budget. Consider raising "
-                    "KRATOS_LLM_MAX_TOKENS.",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    f"[KRATOS-LLM] openai_compatible query error: response had no content "
-                    f"(finish_reason={finish_reason!r}) -- raw message: {choice.get('message')}",
-                    file=sys.stderr,
-                )
+
+    for attempt in range(_MAX_LLM_ATTEMPTS):
+        try:
+            resp = requests.post(
+                f"{base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "max_tokens": max_tokens,
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            choice = resp.json()["choices"][0]
+            content = choice.get("message", {}).get("content")
+            if content is None:
+                # Confirmed real failure mode (Phase 3b.3, originally found
+                # against Gemini 2.5 Pro but applies to any reasoning-capable
+                # model behind this same endpoint): a reasoning model can spend
+                # its entire max_tokens budget on hidden "thinking" tokens
+                # before producing any visible output -- HTTP 200,
+                # finish_reason="length", completion_tokens=0, and a message
+                # dict with no "content" key at all. Left unhandled, the
+                # dict-index access above raised a bare `KeyError: 'content'`
+                # that gave no indication WHY -- indistinguishable from a real
+                # network/API failure. Surface the actual cause instead.
+                # Not retried -- a real 200 response, retrying the identical
+                # request would very likely burn the budget the same way again.
+                finish_reason = choice.get("finish_reason")
+                if finish_reason == "length":
+                    print(
+                        "[KRATOS-LLM] openai_compatible query error: generation truncated by "
+                        f"max_tokens (max_tokens={max_tokens}) -- no output produced, likely because "
+                        "hidden reasoning tokens consumed the entire budget. Consider raising "
+                        "KRATOS_LLM_MAX_TOKENS.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"[KRATOS-LLM] openai_compatible query error: response had no content "
+                        f"(finish_reason={finish_reason!r}) -- raw message: {choice.get('message')}",
+                        file=sys.stderr,
+                    )
+                return None
+            return content.strip()
+        except Exception as e:
+            if _is_retryable_llm_error(e) and attempt < _MAX_LLM_ATTEMPTS - 1:
+                _render_retry_note(attempt, e)
+                time.sleep(_LLM_RETRY_BACKOFF_SECONDS[attempt])
+                continue
+            # Explicit redaction guard, not a reaction to a confirmed leak --
+            # real testing (ConnectionError/HTTPError/Timeout/JSONDecodeError,
+            # the realistic failure modes here) found requests's own exception
+            # __str__ methods don't currently embed the Authorization header.
+            # Applied anyway so a future exception type or a raw
+            # request/response dump can't silently reintroduce a real one.
+            print(f"[KRATOS-LLM] openai_compatible query error: {redact_secrets(str(e), api_key)}", file=sys.stderr)
             return None
-        return content.strip()
-    except Exception as e:
-        # Explicit redaction guard, not a reaction to a confirmed leak --
-        # real testing (ConnectionError/HTTPError/Timeout/JSONDecodeError,
-        # the realistic failure modes here) found requests's own exception
-        # __str__ methods don't currently embed the Authorization header.
-        # Applied anyway so a future exception type or a raw
-        # request/response dump can't silently reintroduce a real one.
-        print(f"[KRATOS-LLM] openai_compatible query error: {redact_secrets(str(e), LLM_OPENAI_API_KEY)}", file=sys.stderr)
-        return None
+    return None
 
 
 class LLMServer:
@@ -212,7 +332,7 @@ class LLMServer:
             # for a local GGUF file. Surface a clear, actionable error
             # instead of silently trying something else.
             print(
-                f"[KRATOS-LLM] No OpenAI-compatible endpoint reachable at {LLM_OPENAI_BASE_URL}. "
+                f"[KRATOS-LLM] No OpenAI-compatible endpoint reachable at {get_active_llm_base_url()}. "
                 "If this should be a local Ollama server, start it with `kratos llm-serve` "
                 "(or `ollama serve` directly) and check LLM_BASE_URL matches where it's "
                 "listening.",
@@ -317,7 +437,15 @@ def agent_chat(
     """
     running_backend = _running_backend()
     if running_backend is not None:
-        print("[KRATOS-LLM] Using running LLM server (fast path)...", file=sys.stderr)
+        # Sprint 3 UI polish (2026-07-16): this used to print
+        # "[KRATOS-LLM] Using running LLM server (fast path)..." on every
+        # single call -- redundant noise once per investigate-loop iteration
+        # (cmd_investigate's own "Kratos is working..." spinner already
+        # signals this) and equally redundant for self_write.py's write
+        # step (an internal "which code path" detail, not something a
+        # human reviewing a self-write run needs repeated). Removed here
+        # only -- analyze_findings's identical line (used by `kratos chat`,
+        # out of Sprint 3's CLI-overhaul scope) is untouched.
         if running_backend == "openai_compatible":
             # Reasoning-capable models behind this endpoint (e.g. Gemini 2.5
             # Pro) spend hidden "thinking" tokens out of the same max_tokens

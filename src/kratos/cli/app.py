@@ -1,8 +1,12 @@
 import argparse
+import os
 import sys
 import json
 import shutil
+import time
 from pathlib import Path
+from rich.panel import Panel
+from rich.table import Table
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
 
@@ -30,6 +34,9 @@ from kratos.llm_config import MAX_TOKENS_QUESTION
 from kratos.storage.anomaly_store import AnomalyStore
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.self_write_loop import load_kept_tools
+from kratos.agent import console as _console
+from kratos.kratos_config import SSH_TARGET_HOST
+from kratos.llm_config import LLM_OPENAI_MODEL
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = Path("data")
@@ -744,30 +751,43 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     (see agent/loop.py, agent/tools.py) instead of running the fixed
     scan -> logs -> context -> findings pipeline that `kratos run` uses.
     Reuses the exact same adapters as the other subcommands, unmodified.
+
+    Sprint 3 Phase 2 (CLI overhaul): output rendering only, via
+    agent/console.py -- run_agent()'s own decisions, transcript shape, and
+    on_step() callback timing are unchanged (see console.py's module
+    docstring for why no live per-tool spinner is possible without touching
+    agent/loop.py, which is explicitly out of scope for this phase).
     """
     goal = args.goal
     max_iters = args.max_iters if args.max_iters is not None else DEFAULT_MAX_ITERS
 
-    print(f"[KRATOS-AGENT] Investigation goal: {goal}")
-    print(f"[KRATOS-AGENT] Max iterations: {max_iters}")
-    print("=" * 70, flush=True)
+    console = _console.get_console()
+    backend_label = LLM_OPENAI_MODEL
+    _console.render_session_header(console, goal=goal, max_iters=max_iters, ssh_target=SSH_TARGET_HOST, backend=backend_label)
+
+    session_events: list[str] = []
+    findings_count = 0
+    live = _console.thinking_spinner(console)
 
     def _print_step(step: dict) -> None:
+        nonlocal findings_count
+        live.stop()
         iteration = step.get("iteration")
 
         if step.get("status") == "llm_unavailable":
-            print(f"\n[KRATOS-AGENT] Iteration {iteration}: LLM unavailable, aborting.", flush=True)
+            _console.render_error(console, f"Step {iteration}: could not reach the language model backend -- stopping.")
+            session_events.append(f"Step {iteration}: LLM unavailable, investigation aborted")
             return
 
         if step.get("status") == "parse_error":
-            print(f"\n[KRATOS-AGENT] Iteration {iteration}: model response was not valid JSON -- asking it to retry.", flush=True)
+            _console.render_note(console, f"Step {iteration}: the model's response wasn't understood -- asking it to try again.")
             return
 
         if step.get("status") == "final_iteration_tool_call_ignored":
-            print(
-                f"\n[KRATOS-AGENT] Iteration {iteration}: tried to call '{step.get('attempted_tool')}' on the "
-                "final iteration -- not executed, synthesizing a fallback answer instead.",
-                flush=True,
+            _console.render_note(
+                console,
+                f"Step {iteration}: ran out of steps while the model was still trying to use "
+                f"'{step.get('attempted_tool')}' -- wrapping up with a best-effort answer instead.",
             )
             return
 
@@ -777,58 +797,84 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             # contradiction) -- agent/loop.py now combines all co-firing guards
             # into a single rejection + retry rather than one per guard.
             violation_labels = {
-                "missing_correlation": "did not call correlate_findings",
-                "file_integrity_contradiction": "contradicted check_file_integrity's actual result",
-                "dismissive_verdict_contradiction": "dismissive verdict contradicted a real HIGH/CRITICAL finding",
+                "missing_correlation": "did not run the correlation engine before concluding",
+                "file_integrity_contradiction": "contradicted the file-integrity check's actual result",
+                "dismissive_verdict_contradiction": "dismissive verdict contradicted a real high-severity finding",
             }
             violations = step.get("violations", [])
-            reasons = "; ".join(violation_labels.get(v, v) for v in violations)
-            print(
-                f"\n[KRATOS-AGENT] Iteration {iteration}: final answer rejected ({reasons}) "
-                "-- forcing it to reconsider.",
-                flush=True,
+            reasons = [violation_labels.get(v, v) for v in violations]
+            body = (
+                "Kratos's own draft answer needed a second look before it could be trusted:\n"
+                + "\n".join(f"  - {r}" for r in reasons)
+                + f"\n\nReasoning given: {step.get('reasoning', '')}"
+                + f"\nAttempted answer: {step.get('attempted_final_answer', '')}"
             )
-            print(f"  Reasoning          : {step.get('reasoning', '')}", flush=True)
-            print(f"  Attempted answer   : {step.get('attempted_final_answer', '')}", flush=True)
+            _console.render_result_panel(console, f"Step {iteration}: answer sent back for reconsideration", body, "yellow")
+            session_events.append(f"Step {iteration}: draft answer rejected ({'; '.join(reasons)})")
             return
 
         if "final_answer" in step:
-            print(f"\n[KRATOS-AGENT] Iteration {iteration} -- concluding", flush=True)
-            print(f"  Reasoning: {step.get('reasoning', '')}", flush=True)
+            console.print(f"[green]✓[/green] Step {iteration}: concluding -- {step.get('reasoning', '')}")
             return
 
-        obs_text = json.dumps(step.get("observation"), indent=2, default=str)
-        if len(obs_text) > 800:
-            obs_text = obs_text[:800] + f"\n  ...[truncated, {len(obs_text) - 800} more chars]"
+        tool_name = step.get("tool")
+        observation = step.get("observation")
+        tool_result, effective_status = _console.unwrap_tool_result(observation)
 
-        print(f"\n[KRATOS-AGENT] Iteration {iteration}", flush=True)
-        print(f"  Reasoning  : {step.get('reasoning', '')}", flush=True)
-        print(f"  Tool       : {step.get('tool')}", flush=True)
-        print(f"  Args       : {step.get('args')}", flush=True)
-        print(f"  Observation: {obs_text}", flush=True)
+        if effective_status == "error":
+            error_text = tool_result.get("observation") if isinstance(tool_result, dict) else None
+            _console.render_error(console, f"{tool_name} failed -- {error_text or 'no error detail available'}")
+            session_events.append(f"Step {iteration}: {tool_name} failed")
+        elif tool_name == "correlate_findings" and isinstance(tool_result, dict):
+            findings = tool_result.get("findings") or []
+            if findings:
+                console.print(f"[green]✓[/green] [bold]{tool_name}[/bold] -- {_console.plain_label(tool_name)} ({len(findings)} found)")
+                for finding in findings:
+                    _console.render_finding(console, finding)
+                    findings_count += 1
+                    session_events.append(f"Finding {finding.get('id', '?')} ({finding.get('severity', '?')}): {finding.get('title', '')}")
+            else:
+                _console.render_tool_call(console, tool_name, effective_status)
+                session_events.append(f"Step {iteration}: used {tool_name}")
+            _console.render_tool_metadata_notes(console, tool_result)
+        else:
+            _console.render_tool_call(console, tool_name, effective_status)
+            session_events.append(f"Step {iteration}: used {tool_name}")
 
-    result = run_agent(goal, args.data_dir, max_iters=max_iters, on_step=_print_step)
+    started_at = time.monotonic()
+    try:
+        result = run_agent(goal, args.data_dir, max_iters=max_iters, on_step=_print_step)
+    finally:
+        live.stop()
+    duration = time.monotonic() - started_at
 
-    print("\n" + "=" * 70, flush=True)
+    console.print()
     if result["status"] == "final_answer":
-        print("KRATOS INVESTIGATION -- FINAL ANSWER", flush=True)
-        print("=" * 70, flush=True)
-        print(result["final_answer"], flush=True)
+        _console.render_result_panel(console, "Investigation complete", result["final_answer"], "green")
+        console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
+        session_events.append("Investigation concluded with a final answer")
+        _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
         return 0
 
     if result["status"] == "llm_unavailable":
-        print("[KRATOS-AGENT] ERROR: LLM unavailable. Check `kratos llm-serve` / your model config.", flush=True)
+        _console.render_error(console, "Language model backend unavailable. Check `kratos llm-serve` / your model config.")
         return 2
 
     if result["status"] == "max_iters_reached" and result.get("final_answer"):
-        print("KRATOS INVESTIGATION -- INCOMPLETE (iteration limit reached)", flush=True)
-        print("=" * 70, flush=True)
-        print("The agent did not reach its own conclusion in time. Best-effort summary:", flush=True)
-        print(flush=True)
-        print(result["final_answer"], flush=True)
+        _console.render_result_panel(
+            console,
+            "Investigation incomplete (step limit reached)",
+            "The agent did not reach its own conclusion in time. Best-effort summary:\n\n" + result["final_answer"],
+            "yellow",
+        )
+        console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
+        session_events.append("Investigation stopped: step limit reached (best-effort answer shown)")
+        _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
         return 1
 
-    print(f"[KRATOS-AGENT] Investigation stopped: {result['status']} (no final answer reached).", flush=True)
+    _console.render_error(console, f"Investigation stopped: {result['status']} (no final answer reached).")
+    console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
+    _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
     return 1
 
 
@@ -842,6 +888,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_DATA_DIR,
         help="Directory for storing scans/logs/context/reports (default: ./data)",
+    )
+    p.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored/styled output (also honors the NO_COLOR env var). Affects "
+        "`kratos investigate` and its approval prompts only -- other subcommands' output is "
+        "unstyled plain text already.",
     )
 
     sub = p.add_subparsers(dest="command", required=True)
@@ -1026,8 +1079,163 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _subcommand_help_text(parser: argparse.ArgumentParser) -> dict[str, str]:
+    """Best-effort: name -> its `help=...` string, as passed to add_parser().
+    Reaches into argparse's own (undocumented but long-stable) internals
+    rather than re-typing every subcommand's help text a second time here,
+    which would drift. Falls back to an empty description per command if
+    argparse's internals ever change shape -- never raises."""
+    out: dict[str, str] = {}
+    try:
+        for action in parser._subparsers._group_actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for pseudo in action._choices_actions:
+                    out[pseudo.dest] = pseudo.help or ""
+    except AttributeError:
+        pass
+    return out
+
+
+# Sprint 3 (CLI --help sizing fix, 2026-07-16): the design doc's own exit
+# criterion #4 requires `kratos --help` to fit an 80x24 terminal without
+# scrolling. Listing all ~23 real subcommands in one table can't fit that
+# regardless of styling (confirmed: full-list render measured at 41 lines).
+# Resolution -- shrink the DEFAULT view to the commands a new, non-technical
+# user would actually reach for first, per the design doc's own "approachable
+# first-run experience" framing (not a complete reference crammed onto one
+# screen); the full list stays one flag away. Deliberately NOT the CLI-wide
+# Rich migration for the other subcommands' own runtime output -- that's a
+# separate, much larger, explicitly-deferred item (see CLAUDE.md backlog).
+PRIMARY_COMMANDS = ["investigate", "run", "chat", "findings-show", "scan"]
+
+
+def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = False) -> None:
+    """Sprint 3 Phase 2: Rich-formatted top-level --help only (design doc §6/
+    §7) -- every other subcommand's own `--help` output is untouched
+    argparse default formatting, per the Phase 2 scoping decision to limit
+    this overhaul to `investigate` + the shared approval gate."""
+    console = _console.get_console()
+    console.print(
+        Panel(
+            "Kratos analyzes system, network, and log data for security issues -- offline, "
+            "no cloud dependency by default.\n\n"
+            "Example:\n  kratos investigate \"check for suspicious SSH activity\"",
+            title="kratos -- Offline AI Security Assistant",
+            border_style="cyan",
+        )
+    )
+    all_help = _subcommand_help_text(parser)
+    shown = all_help if show_all else {k: v for k, v in all_help.items() if k in PRIMARY_COMMANDS}
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Command")
+    table.add_column("Description")
+    for name, help_text in shown.items():
+        # Curated view only: keep each row to one line (the full text is
+        # always one flag/subcommand-help away) -- the parenthetical detail
+        # on longer descriptions (e.g. investigate's "(experimental; does
+        # not replace...)") is exactly what's safe to trim here, not the
+        # core sentence.
+        if not show_all and len(help_text) > 60:
+            help_text = help_text.split(" (")[0].rstrip(".")
+            if len(help_text) > 60:
+                help_text = help_text[:57].rstrip() + "..."
+        table.add_row(name, help_text)
+    console.print(table)
+    if not show_all:
+        hidden_count = len(all_help) - len(shown)
+        console.print(f"\n...and {hidden_count} more. Run `kratos --help --all` to see every command.")
+    console.print(
+        "\nGlobal options: --data-dir PATH   --no-color   --resume SESSION_ID_OR_NAME   --continue/-c"
+    )
+    console.print("Run `kratos <command> --help` for command-specific options.\n")
+
+
+def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> None:
+    console = _console.get_console()
+    console.print(
+        Panel(
+            "Ask Kratos to investigate a goal in plain language -- it picks which of its "
+            "own tools to run, step by step, and asks for your approval before anything "
+            "that runs a command or escalates privilege.\n\n"
+            'Example:\n  kratos investigate "check for suspicious SSH activity"',
+            title="kratos investigate",
+            border_style="cyan",
+        )
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Argument")
+    table.add_column("Description")
+    table.add_row("goal", "Natural-language investigation goal (required)")
+    table.add_row("--max-iters N", f"Max agent steps before stopping (default: {DEFAULT_MAX_ITERS})")
+    table.add_row("--data-dir PATH", "Directory for storing scans/logs/context/reports (default: ./data)")
+    table.add_row("--no-color", "Disable colored/styled output")
+    console.print(table)
+    console.print()
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    no_color = "--no-color" in argv or bool(os.environ.get("NO_COLOR"))
+    _console.configure(no_color)
+
     parser = build_parser()
+
+    # Sprint 3 (interactive session mode): `kratos` with NO SUBCOMMAND
+    # (regardless of whether --data-dir/--no-color are also given) launches
+    # the REPL instead of falling through to argparse's own required=True
+    # error on the `command` subparser. Confirmed via a real Step 1 audit:
+    # `kratos --data-dir /foo` (no subcommand, but WITH a global flag) hits
+    # the exact same "the following arguments are required: command" error
+    # today as truly-bare `kratos` -- so the trigger has to be "no known
+    # subcommand token present", not "argv is literally empty", or
+    # `--data-dir`/`--no-color` alongside a bare invocation would still
+    # incorrectly error instead of launching the session. Also confirmed:
+    # help_requested (any(a in ("-h","--help") for a in argv)) is always
+    # False when argv is empty, so the OLD "len(argv) == 0" check nested
+    # inside the help_requested branch below was already dead code, never
+    # reachable for a genuinely bare invocation.
+    subcommand_names = set(_subcommand_help_text(parser).keys())
+    has_subcommand = any(a in subcommand_names for a in argv)
+    if not has_subcommand and not any(a in ("-h", "--help") for a in argv):
+        global_only_parser = argparse.ArgumentParser(add_help=False)
+        global_only_parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+        global_only_parser.add_argument("--no-color", action="store_true")
+        # Real fix (2026-07-18, real user report): `kratos --resume <id>`
+        # used to be a guessed, never-implemented flag -- parse_known_args
+        # above silently discarded it as an unrecognized extra, so it
+        # landed on the normal bare chooser with zero indication the flag
+        # itself did nothing. Now a real flag: threaded into run_session()
+        # (cli/repl.py) as a one-time "resolve this session by ID and skip
+        # straight to its [l]/[f] resume-tier prompt" instruction, reusing
+        # the exact same resolution path the chooser's own "type a session
+        # ID directly" support (also added 2026-07-18) uses.
+        global_only_parser.add_argument("--resume", dest="resume_session_id", default=None)
+        # --continue/-c (2026-07-18): jump straight to the most recently
+        # active session's [l]/[f] resume-tier prompt, no chooser table --
+        # same "skip the table, still ask the tier" behavior as --resume,
+        # for the common case where you don't need to name a specific
+        # session at all. See cli/repl.py::_resolve_continue_most_recent.
+        global_only_parser.add_argument(
+            "--continue", "-c", dest="continue_most_recent", action="store_true"
+        )
+        global_args, _unused = global_only_parser.parse_known_args(argv)
+        load_kept_tools()
+        from kratos.cli.repl import run_session
+        return run_session(global_args)
+
+    # Sprint 3 Phase 2: intercept the two --help forms this phase covers
+    # (bare top-level, and `investigate --help`) before argparse's own
+    # -h/--help handling would print+exit -- every other subcommand's
+    # --help falls through to parser.parse_args() below unchanged.
+    help_requested = any(a in ("-h", "--help") for a in argv)
+    if help_requested and (len(argv) == 0 or argv[0] in ("-h", "--help")):
+        _render_top_level_help(parser, show_all="--all" in argv)
+        return 0
+    if help_requested and "investigate" in argv:
+        investigate_parser = parser._subparsers._group_actions[0].choices["investigate"]
+        _render_investigate_help(investigate_parser)
+        return 0
+
     args = parser.parse_args(argv)
 
     args.data_dir.mkdir(parents=True, exist_ok=True)

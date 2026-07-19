@@ -29,7 +29,11 @@ from kratos.adapters.auth_log_parse import (
 )
 from kratos.adapters.auth_log_patterns import analyze_auth_patterns as _analyze_auth_patterns
 from kratos.adapters.findings_engine import write_findings_report as _write_findings_report
-from kratos.kratos_config import SSH_TARGET_HOST, THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED
+from kratos.kratos_config import (
+    THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED,
+    get_active_target,
+)
+from kratos.agent import console as _console
 from kratos.adapters.ssh_remote import (
     target_label as _ssh_target_label,
     fetch_journalctl_entries as _fetch_journalctl_entries,
@@ -123,17 +127,19 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     No TTY / interrupted input (EOFError, KeyboardInterrupt) is treated as an
     explicit denial -- fail-safe by design, not by accidental exception
     propagation into a caller's generic except clause.
+
+    Sprint 3 Phase 2 (CLI overhaul): the print block immediately below and
+    the input() prompt string are the ONLY things that changed here --
+    rendering now goes through agent/console.py::render_approval_situation,
+    the single shared presentation path for every approval gate (self-write
+    keep, run_linux_command, capture_traffic, live threat-intel, vulscan
+    staleness). Still blocks on the same input(), still no force-accept
+    fallback, still the same EOFError/KeyboardInterrupt -> denial handling.
     """
-    print("\n" + "=" * 70)
-    print("[KRATOS-AGENT] APPROVAL REQUIRED")
-    print("=" * 70)
-    print(f"Tool    : {tool_name}")
-    for key, value in details.items():
-        print(f"{key.capitalize():8}: {value}")
-    print("=" * 70)
+    _console.render_approval_situation(_console.get_console(), tool_name, details)
 
     try:
-        decision = input("Approve execution? [y/N]: ").strip().lower()
+        decision = input(_console.approval_prompt_text()).strip().lower()
         approved = decision == "y"
     except (EOFError, KeyboardInterrupt):
         approved = False
@@ -158,12 +164,13 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
-        "target": {"type": "str", "description": "IP or hostname to scan", "default": SSH_TARGET_HOST},
+        "target": {"type": "str|null", "description": "IP or hostname to scan. Defaults to the configured/active SSH target.", "default": None},
     },
 )
-def tool_run_nmap_scan(data_dir: Path, target: str = SSH_TARGET_HOST) -> dict[str, Any]:
+def tool_run_nmap_scan(data_dir: Path, target: str | None = None) -> dict[str, Any]:
     data_dir = Path(data_dir)
-    out_xml = _run_nmap_scan(data_dir, target)
+    resolved_target = target or get_active_target()
+    out_xml = _run_nmap_scan(data_dir, resolved_target)
     parsed = _parse_nmap_xml_to_dict(out_xml)
     out_json = _write_parsed_json(data_dir, parsed)
 
@@ -171,7 +178,7 @@ def tool_run_nmap_scan(data_dir: Path, target: str = SSH_TARGET_HOST) -> dict[st
     return {
         "xml_file": str(out_xml),
         "parsed_json_file": str(out_json),
-        "target": target,
+        "target": resolved_target,
         "host_count": len(hosts),
         "open_ports_total": sum(len(h.get("open_ports", [])) for h in hosts),
     }
@@ -289,18 +296,38 @@ def tool_parse_auth_log(
         "etc) into concrete, ranked findings -- relevant once you've gathered enough evidence "
         "across the categories that matter for this goal, typically as a later step, not a "
         "substitute for collecting network/auth/system-state data in the first place. "
-        "Automatically picks up the latest file each collection tool wrote — you do not need to "
-        "pass any data inline. Only set the *_file args if you need to pin a specific file "
-        "instead of the latest one."
+        "Automatically picks up the latest file each collection tool wrote for every category, "
+        "including categories you never collected (it correlates whatever IS available and "
+        "leaves the rest out) -- always call this with NO arguments; there is nothing else to "
+        "fill in."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
-        "nmap_parsed_file": {"type": "path|null", "description": "Explicit parsed-Nmap JSON path (default: latest in data_dir/scans)", "default": None},
-        "auth_stats_file": {"type": "path|null", "description": "Explicit auth stats JSON path (default: latest in data_dir/logs)", "default": None},
-        "auth_patterns_file": {"type": "path|null", "description": "Explicit auth patterns JSON path (default: latest in data_dir/logs)", "default": None},
-        "system_context_file": {"type": "path|null", "description": "Explicit system context JSON path (default: latest in data_dir/context)", "default": None},
-        "auth_trends_file": {"type": "path|null", "description": "Explicit auth trends JSON path (optional)", "default": None},
-        "file_integrity_file": {"type": "path|null", "description": "Explicit file-integrity diff JSON path (default: latest in data_dir/baseline)", "default": None},
+        # Investigation, 2026-07-16: these 6 override params exist ONLY for
+        # a "pin one specific file instead of the latest" power-user case
+        # that the CLI's own pipeline (cmd_run/cmd_findings_generate)
+        # already serves by calling write_findings_report() directly,
+        # bypassing this tool wrapper entirely -- confirmed via grep, no
+        # other code path relies on the agent ever seeing them. The ReAct
+        # loop has no legitimate use for them (each collection tool writes
+        # exactly one fresh file per call, so "latest" already IS "the one
+        # I just made"), yet a real live run showed the model fabricating
+        # plausible-looking values for them anyway -- a pattern-completion
+        # hallucination off OTHER tools' real Observation filenames in the
+        # same conversation, not a missing-instruction problem (the
+        # description/RULES already said to omit them, three ways, before
+        # this fix). agent_hidden=True removes the affordance from
+        # render_tools_for_prompt()'s output instead of adding yet another
+        # "don't guess" instruction on top of ones already not working --
+        # the model now sees a tool with nothing to fill in at all. The
+        # real Python signature below, existence-check validation, and the
+        # CLI's own explicit-path usage are all completely unchanged.
+        "nmap_parsed_file": {"type": "path|null", "description": "Explicit parsed-Nmap JSON path (default: latest in data_dir/scans)", "default": None, "agent_hidden": True},
+        "auth_stats_file": {"type": "path|null", "description": "Explicit auth stats JSON path (default: latest in data_dir/logs)", "default": None, "agent_hidden": True},
+        "auth_patterns_file": {"type": "path|null", "description": "Explicit auth patterns JSON path (default: latest in data_dir/logs)", "default": None, "agent_hidden": True},
+        "system_context_file": {"type": "path|null", "description": "Explicit system context JSON path (default: latest in data_dir/context)", "default": None, "agent_hidden": True},
+        "auth_trends_file": {"type": "path|null", "description": "Explicit auth trends JSON path (optional)", "default": None, "agent_hidden": True},
+        "file_integrity_file": {"type": "path|null", "description": "Explicit file-integrity diff JSON path (default: latest in data_dir/baseline)", "default": None, "agent_hidden": True},
     },
 )
 def tool_correlate_findings(
@@ -361,12 +388,13 @@ def tool_correlate_findings(
         "inputs_used": report.get("inputs"),
         "missing_inputs": report.get("missing_inputs"),
         "input_errors": report.get("input_errors"),
+        "staleness_warning": report.get("staleness_warning"),
         "findings": findings,
         "count": len(findings),
     }
 
 
-def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
+def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = None) -> dict[str, Any]:
     """
     Fetches the target's sshd/sudo journal entries over SSH and persists
     them in the exact same events/stats/patterns file shape
@@ -377,8 +405,21 @@ def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
     rather than building a parallel one). Called unconditionally from
     tool_read_journalctl; kept as a standalone helper so a fetch failure
     here never blocks that tool's primary, model-requested query.
+
+    `since` (real fix, 2026-07-17): threaded straight from
+    tool_read_journalctl's own `since` arg into
+    fetch_journalctl_auth_entries, so a time-scoped goal ("last 24 hours")
+    actually produces time-scoped auth_stats/auth_patterns -- this used to
+    be a silent, always-unscoped ~500-line snapshot regardless of what the
+    model's primary query asked for, which is the real gap a live incident
+    surfaced (a confident "in the last 24 hours" answer built on data of
+    unknown real age). None (unstated goal) preserves prior behavior
+    exactly. Stamped onto stats['since'] too, so anything reading the
+    persisted auth_stats file later (e.g. findings_engine.py's evidence
+    text) can state plainly whether a given finding was actually time-
+    scoped or not, instead of silently implying it always is.
     """
-    entries, fetch_errors = _fetch_journalctl_auth_entries()
+    entries, fetch_errors = _fetch_journalctl_auth_entries(since=since)
     target = _ssh_target_label()
     events = [
         _classify_auth_message(ts, target, identifier, msg, msg)
@@ -387,6 +428,7 @@ def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
     ]
     stats = _compute_basic_stats(events)
     stats["source"] = f"ssh_target_journald:{target}"
+    stats["since"] = since
     if fetch_errors:
         stats["_fetch_errors"] = fetch_errors
 
@@ -406,6 +448,7 @@ def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
         "patterns_file": str(patterns_out),
         "auth_events_captured": len(events),
         "fetch_errors": fetch_errors,
+        "since": since,
     }
 
 
@@ -421,9 +464,10 @@ def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
         "will not show anything happening on the target). Also useful more broadly for "
         "unexpected service behavior, crashes, or activity tied to a specific unit. Returns "
         "structured entries: timestamp, unit, message, priority. Every call also fetches and "
-        "persists the target's sshd/sudo auth activity in the background (independent of the "
-        "unit/since/lines args) so correlate_findings can pick it up automatically -- no separate "
-        "tool call needed for that."
+        "persists the target's sshd/sudo auth activity in the background (using the same `since` "
+        "value as this call, if given -- independent only of `unit`/`lines`) so correlate_findings "
+        "can pick it up automatically, already scoped to the same time window -- no separate tool "
+        "call needed for that."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
@@ -434,7 +478,7 @@ def _persist_target_auth_correlation_data(data_dir: Path) -> dict[str, Any]:
 )
 def tool_read_journalctl(data_dir: Path, unit: str | None = None, since: str | None = None, lines: int = 200) -> dict[str, Any]:
     data_dir = Path(data_dir)
-    auth_correlation = _persist_target_auth_correlation_data(data_dir)
+    auth_correlation = _persist_target_auth_correlation_data(data_dir, since=since)
 
     result = _fetch_journalctl_entries(unit, since, lines)
     if isinstance(result, _SSHResult):
@@ -653,7 +697,7 @@ def tool_run_yara_scan(scan_path: str, rules_path: str | Path | None = None) -> 
 )
 def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: str | None = None) -> dict[str, Any]:
     data_dir = Path(data_dir)
-    resolved_target = target or SSH_TARGET_HOST
+    resolved_target = target or get_active_target()
     resolved_tags = nuclei_tags or _DEFAULT_NUCLEI_TAGS
 
     staleness = _check_vulscan_db_staleness()
@@ -882,12 +926,32 @@ def tool_run_linux_command(command: str, reason: str) -> dict[str, Any]:
 
 
 def render_tools_for_prompt() -> str:
-    """Human/LLM-readable listing of every registered tool (name, description, params)."""
+    """
+    Human/LLM-readable listing of every registered tool (name, description,
+    params) -- this is the ONLY thing the agent loop's LLM ever sees of the
+    registry; TOOL_REGISTRY/tool.parameters itself stays fully intact for
+    every other consumer (execute_tool_call's real **kwargs call, the CLI's
+    own direct calls, tests, etc.).
+
+    A parameter marked agent_hidden=True (investigation, 2026-07-16 -- see
+    correlate_findings's override params for the motivating case) is skipped
+    here but still fully present/usable in tool.parameters and the real
+    Python signature -- this hides an affordance from the model's view, it
+    does not remove real capability. Confirmed real, not hypothetical: a
+    live run showed the model fabricating plausible-looking values for
+    correlate_findings's *_file override args (which it never had a
+    legitimate need to set) despite the description/RULES already saying to
+    omit them -- removing the args from what the model sees at all closes
+    that off structurally, rather than adding another "don't guess"
+    instruction on top of ones already not working.
+    """
     lines: list[str] = []
     for tool in TOOL_REGISTRY.values():
         approval_note = " [REQUIRES HUMAN APPROVAL]" if tool.requires_approval else ""
         lines.append(f"- {tool.name}{approval_note}: {tool.description}")
         for pname, pinfo in tool.parameters.items():
+            if pinfo.get("agent_hidden"):
+                continue
             default = pinfo.get("default", "<required>")
             lines.append(f"    - {pname} ({pinfo.get('type', 'any')}, default={default!r}): {pinfo.get('description', '')}")
     return "\n".join(lines)

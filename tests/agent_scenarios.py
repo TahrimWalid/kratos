@@ -25,9 +25,9 @@ Run (excluded from a bare `pytest` run -- opt in explicitly):
 
     # Slow pass -- the real target combo. Local runs are expensive: pick a
     # subset with -k rather than running all 6 by default. LLM_MODEL
-    # defaults to qwen2.5-coder:7b (see llm_config.py); override if that's
+    # defaults to qwen2.5:7b (see llm_config.py); override only if that's
     # not the model actually pulled.
-    LLM_MODEL=qwen2.5:7b pytest tests/agent_scenarios.py -m agent_llm -v -s \\
+    pytest tests/agent_scenarios.py -m agent_llm -v -s \\
         -k "scenario_1 or scenario_3 or scenario_6"
 """
 from __future__ import annotations
