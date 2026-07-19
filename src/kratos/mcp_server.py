@@ -56,18 +56,45 @@ non-terminal and render-only by design (see CLAUDE.md) -- this module
 doesn't pass an on_step callback at all, so a proposal surfaces in the
 returned transcript exactly like any other step and is never acted on.
 
-Concurrency: an MCP server is a single long-running process that can, in
-principle, receive overlapping tool calls (FastMCP runs sync tool
-functions in a thread pool). kratos_config.py's active-target override and
-the TOOL_REGISTRY exclusion above are both plain mutable module globals --
-safe for a single serial investigation (the same assumption
-kratos_config.py's own docstring already states), not safe if two
-investigate() calls interleave and stomp on each other's target/tool-list.
-_investigation_lock serializes the whole "exclude tools -> set target ->
-run_agent -> restore tools" critical section into one atomic unit per
-call, rather than threading an explicit target/registry parameter through
-run_agent()/execute_tool_call() (an 8-call-chain refactor kratos_config.py
-already explicitly scoped out for the same reason /target doesn't do it).
+Concurrency, corrected 2026-07-19 (a real audit + live test found the
+previous version of this paragraph wrong, not just imprecise): execution
+on a given stdio connection is SERIAL, not thread-pooled. A long-running
+kratos_investigate call blocks every OTHER MCP call on that same
+connection -- including kratos_list_sessions/kratos_get_findings, which
+touch none of the state below -- for its full duration (10-40+ minutes on
+the local backend). Confirmed both by live testing and by reading the
+installed `mcp` SDK's own source: the low-level server does spawn a
+separate anyio task per incoming request (mcp/server/lowlevel/server.py's
+run() loop, tg.start_soon), but a SYNC tool function (kratos_investigate/
+etc. are plain `def`, not `async def`) is invoked directly inline
+(func_metadata.py::call_fn_with_arg_validation -- `return fn(**args)`, no
+anyio.to_thread.run_sync, no thread pool anywhere in this SDK version).
+Every spawned task still shares ONE single-threaded event loop, so a
+long-blocking sync call monopolizes that thread and stalls every other
+task on the connection, not just ones touching the same state. A future
+OpenWebUI/client integration needs to design around this directly -- e.g.
+don't expect to poll kratos_list_sessions while a kratos_investigate call
+is in flight on the same connection; issue investigate on its own
+connection/process if the client needs to stay responsive meanwhile.
+
+_investigation_lock (kept as-is, this correction changes no behavior) is
+still real and still correct to keep despite the above: it protects
+kratos_config.py's active-target override and the TOOL_REGISTRY exclusion
+below -- both plain mutable module globals, safe for one investigation at
+a time (the same assumption kratos_config.py's own docstring already
+states for /target) -- from a hypothetical future where either changes:
+these tool functions becoming `async def` (which WOULD make FastMCP await
+them concurrently rather than blocking the loop), a future SDK version
+offloading sync tools to a real thread pool, or a transport other than
+stdio (mcp.run() also supports streamable-http, which can genuinely serve
+multiple concurrent client connections to one process). None of those are
+true today, but the lock costs nothing to keep and removes a landmine for
+whichever one happens first. It serializes the whole "exclude tools -> set
+target -> run_agent -> restore tools" critical section into one atomic
+unit per call, rather than threading an explicit target/registry
+parameter through run_agent()/execute_tool_call() (an 8-call-chain
+refactor kratos_config.py already explicitly scoped out for the same
+reason /target doesn't do it).
 
 kratos_notify_findings (2026-07-19, replaces an earlier free-form
 kratos_notify(message, severity) that shipped, then was found to have a
@@ -229,7 +256,13 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
     threat-intel escalation, evolving a new tool) are never reachable from this call.
     Returns the investigation's outcome, final answer, and any findings correlate_findings
     produced. `target` is required and explicit -- an MCP call has no prior session/`/target`
-    state to fall back on."""
+    state to fall back on.
+
+    IMPORTANT for the calling client: this call blocks this MCP connection for its full
+    duration (commonly 10-40+ minutes on the local backend) -- no other tool call on the same
+    connection, including kratos_list_sessions/kratos_get_findings, will get a response until
+    this one returns. Do not expect to poll session state on the same connection while an
+    investigation is in flight; use a separate connection for that if needed."""
     if not target or not target.strip():
         raise ValueError("target is required (no implicit session state exists over MCP)")
     if not goal or not goal.strip():
