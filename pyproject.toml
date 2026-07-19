@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv",
     "rich",
     "prompt_toolkit",
+    "mcp",
 ]
 
 [project.optional-dependencies]

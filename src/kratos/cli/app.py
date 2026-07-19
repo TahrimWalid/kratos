@@ -160,6 +160,22 @@ def cmd_logs_parse(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    """
+    Starts the Kratos MCP server (stdio transport) -- exposes kratos_investigate/
+    kratos_get_findings/kratos_list_sessions to an MCP client (e.g. Claude Desktop).
+    Thin wrapper around run_agent()/SessionStore, same architecture as `kratos
+    investigate`/the REPL -- Kratos's own agent loop and its own configured LLM remain
+    the orchestrator regardless of how the request arrives. Read/investigate only: no
+    approval-gated action is reachable through this surface. Blocking -- runs until the
+    client disconnects or the process is killed. See mcp_server.py's module docstring
+    for the full boundary rationale.
+    """
+    from kratos.mcp_server import run_stdio_server
+    run_stdio_server(args.data_dir)
+    return 0
+
+
 def cmd_llm_serve(args: argparse.Namespace) -> int:
     """
     Start the Qwen2.5-Coder LLM server (model loaded once, stays in memory).
@@ -1061,6 +1077,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="If Ollama is already running, attach and tail its logs instead of returning immediately",
     )
     llm_serve.set_defaults(func=cmd_llm_serve)
+
+    mcp_serve = sub.add_parser(
+        "mcp-serve",
+        help="Start the Kratos MCP server (stdio) -- exposes investigate/get_findings/list_sessions to an MCP client",
+    )
+    mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(
