@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,9 +26,20 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     # does respond to discovery probes; -sV still probes exactly the same.
     cmd = ["nmap", "-sV", "-Pn", "-oX", str(out_xml), target]
 
-    print(f"[KRATOS] Running: {' '.join(cmd)}")
+    # The status line AND nmap's own human-readable report both go to STDERR,
+    # never stdout. Under the MCP stdio server (`kratos mcp-serve`) the process's
+    # stdout (fd 1) IS the JSON-RPC channel to the client, and a subprocess with
+    # no `stdout=` inherits that fd directly -- so nmap's scan report (which is
+    # NOT captured by `-oX`; that only writes the XML file) would be flushed onto
+    # the protocol stream, interleaving with JSON-RPC responses (flooding the
+    # client with parse errors and, worst case, hanging it). Only the -oX XML is
+    # ever consumed downstream; the human-readable output is purely informational,
+    # so routing it to stderr keeps it visible in the CLI/REPL while leaving fd 1
+    # clean. stderr is safe -- it is never the protocol channel (FastMCP's own
+    # logs already go there).
+    print(f"[KRATOS] Running: {' '.join(cmd)}", file=sys.stderr)
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, stdout=sys.stderr)
     except FileNotFoundError as e:
         raise RuntimeError("nmap not found. Install with: sudo apt install nmap") from e
     except subprocess.CalledProcessError as e:
