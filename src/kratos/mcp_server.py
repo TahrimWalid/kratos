@@ -5,11 +5,13 @@ investigation pipeline (run_agent) and session store.
 Architecture: Model A, not Model B (standing decision, not re-decided here).
 Kratos's own agent loop (agent/loop.py) and its own configured LLM remain
 the sole orchestrator for all investigation logic, regardless of how the
-request arrives -- this module exposes only 3 top-level tools that call
-into run_agent()/SessionStore, never a raw pass-through of individual
-TOOL_REGISTRY entries. An external MCP client's own LLM never picks which
-internal Kratos tool (nmap, journalctl, correlate_findings, ...) runs or in
-what order; that choice is made entirely inside run_agent(), unchanged.
+request arrives -- this module exposes 4 top-level tools (kratos_investigate,
+kratos_get_findings, kratos_list_sessions, kratos_notify_findings) that call
+into run_agent()/SessionStore/agent/notify.py, never a raw pass-through of
+individual TOOL_REGISTRY entries. An external MCP client's own LLM never
+picks which internal Kratos tool (nmap, journalctl, correlate_findings, ...)
+runs or in what order; that choice is made entirely inside run_agent(),
+unchanged.
 
 Hard boundary: read/investigate only, nothing approval-gated. The approval
 gate (agent/tools.py::request_approval) is a blocking input() call whose
@@ -66,6 +68,45 @@ run_agent -> restore tools" critical section into one atomic unit per
 call, rather than threading an explicit target/registry parameter through
 run_agent()/execute_tool_call() (an 8-call-chain refactor kratos_config.py
 already explicitly scoped out for the same reason /target doesn't do it).
+
+kratos_notify_findings (2026-07-19, replaces an earlier free-form
+kratos_notify(message, severity) that shipped, then was found to have a
+real problem, then was removed here -- not kept alongside this one).
+Closes out the original 3-tool MCP plan (analyze_logs/get_findings/notify
+-- the first two shipped as kratos_investigate/kratos_get_findings). The
+free-form version let a connecting MCP client send a notification with
+ANY message/severity it liked, completely unrelated to anything Kratos
+actually found -- i.e. a third-party caller could put words in Kratos's
+mouth over a channel meant to report Kratos's own real findings. Fixed by
+narrowing the surface, not by adding validation on top of free-form input:
+kratos_notify_findings(session_id) is the only notify-shaped tool exposed
+now, and its message/severity are ALWAYS derived from that session's real,
+already-stored correlate_findings results (via the exact same
+_load_session_turns lookup kratos_get_findings uses) -- there is no
+parameter through which a caller can inject arbitrary text or assert a
+severity that isn't backed by a real finding. Refuses to send anything
+(raises, sends nothing) unless the session is real, at least one turn in
+it reached a genuine completion (final_answer/max_iters_reached -- not
+cancelled/in-progress/crashed), and it has at least one real finding.
+Severity is the HIGHEST severity actually present among those findings,
+mapped onto ntfy's 3-tier scale -- never caller-asserted.
+
+This boundary is about the EXTERNAL MCP surface specifically, not internal
+usage: agent/notify.py::send_notification itself is unchanged and remains
+freely callable from Kratos's own internal code (the existing
+send_notification TOOL_REGISTRY tool inside an investigation, or any
+future internal/proactive checker) for whatever real reason it has --
+only the external, free-form MCP entry point was the actual problem, and
+only that was removed.
+
+Deliberately NOT approval-gated (unchanged reasoning): confirmed
+send_notification/tool_send_notification never appear in agent/tools.py's
+request_approval( call sites (the same grep that found the 4 real
+approval-reaching tools for the investigate path) -- sending a
+notification isn't a security-relevant action the way target execution
+is. No lock needed: this never touches TOOL_REGISTRY or the active-target
+override -- session/transcript reads plus one stateless HTTP POST, no
+shared mutable state to protect.
 """
 from __future__ import annotations
 
@@ -79,6 +120,7 @@ from mcp.server.fastmcp import FastMCP
 
 from kratos import kratos_config as _kconfig
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
+from kratos.agent.notify import send_notification
 from kratos.agent.tools import TOOL_REGISTRY, Tool
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
@@ -195,6 +237,32 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
     return _run_locked_investigation(goal.strip(), target.strip(), max_iters, _data_dir)
 
 
+def _load_session_turns(store: SessionStore, session_id: str) -> list[dict[str, Any]]:
+    """Loads every turn in `session_id` with its findings extracted from the saved
+    transcript -- shared by kratos_get_findings and kratos_notify_findings so both resolve
+    findings through the exact same path (kratos_notify_findings's own requirement: reuse
+    this lookup rather than a second, parallel implementation)."""
+    turns = []
+    for turn in store.get_goal_history(session_id):
+        findings: list[dict[str, Any]] = []
+        ref = turn.get("transcript_ref")
+        if ref:
+            try:
+                transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
+                findings = _extract_findings(transcript)
+            except (OSError, json.JSONDecodeError):
+                pass
+        turns.append(
+            {
+                "goal": turn["goal"],
+                "status": turn.get("status"),
+                "started_at": turn.get("started_at"),
+                "findings": findings,
+            }
+        )
+    return turns
+
+
 @mcp.tool()
 def kratos_get_findings(session_id: str | None = None) -> dict[str, Any]:
     """Retrieves findings from a specific Kratos session (by session_id), or the most
@@ -213,25 +281,7 @@ def kratos_get_findings(session_id: str | None = None) -> dict[str, Any]:
             return {"session_id": None, "target": [], "turns": []}
         session = recent[0]
 
-    turns = []
-    for turn in store.get_goal_history(session["session_id"]):
-        findings: list[dict[str, Any]] = []
-        ref = turn.get("transcript_ref")
-        if ref:
-            try:
-                transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
-                findings = _extract_findings(transcript)
-            except (OSError, json.JSONDecodeError):
-                pass
-        turns.append(
-            {
-                "goal": turn["goal"],
-                "status": turn.get("status"),
-                "started_at": turn.get("started_at"),
-                "findings": findings,
-            }
-        )
-
+    turns = _load_session_turns(store, session["session_id"])
     return {"session_id": session["session_id"], "target": session["targets"], "turns": turns}
 
 
@@ -251,6 +301,68 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
         }
         for s in store.list_recent_sessions(limit=limit)
     ]
+
+
+_TERMINAL_COMPLETION_STATUSES = {"final_answer", "max_iters_reached"}
+_FINDING_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+
+
+def _derive_notify_severity(findings: list[dict[str, Any]]) -> str:
+    """Maps the HIGHEST severity actually present among real findings onto ntfy's 3-tier
+    scale (agent/notify.py::_SEVERITY_MAP) -- never caller-asserted, always derived from
+    stored data. critical/high -> critical (ntfy urgent): CLAUDE.md's own CORR-SSH-001
+    example is a HIGH finding for a live attack, which warrants an urgent push, not merely
+    "warning". medium -> warning. low/info -> info."""
+    rank = max((_FINDING_SEVERITY_RANK.get(str(f.get("severity", "")).lower(), 0) for f in findings), default=0)
+    if rank >= 3:
+        return "critical"
+    if rank == 2:
+        return "warning"
+    return "info"
+
+
+def _build_findings_notification_message(session: dict[str, Any], findings: list[dict[str, Any]]) -> str:
+    target = ", ".join(session["targets"]) if session["targets"] else "unknown target"
+    lines = [f"Kratos findings for session {session['session_id']} ({target}):"]
+    for f in findings:
+        severity = str(f.get("severity", "info")).upper()
+        title = f.get("title") or f.get("id", "finding")
+        lines.append(f"- [{severity}] {f.get('id', '?')}: {title}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def kratos_notify_findings(session_id: str) -> dict[str, Any]:
+    """Sends a push notification summarizing a REAL, already-completed investigation's
+    stored findings. The message and severity are always derived from that session's actual
+    correlate_findings results -- there is no way to pass free-form text or an asserted
+    severity through this tool. Fails clearly, sending nothing, if session_id doesn't resolve
+    to a real session, no turn in it reached a genuine completion, or it has no findings."""
+    if not session_id or not session_id.strip():
+        raise ValueError("session_id is required")
+    session_id = session_id.strip()
+
+    store = SessionStore(_data_dir / "kratos.db")
+    session = store.get_session(session_id)
+    if session is None:
+        raise ValueError(f"No session found with id {session_id!r}")
+
+    turns = _load_session_turns(store, session_id)
+    if not any(t.get("status") in _TERMINAL_COMPLETION_STATUSES for t in turns):
+        raise ValueError(
+            f"Session {session_id!r} has no turn that reached a real completion "
+            "(final_answer/max_iters_reached) -- refusing to notify about an incomplete "
+            "or cancelled investigation."
+        )
+
+    all_findings = [f for t in turns for f in t["findings"]]
+    if not all_findings:
+        raise ValueError(f"Session {session_id!r} has no findings to notify about.")
+
+    message = _build_findings_notification_message(session, all_findings)
+    severity = _derive_notify_severity(all_findings)
+    result = send_notification(message, severity)
+    return {"notified_message": message, "derived_severity": severity, **result}
 
 
 def run_stdio_server(data_dir: Path = Path("data")) -> None:

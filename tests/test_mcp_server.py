@@ -239,3 +239,141 @@ def test_get_findings_empty_when_no_sessions_exist(tmp_path, monkeypatch):
     SessionStore(tmp_path / "kratos.db")
     result = mcp_server.kratos_get_findings(session_id=None)
     assert result == {"session_id": None, "target": [], "turns": []}
+
+
+# ---------------------------------------------------------------------------
+# kratos_notify_findings -- content ALWAYS derived from real stored findings,
+# never free-form caller input (replaces an earlier kratos_notify(message,
+# severity) that let a connecting client send arbitrary notification text).
+# ---------------------------------------------------------------------------
+def _seed_session_with_turn(tmp_path, *, status, findings, goal="check things", target="10.0.0.9"):
+    """Real SessionStore + real transcript file on disk, matching this project's
+    convention for pure-logic/parsing coverage against real (not mocked) storage."""
+    store = SessionStore(tmp_path / "kratos.db")
+    session_id = store.create_session([target], "test-model")
+    turn_id = store.start_turn(session_id, goal)
+
+    transcripts_dir = tmp_path / "sessions"
+    transcripts_dir.mkdir(exist_ok=True)
+    transcript_path = transcripts_dir / f"{session_id}_turn{turn_id}.json"
+    transcript = []
+    if findings:
+        transcript.append(
+            {"tool": "correlate_findings", "observation": {"status": "ok", "result": {"findings": findings}}}
+        )
+    transcript_path.write_text(json.dumps(transcript), encoding="utf-8")
+    store.complete_turn(turn_id, status, transcript_ref=str(transcript_path))
+    return session_id
+
+
+@pytest.mark.parametrize(
+    "findings,expected",
+    [
+        ([{"severity": "critical"}], "critical"),
+        ([{"severity": "high"}], "critical"),
+        ([{"severity": "medium"}], "warning"),
+        ([{"severity": "low"}], "info"),
+        ([{"severity": "info"}], "info"),
+        ([{"severity": "medium"}, {"severity": "high"}], "critical"),  # highest wins
+        ([], "info"),
+        ([{"severity": "unknown-value"}], "info"),
+    ],
+)
+def test_derive_notify_severity(findings, expected):
+    assert mcp_server._derive_notify_severity(findings) == expected
+
+
+def test_notify_findings_rejects_empty_session_id():
+    with pytest.raises(ValueError):
+        mcp_server.kratos_notify_findings(session_id="")
+
+
+def test_notify_findings_raises_for_unknown_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
+    SessionStore(tmp_path / "kratos.db")  # initialize schema, no sessions
+
+    called = []
+    monkeypatch.setattr(mcp_server, "send_notification", lambda *a, **k: called.append(1))
+
+    with pytest.raises(ValueError):
+        mcp_server.kratos_notify_findings(session_id="doesnotexist")
+    assert called == []  # nothing sent
+
+
+def test_notify_findings_raises_when_no_turn_completed(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
+    session_id = _seed_session_with_turn(
+        tmp_path, status="cancelled", findings=[{"id": "X-1", "severity": "high"}]
+    )
+
+    called = []
+    monkeypatch.setattr(mcp_server, "send_notification", lambda *a, **k: called.append(1))
+
+    with pytest.raises(ValueError, match="no turn that reached a real completion"):
+        mcp_server.kratos_notify_findings(session_id=session_id)
+    assert called == []
+
+
+def test_notify_findings_raises_when_no_findings(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
+    session_id = _seed_session_with_turn(tmp_path, status="final_answer", findings=[])
+
+    called = []
+    monkeypatch.setattr(mcp_server, "send_notification", lambda *a, **k: called.append(1))
+
+    with pytest.raises(ValueError, match="no findings"):
+        mcp_server.kratos_notify_findings(session_id=session_id)
+    assert called == []
+
+
+def test_notify_findings_sends_content_matching_real_stored_findings(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
+    session_id = _seed_session_with_turn(
+        tmp_path,
+        status="final_answer",
+        findings=[
+            {"id": "CORR-SSH-001", "title": "Probable SSH brute-force attack", "severity": "high"},
+            {"id": "NET-002", "title": "Open ports detected", "severity": "medium"},
+        ],
+        target="10.136.28.168",
+    )
+
+    captured = {}
+
+    def _fake_send_notification(message, severity="info"):
+        captured["message"] = message
+        captured["severity"] = severity
+        return {"status": "sent", "topic": "fake-topic", "severity": severity, "http_status": 200}
+
+    monkeypatch.setattr(mcp_server, "send_notification", _fake_send_notification)
+
+    result = mcp_server.kratos_notify_findings(session_id=session_id)
+
+    # Content genuinely comes from the stored findings, not caller input --
+    # there is no message/severity parameter on this tool at all.
+    assert "CORR-SSH-001" in captured["message"]
+    assert "Probable SSH brute-force attack" in captured["message"]
+    assert "NET-002" in captured["message"]
+    assert session_id in captured["message"]
+    assert "10.136.28.168" in captured["message"]
+    assert captured["severity"] == "critical"  # derived from the HIGH finding, not asserted
+    assert result["derived_severity"] == "critical"
+    assert result["notified_message"] == captured["message"]
+    assert result["status"] == "sent"
+
+
+def test_notify_findings_uses_the_same_lookup_as_get_findings(tmp_path, monkeypatch):
+    # Explicit requirement: kratos_notify_findings must resolve findings via
+    # the same path kratos_get_findings uses, not a second implementation.
+    monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
+    session_id = _seed_session_with_turn(
+        tmp_path, status="final_answer", findings=[{"id": "X-1", "title": "t", "severity": "low"}]
+    )
+    monkeypatch.setattr(mcp_server, "send_notification", lambda message, severity="info": {"status": "sent"})
+
+    get_findings_result = mcp_server.kratos_get_findings(session_id=session_id)
+    notify_result = mcp_server.kratos_notify_findings(session_id=session_id)
+
+    get_findings_findings = [f for t in get_findings_result["turns"] for f in t["findings"]]
+    assert get_findings_findings == [{"id": "X-1", "title": "t", "severity": "low"}]
+    assert "X-1" in notify_result["notified_message"]
