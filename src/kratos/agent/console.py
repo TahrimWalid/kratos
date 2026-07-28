@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console, ConsoleDimensions, Group
@@ -350,6 +351,28 @@ def render_evolve_suggestion(console: Console, name: str, description: str) -> N
         '[/dim][bold]/evolve "<your own idea>"[/bold][dim] to propose something else.[/dim]'
     )
     console.print(Panel(body, title="Evo-loop suggestion", border_style=ATTENTION))
+
+
+def render_evolve_harness_template(console: Console, template_text: str, suggested_path: Path) -> None:
+    """cli/repl.py::_resolve_evolve_test_file's starter-scaffold display,
+    shown when the suggested/given pytest harness path doesn't exist --
+    2026-07-28 UX fix, real complaint: the old "create it first" message
+    left a user with nothing concrete to start from. word_wrap=True
+    (unlike render_target_setup_checklist's own word_wrap=False): this is
+    Python source meant to be READ and copied into an editor via normal
+    text selection, not typed character-by-character into a shell, so the
+    exact-copy-paste risk that motivated that other panel's choice doesn't
+    apply here -- same Syntax(..., word_wrap=True, background_color=
+    "default") shape render_approval_situation already uses for source
+    display. Never implies this should be saved as-is -- title and the
+    template's own TODO comments both say so."""
+    console.print(
+        Panel(
+            Syntax(template_text, "python", word_wrap=True, background_color="default"),
+            title=f"Starter harness (save to {suggested_path}, then edit the TODOs before running /evolve again)",
+            border_style=ATTENTION,
+        )
+    )
 
 
 def render_target_setup_checklist(console: Console, checklist_text: str) -> None:

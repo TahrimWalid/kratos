@@ -1109,6 +1109,91 @@ def _cmd_rename(console, session_state: dict[str, Any], store: SessionStore, arg
 # for agent/loop.py's tool_proposal signal) and a closing outcome summary.
 # ---------------------------------------------------------------------------
 
+# Real UX complaint (2026-07-28): a long free-text idea (the common case --
+# /evolve's own idea argument is a full sentence, not a short name) used to
+# be slugified WHOLE into the suggested filename, producing something like
+# test_add_a_tool_that_lists_which_users_have_sudo_access_on_the_monitored_
+# target_via_ssh.py. Capped to the first few words -- still not always a
+# GREAT name (no stopword filtering, deliberately kept simple), but always
+# a SHORT one; it's a suggested default the user can freely override (and,
+# per the incident that prompted this, often will), not a final answer.
+_EVOLVE_SLUG_MAX_WORDS = 4
+
+
+def _slugify_name_hint(name_hint: str) -> str:
+    words = re.findall(r"[a-z0-9]+", name_hint.lower())[:_EVOLVE_SLUG_MAX_WORDS]
+    return "_".join(words) or "new_tool"
+
+
+def _build_evolve_harness_template(slug: str, goal: str) -> str:
+    """A starter pytest harness shown (never written to disk automatically
+    -- see _resolve_evolve_test_file) when the suggested/given path doesn't
+    exist. Mirrors tests/self_write_harnesses/test_evolve_verification_ping.py's
+    real shape exactly (the one other harness in this repo built specifically
+    to exercise this same wiring) so what's shown is this project's actual
+    convention, not a generic pytest example. The TODO'd assertion is
+    deliberately trivial/obviously incomplete, not a plausible-looking real
+    check -- this is scaffolding to save typing the boilerplate, not
+    something that should ever be run against evo-loop unedited. Never
+    written to disk automatically: doing so would let a human accidentally
+    re-run /evolve against an un-edited, trivially-passable stub instead of
+    a deliberately-authored correctness check, undermining the same
+    human-authored-test principle this whole flow exists to protect."""
+    tool_name = slug or "new_tool"
+    return f'''"""
+Test harness for "{tool_name}" -- {goal}
+
+TODO: replace the trivial assertion in test_{tool_name}_behaves_correctly
+below with real checks against registered_handler's actual return shape.
+This file is what defines "correct" for the tool evo-loop will write --
+edit it BEFORE running /evolve again.
+"""
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+
+import pytest
+
+CANDIDATE_MODULE_PATH = os.environ.get("CANDIDATE_MODULE_PATH")
+TOOL_NAME = "{tool_name}"
+
+
+def _load_candidate():
+    if not CANDIDATE_MODULE_PATH:
+        pytest.skip(
+            "CANDIDATE_MODULE_PATH not set -- this harness is meant to be pointed at a staged "
+            "candidate (by Part B) or a reference implementation (manual sanity check)."
+        )
+    path = Path(CANDIDATE_MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("candidate_tool_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def registered_handler():
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    _load_candidate()
+    assert TOOL_NAME in TOOL_REGISTRY, (
+        f"Candidate did not register a tool named '{{TOOL_NAME}}' via @register_tool -- "
+        f"found instead: {{sorted(TOOL_REGISTRY.keys())}}"
+    )
+    return TOOL_REGISTRY[TOOL_NAME].handler
+
+
+def test_{tool_name}_behaves_correctly(registered_handler):
+    # TODO: call registered_handler(...) with real/representative arguments
+    # and assert on its actual return shape -- this is the part that
+    # defines "correct", not a placeholder to leave as-is.
+    result = registered_handler()
+    assert isinstance(result, dict)
+'''
+
+
 def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
     """WriteRequest.test_file is required and never auto-generated (see
     module-level comment above) -- prompts for a real path, suggesting
@@ -1118,7 +1203,7 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
     given/suggested path doesn't exist, so the caller aborts cleanly
     rather than handing run_self_write_loop a path that will fail later
     with a less clear error."""
-    slug = re.sub(r"[^a-z0-9_]+", "_", name_hint.lower()).strip("_") or "new_tool"
+    slug = _slugify_name_hint(name_hint)
     suggested = Path("tests") / "self_write_harnesses" / f"test_{slug}.py"
     console.print(
         f"\nEvo-loop needs a real, human-authored pytest harness file -- it's what defines "
@@ -1130,6 +1215,9 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
         _console.render_error(
             console, f"No test file found at {path} -- create it first, then run /evolve again."
         )
+        template_slug = _slugify_name_hint(path.stem.removeprefix("test_") or name_hint)
+        template = _build_evolve_harness_template(template_slug, name_hint)
+        _console.render_evolve_harness_template(console, template, path)
         return None
     return path
 
