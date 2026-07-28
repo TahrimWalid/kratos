@@ -1405,6 +1405,48 @@ def _resolve_evolve_tool_name(console, goal: str, suggested_name: str | None = N
     return fallback
 
 
+def _check_evolve_name_collision(console, tool_name: str) -> bool:
+    """Warns if tool_name already matches a REAL tool already reachable by
+    the agent -- built-in (agent/tools.py) or a previously-kept one.
+    Building and approving a new candidate under the same name would
+    silently REPLACE it in TOOL_REGISTRY the moment it's kept (and, for an
+    already-kept tool, overwrite its file + metadata.json entry too) --
+    neither _persist_kept_tool nor the keep-approval prompt itself warns
+    about this on their own; this is the one place in the whole flow that
+    catches it, before any real work is done. Read-only: never modifies
+    kept_tools/ or TOOL_REGISTRY itself, only warns and asks. Returns True
+    if the caller should proceed (no collision, or the user explicitly
+    confirmed), False if they backed out -- "no" is the default on any
+    unclear answer, matching this project's established pattern for
+    consequential actions."""
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+
+    if tool_name not in TOOL_REGISTRY:
+        return True
+
+    metadata = _read_metadata(KEPT_TOOLS_DIR)
+    if tool_name in metadata:
+        kept_at = metadata[tool_name].get("kept_at", "an earlier session")
+        what = f"a kept tool (approved {kept_at})"
+    else:
+        what = "a BUILT-IN Kratos tool"
+
+    _console.render_note(
+        console,
+        f"'{tool_name}' is already {what}. Building and approving a new one under the SAME name "
+        "will silently REPLACE it once you approve the keep decision.",
+    )
+    answer: str | None = None
+    while answer is None:
+        raw = input("Continue with this name anyway? [y/N]: ").strip().lower()
+        if raw in ("", "y", "yes", "n", "no"):
+            answer = raw
+        else:
+            _console.render_note(console, f"{raw!r} isn't a valid answer -- try again (y or n).")
+    return answer in ("y", "yes")
+
+
 def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None:
     """WriteRequest.test_file is required and never auto-generated (see
     module-level comment above) -- prompts for a real path, suggesting
@@ -1428,8 +1470,21 @@ def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None
         f"\nEvo-loop needs a real, human-authored pytest harness file -- it's what defines "
         f"'correct' for this tool, and is never auto-generated. Suggested path: {suggested}"
     )
-    raw = input(f"Test harness file path [{suggested}]: ").strip()
-    path = Path(raw) if raw else suggested
+    # Sanity check (2026-07-28): catches an obvious fat-fingered path (e.g.
+    # a stray non-.py path pasted from elsewhere) before it's treated as a
+    # real pytest harness -- reject-and-reprompt, same established pattern
+    # as the other /evolve prompts, rather than silently reading/writing
+    # whatever was typed.
+    path: Path | None = None
+    while path is None:
+        raw = input(f"Test harness file path [{suggested}]: ").strip()
+        candidate_path = Path(raw) if raw else suggested
+        if candidate_path.suffix == ".py":
+            path = candidate_path
+        else:
+            _console.render_note(
+                console, f"{str(candidate_path)!r} doesn't look like a Python file (no .py extension) -- try again."
+            )
     if not path.exists():
         _console.render_error(
             console, f"No test file found at {path} -- create it first, then run /evolve again."
@@ -1438,7 +1493,22 @@ def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None
         # Default yes -- an Enter keypress takes the more helpful path; "n"
         # opts straight out to the plain static template for anyone who'd
         # rather write from scratch or skip the LLM call/wait.
-        want_draft = input("Draft a starter harness with the LLM for you to review? [Y/n]: ").strip().lower()
+        #
+        # Strict validation (2026-07-28), matching the resume-tier prompt's
+        # own established fix (see _resolve_resume_tier's real-incident
+        # comment): a real user's mistyped keystroke here shouldn't silently
+        # become an answer they didn't intend -- only documented answers are
+        # accepted, anything else is rejected with a visible message and the
+        # SAME prompt re-shown, never a silent guess at what they meant.
+        want_draft: str | None = None
+        while want_draft is None:
+            raw_draft = input("Draft a starter harness with the LLM for you to review? [Y/n]: ").strip().lower()
+            if raw_draft in ("", "y", "yes", "n", "no"):
+                want_draft = raw_draft
+            else:
+                _console.render_note(
+                    console, f"{raw_draft!r} isn't a valid answer -- try again (Enter/y for yes, n for no)."
+                )
         drafted_code = None
         if want_draft in ("", "y", "yes"):
             _console.render_note(console, "Drafting a starter harness (calls the LLM, can take a moment)...")
@@ -1461,9 +1531,19 @@ def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None
             # draft was already shown in full immediately above; retyping
             # the same command a moment later wouldn't have shown it again
             # or given a materially different opportunity to review it.
-            choice = input(
-                f"[s]ave and start building now, [e]dit it yourself first, or [d]iscard? [s/e/d, default d]: "
-            ).strip().lower()
+            # Strict validation (2026-07-28) -- same reasoning as the draft
+            # prompt above: a typo here would otherwise silently discard a
+            # reviewed draft (or worse, silently pick a different option
+            # than intended) instead of being caught and re-asked.
+            choice: str | None = None
+            while choice is None:
+                raw_choice = input(
+                    "[s]ave and start building now, [e]dit it yourself first, or [d]iscard? [s/e/d, default d]: "
+                ).strip().lower()
+                if raw_choice in ("", "s", "save", "e", "edit", "d", "discard"):
+                    choice = raw_choice
+                else:
+                    _console.render_note(console, f"{raw_choice!r} isn't a valid choice -- try again (s, e, or d).")
             if choice in ("s", "save"):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(drafted_code, encoding="utf-8")
@@ -1548,6 +1628,8 @@ def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any)
         pending_name = pending.get("name") or None
 
     tool_name = _resolve_evolve_tool_name(console, goal, suggested_name=pending_name)
+    if not _check_evolve_name_collision(console, tool_name):
+        return
     test_file = _resolve_evolve_test_file(console, tool_name, goal)
     if test_file is None:
         return

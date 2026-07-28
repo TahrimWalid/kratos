@@ -88,7 +88,7 @@ def test_missing_file_shows_template_and_writes_nothing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    with patch("builtins.input", return_value=target), patch.object(
+    with patch("builtins.input", side_effect=[target, "n"]), patch.object(
         repl._console, "render_evolve_harness_template"
     ) as render_mock:
         result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
@@ -108,7 +108,7 @@ def test_existing_file_returned_unaffected(tmp_path, monkeypatch):
     real_file = harness_dir / "test_list_sudo_members.py"
     real_file.write_text("def test_x(): pass\n", encoding="utf-8")
 
-    with patch("builtins.input", return_value=str(real_file)), patch.object(
+    with patch("builtins.input", side_effect=[str(real_file)]), patch.object(
         repl._console, "render_evolve_harness_template"
     ) as render_mock:
         result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
@@ -282,24 +282,52 @@ def test_draft_default_yes_on_empty_input(tmp_path, monkeypatch):
     draft_mock.assert_called_once()
 
 
-def test_save_choice_default_discard_on_empty_or_unrecognized_input(tmp_path, monkeypatch):
-    # Empty/unrecognized input on the SECOND prompt (save/edit/discard?)
-    # means discard -- the LEAST consequential of the three options, matching
-    # this project's "no force-accept on anything consequential" pattern
-    # applied to whichever choice is most consequential here (save-and-build,
+def test_save_choice_empty_input_means_discard(tmp_path, monkeypatch):
+    # Empty input on the SECOND prompt (save/edit/discard?) means discard --
+    # the LEAST consequential of the three options, matching this project's
+    # "no force-accept on anything consequential" pattern applied to
+    # whichever choice is most consequential here (save-and-build-now,
     # which starts the real pipeline), not just a plain save/no-save binary.
+    # Unlike genuinely garbage input (see the reject-and-reprompt test
+    # below), empty Enter is a documented, accepted answer -- it resolves
+    # immediately, no reprompt.
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    for garbage_answer in ("", "y", "whatever"):
-        Path(target).unlink(missing_ok=True)
-        with patch("builtins.input", side_effect=[target, "y", garbage_answer]), patch.object(
-            repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
-        ), patch.object(repl._console, "render_evolve_harness_template"):
-            result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
+    with patch("builtins.input", side_effect=[target, "y", ""]), patch.object(
+        repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
+    ), patch.object(repl._console, "render_evolve_harness_template"):
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
-        assert result is None
-        assert not Path(target).exists()
+    assert result is None
+    assert not Path(target).exists()
+
+
+def test_save_choice_rejects_garbage_input_and_reprompts(tmp_path, monkeypatch):
+    # Real fix (2026-07-28), matching the resume-tier prompt's established
+    # precedent: a mistyped keystroke here used to be silently treated as
+    # "discard" -- which could quietly throw away a reviewed draft the user
+    # actually wanted to keep. Garbage input is now REJECTED with a visible
+    # message and the SAME prompt re-shown, exactly like the chooser/
+    # resume-tier prompts already do -- it takes a real subsequent valid
+    # answer to resolve, never a guess at what the user meant.
+    monkeypatch.chdir(tmp_path)
+    target = "tests/self_write_harnesses/test_list_sudo_members.py"
+
+    with patch("builtins.input", side_effect=[target, "y", "whatever", "y", "s"]), patch.object(
+        repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
+    ), patch.object(repl._console, "render_evolve_harness_template"), patch.object(
+        repl._console, "render_note"
+    ) as note_mock:
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
+
+    # Two garbage answers ("whatever", then "y", which isn't a valid choice
+    # either) were rejected before "s" finally resolved it -- confirmed by
+    # the real rejection messages, not just the eventual outcome.
+    rejection_texts = [call.args[1] for call in note_mock.call_args_list if "valid choice" in call.args[1]]
+    assert len(rejection_texts) == 2
+    assert result == Path(target)
+    assert Path(target).exists()
 
 
 def test_failed_draft_falls_back_to_static_template(tmp_path, monkeypatch):
@@ -380,3 +408,84 @@ def test_resolve_tool_name_can_override_pending_suggestion():
         result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA, suggested_name="parse_journalctl_to_json")
     assert result == "a_better_name"
     suggest_mock.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _check_evolve_name_collision -- real user complaint (2026-07-28): "the
+# user will strictly follow the rules... but in real life that doesn't
+# happen, they might make a mistake" -- this specifically guards against
+# picking a name that already belongs to a real tool (built-in or kept),
+# which would silently REPLACE it once approved, with no other warning
+# anywhere in the pipeline.
+# ---------------------------------------------------------------------------
+def test_name_collision_no_collision_proceeds_without_prompting():
+    with patch("builtins.input") as input_mock:
+        result = repl._check_evolve_name_collision(MagicMock(), "totally_new_tool_xyz")
+    assert result is True
+    input_mock.assert_not_called()  # no collision -- never even asks
+
+
+def test_name_collision_with_kept_tool_declined():
+    fake_registry = {"list_net_services": MagicMock()}
+    fake_metadata = {"list_net_services": {"kept_at": "2026-07-28T20:36:56"}}
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value=fake_metadata
+    ), patch("builtins.input", return_value="n"):
+        result = repl._check_evolve_name_collision(MagicMock(), "list_net_services")
+    assert result is False
+
+
+def test_name_collision_with_kept_tool_confirmed():
+    fake_registry = {"list_net_services": MagicMock()}
+    fake_metadata = {"list_net_services": {"kept_at": "2026-07-28T20:36:56"}}
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value=fake_metadata
+    ), patch("builtins.input", return_value="y"):
+        result = repl._check_evolve_name_collision(MagicMock(), "list_net_services")
+    assert result is True
+
+
+def test_name_collision_with_builtin_tool_shows_builtin_wording():
+    fake_registry = {"run_nmap_scan": MagicMock()}
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value={}
+    ), patch("builtins.input", return_value="n"), patch.object(repl._console, "render_note") as note_mock:
+        result = repl._check_evolve_name_collision(MagicMock(), "run_nmap_scan")
+    assert result is False
+    warning_texts = [call.args[1] for call in note_mock.call_args_list if "run_nmap_scan" in call.args[1]]
+    assert any("BUILT-IN" in t for t in warning_texts)
+
+
+def test_name_collision_empty_input_means_no():
+    fake_registry = {"list_net_services": MagicMock()}
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value={}
+    ), patch("builtins.input", return_value=""):
+        result = repl._check_evolve_name_collision(MagicMock(), "list_net_services")
+    assert result is False
+
+
+def test_name_collision_rejects_garbage_and_reprompts():
+    fake_registry = {"list_net_services": MagicMock()}
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value={}
+    ), patch("builtins.input", side_effect=["maybe", "y"]):
+        result = repl._check_evolve_name_collision(MagicMock(), "list_net_services")
+    assert result is True  # eventually resolved by the real "y"
+
+
+# ---------------------------------------------------------------------------
+# Harness path sanity check -- rejects an obvious non-.py path
+# ---------------------------------------------------------------------------
+def test_path_rejects_non_py_extension_and_reprompts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = "tests/self_write_harnesses/test_list_sudo_members.py"
+
+    with patch("builtins.input", side_effect=["notes.txt", target, "n"]), patch.object(
+        repl._console, "render_evolve_harness_template"
+    ), patch.object(repl._console, "render_note") as note_mock:
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
+
+    assert result is None
+    rejection_texts = [call.args[1] for call in note_mock.call_args_list if "doesn't look like a Python file" in call.args[1]]
+    assert len(rejection_texts) == 1

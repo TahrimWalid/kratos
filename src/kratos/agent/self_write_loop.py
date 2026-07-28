@@ -348,7 +348,14 @@ def run_self_write_loop(request: WriteRequest, max_attempts: int = MAX_ATTEMPTS)
             goal=request.goal, test_file=request.test_file, extra_context=extra_context,
             previous_code=previous_code, previous_error=previous_error,
         )
-        write_result = write_candidate_tool(attempt_request)
+        # outer_attempt_label (2026-07-28): write_candidate_tool's own
+        # attempt/max_attempts restarts from 1 on every call -- without this,
+        # its progress messages show "(attempt 1/3)" identically for every
+        # genuinely different OUTER attempt here, a real, confirmed source of
+        # confusion (two different real retries looked like nothing changed).
+        write_result = write_candidate_tool(
+            attempt_request, outer_attempt_label=f"outer attempt {attempt_number}/{max_attempts}"
+        )
 
         if write_result.status == "no_variation":
             # Distinct from write_failed/exhausted_retries on purpose (see

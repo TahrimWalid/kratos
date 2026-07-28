@@ -378,6 +378,7 @@ def write_candidate_tool(
     request: WriteRequest,
     staging_dir: Path = DEFAULT_STAGING_DIR,
     max_attempts: int = MAX_WRITE_ATTEMPTS,
+    outer_attempt_label: str | None = None,
 ) -> WriteResult:
     """
     Runs the WRITE step only. Prompts the configured LLM backend (via
@@ -419,6 +420,19 @@ def write_candidate_tool(
     Returns a WriteResult carrying the staging PATH, never the code inline,
     so Part B can pick the candidate up by path without this function's
     caller needing to shuttle source text around.
+
+    outer_attempt_label (2026-07-28, display only, no effect on control
+    flow): an optional pre-formatted string like "outer attempt 2/3" from
+    the caller (run_self_write_loop), folded into this function's own
+    progress messages below. Real, confirmed UX confusion this closes:
+    this function's OWN attempt/max_attempts always restarts from 1 on
+    every fresh call -- it's Part A's own internal write-retry budget,
+    distinct from Part D's outer sandbox-test retry budget -- so without
+    this label, two genuinely different OUTER attempts both print
+    "(attempt 1/3)" and look identical even though a real retry happened
+    between them. None (the default) preserves the exact prior message
+    shape for any caller that doesn't pass one (e.g.
+    scripts/dev/run_self_write_count_failed_ssh_attempts.py).
     """
     if not request.test_file.exists():
         return WriteResult(status="failed", error=f"test_file does not exist: {request.test_file}")
@@ -439,6 +453,13 @@ def write_candidate_tool(
     last_problems: list[str] = []
 
     for attempt in range(1, max_attempts + 1):
+        # See outer_attempt_label's own docstring note above for why this is
+        # NOT just f"attempt {attempt}/{max_attempts}" when a label is given.
+        attempt_desc = (
+            f"{outer_attempt_label}, write sub-attempt {attempt}/{max_attempts}"
+            if outer_attempt_label
+            else f"attempt {attempt}/{max_attempts}"
+        )
         user_prompt = _build_user_prompt(request, display_code, display_error, rejected_before_testing)
         raw = agent_chat(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt, max_tokens=MAX_TOKENS)
 
@@ -470,7 +491,7 @@ def write_candidate_tool(
         if not problems and anchor_code is not None and code == anchor_code:
             _console.render_note(
                 _console.get_stderr_console(),
-                f"Evo-loop: attempt {attempt}/{max_attempts} is BYTE-IDENTICAL to the anchor -- no "
+                f"Evo-loop: {attempt_desc} is BYTE-IDENTICAL to the anchor -- no "
                 "variation despite fresh failing-test context. Stopping this write step immediately "
                 "rather than silently consuming another attempt on a known repeat.",
             )
@@ -509,7 +530,7 @@ def write_candidate_tool(
             staging_path = _stage(code, staging_dir, request.goal)
             _console.render_note(
                 _console.get_stderr_console(),
-                f"Evo-loop: staged candidate '{tool_name}' (attempt {attempt}/{max_attempts}) -> {staging_path}",
+                f"Evo-loop: staged candidate '{tool_name}' ({attempt_desc}) -> {staging_path}",
             )
             return WriteResult(status="staged", staging_path=staging_path, tool_name=tool_name, attempts=attempt)
 
@@ -540,7 +561,7 @@ def write_candidate_tool(
             rejected_before_testing = True
         _console.render_error(
             _console.get_stderr_console(),
-            f"Evo-loop: attempt {attempt}/{max_attempts} failed sanity check: {display_error}",
+            f"Evo-loop: {attempt_desc} failed sanity check: {display_error}",
         )
 
     return WriteResult(
