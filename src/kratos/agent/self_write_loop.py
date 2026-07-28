@@ -81,7 +81,6 @@ import importlib.util
 import json
 import os
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -321,7 +320,10 @@ def load_kept_tools(kept_tools_dir: Path = KEPT_TOOLS_DIR) -> list[str]:
     for tool_name, meta in metadata.items():
         source_file = kept_tools_dir / meta["source_file"]
         if not source_file.exists():
-            print(f"[KRATOS-SELF-WRITE-LOOP] WARNING: metadata references missing file for '{tool_name}': {source_file}", file=sys.stderr)
+            _console.render_error(
+                _console.get_stderr_console(),
+                f"Evo-loop: metadata references a missing file for '{tool_name}': {source_file}",
+            )
             continue
         _import_kept_tool(source_file)
         if tool_name in TOOL_REGISTRY:
@@ -356,30 +358,28 @@ def run_self_write_loop(request: WriteRequest, max_attempts: int = MAX_ATTEMPTS)
             # already known -- it's the last entry already in
             # attempt_history, not fabricated or re-fetched here.
             budget_remaining = max_attempts - attempt_number
-            print(
-                f"[KRATOS-SELF-WRITE-LOOP] STALLED on attempt {attempt_number}/{max_attempts} -- the "
-                f"model produced a candidate BYTE-IDENTICAL to the immediately preceding attempt, "
-                f"despite being shown fresh, real failing-test context. This is NOT exhaustion "
-                f"({budget_remaining} attempt(s) of budget remain unused) -- the model stopped "
-                "varying its output, not the budget running out. Not re-running the sandbox test; "
-                "its result is already known.",
-                file=sys.stderr,
+            _console.render_error(
+                _console.get_stderr_console(),
+                f"Evo-loop: STALLED on attempt {attempt_number}/{max_attempts} -- the model produced "
+                f"a candidate BYTE-IDENTICAL to the immediately preceding attempt, despite being shown "
+                f"fresh, real failing-test context. This is NOT exhaustion ({budget_remaining} "
+                "attempt(s) of budget remain unused) -- the model stopped varying its output, not the "
+                "budget running out. Not re-running the sandbox test; its result is already known.",
             )
             if attempt_history:
                 last = attempt_history[-1]
-                print(
-                    f"[KRATOS-SELF-WRITE-LOOP] the repeated candidate's known result (from attempt "
+                _console.render_note(
+                    _console.get_stderr_console(),
+                    f"Evo-loop: the repeated candidate's known result (from attempt "
                     f"{last.attempt_number}): passed={last.test_result.passed} "
                     f"exit_code={last.test_result.exit_code}",
-                    file=sys.stderr,
                 )
             return LoopOutcome(status="stalled_no_variation", keep_decision=None, attempt_history=attempt_history)
 
         if write_result.status != "staged":
-            print(
-                f"[KRATOS-SELF-WRITE-LOOP] WRITE STEP FAILED on attempt {attempt_number}/{max_attempts} "
-                f"-- {write_result.error}",
-                file=sys.stderr,
+            _console.render_error(
+                _console.get_stderr_console(),
+                f"Evo-loop: WRITE STEP FAILED on attempt {attempt_number}/{max_attempts} -- {write_result.error}",
             )
             return LoopOutcome(status="write_failed", keep_decision=None, attempt_history=attempt_history)
 
@@ -393,11 +393,11 @@ def run_self_write_loop(request: WriteRequest, max_attempts: int = MAX_ATTEMPTS)
         ))
 
         if test_result.infra_error is not None:
-            print(
-                f"[KRATOS-SELF-WRITE-LOOP] SANDBOX INFRASTRUCTURE ERROR on attempt {attempt_number} -- "
-                f"stopping immediately, NOT retrying (a broken sandbox is a Kratos problem, not a "
-                f"candidate problem): {test_result.infra_error}",
-                file=sys.stderr,
+            _console.render_error(
+                _console.get_stderr_console(),
+                f"Evo-loop: SANDBOX INFRASTRUCTURE ERROR on attempt {attempt_number} -- stopping "
+                f"immediately, NOT retrying (a broken sandbox is a Kratos problem, not a candidate "
+                f"problem): {test_result.infra_error}",
             )
             return LoopOutcome(status="infra_error", keep_decision=None, attempt_history=attempt_history)
 
@@ -423,20 +423,24 @@ def run_self_write_loop(request: WriteRequest, max_attempts: int = MAX_ATTEMPTS)
         # both threaded through WriteRequest.previous_code/previous_error (Phase 3c) so the next
         # call to write_candidate_tool shows them as a distinct, structured retry section rather
         # than folding them into the generic extra_context channel.
-        print(
-            f"[KRATOS-SELF-WRITE-LOOP] attempt {attempt_number}/{max_attempts} FAILED sandbox test "
-            f"(exit_code={test_result.exit_code}, timed_out={test_result.timed_out})",
-            file=sys.stderr,
+        _console.render_note(
+            _console.get_stderr_console(),
+            f"Evo-loop: attempt {attempt_number}/{max_attempts} failed the sandbox test "
+            f"(exit_code={test_result.exit_code}, timed_out={test_result.timed_out}) -- retrying with "
+            "the real error fed back.",
         )
         previous_code = write_result.staging_path.read_text(encoding="utf-8")
         previous_error = _build_retry_error_text(attempt_number, test_result)
 
-    print(
-        f"[KRATOS-SELF-WRITE-LOOP] EXHAUSTED {max_attempts} attempts, none passed -- NOT proceeding "
-        "to approval. Full attempt history:",
-        file=sys.stderr,
+    stderr_console = _console.get_stderr_console()
+    _console.render_error(
+        stderr_console,
+        f"Evo-loop: EXHAUSTED {max_attempts} attempts, none passed -- not proceeding to approval.",
     )
     for a in attempt_history:
         r = a.test_result
-        print(f"  attempt {a.attempt_number}: exit_code={r.exit_code} timed_out={r.timed_out} passed={r.passed}", file=sys.stderr)
+        stderr_console.print(
+            f"  attempt {a.attempt_number}: exit_code={r.exit_code} timed_out={r.timed_out} passed={r.passed}",
+            style=_console.TEXT_SECONDARY,
+        )
     return LoopOutcome(status="exhausted_retries", keep_decision=None, attempt_history=attempt_history)

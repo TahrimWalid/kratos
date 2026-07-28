@@ -1256,11 +1256,43 @@ def test_<something_specific>(registered_handler):
     <concrete, specific assertions on result's actual expected shape>
 ```
 
+TARGET-FACING GOALS (the idea is about data on the MONITORED device Kratos watches over SSH --
+users, processes, files, config, logs living THERE, not something Kratos already collected into
+a local file): the candidate you're testing will reach the target via
+`kratos.adapters.ssh_remote.run_remote_command`/`run_remote_script`. The sandbox that runs this
+test has NO NETWORK ACCESS AT ALL, by design -- an unmocked call would hang or fail regardless of
+whether the candidate's logic is correct. For a target-facing goal, your harness MUST mock the
+SSH layer with realistic fake output instead of calling registered_handler() directly:
+
+```python
+from unittest.mock import patch
+from kratos.adapters.ssh_remote import SSHResult
+
+def test_<something_specific>(registered_handler):
+    fake_output = "<realistic fake command output matching what the real target would return>"
+    with patch(
+        "kratos.adapters.ssh_remote.run_remote_command",
+        return_value=SSHResult(ok=True, returncode=0, stdout=fake_output, stderr=""),
+    ):
+        result = registered_handler()
+    <concrete, specific assertions on result's actual expected shape, reasoning about how the
+    candidate should have PARSED fake_output above>
+```
+
+Patch `kratos.adapters.ssh_remote.run_remote_command` (module-qualified, exactly as shown) --
+NOT some other path -- this works regardless of what name the candidate imports it under,
+because it patches the function where ssh_remote.py itself defines it. Use `run_remote_script`
+instead if the goal clearly needs a multi-line script rather than one command. Only do this for
+a genuinely target-facing goal -- a goal about data Kratos already has locally (existing scan/log
+files under data_dir) needs no mocking at all, call registered_handler() directly as shown in the
+main template above.
+
 RULES:
 - Keep the CANDIDATE_MODULE_PATH/_load_candidate/registered_handler fixture EXACTLY as shown -- that machinery is fixed, not yours to redesign.
 - TOOL_NAME must be exactly the tool name given to you, nothing else.
 - Write 1-3 test functions with REAL, SPECIFIC assertions reasoning about what this tool's return value should actually contain, based on the goal -- e.g. if the goal is about listing users, assert on a real, named key you'd expect (like checking for a "sudo_members" key and that it's a list), not just "assert isinstance(result, dict)".
 - You do NOT know the real implementation yet -- you are proposing a REASONABLE interface (return dict shape) for it to be judged against. A human will review and adjust this before it's ever used, so make a concrete, defensible choice rather than a vague one.
+- If the goal is target-facing (see above), mock the SSH layer as shown -- do not write a harness that will hang or fail in a no-network sandbox regardless of whether the candidate is correct.
 - Output ONLY the Python source code -- no markdown fences, no commentary before or after.
 '''
 
@@ -1347,11 +1379,30 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
 
         if drafted_code:
             _console.render_evolve_harness_template(console, drafted_code, path, drafted=True)
-            # Default NO here, unlike the draft prompt above -- writing a
-            # file is the more consequential action, so it needs an
-            # explicit "y", not just an Enter keypress.
-            want_save = input(f"Save this draft to {path} for you to review/edit? [y/N]: ").strip().lower()
-            if want_save in ("y", "yes"):
+            # Real UX complaint (2026-07-28): the old separate "save?"
+            # prompt dead-ended -- saying yes still meant manually retyping
+            # the WHOLE /evolve command to actually proceed, even though
+            # the draft was just fully read on screen seconds earlier.
+            # Collapsed into one choice with 3 real options instead of a
+            # generic y/n. Default (empty/unrecognized input) is DISCARD,
+            # the least consequential of the three -- matches this
+            # project's "no force-accept on anything consequential"
+            # pattern applied to whichever option here is most
+            # consequential (save-and-build-now actually starts the real
+            # write/sandbox/approval pipeline), not just the save step
+            # alone. Choosing save-and-build does NOT skip review -- the
+            # draft was already shown in full immediately above; retyping
+            # the same command a moment later wouldn't have shown it again
+            # or given a materially different opportunity to review it.
+            choice = input(
+                f"[s]ave and start building now, [e]dit it yourself first, or [d]iscard? [s/e/d, default d]: "
+            ).strip().lower()
+            if choice in ("s", "save"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(drafted_code, encoding="utf-8")
+                _console.render_success(console, f"Draft saved to {path} -- starting evo-loop now.")
+                return path
+            elif choice in ("e", "edit"):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(drafted_code, encoding="utf-8")
                 _console.render_success(console, f"Draft saved to {path}.")
@@ -1362,7 +1413,7 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
                     "/evolve again to actually build the tool.",
                 )
             else:
-                _console.render_note(console, f"Not saved -- write your own harness at {path}, then run /evolve again.")
+                _console.render_note(console, f"Discarded -- write your own harness at {path}, then run /evolve again.")
         else:
             template = _build_evolve_harness_template(template_slug, name_hint)
             _console.render_evolve_harness_template(console, template, path)

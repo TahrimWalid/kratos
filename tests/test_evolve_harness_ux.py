@@ -214,27 +214,46 @@ def test_declining_draft_falls_back_to_static_template(tmp_path, monkeypatch):
     assert render_mock.call_args.kwargs.get("drafted") is not True  # plain template, not the draft variant
 
 
-def test_accepting_draft_then_saving_writes_the_file(tmp_path, monkeypatch):
+def test_accepting_draft_then_choosing_save_and_build_returns_path(tmp_path, monkeypatch):
+    # Real UX fix (2026-07-28): "save and build now" returns the path
+    # directly, the SAME return shape as an already-existing file, so
+    # _cmd_evolve's existing flow proceeds straight into run_self_write_loop
+    # with no need to retype /evolve.
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    with patch("builtins.input", side_effect=[target, "y", "y"]), patch.object(
+    with patch("builtins.input", side_effect=[target, "y", "s"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ), patch.object(repl._console, "render_evolve_harness_template") as render_mock:
         result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
 
-    assert result is None  # still aborts -- a fresh /evolve is required to actually proceed
+    assert result == Path(target)
     assert render_mock.call_args.kwargs.get("drafted") is True
     saved = Path(target)
     assert saved.exists()
     assert saved.read_text(encoding="utf-8") == _VALID_DRAFT
 
 
-def test_accepting_draft_then_declining_save_writes_nothing(tmp_path, monkeypatch):
+def test_accepting_draft_then_choosing_edit_saves_but_aborts(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    with patch("builtins.input", side_effect=[target, "y", "n"]), patch.object(
+    with patch("builtins.input", side_effect=[target, "y", "e"]), patch.object(
+        repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
+    ), patch.object(repl._console, "render_evolve_harness_template"):
+        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+
+    assert result is None  # aborts -- a fresh /evolve is required to actually proceed
+    saved = Path(target)
+    assert saved.exists()
+    assert saved.read_text(encoding="utf-8") == _VALID_DRAFT
+
+
+def test_accepting_draft_then_choosing_discard_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    target = "tests/self_write_harnesses/test_list_sudo_members.py"
+
+    with patch("builtins.input", side_effect=[target, "y", "d"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ), patch.object(repl._console, "render_evolve_harness_template"):
         result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
@@ -249,7 +268,7 @@ def test_draft_default_yes_on_empty_input(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    with patch("builtins.input", side_effect=[target, "", "n"]), patch.object(
+    with patch("builtins.input", side_effect=[target, "", "d"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ) as draft_mock, patch.object(repl._console, "render_evolve_harness_template"):
         repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
@@ -257,18 +276,24 @@ def test_draft_default_yes_on_empty_input(tmp_path, monkeypatch):
     draft_mock.assert_called_once()
 
 
-def test_save_default_no_on_empty_input(tmp_path, monkeypatch):
-    # Empty input on the SECOND prompt (save?) means no -- writing a file
-    # is the more consequential action, so it needs an explicit "y".
+def test_save_choice_default_discard_on_empty_or_unrecognized_input(tmp_path, monkeypatch):
+    # Empty/unrecognized input on the SECOND prompt (save/edit/discard?)
+    # means discard -- the LEAST consequential of the three options, matching
+    # this project's "no force-accept on anything consequential" pattern
+    # applied to whichever choice is most consequential here (save-and-build,
+    # which starts the real pipeline), not just a plain save/no-save binary.
     monkeypatch.chdir(tmp_path)
     target = "tests/self_write_harnesses/test_list_sudo_members.py"
 
-    with patch("builtins.input", side_effect=[target, "y", ""]), patch.object(
-        repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
-    ), patch.object(repl._console, "render_evolve_harness_template"):
-        repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+    for garbage_answer in ("", "y", "whatever"):
+        Path(target).unlink(missing_ok=True)
+        with patch("builtins.input", side_effect=[target, "y", garbage_answer]), patch.object(
+            repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
+        ), patch.object(repl._console, "render_evolve_harness_template"):
+            result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
 
-    assert not Path(target).exists()
+        assert result is None
+        assert not Path(target).exists()
 
 
 def test_failed_draft_falls_back_to_static_template(tmp_path, monkeypatch):

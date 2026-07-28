@@ -57,11 +57,12 @@ that original cost, not image unpacking.
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+from kratos.agent import console as _console
 
 INCUS_BASE_IMAGE = "images:ubuntu/jammy"    # same base image kratos-target/attacker-box use
 SANDBOX_IMAGE_ALIAS = "kratos-sandbox-base"  # one-time-built, then locally cached
@@ -274,5 +275,12 @@ def run_sandbox_test(
         # --force (stop+delete) is used directly as a stronger guarantee
         # that doesn't depend on that flag having taken effect correctly.
         if launched:
-            print(f"[KRATOS-SELF-TEST] tearing down sandbox container {container}", file=sys.stderr)
+            # De-emphasized (TEXT_SECONDARY, not the default ATTENTION amber) --
+            # routine cleanup bookkeeping, not something decision-relevant for
+            # a human watching evo-loop run.
+            _console.render_note(
+                _console.get_stderr_console(),
+                f"Evo-loop: tearing down sandbox container {container}",
+                style=_console.TEXT_SECONDARY,
+            )
             _run_incus(["delete", container, "--force"], timeout=30)

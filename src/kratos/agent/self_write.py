@@ -27,13 +27,13 @@ from __future__ import annotations
 import ast
 import difflib
 import re
-import sys
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from kratos.agent import console as _console
 from kratos.llm_interface import agent_chat
 from kratos.llm_config import MAX_TOKENS
 
@@ -160,6 +160,37 @@ as received. Real precedent, from agent/tools.py's tool_parse_auth_log:
 Follow this pattern for any path-like argument your tool takes: convert with `Path(...)` before
 using any Path-only method. Do not assume the caller already converted it for you.
 
+TARGET-FACING TOOLS (reaching the MONITORED device, not Kratos's own host, over SSH):
+Some goals are about data that only exists on the SEPARATE device Kratos monitors -- users,
+processes, open files, config, logs living on that machine -- not anything already collected
+into a local JSON/XML file under data_dir. For a goal like this, do NOT invent a local-file data
+source under data_dir; that data is not there. Instead, import the ssh_remote MODULE (not
+individual names from it -- this matters, see below) and call one of its two fixed-command
+functions:
+
+    from kratos.adapters import ssh_remote
+
+    def tool_<name>() -> dict[str, Any]:
+        result = ssh_remote.run_remote_command("cat /etc/group | grep '^sudo:'")
+        if not result.ok:
+            return {"status": "error", "observation": f"command failed: {(result.stderr or result.stdout).strip()}"}
+        # ... parse result.stdout into your return shape ...
+        return {"status": "ok", "target": ssh_remote.target_label(), ...}
+
+`run_remote_command(command)` runs one command string on the target over SSH; `run_remote_script
+(script)` runs a multi-line script via `bash -s` (use this if you need more than one command).
+Both return an SSHResult (`.ok`, `.returncode`, `.stdout`, `.stderr`) -- never raise on a failed
+command, so always check `.ok` before trusting `.stdout`. The command/script string itself MUST
+be fixed at write time (a literal you write, optionally with fixed flags) -- never build it from
+a caller-supplied argument; that would turn this into a generic remote-command executor, which
+Kratos never allows regardless of how the tool is framed (see agent/tools.py's run_linux_command
+and CLAUDE.md's permanent boundary on this if you need the full reasoning).
+IMPORTANT -- import the MODULE (`from kratos.adapters import ssh_remote`), never individual names
+(`from kratos.adapters.ssh_remote import run_remote_command`): the human-authored test harness
+that will judge this code needs to mock the SSH layer (the sandbox that tests it has no network
+access at all, by design), and mocking only works reliably against the module-qualified call
+shown above -- a bare imported name breaks that.
+
 RULES:
 - Output ONLY the Python source code for this one tool -- no markdown fences, no commentary \
 before or after, no explanation. If you do use fences, put ONLY code inside them.
@@ -174,9 +205,11 @@ reasoning genuinely isn't obvious from the code.
 if optional) and explicitly converted with `Path(...)` before any Path-only method is called on \
 it -- never type a parameter as bare `Path` and call `.read_text()`/`.exists()`/etc. directly on \
 the value as received. See REAL INVOCATION CONTRACT above.
-- The function must not perform network access, subprocess calls, or file writes outside of \
-reading the input path(s) it's given as arguments -- this tool will later run in a sandbox with \
-no such access, and code that assumes it has any will fail there regardless of logic correctness.
+- The function must not perform network access, subprocess calls, or file writes of its own \
+EXCEPT via ssh_remote.run_remote_command/run_remote_script as described above for a genuinely \
+target-facing goal -- this tool will later run in a sandbox with no real network access, and the \
+human-authored test harness is expected to mock the SSH layer for exactly that reason. Do not \
+add any OTHER network access, subprocess call, or file write beyond that one documented path.
 """
 
 
@@ -410,7 +443,7 @@ def write_candidate_tool(
         raw = agent_chat(system_prompt=SYSTEM_PROMPT, user_prompt=user_prompt, max_tokens=MAX_TOKENS)
 
         if raw is None:
-            print("[KRATOS-SELF-WRITE] LLM backend unavailable, aborting write step.", file=sys.stderr)
+            _console.render_error(_console.get_stderr_console(), "Evo-loop: LLM backend unavailable, aborting write step.")
             return WriteResult(status="failed", attempts=attempt, error="LLM backend unavailable (agent_chat returned None).")
 
         code = _extract_code(raw)
@@ -435,12 +468,11 @@ def write_candidate_tool(
         # otherwise valid (an already-broken repeat is still just broken,
         # nothing new to report there).
         if not problems and anchor_code is not None and code == anchor_code:
-            print(
-                f"[KRATOS-SELF-WRITE] attempt {attempt}/{max_attempts}: response is BYTE-IDENTICAL "
-                "to the anchor -- no variation despite fresh failing-test context. Stopping this "
-                "write step immediately rather than silently consuming another attempt on a known "
-                "repeat.",
-                file=sys.stderr,
+            _console.render_note(
+                _console.get_stderr_console(),
+                f"Evo-loop: attempt {attempt}/{max_attempts} is BYTE-IDENTICAL to the anchor -- no "
+                "variation despite fresh failing-test context. Stopping this write step immediately "
+                "rather than silently consuming another attempt on a known repeat.",
             )
             return WriteResult(status="no_variation", tool_name=tool_name, attempts=attempt)
 
@@ -475,7 +507,10 @@ def write_candidate_tool(
                 "-- staging would hand Part D an unnamed candidate; refusing to proceed silently."
             )
             staging_path = _stage(code, staging_dir, request.goal)
-            print(f"[KRATOS-SELF-WRITE] staged candidate '{tool_name}' -> {staging_path} (attempt {attempt}/{max_attempts})", file=sys.stderr)
+            _console.render_note(
+                _console.get_stderr_console(),
+                f"Evo-loop: staged candidate '{tool_name}' (attempt {attempt}/{max_attempts}) -> {staging_path}",
+            )
             return WriteResult(status="staged", staging_path=staging_path, tool_name=tool_name, attempts=attempt)
 
         last_problems = problems
@@ -503,7 +538,10 @@ def write_candidate_tool(
             display_code = code
             display_error = "\n".join(f"- {p}" for p in problems)
             rejected_before_testing = True
-        print(f"[KRATOS-SELF-WRITE] attempt {attempt}/{max_attempts} failed sanity check: {display_error}", file=sys.stderr)
+        _console.render_error(
+            _console.get_stderr_console(),
+            f"Evo-loop: attempt {attempt}/{max_attempts} failed sanity check: {display_error}",
+        )
 
     return WriteResult(
         status="failed",
