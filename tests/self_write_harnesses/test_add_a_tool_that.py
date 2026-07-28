@@ -1,0 +1,95 @@
+"""
+Validates that the add_a_tool_that tool correctly identifies users with sudo access
+on the monitored target over SSH.
+"""
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from kratos.adapters.ssh_remote import SSHResult
+
+CANDIDATE_MODULE_PATH = os.environ.get("CANDIDATE_MODULE_PATH")
+TOOL_NAME = "add_a_tool_that"
+
+
+def _load_candidate():
+    if not CANDIDATE_MODULE_PATH:
+        pytest.skip(
+            "CANDIDATE_MODULE_PATH not set -- this harness is meant to be pointed at a staged "
+            "candidate (by Part B) or a reference implementation (manual sanity check)."
+        )
+    path = Path(CANDIDATE_MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("candidate_tool_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def registered_handler():
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    _load_candidate()
+    assert TOOL_NAME in TOOL_REGISTRY, (
+        f"Candidate did not register a tool named '{TOOL_NAME}' via @register_tool -- "
+        f"found instead: {sorted(TOOL_REGISTRY.keys())}"
+    )
+    return TOOL_REGISTRY[TOOL_NAME].handler
+
+
+def _fake_ssh_response(command, *args, **kwargs):
+    """Realistic canned output for the commands a sudo-listing tool would plausibly
+    issue over SSH. The sandbox this harness runs in has NO real network access (by
+    design), so a candidate's real SSH calls must be mocked here, not made for real --
+    an unmocked call would just fail/time out regardless of whether the candidate's
+    own logic is correct (this is exactly what broke here before this fix: the write
+    step now correctly writes real ssh_remote calls, but this harness never mocked
+    them, so every attempt failed on a network error that had nothing to do with the
+    candidate's actual code). "sudo:x:27:sysadmin,komil" is the real target's own
+    /etc/group sudo line (see CLAUDE.md's Operational facts) -- using real data here
+    so a correct implementation's result is independently checkable against reality."""
+    cmd = command if isinstance(command, str) else " ".join(command)
+    if "sudo" in cmd and "getent" in cmd:
+        return SSHResult(ok=True, returncode=0, stdout="sudo:x:27:sysadmin,komil", stderr="")
+    if "wheel" in cmd:
+        return SSHResult(ok=False, returncode=2, stdout="", stderr="getent: Unknown group: wheel")
+    if "sudoers" in cmd:
+        return SSHResult(
+            ok=True, returncode=0,
+            stdout="root    ALL=(ALL:ALL) ALL\n%sudo   ALL=(ALL:ALL) ALL\n",
+            stderr="",
+        )
+    return SSHResult(ok=True, returncode=0, stdout="", stderr="")
+
+
+def test_sudo_users_structure(registered_handler):
+    # This tool is expected to return a dict containing lists of authorized entities
+    with patch("kratos.adapters.ssh_remote.run_remote_command", side_effect=_fake_ssh_response), \
+         patch("kratos.adapters.ssh_remote.run_remote_script", side_effect=_fake_ssh_response):
+        result = registered_handler()
+
+    assert isinstance(result, dict)
+    assert "users" in result, "Result must contain a list of individual users with sudo access"
+    assert "groups" in result, "Result must contain a list of groups with sudo access"
+    assert isinstance(result["users"], list)
+    assert isinstance(result["groups"], list)
+
+def test_sudo_users_nonempty(registered_handler):
+    # 'root' is intentionally NOT asserted here: root already has full
+    # privileges and typically isn't listed as a member of the sudo group
+    # (getent group sudo / /etc/group's sudo line lists explicit members
+    # like real admin usernames, not root) -- a correct implementation that
+    # only reports actual sudo-group members would fail a "root must be
+    # present" check. The fake sudo group membership above ("sysadmin,
+    # komil") matches the real target's actual /etc/group sudo line, so a
+    # correct implementation should find at least those two users.
+    with patch("kratos.adapters.ssh_remote.run_remote_command", side_effect=_fake_ssh_response), \
+         patch("kratos.adapters.ssh_remote.run_remote_script", side_effect=_fake_ssh_response):
+        result = registered_handler()
+
+    assert len(result["users"]) >= 1, "At least one user with sudo access should be found on a real system"
+    assert all(isinstance(user, str) and user for user in result["users"]), "Usernames must be non-empty strings"
