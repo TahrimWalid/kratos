@@ -353,7 +353,9 @@ def render_evolve_suggestion(console: Console, name: str, description: str) -> N
     console.print(Panel(body, title="Evo-loop suggestion", border_style=ATTENTION))
 
 
-def render_evolve_harness_template(console: Console, template_text: str, suggested_path: Path) -> None:
+def render_evolve_harness_template(
+    console: Console, template_text: str, suggested_path: Path, drafted: bool = False
+) -> None:
     """cli/repl.py::_resolve_evolve_test_file's starter-scaffold display,
     shown when the suggested/given pytest harness path doesn't exist --
     2026-07-28 UX fix, real complaint: the old "create it first" message
@@ -364,12 +366,22 @@ def render_evolve_harness_template(console: Console, template_text: str, suggest
     exact-copy-paste risk that motivated that other panel's choice doesn't
     apply here -- same Syntax(..., word_wrap=True, background_color=
     "default") shape render_approval_situation already uses for source
-    display. Never implies this should be saved as-is -- title and the
-    template's own TODO comments both say so."""
+    display. Never implies this should be saved as-is -- title and (for the
+    plain template) the template's own TODO comments both say so.
+    `drafted=True` (added the same day, LLM-drafted harness review flow):
+    same rendering, a louder title making clear this is unreviewed AI
+    output specifically, not this project's usual generic "starter
+    template" framing -- the reviewer's attention should go to whether the
+    model's assumed interface/assertions are actually right, not just
+    whether the boilerplate is filled in."""
+    if drafted:
+        title = f"LLM-DRAFTED, UNREVIEWED harness for {suggested_path} -- read before saving"
+    else:
+        title = f"Starter harness (save to {suggested_path}, then edit the TODOs before running /evolve again)"
     console.print(
         Panel(
             Syntax(template_text, "python", word_wrap=True, background_color="default"),
-            title=f"Starter harness (save to {suggested_path}, then edit the TODOs before running /evolve again)",
+            title=title,
             border_style=ATTENTION,
         )
     )

@@ -22,6 +22,7 @@ guaranteed rather than something that has to be separately kept in sync.
 """
 from __future__ import annotations
 
+import ast
 import json
 import re
 import time
@@ -1194,6 +1195,124 @@ def test_{tool_name}_behaves_correctly(registered_handler):
 '''
 
 
+# LLM-drafted harness review flow (2026-07-28) -- real user complaint: even
+# a starter TEMPLATE (above) still means staring at boilerplate and writing
+# the real, idea-specific assertions entirely from scratch. This drafts an
+# actual, idea-grounded harness via the LLM instead -- but critically, this
+# is still not "auto-generate the test and trust it": the draft is only
+# ever SHOWN, saving it to disk requires an explicit "y", and even after
+# saving, /evolve still aborts (same as the plain-template path) -- a
+# separate, deliberate re-run of /evolve is required to actually proceed,
+# giving a real window for the human to open the file and edit it. The
+# human-authored-test principle isn't relaxed, just the cold-start cost of
+# getting to a real first draft is.
+_EVOLVE_HARNESS_DRAFT_SYSTEM_PROMPT = '''You are drafting a PYTEST TEST HARNESS for a new Kratos tool that does not exist yet -- you are NOT writing the tool's implementation. This test file is what will later define "correct" for whatever code gets written against it, so its assertions must be concrete and specific to the goal given to you, not generic placeholders.
+
+Kratos's self-writing pipeline loads a candidate tool module and exposes its path via the CANDIDATE_MODULE_PATH environment variable. Every harness in this project follows the EXACT same shape -- match it precisely, including the parts that look like fixed boilerplate:
+
+```python
+"""
+<one or two sentences: what this test validates and why>
+"""
+from __future__ import annotations
+
+import importlib.util
+import os
+from pathlib import Path
+
+import pytest
+
+CANDIDATE_MODULE_PATH = os.environ.get("CANDIDATE_MODULE_PATH")
+TOOL_NAME = "<the exact tool name given to you>"
+
+
+def _load_candidate():
+    if not CANDIDATE_MODULE_PATH:
+        pytest.skip(
+            "CANDIDATE_MODULE_PATH not set -- this harness is meant to be pointed at a staged "
+            "candidate (by Part B) or a reference implementation (manual sanity check)."
+        )
+    path = Path(CANDIDATE_MODULE_PATH)
+    spec = importlib.util.spec_from_file_location("candidate_tool_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def registered_handler():
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    _load_candidate()
+    assert TOOL_NAME in TOOL_REGISTRY, (
+        f"Candidate did not register a tool named '{TOOL_NAME}' via @register_tool -- "
+        f"found instead: {sorted(TOOL_REGISTRY.keys())}"
+    )
+    return TOOL_REGISTRY[TOOL_NAME].handler
+
+
+def test_<something_specific>(registered_handler):
+    result = registered_handler(<real, representative arguments if the tool takes any>)
+    <concrete, specific assertions on result's actual expected shape>
+```
+
+RULES:
+- Keep the CANDIDATE_MODULE_PATH/_load_candidate/registered_handler fixture EXACTLY as shown -- that machinery is fixed, not yours to redesign.
+- TOOL_NAME must be exactly the tool name given to you, nothing else.
+- Write 1-3 test functions with REAL, SPECIFIC assertions reasoning about what this tool's return value should actually contain, based on the goal -- e.g. if the goal is about listing users, assert on a real, named key you'd expect (like checking for a "sudo_members" key and that it's a list), not just "assert isinstance(result, dict)".
+- You do NOT know the real implementation yet -- you are proposing a REASONABLE interface (return dict shape) for it to be judged against. A human will review and adjust this before it's ever used, so make a concrete, defensible choice rather than a vague one.
+- Output ONLY the Python source code -- no markdown fences, no commentary before or after.
+'''
+
+
+def _draft_evolve_harness(console, slug: str, goal: str) -> str | None:
+    """Drafts a real, idea-specific starter harness via the LLM -- reuses
+    agent_chat (the same query mechanism agent/loop.py and agent/self_write.py's
+    own write step already use, not a new one) and self_write.py's own
+    _extract_code fence-stripping, not a duplicated copy. Returns None
+    (never raises) on ANY failure -- LLM unavailable, invalid Python, or a
+    TOOL_NAME that doesn't match what was actually asked for -- so the
+    caller falls back to the plain static template rather than showing or
+    saving something broken. The TOOL_NAME check is a real structural
+    guard, not just a prompt instruction: this project has hit "a prompt
+    instruction alone doesn't guarantee X" before (the data_dir/target
+    dispatch guards), and a harness silently testing the wrong tool name
+    would be a subtle, easy-to-miss-on-a-skim failure mode. This function
+    only ever returns text -- it never writes to disk itself, see
+    _resolve_evolve_test_file for the explicit, separate save step."""
+    from kratos.agent.self_write import _extract_code
+    from kratos.llm_config import MAX_TOKENS
+
+    user_prompt = f"Tool name: {slug}\nGoal: {goal}\n\nWrite the pytest harness now."
+    raw = agent_chat(
+        system_prompt=_EVOLVE_HARNESS_DRAFT_SYSTEM_PROMPT, user_prompt=user_prompt, max_tokens=MAX_TOKENS
+    )
+    if raw is None:
+        _console.render_error(
+            console, "Could not reach the LLM to draft a harness -- showing a plain starter template instead."
+        )
+        return None
+
+    code = _extract_code(raw)
+    try:
+        ast.parse(code)
+    except SyntaxError as e:
+        _console.render_error(
+            console, f"The drafted harness wasn't valid Python ({e}) -- showing a plain starter template instead."
+        )
+        return None
+
+    if f'TOOL_NAME = "{slug}"' not in code and f"TOOL_NAME = '{slug}'" not in code:
+        _console.render_error(
+            console,
+            f"The drafted harness didn't use TOOL_NAME = {slug!r} as required -- showing a plain "
+            "starter template instead.",
+        )
+        return None
+
+    return code
+
+
 def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
     """WriteRequest.test_file is required and never auto-generated (see
     module-level comment above) -- prompts for a real path, suggesting
@@ -1216,8 +1335,37 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
             console, f"No test file found at {path} -- create it first, then run /evolve again."
         )
         template_slug = _slugify_name_hint(path.stem.removeprefix("test_") or name_hint)
-        template = _build_evolve_harness_template(template_slug, name_hint)
-        _console.render_evolve_harness_template(console, template, path)
+
+        # Default yes -- an Enter keypress takes the more helpful path; "n"
+        # opts straight out to the plain static template for anyone who'd
+        # rather write from scratch or skip the LLM call/wait.
+        want_draft = input("Draft a starter harness with the LLM for you to review? [Y/n]: ").strip().lower()
+        drafted_code = None
+        if want_draft in ("", "y", "yes"):
+            _console.render_note(console, "Drafting a starter harness (calls the LLM, can take a moment)...")
+            drafted_code = _draft_evolve_harness(console, template_slug, name_hint)
+
+        if drafted_code:
+            _console.render_evolve_harness_template(console, drafted_code, path, drafted=True)
+            # Default NO here, unlike the draft prompt above -- writing a
+            # file is the more consequential action, so it needs an
+            # explicit "y", not just an Enter keypress.
+            want_save = input(f"Save this draft to {path} for you to review/edit? [y/N]: ").strip().lower()
+            if want_save in ("y", "yes"):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(drafted_code, encoding="utf-8")
+                _console.render_success(console, f"Draft saved to {path}.")
+                _console.render_note(
+                    console,
+                    "REVIEW IT before continuing -- especially the assertions, which are the model's "
+                    "best guess at this tool's interface, not a verified fact. Edit as needed, then run "
+                    "/evolve again to actually build the tool.",
+                )
+            else:
+                _console.render_note(console, f"Not saved -- write your own harness at {path}, then run /evolve again.")
+        else:
+            template = _build_evolve_harness_template(template_slug, name_hint)
+            _console.render_evolve_harness_template(console, template, path)
         return None
     return path
 
