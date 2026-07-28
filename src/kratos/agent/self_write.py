@@ -191,9 +191,24 @@ that will judge this code needs to mock the SSH layer (the sandbox that tests it
 access at all, by design), and mocking only works reliably against the module-qualified call
 shown above -- a bare imported name breaks that.
 
+PARTIAL FAILURES INSIDE A LOOP (do not silently shrink the result set):
+If your tool iterates over multiple items (ports, users, processes, files, ...) and a per-item
+sub-step can independently fail, come back empty, or be unidentifiable for just ONE item (e.g. a
+listening socket's owning process isn't visible without elevated privileges, or one user's
+crontab can't be read), do NOT simply skip that item and omit it from the result. For a
+security-investigation tool, a silently-shrunk result set is worse than an incomplete one -- it
+can hide exactly the entry an investigator most needs to see (an unattributed listening port is a
+more suspicious finding than an attributed one, not a less interesting one). Always include the
+item, with the failed/unresolved sub-fields set to `None` (or a short "error"/"unknown" marker
+string), so the caller can see it was present but not fully resolved. Only omit an item entirely
+when it genuinely isn't in the source data at all -- never because one piece of enrichment about
+it failed.
+
 RULES:
 - Output ONLY the Python source code for this one tool -- no markdown fences, no commentary \
 before or after, no explanation. If you do use fences, put ONLY code inside them.
+- When iterating over multiple items, never let a failed/missing per-item sub-step remove that \
+item from the result entirely -- see PARTIAL FAILURES INSIDE A LOOP above.
 - Do NOT write a test. A human-authored test file is given to you below so you know the exact \
 interface (tool name, handler argument names, return shape) you must implement -- match it \
 exactly, since that test is what your code will be judged against later.
