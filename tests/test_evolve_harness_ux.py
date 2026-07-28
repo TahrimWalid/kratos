@@ -7,7 +7,7 @@ the static starter template still meant hand-writing every real assertion
 from a blank slate ("it should be as easy as asking Claude Code to create
 a function").
 
-Three fixes, all covered here:
+Four fixes, all covered here:
   1. _slugify_name_hint caps word count -- the suggested default is always
      short, not a full-sentence slug.
   2. _resolve_evolve_test_file shows a real starter pytest harness template
@@ -20,6 +20,12 @@ Three fixes, all covered here:
      same command, and saving requires an explicit "y", so a human still
      has to take a deliberate, separate action before the draft is ever
      used as evo-loop's actual correctness bar.
+  4. _resolve_evolve_tool_name + _suggest_evolve_tool_name: a real naming
+     step instead of the old purely-mechanical slug -- type your own name,
+     or press Enter to have the LLM propose one from the goal. tool_name is
+     now resolved ONCE and threaded through consistently (the suggested
+     path AND the drafted/template harness's TOOL_NAME), rather than being
+     re-derived from whatever file path the user ends up typing.
 """
 from __future__ import annotations
 
@@ -85,7 +91,7 @@ def test_missing_file_shows_template_and_writes_nothing(tmp_path, monkeypatch):
     with patch("builtins.input", return_value=target), patch.object(
         repl._console, "render_evolve_harness_template"
     ) as render_mock:
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result is None
     render_mock.assert_called_once()
@@ -105,7 +111,7 @@ def test_existing_file_returned_unaffected(tmp_path, monkeypatch):
     with patch("builtins.input", return_value=str(real_file)), patch.object(
         repl._console, "render_evolve_harness_template"
     ) as render_mock:
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result == real_file
     render_mock.assert_not_called()
@@ -206,7 +212,7 @@ def test_declining_draft_falls_back_to_static_template(tmp_path, monkeypatch):
     with patch("builtins.input", side_effect=[target, "n"]), patch.object(
         repl, "_draft_evolve_harness"
     ) as draft_mock, patch.object(repl._console, "render_evolve_harness_template") as render_mock:
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result is None
     draft_mock.assert_not_called()
@@ -225,7 +231,7 @@ def test_accepting_draft_then_choosing_save_and_build_returns_path(tmp_path, mon
     with patch("builtins.input", side_effect=[target, "y", "s"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ), patch.object(repl._console, "render_evolve_harness_template") as render_mock:
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result == Path(target)
     assert render_mock.call_args.kwargs.get("drafted") is True
@@ -241,7 +247,7 @@ def test_accepting_draft_then_choosing_edit_saves_but_aborts(tmp_path, monkeypat
     with patch("builtins.input", side_effect=[target, "y", "e"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ), patch.object(repl._console, "render_evolve_harness_template"):
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result is None  # aborts -- a fresh /evolve is required to actually proceed
     saved = Path(target)
@@ -256,7 +262,7 @@ def test_accepting_draft_then_choosing_discard_writes_nothing(tmp_path, monkeypa
     with patch("builtins.input", side_effect=[target, "y", "d"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ), patch.object(repl._console, "render_evolve_harness_template"):
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result is None
     assert not Path(target).exists()
@@ -271,7 +277,7 @@ def test_draft_default_yes_on_empty_input(tmp_path, monkeypatch):
     with patch("builtins.input", side_effect=[target, "", "d"]), patch.object(
         repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
     ) as draft_mock, patch.object(repl._console, "render_evolve_harness_template"):
-        repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     draft_mock.assert_called_once()
 
@@ -290,7 +296,7 @@ def test_save_choice_default_discard_on_empty_or_unrecognized_input(tmp_path, mo
         with patch("builtins.input", side_effect=[target, "y", garbage_answer]), patch.object(
             repl, "_draft_evolve_harness", return_value=_VALID_DRAFT
         ), patch.object(repl._console, "render_evolve_harness_template"):
-            result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+            result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
         assert result is None
         assert not Path(target).exists()
@@ -303,9 +309,74 @@ def test_failed_draft_falls_back_to_static_template(tmp_path, monkeypatch):
     with patch("builtins.input", side_effect=[target, "y"]), patch.object(
         repl, "_draft_evolve_harness", return_value=None
     ), patch.object(repl._console, "render_evolve_harness_template") as render_mock:
-        result = repl._resolve_evolve_test_file(MagicMock(), LONG_IDEA)
+        result = repl._resolve_evolve_test_file(MagicMock(), "list_sudo_members", LONG_IDEA)
 
     assert result is None
     render_mock.assert_called_once()
     assert render_mock.call_args.kwargs.get("drafted") is not True
     assert not Path(target).exists()
+
+
+# ---------------------------------------------------------------------------
+# _suggest_evolve_tool_name / _resolve_evolve_tool_name -- LLM-based naming
+# ---------------------------------------------------------------------------
+def test_suggest_tool_name_returns_none_when_llm_unavailable():
+    with patch.object(repl, "agent_chat", return_value=None):
+        result = repl._suggest_evolve_tool_name(LONG_IDEA)
+    assert result is None
+
+
+def test_suggest_tool_name_sanitizes_the_response():
+    # Reuses _slugify_name_hint on whatever the LLM returns -- a clean
+    # snake_case reply survives unchanged, but this must also cope with an
+    # LLM adding stray formatting rather than trusting the prompt alone.
+    with patch.object(repl, "agent_chat", return_value="  `list_sudo_members`  "):
+        result = repl._suggest_evolve_tool_name(LONG_IDEA)
+    assert result == "list_sudo_members"
+
+
+def test_resolve_tool_name_uses_typed_name_directly():
+    with patch("builtins.input", return_value="my_custom_name"), patch.object(
+        repl, "_suggest_evolve_tool_name"
+    ) as suggest_mock:
+        result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA)
+    assert result == "my_custom_name"
+    suggest_mock.assert_not_called()  # typed a name -- no LLM call needed
+
+
+def test_resolve_tool_name_calls_llm_on_empty_input():
+    with patch("builtins.input", return_value=""), patch.object(
+        repl, "_suggest_evolve_tool_name", return_value="list_sudo_members"
+    ) as suggest_mock:
+        result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA)
+    assert result == "list_sudo_members"
+    suggest_mock.assert_called_once_with(LONG_IDEA)
+
+
+def test_resolve_tool_name_falls_back_to_mechanical_slug_on_llm_failure():
+    with patch("builtins.input", return_value=""), patch.object(
+        repl, "_suggest_evolve_tool_name", return_value=None
+    ):
+        result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA)
+    assert result == repl._slugify_name_hint(LONG_IDEA)  # the existing mechanical fallback
+
+
+def test_resolve_tool_name_offers_pending_suggestion_as_default():
+    # A real auto-suggested tool_proposal already includes the model's own
+    # chosen name -- pressing Enter should accept THAT directly, no fresh
+    # LLM call needed.
+    with patch("builtins.input", return_value=""), patch.object(
+        repl, "_suggest_evolve_tool_name"
+    ) as suggest_mock:
+        result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA, suggested_name="parse_journalctl_to_json")
+    assert result == "parse_journalctl_to_json"
+    suggest_mock.assert_not_called()
+
+
+def test_resolve_tool_name_can_override_pending_suggestion():
+    with patch("builtins.input", return_value="a_better_name"), patch.object(
+        repl, "_suggest_evolve_tool_name"
+    ) as suggest_mock:
+        result = repl._resolve_evolve_tool_name(MagicMock(), LONG_IDEA, suggested_name="parse_journalctl_to_json")
+    assert result == "a_better_name"
+    suggest_mock.assert_not_called()

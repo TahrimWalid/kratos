@@ -1345,7 +1345,67 @@ def _draft_evolve_harness(console, slug: str, goal: str) -> str | None:
     return code
 
 
-def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
+# Real feature request (2026-07-28), direct follow-up to the "add_a_tool_that"
+# naming complaint: the suggested harness path (and therefore the tool's
+# eventual registered name) used to come from a purely mechanical slug --
+# the first few words of the idea text, no understanding of what the tool
+# actually does. Now there's a real naming step: type your own name, or
+# press Enter to have the LLM propose one FROM the goal, reusing the same
+# agent_chat mechanism harness-drafting already uses.
+def _suggest_evolve_tool_name(goal: str) -> str | None:
+    """LLM-based tool name suggestion, used only when the user pressed Enter
+    at the naming prompt instead of typing their own. Returns None (never
+    raises) on any LLM failure so the caller falls back to the existing
+    mechanical slug rather than blocking /evolve on a naming step that
+    couldn't complete. Reuses _slugify_name_hint to sanitize the response --
+    the same guard that already keeps a suggested slug short and
+    identifier-safe applies here too, regardless of whatever extra
+    formatting the LLM's raw answer might include."""
+    system_prompt = (
+        "You name new tools for Kratos, an offline security investigation assistant. Given a "
+        "short goal describing what a new tool should do, respond with EXACTLY ONE good, "
+        "specific, descriptive tool name in snake_case Python-identifier form (lowercase "
+        "letters, digits, underscores only; 2-5 words joined by underscores) -- nothing else, "
+        "no explanation, no punctuation beyond underscores, no quotes, no markdown."
+    )
+    raw = agent_chat(system_prompt=system_prompt, user_prompt=f"Goal: {goal}\n\nTool name:", max_tokens=32)
+    if raw is None:
+        return None
+    return _slugify_name_hint(raw) or None
+
+
+def _resolve_evolve_tool_name(console, goal: str, suggested_name: str | None = None) -> str:
+    """Prompts for a tool name. If one is already known (a real
+    auto-suggested tool_proposal already includes the model's own chosen
+    name -- see session_state['pending_evolve_suggestion']), it's offered
+    as the default: pressing Enter just accepts it, no extra LLM call
+    needed. Otherwise pressing Enter triggers a FRESH LLM call to suggest
+    one from the goal text. Always returns a real, non-empty slug -- an
+    LLM failure or unusable response falls back to the existing mechanical
+    slug (first few words of the goal) rather than blocking /evolve."""
+    if suggested_name:
+        default_slug = _slugify_name_hint(suggested_name)
+        raw = input(f"Name this tool (snake_case) [{default_slug}]: ").strip()
+        return _slugify_name_hint(raw) if raw else default_slug
+
+    raw = input(
+        "Name this tool (snake_case), or press Enter to let the LLM suggest one from your idea: "
+    ).strip()
+    if raw:
+        return _slugify_name_hint(raw)
+
+    _console.render_note(console, "Asking the LLM to suggest a tool name...")
+    llm_suggestion = _suggest_evolve_tool_name(goal)
+    if llm_suggestion:
+        _console.render_success(console, f"Suggested name: {llm_suggestion}")
+        return llm_suggestion
+
+    fallback = _slugify_name_hint(goal)
+    _console.render_note(console, f"Could not get a name suggestion from the LLM -- using '{fallback}' instead.")
+    return fallback
+
+
+def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None:
     """WriteRequest.test_file is required and never auto-generated (see
     module-level comment above) -- prompts for a real path, suggesting
     this project's own established convention
@@ -1353,9 +1413,17 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
     never assuming it already exists. Returns None (never raises) if the
     given/suggested path doesn't exist, so the caller aborts cleanly
     rather than handing run_self_write_loop a path that will fail later
-    with a less clear error."""
-    slug = _slugify_name_hint(name_hint)
-    suggested = Path("tests") / "self_write_harnesses" / f"test_{slug}.py"
+    with a less clear error.
+
+    tool_name (2026-07-28: now an already-resolved name from
+    _resolve_evolve_tool_name, not re-derived here) drives BOTH the
+    suggested path AND the drafted/template harness's TOOL_NAME
+    consistently -- deliberately NOT re-derived from whatever file path
+    the user ends up typing (the old behavior): the file location and the
+    tool's registered name are separate concerns, and conflating them
+    meant a custom save path could silently change what TOOL_NAME the
+    draft used."""
+    suggested = Path("tests") / "self_write_harnesses" / f"test_{tool_name}.py"
     console.print(
         f"\nEvo-loop needs a real, human-authored pytest harness file -- it's what defines "
         f"'correct' for this tool, and is never auto-generated. Suggested path: {suggested}"
@@ -1366,7 +1434,6 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
         _console.render_error(
             console, f"No test file found at {path} -- create it first, then run /evolve again."
         )
-        template_slug = _slugify_name_hint(path.stem.removeprefix("test_") or name_hint)
 
         # Default yes -- an Enter keypress takes the more helpful path; "n"
         # opts straight out to the plain static template for anyone who'd
@@ -1375,7 +1442,7 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
         drafted_code = None
         if want_draft in ("", "y", "yes"):
             _console.render_note(console, "Drafting a starter harness (calls the LLM, can take a moment)...")
-            drafted_code = _draft_evolve_harness(console, template_slug, name_hint)
+            drafted_code = _draft_evolve_harness(console, tool_name, goal)
 
         if drafted_code:
             _console.render_evolve_harness_template(console, drafted_code, path, drafted=True)
@@ -1415,7 +1482,7 @@ def _resolve_evolve_test_file(console, name_hint: str) -> Path | None:
             else:
                 _console.render_note(console, f"Discarded -- write your own harness at {path}, then run /evolve again.")
         else:
-            template = _build_evolve_harness_template(template_slug, name_hint)
+            template = _build_evolve_harness_template(tool_name, goal)
             _console.render_evolve_harness_template(console, template, path)
         return None
     return path
@@ -1467,7 +1534,7 @@ def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any)
     idea = arg_text.strip().strip('"').strip("'").strip()
     if idea:
         goal = idea
-        name_hint = idea
+        pending_name = None
     else:
         pending = session_state.get("pending_evolve_suggestion")
         if not pending:
@@ -1478,9 +1545,10 @@ def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any)
             )
             return
         goal = f"{pending.get('name', '')}: {pending.get('description', '')}".strip(": ")
-        name_hint = pending.get("name", "") or idea
+        pending_name = pending.get("name") or None
 
-    test_file = _resolve_evolve_test_file(console, name_hint)
+    tool_name = _resolve_evolve_tool_name(console, goal, suggested_name=pending_name)
+    test_file = _resolve_evolve_test_file(console, tool_name, goal)
     if test_file is None:
         return
 
