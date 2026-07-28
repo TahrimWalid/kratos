@@ -427,6 +427,34 @@ def render_target_probe_results(console: Console, checks: list[dict[str, str]]) 
     console.print(table)
 
 
+def render_evolve_tool_list(console: Console, rows: list[dict[str, Any]]) -> None:
+    """/evolve list (2026-07-28) -- lets a user browse everything already
+    reachable by the agent (built-in + kept) BEFORE picking a name for a
+    new tool, instead of only discovering a naming collision after the
+    fact via _check_evolve_name_collision's warning. Read-only, same plain
+    status-table shape as render_target_probe_results -- no new visual
+    convention. Each row is a plain dict (name/kind/requires_approval/
+    kept_at/description) built by cli/repl.py -- this function only
+    renders, it never reads TOOL_REGISTRY or kept_tools/metadata.json
+    itself."""
+    table = Table(show_header=True, header_style="bold", title=f"Tools reachable by the agent ({len(rows)})")
+    table.add_column("Name")
+    table.add_column("Kind")
+    table.add_column("Requires approval")
+    table.add_column("Kept at")
+    table.add_column("Description")
+    for r in rows:
+        kind_style = ACCENT if r["kind"] == "kept" else TEXT_SECONDARY
+        table.add_row(
+            r["name"],
+            f"[{kind_style}]{r['kind']}[/{kind_style}]",
+            "yes" if r["requires_approval"] else "no",
+            r.get("kept_at") or "-",
+            r["description"],
+        )
+    console.print(table)
+
+
 def render_session_summary(console: Console, events: list[str]) -> None:
     body = "\n".join(f"- {e}" for e in events) if events else "(no notable events)"
     console.print(Panel(body, title="Session summary", border_style=ACCENT))

@@ -489,3 +489,41 @@ def test_path_rejects_non_py_extension_and_reprompts(tmp_path, monkeypatch):
     assert result is None
     rejection_texts = [call.args[1] for call in note_mock.call_args_list if "doesn't look like a Python file" in call.args[1]]
     assert len(rejection_texts) == 1
+
+
+# ---------------------------------------------------------------------------
+# /evolve list -- browse built-in + kept tools before naming a new one
+# ---------------------------------------------------------------------------
+def test_evolve_list_builds_rows_for_builtin_and_kept_tools():
+    builtin_tool = MagicMock(description="Built-in thing.\nmore detail", requires_approval=False)
+    kept_tool = MagicMock(description="A kept thing.", requires_approval=True)
+    fake_registry = {"a_builtin_tool": builtin_tool, "a_kept_tool": kept_tool}
+    fake_metadata = {"a_kept_tool": {"kept_at": "2026-07-28T20:36:56", "source_file": "a_kept_tool.py"}}
+
+    with patch("kratos.agent.tools.TOOL_REGISTRY", fake_registry), patch(
+        "kratos.agent.self_write_loop._read_metadata", return_value=fake_metadata
+    ), patch.object(repl._console, "render_evolve_tool_list") as render_mock:
+        repl._cmd_evolve_list(MagicMock())
+
+    assert render_mock.call_count == 1
+    rows = {r["name"]: r for r in render_mock.call_args.args[1]}
+    assert rows["a_builtin_tool"]["kind"] == "built-in"
+    assert rows["a_builtin_tool"]["requires_approval"] is False
+    assert rows["a_builtin_tool"]["kept_at"] is None
+    assert rows["a_builtin_tool"]["description"] == "Built-in thing."
+    assert rows["a_kept_tool"]["kind"] == "kept"
+    assert rows["a_kept_tool"]["requires_approval"] is True
+    assert rows["a_kept_tool"]["kept_at"] == "2026-07-28T20:36:56"
+
+
+def test_evolve_cmd_list_dispatches_without_touching_write_flow():
+    with patch.object(repl, "_cmd_evolve_list") as list_mock, patch("builtins.input") as input_mock:
+        repl._cmd_evolve(MagicMock(), {}, "list")
+    list_mock.assert_called_once()
+    input_mock.assert_not_called()  # must never fall through into naming/goal resolution
+
+
+def test_evolve_cmd_ls_alias_also_dispatches():
+    with patch.object(repl, "_cmd_evolve_list") as list_mock:
+        repl._cmd_evolve(MagicMock(), {}, "  LS  ")
+    list_mock.assert_called_once()

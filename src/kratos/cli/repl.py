@@ -845,6 +845,7 @@ def _cmd_help(console, **_: Any) -> None:
     t = Table(show_header=False, box=None)
     t.add_row("/evolve", "Build the most recent auto-suggested tool, if one is pending")
     t.add_row("/evolve \"<idea>\"", "Start evo-loop fresh with your own idea instead")
+    t.add_row("/evolve list", "Browse tools already reachable by the agent (built-in + kept)")
     console.print(t)
 
     console.print("[bold]Configuration[/]")
@@ -1595,12 +1596,41 @@ def _render_evolve_outcome(console, outcome: Any) -> None:
         )
 
 
+def _cmd_evolve_list(console) -> None:
+    """/evolve list (2026-07-28) -- browse everything the agent can already
+    reach (built-in tools from agent/tools.py + previously-kept ones, the
+    same TOOL_REGISTRY load_kept_tools() already merges both into) BEFORE
+    picking a name for a new tool. Closes a real gap: until now the only
+    way to discover a naming collision was to hit
+    _check_evolve_name_collision's warning AFTER typing a name that
+    already existed. Read-only, mirrors that check's own kept-vs-built-in
+    distinction (kept tools show their real kept_at from metadata.json)."""
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+
+    metadata = _read_metadata(KEPT_TOOLS_DIR)
+    rows = []
+    for name in sorted(TOOL_REGISTRY):
+        tool = TOOL_REGISTRY[name]
+        is_kept = name in metadata
+        first_line = tool.description.strip().splitlines()[0] if tool.description.strip() else ""
+        description = first_line[:80] + ("..." if len(first_line) > 80 else "")
+        rows.append({
+            "name": name,
+            "kind": "kept" if is_kept else "built-in",
+            "requires_approval": tool.requires_approval,
+            "kept_at": metadata[name].get("kept_at") if is_kept else None,
+            "description": description,
+        })
+    _console.render_evolve_tool_list(console, rows)
+
+
 def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any) -> None:
     """/evolve -- the only thing that can ever actually start evo-loop
     (agent/loop.py's tool_proposal signal only ever suggests; nothing is
     auto-invoked, no exceptions -- see agent/console.py::
     render_evolve_suggestion and this project's standing no-auto-
-    escalation principle). Two forms:
+    escalation principle). Three forms:
     - `/evolve` (no argument): uses the most recent auto-suggest, if one
       is pending on session_state['pending_evolve_suggestion'] (set by
       _run_investigate_turn's _on_step when agent/loop.py emits a
@@ -1608,10 +1638,18 @@ def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any)
       is pending -- never silent.
     - `/evolve "<idea>"`: starts fresh with the given idea, ignoring any
       pending suggestion entirely.
-    Either way: real WriteRequest, real run_self_write_loop() call (Sprint
-    2's actual pipeline, unmodified), real console.py/request_approval
-    rendering -- no mocking, no shortcuts."""
-    idea = arg_text.strip().strip('"').strip("'").strip()
+    - `/evolve list` (2026-07-28): browse built-in + kept tools instead of
+      starting evo-loop -- see _cmd_evolve_list.
+    Either way (for the two starting forms): real WriteRequest, real
+    run_self_write_loop() call (Sprint 2's actual pipeline, unmodified),
+    real console.py/request_approval rendering -- no mocking, no
+    shortcuts."""
+    stripped = arg_text.strip()
+    if stripped.lower() in ("list", "ls"):
+        _cmd_evolve_list(console)
+        return
+
+    idea = stripped.strip('"').strip("'").strip()
     if idea:
         goal = idea
         pending_name = None

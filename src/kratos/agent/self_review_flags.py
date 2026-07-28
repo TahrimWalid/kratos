@@ -225,6 +225,98 @@ def _check_b_inclusion_affecting_branches(tree: ast.AST) -> list[ReviewFlag]:
     return flags
 
 
+def _loop_call_assigned_names(loop: ast.AST) -> set[str]:
+    """Names assigned anywhere in this loop from a direct function/method
+    call (`x = some_call(...)`) -- the shape a per-item sub-fetch takes."""
+    names: set[str] = set()
+    for node in ast.walk(loop):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            if isinstance(node.value, ast.Call):
+                names.add(node.targets[0].id)
+    return names
+
+
+def _branch_has_inclusion_call(stmts: list[ast.stmt]) -> bool:
+    """True if this branch either calls an inclusion-affecting method
+    (append/add/update/... -- see _INCLUSION_AFFECTING_CALL_NAMES) or does a
+    dict/list-item assignment (`some_dict[key] = value`) -- the real
+    enumerate_system_cron_jobs draft built its result via subscript
+    assignment (`cron_jobs[user] = ...`), not a .append()/.update() call, so
+    both shapes must count as "this branch includes something for the
+    item"."""
+    for stmt in stmts:
+        for n in ast.walk(stmt):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in _INCLUSION_AFFECTING_CALL_NAMES:
+                return True
+            if isinstance(n, ast.Assign) and any(isinstance(t, ast.Subscript) for t in n.targets):
+                return True
+    return False
+
+
+def _if_test_root_name(test: ast.AST) -> str | None:
+    """Best-effort: the base variable name an if-test is actually checking
+    the truthiness/success of -- `x`, `x.ok`, `not x`, `x is not None` all
+    resolve to "x". Deliberately gives up (returns None) on compound
+    BoolOp tests (`x and y`) rather than guessing which operand matters."""
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _if_test_root_name(test.operand)
+    if isinstance(test, ast.Name):
+        return test.id
+    if isinstance(test, ast.Attribute) and isinstance(test.value, ast.Name):
+        return test.value.id
+    if isinstance(test, ast.Compare) and isinstance(test.left, (ast.Name, ast.Attribute)):
+        return _if_test_root_name(test.left)
+    return None
+
+
+def _check_e_silent_drop_on_subfetch_failure(tree: ast.AST) -> list[ReviewFlag]:
+    """New check (2026-07-28), added after two independent real self-written
+    tools (the kept list_net_services tool, and a drafted-but-never-kept
+    enumerate_system_cron_jobs candidate) both silently dropped an item from
+    their result ENTIRELY when a per-item sub-fetch failed, instead of
+    including it with a null/error marker -- see CLAUDE.md's "Write-step
+    prompt hardening" entry. Distinct from check b (inclusion-affecting-
+    branch, which flags ANY loop-nested conditional touching the output,
+    with no attempt to characterize why) -- this one narrows specifically to
+    the shape that broke twice for real: `x = some_call(...)` immediately
+    followed by `if x: <append something for this item>` with NO
+    corresponding else, so a falsy/failed `x` silently means the loop
+    iteration contributes nothing at all for that item. A genuine,
+    deliberate content filter (e.g. `if is_risky_port: results.append(...)`,
+    where `is_risky_port` is a boolean expression, not a call result) is
+    NOT this shape and is not flagged here -- see check b for that broader,
+    non-specific case."""
+    flags: list[ReviewFlag] = []
+    seen_lines: set[int] = set()
+    for loop in ast.walk(tree):
+        if not isinstance(loop, (ast.For, ast.While)):
+            continue
+        call_assigned = _loop_call_assigned_names(loop)
+        if not call_assigned:
+            continue
+        for node in ast.walk(loop):
+            if not isinstance(node, ast.If) or node.lineno in seen_lines:
+                continue
+            root = _if_test_root_name(node.test)
+            if root is None or root not in call_assigned:
+                continue
+            if not _branch_has_inclusion_call(node.body):
+                continue
+            if _branch_has_inclusion_call(node.orelse):
+                continue  # a real else that also includes something -- not a silent drop
+            seen_lines.add(node.lineno)
+            flags.append(ReviewFlag(
+                "silent-item-drop-on-subfetch-failure",
+                f'This branch only adds an entry when "{root}" (assigned from a function/method call '
+                "earlier in this loop) is truthy, with no else covering the failing case -- if that "
+                "sub-step fails or comes back empty for one item, the item vanishes from the result "
+                "entirely instead of being reported with a null/error marker. Confirm this is a "
+                "deliberate filter, not an accidental drop of a failed per-item sub-fetch.",
+                node.lineno,
+            ))
+    return flags
+
+
 def _find_register_tool_description(tree: ast.AST) -> tuple[str | None, str | None]:
     """
     Returns (description, docstring) for the first @register_tool(...)
@@ -338,6 +430,7 @@ def scan_review_flags(source_code: str) -> list[ReviewFlag]:
     flags.extend(_check_a_ip_or_credential_literals(tree, name_map))
     flags.extend(_check_b_inclusion_affecting_branches(tree))
     flags.extend(_check_c_invented_filter_criteria(tree, name_map, description, docstring))
+    flags.extend(_check_e_silent_drop_on_subfetch_failure(tree))
     flags.extend(_check_d_description_coverage(tree, description, docstring))
     return flags
 
