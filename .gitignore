@@ -58,3 +58,6 @@ llm/work/
 *.md
 *.txt
 !README.md
+
+# Local data-directory backups (e.g. data.bak.20260705_pretest/) -- not code
+data.bak*/
