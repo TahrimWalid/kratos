@@ -164,6 +164,101 @@ GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see deta
 # ---------------------------
 # Core: generate findings
 # ---------------------------
+# ---------------------------
+# Deterministic offline threat-intel corroboration (Option 1, 2026-08-24)
+# ---------------------------
+# When correlation surfaces a suspicious SOURCE IP (a failed-login / brute-force
+# / sudo-failure burst), corroborating that IP against known threat intel must
+# NOT depend on the agent LLM remembering to call check_ip_reputation -- that was
+# measured unreliable (~25% tool-selection on the eval's A8). The rule engine
+# does it itself here, deterministically, using ONLY the OFFLINE local OTX cache
+# (a plain file read -- no network call, no approval). The live AbuseIPDB tier is
+# untouched and stays approval-gated. Only a real KNOWN-MALICIOUS cache hit
+# changes anything (evidence line + severity raised to at least high) -- a miss
+# leaves the finding exactly as it was, so there's no "not in cache" noise and no
+# risk of a clean lookup reading as reassuring.
+_IP_SOURCED_SUSPICIOUS_IDS = {"CORR-SSH-001", "CORR-001", "CORR-002", "AUTH-004"}
+_SUSPICIOUS_BURST_TYPES = ("ssh_failed_login", "sudo_pam_auth_failure", "sudo_auth_failure")
+
+
+def _suspicious_source_ips(auth_patterns: dict[str, Any] | None) -> list[str]:
+    if not auth_patterns or not isinstance(auth_patterns.get("bursts"), list):
+        return []
+    ips: list[str] = []
+    for b in auth_patterns["bursts"]:
+        if b.get("event_type") in _SUSPICIOUS_BURST_TYPES:
+            for entry in b.get("top_source_ips", []) or []:
+                ip = entry.get("ip")
+                if ip and ip not in ips:
+                    ips.append(ip)
+    return ips
+
+
+def _suspicious_source_ip_counts(auth_patterns: dict[str, Any] | None) -> list[tuple[str, int]]:
+    if not auth_patterns or not isinstance(auth_patterns.get("bursts"), list):
+        return []
+    from collections import Counter
+    c: Counter = Counter()
+    for b in auth_patterns["bursts"]:
+        if b.get("event_type") in _SUSPICIOUS_BURST_TYPES:
+            for entry in b.get("top_source_ips", []) or []:
+                ip = entry.get("ip")
+                if ip:
+                    c[ip] += int(entry.get("count") or 0)
+    return c.most_common(5)
+
+
+def _surface_source_ips_in_evidence(
+    findings: list["Finding"], auth_patterns: dict[str, Any] | None
+) -> None:
+    # Put the attacking source IP(s) directly on the finding so the final answer
+    # can name them -- the burst carries top_source_ips but the finding text
+    # didn't expose it, so the agent knew the burst happened but often couldn't
+    # attribute it to an IP. Independent of threat-intel (fires on any burst).
+    counts = _suspicious_source_ip_counts(auth_patterns)
+    if not counts:
+        return
+    summary = ", ".join(f"{ip} ({n} events)" for ip, n in counts)
+    for f in findings:
+        if f.id in _IP_SOURCED_SUSPICIOUS_IDS:
+            f.evidence.append(f"Source IP(s) behind this activity: {summary}.")
+
+
+def _enrich_findings_with_offline_reputation(
+    findings: list["Finding"], auth_patterns: dict[str, Any] | None
+) -> None:
+    ips = _suspicious_source_ips(auth_patterns)
+    if not ips:
+        return
+    try:
+        from kratos.adapters.threat_intel import lookup_ip_cache
+    except Exception:  # noqa: BLE001 -- enrichment must never break correlation
+        return
+    malicious: dict[str, dict[str, Any]] = {}
+    for ip in ips:
+        try:
+            r = lookup_ip_cache(ip)  # OFFLINE: reads only the local OTX cache file
+        except Exception:  # noqa: BLE001
+            r = None
+        if r:
+            malicious[ip] = r
+    if not malicious:
+        return
+    for f in findings:
+        if f.id not in _IP_SOURCED_SUSPICIOUS_IDS:
+            continue
+        for ip, r in malicious.items():
+            pulses = r.get("pulses") or []
+            names = ", ".join(str(p.get("pulse_name")) for p in pulses[:3] if p.get("pulse_name"))
+            f.evidence.append(
+                f"Threat-intel corroboration (offline OTX cache): source IP {ip} is KNOWN-MALICIOUS"
+                + (f" -- {names}" if names else "")
+                + " -- this corroborates a real attack; treat with raised confidence/severity."
+            )
+        if _severity_rank(f.severity) < _severity_rank("high"):
+            f.severity = "high"
+
+
 def generate_findings(
     nmap_parsed: dict[str, Any] | None,
     auth_stats: dict[str, Any] | None,
@@ -657,6 +752,13 @@ def generate_findings(
                     ],
                 )
             )
+
+    # Surface the attacking source IP(s) on IP-sourced findings so the answer
+    # can attribute the activity, then deterministically corroborate them against
+    # the offline threat-intel cache (Option 1). Both are independent of whether
+    # the agent chose to call check_ip_reputation.
+    _surface_source_ips_in_evidence(findings, auth_patterns)
+    _enrich_findings_with_offline_reputation(findings, auth_patterns)
 
     # Sort by severity (high -> info)
     findings.sort(key=lambda f: _severity_rank(f.severity), reverse=True)

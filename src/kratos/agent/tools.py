@@ -122,7 +122,8 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     escalates privilege (run_linux_command, capture_traffic) MUST call this
     and check its return value before doing anything irreversible — no
     parameter, retry, or error path may skip it. Returns True only on an
-    exact (case/whitespace-insensitive) 'y'.
+    explicit (case/whitespace-insensitive) 'y' or 'yes'; Enter or anything
+    else denies -- fail-safe, never force-accept.
 
     No TTY / interrupted input (EOFError, KeyboardInterrupt) is treated as an
     explicit denial -- fail-safe by design, not by accidental exception
@@ -140,7 +141,8 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
 
     try:
         decision = input(_console.approval_prompt_text()).strip().lower()
-        approved = decision == "y"
+        # Fail-safe: ONLY an explicit yes approves; Enter/n/anything else denies.
+        approved = decision in ("y", "yes")
     except (EOFError, KeyboardInterrupt):
         approved = False
 
@@ -565,6 +567,27 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
         return {"status": "error", "observation": f"File integrity check over SSH failed: {(current.stderr or current.stdout).strip()}"}
 
     existing = _load_file_integrity_baseline(data_dir, baseline_name)
+    fell_back_from: str | None = None
+    if existing is None:
+        # A fresh baseline_name must NOT silently establish a new baseline on a
+        # possibly-tampered system (that always returns "no diff" and misses real
+        # changes -- a confirmed detection gap). Fall back to the most recent
+        # EXISTING baseline of ANY name and diff against it; only establish a
+        # brand-new baseline if truly none exists yet.
+        bdir = Path(data_dir) / "baseline"
+        if bdir.exists():
+            candidates = sorted(
+                (p for p in bdir.glob("file_integrity_*.json")
+                 if not p.name.startswith("file_integrity_diff_")),
+                key=lambda p: p.stat().st_mtime, reverse=True,
+            )
+            for cand in candidates:
+                try:
+                    existing = json.loads(cand.read_text(encoding="utf-8"))
+                    fell_back_from = cand.stem.replace("file_integrity_", "", 1)
+                    break
+                except Exception:  # noqa: BLE001
+                    continue
     if existing is None:
         baseline_path = _save_file_integrity_baseline(data_dir, baseline_name, target, current)
         return {
@@ -577,7 +600,7 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
 
     diff = _diff_file_integrity(existing.get("hashes") or {}, current)
     diff_file = _save_file_integrity_diff(data_dir, baseline_name, target, diff)
-    return {
+    result = {
         "status": "ok",
         "baseline_name": baseline_name,
         "target": target,
@@ -585,6 +608,12 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
         "diff": diff,
         "diff_file": str(diff_file),
     }
+    if fell_back_from is not None:
+        result["baseline_fallback"] = (
+            f"No baseline named '{baseline_name}' existed; diffed against the most recent "
+            f"existing baseline '{fell_back_from}' instead of establishing a new one."
+        )
+    return result
 
 
 # Bundled starter ruleset -- see yara_rules/README.md for source/license/citation. Deliberately
@@ -776,16 +805,21 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
 @register_tool(
     name="check_ip_reputation",
     description=(
-        "Checks an IP address's threat-intel reputation. TWO TIERS, tried in order: a LOCAL, "
-        "OFFLINE cache of AlienVault OTX pulses (default -- checked first, no live network call, "
-        "available regardless of configuration) and an OPT-IN live escalation via AbuseIPDB, only "
-        "reachable if BOTH KRATOS_THREAT_INTEL_ENABLED=1 is set AND a human explicitly approves "
-        "THIS SPECIFIC lookup at a real-time prompt -- never triggered automatically by this tool "
-        "or the agent loop, and only ever offered when the cache had nothing. The result's "
-        "'source' field states which tier actually answered: 'cache', 'live', or 'none' if neither "
-        "had anything (including live disabled/declined). Relevant when investigating a specific "
-        "suspicious source IP (e.g. from auth logs or a network capture) -- not a bulk/speculative "
-        "check across every IP seen."
+        "Correlates a specific IP address against threat intelligence. USE THIS whenever an "
+        "investigation has surfaced a SPECIFIC source IP tied to suspicious activity -- a "
+        "failed-login or brute-force burst, a port scan, or any attack traffic attributable to an "
+        "IP (e.g. the source IP on AUTH/CORR-SSH findings, or from a network capture). Checking "
+        "that IP's reputation directly strengthens or weakens the finding: a known-malicious hit "
+        "corroborates a real attack and should RAISE the finding's confidence/severity in your "
+        "final answer, while a clean result tempers a borderline one. Worth reaching for as a "
+        "standard enrichment step once a concrete suspicious IP is in view -- but only on such an "
+        "IP, never a bulk/speculative sweep across every IP seen. TWO TIERS, tried in order: a "
+        "LOCAL, OFFLINE cache of AlienVault OTX pulses (default -- checked first, no live network "
+        "call, available regardless of configuration) and an OPT-IN live escalation via AbuseIPDB, "
+        "only reachable if BOTH KRATOS_THREAT_INTEL_ENABLED=1 is set AND a human explicitly "
+        "approves THIS SPECIFIC lookup at a real-time prompt -- never triggered automatically. The "
+        "result's 'source' field states which tier answered: 'cache', 'live', or 'none' if neither "
+        "had anything (including live disabled/declined)."
     ),
     parameters={
         "ip": {"type": "str", "description": "IP address to check."},

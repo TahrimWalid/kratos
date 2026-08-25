@@ -460,13 +460,35 @@ def render_session_summary(console: Console, events: list[str]) -> None:
     console.print(Panel(body, title="Session summary", border_style=ACCENT))
 
 
+# Reference to the currently-running "thinking" spinner, if any. A Rich Live
+# animating at 8fps ON TOP OF a blocking input() clobbers the typed line -- the
+# confirmed cause of the approval prompt "I can only press Enter, can't type y"
+# bug (same class as the /evolve spinner corruption noted in CLAUDE.md). Every
+# approval gate funnels through render_approval_situation, which stops this
+# before the prompt so input() gets a clean, static terminal.
+_ACTIVE_SPINNER: "Live | None" = None
+
+
+def stop_active_spinner() -> None:
+    """Stop any live 'thinking' spinner before a blocking prompt. Safe to call
+    when nothing is running; leaves the reference so the caller's own
+    on_step start/stop cycle (which holds the same Live) can restart it."""
+    if _ACTIVE_SPINNER is not None:
+        try:
+            _ACTIVE_SPINNER.stop()
+        except Exception:  # noqa: BLE001 -- never let spinner cleanup block a prompt
+            pass
+
+
 def thinking_spinner(console: Console, text: str = "Kratos is working...") -> Live:
     """Started immediately by the caller; covers the gap between one
     on_step() callback and the next (LLM call + tool round-trip), which is
     the only genuinely long, silent stretch reachable without touching
     agent/loop.py -- see module docstring."""
+    global _ACTIVE_SPINNER
     live = Live(Spinner("dots", text=text), console=console, transient=True, refresh_per_second=8)
     live.start()
+    _ACTIVE_SPINNER = live
     return live
 
 
@@ -503,6 +525,11 @@ def render_approval_situation(console: Console, title: str, details: dict[str, A
     a richer dict (e.g. self-write's source code + test summary + review
     flags) simply renders more/bigger sections, not a different code path.
     """
+    # A live spinner animating over the blocking input() below eats the user's
+    # keystrokes (they can only press Enter) -- stop it first so the prompt is
+    # usable. Fixes the approval gate across every entry point at once.
+    stop_active_spinner()
+
     renderables: list[Any] = []
     for key, value in details.items():
         label = str(key).replace("_", " ").capitalize()
@@ -521,4 +548,6 @@ def render_approval_situation(console: Console, title: str, details: dict[str, A
 
 
 def approval_prompt_text() -> str:
-    return "Approve? [y/N]: "
+    # Explicit, and fail-safe by design: ONLY 'y'/'yes' approves; Enter or
+    # anything else DENIES (this gate never force-accepts -- see request_approval).
+    return "Approve?  y = approve  |  Enter / n / anything else = DENY (default) : "

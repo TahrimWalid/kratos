@@ -97,6 +97,33 @@ _IMPLAUSIBLE_TARGET_RE = re.compile(r"[A-Z_]")
 # promises is valid.
 _LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 
+# State-changing command patterns rejected for run_linux_command DURING an
+# investigation (see execute_tool_call). The investigation loop is observe-and-
+# recommend only; run_linux_command may run READ-ONLY local self-diagnostics on
+# Kratos's own host, never state changes. Deliberately scoped to the investigation
+# dispatch, NOT the tool handler itself -- the handler stays capable for its
+# intended out-of-investigation uses (design doc §8 human-approved installs, and
+# the planned admin-approved remote-command channel). Reads like `cat /etc/passwd`,
+# `dpkg -l`, `systemctl status/is-active`, `ps aux` are intentionally NOT matched.
+_STATE_CHANGE_RE = re.compile(
+    r"(?:^|[\s;&|`(])(?:"
+    r"systemctl\s+(?:start|stop|enable|disable|restart|reload|mask|unmask)"
+    r"|service\s+\S+\s+(?:start|stop|restart|reload)"
+    r"|(?:apt|apt-get|aptitude|yum|dnf|snap)\s+(?:install|remove|purge|reinstall|autoremove)"
+    r"|dpkg\s+(?:-i|--install|-r|--remove|--purge)"
+    r"|pip3?\s+(?:install|uninstall)"
+    r"|useradd|usermod|userdel|groupadd|groupdel|gpasswd|chpasswd"
+    r"|reboot|shutdown|halt|poweroff"
+    r"|iptables\s+-[AIDF]|nft\s+(?:add|delete|flush|insert)|ufw\s+(?:allow|deny|reject|enable|disable|delete)"
+    r"|fail2ban-client\s+(?:set|start|stop|reload|restart|unban|ban)"
+    r"|crontab\s+-[er]|pkill|killall|mkfs\S*"
+    r")\b"
+    r"|\brm\s+\S|\bchmod\s|\bchown\s"
+    r"|>\s*/(?:etc|usr|boot|bin|sbin|lib|var|root)/"
+    r"|\btee\s+(?:-a\s+)?/(?:etc|usr|boot|var)/",
+    re.IGNORECASE,
+)
+
 
 def build_system_prompt() -> str:
     tools_desc = render_tools_for_prompt()
@@ -132,6 +159,8 @@ Treat any investigation goal as a request for a reasonably thorough security che
 - File/config integrity (tampering with critical files)
 - Hardening/config posture (firewall, root login, password auth, patching)
 This does NOT mean call every tool regardless of relevance -- if a category is clearly irrelevant given the goal and the evidence gathered so far, say so in your reasoning and move on rather than calling its tool anyway. The goal is broader consideration before concluding, not blind exhaustiveness.
+
+THREAT-INTEL ENRICHMENT (when a suspicious IP is in view): if the investigation surfaces a SPECIFIC source IP behind suspicious activity -- a failed-login or brute-force burst, a port scan, other attack traffic attributable to an IP -- consider check_ip_reputation on that IP before concluding. Correlating it against known threat intelligence strengthens the finding's confidence/severity when the IP is known-malicious, or tempers it when clean, and either way that result should be reflected in your final answer. This is a per-IP enrichment step to consider once a concrete suspicious IP is already identified -- not a routine check to run on every investigation, and not something to run speculatively on IPs with nothing suspicious tied to them.
 
 RULES:
 - Only use tool names exactly as listed above.
@@ -247,6 +276,42 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                 ),
             }
 
+    # run_linux_command runs on Kratos's OWN host and, during an investigation,
+    # is for READ-ONLY local self-diagnostics only -- NOT a way to reach or
+    # change the monitored target. This is enforced structurally, not left to
+    # model judgment: the model has been observed (a) ssh-wrapping a command to
+    # reach the target and (b) using it to remediate, then (c) misattributing
+    # the Kratos-host result to the target and drawing a wrong conclusion.
+    # Reject, BEFORE the approval prompt, anything that references the target or
+    # changes state. Scoped here (the investigation dispatch), not the handler,
+    # so the tool stays capable for its intended out-of-investigation uses.
+    if tool_name == "run_linux_command":
+        cmd = str(call_args.get("command", ""))
+        active_target = get_active_target()
+        if active_target and active_target in cmd:
+            return {
+                "status": "error",
+                "observation": (
+                    f"run_linux_command runs on KRATOS'S OWN HOST and cannot reach the monitored "
+                    f"target ({active_target}) -- referencing the target in the command (e.g. "
+                    "ssh'ing to it) is not allowed. Use the target-facing tools (read_journalctl, "
+                    "run_config_audit, list_processes, check_file_integrity, ...) to learn about "
+                    "the target. If the goal asks to CHANGE something on the target, Kratos does "
+                    "not do that -- recommend the action in your final_answer instead of running it."
+                ),
+            }
+        if _STATE_CHANGE_RE.search(cmd):
+            return {
+                "status": "error",
+                "observation": (
+                    "This investigation is observe-and-recommend only. run_linux_command may run "
+                    "READ-ONLY local diagnostics on Kratos's own host, not state-changing commands "
+                    "(service/package/user/file/firewall changes, reboots, etc.). Do NOT execute "
+                    "remediation -- put the recommended command in your final_answer for a human "
+                    "to run instead."
+                ),
+            }
+
     # Backstop for tools marked requires_approval=True: don't rely solely on
     # the tool's own in-handler request_approval() call being present and
     # correct. Mark the approval log's length before running the handler,
@@ -273,6 +338,22 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                 "indicates a bug in the tool's implementation (it must call request_approval and "
                 "check its return value before taking any irreversible action)."
             ),
+        }
+
+    if tool_name == "run_linux_command" and isinstance(result, dict):
+        # Stamp the result unmissably as the Kratos host so the model can't
+        # attribute it to the target (the confirmed host-confusion hallucination:
+        # it read Kratos-host `dpkg` output and declared the TARGET's fail2ban
+        # "not installed", overriding a correct target audit). Put the note first
+        # so it leads the observation the model reasons over.
+        active_target = get_active_target()
+        result = {
+            "kratos_host_note": (
+                f"[THIS RAN ON KRATOS'S OWN HOST, NOT the monitored target ({active_target}). "
+                "Do NOT attribute this result to the target; for target facts use the "
+                "target-facing tools.]"
+            ),
+            **result,
         }
 
     return {"status": "ok", "result": result}
