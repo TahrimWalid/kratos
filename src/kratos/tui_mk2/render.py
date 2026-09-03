@@ -13,10 +13,12 @@ is no reason to fork it.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from rich.console import Group
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -34,9 +36,32 @@ __all__ = [
     "error_line",
     "success_line",
     "speaker_line",
+    "timestamped",
+    "day_divider",
     "approval_panel",
     "recommended_fix_panel",
 ]
+
+
+def timestamped(left: Text, when: datetime) -> Table:
+    """A message-header line with `left` at the left edge and a fine-print,
+    right-aligned HH:MM on the same line (WhatsApp-style, mirroring the classic
+    REPL's _print_trailing_timestamp). A Table.grid does the alignment so it
+    stays correct at any width; the timestamp is TEXT_FAINTER so it reads as a
+    caption, not a headline. Only message HEADERS (you> / Kratos:) get one --
+    tool-call lines and panels below them stay clean."""
+    grid = Table.grid(expand=True)
+    grid.add_column(ratio=1)
+    grid.add_column(justify="right")
+    grid.add_row(left, Text(when.strftime("%H:%M"), style=T.TEXT_FAINTER))
+    return grid
+
+
+def day_divider(when: datetime) -> Rule:
+    """A subtle full-date separator, shown once when the day changes (like a
+    messaging app's date chip). Mirrors the classic REPL's _DayMarker, which
+    prints the date only on the first message of a new day."""
+    return Rule(when.strftime("%A, %B %d, %Y"), style=T.TEXT_GHOST, characters="·")
 
 
 def tool_call_line(name: str, status: str) -> Text:
@@ -52,7 +77,16 @@ def tool_call_line(name: str, status: str) -> Text:
     return t
 
 
-def finding_panel(finding: dict[str, Any]) -> Panel:
+def _time_subtitle(when: datetime | None) -> Text | None:
+    """The in-bubble timestamp: a fine-print HH:MM tucked into a panel's
+    bottom-right border, like a chat app's per-message time. None -> no
+    subtitle (a panel with no meaningful moment)."""
+    if when is None:
+        return None
+    return Text(f" {when.strftime('%H:%M')} ", style=T.TEXT_FAINTER)
+
+
+def finding_panel(finding: dict[str, Any], when: datetime | None = None) -> Panel:
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
@@ -70,11 +104,25 @@ def finding_panel(finding: dict[str, Any]) -> Panel:
         if len(evidence) > 5:
             body.append(f"\n  … {len(evidence) - 5} more (see /report)", style=T.TEXT_FAINT)
 
-    return Panel(body, title=f"Finding — {severity.upper()}", title_align="left", border_style=color)
+    return Panel(
+        body,
+        title=f"Finding — {severity.upper()}",
+        title_align="left",
+        subtitle=_time_subtitle(when),
+        subtitle_align="right",
+        border_style=color,
+    )
 
 
-def result_panel(title: str, body: str, color: str) -> Panel:
-    return Panel(Text(body, style=T.TEXT), title=title, title_align="left", border_style=color)
+def result_panel(title: str, body: str, color: str, when: datetime | None = None) -> Panel:
+    return Panel(
+        Text(body, style=T.TEXT),
+        title=title,
+        title_align="left",
+        subtitle=_time_subtitle(when),
+        subtitle_align="right",
+        border_style=color,
+    )
 
 
 def _prefixed(symbol: str, text: str, color: str) -> Text:

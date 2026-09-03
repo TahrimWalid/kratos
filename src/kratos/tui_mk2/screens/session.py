@@ -101,6 +101,7 @@ class SessionScreen(Screen):
         }
         self._busy = False
         self._ctx_chars = len(resume_context)
+        self._last_day: str | None = None  # for the date divider (WhatsApp-style)
 
     # --- layout ----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -196,6 +197,40 @@ class SessionScreen(Screen):
         """Write to the transcript from a THREAD worker (on_step, etc.)."""
         self.app.call_from_thread(self._log.write, renderable)
 
+    def _emit_bubble(self, renderable: Any, when: datetime | None = None) -> None:
+        """Write a timed 'bubble' (a stamped header line, or a finding/result
+        panel that already carries its own subtitle time), preceded by a date
+        divider whenever the day changes. Every timestamped thing funnels
+        through here so the divider fires exactly once per day regardless of
+        which kind of bubble crossed the boundary. Event-loop callers only."""
+        when = when or datetime.now()
+        day = when.strftime("%A, %B %d, %Y")
+        if day != self._last_day:
+            self._last_day = day
+            self._log.write(R.day_divider(when))
+        self._log.write(renderable)
+
+    def _emit_bubble_from_worker(self, renderable: Any, when: datetime | None = None) -> None:
+        self.app.call_from_thread(self._emit_bubble, renderable, when or datetime.now())
+
+    def _emit_stamped(self, left: Text, when: datetime | None = None) -> None:
+        """A message HEADER (you> / Kratos:) with a fine-print trailing HH:MM."""
+        when = when or datetime.now()
+        self._emit_bubble(R.timestamped(left, when), when)
+
+    def _emit_stamped_from_worker(self, left: Text, when: datetime | None = None) -> None:
+        when = when or datetime.now()
+        self._emit_bubble_from_worker(R.timestamped(left, when), when)
+
+    def _you_header(self, text: str) -> Text:
+        line = Text()
+        line.append("you> ", style=f"bold {T.TEXT_DIM}")
+        line.append(text, style=T.TEXT)
+        return line
+
+    def _kratos_header(self) -> Text:
+        return Text("Kratos:", style=f"bold {T.KRATOS_RED}")
+
     def _render_idle(self) -> None:
         st = self.session_state
         from kratos.agent.tools import TOOL_REGISTRY
@@ -232,8 +267,8 @@ class SessionScreen(Screen):
         if self._busy:
             self.notify("A turn is already running — press esc to interrupt it first.", timeout=3)
             return
-        # echo the user's line
-        self._emit(R.speaker_line(f"you> {text}", T.TEXT_DIM))
+        # echo the user's line (with a trailing timestamp / date divider)
+        self._emit_stamped(self._you_header(text))
         self._store.touch_session(self.session_state["session_id"])
         if text.startswith("/"):
             self._dispatch_slash(text)
@@ -279,24 +314,27 @@ class SessionScreen(Screen):
 
     # --- /report (turn 4a) ----------------------------------------------
     def _render_report(self) -> None:
-        findings = self._collect_session_findings()
+        findings = self._collect_session_findings()  # list of (finding, when)
         self._emit(Text(""))
         if not findings:
             self._emit(R.result_panel("Report — no findings", "No findings recorded in this session yet. Run an investigation first, or the target is clean so far.", T.SAFE))
             return
         order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        findings.sort(key=lambda f: order.get(str(f.get("severity", "info")).lower(), 5))
-        self._emit(R.speaker_line("Kratos:", T.KRATOS_RED))
+        findings.sort(key=lambda fw: order.get(str(fw[0].get("severity", "info")).lower(), 5))
+        self._emit_stamped(self._kratos_header())
         self._emit(Text(f"investigation summary — {len(findings)} finding(s), high → low severity", style=T.TEXT_MUTED))
-        for f in findings:
-            self._emit(R.finding_panel(f))
+        for f, when in findings:
+            # Each finding keeps the timestamp of when it was ORIGINALLY found
+            # (its turn's completion time), not when /report was run.
+            self._emit(R.finding_panel(f, when=when))
 
-    def _collect_session_findings(self) -> list[dict[str, Any]]:
+    def _collect_session_findings(self) -> list[tuple[dict[str, Any], datetime | None]]:
         """Aggregate correlate_findings output across this session's turns'
-        saved transcripts -- same mechanism mcp_server.py::kratos_get_findings
-        uses (findings live in the turn transcript, produced by
-        correlate_findings). New UI (/report), pre-existing data."""
-        out: list[dict[str, Any]] = []
+        saved transcripts, each paired with the time the turn completed --
+        same data path mcp_server.py::kratos_get_findings uses (findings live
+        in the turn transcript, produced by correlate_findings). New UI
+        (/report), pre-existing data."""
+        out: list[tuple[dict[str, Any], datetime | None]] = []
         for turn in self._store.get_goal_history(self.session_state["session_id"]):
             ref = turn.get("transcript_ref")
             if not ref:
@@ -305,13 +343,23 @@ class SessionScreen(Screen):
                 transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            when = self._parse_iso(turn.get("completed_at") or turn.get("started_at"))
             for step in transcript:
                 if step.get("tool") != "correlate_findings":
                     continue
                 result, _status = R.unwrap_tool_result(step.get("observation"))
                 if isinstance(result, dict) and isinstance(result.get("findings"), list):
-                    out.extend(result["findings"])
+                    out.extend((f, when) for f in result["findings"])
         return out
+
+    @staticmethod
+    def _parse_iso(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
 
     # --- /reset, /delete (native confirm modals) -------------------------
     @work
@@ -587,7 +635,7 @@ class SessionScreen(Screen):
             return
 
         if not should_investigate:
-            self._emit_from_worker(R.speaker_line("Kratos:", T.KRATOS_RED))
+            self._emit_stamped_from_worker(self._kratos_header())
             self._emit_from_worker(Text(second or "(no reply)", style=T.TEXT))
             self._log_chat_turn(goal, second or "")
             self._ctx_chars += len(goal) + len(second or "")
@@ -624,12 +672,14 @@ class SessionScreen(Screen):
             return
 
         duration = time.monotonic() - started
-        self._emit_from_worker(R.speaker_line("Kratos:", T.KRATOS_RED))
+        # The conclusion panel carries its own in-bubble timestamp (subtitle),
+        # so no separate stamped "Kratos:" header here -- one time per bubble.
+        now = datetime.now()
         if result["status"] == "final_answer":
-            self._emit_from_worker(R.result_panel("Investigation complete", result["final_answer"], T.SAFE))
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, when=now), now)
             status = "final_answer"
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
-            self._emit_from_worker(R.result_panel("Investigation incomplete (step limit)", result["final_answer"], T.ATTENTION))
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, when=now), now)
             status = "max_iters_reached"
         else:
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
@@ -658,7 +708,8 @@ class SessionScreen(Screen):
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit_from_worker(line)
                 for f in findings:
-                    self._emit_from_worker(R.finding_panel(f))
+                    now = datetime.now()
+                    self._emit_bubble_from_worker(R.finding_panel(f, when=now), now)
             else:
                 self._emit_from_worker(R.tool_call_line(tool_name, effective_status))
         elif step.get("tool_proposal"):
@@ -696,5 +747,5 @@ class SessionScreen(Screen):
     async def action_palette(self) -> None:
         chosen = await self.app.push_screen_wait(CommandPaletteModal(_PALETTE_COMMANDS))
         if chosen:
-            self._emit(R.speaker_line(f"you> {chosen}", T.TEXT_DIM))
+            self._emit_stamped(self._you_header(chosen))
             self._dispatch_slash(chosen)
