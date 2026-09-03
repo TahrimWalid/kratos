@@ -116,6 +116,30 @@ def approval_was_recorded(tool_name: str, since_index: int) -> bool:
     return any(entry["tool"] == tool_name for entry in _approval_log[since_index:])
 
 
+# Swappable presentation/decision provider for request_approval (2026-09-03,
+# kratos-mk2 Textual TUI). DEFAULT is None -> the exact prior behavior below
+# (render_approval_situation + a blocking input()), so the classic
+# `kratos` REPL and every shell subcommand are byte-for-byte unaffected. The
+# Textual TUI installs a provider that renders a modal and blocks the worker
+# thread on the user's answer instead -- a blocking input() cannot drive a
+# Textual modal. A provider only replaces the "show the situation and get a
+# yes/no" step; the fail-safe semantics (any exception/interrupt -> denial)
+# and the central _approval_log recording (which execute_tool_call's backstop
+# depends on) both stay HERE, so no gate can bypass them by supplying a
+# provider. See src/kratos/tui_mk2/approvals.py for the TUI's provider.
+_approval_prompt_provider: "Callable[[str, dict[str, Any]], bool] | None" = None
+
+
+def set_approval_prompt_provider(provider: "Callable[[str, dict[str, Any]], bool] | None") -> None:
+    """Install (or clear, with None) the approval decision provider. When set,
+    request_approval delegates the render+decide step to it instead of the
+    built-in input() prompt. The provider must return a truthy value ONLY for
+    an explicit approval; anything else (including a raised exception) is
+    treated as a denial, preserving the no-force-accept invariant."""
+    global _approval_prompt_provider
+    _approval_prompt_provider = provider
+
+
 def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     """
     Blocking human approval prompt. Every tool that executes a command or
@@ -136,7 +160,23 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     keep, run_linux_command, capture_traffic, live threat-intel, vulscan
     staleness). Still blocks on the same input(), still no force-accept
     fallback, still the same EOFError/KeyboardInterrupt -> denial handling.
+
+    kratos-mk2 (2026-09-03): when set_approval_prompt_provider() has installed
+    a provider (the Textual TUI does), the render+decide step is delegated to
+    it -- but the fail-safe (any exception -> denial) and the _approval_log
+    recording below still happen here unconditionally, so the invariants hold
+    regardless of provider.
     """
+    if _approval_prompt_provider is not None:
+        try:
+            approved = bool(_approval_prompt_provider(tool_name, details))
+        except (EOFError, KeyboardInterrupt):
+            approved = False
+        except Exception:  # noqa: BLE001 -- a broken provider must fail safe, never force-accept
+            approved = False
+        _approval_log.append({"tool": tool_name, "approved": approved})
+        return approved
+
     _console.render_approval_situation(_console.get_console(), tool_name, details)
 
     try:

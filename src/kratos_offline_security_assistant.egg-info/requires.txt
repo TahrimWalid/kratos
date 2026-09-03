@@ -4,3 +4,11 @@ fastapi
 sse-starlette
 pydantic-settings
 starlette-context
+python-dotenv
+rich
+prompt_toolkit
+textual>=0.60
+mcp
+
+[test]
+pytest

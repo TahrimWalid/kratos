@@ -10,6 +10,13 @@ Requires-Dist: fastapi
 Requires-Dist: sse-starlette
 Requires-Dist: pydantic-settings
 Requires-Dist: starlette-context
+Requires-Dist: python-dotenv
+Requires-Dist: rich
+Requires-Dist: prompt_toolkit
+Requires-Dist: textual>=0.60
+Requires-Dist: mcp
+Provides-Extra: test
+Requires-Dist: pytest; extra == "test"
 
 # Kratos — Offline AI Security Analysis for Edge Devices
 
@@ -38,7 +45,7 @@ The LLM advises. It never acts. All mitigation decisions stay with the human ope
 
 ```
 [Scan] ──► [Logs] ──► [Context] ──► [Findings] ──► [LLM Chat]
-  nmap      auth.log    OS/users      correlate       Qwen2.5-Coder 7B
+  nmap      auth.log    OS/users      correlate       Qwen2.5 7B
   XML       parsing     services      + baseline      plain-English analysis
 ```
 
@@ -165,12 +172,22 @@ pip install -e .
 pip install llama-cpp-python requests
 ```
 
-Download the model (~4.5 GB):
+Download the model (~4.5 GB) if you want the built-in llama.cpp path:
 
 ```bash
 mkdir -p llm/models
 wget -O llm/models/qwen2.5-coder-7b-q4_k_m.gguf \
   https://huggingface.co/Qwen/Qwen2.5-Coder-7B-GGUF/resolve/main/qwen2.5-coder-7b-q4_k_m.gguf
+```
+
+Or use Ollama with no Hugging Face token (this is also the default with no
+config at all -- Kratos talks to it via the same OpenAI-compatible API any
+other backend uses, so swapping to a different local server or a cloud
+provider later is just changing `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`):
+
+```bash
+ollama serve
+ollama pull qwen2.5:7b
 ```
 
 Run it:
@@ -199,6 +216,11 @@ kratos chat -q "what is the most urgent thing to fix?"
 ```
 
 `kratos chat` auto-detects the running server and uses it if available.
+
+By default (no config needed), `kratos chat` talks to a local Ollama server
+via its OpenAI-compatible API. To point at a different local server or a
+cloud provider instead, set `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` in
+`.env` (see `.env.example`) and `export KRATOS_LLM_BACKEND=openai_compatible`.
 
 ---
 
@@ -235,6 +257,28 @@ kratos chat -q "what is the most urgent thing to fix?"
 - Python 3.10+
 - `nmap` installed (`sudo apt install nmap`)
 - Read access to `/var/log/auth.log`
+- `nuclei` installed, for `run_vuln_scan`'s active-scanning half. No apt package on Ubuntu 22.04 —
+  install a prebuilt release binary:
+  ```
+  curl -sL https://github.com/projectdiscovery/nuclei/releases/latest/download/nuclei_<version>_linux_amd64.zip -o nuclei.zip
+  # unzip (or python3 -c "import zipfile; zipfile.ZipFile('nuclei.zip').extractall('.')" if unzip isn't installed)
+  # place the extracted `nuclei` binary somewhere on PATH, e.g. ~/.local/bin/
+  ```
+  Templates auto-download on first run (`~/nuclei-templates/`, ~13,000 templates as of v10.4.5).
+  `run_vuln_scan` defaults to a modest tag subset (`cve,exposure,misconfig`, ~6000 templates), not
+  the full set, given this project's "modest hardware" constraint.
+- `vulscan/scripts/vulscan/{vulscan.nse,cve.csv}` populated locally, for `run_vuln_scan`'s
+  offline CVE-correlation half (nmap's vulscan NSE script + a local CVE database, gitignored --
+  see `vulscan/README.md` for the exact install step and why the nested directory layout is
+  required, not optional).
+
+**On the monitored target device** (not the Kratos host — reached over SSH):
+- `yara` installed (`sudo apt install yara`), for `run_yara_scan` (malware/webshell signature
+  matching). Not a Kratos-host Python dependency — the scan runs the `yara` binary on the target
+  over SSH, the same way `list_open_files`/`list_processes` run `lsof`/`ps` there; nothing extra
+  to install on the Kratos host itself for this tool. A small starter YARA ruleset ships in
+  `yara_rules/` (see `yara_rules/README.md` for source/license) as the default; pass a custom
+  rules path to `run_yara_scan` to use your own instead.
 
 **Hardware (for LLM chat):**
 - 8 GB RAM minimum (16 GB recommended)
@@ -317,6 +361,6 @@ Developed as a Bachelor's thesis prototype at Tampere University of Applied Scie
 
 - **Version:** v0.1 (May 2026)
 - **Correlation rules:** 10 active finding types
-- **LLM integration:** Qwen2.5-Coder 7B, fully offline, daemon mode
+- **LLM integration:** Qwen2.5 7B, fully offline, daemon mode
 - **Baseline drift:** sudo / services / ports
 - **Tested hardware:** Mixtile Blade 3 (RK3588 ARM64), CSC OpenStack VM, WSL2

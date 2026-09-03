@@ -18,6 +18,7 @@ dependencies = [
     "python-dotenv",
     "rich",
     "prompt_toolkit",
+    "textual>=0.60",
     "mcp",
 ]
 
@@ -26,6 +27,11 @@ test = ["pytest"]
 
 [project.scripts]
 kratos = "kratos.cli.app:main"
+# kratos-mk2: the Textual full-screen TUI (docs/kratos_mk2_tui.md). Ships
+# side-by-side with the classic `kratos` REPL while it reaches parity. To
+# promote it once trusted, point `kratos` at kratos.tui_mk2.app:main and drop
+# this line -- deliberately a one-line swap, nothing else depends on the name.
+kratos-mk2 = "kratos.tui_mk2.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
