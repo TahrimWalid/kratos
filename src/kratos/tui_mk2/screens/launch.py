@@ -25,6 +25,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
 from kratos.storage.session_store import SessionStore
+from kratos.utils import timeutil
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import PromptModal, ResumeTierModal
 
@@ -58,6 +59,7 @@ class LaunchScreen(Screen):
         self._data_dir = data_dir
         self._rows: list[dict[str, Any]] = []
         self._archived_mode = False
+        self._display_tz = None  # resolved in on_mount (display-only; storage is UTC)
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -69,6 +71,7 @@ class LaunchScreen(Screen):
             yield Static("", id="hints")
 
     def on_mount(self) -> None:
+        self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         table = self.query_one("#sessions", DataTable)
         table.add_columns("#", "id", "name", "target", "last goal", "last active")
         self._reload()
@@ -92,7 +95,10 @@ class LaunchScreen(Screen):
             goal = s.get("latest_goal") or "(no turns yet)"
             if len(goal) > 46:
                 goal = goal[:43] + "…"
-            table.add_row(str(i), s["session_id"], name, targets, goal, s["last_active_at"])
+            # last_active_at is stored UTC -- render in the display zone
+            # (falls back to the raw string if unparseable).
+            last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
+            table.add_row(str(i), s["session_id"], name, targets, goal, last_active)
         table.focus()
         self._render_hints()
 

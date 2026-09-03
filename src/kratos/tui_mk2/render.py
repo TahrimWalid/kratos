@@ -13,7 +13,6 @@ is no reason to fork it.
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from rich.console import Group
@@ -43,25 +42,27 @@ __all__ = [
 ]
 
 
-def timestamped(left: Text, when: datetime) -> Table:
+def timestamped(left: Text, time_str: str) -> Table:
     """A message-header line with `left` at the left edge and a fine-print,
-    right-aligned HH:MM on the same line (WhatsApp-style, mirroring the classic
-    REPL's _print_trailing_timestamp). A Table.grid does the alignment so it
-    stays correct at any width; the timestamp is TEXT_FAINTER so it reads as a
-    caption, not a headline. Only message HEADERS (you> / Kratos:) get one --
-    tool-call lines and panels below them stay clean."""
+    right-aligned time on the same line (WhatsApp-style, mirroring the classic
+    REPL's _print_trailing_timestamp). `time_str` is pre-formatted in the
+    display zone by the caller via kratos.utils.timeutil -- this layer never
+    touches raw datetimes, so display-zone resolution lives in exactly one
+    place. A Table.grid does the alignment so it stays correct at any width;
+    the timestamp is TEXT_FAINTER so it reads as a caption, not a headline."""
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
     grid.add_column(justify="right")
-    grid.add_row(left, Text(when.strftime("%H:%M"), style=T.TEXT_FAINTER))
+    grid.add_row(left, Text(time_str, style=T.TEXT_FAINTER))
     return grid
 
 
-def day_divider(when: datetime) -> Rule:
-    """A subtle full-date separator, shown once when the day changes (like a
-    messaging app's date chip). Mirrors the classic REPL's _DayMarker, which
-    prints the date only on the first message of a new day."""
-    return Rule(when.strftime("%A, %B %d, %Y"), style=T.TEXT_GHOST, characters="·")
+def day_divider(date_str: str) -> Rule:
+    """A subtle full-date separator, shown once when the display-zone day
+    changes (like a messaging app's date chip). `date_str` is pre-formatted in
+    the display zone by the caller (timeutil). Mirrors the classic REPL's
+    _DayMarker."""
+    return Rule(date_str, style=T.TEXT_GHOST, characters="·")
 
 
 def tool_call_line(name: str, status: str) -> Text:
@@ -77,16 +78,16 @@ def tool_call_line(name: str, status: str) -> Text:
     return t
 
 
-def _time_subtitle(when: datetime | None) -> Text | None:
-    """The in-bubble timestamp: a fine-print HH:MM tucked into a panel's
-    bottom-right border, like a chat app's per-message time. None -> no
-    subtitle (a panel with no meaningful moment)."""
-    if when is None:
+def _time_subtitle(time_str: str | None) -> Text | None:
+    """The in-bubble timestamp: a fine-print, display-zone time tucked into a
+    panel's bottom-right border, like a chat app's per-message time. `time_str`
+    is pre-formatted by the caller (timeutil); None/"" -> no subtitle."""
+    if not time_str:
         return None
-    return Text(f" {when.strftime('%H:%M')} ", style=T.TEXT_FAINTER)
+    return Text(f" {time_str} ", style=T.TEXT_FAINTER)
 
 
-def finding_panel(finding: dict[str, Any], when: datetime | None = None) -> Panel:
+def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel:
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
@@ -108,18 +109,18 @@ def finding_panel(finding: dict[str, Any], when: datetime | None = None) -> Pane
         body,
         title=f"Finding — {severity.upper()}",
         title_align="left",
-        subtitle=_time_subtitle(when),
+        subtitle=_time_subtitle(time_str),
         subtitle_align="right",
         border_style=color,
     )
 
 
-def result_panel(title: str, body: str, color: str, when: datetime | None = None) -> Panel:
+def result_panel(title: str, body: str, color: str, time_str: str | None = None) -> Panel:
     return Panel(
         Text(body, style=T.TEXT),
         title=title,
         title_align="left",
-        subtitle=_time_subtitle(when),
+        subtitle=_time_subtitle(time_str),
         subtitle_align="right",
         border_style=color,
     )

@@ -185,6 +185,7 @@ class HelpModal(ModalScreen[None]):
                 ("/target <ip> …", "Set active target(s) — shows setup checklist"),
                 ("/target verify", "Re-check the active target's setup"),
                 ("/model", "Show / switch the active LLM backend"),
+                ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Per-tool approval policy (not yet implemented)"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))

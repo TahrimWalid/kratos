@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +31,7 @@ from textual.worker import get_current_worker
 
 from kratos import kratos_config as _kconfig
 from kratos.storage.session_store import SessionStore
+from kratos.utils import timeutil
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import (
@@ -49,6 +49,7 @@ _PALETTE_COMMANDS = [
     ("/evolve", "write a new tool for the current gap"),
     ("/help", "list all commands"),
     ("/model", "show / switch the active LLM backend"),
+    ("/timezone", "show / set the display timezone (storage stays UTC)"),
     ("/target", "set or verify the active target"),
     ("/rename", "name this session"),
     ("/clear", "free up context (visible history stays)"),
@@ -102,6 +103,11 @@ class SessionScreen(Screen):
         self._busy = False
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
+        # Resolved once in on_mount (override > system-local > UTC) and passed
+        # to every timeutil format call, so live times, resumed/stored times,
+        # and the header clock all render in the SAME display zone. Storage
+        # stays UTC -- this is display-only (see kratos.utils.timeutil).
+        self._display_tz = None
 
     # --- layout ----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -112,6 +118,7 @@ class SessionScreen(Screen):
         yield Static(id="statusfooter")
 
     def on_mount(self) -> None:
+        self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         if self.session_state["targets"]:
             _kconfig.set_active_target(self.session_state["targets"][0])
         self._refresh_header()
@@ -126,13 +133,36 @@ class SessionScreen(Screen):
 
         return get_active_llm_model()
 
+    # --- display-zone time formatting (all via kratos.utils.timeutil) ----
+    def _now_time(self) -> str:
+        """Live wall-clock HH:MM in the resolved display zone."""
+        return timeutil.now_for_display("%H:%M", tz=self._display_tz)
+
+    def _stamp_now(self) -> tuple[str, str]:
+        """One instant, formatted as (HH:MM, full date) in the display zone --
+        captured once so a message's time and its date-divider check can never
+        straddle a second/day boundary."""
+        u = timeutil.utc_now()
+        return (
+            timeutil.format_for_display(u, "%H:%M", tz=self._display_tz),
+            timeutil.format_for_display(u, "%A, %B %d, %Y", tz=self._display_tz),
+        )
+
+    def _fmt_stored_time(self, value: Any) -> str:
+        """A stored (UTC) instant rendered as HH:MM in the display zone --
+        falls back to the raw string if unparseable (timeutil's own guard)."""
+        return timeutil.format_for_display(value, "%H:%M", tz=self._display_tz)
+
     def _tz_label(self) -> str:
-        return datetime.now().astimezone().tzname() or "local"
+        # The resolved DISPLAY zone's abbreviation (not the system zone) -- so
+        # it stays honest if an override is ever set. %Z on the display-zone
+        # instant yields e.g. "EEST" / "+06" / "UTC".
+        return timeutil.now_for_display("%Z", tz=self._display_tz) or "local"
 
     def _refresh_header(self) -> None:
         targets = self.session_state["targets"]
         target = targets[0] if targets else "(no target)"
-        now = datetime.now().strftime("%H:%M")
+        now = self._now_time()
         header = Text()
         header.append("KRATOS", style=f"bold {T.KRATOS_RED}")
         header.append("  ·  ", style=T.TEXT_GHOST)
@@ -197,30 +227,26 @@ class SessionScreen(Screen):
         """Write to the transcript from a THREAD worker (on_step, etc.)."""
         self.app.call_from_thread(self._log.write, renderable)
 
-    def _emit_bubble(self, renderable: Any, when: datetime | None = None) -> None:
+    def _emit_bubble(self, renderable: Any, date_str: str) -> None:
         """Write a timed 'bubble' (a stamped header line, or a finding/result
         panel that already carries its own subtitle time), preceded by a date
-        divider whenever the day changes. Every timestamped thing funnels
-        through here so the divider fires exactly once per day regardless of
-        which kind of bubble crossed the boundary. Event-loop callers only."""
-        when = when or datetime.now()
-        day = when.strftime("%A, %B %d, %Y")
-        if day != self._last_day:
-            self._last_day = day
-            self._log.write(R.day_divider(when))
+        divider whenever the display-zone day changes. Every timestamped thing
+        funnels through here so the divider fires exactly once per day.
+        `date_str` is the display-zone full date. Event-loop callers only."""
+        if date_str != self._last_day:
+            self._last_day = date_str
+            self._log.write(R.day_divider(date_str))
         self._log.write(renderable)
 
-    def _emit_bubble_from_worker(self, renderable: Any, when: datetime | None = None) -> None:
-        self.app.call_from_thread(self._emit_bubble, renderable, when or datetime.now())
+    def _emit_bubble_from_worker(self, renderable: Any, date_str: str) -> None:
+        self.app.call_from_thread(self._emit_bubble, renderable, date_str)
 
-    def _emit_stamped(self, left: Text, when: datetime | None = None) -> None:
-        """A message HEADER (you> / Kratos:) with a fine-print trailing HH:MM."""
-        when = when or datetime.now()
-        self._emit_bubble(R.timestamped(left, when), when)
+    def _emit_stamped(self, left: Text, time_str: str, date_str: str) -> None:
+        """A message HEADER (you> / Kratos:) with a fine-print trailing time."""
+        self._emit_bubble(R.timestamped(left, time_str), date_str)
 
-    def _emit_stamped_from_worker(self, left: Text, when: datetime | None = None) -> None:
-        when = when or datetime.now()
-        self._emit_bubble_from_worker(R.timestamped(left, when), when)
+    def _emit_stamped_from_worker(self, left: Text, time_str: str, date_str: str) -> None:
+        self._emit_bubble_from_worker(R.timestamped(left, time_str), date_str)
 
     def _you_header(self, text: str) -> Text:
         line = Text()
@@ -268,7 +294,8 @@ class SessionScreen(Screen):
             self.notify("A turn is already running — press esc to interrupt it first.", timeout=3)
             return
         # echo the user's line (with a trailing timestamp / date divider)
-        self._emit_stamped(self._you_header(text))
+        t, d = self._stamp_now()
+        self._emit_stamped(self._you_header(text), t, d)
         self._store.touch_session(self.session_state["session_id"])
         if text.startswith("/"):
             self._dispatch_slash(text)
@@ -302,6 +329,8 @@ class SessionScreen(Screen):
             self._target_flow(rest)
         elif cmd == "/model":
             self._model_flow()
+        elif cmd == "/timezone":
+            self._cmd_timezone(rest)
         elif cmd == "/evolve":
             self._evolve_flow(rest)
         elif cmd == "/settings":
@@ -321,20 +350,23 @@ class SessionScreen(Screen):
             return
         order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         findings.sort(key=lambda fw: order.get(str(fw[0].get("severity", "info")).lower(), 5))
-        self._emit_stamped(self._kratos_header())
+        t, d = self._stamp_now()
+        self._emit_stamped(self._kratos_header(), t, d)
         self._emit(Text(f"investigation summary — {len(findings)} finding(s), high → low severity", style=T.TEXT_MUTED))
-        for f, when in findings:
-            # Each finding keeps the timestamp of when it was ORIGINALLY found
-            # (its turn's completion time), not when /report was run.
-            self._emit(R.finding_panel(f, when=when))
+        for f, when_value in findings:
+            # Each finding keeps the time it was ORIGINALLY found (its turn's
+            # completion time, a stored UTC value), rendered in the display
+            # zone -- not when /report was run.
+            self._emit(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)))
 
-    def _collect_session_findings(self) -> list[tuple[dict[str, Any], datetime | None]]:
+    def _collect_session_findings(self) -> list[tuple[dict[str, Any], str | None]]:
         """Aggregate correlate_findings output across this session's turns'
-        saved transcripts, each paired with the time the turn completed --
-        same data path mcp_server.py::kratos_get_findings uses (findings live
-        in the turn transcript, produced by correlate_findings). New UI
-        (/report), pre-existing data."""
-        out: list[tuple[dict[str, Any], datetime | None]] = []
+        saved transcripts, each paired with the RAW stored (UTC) time the turn
+        completed -- formatting into the display zone happens at render time
+        via timeutil. Same data path mcp_server.py::kratos_get_findings uses
+        (findings live in the turn transcript, produced by correlate_findings).
+        New UI (/report), pre-existing data."""
+        out: list[tuple[dict[str, Any], str | None]] = []
         for turn in self._store.get_goal_history(self.session_state["session_id"]):
             ref = turn.get("transcript_ref")
             if not ref:
@@ -343,23 +375,49 @@ class SessionScreen(Screen):
                 transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
-            when = self._parse_iso(turn.get("completed_at") or turn.get("started_at"))
+            when_value = turn.get("completed_at") or turn.get("started_at")
             for step in transcript:
                 if step.get("tool") != "correlate_findings":
                     continue
                 result, _status = R.unwrap_tool_result(step.get("observation"))
                 if isinstance(result, dict) and isinstance(result.get("findings"), list):
-                    out.extend((f, when) for f in result["findings"])
+                    out.extend((f, when_value) for f in result["findings"])
         return out
 
-    @staticmethod
-    def _parse_iso(value: str | None) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
+    # --- /timezone (display-only override; storage stays UTC) ------------
+    def _cmd_timezone(self, rest: str) -> None:
+        """/timezone            -> show the current display zone + how it was resolved
+           /timezone auto       -> clear any override, use the auto-detected system zone
+           /timezone <Zone>     -> pin a display zone (e.g. UTC, Europe/Helsinki, Asia/Dhaka)
+        Display-only: this never touches stored times (always UTC), it only
+        changes how they're SHOWN. Re-resolves this session's display zone live
+        and refreshes the header; the next message re-emits a date divider in
+        the new zone (a day boundary can move). Persisted via timeutil so future
+        launches and the launch chooser agree."""
+        arg = rest.strip()
+        if not arg:
+            source, tz = timeutil.display_tz_status(self._data_dir)
+            name = getattr(tz, "key", None) or self._tz_label()
+            self._emit(R.note_line(
+                f"Display timezone: {name} ({source}). Change with /timezone <Zone> or /timezone auto."
+            ))
+            return
+        if arg.lower() == "auto":
+            timeutil.set_display_timezone_override(self._data_dir, None)
+            self._apply_timezone_change()
+            self._emit(R.success_line(f"Display timezone: auto ({timeutil.local_tz_name() or 'system local'})."))
+            return
+        if timeutil.zone_from_name(arg) is None:
+            self._emit(R.error_line(f"{arg!r} isn't a known timezone (try UTC, Europe/Helsinki, Asia/Dhaka, …)."))
+            return
+        timeutil.set_display_timezone_override(self._data_dir, arg)
+        self._apply_timezone_change()
+        self._emit(R.success_line(f"Display timezone set to {arg} — stored times now shown in this zone."))
+
+    def _apply_timezone_change(self) -> None:
+        self._display_tz = timeutil.resolve_display_tz(self._data_dir)
+        self._last_day = None  # force a fresh date divider in the new zone
+        self._refresh_header()
 
     # --- /reset, /delete (native confirm modals) -------------------------
     @work
@@ -635,7 +693,8 @@ class SessionScreen(Screen):
             return
 
         if not should_investigate:
-            self._emit_stamped_from_worker(self._kratos_header())
+            t, d = self._stamp_now()
+            self._emit_stamped_from_worker(self._kratos_header(), t, d)
             self._emit_from_worker(Text(second or "(no reply)", style=T.TEXT))
             self._log_chat_turn(goal, second or "")
             self._ctx_chars += len(goal) + len(second or "")
@@ -674,12 +733,12 @@ class SessionScreen(Screen):
         duration = time.monotonic() - started
         # The conclusion panel carries its own in-bubble timestamp (subtitle),
         # so no separate stamped "Kratos:" header here -- one time per bubble.
-        now = datetime.now()
+        t, d = self._stamp_now()
         if result["status"] == "final_answer":
-            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, when=now), now)
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, time_str=t), d)
             status = "final_answer"
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
-            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, when=now), now)
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
             status = "max_iters_reached"
         else:
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
@@ -708,8 +767,8 @@ class SessionScreen(Screen):
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit_from_worker(line)
                 for f in findings:
-                    now = datetime.now()
-                    self._emit_bubble_from_worker(R.finding_panel(f, when=now), now)
+                    t, d = self._stamp_now()
+                    self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
             else:
                 self._emit_from_worker(R.tool_call_line(tool_name, effective_status))
         elif step.get("tool_proposal"):
@@ -747,5 +806,6 @@ class SessionScreen(Screen):
     async def action_palette(self) -> None:
         chosen = await self.app.push_screen_wait(CommandPaletteModal(_PALETTE_COMMANDS))
         if chosen:
-            self._emit_stamped(self._you_header(chosen))
+            t, d = self._stamp_now()
+            self._emit_stamped(self._you_header(chosen), t, d)
             self._dispatch_slash(chosen)
