@@ -74,6 +74,7 @@ class SessionScreen(Screen):
     BINDINGS = [
         Binding("escape", "interrupt", "interrupt", show=True),
         Binding("ctrl+p", "palette", "commands", show=True),
+        Binding("ctrl+y", "copy_last", "copy answer", show=True),
     ]
 
     CSS = f"""
@@ -109,6 +110,7 @@ class SessionScreen(Screen):
         self._busy = False
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
+        self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
         # Resolved once in on_mount (override > system-local > UTC) and passed
         # to every timeutil format call, so live times, resumed/stored times,
         # and the header clock all render in the SAME display zone. Storage
@@ -134,6 +136,42 @@ class SessionScreen(Screen):
         if self._full_replay:
             self._render_full_replay()
         self.query_one("#goal", Input).focus()
+        self._maybe_timezone_fallback()  # turn 9b (only fires if auto-detect failed)
+
+    # --- turn 9b: one-time manual timezone entry when auto-detect fails ---
+    @work
+    async def _maybe_timezone_fallback(self) -> None:
+        source, _tz = timeutil.display_tz_status(self._data_dir)
+        if source != "fallback":
+            return  # normal case: system zone detected, nothing to ask
+        config = _kconfig.load_local_config(self._data_dir)
+        if config.get("tz_fallback_prompted"):
+            return  # one-time only, never nags again
+        _kconfig.save_local_config(self._data_dir, tz_fallback_prompted=True)
+        answer = await self.app.push_screen_wait(
+            PromptModal(
+                "Timezone couldn't be auto-detected",
+                "Enter a zone (e.g. Asia/Dhaka, Europe/Helsinki, UTC), or leave blank to use UTC",
+            )
+        )
+        if answer and timeutil.zone_from_name(answer.strip()):
+            timeutil.set_display_timezone_override(self._data_dir, answer.strip())
+            self._apply_timezone_change()
+            self._emit(R.success_line(f"Display timezone set to {answer.strip()}."))
+        else:
+            self._emit(R.note_line("Using UTC for display. Change anytime with /timezone <zone>."))
+
+    def action_copy_last(self) -> None:
+        # Turn 14d: copy Kratos's most recent answer/reply to the clipboard
+        # (via the terminal's OSC-52, Textual's copy_to_clipboard) with a
+        # transient confirmation -- the concrete "copy" affordance the design
+        # asks for. A structured per-command 19b copy panel needs the
+        # remediation-command structure that doesn't exist yet (see the doc).
+        if not self._last_answer.strip():
+            self.notify("Nothing to copy yet — run a goal first.", timeout=3)
+            return
+        self.app.copy_to_clipboard(self._last_answer)
+        self.notify("Copied Kratos's last answer to the clipboard.", timeout=3)
 
     # --- header / footer -------------------------------------------------
     def _model_label(self) -> str:
@@ -857,11 +895,33 @@ class SessionScreen(Screen):
             self._set_busy(False)
             return
         self.session_state["pending_evolve_suggestion"] = None
+        n = len(outcome.attempt_history)
         if outcome.status == "approved":
             kd = outcome.keep_decision
             self._emit_from_worker(R.success_line(f"Kept: {kd.tool_name} (requires_approval={kd.requires_approval}) — available now."))
         elif outcome.status == "denied":
-            self._emit_from_worker(R.note_line("Evo-loop finished — a candidate passed testing but was not kept."))
+            self._emit_from_worker(R.note_line("Evo-loop finished — a candidate passed testing but was not kept (denied)."))
+        elif outcome.status == "write_failed":
+            # 15d "never got there": no testable candidate was ever produced.
+            self._emit_from_worker(R.error_line(
+                f"Evo-loop never produced a testable candidate — the write step failed before any "
+                f"sandbox test could run ({n} attempt(s)). Try a clearer idea or a simpler harness."
+            ))
+        elif outcome.status == "stalled_no_variation":
+            self._emit_from_worker(R.error_line(
+                f"Evo-loop stalled — the model stopped varying its output (converged, then repeated "
+                f"the same candidate) after {n} attempt(s). No new candidate to try."
+            ))
+        elif outcome.status == "exhausted_retries":
+            self._emit_from_worker(R.error_line(
+                f"Evo-loop ran out of attempts ({n}) while still trying different fixes — none passed "
+                f"the harness. Consider loosening/clarifying the harness assertions."
+            ))
+        elif outcome.status == "infra_error":
+            self._emit_from_worker(R.error_line(
+                "Evo-loop hit a sandbox infrastructure error (not a problem with the candidate code) "
+                "— check the Incus sandbox is available."
+            ))
         else:
             self._emit_from_worker(R.error_line(f"Evo-loop did not produce an approvable candidate (status: {outcome.status})."))
         self._set_busy(False)
@@ -927,6 +987,7 @@ class SessionScreen(Screen):
             t, d = self._stamp_now()
             self._emit_stamped_from_worker(self._kratos_header(), t, d)
             self._emit_from_worker(Text(second or "(no reply)", style=T.TEXT))
+            self._last_answer = second or ""
             self._log_chat_turn(goal, second or "")
             self._ctx_chars += len(goal) + len(second or "")
             self.app.call_from_thread(self._refresh_footer)
@@ -965,6 +1026,7 @@ class SessionScreen(Screen):
         # The conclusion panel carries its own in-bubble timestamp (subtitle),
         # so no separate stamped "Kratos:" header here -- one time per bubble.
         t, d = self._stamp_now()
+        self._last_answer = result.get("final_answer", "") or ""
         if result["status"] == "final_answer":
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, time_str=t), d)
             status = "final_answer"

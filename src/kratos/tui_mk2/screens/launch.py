@@ -59,7 +59,9 @@ class LaunchScreen(Screen):
         self._data_dir = data_dir
         self._rows: list[dict[str, Any]] = []
         self._archived_mode = False
-        self._display_tz = None  # resolved in on_mount (display-only; storage is UTC)
+        self._offset = 0          # recent-mode paging (turn 6a "[m] more")
+        self._has_more = False    # is there a page after the current one?
+        self._display_tz = None   # resolved in on_mount (display-only; storage is UTC)
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -87,8 +89,13 @@ class LaunchScreen(Screen):
         table.clear()
         if self._archived_mode:
             self._rows = self._store.list_archived_sessions(limit=CHOOSER_SESSION_LIMIT)
+            self._has_more = False
         else:
-            self._rows = self._store.list_recent_sessions(limit=CHOOSER_SESSION_LIMIT)
+            self._rows = self._store.list_recent_sessions(limit=CHOOSER_SESSION_LIMIT, offset=self._offset)
+            # Peek one row past this page to know whether "[m] more" applies.
+            self._has_more = bool(
+                self._store.list_recent_sessions(limit=1, offset=self._offset + CHOOSER_SESSION_LIMIT)
+            )
         for i, s in enumerate(self._rows, start=1):
             name = s.get("name") or "(unnamed)"
             targets = ", ".join(s["targets"]) if s["targets"] else "(none)"
@@ -110,8 +117,15 @@ class LaunchScreen(Screen):
         if self._archived_mode:
             hints.update(Text("Enter restore & resume · b back to recent · q quit", style=T.TEXT_DIM))
             return
-        more = "  ·  m more" if len(self._rows) >= CHOOSER_SESSION_LIMIT else ""
-        hints.update(Text(f"Enter resume · n new · a archived{more} · q quit", style=T.TEXT_DIM))
+        page = self._offset // CHOOSER_SESSION_LIMIT + 1
+        page_txt = f"  ·  page {page}" if self._offset else ""
+        if self._has_more:
+            more = "  ·  m more"
+        elif self._offset:
+            more = "  ·  m back to page 1"
+        else:
+            more = ""
+        hints.update(Text(f"Enter resume · n new · a archived{more}{page_txt} · q quit", style=T.TEXT_DIM))
 
     # --- actions ---------------------------------------------------------
     def action_quit_app(self) -> None:
@@ -123,14 +137,19 @@ class LaunchScreen(Screen):
 
     def action_archived(self) -> None:
         self._archived_mode = True
+        self._offset = 0
         self._reload()
 
     def action_more(self) -> None:
-        # Overflow view (turn 6a "[m] more"): mechanism exists via offset, but
-        # a second page adds little at today's scale -- documented in the doc
-        # as a small follow-up. For now, more == archived is NOT correct, so we
-        # simply note it rather than silently doing the wrong thing.
-        self.notify("More-sessions paging is a documented follow-up (see docs/kratos_mk2_tui.md).", timeout=4)
+        # Turn 6a "[m] more sessions": page forward through recent sessions
+        # using the store's offset support; wrap back to page 1 once there are
+        # no more (so a session can never become unreachable, and there's a way
+        # back without a separate key).
+        if self._archived_mode:
+            return
+        next_off = self._offset + CHOOSER_SESSION_LIMIT
+        self._offset = next_off if self._store.list_recent_sessions(limit=1, offset=next_off) else 0
+        self._reload()
 
     def action_resume_selected(self) -> None:
         # Enter is consumed by the focused DataTable (it fires RowSelected, see

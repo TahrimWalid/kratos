@@ -97,7 +97,7 @@ Reverting is the same edit backwards.
 | 6b | Resume-depth sub-prompt (light / full / back) | ✅ | `ResumeTierModal`; context via the classic REPL's pure builders. Small-context warning honored. |
 | 6c | New session (target prompt, last-used default) | ✅ | `PromptModal` for target + optional name. |
 | 6d | Archived sessions view | ✅ | `a` toggles it; `SessionStore.list_archived_sessions` + `restore_session`. |
-| 6a "[m] more" | Overflow paging past `CHOOSER_SESSION_LIMIT` | 🟡 | Mechanism exists (`list_recent_sessions(offset=…)`); UI shows a note. **To wire:** a second-page view (low priority — single-digit session counts today). |
+| 6a "[m] more" | Overflow paging past `CHOOSER_SESSION_LIMIT` | ✅ | `m` pages forward through recent sessions via `list_recent_sessions(offset=…)`, wrapping back to page 1 after the last page (so nothing becomes unreachable). Footer shows the page number + whether more exist. |
 | — | Full-tier on-screen transcript **replay** | ✅ | `SessionScreen._render_full_replay` / `_render_replay_turn` / `_render_step_replay`: `[f]` resume re-renders the most recent `FULL_RESUME_DETAILED_TURN_CAP` turns (chat replies, tool lines, findings, conclusions) through the same bubble helpers, each stamped at its real historical display-zone time; older turns collapse to one-liners. |
 
 ### 2. Idle / empty state (turn 5)
@@ -113,7 +113,7 @@ Reverting is the same edit backwards.
 | (routing) | plain input → chat-or-investigate decision | ✅ | Reuses `cli/repl.py::_route_input` (one cheap no-tools LLM call) verbatim. |
 | (live run) | step-by-step tool-call lines, finding panels, concluding panel, "Done in Ns" | ✅ | `run_agent` + `on_step`; renderables from `render.py`. Transcript persisted per turn (same layout as classic REPL). |
 | (messaging feel) | per-message + per-bubble timestamps + date divider (WhatsApp-style) | ✅ | `render.py::timestamped` (trailing time on each `you>`/`Kratos:` header), `render.py::day_divider` (dotted full-date chip on display-zone day-change), and an **in-bubble** time in the bottom-right border of every finding/result panel. `/report` stamps each finding with when it was originally found (its turn's `completed_at`). Mirrors the classic REPL's `_print_trailing_timestamp` / `_DayMarker`. **All formatting routes through `kratos.utils.timeutil`** (storage stays UTC; display zone resolved once in `SessionScreen.on_mount` / `LaunchScreen.on_mount` and passed as `tz=` to every `format_for_display` / `now_for_display`). Render helpers take pre-formatted display strings — the single place display-zone lives. |
-| 9a/9b/9c | Header live clock + timezone; `/timezone` override | ✅ (prompt 🔲) | Live clock + display-zone abbreviation in the header (`_tz_label` reports the resolved DISPLAY zone via `%Z`, so it's honest under an override). `/timezone [<zone>\|auto]` sets/clears a persisted display override (`timeutil.set_display_timezone_override`) and live-re-resolves the session's zone. The rare **auto-detect-failed fallback prompt** (9b) still needs a Textual modal — deferred (auto-detect covers the normal case). |
+| 9a/9b/9c | Header live clock + timezone; `/timezone` override; fallback prompt | ✅ | Live clock + display-zone abbreviation in the header (`_tz_label` reports the resolved DISPLAY zone via `%Z`, honest under an override). `/timezone [<zone>\|auto]` sets/clears a persisted override and live-re-resolves the session's zone. **9b fallback prompt done** (`_maybe_timezone_fallback`): if the system zone genuinely can't be detected (`display_tz_status` source `fallback`), a one-time modal asks for a zone; persisted so it never nags again. |
 | 7b | Interrupt (esc) → resumable, "nothing left running" | 🟡 | Cancels at next step boundary; turn marked `cancelled`. **To wire (nicety):** a one-key "resume from here" affordance (today: just type a new goal). |
 | 7c | Context-window meter in the footer, warns before compact | 🟡 | **Approximate** — Kratos exposes no real token count, so it's a char-based heuristic vs `LLAMA_N_CTX*4`. **To wire:** surface real prompt-token usage from the LLM layer (`llm_interface`) and feed it here. |
 | 14b | Context **compaction** firing (the event) | 🔲 | No compaction mechanism exists in the agent loop. **To wire:** actual transcript compaction in `agent/loop.py`, then render the event. |
@@ -138,8 +138,8 @@ Reverting is the same edit backwards.
 | Canvas | Screen | Status | Notes / To wire |
 |---|---|---|---|
 | (existing gates) | Generic approval gate (run_linux_command, capture_traffic, vulscan-staleness, live threat-intel, self-write keep) | ✅ | `ApprovalModal` via the provider bridge. Fail-safe preserved. |
-| 19b | **Recommend-only remediation** — show the exact command for the human to run themselves | 🟡 | `render.py::recommended_fix_panel` exists. Today Kratos surfaces recommendations inside the `final_answer` text (mk2 shows that). **To wire (nicety):** have the agent emit a structured "recommended command" so it renders as the dedicated 19b panel with a copy affordance. |
-| 14d | Copy-to-clipboard confirmation | 🔲 | No clipboard action yet. **To wire:** a copy binding on command panels + a transient confirm toast. |
+| 19b | **Recommend-only remediation** — show the exact command for the human to run themselves | 🟡 | `render.py::recommended_fix_panel` exists. Today Kratos surfaces recommendations inside the `final_answer` text (mk2 shows that, and it's copyable — see 14d). **To wire (nicety):** have the agent emit a *structured* "recommended command" so it renders as the dedicated 19b panel per-command (needs a small `agent/loop.py` schema addition). |
+| 14d | Copy-to-clipboard confirmation | ✅ | `ctrl+y` copies Kratos's most recent answer/reply (`_last_answer`) via Textual's `copy_to_clipboard` (terminal OSC-52), with a transient confirmation toast. Per-command copy panels wait on 19b's structured command. |
 | 19a / 19d / 19e | Direct-execution **opt-in** (dedicated consent screen), settings toggle, first-run suggestion | 🔲 | **Direct execution does not exist** (arch doc capability 2, off by default, gated on the whitelist being built). **To wire:** the per-target toggle store + the sub-agent execution channel **and** the fixed narrow action whitelist (arch doc control 3 — the real security boundary), THEN this consent UI. Consent copy must use the arch doc's plain-risk wording (control 6). |
 | 12c / 19c | Upgraded **critical gate** — typed `EXECUTE` | 🔲 | The typed-EXECUTE gate only means something once EXECUTE can dispatch to a sub-agent. **To wire:** same prerequisites as 19a; the risk disclosure (effect/reversibility/blast-radius) must come from the trusted whitelist action definition, **never** LLM-generated (arch doc control 7). |
 | 16a | Sub-agent drops mid-type → field pulled live | 🔲 | Depends on the execution channel + liveness signal. |
@@ -162,7 +162,8 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 | 11b | Total target loss during investigation | Distinguish "core can't reach target at all" from a single tool timeout. |
 | 11c–11f | Dispatch/refuse/drop-mid-exec/success outcomes | The execution channel + its outcome protocol (arch doc capability 2). |
 | 12d / 12e | "No EXECUTE offered" when unreachable; multi-target dashboard | Reachability state; multi-target execution (explicitly out of scope in current code — `/target` uses only the first). |
-| 15a–15d | Emergency revoke, core-off-tailnet, queued critical approvals, sandbox-never-produces-candidate | Revoke = tailnet key removal; queueing = a serialized approval queue; 15d is an evo-loop `LoopOutcome` state that CAN be surfaced today (nicety). |
+| 15a–15c | Emergency revoke, core-off-tailnet, queued critical approvals | Revoke = tailnet key removal; queueing = a serialized approval queue. |
+| 15d | Sandbox never produces a viable candidate | ✅ (the evo-loop half) | `/evolve` now reports each `LoopOutcome` distinctly: `write_failed` ("never produced a testable candidate"), `stalled_no_variation` ("converged, then repeated"), `exhausted_retries`, `infra_error` — the 15d "never got there" vs. "got there and stopped" distinction. |
 | 17a–17e | State-drift hash check at EXECUTE, multi-target broadcast matrix, etc. | All depend on the execution channel. 17d (sandbox-hostility forensic view) could reuse existing `self_test` sandbox signals — a nearer-term nicety. |
 
 ### 8. Error / capability-limit states (turn 14, 17)
@@ -178,12 +179,15 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 
 ## What a future session should do next (suggested order)
 
-1. **Phase 1 polish — DONE:** full-tier on-screen replay, terminal-too-narrow
-   guard (14c), `/model` cost/privacy blurbs, `/scan`-family shortcuts, the
-   `/`-live palette, and the `/evolve` LLM-drafted-harness flow all shipped.
-   Small remainders: chooser "[m] more" second page; 15d evo-loop "never
-   produced a candidate" surfaced from `LoopOutcome`; a fuller 19b structured
-   "recommended command" panel + 14d copy affordance.
+1. **Phase 1 polish + small remainders — DONE:** full-tier on-screen replay,
+   terminal-too-narrow guard (14c), `/model` cost/privacy blurbs, `/scan`-family
+   shortcuts, the `/`-live palette, the `/evolve` LLM-drafted-harness flow, the
+   chooser `[m]` paging, distinct evo-loop outcome messaging (15d), the `ctrl+y`
+   copy affordance (14d), and the 9b timezone auto-detect-failed fallback prompt
+   all shipped. The only Phase-1-adjacent item left is the *structured* 19b
+   "recommended command" panel, which needs a small `agent/loop.py` schema
+   addition (the agent emitting a discrete command), so it's grouped with the
+   remediation work rather than pure UI polish.
 2. **Real token accounting** (unblocks 7c accurate meter, 17c, 14b compaction):
    surface prompt-token usage from `llm_interface`.
 3. **Sub-agent, telemetry-first** (arch doc capability 1, low risk): build the
