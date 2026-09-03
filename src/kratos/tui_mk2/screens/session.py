@@ -15,7 +15,9 @@ docs/kratos_mk2_tui.md for the per-screen "mechanism exists?" audit.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,8 @@ from kratos.tui_mk2.modals import (
 )
 
 REPL_MAX_ITERS = 5  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
+FULL_RESUME_DETAILED_TURN_CAP = 5  # matches cli/repl.py -- only the most recent N turns replay in full
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control codes from captured output
 
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
@@ -89,10 +93,12 @@ class SessionScreen(Screen):
         session_id: str,
         targets: list[str],
         resume_context: str,
+        full_replay: bool = False,
     ) -> None:
         super().__init__()
         self._store = store
         self._data_dir = data_dir
+        self._full_replay = full_replay
         self.session_state: dict[str, Any] = {
             "session_id": session_id,
             "targets": targets,
@@ -125,6 +131,8 @@ class SessionScreen(Screen):
         self._refresh_footer()
         self.set_interval(1.0, self._refresh_header)  # live clock (turn 9a)
         self._render_idle()
+        if self._full_replay:
+            self._render_full_replay()
         self.query_one("#goal", Input).focus()
 
     # --- header / footer -------------------------------------------------
@@ -152,6 +160,10 @@ class SessionScreen(Screen):
         """A stored (UTC) instant rendered as HH:MM in the display zone --
         falls back to the raw string if unparseable (timeutil's own guard)."""
         return timeutil.format_for_display(value, "%H:%M", tz=self._display_tz)
+
+    def _fmt_stored_date(self, value: Any) -> str:
+        """A stored (UTC) instant rendered as a full date in the display zone."""
+        return timeutil.format_for_display(value, "%A, %B %d, %Y", tz=self._display_tz)
 
     def _tz_label(self) -> str:
         # The resolved DISPLAY zone's abbreviation (not the system zone) -- so
@@ -284,7 +296,98 @@ class SessionScreen(Screen):
         self._emit(Text("Tips:  Ctrl+P commands · /report summary · /help all commands · esc interrupts", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
+    # --- full-tier resume: on-screen replay (turn 6b, [f]) ---------------
+    def _render_full_replay(self) -> None:
+        """Re-render the session's prior turns on screen when resumed at full
+        tier, so a resumed session shows its history (not just feeds it to the
+        model). Only the most recent FULL_RESUME_DETAILED_TURN_CAP turns replay
+        in full; older ones collapse to a one-liner (one format, bounded
+        output on long sessions). Mirrors cli/repl.py's own replay split, and
+        renders through the SAME bubble helpers live turns use, with each turn
+        stamped at its real historical (display-zone) time."""
+        history = self._store.get_goal_history(self.session_state["session_id"])
+        if not history:
+            return
+        self._emit(Text(f"— resumed context ({len(history)} prior turn(s)) —", style=T.TEXT_FAINTER))
+        detailed_from = max(0, len(history) - FULL_RESUME_DETAILED_TURN_CAP)
+        for i, turn in enumerate(history):
+            if i < detailed_from:
+                status = turn.get("status") or "in_progress"
+                self._emit(Text(f"- {turn['goal']!r} → {status}", style=T.TEXT_FAINTER))
+            else:
+                self._render_replay_turn(turn)
+        self._emit(Text("— end resumed context · new activity below —", style=T.TEXT_FAINTER))
+        self._emit(Text(""))
+
+    def _render_replay_turn(self, turn: dict[str, Any]) -> None:
+        goal = turn["goal"]
+        status = turn.get("status") or "in_progress"
+        started = turn.get("started_at")
+        completed = turn.get("completed_at") or started
+        self._emit_stamped(self._you_header(goal), self._fmt_stored_time(started), self._fmt_stored_date(started))
+
+        ref = turn.get("transcript_ref")
+        if not ref:
+            self._emit(R.note_line("(no saved transcript for this turn)"))
+            return
+        try:
+            transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            self._emit(R.note_line(f"(could not load transcript: {e})"))
+            return
+
+        if status == "chat_reply":
+            reply = transcript[0].get("final_answer", "") if transcript else ""
+            self._emit_stamped(self._kratos_header(), self._fmt_stored_time(completed), self._fmt_stored_date(completed))
+            self._emit(Text(reply or "(no reply)", style=T.TEXT))
+            return
+
+        final_present = bool(transcript) and "final_answer" in transcript[-1]
+        for step in (transcript[:-1] if final_present else transcript):
+            self._render_step_replay(step, completed)
+        if final_present:
+            self._emit_bubble(
+                R.result_panel("Kratos — concluded", transcript[-1]["final_answer"], T.SAFE, time_str=self._fmt_stored_time(completed)),
+                self._fmt_stored_date(completed),
+            )
+        if status == "cancelled":
+            self._emit(Text("Investigation cancelled.", style=T.TEXT_FAINT))
+
+    def _render_step_replay(self, step: dict, when_value: Any) -> None:
+        """Event-loop counterpart of _render_step (which is worker-thread only).
+        Kept separate per the classic REPL's own precedent -- live and replay
+        rendering have a real behavioral difference (replay owns the answer;
+        on_step defers it) that's cleaner as two small functions than one
+        special-cased one."""
+        tool_name = step.get("tool")
+        if not tool_name:
+            return
+        result, effective_status = R.unwrap_tool_result(step.get("observation"))
+        if effective_status == "error":
+            err = result.get("observation") if isinstance(result, dict) else None
+            self._emit(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
+        elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
+            findings = result["findings"]
+            line = Text()
+            line.append("✓ ", style=T.SAFE)
+            line.append(tool_name, style=f"bold {T.ACCENT}")
+            line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
+            self._emit(line)
+            for f in findings:
+                self._emit_bubble(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)), self._fmt_stored_date(when_value))
+        else:
+            self._emit(R.tool_call_line(tool_name, effective_status))
+
     # --- input -----------------------------------------------------------
+    def on_input_changed(self, event: Input.Changed) -> None:
+        # Turn 7a: a lone "/" typed into the empty prompt opens the command
+        # palette (which filters as you type and can still take inline args).
+        # Only a deliberate single "/" triggers it -- a pasted/typed "/cmd args"
+        # arrives as a longer string and is left for normal inline submission.
+        if event.value == "/" and not self._busy:
+            event.input.value = ""
+            self.action_palette()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
@@ -336,7 +439,7 @@ class SessionScreen(Screen):
         elif cmd == "/settings":
             self._emit(R.note_line("/settings is not implemented yet — per-tool approval policy is a separate design pass."))
         elif cmd in ("/scan", "/logs-parse", "/findings-generate", "/run"):
-            self._emit(R.note_line(f"{cmd} (deterministic shortcut) isn't ported to the TUI yet — see docs/kratos_mk2_tui.md."))
+            self._run_shortcut(cmd.lstrip("/"), rest)
         else:
             # Unmatched /-prefix falls through to a goal (matches classic REPL).
             self._run_goal(text)
@@ -551,9 +654,13 @@ class SessionScreen(Screen):
         entries = []
         for c in candidates:
             marker = "  (active)" if current is not None and c.model == current.model else ""
-            entries.append((c, f"{c.model}{marker}"))
+            entries.append((c, f"{c.model}{marker}  ·  {self._profile_blurb(c.values)}"))
         picked = await self.app.push_screen_wait(
-            ListPickerModal("Switch LLM backend", entries, subtitle=f"Active: {self.session_state['backend']}")
+            ListPickerModal(
+                "Switch LLM backend",
+                entries,
+                subtitle=f"Active: {self.session_state['backend']}  ·  honest cost/privacy per option below",
+            )
         )
         if picked is None:
             return
@@ -561,6 +668,17 @@ class SessionScreen(Screen):
             self._emit(R.note_line(f"{picked.model} is already active — no change."))
             return
         self._apply_model_switch(picked, current)
+
+    @staticmethod
+    def _profile_blurb(values: dict[str, str]) -> str:
+        """Turn 16c -- honest cost/privacy disclosure per backend option,
+        derived from the profile's own endpoint (not a hardcoded list): a
+        loopback base URL is a local model (free, private); anything else is a
+        remote/cloud endpoint that sees the prompts and is usually billed."""
+        url = (values.get("LLM_BASE_URL") or "").lower()
+        if any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")):
+            return "local · free · private (nothing leaves this host)"
+        return "cloud API · sends prompts to a third party · usage-billed"
 
     @work(thread=True)
     def _apply_model_switch(self, target: Any, current: Any) -> None:
@@ -613,11 +731,88 @@ class SessionScreen(Screen):
         if harness is None:
             return
         harness_path = Path(harness.strip() or default_path)
+        if harness_path.suffix != ".py":
+            self._emit(R.error_line(f"{harness_path} isn't a .py file — evo-loop needs a pytest harness."))
+            return
         if not harness_path.exists():
-            self._emit(R.error_line(f"No test file at {harness_path} — evo-loop needs a human-authored harness. Create it, then /evolve again."))
-            self._emit(R.note_line("(The classic REPL's LLM-drafted-harness helper isn't ported to the TUI yet — see docs/kratos_mk2_tui.md.)"))
+            await self._draft_harness_flow(idea, tool_name, harness_path)
             return
         self._run_evolve(idea, harness_path, tool_name)
+
+    async def _draft_harness_flow(self, idea: str, tool_name: str, harness_path: Path) -> None:
+        """Turn: /evolve against a missing harness. Offers an LLM-drafted
+        starter (reusing cli/repl.py's own _draft_evolve_harness), shown for
+        REVIEW and never trusted unedited -- saving is an explicit choice, and
+        even 'save & build now' only proceeds after the full draft was shown.
+        Same human-authored-test principle as the classic REPL, just a lower
+        cold-start cost."""
+        want = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Draft a starter harness with the LLM?",
+                f"No test file at {harness_path}. Evo-loop needs a human-authored pytest harness that "
+                "defines 'correct' for this tool. I can draft one for you to review and edit — it is "
+                "never trusted unedited. Draft one now?",
+            )
+        )
+        code, drafted = None, False
+        if want:
+            self._emit(R.note_line("Drafting a starter harness (LLM, a moment)…"))
+            code = await asyncio.to_thread(self._draft_harness_blocking, tool_name, idea)
+            drafted = bool(code)
+        if not code:
+            code = self._static_harness(tool_name, idea)
+        self._emit(self._harness_panel(code, drafted))
+
+        choice = await self.app.push_screen_wait(
+            ListPickerModal(
+                "Harness draft — what next?",
+                [
+                    ("s", "[s] save and start building now"),
+                    ("e", "[e] save so I can edit it first"),
+                    ("d", "[d] discard"),
+                ],
+                subtitle="Review the assertions — they're the model's best guess at the interface.",
+            )
+        )
+        if choice == "s":
+            harness_path.parent.mkdir(parents=True, exist_ok=True)
+            harness_path.write_text(code, encoding="utf-8")
+            self._emit(R.success_line(f"Saved to {harness_path} — starting evo-loop now."))
+            self._run_evolve(idea, harness_path, tool_name)
+        elif choice == "e":
+            harness_path.parent.mkdir(parents=True, exist_ok=True)
+            harness_path.write_text(code, encoding="utf-8")
+            self._emit(R.success_line(f"Saved to {harness_path}."))
+            self._emit(R.note_line("Review it (especially the assertions), then run /evolve again to build."))
+        else:
+            self._emit(R.note_line(f"Discarded — write your own harness at {harness_path}, then /evolve again."))
+
+    def _draft_harness_blocking(self, tool_name: str, idea: str) -> str | None:
+        from kratos.agent import console as _c
+        from kratos.cli.repl import _draft_evolve_harness
+
+        return _draft_evolve_harness(_c.get_console(), tool_name, idea)
+
+    def _static_harness(self, tool_name: str, idea: str) -> str:
+        from kratos.cli.repl import _build_evolve_harness_template
+
+        return _build_evolve_harness_template(tool_name, idea)
+
+    def _harness_panel(self, code: str, drafted: bool) -> Any:
+        from rich.panel import Panel
+        from rich.syntax import Syntax
+
+        title = (
+            "LLM-DRAFTED harness — READ before saving (assertions are guesses)"
+            if drafted
+            else "Starter harness — edit the TODOs before running /evolve"
+        )
+        return Panel(
+            Syntax(code, "python", word_wrap=True, background_color="default"),
+            title=title,
+            title_align="left",
+            border_style=T.ATTENTION,
+        )
 
     def _slug(self, text: str) -> str:
         import re
@@ -670,6 +865,42 @@ class SessionScreen(Screen):
         else:
             self._emit_from_worker(R.error_line(f"Evo-loop did not produce an approvable candidate (status: {outcome.status})."))
         self._set_busy(False)
+
+    # --- deterministic subcommand shortcuts (/scan, /run, ...) -----------
+    @work(thread=True)
+    def _run_shortcut(self, subcommand: str, rest: str) -> None:
+        """Run a fixed-pipeline subcommand (the same build_parser() ->
+        args.func(args) path `kratos <sub>` uses from the shell) and capture
+        its output into the transcript. Those commands print via plain print()
+        and the classic Rich console to stdout; captured here (worker thread,
+        brief) and shown as a panel. ANSI is stripped so it reads cleanly in
+        the log. Any approval the command triggers still routes to the modal
+        via the provider (worker-thread safe)."""
+        import contextlib
+        import io
+
+        from kratos.cli.app import build_parser
+
+        self._set_busy(True)
+        try:
+            parser = build_parser()
+            argv = ["--data-dir", str(self._data_dir), subcommand, *rest.split()]
+            try:
+                parsed = parser.parse_args(argv)
+            except SystemExit:
+                self._emit_from_worker(R.error_line(f"Could not parse arguments for /{subcommand}: {rest!r}"))
+                return
+            self._emit_from_worker(R.note_line(f"Running /{subcommand}…"))
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                try:
+                    parsed.func(parsed)
+                except Exception as e:  # noqa: BLE001 -- surface, don't crash the TUI
+                    buf.write(f"\n[error] {e}\n")
+            text = _ANSI_RE.sub("", buf.getvalue()).rstrip()
+            self._emit_from_worker(R.result_panel(f"kratos {subcommand}", text or "(no output)", T.ACCENT))
+        finally:
+            self._set_busy(False)
 
     # --- goal handling: chat vs investigate ------------------------------
     def _set_busy(self, busy: bool) -> None:

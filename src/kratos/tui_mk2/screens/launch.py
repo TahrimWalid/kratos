@@ -163,7 +163,7 @@ class LaunchScreen(Screen):
             self._reload()
             return
         resume_context = self._build_context(session["session_id"], tier)
-        self._open_session(session["session_id"], session["targets"], resume_context)
+        self._open_session(session["session_id"], session["targets"], resume_context, full_replay=(tier == "f"))
 
     @work
     async def _new_session_flow(self) -> None:
@@ -210,7 +210,11 @@ class LaunchScreen(Screen):
             return _build_full_resume_context(history, self._data_dir)
         return _build_light_resume_context(history)
 
-    def _open_session(self, session_id: str, targets: list[str], resume_context: str) -> None:
+    def _open_session(
+        self, session_id: str, targets: list[str], resume_context: str, full_replay: bool = False
+    ) -> None:
         from kratos.tui_mk2.screens.session import SessionScreen
 
-        self.app.push_screen(SessionScreen(self._store, self._data_dir, session_id, targets, resume_context))
+        self.app.push_screen(
+            SessionScreen(self._store, self._data_dir, session_id, targets, resume_context, full_replay=full_replay)
+        )

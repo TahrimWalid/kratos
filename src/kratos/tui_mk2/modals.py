@@ -282,11 +282,21 @@ class CommandPaletteModal(ModalScreen[str | None]):
 
     @on(Input.Submitted, "#palette-input")
     def _submit(self, event: Input.Submitted) -> None:
-        matches = self._matches(event.value)
+        val = event.value.strip()
+        # If the user typed args (a space), pass the WHOLE command through so
+        # inline usage (`/rename foo`, `/target 1.2.3.4`) still works from the
+        # palette -- the caller dispatches it exactly like a typed command.
+        if " " in val:
+            self.dismiss(val)
+            return
+        matches = self._matches(val)
         if matches:
-            self.dismiss(matches[max(0, self.query_one("#palette-list", ListView).index or 0)][0])
-        else:
-            self.dismiss(None)
+            idx = max(0, self.query_one("#palette-list", ListView).index or 0)
+            self.dismiss(matches[idx][0])
+            return
+        # No match: hand a bare /-command through (dispatch treats an unknown
+        # one as goal text, same as typing it directly); otherwise cancel.
+        self.dismiss(val if val.startswith("/") else None)
 
     @on(ListView.Selected, "#palette-list")
     def _picked(self, event: ListView.Selected) -> None:

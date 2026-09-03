@@ -98,7 +98,7 @@ Reverting is the same edit backwards.
 | 6c | New session (target prompt, last-used default) | ✅ | `PromptModal` for target + optional name. |
 | 6d | Archived sessions view | ✅ | `a` toggles it; `SessionStore.list_archived_sessions` + `restore_session`. |
 | 6a "[m] more" | Overflow paging past `CHOOSER_SESSION_LIMIT` | 🟡 | Mechanism exists (`list_recent_sessions(offset=…)`); UI shows a note. **To wire:** a second-page view (low priority — single-digit session counts today). |
-| — | Full-tier on-screen transcript **replay** | 🟡 | Context IS fed to the model; the classic REPL also re-renders it (`_render_resumed_full_history`). mk2 shows a "resumed context loaded" note instead of a full visual replay. **To wire:** port `_render_turn_replay` into the log. |
+| — | Full-tier on-screen transcript **replay** | ✅ | `SessionScreen._render_full_replay` / `_render_replay_turn` / `_render_step_replay`: `[f]` resume re-renders the most recent `FULL_RESUME_DETAILED_TURN_CAP` turns (chat replies, tool lines, findings, conclusions) through the same bubble helpers, each stamped at its real historical display-zone time; older turns collapse to one-liners. |
 
 ### 2. Idle / empty state (turn 5)
 
@@ -122,10 +122,12 @@ Reverting is the same edit backwards.
 
 | Canvas | Command | Status | Notes / To wire |
 |---|---|---|---|
-| 7a | `/` command palette (filter as you type) | 🟡 | `CommandPaletteModal` on **ctrl+p** (works, filters, runs). **To wire (design-exact):** open it live from the main input when the line is just `/`, streaming filter there. Deferred because it conflicts with typing full `/cmd args` inline. |
+| 7a | `/` command palette (filter as you type) | ✅ | `CommandPaletteModal` opens on **ctrl+p** AND on typing a lone `/` in the empty prompt (`on_input_changed`). Filters as you type; a typed command with args (`/rename foo`) passes straight through, so inline usage isn't lost. |
 | 8a | `/help` grouped reference | ✅ | `HelpModal`. |
 | 8b | `/rename` (inline before/after) | ✅ | `session.py::_rename_flow`, same validation family as classic `/rename`. |
-| 16c | `/model` backend selection + reachability | ✅ | `ListPickerModal` + `llm_profiles` validate + `check_endpoint_reachable` + `switch_profile`, in a worker. Cost/privacy disclosure text: **To wire** (add per-profile blurbs). |
+| 16c | `/model` backend selection + reachability + cost/privacy | ✅ | `ListPickerModal` + `llm_profiles` validate + `check_endpoint_reachable` + `switch_profile`, in a worker. Each option carries an honest cost/privacy blurb derived from its endpoint (`_profile_blurb`: loopback → local/free/private; else cloud/third-party/billed). |
+| — | `/scan` · `/run` · `/logs-parse` · `/findings-generate` shortcuts | ✅ | `SessionScreen._run_shortcut`: runs the real `build_parser()` → `args.func(args)` path in a worker, captures stdout/stderr (ANSI-stripped) into a result panel. Any approval it triggers still routes to the modal. |
+| — | `/evolve` LLM-drafted starter harness | ✅ | On a missing harness, offers an LLM draft (reuses `cli/repl.py::_draft_evolve_harness`), shown for review; save-and-build / save-to-edit / discard. Never trusted unedited — same human-authored-test principle as the classic REPL. |
 | — | `/target`, `/target verify` (+ setup checklist + probe) | ✅ | `target_setup.generate_target_setup_checklist` + `ssh_remote.run_target_probe_checks`. |
 | — | `/clear`, `/reset`, `/delete` | ✅ | `/reset`/`/delete` use a native `ConfirmModal` (no force-accept). `/delete` pops back to the chooser. |
 | 9a/9b/9c | Header live clock + auto TZ; TZ fallback prompt; TZ override | 🟡 | Live clock + auto TZ done (`_refresh_header`). Fallback prompt / settings override: **To wire** (needs `/settings`). |
@@ -176,12 +178,12 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 
 ## What a future session should do next (suggested order)
 
-1. **Nearer-term, mechanism already exists (finish Phase 1 polish):**
-   full-tier on-screen replay (port `_render_turn_replay`); 14c terminal-too-narrow
-   guard; 15d evo-loop "never produced a candidate" surfaced from `LoopOutcome`;
-   `/model` per-profile cost/privacy blurbs; `/scan` / `/run` / `/logs-parse` /
-   `/findings-generate` shortcuts (capture their Rich output into the log);
-   the classic REPL's LLM-drafted-harness flow for `/evolve`.
+1. **Phase 1 polish — DONE:** full-tier on-screen replay, terminal-too-narrow
+   guard (14c), `/model` cost/privacy blurbs, `/scan`-family shortcuts, the
+   `/`-live palette, and the `/evolve` LLM-drafted-harness flow all shipped.
+   Small remainders: chooser "[m] more" second page; 15d evo-loop "never
+   produced a candidate" surfaced from `LoopOutcome`; a fuller 19b structured
+   "recommended command" panel + 14d copy affordance.
 2. **Real token accounting** (unblocks 7c accurate meter, 17c, 14b compaction):
    surface prompt-token usage from `llm_interface`.
 3. **Sub-agent, telemetry-first** (arch doc capability 1, low risk): build the
