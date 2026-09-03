@@ -53,6 +53,39 @@ from kratos.llm_config import (
 from kratos.adapters import llm_profiles as _llm_profiles
 from kratos.llm_interface import agent_chat, check_endpoint_reachable
 from kratos.storage.session_store import SessionStore
+from kratos.utils import timeutil as _timeutil
+
+# ---------------------------------------------------------------------------
+# Display timezone (UTC-storage / local-display split, see utils/timeutil.py).
+# Stored timestamps are absolute UTC; the REPL renders them (and live "now"
+# markers) in ONE resolved display zone -- the user's auto-detected system
+# zone by default, or a persisted override. Resolved once per session launch
+# (run_session) into this module global -- each `kratos` process runs a
+# single session serially, the same reason kratos_config._active_target_override
+# is a module global rather than threaded through every render helper's
+# signature. None until a session sets it: the two helpers below then fall
+# back to timeutil's own auto-detection, which matches the previous
+# datetime.now()-in-local-time behavior, so a stray direct call (e.g. a unit
+# test on a render helper) still renders sensibly.
+# ---------------------------------------------------------------------------
+_DISPLAY_TZ = None
+
+
+def _set_display_tz(tz) -> None:
+    global _DISPLAY_TZ
+    _DISPLAY_TZ = tz
+
+
+def _display_now(fmt: str = "%H:%M") -> str:
+    """Current instant, rendered in the session's display zone."""
+    return _timeutil.now_for_display(fmt, tz=_DISPLAY_TZ)
+
+
+def _display_stored(value: Any, fmt: str = "%H:%M") -> str:
+    """A stored (UTC) timestamp string/datetime, rendered in the display
+    zone. A legacy naive value is interpreted as local time -- see
+    timeutil.parse_stored_instant."""
+    return _timeutil.format_for_display(value, fmt, tz=_DISPLAY_TZ)
 
 # Deliberately lower, separate default from DEFAULT_MAX_ITERS (agent/loop.py)
 # -- design doc §4.1: a REPL turn is the repeatedly-invoked case (keep it
@@ -143,7 +176,7 @@ def _route_input(goal: str, resume_context: str = "") -> tuple[bool | None, str 
 
 SLASH_COMMAND_NAMES = [
     "/help", "/clear", "/reset", "/delete", "/rename", "/evolve", "/exit", "/quit", "/target", "/settings",
-    "/model", "/scan", "/logs-parse", "/findings-generate", "/run",
+    "/model", "/timezone", "/scan", "/logs-parse", "/findings-generate", "/run",
 ]
 
 # Slash-equivalent -> real shell subcommand name (design doc §3's shorthand
@@ -222,7 +255,7 @@ class _DayMarker:
         self._last_date: str | None = None
 
     def maybe_render(self, console) -> None:
-        today = datetime.now().strftime("%A, %B %d, %Y")
+        today = _display_now("%A, %B %d, %Y")
         if today != self._last_date:
             console.print(f"[{_console.TEXT_SECONDARY}]-- {today} --[/]")
             self._last_date = today
@@ -240,7 +273,9 @@ def _print_trailing_timestamp(console, left: str, when: datetime | None = None) 
     -- see run_session's main loop."""
     from rich.table import Table
 
-    hhmm = (when or datetime.now()).strftime("%H:%M")
+    # Stored timestamps are absolute UTC; render `when` in the display zone.
+    # A live call (when=None) shows the current instant in that same zone.
+    hhmm = _display_stored(when, "%H:%M") if when is not None else _display_now("%H:%M")
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
     grid.add_column(justify="right")
@@ -345,7 +380,11 @@ def _build_sessions_table(sessions: list[dict[str, Any]]):
         goal = (s["latest_goal"] or "(no turns yet)")
         if len(goal) > 50:
             goal = goal[:47] + "..."
-        table.add_row(str(i), s["session_id"], name, targets, goal, s["last_active_at"])
+        # last_active_at is stored as absolute UTC -- render it in the
+        # display zone so the chooser's "Last active" column reads in the
+        # user's own local time, not UTC.
+        last_active = _display_stored(s["last_active_at"], "%Y-%m-%d %H:%M")
+        table.add_row(str(i), s["session_id"], name, targets, goal, last_active)
     return table
 
 
@@ -854,6 +893,7 @@ def _cmd_help(console, **_: Any) -> None:
     t.add_row("/target verify", "Re-check the active target's setup without changing it")
     t.add_row("/settings", "Per-tool approval policy (not yet implemented)")
     t.add_row("/model", "Show/switch the active LLM backend (only models already listed in .env)")
+    t.add_row("/timezone [<zone>|auto]", "Show or pin the display timezone (stored data is always UTC)")
     console.print(t)
 
     console.print("[bold]Deterministic tool shortcuts[/]")
@@ -1710,6 +1750,81 @@ def _cmd_settings(console, **_: Any) -> None:
     )
 
 
+def _prompt_timezone_fallback(console, data_dir: Path):
+    """One-time manual timezone entry, reached ONLY when auto-detection
+    genuinely fails (utils/timeutil.display_tz_status -> "fallback") -- a
+    rare, misconfigured-environment case, never a recurring nag on normal
+    launches. Persists the answer as a display override so it isn't asked
+    again; an empty/invalid answer defaults to UTC (also persisted, so the
+    prompt doesn't recur every launch). Returns the resolved tzinfo."""
+    _console.render_note(
+        console,
+        "Could not auto-detect this machine's timezone. Enter an IANA zone name "
+        "(e.g. 'Europe/Helsinki', 'Asia/Dhaka', or 'UTC') for how timestamps are "
+        "shown -- stored data is always UTC, this only affects display. Press Enter for UTC.",
+    )
+    try:
+        answer = input("Display timezone [UTC]: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    tz = _timeutil.zone_from_name(answer) if answer else None
+    if answer and tz is None:
+        _console.render_note(console, f"'{answer}' is not a known timezone -- defaulting to UTC.")
+    chosen_name = answer if tz is not None else "UTC"
+    _timeutil.set_display_timezone_override(data_dir, chosen_name)
+    return _timeutil.zone_from_name(chosen_name) or _timeutil.resolve_display_tz(data_dir)
+
+
+def _cmd_timezone(console, arg_text: str, data_dir: Path, **_: Any) -> None:
+    """/timezone -- display-zone control (setting #5, opt-in override).
+
+      /timezone            show the active display zone + how it was resolved
+      /timezone auto       clear any override, revert to system auto-detection
+      /timezone <zone>     pin a fixed display zone (e.g. UTC, Asia/Dhaka)
+
+    Display-only: this never changes how anything is STORED (always UTC),
+    only how stored instants are rendered. A pinned zone survives across
+    sessions (persisted in the local config); 'auto' removes it."""
+    arg = arg_text.strip()
+    if not arg:
+        source, tz = _timeutil.display_tz_status(data_dir)
+        name = getattr(tz, "key", None) or str(tz)
+        detected = _timeutil.local_tz_name() or "unknown"
+        source_label = {
+            "override": "fixed override",
+            "auto": "auto-detected from this system",
+            "fallback": "UTC fallback (auto-detection failed)",
+        }.get(source, source)
+        _console.render_note(
+            console,
+            f"Display timezone: {name} ({source_label}). "
+            f"Detected system zone: {detected}. "
+            "Use '/timezone <zone>' to pin one, or '/timezone auto' to follow this system.",
+        )
+        return
+
+    if arg.lower() == "auto":
+        _timeutil.set_display_timezone_override(data_dir, None)
+        _set_display_tz(_timeutil.resolve_display_tz(data_dir))
+        _console.render_note(
+            console,
+            f"Display timezone now follows this system ({_timeutil.local_tz_name() or 'unknown'}).",
+        )
+        return
+
+    tz = _timeutil.zone_from_name(arg)
+    if tz is None:
+        _console.render_note(
+            console,
+            f"'{arg}' is not a known timezone. Use an IANA name like 'Europe/Helsinki', "
+            "'Asia/Dhaka', or 'UTC' -- or '/timezone auto' to follow this system.",
+        )
+        return
+    _timeutil.set_display_timezone_override(data_dir, arg)
+    _set_display_tz(tz)
+    _console.render_note(console, f"Display timezone pinned to {arg}. Stored data is unchanged (always UTC).")
+
+
 def _cmd_model(console, session_state: dict[str, Any], **_: Any) -> None:
     """/model -- live switching (2026-07-18), constrained to models already
     present in .env. Candidates come from a real .env parse
@@ -1978,6 +2093,8 @@ def _dispatch_slash(console, text: str, session_state: dict[str, Any], store: Se
         _cmd_settings(console)
     elif cmd == "/model":
         _cmd_model(console, session_state)
+    elif cmd == "/timezone":
+        _cmd_timezone(console, rest, data_dir)
     elif cmd in _SHORTCUT_TO_SUBCOMMAND:
         _cmd_shortcut(console, _SHORTCUT_TO_SUBCOMMAND[cmd], rest, data_dir)
     else:
@@ -2109,6 +2226,16 @@ def run_session(top_level_args) -> int:
 
     if not _run_first_run_wizard(console, data_dir):
         return 0
+
+    # Resolve the display timezone once for this session (UTC-storage /
+    # local-display split, see utils/timeutil.py). Silent in the normal case:
+    # an explicit override (setting #5) or the auto-detected system zone needs
+    # no interaction at all. Only a genuine auto-detection failure ("fallback")
+    # prompts -- once -- for a manual zone, defaulting to UTC if declined.
+    tz_source, display_tz = _timeutil.display_tz_status(data_dir)
+    if tz_source == "fallback":
+        display_tz = _prompt_timezone_fallback(console, data_dir)
+    _set_display_tz(display_tz)
 
     # Seed the active-target override from a wizard-persisted default (if
     # any) BEFORE the chooser runs, so _choose_session()'s own
@@ -2290,7 +2417,7 @@ def _run_one_session(
         # isn't "kratos> " anymore; no separate print before/after either,
         # same no-clutter-on-bare-Enter property the old prefix design
         # already had).
-        now_str = datetime.now().strftime("%H:%M")
+        now_str = _display_now("%H:%M")
         try:
             with patch_stdout():
                 text = prompt_session.prompt(

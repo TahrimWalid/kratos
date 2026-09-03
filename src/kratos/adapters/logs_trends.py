@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
 
@@ -101,7 +102,7 @@ def build_auth_trends_report(
     out_md = reports_dir / f"auth_trends_{ts}.md"
 
     report: dict[str, Any] = {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": utc_now_iso(),
         "inputs": {
             "stats_files": [p.file for p in points],
             "last_n": last_n,

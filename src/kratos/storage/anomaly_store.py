@@ -10,8 +10,16 @@ from __future__ import annotations
 import sqlite3
 import json
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Optional
+
+# UTC-storage / local-display split -- every timestamp written and every
+# relative-time cutoff computed here is an absolute UTC instant, so a
+# "last N days" query stays correct regardless of the querying machine's
+# local timezone (see utils/timeutil.py for the rationale). Both the stored
+# values AND the cutoffs use utc_now(); mixing the two would silently skew
+# every windowed query.
+from kratos.utils.timeutil import utc_now
 
 
 class AnomalyStore:
@@ -80,7 +88,7 @@ class AnomalyStore:
                         (timestamp, src_ip, dst_ip, dst_port, protocol, device_type, severity, score, reason, recommendation)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        datetime.now().isoformat(),
+                        utc_now().isoformat(),
                         anom.get("src_ip"),
                         anom.get("dst_ip"),
                         anom.get("dst_port"),
@@ -101,7 +109,7 @@ class AnomalyStore:
         self, severity: str, days: int = 7
     ) -> list[dict[str, Any]]:
         """Get anomalies of specific severity from last N days."""
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (utc_now() - timedelta(days=days)).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
@@ -117,7 +125,7 @@ class AnomalyStore:
     
     def get_trend(self, device_ip: str, days: int = 7) -> dict[str, Any]:
         """Get anomaly trend for a specific device."""
-        cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+        cutoff = (utc_now() - timedelta(days=days)).isoformat()
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute("""
                 SELECT
@@ -138,7 +146,7 @@ class AnomalyStore:
     
     def update_daily_summary(self) -> None:
         """Recalculate daily summaries."""
-        today = datetime.now().date().isoformat()
+        today = utc_now().date().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             stats = conn.execute("""
                 SELECT
@@ -161,7 +169,7 @@ class AnomalyStore:
     
     def get_weekly_summary(self, weeks: int = 1) -> list[dict[str, Any]]:
         """Get daily summaries for last N weeks."""
-        cutoff = (datetime.now() - timedelta(weeks=weeks)).date().isoformat()
+        cutoff = (utc_now() - timedelta(weeks=weeks)).date().isoformat()
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
@@ -180,7 +188,7 @@ class AnomalyStore:
                     (timestamp, finding_id, title, severity, category, description, evidence, recommendation)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    datetime.now().isoformat(),
+                    utc_now().isoformat(),
                     finding.get("id"),
                     finding.get("title"),
                     finding.get("severity"),

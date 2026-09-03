@@ -23,9 +23,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from kratos.utils.timeutil import parse_stored_instant, utc_now_iso
 
 _BUSY_TIMEOUT_MS = 5000
 
@@ -112,7 +113,7 @@ class SessionStore:
 
     def create_session(self, targets: list[str], model_backend: str) -> str:
         session_id = uuid.uuid4().hex[:12]
-        now = datetime.now().isoformat(timespec="seconds")
+        now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -130,7 +131,7 @@ class SessionStore:
         return session_id
 
     def touch_session(self, session_id: str) -> None:
-        now = datetime.now().isoformat(timespec="seconds")
+        now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -148,7 +149,7 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE sessions SET targets = ?, last_active_at = ? WHERE session_id = ?",
-                (json.dumps(targets), datetime.now().isoformat(timespec="seconds"), session_id),
+                (json.dumps(targets), utc_now_iso(), session_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -208,7 +209,7 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE sessions SET name = ?, last_active_at = ? WHERE session_id = ?",
-                (name, datetime.now().isoformat(timespec="seconds"), session_id),
+                (name, utc_now_iso(), session_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -286,7 +287,7 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE sessions SET status = 'archived', last_active_at = ? WHERE session_id = ?",
-                (datetime.now().isoformat(timespec="seconds"), session_id),
+                (utc_now_iso(), session_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -303,7 +304,7 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE sessions SET status = 'active', last_active_at = ? WHERE session_id = ?",
-                (datetime.now().isoformat(timespec="seconds"), session_id),
+                (utc_now_iso(), session_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -325,7 +326,7 @@ class SessionStore:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE goal_history SET archived_at = ? WHERE session_id = ? AND archived_at IS NULL",
-                (datetime.now().isoformat(timespec="seconds"), session_id),
+                (utc_now_iso(), session_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -342,7 +343,7 @@ class SessionStore:
         """Written immediately, before the turn actually runs -- so a crash
         mid-turn still leaves a real, recoverable row (completed_at NULL,
         status 'in_progress') rather than losing the turn entirely."""
-        now = datetime.now().isoformat(timespec="seconds")
+        now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -369,7 +370,7 @@ class SessionStore:
         return turn_id
 
     def complete_turn(self, turn_id: int, status: str, transcript_ref: str | None = None) -> None:
-        now = datetime.now().isoformat(timespec="seconds")
+        now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -396,8 +397,15 @@ class SessionStore:
             conn.close()
         if row is None or row["completed_at"] is None:
             return None
-        started = datetime.fromisoformat(row["started_at"])
-        completed = datetime.fromisoformat(row["completed_at"])
+        # parse_stored_instant normalizes both endpoints to tz-aware UTC,
+        # so the subtraction is correct whether the rows were written by the
+        # new UTC path or are legacy naive-local values -- and it never
+        # raises "can't subtract offset-naive and offset-aware datetimes"
+        # if a session straddled the storage change.
+        started = parse_stored_instant(row["started_at"])
+        completed = parse_stored_instant(row["completed_at"])
+        if started is None or completed is None:
+            return None
         return (completed - started).total_seconds()
 
     def get_goal_history(self, session_id: str, include_archived: bool = False) -> list[dict[str, Any]]:

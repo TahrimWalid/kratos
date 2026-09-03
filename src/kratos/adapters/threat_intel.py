@@ -23,7 +23,7 @@ established "adapters do mechanism, tools.py does policy" convention.
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +94,7 @@ def update_threat_intel_cache(max_pages: int = 5) -> tuple[bool, str]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = CACHE_FILE.with_suffix(".json.new")
     payload = {
-        "synced_at": datetime.now().isoformat(timespec="seconds"),
+        "synced_at": utc_now_iso(),
         "indicator_count": len(all_indicators),
         "indicators": all_indicators,
     }

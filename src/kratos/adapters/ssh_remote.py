@@ -29,11 +29,11 @@ import shlex
 import subprocess
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from kratos import kratos_config as _kconfig
+from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
     SSH_TARGET_USER,
     SSH_TARGET_KEY_PATH,
@@ -121,7 +121,14 @@ def _parse_journal_entry(raw: dict[str, Any]) -> dict[str, Any]:
     timestamp = None
     if ts_micro:
         try:
-            timestamp = datetime.fromtimestamp(int(ts_micro) / 1_000_000).isoformat(timespec="seconds")
+            # __REALTIME_TIMESTAMP is epoch microseconds -- an absolute UTC
+            # instant, independent of the TARGET's own local timezone -- so
+            # UTC is the correct, lossless normalization. The previous
+            # datetime.fromtimestamp() (no tz) silently rebased it onto the
+            # KRATOS HOST's local zone and stored it naive, which broke as
+            # soon as the host and target zones differed, or the host
+            # travelled between sessions.
+            timestamp = epoch_to_utc_iso(int(ts_micro) / 1_000_000)
         except (ValueError, OSError, OverflowError):
             timestamp = None
     return {
@@ -200,11 +207,13 @@ def _parse_journal_entry_for_auth(raw: dict[str, Any]) -> tuple[str, str | None,
     timestamp = None
     if ts_micro:
         try:
-            timestamp = datetime.fromtimestamp(int(ts_micro) / 1_000_000).isoformat(timespec="seconds")
+            # Absolute UTC instant -- see _parse_journal_entry for why UTC is
+            # the correct normalization of journald's epoch timestamp.
+            timestamp = epoch_to_utc_iso(int(ts_micro) / 1_000_000)
         except (ValueError, OSError, OverflowError):
             timestamp = None
     if timestamp is None:
-        timestamp = datetime.now().isoformat(timespec="seconds")
+        timestamp = utc_now_iso()
     identifier = raw.get("SYSLOG_IDENTIFIER") or raw.get("_COMM")
     return timestamp, identifier, raw.get("MESSAGE") or ""
 
@@ -544,6 +553,15 @@ if command -v lsof >/dev/null 2>&1; then
 else
   printf 'lsof_installed\tFAIL\tlsof not installed -- list_open_files will fail\n'
 fi
+
+# Target timezone (informational). Kratos reads target logs via journalctl's
+# JSON __REALTIME_TIMESTAMP, which is an absolute UTC epoch regardless of this
+# setting -- so target-log storage is already correct no matter what this
+# says. It's surfaced only so an operator interpreting RAW TEXT log lines
+# (which are printed in the target's local zone) knows which zone those are
+# in. Never FAIL: a target's zone is a fact to report, not a misconfiguration.
+tz_name="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || echo unknown)"
+printf 'target_timezone\tINFO\tTarget system timezone: %s (journald log timestamps are stored as absolute UTC regardless)\n' "$tz_name"
 """
 
 

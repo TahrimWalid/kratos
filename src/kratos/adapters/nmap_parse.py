@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
+from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ def parse_nmap_xml_to_dict(xml_path: Path) -> dict[str, Any]:
     parsed: dict[str, Any] = {
         "tool": "nmap",
         "source_file": xml_path.name,
-        "parsed_at": datetime.now().isoformat(timespec="seconds"),
+        "parsed_at": utc_now_iso(),
         "hosts": [],
     }
 

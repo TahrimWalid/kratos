@@ -8,6 +8,7 @@ from typing import Any
 
 from kratos import __version__ as KRATOS_VERSION
 from kratos.utils.latest_file import latest_file
+from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 
 
 
@@ -823,8 +824,11 @@ def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set
     if spread_hours <= STALENESS_SPREAD_THRESHOLD_HOURS:
         return None
 
-    newest_ts = datetime.fromtimestamp(mtimes[newest_key]).isoformat(timespec="seconds")
-    oldest_ts = datetime.fromtimestamp(mtimes[oldest_key]).isoformat(timespec="seconds")
+    # Rendered as absolute UTC instants (the spread itself is tz-independent,
+    # since it's a difference of epoch mtimes) so the warning reads
+    # consistently no matter which machine/timezone produced or reads it.
+    newest_ts = epoch_to_utc_iso(mtimes[newest_key])
+    oldest_ts = epoch_to_utc_iso(mtimes[oldest_key])
     return (
         f"Auto-discovered inputs span {spread_hours:.1f}h (> {STALENESS_SPREAD_THRESHOLD_HOURS}h "
         f"threshold): '{newest_key}' is from {newest_ts}, '{oldest_key}' is from {oldest_ts}. This "
@@ -932,7 +936,10 @@ def write_findings_report(
             env_label = "wsl2"
 
     report_obj = {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        # Absolute UTC instant -- a findings report is a stored, later-read
+        # artifact whose "when" must survive being read on a different
+        # machine / in a different timezone than the one that produced it.
+        "generated_at": utc_now_iso(),
         "tool": {"name": "kratos", "version": KRATOS_VERSION},
         "environment": {"label": env_label},
         # Explicit, report-level flag for which host system_context describes --

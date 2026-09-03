@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +144,7 @@ def build_current_snapshot(data_dir: Path) -> BaselineSnapshot:
     system_context = json.loads(system_context_path.read_text()) if system_context_path else None
 
     snap = BaselineSnapshot(
-        created_at=datetime.now().isoformat(timespec="seconds"),
+        created_at=utc_now_iso(),
         environment=_env_label(system_context),
         inputs={
             "nmap_parsed": nmap_parsed_path.name if nmap_parsed_path else None,
@@ -280,7 +281,7 @@ def save_file_integrity_baseline(
     snapshot = {
         "baseline_name": baseline_name,
         "target": target,
-        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "created_at": utc_now_iso(),
         "hashes": hashes,
     }
     path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
@@ -351,7 +352,7 @@ def save_file_integrity_diff(
             {
                 "baseline_name": baseline_name,
                 "target": target,
-                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "checked_at": utc_now_iso(),
                 "diff": diff,
             },
             indent=2,
