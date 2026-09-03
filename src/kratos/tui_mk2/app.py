@@ -19,7 +19,12 @@ import os
 import sys
 from pathlib import Path
 
-from textual.app import App
+from rich.align import Align
+from rich.text import Text
+from textual.app import App, ComposeResult
+from textual.events import Resize
+from textual.screen import Screen
+from textual.widgets import Static
 
 from kratos.agent import console as _console
 from kratos.agent.tools import set_approval_prompt_provider
@@ -32,6 +37,24 @@ from kratos.tui_mk2.modals import ConfirmModal, PromptModal
 from kratos.tui_mk2.screens.launch import LaunchScreen
 
 
+class TooSmallScreen(Screen):
+    """Turn 14c -- a hard blocking screen when the terminal is too small for the
+    fixed-column layouts, rather than letting them overlap. Shown/hidden by the
+    app's on_resize; the app never dismisses it while still too small."""
+
+    CSS = f"""
+    TooSmallScreen {{ align: center middle; background: {T.BG}; }}
+    TooSmallScreen Static {{ width: auto; color: {T.ATTENTION}; }}
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self._message = message
+
+    def compose(self) -> ComposeResult:
+        yield Static(Align.center(Text(self._message)))
+
+
 class KratosTUI(App):
     CSS = T.APP_CSS
     TITLE = "kratos"
@@ -39,10 +62,38 @@ class KratosTUI(App):
     # (CommandPaletteModal, design turn 7a) owns that trigger instead.
     ENABLE_COMMAND_PALETTE = False
 
+    MIN_WIDTH = 72
+    MIN_HEIGHT = 18
+
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
         self.data_dir = data_dir
         self.store = SessionStore(data_dir / "kratos.db")
+        self._too_small_active = False
+        self._booted = False  # gate the resize guard until boot pushed a real screen
+
+    def on_resize(self, event: Resize) -> None:
+        # Ignore resizes until boot has pushed the first real screen -- otherwise
+        # an early startup resize pushes the block, then the boot flow's own
+        # push_screen(LaunchScreen) lands on top of it (a real race, caught in
+        # testing). After boot, this handler owns the block/unblock transitions.
+        if self._booted:
+            self._apply_size_guard(event.size.width, event.size.height)
+
+    def _apply_size_guard(self, width: int, height: int) -> None:
+        too_small = width < self.MIN_WIDTH or height < self.MIN_HEIGHT
+        if too_small and not self._too_small_active:
+            self._too_small_active = True
+            self.push_screen(
+                TooSmallScreen(
+                    f"Terminal too small\n\nResize to at least {self.MIN_WIDTH}×{self.MIN_HEIGHT} "
+                    f"(now {width}×{height})."
+                )
+            )
+        elif not too_small and self._too_small_active:
+            self._too_small_active = False
+            if isinstance(self.screen, TooSmallScreen):
+                self.pop_screen()
 
     def model_label(self) -> str:
         from kratos.llm_config import get_active_llm_model
@@ -91,6 +142,11 @@ class KratosTUI(App):
                 _kconfig.set_active_target(persisted)
 
         self.push_screen(LaunchScreen(self.store, self.data_dir))
+        # Now that a real screen exists, enable the resize guard and apply it
+        # once for the current size (covers launching into an already-small
+        # terminal, which the pre-boot on_resize deliberately skipped).
+        self._booted = True
+        self._apply_size_guard(self.size.width, self.size.height)
 
 
 def main(argv: list[str] | None = None) -> int:

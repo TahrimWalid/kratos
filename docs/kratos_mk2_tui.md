@@ -168,7 +168,7 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 |---|---|---|---|
 | 14a | Kratos's own model/API failure banner | 🟡 | Errors are shown inline (routing/investigation failures render as red lines). **To wire:** a full-width banner that distinguishes "Kratos can't think" from a tool/target problem. |
 | 17b | Local inference hardware failure (OOM/thermal) | 🔲 | Needs host-health signals from the LLM layer. |
-| 14c | Terminal-too-narrow hard block | 🔲 | **To wire:** a min-width guard screen (Textual `on_resize`). Cheap; good early add. |
+| 14c | Terminal-too-narrow hard block | ✅ | `app.py::TooSmallScreen` + `KratosTUI._apply_size_guard` (min 72×18). Blocks/clears live on resize; boot-gated so it can't race the first screen push. |
 | 17c | Payload exceeds context before compaction | 🔲 | Depends on real token accounting (see 7c). |
 
 ---
