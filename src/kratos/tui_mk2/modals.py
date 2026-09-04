@@ -187,6 +187,7 @@ class HelpModal(ModalScreen[None]):
                 ("/model", "Show / switch the active LLM backend"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Per-tool approval policy (not yet implemented)"),
+                ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))
 

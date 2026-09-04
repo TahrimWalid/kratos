@@ -1,7 +1,18 @@
 # Kratos mk2 — Textual TUI (build + audit map)
 
-Status: **Phase 1 complete.** Phase 2 (sub-agent / Tailscale / direct-execution
-shells) not started. This doc is the working map between the *"Kratos TUI"*
+Status: **Phase 1 complete. Phase 2 shells started (safe half).** The
+sub-agent / Tailscale / telemetry screens now exist as **UI-only shells** in a
+dedicated `/preview` gallery (`tui_mk2/screens/phase2_preview.py`) — every one
+carries a persistent "NOT WIRED" banner + a to-wire note tied to its backend
+layer, and the gallery is reachable ONLY via `/preview` (never the normal flow)
+so a shell can't be mistaken for a wired capability. Backend is still fully
+greenfield (no Tailscale/sub-agent/telemetry/execution code). Safe half shipped:
+Tailscale onboarding (Layer 1), pairing wizard (Layer 2), sub-agent status +
+zombie (Layer 3), multi-target dashboard. **Execution shells (Layer 5) are a
+separate batch, and will additionally carry a "gated on Layer 4 (whitelist)"
+label** — direct execution cannot ship until the narrow action whitelist is
+designed and independently reviewed (the whitelist, not signing, is the
+boundary). This doc is the working map between the *"Kratos TUI"*
 design canvas and the code in `src/kratos/tui_mk2/`. It exists so a future
 session can, at a glance, see **which screens are built, which have
 a real backing mechanism, and which are UI-only shells waiting for a mechanism

@@ -60,6 +60,7 @@ _PALETTE_COMMANDS = [
     ("/reset", "archive history, start this session fresh"),
     ("/delete", "archive (soft-delete) this session"),
     ("/settings", "per-tool approval policy (not yet implemented)"),
+    ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]
 
@@ -574,6 +575,10 @@ class SessionScreen(Screen):
             self._evolve_flow(rest)
         elif cmd == "/settings":
             self._emit(R.note_line("/settings is not implemented yet — per-tool approval policy is a separate design pass."))
+        elif cmd == "/preview":
+            from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
+
+            self.app.push_screen(Phase2PreviewScreen())
         elif cmd in ("/scan", "/logs-parse", "/findings-generate", "/run"):
             self._run_shortcut(cmd.lstrip("/"), rest)
         else:
