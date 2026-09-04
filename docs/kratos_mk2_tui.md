@@ -1,18 +1,26 @@
 # Kratos mk2 — Textual TUI (build + audit map)
 
-Status: **Phase 1 complete. Phase 2 shells started (safe half).** The
-sub-agent / Tailscale / telemetry screens now exist as **UI-only shells** in a
-dedicated `/preview` gallery (`tui_mk2/screens/phase2_preview.py`) — every one
-carries a persistent "NOT WIRED" banner + a to-wire note tied to its backend
-layer, and the gallery is reachable ONLY via `/preview` (never the normal flow)
-so a shell can't be mistaken for a wired capability. Backend is still fully
-greenfield (no Tailscale/sub-agent/telemetry/execution code). Safe half shipped:
-Tailscale onboarding (Layer 1), pairing wizard (Layer 2), sub-agent status +
-zombie (Layer 3), multi-target dashboard. **Execution shells (Layer 5) are a
-separate batch, and will additionally carry a "gated on Layer 4 (whitelist)"
-label** — direct execution cannot ship until the narrow action whitelist is
-designed and independently reviewed (the whitelist, not signing, is the
-boundary). This doc is the working map between the *"Kratos TUI"*
+Status: **Phase 1 complete. Phase 2 UI shells complete (both halves).** All
+sub-agent / Tailscale / telemetry / execution screens exist as **UI-only shells**
+in a dedicated `/preview` gallery (`tui_mk2/screens/phase2_preview.py`, 11
+shells) — every one carries a persistent "NOT WIRED" banner + a to-wire note
+tied to its backend layer, and the gallery is reachable ONLY via `/preview`
+(never the normal flow) so a shell can't be mistaken for a wired capability.
+**Backend is still fully greenfield** (no Tailscale/sub-agent/telemetry/
+execution/whitelist code — confirmed). Safe half (zero execution): Tailscale
+onboarding (Layer 1), pairing wizard (Layer 2), sub-agent status + zombie
+(Layer 3), multi-target dashboard. Execution half — every one **gated on
+Layer 4 (whitelist)** with its own gate banner: direct-execution consent +
+settings (19a/d/e), typed-EXECUTE critical gate + drop-mid-approval + state-drift
+(12c/19c/16a/17a), dispatch outcomes (11c–f), emergency revoke + queued approvals
+(15a/15c), multi-target broadcast (17e — flagged as the doc's worst case, its own
+review gate). Plus edge/error shells (14a/14b/17b/17c, 17d). **Direct execution
+cannot ship until the narrow action whitelist is designed and independently
+reviewed — the whitelist, not signing, is the security boundary; the whitelist is
+human-owned security work, must bound parameters (not just verbs), and Control 7
+risk text comes from the trusted action definition, never the LLM.** See
+`docs/subagent_architecture.md` v2 for the authoritative backend spec. This doc
+is the working map between the *"Kratos TUI"*
 design canvas and the code in `src/kratos/tui_mk2/`. It exists so a future
 session can, at a glance, see **which screens are built, which have
 a real backing mechanism, and which are UI-only shells waiting for a mechanism
