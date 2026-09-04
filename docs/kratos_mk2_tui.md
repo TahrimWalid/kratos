@@ -131,7 +131,7 @@ Reverting is the same edit backwards.
 | — | `/target`, `/target verify` (+ setup checklist + probe) | ✅ | `target_setup.generate_target_setup_checklist` + `ssh_remote.run_target_probe_checks`. |
 | — | `/clear`, `/reset`, `/delete` | ✅ | `/reset`/`/delete` use a native `ConfirmModal` (no force-accept). `/delete` pops back to the chooser. |
 | — | `/timezone` (+ 9a/9b/9c) | ✅ | See the 9a/9b/9c row under "A live turn" above — live clock, display-zone `%Z`, `/timezone` override, and the 9b fallback prompt are all done. |
-| 10a | Double-esc → edit a previous turn in place | 🔲 | No transcript-rewind/re-send mechanism. **To wire:** turn history navigation + truncate-and-resend in the session model. |
+| 10a | Edit a previous turn in place | ✅ | ↑/↓ recall prior turns into the prompt for editing (adapted from the mockup's double-esc — doesn't collide with esc=interrupt). Resending a recalled turn discards it and everything after via `SessionStore.archive_turns_from` (non-destructive soft-delete, recoverable), rebuilds the resume context, then re-runs. |
 
 ### 5. Remediation & approvals
 

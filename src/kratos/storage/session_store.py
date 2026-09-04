@@ -335,6 +335,32 @@ class SessionStore:
         finally:
             conn.close()
 
+    def archive_turns_from(self, session_id: str, seq: int) -> int:
+        """Soft-delete every non-archived turn with seq >= `seq` for this
+        session -- the mechanism behind the TUI's "edit a previous turn"
+        (design 10a): backing up to an earlier turn and resending discards
+        that turn and everything after it. Non-destructive, exactly like
+        archive_goal_history (stamps archived_at, never deletes -- so the
+        discarded turns stay recoverable via get_goal_history(
+        include_archived=True)); this is just scoped to seq >= a cutoff
+        instead of the whole session. Returns how many rows were archived."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                "UPDATE goal_history SET archived_at = ? "
+                "WHERE session_id = ? AND seq >= ? AND archived_at IS NULL",
+                (utc_now_iso(), session_id, seq),
+            )
+            count = cur.rowcount
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return count
+
     # ------------------------------------------------------------------
     # Turns (goal_history)
     # ------------------------------------------------------------------

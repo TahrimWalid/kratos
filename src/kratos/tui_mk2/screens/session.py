@@ -75,6 +75,14 @@ class SessionScreen(Screen):
         Binding("escape", "interrupt", "interrupt", show=True),
         Binding("ctrl+p", "palette", "commands", show=True),
         Binding("ctrl+y", "copy_last", "copy answer", show=True),
+        # Design 10a "edit a previous turn": ↑/↓ recall prior turns into the
+        # prompt for editing; resending a recalled turn discards it and
+        # everything after (see on_input_submitted). Adapted from the mockup's
+        # double-esc to arrow-key history recall -- more idiomatic and doesn't
+        # collide with esc=interrupt, same spirit as the cursor-vs-number-keys
+        # chooser adaptation.
+        Binding("up", "history_prev", "prev turn", show=False),
+        Binding("down", "history_next", "next turn", show=False),
     ]
 
     CSS = f"""
@@ -111,6 +119,11 @@ class SessionScreen(Screen):
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
+        # Design 10a -- edit-a-previous-turn recall state:
+        self._hist_turns: list[dict[str, Any]] | None = None  # loaded lazily on first ↑
+        self._hist_index = 0               # position within _hist_turns; == len means "composing new"
+        self._edit_seq: int | None = None  # seq of the recalled turn (None = a fresh turn)
+        self._pre_recall_draft = ""        # the in-progress input saved when recall started
         # Resolved once in on_mount (override > system-local > UTC) and passed
         # to every timeutil format call, so live times, resumed/stored times,
         # and the header clock all render in the SAME display zone. Storage
@@ -172,6 +185,59 @@ class SessionScreen(Screen):
             return
         self.app.copy_to_clipboard(self._last_answer)
         self.notify("Copied Kratos's last answer to the clipboard.", timeout=3)
+
+    # --- design 10a: edit a previous turn --------------------------------
+    def action_history_prev(self) -> None:
+        """↑ -- back up to an earlier turn, loading its text into the prompt
+        for editing. First press snapshots the current draft and jumps to the
+        latest prior turn; further presses go older."""
+        if self._busy:
+            return
+        inp = self.query_one("#goal", Input)
+        if self._hist_turns is None:
+            self._hist_turns = self._store.get_goal_history(self.session_state["session_id"])
+            self._hist_index = len(self._hist_turns)
+            self._pre_recall_draft = inp.value
+        if not self._hist_turns or self._hist_index == 0:
+            return
+        self._hist_index -= 1
+        turn = self._hist_turns[self._hist_index]
+        inp.value = turn["goal"]
+        inp.cursor_position = len(inp.value)
+        self._edit_seq = turn["seq"]
+
+    def action_history_next(self) -> None:
+        """↓ -- move back toward newer turns, and past the newest back to the
+        draft you were composing (which restores _edit_seq to None, so the next
+        send is a fresh turn, not an edit)."""
+        if self._busy or self._hist_turns is None:
+            return
+        inp = self.query_one("#goal", Input)
+        if self._hist_index < len(self._hist_turns) - 1:
+            self._hist_index += 1
+            turn = self._hist_turns[self._hist_index]
+            inp.value = turn["goal"]
+            inp.cursor_position = len(inp.value)
+            self._edit_seq = turn["seq"]
+        else:
+            self._hist_index = len(self._hist_turns)
+            inp.value = self._pre_recall_draft
+            inp.cursor_position = len(inp.value)
+            self._edit_seq = None
+
+    def _reset_recall(self) -> None:
+        self._hist_turns = None
+        self._hist_index = 0
+        self._edit_seq = None
+        self._pre_recall_draft = ""
+
+    def _rebuild_resume_context(self) -> None:
+        from kratos.cli.repl import _build_light_resume_context
+
+        history = self._store.get_goal_history(self.session_state["session_id"])
+        self.session_state["resume_context"] = _build_light_resume_context(history)
+        self._ctx_chars = len(self.session_state["resume_context"])
+        self._refresh_footer()
 
     # --- header / footer -------------------------------------------------
     def _model_label(self) -> str:
@@ -331,7 +397,7 @@ class SessionScreen(Screen):
             )
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  Ctrl+P commands · /report summary · /help all commands · esc interrupts", style=T.TEXT_GHOST))
+        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · /report summary · /help · esc interrupts", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay (turn 6b, [f]) ---------------
@@ -424,11 +490,16 @@ class SessionScreen(Screen):
         # arrives as a longer string and is left for normal inline submission.
         if event.value == "/" and not self._busy:
             event.input.value = ""
+            self._reset_recall()  # opening the palette abandons any in-progress turn recall
             self.action_palette()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
+        # Capture whether this submission is editing a recalled prior turn,
+        # then reset recall state regardless of what happens next.
+        edit_seq = self._edit_seq
+        self._reset_recall()
         if not text:
             return
         if self._busy:
@@ -438,6 +509,14 @@ class SessionScreen(Screen):
         t, d = self._stamp_now()
         self._emit_stamped(self._you_header(text), t, d)
         self._store.touch_session(self.session_state["session_id"])
+        # Design 10a: resending a recalled prior turn discards that turn and
+        # everything after it (soft-delete, recoverable) before the new goal
+        # runs. Only for real goals -- a slash command isn't a turn edit.
+        if edit_seq is not None and not text.startswith("/"):
+            n = self._store.archive_turns_from(self.session_state["session_id"], edit_seq)
+            if n:
+                self._rebuild_resume_context()
+                self._emit(R.note_line(f"Editing an earlier turn — discarded {n} turn(s) from here (recoverable); re-running."))
         if text.startswith("/"):
             self._dispatch_slash(text)
         else:
