@@ -5,8 +5,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 try:
     import requests
@@ -43,6 +44,100 @@ from kratos.llm_config import (
     get_active_llm_backend,
 )
 from kratos.utils.redact import redact_secrets
+
+
+# ---------------------------------------------------------------------------
+# Real token accounting (feature 7c). Every OpenAI-compatible / llama.cpp
+# response carries a `usage` block ({prompt_tokens, completion_tokens,
+# total_tokens}); the query functions used to read only the message content
+# and throw usage away, so a UI context/token meter had nothing real to show
+# and fell back to a char-based approximation.
+#
+# Exposed WITHOUT changing agent_chat()/analyze_findings()'s return contract
+# (still `Optional[str]`) -- every existing caller (REPL routing, MCP,
+# `kratos chat`, self_write, the ReAct loop) keeps working unchanged. New
+# consumers read usage via the accessors below instead:
+#   - get_last_token_usage()   : the most recent call -- for a context-fill
+#                                meter (prompt_tokens vs get_context_window_tokens()).
+#   - get_session_token_usage(): cumulative since the last reset -- for a
+#                                running session-total meter.
+#   - reset_session_token_usage(): front-ends call this at a boundary they own
+#                                (e.g. session start / per turn).
+# Serial-execution safe as module state, the same basis kratos_config's
+# active-target override relies on: one `kratos` process runs one session at a
+# time, and the MCP server serializes tool calls on a connection.
+# ---------------------------------------------------------------------------
+@dataclass
+class TokenUsage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, other: "TokenUsage") -> None:
+        self.prompt_tokens += other.prompt_tokens
+        self.completion_tokens += other.completion_tokens
+        self.total_tokens += other.total_tokens
+
+    def copy(self) -> "TokenUsage":
+        return TokenUsage(self.prompt_tokens, self.completion_tokens, self.total_tokens)
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+
+_last_usage: Optional[TokenUsage] = None
+_session_usage = TokenUsage()
+
+
+def _record_usage(raw: Any) -> None:
+    """Capture a response's `usage` block. Tolerant of a missing/partial/
+    malformed block (some endpoints omit it) -- records nothing rather than
+    raising into a query path. total_tokens is derived when the endpoint
+    reports the two components but not the sum."""
+    global _last_usage
+    if not isinstance(raw, dict):
+        return
+    try:
+        prompt = int(raw.get("prompt_tokens") or 0)
+        completion = int(raw.get("completion_tokens") or 0)
+        total = int(raw.get("total_tokens") or 0)
+    except (TypeError, ValueError):
+        return
+    if total == 0 and (prompt or completion):
+        total = prompt + completion
+    usage = TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
+    _last_usage = usage
+    _session_usage.add(usage)
+
+
+def get_last_token_usage() -> Optional[TokenUsage]:
+    """The most recent LLM call's real token usage, or None if no call has
+    reported usage yet. Its `prompt_tokens` is the meaningful numerator for a
+    context-fill meter (how much context was actually sent)."""
+    return _last_usage.copy() if _last_usage is not None else None
+
+
+def get_session_token_usage() -> TokenUsage:
+    """Cumulative token usage since the last reset_session_token_usage()."""
+    return _session_usage.copy()
+
+
+def reset_session_token_usage() -> None:
+    global _last_usage, _session_usage
+    _last_usage = None
+    _session_usage = TokenUsage()
+
+
+def get_context_window_tokens() -> int:
+    """The context-window size to use as a meter's denominator. This is the
+    configured local-model window (LLAMA_N_CTX / KRATOS_LLM_N_CTX); for a
+    cloud/OpenAI-compatible backend the real window may be larger, so treat
+    this as the local budget, not a hard cloud limit."""
+    return LLAMA_N_CTX
 
 
 def _is_llama_server_running() -> bool:
@@ -151,7 +246,9 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        body = resp.json()
+        _record_usage(body.get("usage"))
+        return body["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"[KRATOS-LLM] Server query error: {e}", file=sys.stderr)
         return None
@@ -265,7 +362,12 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
-            choice = resp.json()["choices"][0]
+            body = resp.json()
+            # Record real usage regardless of whether content came back --
+            # a length-truncated reasoning response (content is None, below)
+            # still consumed real tokens worth reflecting in a meter.
+            _record_usage(body.get("usage"))
+            choice = body["choices"][0]
             content = choice.get("message", {}).get("content")
             if content is None:
                 # Confirmed real failure mode (Phase 3b.3, originally found
@@ -402,6 +504,7 @@ class LLMServer:
                 top_k=LLAMA_TOP_K,
                 stop=["<|im_end|>", "<|im_start|>"],
             )
+            _record_usage(response.get("usage"))
             return response["choices"][0]["text"].strip()
         except Exception as e:
             print(f"[KRATOS-LLM] Inference error: {e}", file=sys.stderr)

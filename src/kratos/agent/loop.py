@@ -29,7 +29,12 @@ from kratos.agent.tools import (
     approval_was_recorded,
 )
 from kratos.kratos_config import get_active_target
-from kratos.llm_interface import agent_chat
+from kratos.llm_interface import (
+    agent_chat,
+    get_context_window_tokens,
+    get_last_token_usage,
+    TokenUsage,
+)
 from kratos.llm_config import MAX_TOKENS_QUESTION
 
 DEFAULT_MAX_ITERS = 10
@@ -145,6 +150,10 @@ To call a tool:
 
 To finish, once you have enough evidence to answer the goal:
 {{"reasoning": "<one sentence: why you're done>", "final_answer": "<your answer, grounded only in Observations you received>"}}
+
+When your final_answer recommends concrete remediation, you MAY additionally attach a structured list of the exact commands for a HUMAN to run -- Kratos NEVER runs them itself, this only structures your recommendation so it can be shown clearly:
+{{"reasoning": "...", "final_answer": "...", "recommended_commands": [{{"command": "<exact shell command>", "explanation": "<what it does and why>", "run_on": "target"}}]}}
+Set "run_on" to "target" for a command the human runs on the monitored device, or "kratos_host" for one on Kratos's own host. Omit recommended_commands entirely unless the investigation genuinely warrants specific remediation -- it is never a claim that anything was executed.
 
 To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
 {{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
@@ -359,6 +368,43 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
     return {"status": "ok", "result": result}
 
 
+# Structured recommended-remediation commands (feature 19b). The model MAY
+# attach these to a final_answer so a UI can render a copyable command panel
+# instead of a human digging them out of prose. They are RECOMMENDATIONS
+# ONLY -- Kratos never executes them (the permanent observe-and-recommend
+# boundary); nothing in this loop or any consumer wires them to an execution
+# path. Bounded and sanitized so a malformed/oversized model response can't
+# flood a caller.
+_MAX_RECOMMENDED_COMMANDS = 12
+_MAX_COMMAND_LEN = 500
+_MAX_EXPLANATION_LEN = 500
+_VALID_RUN_ON = {"target", "kratos_host"}
+
+
+def _sanitize_recommended_commands(raw: Any) -> list[dict[str, str]]:
+    """Normalize the optional recommended_commands into a clean, bounded list
+    of {command, explanation, run_on} dicts. Drops any malformed entry rather
+    than raising; returns [] for a missing/non-list value. `run_on` is
+    normalized to 'target' (default) or 'kratos_host'."""
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command") or "").strip()
+        if not command:
+            continue
+        explanation = str(item.get("explanation") or "").strip()[:_MAX_EXPLANATION_LEN]
+        run_on = str(item.get("run_on") or "target").strip().lower()
+        if run_on not in _VALID_RUN_ON:
+            run_on = "target"
+        out.append({"command": command[:_MAX_COMMAND_LEN], "explanation": explanation, "run_on": run_on})
+        if len(out) >= _MAX_RECOMMENDED_COMMANDS:
+            break
+    return out
+
+
 def _cap(text: str, limit: int = OBSERVATION_CHAR_CAP) -> str:
     if len(text) <= limit:
         return text
@@ -414,6 +460,23 @@ def run_agent(
     system_prompt = build_system_prompt()
     conversation = f"Investigation goal: {goal}\n"
     transcript: list[dict[str, Any]] = []
+
+    # Real per-run token accounting (feature 7c). run_usage sums every LLM
+    # call this run makes; last_context_tokens is the most recent call's
+    # prompt_tokens -- the meaningful numerator for a context-fill meter
+    # (how full the model's context was on the last turn). Both are added to
+    # every return below as additive keys, so a UI has a real number instead
+    # of a char-based estimate; existing consumers that read status/
+    # final_answer/transcript are unaffected. A live per-iteration meter can
+    # also read llm_interface.get_last_token_usage() from an on_step callback.
+    run_usage = TokenUsage()
+    last_context_tokens = 0
+
+    def _with_usage(result: dict[str, Any]) -> dict[str, Any]:
+        result["token_usage"] = run_usage.as_dict()
+        result["context_tokens"] = last_context_tokens
+        result["context_window"] = get_context_window_tokens()
+        return result
 
     # Hard enforcement (not just a prompt instruction -- a prompt instruction
     # alone already failed to guarantee this in practice): correlate_findings
@@ -544,16 +607,24 @@ def run_agent(
 
         raw = agent_chat(system_prompt=system_prompt, user_prompt=prompt_for_call, max_tokens=MAX_TOKENS_QUESTION)
 
+        # Fold this call's real usage into the run totals (get_last_token_usage
+        # reflects the call just made -- serial by construction). A backend
+        # that reports no usage leaves the totals unchanged rather than erroring.
+        _call_usage = get_last_token_usage()
+        if _call_usage is not None:
+            run_usage.add(_call_usage)
+            last_context_tokens = _call_usage.prompt_tokens
+
         if raw is None:
             _record({"iteration": i, "status": "llm_unavailable"})
-            return {"status": "llm_unavailable", "transcript": transcript}
+            return _with_usage({"status": "llm_unavailable", "transcript": transcript})
 
         parsed = _parse_agent_json(raw)
         if parsed is None:
             if is_final_iteration:
                 fallback = _synthesize_fallback_answer(transcript)
                 _record({"iteration": i, "status": "parse_error", "raw_response": raw, "final_answer": fallback})
-                return {"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript}
+                return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
 
             correction = (
                 "ERROR: your last response was not valid JSON per the required schema. "
@@ -566,6 +637,11 @@ def run_agent(
 
         if "final_answer" in parsed:
             final_answer_text = parsed["final_answer"]
+            # Optional structured remediation recommendations (feature 19b) --
+            # sanitized here, carried through unchanged whether or not the
+            # guards below NOTE-tag the prose answer. Recommendations only;
+            # never executed.
+            recommended_commands = _sanitize_recommended_commands(parsed.get("recommended_commands"))
 
             # Each guard's violated/can-reject condition is computed up front
             # (against the model's raw answer) before any rejection or
@@ -790,8 +866,14 @@ def run_agent(
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
                 "final_answer": final_answer_text,
+                "recommended_commands": recommended_commands,
             })
-            return {"status": "final_answer", "final_answer": final_answer_text, "transcript": transcript}
+            return _with_usage({
+                "status": "final_answer",
+                "final_answer": final_answer_text,
+                "recommended_commands": recommended_commands,
+                "transcript": transcript,
+            })
 
         if "tool_proposal" in parsed:
             # Evo-loop auto-suggest (2026-07-18): a structured, reliably
@@ -826,7 +908,7 @@ def run_agent(
                     "attempted_tool_proposal": proposal,
                     "final_answer": fallback,
                 })
-                return {"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript}
+                return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
 
             if not proposal_name or not proposal_description:
                 # Same "don't silently accept a broken structure" stance
@@ -871,7 +953,7 @@ def run_agent(
                 "attempted_tool": tool_name,
                 "final_answer": fallback,
             })
-            return {"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript}
+            return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
 
         exec_result = execute_tool_call(tool_name, args, data_dir)
 
@@ -934,4 +1016,4 @@ def run_agent(
     # Unreachable in practice (the is_final_iteration branches above always
     # return), but kept as a safety net in case max_iters is 0 or negative.
     _record({"status": "max_iters_reached"})
-    return {"status": "max_iters_reached", "transcript": transcript}
+    return _with_usage({"status": "max_iters_reached", "transcript": transcript})

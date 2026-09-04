@@ -242,6 +242,12 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
                 "status": status,
                 "final_answer": result.get("final_answer"),
                 "findings": _extract_findings(transcript),
+                # Additive (features 7c/19b): recommended_commands are
+                # recommendations for a human only -- Kratos never executes
+                # them, and neither should an MCP client auto-run them.
+                # token_usage is real per-run accounting for a client-side meter.
+                "recommended_commands": result.get("recommended_commands", []),
+                "token_usage": result.get("token_usage"),
             }
         finally:
             TOOL_REGISTRY.update(excluded)
