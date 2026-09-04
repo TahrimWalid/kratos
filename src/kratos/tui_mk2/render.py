@@ -186,6 +186,24 @@ def recommended_fix_panel(title: str, command: str, footnote: str) -> Panel:
     return Panel(body, title=f"✓ {title}", title_align="left", border_style=T.SAFE)
 
 
+def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
+    """Design 19b -- a recommend-only remediation command the agent produced
+    (structured `recommended_commands` from run_agent, feature 19b backend).
+    Green, calm, and explicit that Kratos does NOT run it: it's for the human
+    to run in their own session (matching the project's permanent
+    observe-and-recommend boundary). Copyable via ctrl+y."""
+    run_on = str(cmd.get("run_on") or "target")
+    where = target_label if run_on == "target" else "Kratos's own host"
+    parts: list[Any] = []
+    explanation = str(cmd.get("explanation") or "").strip()
+    if explanation:
+        parts.append(Text(explanation, style=T.TEXT))
+        parts.append(Text(""))
+    parts.append(Syntax(str(cmd.get("command") or ""), "bash", word_wrap=False, background_color="default"))
+    parts.append(Text(f"Run this yourself on {where} — Kratos does not execute it.", style=T.TEXT_FAINT))
+    return Panel(Group(*parts), title="✓ recommended fix", title_align="left", border_style=T.SAFE)
+
+
 _SUBTEST_MARKERS = ("PASSED", "FAILED", "ERROR", "SKIPPED")
 
 

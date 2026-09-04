@@ -123,6 +123,7 @@ class SessionScreen(Screen):
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
+        self._last_commands: list[str] = []  # recommended commands from the last turn (19b), for ctrl+y
         # Design 10a -- edit-a-previous-turn recall state:
         self._hist_turns: list[dict[str, Any]] | None = None  # loaded lazily on first ↑
         self._hist_index = 0               # position within _hist_turns; == len means "composing new"
@@ -144,6 +145,9 @@ class SessionScreen(Screen):
         yield Static(id="statusfooter")
 
     def on_mount(self) -> None:
+        from kratos import llm_interface
+
+        llm_interface.reset_session_token_usage()  # fresh cumulative accounting for this session
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         if self.session_state["targets"]:
             _kconfig.set_active_target(self.session_state["targets"][0])
@@ -185,6 +189,10 @@ class SessionScreen(Screen):
         # transient confirmation -- the concrete "copy" affordance the design
         # asks for. A structured per-command 19b copy panel needs the
         # remediation-command structure that doesn't exist yet (see the doc).
+        if self._last_commands:
+            self.app.copy_to_clipboard("\n".join(self._last_commands))
+            self.notify(f"Copied {len(self._last_commands)} recommended command(s) to the clipboard.", timeout=3)
+            return
         if not self._last_answer.strip():
             self.notify("Nothing to copy yet — run a goal first.", timeout=3)
             return
@@ -304,20 +312,26 @@ class SessionScreen(Screen):
         header.append(clock, style=T.TEXT_DIM)
         self.query_one("#appheader", Static).update(header)
 
-    def _context_pct(self) -> int:
-        # APPROXIMATE (documented as such): Kratos exposes no real token count.
-        # Heuristic -- cumulative session chars vs. an assumed budget derived
-        # from LLAMA_N_CTX * ~4 chars/token. Good enough to warn before a
-        # compact (turn 7c); a future session can replace with real usage from
-        # the LLM layer. See docs/kratos_mk2_tui.md.
-        from kratos.llm_config import LLAMA_N_CTX
+    def _context_pct(self) -> tuple[int, int, int]:
+        # REAL token accounting (feature 7c backend, 2026-09): the last LLM
+        # call's prompt_tokens vs the configured context window. Returns
+        # (pct, used_tokens, window_tokens). Before any call this turn,
+        # get_last_token_usage() is None -> 0% cleanly. For a cloud backend the
+        # window is the local budget (get_context_window_tokens' own caveat).
+        from kratos import llm_interface
 
-        budget_chars = max(1, LLAMA_N_CTX * 4)
-        return min(100, int(100 * self._ctx_chars / budget_chars))
+        usage = llm_interface.get_last_token_usage()
+        window = llm_interface.get_context_window_tokens() or 1
+        used = usage.prompt_tokens if usage is not None else 0
+        return min(100, int(100 * used / window)), used, window
+
+    @staticmethod
+    def _fmt_tok(n: int) -> str:
+        return f"{n / 1000:.1f}k" if n >= 1000 else str(n)
 
     def _refresh_footer(self) -> None:
         st = self.session_state
-        pct = self._context_pct()
+        pct, used, window = self._context_pct()
         bar_w = 10
         filled = int(bar_w * pct / 100)
         color = T.ATTENTION if pct >= 85 else T.TEXT_FAINTER
@@ -330,7 +344,7 @@ class SessionScreen(Screen):
         footer.append("   ", style=T.TEXT_GHOST)
         footer.append("ctx ", style=T.TEXT_FAINTER)
         footer.append("█" * filled + "░" * (bar_w - filled), style=color)
-        footer.append(f" {pct}%", style=color)
+        footer.append(f" {pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
             footer.append(" · will compact soon", style=T.ATTENTION)
         self.query_one("#statusfooter", Static).update(footer)
@@ -1087,6 +1101,7 @@ class SessionScreen(Screen):
             self._emit_stamped_from_worker(self._kratos_header(), t, d)
             self._emit_from_worker(Text(second or "(no reply)", style=T.TEXT))
             self._last_answer = second or ""
+            self._last_commands = []  # a chat reply carries no remediation commands
             self._log_chat_turn(goal, second or "")
             self._ctx_chars += len(goal) + len(second or "")
             self.app.call_from_thread(self._refresh_footer)
@@ -1108,6 +1123,9 @@ class SessionScreen(Screen):
             if worker.is_cancelled:
                 raise _CancelInvestigation()
             self._render_step(step)
+            # Live context meter (7c): each step follows an LLM call, so the
+            # last-call prompt_tokens has advanced -- refresh the footer.
+            self.app.call_from_thread(self._refresh_footer)
 
         try:
             result = run_agent(goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step)
@@ -1140,6 +1158,17 @@ class SessionScreen(Screen):
         else:
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
             status = str(result["status"])
+
+        # Structured recommend-only remediation (19b): render each command the
+        # agent produced as its own panel, and remember them for ctrl+y copy.
+        commands = result.get("recommended_commands") or []
+        self._last_commands = [str(c.get("command") or "") for c in commands if c.get("command")]
+        target_label = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        for c in commands:
+            self._emit_from_worker(R.recommended_command_panel(c, target_label))
+        if self._last_commands:
+            self._emit_from_worker(R.note_line("Ctrl+Y copies the recommended command(s) — Kratos does not run them."))
+
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
         transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
