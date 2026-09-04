@@ -14,7 +14,12 @@ Layer 4 (whitelist)** with its own gate banner: direct-execution consent +
 settings (19a/d/e), typed-EXECUTE critical gate + drop-mid-approval + state-drift
 (12c/19c/16a/17a), dispatch outcomes (11c–f), emergency revoke + queued approvals
 (15a/15c), multi-target broadcast (17e — flagged as the doc's worst case, its own
-review gate). Plus edge/error shells (14a/14b/17b/17c, 17d). **Direct execution
+review gate). Plus edge/error shells (14a/14b/17b/17c, 17d). The gallery is now **1:1 with the
+canvas's Phase-2 screens** — the previously-noted-only variants are drawn as
+their own panels: OAuth denied/abandoned/already-set-up (13d/e/f), disconnect &
+unpair (13j/13m), total target loss (11b), regressed-unreachable (13k), core-off-
+tailnet (15b), and the two no-EXECUTE-field states (12d unreachable, 18b zombied)
+in the gated critical-gate shell. **Direct execution
 cannot ship until the narrow action whitelist is designed and independently
 reviewed — the whitelist, not signing, is the security boundary; the whitelist is
 human-owned security work, must bound parameters (not just verbs), and Control 7

@@ -22,7 +22,7 @@ Layer 5 (execution) shells are a separate, clearly-gated batch.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any
 
 from rich.console import Group
 from rich.panel import Panel
@@ -93,11 +93,51 @@ def _tailscale_onboarding() -> Any:
         Text("Falls straight into the target dashboard. The account indicator persists; OAuth is never repeated.", style=T.TEXT_MUTED),
         border=T.SAFE,
     )
+    denied = _win(
+        "kratos — connecting",
+        Text("✗ authorization denied or errored", style=T.CRITICAL),
+        Text("Recoverable — one clear retry action, no dead end.", style=T.TEXT_MUTED),
+        Text("r  try again   ·   esc cancel", style=T.TEXT_DIM),
+        border=T.CRITICAL,
+    )
+    abandoned = _win(
+        "kratos — connecting",
+        Text("⧗ authorization abandoned", style=T.ATTENTION),
+        Text("Browser tab closed / no response — detected by timeout, returns to a clean retry rather "
+             "than hanging forever.", style=T.TEXT_MUTED),
+        border=T.ATTENTION,
+    )
+    already = _win(
+        "kratos — targets",
+        Text("Tailscale: connected as boss@tailnet", style=T.SAFE),
+        Text("Setup already done → straight to the dashboard. Persistent indicator; OAuth never "
+             "repeated.", style=T.TEXT_MUTED),
+        border=T.SAFE,
+    )
+    disconnect = _win(
+        "kratos — settings",
+        Text("Disconnect Tailscale account?", style=f"bold {T.ATTENTION}"),
+        Text("Framed as a trust property, not an apology — a single deliberate keypress, NOT typed "
+             "confirmation (that friction stays reserved for real execution, 12c/1e).", style=T.TEXT_MUTED),
+        Text("d  disconnect   ·   esc keep connected", style=T.TEXT_DIM),
+        border=T.ATTENTION,
+    )
+    unpair = _win(
+        "kratos — web-01",
+        Text("Unpair web-01?", style=f"bold {T.ATTENTION}"),
+        Text("Sibling to disconnect: same warning language and double-confirm tier, scoped to one "
+             "server instead of the whole account.", style=T.TEXT_MUTED),
+        border=T.ATTENTION,
+    )
     return Group(
         _state("13a  first launch — no account"), connect, Text(""),
         _state("13b  OAuth waiting (shared with 13g pairing)"), waiting, Text(""),
-        _state("13c  connected → dashboard"), connected, Text(""),
-        Text("Also in this flow (not shown): 13d denied/errored (one retry), 13e abandoned/timeout, 13f already-set-up, 13j disconnect/switch account.", style=T.TEXT_FAINT),
+        _state("13c  OAuth success → dashboard"), connected, Text(""),
+        _state("13d  OAuth denied / errored — one retry, no dead end"), denied, Text(""),
+        _state("13e  OAuth abandoned — timeout → clean retry"), abandoned, Text(""),
+        _state("13f  setup already done — straight to dashboard, persistent indicator"), already, Text(""),
+        _state("13j  disconnect / switch account — single deliberate keypress"), disconnect, Text(""),
+        _state("13m  unpair a single target — double-confirm tier, scoped to one server"), unpair,
     )
 
 
@@ -165,11 +205,33 @@ def _subagent_status() -> Any:
         Text("Telemetry is stale; restart the sub-agent on the target to recover.", style=T.TEXT_DIM),
         border=T.ATTENTION,
     )
+    total_loss = _win(
+        "kratos — web-01",
+        Text("✗ can't reach web-01 at all", style=f"bold {T.CRITICAL}"),
+        Text("Kratos itself lost the target mid-investigation — distinct from a single tool's timeout. "
+             "The investigation pauses rather than reporting a false all-clear.", style=T.TEXT_MUTED),
+        border=T.CRITICAL,
+    )
+    regressed = _win(
+        "kratos — targets",
+        Text("web-01 · unreachable — last seen 6m ago", style=T.CRITICAL),
+        Text("A previously-paired target that regressed to unreachable — distinct from 'never paired'; "
+             "recency + last-good state are shown wherever targets are listed.", style=T.TEXT_MUTED),
+        border=T.CRITICAL,
+    )
+    core_off = _win(
+        "kratos — targets",
+        Text("⚠ Kratos's core dropped off the tailnet", style=f"bold {T.ATTENTION}"),
+        Text("Every paired target goes dark at once — shown ONCE at the dashboard level, not repeated "
+             "per row. It's Kratos's own connectivity, not each target's.", style=T.TEXT_MUTED),
+        border=T.ATTENTION,
+    )
     return Group(
         _state("11a / 12b  persistent status chip — three states"), chips, Text(""),
         _state("18a  zombie sub-agent (network up, process silent)"), zombie, Text(""),
-        Text("Also here (not shown): 11b total target loss during an investigation, 13k a "
-             "previously-paired target regressing to unreachable (shows last-good state).", style=T.TEXT_FAINT),
+        _state("11b  total target loss during an investigation"), total_loss, Text(""),
+        _state("13k  a previously-paired target regressing to unreachable"), regressed, Text(""),
+        _state("15b  Kratos's core off the tailnet entirely — all targets dark at once"), core_off,
     )
 
 
@@ -197,7 +259,7 @@ def _multi_target_dashboard() -> Any:
 PHASE2_SAFE: list[dict[str, Any]] = [
     {
         "id": "onboarding",
-        "title": "Tailscale onboarding (13a–13f, 13j)",
+        "title": "Tailscale onboarding + disconnect/unpair (13a–13f, 13j, 13m)",
         "layer": "Layer 1 · Tailscale",
         "gated": False,
         "builder": _tailscale_onboarding,
@@ -213,7 +275,7 @@ PHASE2_SAFE: list[dict[str, Any]] = [
     },
     {
         "id": "status",
-        "title": "Sub-agent status + zombie (11a/12b/18, 11b/13k)",
+        "title": "Sub-agent status / reachability / loss (11a/b, 12b, 13k, 15b, 18)",
         "layer": "Layer 3 · Telemetry",
         "gated": False,
         "builder": _subagent_status,
@@ -266,11 +328,28 @@ def _exec_consent() -> Any:
         Text("Per-target, off by default, reversible. Toggling is a deliberate, logged choice.", style=T.TEXT_FAINT),
         border=T.BORDER,
     )
+    discoverable = _win(
+        "kratos — pair a target",
+        Text("✓ web-01 paired", style=f"bold {T.SAFE}"),
+        Panel(
+            Group(
+                Text("web-01 is recommend-only by default. Turn on direct execution?", style=T.TEXT),
+                Group(_key("o"), Text("  open the direct-execution choice now (→ 19a)", style=T.TEXT_DIM),
+                      _key("esc"), Text("  skip — won't ask again for web-01", style=T.TEXT_DIM)),
+            ),
+            border_style=T.BORDER,
+        ),
+        Text("One-time, dismissible, shown once right after a target's first pairing — never nags again "
+             "once dismissed (per-target flag). A suggestion, not a gate: enter still starts "
+             "investigating.", style=T.TEXT_FAINT),
+        border=T.ACCENT,
+    )
     return Group(
         _state("19a  direct-execution opt-in — dedicated consent screen"), consent, Text(""),
         _state("19d  settings — per-target status + toggle"), settings, Text(""),
-        Text("19e first-discoverable moment (a one-time post-pairing suggestion) points here; it never "
-             "nags again once dismissed. Consent copy is plain-risk by design (control 6).", style=T.TEXT_FAINT),
+        _state("19e  first-discoverable moment — one-time post-pairing suggestion (points to 19a)"), discoverable,
+        Text(""),
+        Text("Consent copy is plain-risk by design (control 6).", style=T.TEXT_FAINT),
     )
 
 
@@ -310,10 +389,28 @@ def _critical_gate() -> Any:
              "cancels rather than execute against a stale assumption.", style=T.TEXT_MUTED),
         border=T.CRITICAL,
     )
+    unreachable = _win(
+        "kratos — web-01 · CRITICAL APPROVAL",
+        Text("No EXECUTE field — the sub-agent is unreachable.", style=f"bold {T.ATTENTION}"),
+        Text("Nothing dispatchable exists right now, so no EXECUTE is offered at all — amber, not the "
+             "red gate. The exact command is shown to copy and run yourself instead (the recommend-only "
+             "path, 19b).", style=T.TEXT_MUTED),
+        border=T.ATTENTION,
+    )
+    zombied = _win(
+        "kratos — web-01 · CRITICAL APPROVAL",
+        Text("No EXECUTE field — the sub-agent isn't responding.", style=f"bold {T.ATTENTION}"),
+        Text("Same 'no EXECUTE field' pattern as 12d, but here the process is live-but-silent (zombie), "
+             "not a downed connection — wording is specific to that. Amber; copy-and-run-yourself "
+             "offered instead.", style=T.TEXT_MUTED),
+        border=T.ATTENTION,
+    )
     return Group(
         _state("12c / 19c  upgraded critical gate — typed EXECUTE (direct-execution targets)"), gate, Text(""),
         _state("16a  sub-agent drops mid-type — field pulled live"), drop, Text(""),
-        _state("17a  state-drift pre-flight — cancels on a changed target file"), drift,
+        _state("17a  state-drift pre-flight — cancels on a changed target file"), drift, Text(""),
+        _state("12d  sub-agent unreachable at approval — no EXECUTE offered"), unreachable, Text(""),
+        _state("18b  critical approval while zombied — no EXECUTE, live-but-silent wording"), zombied,
     )
 
 
@@ -413,7 +510,7 @@ PHASE2_EXECUTION: list[dict[str, Any]] = [
     {"id": "consent", "title": "Direct-execution consent + settings (19a/19d/19e)", "layer": "Layer 5 · Execution",
      "gated": True, "builder": _exec_consent,
      "to_wire": "Per-target opt-in flag store + the consent flow. Gated on Layer 4's whitelist existing first."},
-    {"id": "critgate", "title": "Critical gate — typed EXECUTE (12c/19c, 16a, 17a)", "layer": "Layer 5 · Execution",
+    {"id": "critgate", "title": "Critical gate — typed EXECUTE (12c/19c, 16a, 17a, 12d, 18b)", "layer": "Layer 5 · Execution",
      "gated": True, "builder": _critical_gate,
      "to_wire": "Execution dispatch + the whitelist action definitions supplying effect/reversibility/blast-radius (control 7). Gated on Layer 4."},
     {"id": "outcomes", "title": "Dispatch outcomes (11c–11f)", "layer": "Layer 5 · Execution",
