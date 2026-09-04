@@ -114,8 +114,8 @@ Reverting is the same edit backwards.
 | (live run) | step-by-step tool-call lines, finding panels, concluding panel, "Done in Ns" | ✅ | `run_agent` + `on_step`; renderables from `render.py`. Transcript persisted per turn (same layout as classic REPL). |
 | (messaging feel) | per-message + per-bubble timestamps + date divider (WhatsApp-style) | ✅ | `render.py::timestamped` (trailing time on each `you>`/`Kratos:` header), `render.py::day_divider` (dotted full-date chip on display-zone day-change), and an **in-bubble** time in the bottom-right border of every finding/result panel. `/report` stamps each finding with when it was originally found (its turn's `completed_at`). Mirrors the classic REPL's `_print_trailing_timestamp` / `_DayMarker`. **All formatting routes through `kratos.utils.timeutil`** (storage stays UTC; display zone resolved once in `SessionScreen.on_mount` / `LaunchScreen.on_mount` and passed as `tz=` to every `format_for_display` / `now_for_display`). Render helpers take pre-formatted display strings — the single place display-zone lives. |
 | 9a/9b/9c | Header live clock + timezone; `/timezone` override; fallback prompt | ✅ | Live clock + display-zone abbreviation in the header (`_tz_label` reports the resolved DISPLAY zone via `%Z`, honest under an override). `/timezone [<zone>\|auto]` sets/clears a persisted override and live-re-resolves the session's zone. **9b fallback prompt done** (`_maybe_timezone_fallback`): if the system zone genuinely can't be detected (`display_tz_status` source `fallback`), a one-time modal asks for a zone; persisted so it never nags again. |
-| 7b | Interrupt (esc) → resumable, "nothing left running" | 🟡 | Cancels at next step boundary; turn marked `cancelled`. **To wire (nicety):** a one-key "resume from here" affordance (today: just type a new goal). |
-| 7c | Context-window meter in the footer, warns before compact | 🟡 | **Approximate** — Kratos exposes no real token count, so it's a char-based heuristic vs `LLAMA_N_CTX*4`. **To wire:** surface real prompt-token usage from the LLM layer (`llm_interface`) and feed it here. |
+| 7b | Interrupt (esc) → resumable, "nothing left running" | ✅ | Cancels at next step boundary; turn marked `cancelled`. `ctrl+r` re-runs the last goal (an honest re-run — `run_agent` has no mid-loop checkpoint, so true "continue from step N" isn't possible); the interrupt note points at it. |
+| 7c | Context-window meter in the footer, warns before compact | 🟡 (backend-dependent) | **Approximate** — the LLM layer (`llm_interface._query_openai_compatible`) returns only the message content and discards the response `usage`, so there's no real token count to show; the meter is a char heuristic vs `LLAMA_N_CTX*4`. **To wire:** change the LLM interface to also return `usage.prompt_tokens` (touches all callers) and feed it here. Not a UI nicety. |
 | 14b | Context **compaction** firing (the event) | 🔲 | No compaction mechanism exists in the agent loop. **To wire:** actual transcript compaction in `agent/loop.py`, then render the event. |
 
 ### 4. In-session commands
@@ -138,7 +138,7 @@ Reverting is the same edit backwards.
 | Canvas | Screen | Status | Notes / To wire |
 |---|---|---|---|
 | (existing gates) | Generic approval gate (run_linux_command, capture_traffic, vulscan-staleness, live threat-intel, self-write keep) | ✅ | `ApprovalModal` via the provider bridge. Fail-safe preserved. |
-| 19b | **Recommend-only remediation** — show the exact command for the human to run themselves | 🟡 | `render.py::recommended_fix_panel` exists. Today Kratos surfaces recommendations inside the `final_answer` text (mk2 shows that, and it's copyable — see 14d). **To wire (nicety):** have the agent emit a *structured* "recommended command" so it renders as the dedicated 19b panel per-command (needs a small `agent/loop.py` schema addition). |
+| 19b | **Recommend-only remediation** — show the exact command for the human to run themselves | 🟡 (backend-dependent) | `render.py::recommended_fix_panel` exists. Today Kratos surfaces recommendations inside the `final_answer` text (mk2 shows that, and it's copyable — see 14d). **To wire:** have the agent emit a *structured* "recommended command" (a new key in `agent/loop.py`'s response schema, shared by the REPL + MCP) so it renders as the dedicated 19b panel per-command. A cross-cutting agent-loop change, not UI-only. |
 | 14d | Copy-to-clipboard confirmation | ✅ | `ctrl+y` copies Kratos's most recent answer/reply (`_last_answer`) via Textual's `copy_to_clipboard` (terminal OSC-52), with a transient confirmation toast. Per-command copy panels wait on 19b's structured command. |
 | 19a / 19d / 19e | Direct-execution **opt-in** (dedicated consent screen), settings toggle, first-run suggestion | 🔲 | **Direct execution does not exist** (arch doc capability 2, off by default, gated on the whitelist being built). **To wire:** the per-target toggle store + the sub-agent execution channel **and** the fixed narrow action whitelist (arch doc control 3 — the real security boundary), THEN this consent UI. Consent copy must use the arch doc's plain-risk wording (control 6). |
 | 12c / 19c | Upgraded **critical gate** — typed `EXECUTE` | 🔲 | The typed-EXECUTE gate only means something once EXECUTE can dispatch to a sub-agent. **To wire:** same prerequisites as 19a; the risk disclosure (effect/reversibility/blast-radius) must come from the trusted whitelist action definition, **never** LLM-generated (arch doc control 7). |
@@ -170,7 +170,7 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 
 | Canvas | Screen | Status | To wire |
 |---|---|---|---|
-| 14a | Kratos's own model/API failure banner | 🟡 | Errors are shown inline (routing/investigation failures render as red lines). **To wire:** a full-width banner that distinguishes "Kratos can't think" from a tool/target problem. |
+| 14a | Kratos's own model/API failure banner | ✅ | `render.py::llm_failure_banner` — a full-width red banner shown when routing or an investigation fails because Kratos's own model is unreachable (`_route_input` returns None, or `run_agent` returns `llm_unavailable`), explicitly distinguishing "Kratos can't think" from a tool/target problem. Other tool/target errors still render inline. |
 | 17b | Local inference hardware failure (OOM/thermal) | 🔲 | Needs host-health signals from the LLM layer. |
 | 14c | Terminal-too-narrow hard block | ✅ | `app.py::TooSmallScreen` + `KratosTUI._apply_size_guard` (min 72×18). Blocks/clears live on resize; boot-gated so it can't race the first screen push. |
 | 17c | Payload exceeds context before compaction | 🔲 | Depends on real token accounting (see 7c). |
@@ -179,15 +179,18 @@ All 🔲 — **no sub-agent, telemetry, or execution channel exists.**
 
 ## What a future session should do next (suggested order)
 
-1. **Phase 1 polish + small remainders — DONE:** full-tier on-screen replay,
-   terminal-too-narrow guard (14c), `/model` cost/privacy blurbs, `/scan`-family
-   shortcuts, the `/`-live palette, the `/evolve` LLM-drafted-harness flow, the
-   chooser `[m]` paging, distinct evo-loop outcome messaging (15d), the `ctrl+y`
-   copy affordance (14d), and the 9b timezone auto-detect-failed fallback prompt
-   all shipped. The only Phase-1-adjacent item left is the *structured* 19b
-   "recommended command" panel, which needs a small `agent/loop.py` schema
-   addition (the agent emitting a discrete command), so it's grouped with the
-   remediation work rather than pure UI polish.
+1. **Phase 1 — COMPLETE.** Every screen backed by an existing mechanism is
+   built: full-tier on-screen replay, terminal-too-narrow guard (14c), `/model`
+   cost/privacy blurbs, `/scan`-family shortcuts, the `/`-live palette, the
+   `/evolve` LLM-drafted-harness flow, chooser `[m]` paging, distinct evo-loop
+   outcome messaging (15d), the `ctrl+y` copy affordance (14d), the 9b timezone
+   fallback prompt, edit-a-previous-turn (10a), `ctrl+r` re-run (7b), and the
+   14a LLM-failure banner. **Two items are deliberately deferred because they
+   need backend/cross-cutting changes, not UI:** the *accurate* 7c context
+   meter (needs `llm_interface` to return `usage.prompt_tokens` — see 2 below)
+   and the *structured* 19b recommended-command panel (needs a new key in
+   `agent/loop.py`'s response schema, shared by REPL + MCP). Both work in a
+   degraded-but-honest form today (approximate meter; copyable answer text).
 2. **Real token accounting** (unblocks 7c accurate meter, 17c, 14b compaction):
    surface prompt-token usage from `llm_interface`.
 3. **Sub-agent, telemetry-first** (arch doc capability 1, low risk): build the

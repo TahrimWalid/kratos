@@ -115,6 +115,32 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     )
 
 
+def llm_failure_banner(detail: str) -> Panel:
+    """Design 14a -- a full-width banner for Kratos's OWN model/API failure,
+    distinct from a tool or target problem (which render as inline gutter
+    lines). It blocks the whole turn, not one step, so it gets banner weight
+    and says plainly "Kratos can't think" rather than looking like a tool
+    error. Expands to the full transcript width in the RichLog."""
+    body = Text()
+    body.append(
+        "Kratos couldn't reach its own language model — this is Kratos's reasoning layer, "
+        "not a problem with the target or any tool.\n\n",
+        style=T.TEXT,
+    )
+    body.append(f"Detail: {detail}\n", style=T.TEXT_DIM)
+    body.append(
+        "Check the backend is running (e.g. `kratos llm-serve` for local Ollama) or switch it "
+        "with /model, then try the goal again.",
+        style=T.TEXT_FAINT,
+    )
+    return Panel(
+        body,
+        title="⚠ Kratos can't think — language model unavailable",
+        title_align="left",
+        border_style=T.CRITICAL,
+    )
+
+
 def result_panel(title: str, body: str, color: str, time_str: str | None = None) -> Panel:
     return Panel(
         Text(body, style=T.TEXT),

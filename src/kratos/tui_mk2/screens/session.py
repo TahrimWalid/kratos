@@ -83,6 +83,10 @@ class SessionScreen(Screen):
         # chooser adaptation.
         Binding("up", "history_prev", "prev turn", show=False),
         Binding("down", "history_next", "next turn", show=False),
+        # Design 7b -- re-run the last goal (e.g. after interrupting one). A
+        # true mid-loop "resume" isn't possible (run_agent has no checkpoint),
+        # so this honestly re-runs the same goal fresh.
+        Binding("ctrl+r", "rerun", "re-run last", show=True),
     ]
 
     CSS = f"""
@@ -124,6 +128,7 @@ class SessionScreen(Screen):
         self._hist_index = 0               # position within _hist_turns; == len means "composing new"
         self._edit_seq: int | None = None  # seq of the recalled turn (None = a fresh turn)
         self._pre_recall_draft = ""        # the in-progress input saved when recall started
+        self._last_goal = ""               # most recent goal, for ctrl+r re-run (7b)
         # Resolved once in on_mount (override > system-local > UTC) and passed
         # to every timeutil format call, so live times, resumed/stored times,
         # and the header clock all render in the SAME display zone. Storage
@@ -1045,10 +1050,25 @@ class SessionScreen(Screen):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
 
+    def action_rerun(self) -> None:
+        """Design 7b -- re-run the last goal (honest re-run, not a mid-loop
+        resume). Handy right after an interrupt, or to repeat a goal."""
+        if self._busy:
+            self.notify("A turn is already running.", timeout=3)
+            return
+        if not self._last_goal:
+            self.notify("Nothing to re-run yet.", timeout=3)
+            return
+        t, d = self._stamp_now()
+        self._emit_stamped(self._you_header(self._last_goal), t, d)
+        self._emit(R.note_line("Re-running the previous goal."))
+        self._run_goal(self._last_goal)
+
     @work(thread=True, exclusive=True, group="turn")
     def _run_goal(self, goal: str) -> None:
         from kratos.cli.repl import _route_input
 
+        self._last_goal = goal
         self._set_busy(True)
         try:
             should_investigate, second = _route_input(goal, self.session_state.get("resume_context", ""))
@@ -1058,7 +1078,7 @@ class SessionScreen(Screen):
             return
 
         if should_investigate is None:
-            self._emit_from_worker(R.error_line(f"Could not reach the language model — {second or 'no detail'}"))
+            self._emit_from_worker(R.llm_failure_banner(second or "no detail available"))
             self._set_busy(False)
             return
 
@@ -1093,7 +1113,7 @@ class SessionScreen(Screen):
             result = run_agent(goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step)
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
-            self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Type a new goal to continue."))
+            self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Press Ctrl+R to re-run this goal, or type a new one."))
             self._append_outcome(goal, "cancelled")
             return
         except Exception as e:  # noqa: BLE001
@@ -1112,6 +1132,11 @@ class SessionScreen(Screen):
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
             status = "max_iters_reached"
+        elif result["status"] == "llm_unavailable":
+            # Design 14a: Kratos's own model failed mid-investigation -> banner,
+            # not an inline tool-style error.
+            self._emit_from_worker(R.llm_failure_banner("the language model became unavailable during the investigation"))
+            status = "llm_unavailable"
         else:
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
             status = str(result["status"])
