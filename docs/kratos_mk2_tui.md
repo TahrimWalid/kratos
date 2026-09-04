@@ -130,7 +130,7 @@ Reverting is the same edit backwards.
 | — | `/evolve` LLM-drafted starter harness | ✅ | On a missing harness, offers an LLM draft (reuses `cli/repl.py::_draft_evolve_harness`), shown for review; save-and-build / save-to-edit / discard. Never trusted unedited — same human-authored-test principle as the classic REPL. |
 | — | `/target`, `/target verify` (+ setup checklist + probe) | ✅ | `target_setup.generate_target_setup_checklist` + `ssh_remote.run_target_probe_checks`. |
 | — | `/clear`, `/reset`, `/delete` | ✅ | `/reset`/`/delete` use a native `ConfirmModal` (no force-accept). `/delete` pops back to the chooser. |
-| 9a/9b/9c | Header live clock + auto TZ; TZ fallback prompt; TZ override | 🟡 | Live clock + auto TZ done (`_refresh_header`). Fallback prompt / settings override: **To wire** (needs `/settings`). |
+| — | `/timezone` (+ 9a/9b/9c) | ✅ | See the 9a/9b/9c row under "A live turn" above — live clock, display-zone `%Z`, `/timezone` override, and the 9b fallback prompt are all done. |
 | 10a | Double-esc → edit a previous turn in place | 🔲 | No transcript-rewind/re-send mechanism. **To wire:** turn history navigation + truncate-and-resend in the session model. |
 
 ### 5. Remediation & approvals
