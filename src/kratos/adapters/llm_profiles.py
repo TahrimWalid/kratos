@@ -30,6 +30,11 @@ _LINE_RE = re.compile(
     r"^(?P<comment>#\s?)?(?P<key>LLM_BASE_URL|LLM_API_KEY|LLM_MODEL|KRATOS_LLM_BACKEND)=(?P<value>.*)$"
 )
 
+# Optional 5th line a profile block MAY carry (written by the model-setup flow):
+# the per-profile context window. Backward-compatible -- a classic 4-line block
+# simply has no such line, and its absence changes nothing.
+_CONTEXT_LINE_RE = re.compile(r"^(?P<comment>#\s?)?LLM_CONTEXT_WINDOW=(?P<value>.*)$")
+
 # Literal placeholder strings this repo's own .env/.env.example templates
 # use -- a profile whose value matches one of these has never actually
 # been filled in by a human, regardless of whether all 4 keys are
@@ -88,10 +93,22 @@ def _parse_profiles(lines: list[str]) -> list[EnvProfile]:
                 block_indices[expected_key] = i + offset
                 active_flags.append(lm.group("comment") is None)
             if ok:
+                consumed = len(PROFILE_KEYS)
+                # Optional trailing LLM_CONTEXT_WINDOW line -- captured into the
+                # SAME profile (values + line_indices) so it round-trips and
+                # switch_profile toggles it together with the block. `active` is
+                # still decided by the 4 required keys only, so a window line's
+                # own comment state can't flip a profile's active status.
+                if i + consumed < n:
+                    cm = _CONTEXT_LINE_RE.match(lines[i + consumed])
+                    if cm:
+                        block_values["LLM_CONTEXT_WINDOW"] = cm.group("value")
+                        block_indices["LLM_CONTEXT_WINDOW"] = i + consumed
+                        consumed += 1
                 profiles.append(
                     EnvProfile(values=block_values, line_indices=block_indices, active=all(active_flags))
                 )
-                i += len(PROFILE_KEYS)
+                i += consumed
                 continue
         i += 1
     return profiles
@@ -138,6 +155,44 @@ def validate_profile(profile: EnvProfile) -> list[str]:
             f"LLM_BASE_URL still contains the unfilled {_PLACEHOLDER_URL_MARKER!r} placeholder ({base_url!r})"
         )
     return problems
+
+
+def add_profile(env_path: Path, values: dict[str, str], make_active: bool = True) -> None:
+    """Append a NEW profile block to `.env` from `values` (the 4 PROFILE_KEYS,
+    plus an optional LLM_CONTEXT_WINDOW). Written in the exact block shape
+    `_parse_profiles` reads back. When `make_active` (the default), the block is
+    written uncommented AND the currently-active profile is commented out -- so
+    adding a model also switches to it -- mirroring switch_profile's comment/
+    uncomment discipline. Only appends + toggles the outgoing active block's own
+    lines; every other line in the file is left byte-identical.
+
+    Does NOT activate the profile in the running process -- the caller does that
+    via llm_config.set_active_llm_profile(values), exactly as /model already
+    does after a switch."""
+    text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    lines = text.split("\n") if text else []
+
+    if make_active:
+        active = [p for p in _parse_profiles(lines) if p.active]
+        current = active[-1] if active else None
+        if current is not None:
+            for idx in current.line_indices.values():
+                if not lines[idx].lstrip().startswith("#"):
+                    lines[idx] = f"# {lines[idx]}"
+
+    prefix = "" if make_active else "# "
+    block = [f"{prefix}{key}={values.get(key, '')}" for key in PROFILE_KEYS]
+    window = str(values.get("LLM_CONTEXT_WINDOW", "")).strip()
+    if window:
+        block.append(f"{prefix}LLM_CONTEXT_WINDOW={window}")
+
+    # Separate the appended block from prior content with exactly one blank line.
+    while lines and lines[-1].strip() == "":
+        lines.pop()
+    if lines:
+        lines.append("")
+    lines.extend(block)
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def switch_profile(env_path: Path, target: EnvProfile, current: EnvProfile | None) -> None:

@@ -276,7 +276,17 @@ def get_active_llm_context_window() -> int:
       3. cloud + a known model family -> its (conservative) real window;
       4. cloud + unknown -> LLAMA_N_CTX (safe: underclaiming only compacts early,
          overclaiming would risk a real overflow)."""
-    explicit = (_active_llm_override or {}).get("LLM_CONTEXT_WINDOW") or os.environ.get("KRATOS_LLM_CONTEXT_WINDOW")
+    if _active_llm_override is not None:
+        # A live /model switch happened -> the switched profile's own value is
+        # authoritative. Its ABSENCE must NOT fall back to os.environ's
+        # LLM_CONTEXT_WINDOW, which was loaded from a DIFFERENT profile at
+        # startup and is now stale.
+        explicit = _active_llm_override.get("LLM_CONTEXT_WINDOW")
+    else:
+        # Fresh process, no switch yet -> the active profile's LLM_CONTEXT_WINDOW
+        # as load_dotenv loaded it from .env.
+        explicit = os.environ.get("LLM_CONTEXT_WINDOW")
+    explicit = explicit or os.environ.get("KRATOS_LLM_CONTEXT_WINDOW")  # global manual override (fallback)
     if explicit and str(explicit).strip().isdigit():
         return int(str(explicit).strip())
     if _active_backend_is_local():
