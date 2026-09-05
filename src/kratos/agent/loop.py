@@ -441,6 +441,133 @@ def _synthesize_fallback_answer(transcript: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# --- Context compaction (feature 14b) -- mind the C7 regression ---------------
+# The ReAct loop feeds the model a growing prompt: the goal, then one
+# "Assistant: <json> / Observation: <text>" block per turn. On the small local
+# window (LLAMA_N_CTX, default 6144) a long investigation eventually runs that
+# prompt into the ceiling. Naive truncation is exactly Sprint 1's root-cause
+# bug and what eval C7 guards against -- silently dropping an earlier tool
+# observation the model still needs (a file path it must cite in a later
+# correlate_findings call, a diff it must not contradict) makes it lose the
+# thread or its JSON format near the end.
+#
+# So compaction here is non-lossy in the ways that matter:
+#   * It rewrites ONLY the string handed to the model -- never the returned
+#     `transcript` (callers/UI/report still see every step) and never the
+#     guards' own state (they keep last_correlate_findings/last_file_integrity_
+#     diff/last_staleness_warning etc. in Python vars set from parsed results,
+#     and never re-read this string) -- so no guard is weakened and no recorded
+#     observation is lost.
+#   * The JSON schema lives in the system prompt (rebuilt every call), not in
+#     this string, so format discipline is never compacted away.
+#   * Old turns are DIGESTED, not dropped: each folded turn leaves its tool
+#     name and the result pointers a later step references (any *_file/*_path
+#     value + a few key scalar signals). The most recent turns, and the goal,
+#     are always kept verbatim.
+CONTEXT_COMPACTION_TRIGGER_RATIO = 0.85   # matches the 7c meter's "will compact soon" warning
+COMPACTION_KEEP_RECENT_TURNS = 3          # newest turns kept verbatim, never digested
+_DIGEST_MAX_LEN = 240
+# Result keys worth keeping in a folded turn's digest: pointers a later step
+# may need to cite, plus a few scalar signals that summarize what a tool found.
+_DIGEST_SCALAR_KEYS = (
+    "status", "target", "host_count", "open_ports_total", "match_count",
+    "finding_count", "count", "baseline_established", "baseline_name",
+    "database_stale",
+)
+
+
+def _truncate_digest(text: str) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= _DIGEST_MAX_LEN else text[: _DIGEST_MAX_LEN - 1] + "…"
+
+
+def _digest_turn(tool: str | None, observation: Any) -> str:
+    """One-line stand-in for a turn when it's folded during compaction. For a
+    tool turn, preserves the tool name plus the result pointers a later step may
+    still need to cite (file/path outputs + a few key scalar signals); a
+    correction/notice turn has no data to keep, so it collapses to a marker.
+    Never raises -- a digest is best-effort context, not correctness."""
+    if not tool:
+        return "(a correction/notice was issued to the model)"
+    result: Any = observation
+    if isinstance(observation, dict):
+        # execute_tool_call wraps a real return as {"status": ..., "result": {...}}.
+        if str(observation.get("status", "")).lower() == "error":
+            return _truncate_digest(f"{tool}: ERROR {observation.get('observation', '')}")
+        inner = observation.get("result")
+        result = inner if isinstance(inner, dict) else observation
+    parts: list[str] = []
+    if isinstance(result, dict):
+        for k, v in result.items():
+            if not isinstance(v, (dict, list)) and (k.endswith("_file") or k.endswith("_path") or "path" in k):
+                parts.append(f"{k}={v}")
+        for k in _DIGEST_SCALAR_KEYS:
+            if k in result and not isinstance(result[k], (dict, list)):
+                parts.append(f"{k}={result[k]}")
+        findings = result.get("findings")
+        if isinstance(findings, list) and findings:
+            sevs = [str(f.get("severity")) for f in findings if isinstance(f, dict) and f.get("severity")]
+            parts.append(f"findings={len(findings)}[{','.join(sevs)}]")
+    body = ", ".join(parts) if parts else "(ran; full result in transcript)"
+    return _truncate_digest(f"{tool}: {body}")
+
+
+class _Conversation:
+    """The growing model-facing prompt body, as an ordered list of turn blocks
+    -- each the exact text appended today, plus a compact digest used only if
+    that turn is later folded. `render()` reproduces the old raw-string prompt
+    byte-for-byte until a compaction actually happens; `maybe_compact()` folds
+    the oldest turns into a single digest block when the last call's prompt got
+    close to the context window, always keeping the goal and the most recent
+    turns verbatim."""
+
+    def __init__(self, goal: str) -> None:
+        self._preamble = f"Investigation goal: {goal}\n"
+        self._turns: list[tuple[str, str]] = []   # (verbatim text, one-line digest)
+        self.compaction_count = 0
+
+    def add(self, text: str, *, tool: str | None = None, observation: Any = None) -> None:
+        self._turns.append((text, _digest_turn(tool, observation)))
+
+    def render(self) -> str:
+        return self._preamble + "".join(text for text, _ in self._turns)
+
+    def maybe_compact(self, last_context_tokens: int, window: int) -> bool:
+        """Fold old turns into one digest block when the last call's prompt was
+        at or past the trigger ratio of the window. Returns True iff it actually
+        compacted. Refuses to fold the most recent COMPACTION_KEEP_RECENT_TURNS
+        turns (the model's active working set) or the goal -- so this can shrink,
+        but never strand, the context the model is currently reasoning over. A
+        backend that reports no usage (last_context_tokens == 0) never triggers
+        it: safe (never truncates), just no compaction on that backend."""
+        if window <= 0 or last_context_tokens <= 0:
+            return False
+        if last_context_tokens < CONTEXT_COMPACTION_TRIGGER_RATIO * window:
+            return False
+        if len(self._turns) <= COMPACTION_KEEP_RECENT_TURNS:
+            # Nothing foldable without touching the recent working set.
+            return False
+        old = self._turns[: -COMPACTION_KEEP_RECENT_TURNS]
+        recent = self._turns[-COMPACTION_KEEP_RECENT_TURNS:]
+        digest_lines = "\n".join(f"- {digest}" for _, digest in old if digest)
+        folded_text = (
+            "\n[EARLIER STEPS -- COMPACTED to fit the context window; the full, "
+            "unabridged detail of every step is preserved in the saved transcript. "
+            "Any tool-result file paths listed below are still valid to reference.]\n"
+            f"{digest_lines}\n"
+        )
+        # Never let the digest be larger than the turns it replaces -- a real
+        # 85%-of-window trigger always folds substantial observations, but this
+        # keeps compaction a strict no-op-or-shrink even in a degenerate case.
+        if len(folded_text) >= sum(len(text) for text, _ in old):
+            return False
+        # The folded block's own digest is the bare lines (no header), so a later
+        # re-fold concatenates cleanly under a single fresh header.
+        self._turns = [(folded_text, digest_lines)] + recent
+        self.compaction_count += 1
+        return True
+
+
 def run_agent(
     goal: str,
     data_dir: Path,
@@ -458,7 +585,7 @@ def run_agent(
     the loop's decisions or the returned transcript.
     """
     system_prompt = build_system_prompt()
-    conversation = f"Investigation goal: {goal}\n"
+    ctx = _Conversation(goal)
     transcript: list[dict[str, Any]] = []
 
     # Real per-run token accounting (feature 7c). run_usage sums every LLM
@@ -599,7 +726,22 @@ def run_agent(
 
     for i in range(1, max_iters + 1):
         is_final_iteration = i == max_iters
-        prompt_for_call = conversation
+        # Compact BEFORE building this call's prompt, keyed off the PREVIOUS
+        # call's real prompt_tokens (last_context_tokens; 0 on iteration 1 --
+        # never fires then). Emitted as a real transcript step (feature 14b's
+        # "compaction fired" event) via the same _record path parse_error/
+        # final_answer_rejected already use, so existing on_step consumers see
+        # a familiar tool-less status entry, not a new shape.
+        _window = get_context_window_tokens()
+        if ctx.maybe_compact(last_context_tokens, _window):
+            _record({
+                "iteration": i,
+                "status": "context_compacted",
+                "compaction_count": ctx.compaction_count,
+                "context_tokens": last_context_tokens,
+                "context_window": _window,
+            })
+        prompt_for_call = ctx.render()
         if is_final_iteration:
             prompt_for_call += FINAL_ITERATION_NUDGE
         elif i >= max_iters - WRAP_UP_REMAINING_ITERS:
@@ -632,7 +774,7 @@ def run_agent(
                 'or {"reasoning": "...", "final_answer": "..."}.'
             )
             _record({"iteration": i, "status": "parse_error", "raw_response": raw})
-            conversation += f"\nAssistant: {raw}\nObservation: {correction}\n"
+            ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
             continue
 
         if "final_answer" in parsed:
@@ -812,7 +954,7 @@ def run_agent(
                     "violations": violations,
                     "attempted_final_answer": final_answer_text,
                 })
-                conversation += f"\nAssistant: {json.dumps(parsed)}\nObservation: {correction}\n"
+                ctx.add(f"\nAssistant: {json.dumps(parsed)}\nObservation: {correction}\n")
                 continue
 
             # No guard rejected this attempt (either none were violated, or
@@ -921,7 +1063,7 @@ def run_agent(
                     "or continue the investigation with a tool call / final_answer instead."
                 )
                 _record({"iteration": i, "status": "tool_proposal_malformed", "raw_response": raw})
-                conversation += f"\nAssistant: {raw}\nObservation: {correction}\n"
+                ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
                 continue
 
             _record({
@@ -929,7 +1071,7 @@ def run_agent(
                 "reasoning": parsed.get("reasoning", ""),
                 "tool_proposal": {"name": proposal_name, "description": proposal_description},
             })
-            conversation += (
+            ctx.add(
                 f"\nAssistant: {json.dumps(parsed)}\n"
                 f"Observation: Tool proposal noted ({proposal_name!r}) -- this has been surfaced to "
                 "the human; you do not need to build it or mention it again. Continue the "
@@ -1011,7 +1153,11 @@ def run_agent(
         })
 
         observation_json = _cap(json.dumps(exec_result, default=str))
-        conversation += f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation_json}\n"
+        ctx.add(
+            f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation_json}\n",
+            tool=tool_name,
+            observation=exec_result,
+        )
 
     # Unreachable in practice (the is_final_iteration branches above always
     # return), but kept as a safety net in case max_iters is 0 or negative.
