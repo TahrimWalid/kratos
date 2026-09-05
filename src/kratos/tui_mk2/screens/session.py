@@ -59,7 +59,7 @@ _PALETTE_COMMANDS = [
     ("/clear", "free up context (visible history stays)"),
     ("/reset", "archive history, start this session fresh"),
     ("/delete", "archive (soft-delete) this session"),
-    ("/settings", "model settings — switch / add models, context windows"),
+    ("/settings", "settings — models, tool approvals, timezone"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]

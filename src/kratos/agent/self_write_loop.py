@@ -188,6 +188,32 @@ def _read_metadata(kept_tools_dir: Path) -> dict[str, Any]:
     return json.loads(metadata_file.read_text(encoding="utf-8"))
 
 
+def set_kept_tool_approval(
+    tool_name: str, requires_approval: bool, kept_tools_dir: Path = KEPT_TOOLS_DIR
+) -> None:
+    """Toggle an already-KEPT tool's requires_approval flag (Sprint 2 backlog #5,
+    "CLI /settings to edit an already-kept tool's requires_approval flag") --
+    persisted to metadata.json AND applied live to TOOL_REGISTRY so the change
+    takes effect this process and future ones.
+
+    Scoped to kept tools only: a built-in tool's requires_approval is defined in
+    its @register_tool decorator (code, not metadata) and would neither persist
+    nor be safe to relax here -- callers must reject built-ins before calling.
+    Held under the same _kept_tools_lock + atomic _write_metadata that
+    _persist_kept_tool uses, so a concurrent evolve keep can't lose this update;
+    the tool's existing source_file is preserved (kept_at refreshes to now)."""
+    from kratos.agent.tools import TOOL_REGISTRY  # local import, matching this module's pattern
+
+    with _kept_tools_lock(kept_tools_dir):
+        metadata = _read_metadata(kept_tools_dir)
+        if tool_name not in metadata:
+            raise KeyError(f"{tool_name!r} is not a kept tool (built-in approval is fixed in code)")
+        source_file = kept_tools_dir / metadata[tool_name].get("source_file", f"{tool_name}.py")
+        _write_metadata(kept_tools_dir, tool_name, source_file, requires_approval)
+    if tool_name in TOOL_REGISTRY:
+        TOOL_REGISTRY[tool_name].requires_approval = requires_approval
+
+
 def _write_metadata(kept_tools_dir: Path, tool_name: str, source_file: Path, requires_approval: bool) -> None:
     """
     Phase 3b.6: writes via a temp file + os.replace(), never a direct

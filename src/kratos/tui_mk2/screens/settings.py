@@ -266,9 +266,11 @@ class SettingsScreen(Screen):
 
     BINDINGS = [
         Binding("escape,q", "close", "back", show=True),
-        Binding("enter,s", "switch", "switch", show=True),
-        Binding("a", "add", "add model", show=True),
-        Binding("e", "edit", "edit ctx", show=True),
+        Binding("enter,space", "primary", "select", show=True),
+        Binding("s", "switch", "switch", show=False),
+        Binding("a", "add", "add model", show=False),
+        Binding("e", "edit", "edit ctx", show=False),
+        Binding("u", "tz_auto", "tz auto", show=False),
         Binding("right_square_bracket", "next_tab", "next tab", show=True),
         Binding("left_square_bracket", "prev_tab", "prev tab", show=False),
     ]
@@ -287,6 +289,7 @@ class SettingsScreen(Screen):
         self._session = session
         self._candidates: list = []
         self._current = None
+        self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
 
     def compose(self) -> ComposeResult:
         yield Static("Settings", id="set-title")
@@ -300,22 +303,44 @@ class SettingsScreen(Screen):
                 yield Static("", id="ms-status")
             with TabPane("Tool approvals", id="tab-approvals"):
                 yield Static(
-                    "Per-tool approval policy — which self-written (kept) tools need a human OK before they run, "
-                    "and the default for newly-kept tools. Coming next.",
+                    Text("Which self-written (kept) tools need a human OK before they run. Built-in "
+                         "tools' approval is fixed in code and shown read-only.", style=T.TEXT_DIM),
                     classes="set-placeholder")
-            with TabPane("General", id="tab-general"):
+                yield DataTable(id="ap-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    "General settings (timezone, appearance, …) — coming next. Use /timezone for now.",
-                    classes="set-placeholder")
+                    Text("↑↓ select · enter/space toggle a kept tool · ] next tab · esc back", style=T.TEXT_DIM),
+                    id="ap-hint")
+                yield Static("", id="ap-status")
+            with TabPane("General", id="tab-general"):
+                yield Static("", id="gen-tz")
+                yield Static(
+                    Text("enter set a fixed display timezone · u revert to auto-detect · esc back",
+                         style=T.TEXT_DIM),
+                    id="gen-hint")
+                yield Static("", id="gen-status")
 
     def on_mount(self) -> None:
         table = self.query_one("#ms-table", DataTable)
         table.add_columns(" ", "Model", "Where", "Context window")
         self._reload()
+        ap = self.query_one("#ap-table", DataTable)
+        ap.add_columns("Tool", "Kind", "Approval")
+        self._reload_approvals()
+        self._refresh_tz_status()
         table.focus()  # so ↑↓ navigate immediately, no click needed
 
     def _active_tab(self) -> str:
         return self.query_one(TabbedContent).active
+
+    @on(TabbedContent.TabActivated)
+    def _focus_active_table(self, event: TabbedContent.TabActivated) -> None:
+        # Keep keyboard focus on the table of whichever tab is active, so ↑↓ work
+        # without a click after switching tabs.
+        tab = self._active_tab()
+        if tab == "tab-models":
+            self.query_one("#ms-table", DataTable).focus()
+        elif tab == "tab-approvals":
+            self.query_one("#ap-table", DataTable).focus()
 
     # --- data ------------------------------------------------------------
     def _reload(self) -> None:
@@ -383,6 +408,125 @@ class SettingsScreen(Screen):
     @on(DataTable.RowSelected, "#ms-table")
     def _row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_switch()
+
+    def action_primary(self) -> None:
+        tab = self._active_tab()
+        if tab == "tab-models":
+            self.action_switch()
+        elif tab == "tab-approvals":
+            self._toggle_approval()
+        elif tab == "tab-general":
+            self._set_timezone_flow()
+
+    # --- Tool approvals tab (kept tools; built-ins read-only) ------------
+    def _reload_approvals(self) -> None:
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+
+        meta = _read_metadata(KEPT_TOOLS_DIR)
+        ap = self.query_one("#ap-table", DataTable)
+        ap.clear()
+        self._ap_names = []
+        for name in sorted(TOOL_REGISTRY):
+            tool = TOOL_REGISTRY[name]
+            is_kept = name in meta
+            ap.add_row(
+                Text(name, style=T.TEXT_MUTED),
+                Text("kept" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
+                Text("required" if tool.requires_approval else "auto",
+                     style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM),
+            )
+            self._ap_names.append((name, is_kept))
+
+    def _set_ap_status(self, msg: str, style: str | None = None) -> None:
+        self.query_one("#ap-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
+
+    def _toggle_approval(self) -> None:
+        if self._active_tab() != "tab-approvals":
+            return
+        ap = self.query_one("#ap-table", DataTable)
+        idx = ap.cursor_row
+        if idx is None or not (0 <= idx < len(self._ap_names)):
+            return
+        name, is_kept = self._ap_names[idx]
+        if not is_kept:
+            self._set_ap_status(
+                f"{name} is a built-in tool — its approval is fixed in code, not editable here.", T.ATTENTION)
+            return
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.self_write_loop import set_kept_tool_approval
+
+        new_val = not TOOL_REGISTRY[name].requires_approval
+        try:
+            set_kept_tool_approval(name, new_val)
+        except Exception as e:  # noqa: BLE001 -- surface, don't crash the screen
+            self._set_ap_status(f"Couldn't update {name}: {e}", T.CRITICAL)
+            return
+        self._reload_approvals()
+        ap.move_cursor(row=idx)
+        self._set_ap_status(
+            f"{name}: approval {'required' if new_val else 'auto (runs without asking)'} — saved.", T.SAFE)
+
+    @on(DataTable.RowSelected, "#ap-table")
+    def _ap_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._toggle_approval()
+
+    # --- General tab (display timezone) ----------------------------------
+    def _data_dir(self):
+        return getattr(self._session, "_data_dir", None)
+
+    def _refresh_tz_status(self) -> None:
+        from kratos.utils import timeutil
+
+        source, tz = timeutil.display_tz_status(self._data_dir())
+        name = getattr(tz, "key", None) or timeutil.now_for_display("%Z", tz=tz)
+        src_txt = {"override": "fixed override", "auto": "auto-detected", "fallback": "UTC fallback"}.get(source, source)
+        self.query_one("#gen-tz", Static).update(Text(f"Display timezone: {name}  ({src_txt})", style=T.TEXT))
+
+    def _set_gen_status(self, msg: str, style: str | None = None) -> None:
+        self.query_one("#gen-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
+
+    def _apply_tz_to_session(self) -> None:
+        fn = getattr(self._session, "_apply_timezone_change", None)
+        if callable(fn):
+            fn()  # re-resolve the live session's display zone + refresh its header
+
+    @work
+    async def _set_timezone_flow(self) -> None:
+        if self._active_tab() != "tab-general":
+            return
+        from kratos.tui_mk2.modals import PromptModal
+        from kratos.utils import timeutil
+
+        answer = await self.app.push_screen_wait(
+            PromptModal("Set display timezone", "e.g. Asia/Dhaka, Europe/Helsinki, UTC (empty = cancel)"))
+        if not answer or not answer.strip():
+            return
+        zone = answer.strip()
+        if timeutil.zone_from_name(zone) is None:
+            self._set_gen_status(f"{zone!r} isn't a known timezone.", T.CRITICAL)
+            return
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to persist the timezone.", T.CRITICAL)
+            return
+        timeutil.set_display_timezone_override(dd, zone)
+        self._apply_tz_to_session()
+        self._refresh_tz_status()
+        self._set_gen_status(f"Display timezone set to {zone} — saved.", T.SAFE)
+
+    def action_tz_auto(self) -> None:
+        if self._active_tab() != "tab-general":
+            return
+        from kratos.utils import timeutil
+
+        dd = self._data_dir()
+        if dd is None:
+            return
+        timeutil.set_display_timezone_override(dd, None)
+        self._apply_tz_to_session()
+        self._refresh_tz_status()
+        self._set_gen_status(f"Reverted to auto-detect ({timeutil.local_tz_name() or 'system local'}).", T.SAFE)
 
     @work
     async def _add_flow(self) -> None:
