@@ -59,7 +59,7 @@ _PALETTE_COMMANDS = [
     ("/clear", "free up context (visible history stays)"),
     ("/reset", "archive history, start this session fresh"),
     ("/delete", "archive (soft-delete) this session"),
-    ("/settings", "per-tool approval policy (not yet implemented)"),
+    ("/settings", "model settings — switch / add models, context windows"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]
@@ -575,7 +575,9 @@ class SessionScreen(Screen):
         elif cmd == "/evolve":
             self._evolve_flow(rest)
         elif cmd == "/settings":
-            self._emit(R.note_line("/settings is not implemented yet — per-tool approval policy is a separate design pass."))
+            from kratos.tui_mk2.screens.settings import ModelSettingsScreen
+
+            self.app.push_screen(ModelSettingsScreen(self))
         elif cmd == "/preview":
             from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
 
