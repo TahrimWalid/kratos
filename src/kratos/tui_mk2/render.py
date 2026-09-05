@@ -163,6 +163,27 @@ def note_line(text: str) -> Text:
     return _prefixed("!", text, T.ATTENTION)
 
 
+def compaction_line(context_tokens: int = 0, context_window: int = 0) -> Text:
+    """Feature 14b: a receding, informational line marking that the model's
+    working context was compacted mid-investigation. Deliberately NOT the amber
+    "!" notice style -- it's not a warning or a decision the human must act on;
+    earlier steps are just summarized to fit the window, with the full detail
+    preserved in the saved transcript (agent/loop.py's compaction only ever
+    shrinks the model's prompt, never the record). Rendered faint, like the
+    "Done in Ns" footer."""
+    line = Text()
+    line.append("⤵ context compacted", style=T.TEXT_MUTED)
+    if context_window > 0 and context_tokens > 0:
+        line.append(
+            f"  (was {context_tokens / 1000:.1f}k/{context_window / 1000:.1f}k of the model window) ",
+            style=T.TEXT_FAINTER,
+        )
+    else:
+        line.append("  ", style=T.TEXT_FAINTER)
+    line.append("— earlier steps summarized; full detail kept in the transcript", style=T.TEXT_FAINTER)
+    return line
+
+
 def error_line(text: str) -> Text:
     return _prefixed("✗", text, T.CRITICAL)
 

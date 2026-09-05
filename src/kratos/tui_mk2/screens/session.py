@@ -1210,6 +1210,14 @@ class SessionScreen(Screen):
                 'Run /evolve to have Kratos build this (needs a test harness).'
             )
             self._emit_from_worker(R.result_panel("Evo-loop suggestion", body, T.ATTENTION))
+        elif step.get("status") == "context_compacted":
+            # Feature 14b: agent/loop.py folded the oldest turns to stay within
+            # the model's context window. Informational only -- the record is
+            # untouched -- so it renders as a faint line, and the 7c footer meter
+            # will drop on the next step as the prompt shrinks.
+            self._emit_from_worker(
+                R.compaction_line(step.get("context_tokens", 0), step.get("context_window", 0))
+            )
 
     def _append_outcome(self, goal: str, status: str) -> None:
         line = f"- Goal: {goal!r} -> {status}"
