@@ -575,9 +575,9 @@ class SessionScreen(Screen):
         elif cmd == "/evolve":
             self._evolve_flow(rest)
         elif cmd == "/settings":
-            from kratos.tui_mk2.screens.settings import ModelSettingsScreen
+            from kratos.tui_mk2.screens.settings import SettingsScreen
 
-            self.app.push_screen(ModelSettingsScreen(self))
+            self.app.push_screen(SettingsScreen(self))
         elif cmd == "/preview":
             from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
 

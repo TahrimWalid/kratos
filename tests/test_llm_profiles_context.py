@@ -113,6 +113,39 @@ def test_resolver_reads_profile_window_from_env_at_startup(monkeypatch):
     assert C.get_active_llm_context_window() == 196000
 
 
+def test_set_profile_context_window_insert_update_clear(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    # insert on a profile that had none
+    assert P.set_profile_context_window(env, "gemini-3.1-pro", 200000) is True
+    _, current = P.list_candidate_profiles(env)
+    assert current.values["LLM_CONTEXT_WINDOW"] == "200000"
+    # update it
+    assert P.set_profile_context_window(env, "gemini-3.1-pro", 128000) is True
+    _, current = P.list_candidate_profiles(env)
+    assert current.values["LLM_CONTEXT_WINDOW"] == "128000"
+    # clear it (back to auto) -> line removed
+    assert P.set_profile_context_window(env, "gemini-3.1-pro", None) is True
+    _, current = P.list_candidate_profiles(env)
+    assert "LLM_CONTEXT_WINDOW" not in current.values
+    # the 4-key block is still intact and active
+    assert current.model == "gemini-3.1-pro" and current.active
+
+
+def test_set_profile_context_window_unknown_model_returns_false(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    assert P.set_profile_context_window(env, "no-such-model", 100000) is False
+
+
+def test_set_profile_context_window_on_inactive_profile_keeps_it_commented(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    # qwen2.5:7b is the commented (inactive) block -> its new window line must
+    # also be commented, so it doesn't leak active.
+    P.set_profile_context_window(env, "qwen2.5:7b", 40960)
+    assert "# LLM_CONTEXT_WINDOW=40960" in env.read_text()
+    _, current = P.list_candidate_profiles(env)
+    assert current.model == "gemini-3.1-pro"   # active unchanged
+
+
 def test_after_switch_absent_window_does_not_use_stale_env(monkeypatch):
     # A profile switch happened whose profile has NO window -> must NOT fall back
     # to a stale os.environ LLM_CONTEXT_WINDOW from a different profile.

@@ -195,6 +195,33 @@ def add_profile(env_path: Path, values: dict[str, str], make_active: bool = True
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def set_profile_context_window(env_path: Path, model: str, window: int | None) -> bool:
+    """Set (or clear, when `window` is None) the LLM_CONTEXT_WINDOW for the
+    profile whose LLM_MODEL == `model`, editing ONLY that block's lines. Updates
+    the line in place if present; inserts it right after the block's
+    KRATOS_LLM_BACKEND (matching that block's comment state) if absent; removes
+    it when clearing. Returns True iff a matching profile was found. Does not
+    activate anything in-process -- the caller re-syncs set_active_llm_profile if
+    it edited the active profile."""
+    lines = env_path.read_text(encoding="utf-8").split("\n")
+    target = next((p for p in _parse_profiles(lines) if p.model == model), None)
+    if target is None:
+        return False
+    prefix = "" if target.active else "# "
+    if "LLM_CONTEXT_WINDOW" in target.line_indices:
+        idx = target.line_indices["LLM_CONTEXT_WINDOW"]
+        if window is None:
+            del lines[idx]
+        else:
+            lines[idx] = f"{prefix}LLM_CONTEXT_WINDOW={window}"
+    elif window is not None:
+        after = target.line_indices["KRATOS_LLM_BACKEND"]
+        lines.insert(after + 1, f"{prefix}LLM_CONTEXT_WINDOW={window}")
+    text = "\n".join(lines)
+    env_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    return True
+
+
 def switch_profile(env_path: Path, target: EnvProfile, current: EnvProfile | None) -> None:
     """Comments out `current`'s 4 lines (if any, and if it's a different
     profile) and uncomments `target`'s 4 lines -- edits ONLY those specific
