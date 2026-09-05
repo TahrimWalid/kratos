@@ -20,6 +20,7 @@ from kratos.llm_config import (
     LLAMA_SERVER_PORT,
     LLAMA_SERVER_URL,
     LLAMA_N_CTX,
+    get_active_llm_context_window,
     LLAMA_N_GPU_LAYERS,
     LLAMA_TEMP,
     LLAMA_SEED,
@@ -133,11 +134,17 @@ def reset_session_token_usage() -> None:
 
 
 def get_context_window_tokens() -> int:
-    """The context-window size to use as a meter's denominator. This is the
-    configured local-model window (LLAMA_N_CTX / KRATOS_LLM_N_CTX); for a
-    cloud/OpenAI-compatible backend the real window may be larger, so treat
-    this as the local budget, not a hard cloud limit."""
-    return LLAMA_N_CTX
+    """The active model's context window -- the denominator for the fill meter
+    (7c) and the trigger budget for agent/loop.py's compaction (14b). MODEL-AWARE
+    (delegates to llm_config.get_active_llm_context_window()): it reads the
+    live-active profile, so a /model switch changes it automatically -- a
+    bigger-window model raises the budget (less/no compaction), a smaller one
+    lowers it (compaction adapts to fit on the next loop iteration). Local stays
+    at the deliberate LLAMA_N_CTX budget; an unknown cloud model underclaims to
+    that same budget rather than risk overflow. See that resolver for the full
+    order (explicit per-profile/env value > local budget > known cloud window >
+    safe default)."""
+    return get_active_llm_context_window()
 
 
 def _is_llama_server_running() -> bool:

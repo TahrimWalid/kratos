@@ -315,10 +315,11 @@ class SessionScreen(Screen):
 
     def _context_pct(self) -> tuple[int, int, int]:
         # REAL token accounting (feature 7c backend, 2026-09): the last LLM
-        # call's prompt_tokens vs the configured context window. Returns
+        # call's prompt_tokens vs the active model's context window. Returns
         # (pct, used_tokens, window_tokens). Before any call this turn,
-        # get_last_token_usage() is None -> 0% cleanly. For a cloud backend the
-        # window is the local budget (get_context_window_tokens' own caveat).
+        # get_last_token_usage() is None -> 0% cleanly. The window is now
+        # MODEL-AWARE (get_context_window_tokens tracks the live /model profile),
+        # so switching to a bigger/smaller model rescales this meter live.
         from kratos import llm_interface
 
         usage = llm_interface.get_last_token_usage()

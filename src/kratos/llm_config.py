@@ -37,6 +37,7 @@ from __future__ import annotations
 import os
 import os as _os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -211,10 +212,80 @@ def get_active_llm_backend() -> str:
 
 def set_active_llm_profile(values: dict[str, str]) -> None:
     """`values` keyed exactly like adapters/llm_profiles.py's EnvProfile.values
-    (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND) -- no re-keying
-    needed between parsing a .env profile and activating it."""
+    (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND, and optionally
+    LLM_CONTEXT_WINDOW once the model-setup UI sets it) -- no re-keying needed
+    between parsing a .env profile and activating it."""
     global _active_llm_override
     _active_llm_override = dict(values)
+
+
+# ---------------------------------------------------------------------------
+# Model-aware context window (the denominator for the 7c fill meter and the
+# trigger budget for agent/loop.py's compaction). Because every getter here
+# reads the LIVE-active profile, a /model switch changes the window
+# automatically -- bigger model -> bigger budget -> less/no compaction;
+# smaller model -> compaction adapts to fit on the next iteration (agent/loop
+# re-reads this every step).
+#
+# Best-effort context windows for common cloud model families -- DEFAULTS only,
+# deliberately CONSERVATIVE. The asymmetry matters: overclaiming a window risks
+# a real overflow (the backend rejects/truncates an over-long prompt), while
+# underclaiming only compacts a little early, which is harmless -- so on any
+# uncertainty this map underclaims, and an unknown cloud model falls back to the
+# small local budget rather than an optimistic guess. Substring-matched against
+# the active model id; not exhaustive and WILL age, so an explicit value always
+# wins (per-profile LLM_CONTEXT_WINDOW, e.g. from the model-setup UI, or a global
+# KRATOS_LLM_CONTEXT_WINDOW env var).
+_KNOWN_CLOUD_MODEL_WINDOWS: tuple[tuple[str, int], ...] = (
+    ("gemini", 1_000_000),
+    ("claude", 200_000),
+    ("gpt-4.1", 1_000_000),
+    ("gpt-4o", 128_000),
+    ("gpt-4", 128_000),
+    ("o1", 128_000),
+    ("o3", 128_000),
+    ("llama-3", 131_072),
+    ("deepseek", 65_536),
+    ("qwen3", 32_768),
+    ("qwen2.5", 32_768),
+    ("qwq", 32_768),
+    ("mixtral", 32_768),
+    ("mistral", 32_768),
+)
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+
+
+def _active_backend_is_local() -> bool:
+    """Local inference = the in-process llama.cpp path, or an OpenAI-compatible
+    endpoint on loopback (a local Ollama / llama.cpp server). For local we use
+    the deliberate LOCAL BUDGET (LLAMA_N_CTX), not a model's theoretical max --
+    the project runs its local model at a measured 6144 on modest hardware, not
+    32k+."""
+    if get_active_llm_backend() == "llama_cpp":
+        return True
+    host = (urlparse(get_active_llm_base_url()).hostname or "").lower()
+    return host in _LOCAL_HOSTS or host.startswith("127.")
+
+
+def get_active_llm_context_window() -> int:
+    """The active model's context window in tokens. Resolution order:
+      1. an explicit value -- per-profile `LLM_CONTEXT_WINDOW` or the global
+         `KRATOS_LLM_CONTEXT_WINDOW` env var -- the user / setup-UI always wins;
+      2. local backend -> LLAMA_N_CTX, the deliberate local budget;
+      3. cloud + a known model family -> its (conservative) real window;
+      4. cloud + unknown -> LLAMA_N_CTX (safe: underclaiming only compacts early,
+         overclaiming would risk a real overflow)."""
+    explicit = (_active_llm_override or {}).get("LLM_CONTEXT_WINDOW") or os.environ.get("KRATOS_LLM_CONTEXT_WINDOW")
+    if explicit and str(explicit).strip().isdigit():
+        return int(str(explicit).strip())
+    if _active_backend_is_local():
+        return LLAMA_N_CTX
+    model = get_active_llm_model().lower()
+    for needle, window in _KNOWN_CLOUD_MODEL_WINDOWS:
+        if needle in model:
+            return window
+    return LLAMA_N_CTX
 
 
 # ---------------------------------------------------------------------------
