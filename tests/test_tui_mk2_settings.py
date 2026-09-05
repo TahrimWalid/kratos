@@ -141,7 +141,7 @@ def test_add_modal_saves_values_with_window():
             modal.query_one("#add-url", Input).value = "http://127.0.0.1:11434/v1"
             modal.query_one("#add-model", Input).value = "qwen2.5:7b"
             modal.query_one("#add-window", Input).value = "8000"
-            await pilot.click("#add-save")
+            modal.action_save()
             await pilot.pause()
             return captured.get("r")
 
@@ -164,7 +164,7 @@ def test_add_modal_hard_window_blocks_save():
             modal.query_one("#add-model", Input).value = "m"
             modal.query_one("#add-window", Input).value = "500000"
             modal._ctx.detected_max = 262144   # a known ceiling
-            await pilot.click("#add-save")
+            modal.action_save()
             await pilot.pause()
             return dismissed["called"], str(modal.query_one("#add-hint", Static).render())
 
@@ -182,7 +182,7 @@ def test_edit_modal_empty_clears_and_number_sets():
             captured = {}
             modal.dismiss = lambda result=None: captured.__setitem__("r", result)
             modal.query_one("#edit-window", Input).value = typed
-            await pilot.click("#edit-save")
+            modal.action_save()
             await pilot.pause()
             return captured.get("r")
 

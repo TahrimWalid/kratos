@@ -19,9 +19,9 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, DataTable, Input, Label, Select, Static, TabbedContent, TabPane
+from textual.widgets import DataTable, Input, Select, Static, TabbedContent, TabPane
 
 from kratos.tui_mk2 import theme as T
 
@@ -117,13 +117,9 @@ class AddModelModal(ModalScreen):
             yield Input(placeholder="Base URL (e.g. http://127.0.0.1:11434/v1)", id="add-url")
             yield Input(placeholder="API key (use 'ollama' for local)", id="add-key", password=True)
             yield Input(placeholder="Model name / string (e.g. qwen2.5:7b)", id="add-model")
-            with Horizontal(classes="field-row"):
-                yield Input(placeholder="Context window (Detect, or type)", id="add-window")
-                yield Button("Detect", id="add-detect")
+            yield Input(placeholder="Context window — Ctrl+D to detect, or type a number", id="add-window")
             yield Static("", id="add-hint")
-            with Horizontal(classes="field-row"):
-                yield Button("Save", id="add-save", variant="primary")
-                yield Button("Cancel", id="add-cancel")
+            yield Static(Text("Tab move · Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="add-keys")
 
     def on_mount(self) -> None:
         self.query_one("#add-preset", Select).focus()
@@ -143,20 +139,17 @@ class AddModelModal(ModalScreen):
         self.query_one("#add-url", Input).value = url
         self._soft_ok = False
 
-    @on(Button.Pressed, "#add-detect")
     def _detect(self) -> None:
         url = self.query_one("#add-url", Input).value.strip()
         model = self.query_one("#add-model", Input).value.strip()
         if not url or not model:
-            self._set_hint("Enter a base URL and model name first, then Detect.", T.ATTENTION)
+            self._set_hint("Enter a base URL and model name first, then Ctrl+D to detect.", T.ATTENTION)
             return
         self._ctx.detect(url, self.query_one("#add-key", Input).value.strip(), model)
 
-    @on(Button.Pressed, "#add-cancel")
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#add-save")
     def _save(self) -> None:
         url = self.query_one("#add-url", Input).value.strip()
         model = self.query_one("#add-model", Input).value.strip()
@@ -169,7 +162,7 @@ class AddModelModal(ModalScreen):
             self._set_hint(hard, T.CRITICAL)
             return
         if soft and not self._soft_ok:
-            self._set_hint(soft + "  —  press Save again to confirm.", T.ATTENTION)
+            self._set_hint(soft + "  —  press Enter again to confirm.", T.ATTENTION)
             self._soft_ok = True
             return
         values = {
@@ -215,13 +208,9 @@ class EditWindowModal(ModalScreen):
             yield Static(Text(f"Context window — {self._values.get('LLM_MODEL', '')}",
                               style=f"bold {T.ACCENT}"), classes="modal-title")
             yield Static(Text("Empty = auto (Kratos picks a safe default for this model).", style=T.TEXT_DIM))
-            with Horizontal(classes="field-row"):
-                yield Input(value=current, placeholder="tokens (or empty for auto)", id="edit-window")
-                yield Button("Detect", id="edit-detect")
+            yield Input(value=current, placeholder="tokens — Ctrl+D to detect, or empty for auto", id="edit-window")
             yield Static("", id="edit-hint")
-            with Horizontal(classes="field-row"):
-                yield Button("Save", id="edit-save", variant="primary")
-                yield Button("Cancel", id="edit-cancel")
+            yield Static(Text("Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="edit-keys")
 
     def on_mount(self) -> None:
         self.query_one("#edit-window", Input).focus()
@@ -232,16 +221,13 @@ class EditWindowModal(ModalScreen):
     def _set_window_value(self, value: str) -> None:
         self.query_one("#edit-window", Input).value = value
 
-    @on(Button.Pressed, "#edit-detect")
     def _detect(self) -> None:
         self._ctx.detect(self._values.get("LLM_BASE_URL", ""), self._values.get("LLM_API_KEY", ""),
                          self._values.get("LLM_MODEL", ""))
 
-    @on(Button.Pressed, "#edit-cancel")
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    @on(Button.Pressed, "#edit-save")
     def _save(self) -> None:
         raw = self.query_one("#edit-window", Input).value.strip()
         if not raw:
@@ -252,7 +238,7 @@ class EditWindowModal(ModalScreen):
             self._set_hint(hard, T.CRITICAL)
             return
         if soft and not self._soft_ok:
-            self._set_hint(soft + "  —  press Save again to confirm.", T.ATTENTION)
+            self._set_hint(soft + "  —  press Enter again to confirm.", T.ATTENTION)
             self._soft_ok = True
             return
         self.dismiss(value)
