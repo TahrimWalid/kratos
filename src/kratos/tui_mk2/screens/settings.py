@@ -88,13 +88,27 @@ class AddModelModal(ModalScreen):
     with a values dict (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND +
     optional LLM_CONTEXT_WINDOW) or None."""
 
-    BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("ctrl+d", "detect", "detect", show=True),
+        Binding("ctrl+s", "save", "save", show=True),
+    ]
 
     def __init__(self) -> None:
         super().__init__()
         self._ctx = _ContextField(self)
         self._backend = "openai_compatible"
         self._soft_ok = False
+
+    def action_detect(self) -> None:
+        self._detect()
+
+    def action_save(self) -> None:
+        self._save()
+
+    @on(Input.Submitted)
+    def _on_submit(self, event: Input.Submitted) -> None:
+        self._save()
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
@@ -173,13 +187,27 @@ class EditWindowModal(ModalScreen):
     """Edit one profile's context window. Dismisses with an int (set), the
     string 'clear' (back to auto), or None (cancel)."""
 
-    BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("ctrl+d", "detect", "detect", show=True),
+        Binding("ctrl+s", "save", "save", show=True),
+    ]
 
     def __init__(self, profile_values: dict[str, str]) -> None:
         super().__init__()
         self._values = profile_values
         self._ctx = _ContextField(self)
         self._soft_ok = False
+
+    def action_detect(self) -> None:
+        self._detect()
+
+    def action_save(self) -> None:
+        self._save()
+
+    @on(Input.Submitted)
+    def _on_submit(self, event: Input.Submitted) -> None:
+        self._save()
 
     def compose(self) -> ComposeResult:
         current = self._values.get("LLM_CONTEXT_WINDOW", "")
@@ -234,15 +262,23 @@ class SettingsScreen(Screen):
     """General settings hub. `session` is the SessionScreen underneath, reused
     for its cost/privacy blurb and footer refresh."""
 
-    BINDINGS = [Binding("escape,q", "close", "back to session", show=True)]
+    _TABS = ["tab-models", "tab-approvals", "tab-general"]
+
+    BINDINGS = [
+        Binding("escape,q", "close", "back", show=True),
+        Binding("enter,s", "switch", "switch", show=True),
+        Binding("a", "add", "add model", show=True),
+        Binding("e", "edit", "edit ctx", show=True),
+        Binding("right_square_bracket", "next_tab", "next tab", show=True),
+        Binding("left_square_bracket", "prev_tab", "prev tab", show=False),
+    ]
 
     CSS = f"""
     SettingsScreen {{ padding: 1 2; }}
     SettingsScreen #set-title {{ height: 1; text-style: bold; color: {T.ACCENT}; padding: 0 0 1 0; }}
     SettingsScreen DataTable {{ height: 1fr; }}
-    SettingsScreen #ms-buttons {{ height: auto; padding: 1 0 0 0; }}
-    SettingsScreen #ms-buttons Button {{ margin: 0 2 0 0; }}
-    SettingsScreen #ms-status {{ height: auto; color: {T.TEXT_MUTED}; padding: 1 0 0 0; }}
+    SettingsScreen #ms-hint {{ height: auto; color: {T.TEXT_DIM}; padding: 1 0 0 0; }}
+    SettingsScreen #ms-status {{ height: auto; color: {T.TEXT_MUTED}; }}
     SettingsScreen .set-placeholder {{ color: {T.TEXT_DIM}; padding: 1 0; }}
     """
 
@@ -257,11 +293,11 @@ class SettingsScreen(Screen):
         with TabbedContent(initial="tab-models"):
             with TabPane("Models", id="tab-models"):
                 yield DataTable(id="ms-table", cursor_type="row", zebra_stripes=False)
-                with Horizontal(id="ms-buttons"):
-                    yield Button("Switch to selected", id="btn-switch", variant="primary")
-                    yield Button("Add model", id="btn-add")
-                    yield Button("Edit context window", id="btn-edit")
-                yield Static("↑↓ select a model · buttons manage it · esc back", id="ms-status")
+                yield Static(
+                    Text("↑↓ select · enter/s switch · a add model · e edit context window · "
+                         "] next tab · esc back", style=T.TEXT_DIM),
+                    id="ms-hint")
+                yield Static("", id="ms-status")
             with TabPane("Tool approvals", id="tab-approvals"):
                 yield Static(
                     "Per-tool approval policy — which self-written (kept) tools need a human OK before they run, "
@@ -276,6 +312,10 @@ class SettingsScreen(Screen):
         table = self.query_one("#ms-table", DataTable)
         table.add_columns(" ", "Model", "Where", "Context window")
         self._reload()
+        table.focus()  # so ↑↓ navigate immediately, no click needed
+
+    def _active_tab(self) -> str:
+        return self.query_one(TabbedContent).active
 
     # --- data ------------------------------------------------------------
     def _reload(self) -> None:
@@ -307,12 +347,21 @@ class SettingsScreen(Screen):
     def _set_status(self, msg: str, style: str | None = None) -> None:
         self.query_one("#ms-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
 
-    # --- actions ---------------------------------------------------------
+    # --- actions (keyboard-first; no buttons on this screen) -------------
     def action_close(self) -> None:
         self.app.pop_screen()
 
-    @on(Button.Pressed, "#btn-switch")
-    def _switch(self) -> None:
+    def action_next_tab(self) -> None:
+        tc = self.query_one(TabbedContent)
+        tc.active = self._TABS[(self._TABS.index(tc.active) + 1) % len(self._TABS)]
+
+    def action_prev_tab(self) -> None:
+        tc = self.query_one(TabbedContent)
+        tc.active = self._TABS[(self._TABS.index(tc.active) - 1) % len(self._TABS)]
+
+    def action_switch(self) -> None:
+        if self._active_tab() != "tab-models":
+            return
         target = self._selected_profile()
         if target is None:
             return
@@ -321,13 +370,19 @@ class SettingsScreen(Screen):
             return
         self._do_switch(target)
 
-    @on(Button.Pressed, "#btn-add")
-    def _add(self) -> None:
+    def action_add(self) -> None:
+        if self._active_tab() != "tab-models":
+            return
         self._add_flow()
 
-    @on(Button.Pressed, "#btn-edit")
-    def _edit(self) -> None:
+    def action_edit(self) -> None:
+        if self._active_tab() != "tab-models":
+            return
         self._edit_flow()
+
+    @on(DataTable.RowSelected, "#ms-table")
+    def _row_selected(self, event: DataTable.RowSelected) -> None:
+        self.action_switch()
 
     @work
     async def _add_flow(self) -> None:

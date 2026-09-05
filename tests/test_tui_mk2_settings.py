@@ -120,7 +120,7 @@ def test_switch_button_on_active_model_reports_already_active(tmp_path, monkeypa
         async with app.run_test() as pilot:
             await pilot.pause()
             app.screen.query_one("#ms-table", DataTable).move_cursor(row=0)  # active gemini
-            await pilot.click("#btn-switch")
+            app.screen.action_switch()  # keyboard-first: 's'/Enter (buttons removed)
             await pilot.pause()
             return str(app.screen.query_one("#ms-status", Static).render())
 

@@ -101,10 +101,36 @@ class KratosTUI(App):
         return get_active_llm_model()
 
     def on_mount(self) -> None:
+        # Register + apply a Kratos theme so Textual's own default-themed widgets
+        # (Tabs/Buttons/Select/Input focus borders used by the /settings screen)
+        # pull the mk2 canvas palette instead of Textual's stock blue -- one
+        # source of truth for widget colors, matching the hand-styled screens.
+        self._install_theme()
         # Route every approval gate (run_linux_command, capture_traffic,
         # self-write keep, threat-intel, vulscan staleness) to a Textual modal.
         set_approval_prompt_provider(make_textual_approval_provider(self))
         self._boot()
+
+    def _install_theme(self) -> None:
+        from textual.theme import Theme
+
+        self.register_theme(
+            Theme(
+                name="kratos-mk2",
+                primary=T.ACCENT,        # tool-blue: primary buttons, active tab underline, focus
+                secondary=T.ADMIN,
+                accent=T.ACCENT,
+                foreground=T.TEXT,
+                background=T.BG,
+                surface=T.PANEL_BG,
+                panel=T.TITLEBAR_BG,
+                success=T.SAFE,
+                warning=T.ATTENTION,
+                error=T.CRITICAL,
+                dark=True,
+            )
+        )
+        self.theme = "kratos-mk2"
 
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
