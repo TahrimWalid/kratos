@@ -224,6 +224,31 @@ def test_chat_auto_compaction_fires_near_limit(tmp_path, monkeypatch):
     assert "Earlier conversation summary" in ctx and "SUMMARY of the chat" in ctx
 
 
+def test_compact_guarantees_result_fits_window(tmp_path, monkeypatch):
+    # The screenshot bug: recent turns are large, so a plain keep-recent-verbatim
+    # left the context OVER the window ("compacted" but still ~100%). Compaction
+    # must now bring it actually under the window.
+    big = "\n\n".join(f"You: q{i}\nKratos: " + ("Z" * 3000) for i in range(6))
+    store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context=big)
+    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 5000)
+    monkeypatch.setattr(llm_interface, "get_last_token_usage", lambda: None)
+    monkeypatch.setattr(llm_interface, "agent_chat", lambda *a, **k: "SHORT SUMMARY")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "call_from_thread", lambda fn, *a, **k: fn(*a, **k))
+            screen._do_compact(manual=True)
+            return screen.session_state["resume_context"]
+
+    ctx = asyncio.run(_run())
+    target = int(5000 * 0.6) * 4                 # ~60% of the window in chars
+    assert len(ctx) <= target                    # actually fits now
+    assert (len(ctx) // 4) < 5000 * 0.85         # meter would read < 85%
+    assert "SHORT SUMMARY" in ctx                # older folded into the summary
+
+
 def test_chat_auto_compaction_noop_below_threshold(tmp_path, monkeypatch):
     original = "You: hi\nKratos: hello there\n"
     store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context=original)

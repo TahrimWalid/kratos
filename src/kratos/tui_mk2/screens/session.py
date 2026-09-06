@@ -369,7 +369,7 @@ class SessionScreen(Screen):
         pct, used, window, estimated = self._context_pct()
         bar_w = 10
         filled = int(bar_w * pct / 100)
-        color = T.ATTENTION if pct >= 85 else T.TEXT_FAINTER
+        color = T.CRITICAL if pct >= 85 else T.TEXT_FAINTER  # red near/over the window
         footer = Text()
         footer.append(f"session {st['session_id']}", style=T.TEXT_FAINTER)
         footer.append("  ·  ", style=T.TEXT_GHOST)
@@ -382,7 +382,7 @@ class SessionScreen(Screen):
         approx = "~" if estimated else ""  # ~ = estimated from loaded context, not yet measured
         footer.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
-            footer.append(" · will compact soon", style=T.ATTENTION)
+            footer.append(" · will compact soon", style=T.CRITICAL)
         self.query_one("#statusfooter", Static).update(footer)
 
     def refresh_theme(self) -> None:
@@ -1474,18 +1474,26 @@ class SessionScreen(Screen):
         """Summarize resume_context, keeping memory. Shared by /compact (manual)
         and the automatic near-limit trigger (_maybe_auto_compact). Runs the LLM
         call inline — every caller is already on a thread worker. Returns True if
-        it compacted."""
-        from kratos.llm_interface import agent_chat, reset_session_token_usage
+        it compacted.
+
+        GUARANTEES the result fits within a target fraction of the model window
+        (~60%), so auto-compaction actually pulls the meter back under the limit
+        even when the recent turns are large (e.g. a [f] full-resume blob or long
+        investigation answers) — it keeps the summary plus only as many newest
+        turns as fit, and hard-caps as a last resort. C7-orthogonal (chat context
+        only; never touches run_agent's transcript/guards)."""
+        from kratos.llm_interface import agent_chat, get_context_window_tokens, reset_session_token_usage
 
         ctx = self.session_state.get("resume_context", "").strip()
         if not ctx:
             if manual:
                 self._emit_from_worker(R.note_line("Nothing to compact yet — the working context is empty."))
             return False
-        # Keep the most recent turns VERBATIM and summarize only the older ones,
-        # matching the investigation compactor (COMPACTION_KEEP_RECENT_TURNS) and
-        # Claude Code — so the last few exchanges aren't blurred into a summary.
-        # Turns are separated by blank lines (_remember_turn joins with "\n\n").
+        window = get_context_window_tokens() or 1
+        target_chars = max(2000, int(window * 0.6) * 4)  # result should fit ~60% of the window (~4 chars/tok)
+        # Keep the most recent turns VERBATIM and summarize only the older ones
+        # (matches the investigation compactor + Claude Code). Turns are separated
+        # by blank lines (_remember_turn joins with "\n\n").
         chunks = [c for c in ctx.split("\n\n") if c.strip()]
         if len(chunks) > 1:
             keep = min(CHAT_COMPACTION_KEEP_RECENT, len(chunks) - 1)  # always summarize >=1
@@ -1498,25 +1506,42 @@ class SessionScreen(Screen):
             # Auto-compaction near the window limit — the receding ⤵ notice, same
             # visual language as the investigation loop's 14b compaction event.
             self._emit_from_worker(R.compaction_line())
+        # Bound what we send the summarizer so an enormous context can't itself
+        # overflow a small window — keep the newest tail of the older section.
+        older_text = "\n\n".join(older)
+        max_input = target_chars * 6
+        if len(older_text) > max_input:
+            older_text = "[…older conversation truncated…]\n" + older_text[-max_input:]
         summary = agent_chat(
             "You are a precise conversation summarizer.",
             "Summarize the following earlier conversation so it can be resumed later with the key "
             "facts, decisions, findings, targets, and open threads preserved. Be concise but do NOT "
-            "drop concrete details. Write it as notes.\n\n" + "\n\n".join(older),
+            "drop concrete details. Write it as notes.\n\n" + older_text,
             max_tokens=800,
         )
         if not summary or not summary.strip():
             if manual:
                 self._emit_from_worker(R.error_line("Compaction failed — the model returned no summary. Context unchanged."))
             return False
-        new_ctx = f"[Earlier conversation summary:]\n{summary.strip()}"
-        if recent:
-            new_ctx += "\n\n" + "\n\n".join(recent)
+        # Assemble the result under target_chars: the summary, plus as many of the
+        # newest recent turns as fit. This is what actually GUARANTEES the meter
+        # drops below the limit, regardless of how big the recent turns are.
+        summary_block = f"[Earlier conversation summary:]\n{summary.strip()}"
+        kept_recent: list[str] = []
+        used = len(summary_block)
+        for chunk in reversed(recent):
+            if used + len(chunk) + 2 > target_chars:
+                break
+            kept_recent.insert(0, chunk)
+            used += len(chunk) + 2
+        new_ctx = "\n\n".join([summary_block, *kept_recent])
+        if len(new_ctx) > target_chars:  # even the summary alone is over -> hard cap
+            new_ctx = new_ctx[:target_chars]
         self.session_state["resume_context"] = new_ctx
         reset_session_token_usage()  # meter now reflects the smaller context
         self.app.call_from_thread(self._refresh_footer)
         if manual:
-            kept = f" (kept the last {len(recent)} turn(s) verbatim)" if recent else ""
+            kept = f" (kept the last {len(kept_recent)} turn(s) verbatim)" if kept_recent else ""
             self._emit_from_worker(R.success_line(
                 f"Context compacted — earlier conversation summarized{kept}; Kratos still remembers the key points."))
         return True
