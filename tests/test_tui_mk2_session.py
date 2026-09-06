@@ -203,6 +203,47 @@ def test_compact_replaces_context_with_summary(tmp_path, monkeypatch):
     assert "SUMMARY: user greeted" in ctx     # memory kept (summarized), not discarded
 
 
+def test_chat_auto_compaction_fires_near_limit(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch,
+                                      resume_context="You: hi\nKratos: hello there\n" * 10)
+    monkeypatch.setattr(llm_interface, "get_last_token_usage", lambda: None)   # use the estimate path
+    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 40)  # tiny window -> over 85%
+    monkeypatch.setattr(llm_interface, "agent_chat", lambda *a, **k: "SUMMARY of the chat.")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "call_from_thread", lambda fn, *a, **k: fn(*a, **k))
+            screen._maybe_auto_compact()
+            return screen.session_state["resume_context"]
+
+    ctx = asyncio.run(_run())
+    assert "Compacted conversation summary" in ctx and "SUMMARY of the chat" in ctx
+
+
+def test_chat_auto_compaction_noop_below_threshold(tmp_path, monkeypatch):
+    original = "You: hi\nKratos: hello there\n"
+    store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context=original)
+    monkeypatch.setattr(llm_interface, "get_last_token_usage", lambda: None)
+    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 1_000_000)  # huge -> ~0%
+    called = {"n": 0}
+    monkeypatch.setattr(llm_interface, "agent_chat",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "x")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "call_from_thread", lambda fn, *a, **k: fn(*a, **k))
+            screen._maybe_auto_compact()
+            return screen.session_state["resume_context"]
+
+    ctx = asyncio.run(_run())
+    assert called["n"] == 0            # no summarization call below the threshold
+    assert ctx == original             # context untouched
+
+
 def test_compact_on_empty_context_is_a_noop(tmp_path, monkeypatch):
     store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context="")
     called = {"n": 0}

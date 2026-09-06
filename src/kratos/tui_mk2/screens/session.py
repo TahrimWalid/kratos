@@ -1224,6 +1224,7 @@ class SessionScreen(Screen):
             self._last_commands = []  # a chat reply carries no remediation commands
             self._log_chat_turn(goal, reply)
             self._ctx_chars += len(goal) + len(reply)
+            self._maybe_auto_compact()  # keep the growing chat context within the window
             self._emit_from_worker(Text(f"Done in {time.monotonic() - started:.0f}s", style=T.TEXT_FAINTER))
             self.app.call_from_thread(self._refresh_footer)
             self._set_busy(False)
@@ -1231,6 +1232,7 @@ class SessionScreen(Screen):
 
         # kind == "investigate"
         self._run_investigation(goal)
+        self._maybe_auto_compact()
         self._set_busy(False)
 
     # --- conversational controls (design: talk-to-run, approval-gated) ---
@@ -1442,32 +1444,59 @@ class SessionScreen(Screen):
         session's chat/resume context (`resume_context`), which run_agent's loop
         never sees, so it's C7-orthogonal (touches no investigation transcript
         or guard state)."""
+        self._set_busy(True)
+        try:
+            self._do_compact(manual=True)
+        finally:
+            self._set_busy(False)
+
+    def _do_compact(self, manual: bool) -> bool:
+        """Summarize resume_context, keeping memory. Shared by /compact (manual)
+        and the automatic near-limit trigger (_maybe_auto_compact). Runs the LLM
+        call inline — every caller is already on a thread worker. Returns True if
+        it compacted."""
         from kratos.llm_interface import agent_chat, reset_session_token_usage
 
         ctx = self.session_state.get("resume_context", "").strip()
         if not ctx:
-            self._emit_from_worker(R.note_line("Nothing to compact yet — the working context is empty."))
-            return
-        self._set_busy(True)
-        try:
+            if manual:
+                self._emit_from_worker(R.note_line("Nothing to compact yet — the working context is empty."))
+            return False
+        if manual:
             self._emit_from_worker(R.note_line("Compacting the conversation (summarizing, a moment)…"))
-            summary = agent_chat(
-                "You are a precise conversation summarizer.",
-                "Summarize the following conversation so it can be resumed later with the key facts, "
-                "decisions, findings, targets, and open threads preserved. Be concise but do NOT drop "
-                "concrete details. Write it as notes.\n\n" + ctx,
-                max_tokens=800,
-            )
-            if not summary or not summary.strip():
+        else:
+            # Auto-compaction near the window limit — the receding ⤵ notice, same
+            # visual language as the investigation loop's 14b compaction event.
+            self._emit_from_worker(R.compaction_line())
+        summary = agent_chat(
+            "You are a precise conversation summarizer.",
+            "Summarize the following conversation so it can be resumed later with the key facts, "
+            "decisions, findings, targets, and open threads preserved. Be concise but do NOT drop "
+            "concrete details. Write it as notes.\n\n" + ctx,
+            max_tokens=800,
+        )
+        if not summary or not summary.strip():
+            if manual:
                 self._emit_from_worker(R.error_line("Compaction failed — the model returned no summary. Context unchanged."))
-                return
-            self.session_state["resume_context"] = f"[Compacted conversation summary:]\n{summary.strip()}"
-            reset_session_token_usage()  # meter now reflects the smaller context
-            self.app.call_from_thread(self._refresh_footer)
+            return False
+        self.session_state["resume_context"] = f"[Compacted conversation summary:]\n{summary.strip()}"
+        reset_session_token_usage()  # meter now reflects the smaller context
+        self.app.call_from_thread(self._refresh_footer)
+        if manual:
             self._emit_from_worker(R.success_line(
                 "Context compacted — earlier conversation summarized; Kratos still remembers the key points."))
-        finally:
-            self._set_busy(False)
+        return True
+
+    def _maybe_auto_compact(self) -> None:
+        """Automatically compact the conversation context once it crosses the
+        same 85% fill the investigation loop (14b) and the footer's "will compact
+        soon" warning use — so a long chat stays within the model window without
+        the user having to run /compact. Called after each turn appends to the
+        working context; a no-op below the threshold. Runs on the calling thread
+        worker (both call sites are workers)."""
+        pct, _used, _window, _est = self._context_pct()
+        if pct >= 85:
+            self._do_compact(manual=False)
 
     def _remember_turn(self, user_text: str, kratos_text: str) -> None:
         """Append a SUBSTANTIVE record of this turn to the model-facing working

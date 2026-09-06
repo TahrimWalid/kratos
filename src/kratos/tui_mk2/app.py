@@ -275,6 +275,24 @@ class KratosTUI(App):
         self._apply_size_guard(self.size.width, self.size.height)
 
 
+def _restore_terminal_mouse() -> None:
+    """Belt-and-suspenders: disable ALL mouse reporting on process exit, however
+    Kratos exits (clean, unhandled exception, or a signal Textual's own cleanup
+    misses). This is what eliminates the residual `\\x1b[<..M` bytes leaking into
+    the shell prompt after the app is gone — the leak only exists while a mouse
+    mode is left ON with nothing consuming it, so guaranteeing it's OFF at exit
+    removes the bug without disabling the mouse DURING the session (click-to-
+    select + scroll keep working; native copy is Shift+drag). Idempotent — safe
+    even after Textual already restored the terminal. tty-guarded so redirected
+    output is untouched."""
+    try:
+        if sys.stdout.isatty():
+            sys.stdout.write("\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l")
+            sys.stdout.flush()
+    except Exception:  # pragma: no cover -- exit-time best effort, never raise
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(prog="kratos-mk2", description="Kratos Textual TUI (preview).")
@@ -290,6 +308,8 @@ def main(argv: list[str] | None = None) -> int:
     # as cli/app.py::main does for every classic entry point.
     load_kept_tools()
 
+    import atexit
+    atexit.register(_restore_terminal_mouse)  # no leaked mouse bytes after exit (see above)
     KratosTUI(args.data_dir).run()
     return 0
 
