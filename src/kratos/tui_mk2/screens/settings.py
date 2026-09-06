@@ -265,8 +265,13 @@ class SettingsScreen(Screen):
         Binding("t", "set_theme", "theme", show=False),
         Binding("v", "view_source", "view code", show=False),
         Binding("c", "edit_description", "edit desc", show=False),
-        Binding("right_square_bracket", "next_tab", "next tab", show=True),
-        Binding("left_square_bracket", "prev_tab", "prev tab", show=False),
+        # Tab nav is on ctrl+arrows, NOT bare [ / ] -- a leaked '[' from a
+        # fragmented mouse-reporting escape sequence (SGR motion events over a
+        # laggy SSH link) would otherwise land on prev_tab and cycle tabs on its
+        # own ("ghost" tab switching). Modifier-keyed bindings can't collide with
+        # a stray printable bracket.
+        Binding("ctrl+right", "next_tab", "next tab", show=True),
+        Binding("ctrl+left", "prev_tab", "prev tab", show=False),
     ]
 
     CSS = f"""
@@ -292,7 +297,7 @@ class SettingsScreen(Screen):
                 yield DataTable(id="ms-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
                     Text("↑↓ select · enter/s switch · a add · e edit context window · d delete · "
-                         "] next tab · esc back", style=T.TEXT_DIM),
+                         "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="ms-hint")
                 yield Static("", id="ms-status")
             with TabPane("Tools", id="tab-approvals"):
@@ -304,7 +309,7 @@ class SettingsScreen(Screen):
                 yield DataTable(id="ap-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
                     Text("↑↓ select · enter/space toggle approval (kept) · v view code · "
-                         "c edit description (kept) · ] next tab · esc back", style=T.TEXT_DIM),
+                         "c edit description (kept) · ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):

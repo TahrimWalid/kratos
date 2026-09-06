@@ -36,6 +36,40 @@ from kratos.tui_mk2.approvals import make_textual_approval_provider
 from kratos.tui_mk2.modals import ConfirmModal, PromptModal
 from kratos.tui_mk2.screens.launch import LaunchScreen
 
+# --- Mouse: clicks + scroll, but NOT motion --------------------------------
+# Textual's LinuxDriver enables ?1003h (SET_ANY_EVENT_MOUSE), which makes the
+# terminal emit an escape sequence on every mouse *move*. Over SSH (esp. into
+# Windows Terminal) that motion stream is heavy and fragmentation-prone, and it
+# is the root cause of three real symptoms: a flood of `\x1b[<..M` bytes, stray
+# bytes occasionally leaking through as key presses (a lone leaked `[` used to
+# cycle the /settings tabs -- "ghost" tab switching), and the same codes getting
+# dumped to the shell if the app exits without cleanly disabling the mode.
+#
+# Dropping *only* ?1003h keeps click-to-select and scroll-wheel (both reported by
+# ?1000h) while eliminating the move-driven flood entirely. The only thing lost
+# is mouse-hover highlighting and drag, neither of which Kratos relies on. This
+# is preferred over disabling the mouse outright (App.run(mouse=False)) so the
+# pointer still works for users who want it. ?1003l is still sent on exit by the
+# unmodified _disable_mouse_support (harmless: turning off an unset mode).
+try:  # LinuxDriver imports termios/tty -- guard so app.py imports on any platform
+    from textual.drivers.linux_driver import LinuxDriver as _LinuxDriver
+
+    class _ClickOnlyLinuxDriver(_LinuxDriver):
+        """LinuxDriver that reports mouse clicks + scroll but not motion."""
+
+        def _enable_mouse_support(self) -> None:
+            if not self._mouse:
+                return
+            write = self.write
+            write("\x1b[?1000h")  # button press/release + wheel (SET_VT200_MOUSE)
+            write("\x1b[?1015h")  # urxvt ext coords (harmless; SGR preferred below)
+            write("\x1b[?1006h")  # SGR extended coords (SET_SGR_EXT_MODE_MOUSE)
+            # Deliberately NOT ?1003h (SET_ANY_EVENT_MOUSE) -- see module note above.
+            self.flush()
+except Exception:  # pragma: no cover -- non-Linux; auto-detect keeps the default
+    _LinuxDriver = None
+    _ClickOnlyLinuxDriver = None
+
 
 class TooSmallScreen(Screen):
     """Turn 14c -- a hard blocking screen when the terminal is too small for the
@@ -99,6 +133,15 @@ class KratosTUI(App):
             self._too_small_active = False
             if isinstance(self.screen, TooSmallScreen):
                 self.pop_screen()
+
+    def get_driver_class(self):
+        # Substitute the click+scroll-only driver ONLY when the platform driver
+        # is the real LinuxDriver -- leave Windows/headless/env-forced drivers
+        # untouched so tests (headless) and other platforms are unaffected.
+        base = super().get_driver_class()
+        if _ClickOnlyLinuxDriver is not None and base is _LinuxDriver:
+            return _ClickOnlyLinuxDriver
+        return base
 
     def model_label(self) -> str:
         from kratos.llm_config import get_active_llm_model
