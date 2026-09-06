@@ -830,13 +830,41 @@ def _render_resumed_full_history(console, history: list[dict[str, Any]]) -> None
     console.print(f"[{_console.TEXT_SECONDARY}]-- end resumed context -- new activity below --[/]\n")
 
 
+def _final_reply_from_transcript(transcript_ref: Any) -> str | None:
+    """The final answer/reply a turn produced, read from its saved transcript
+    (the last step carrying a 'final_answer'). Light — just the conclusion, not
+    the tool observations the full builder replays. Returns None if unavailable."""
+    if not transcript_ref:
+        return None
+    try:
+        transcript = json.loads(Path(transcript_ref).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    for step in reversed(transcript):
+        if isinstance(step, dict) and step.get("final_answer"):
+            return str(step["final_answer"])
+    return None
+
+
 def _build_light_resume_context(history: list[dict[str, Any]]) -> str:
+    """A LIGHT resume summary that still retains substance: each turn's message
+    AND its final reply/answer (trimmed), but not the full tool-observation
+    detail the full builder replays. The earlier version stored only
+    'Goal -> status', so a light resume had the user's questions but none of
+    Kratos's answers — the model effectively forgot the conversation. Keeping a
+    trimmed reply per turn lets a light resume actually remember what was
+    discussed while staying far smaller than a full transcript replay."""
     if not history:
         return ""
-    lines = ["[Prior session summary -- goals and outcomes only, not full detail:]"]
+    lines = ["[Prior session summary -- messages and Kratos's replies, trimmed (not full tool detail):]"]
     for h in history:
-        status = h.get("status") or "in_progress"
-        lines.append(f"- Goal: {h['goal']!r} -> {status}")
+        reply = _final_reply_from_transcript(h.get("transcript_ref"))
+        if reply:
+            trimmed = reply if len(reply) <= 400 else reply[:400].rstrip() + "…"
+            lines.append(f"- You: {h['goal']!r}\n  Kratos: {trimmed}")
+        else:
+            status = h.get("status") or "in_progress"
+            lines.append(f"- You: {h['goal']!r} -> {status} (no saved reply)")
     return "\n".join(lines)
 
 

@@ -9,11 +9,38 @@ from __future__ import annotations
 
 import asyncio
 
+from types import SimpleNamespace
+
 from textual.app import App
 
 from kratos import llm_interface
 from kratos.storage.session_store import SessionStore
 from kratos.tui_mk2.screens.session import SessionScreen
+
+
+def test_remember_turn_accumulates_both_sides():
+    # The core memory fix: the working context keeps the user's message AND
+    # Kratos's reply, so a follow-up remembers the conversation's content.
+    fake = SimpleNamespace(session_state={"resume_context": ""})
+    SessionScreen._remember_turn(fake, "hello", "hi there")
+    SessionScreen._remember_turn(fake, "what did I just say?", "you said hello")
+    ctx = fake.session_state["resume_context"]
+    assert "You: hello" in ctx and "Kratos: hi there" in ctx
+    assert "You: what did I just say?" in ctx and "Kratos: you said hello" in ctx
+
+
+def test_context_pct_estimates_from_resume_context_when_unmeasured(monkeypatch):
+    # On resume there is no measured usage yet -> the meter approximates the
+    # loaded context instead of showing 0 and then jumping (the [f]-resume bug).
+    monkeypatch.setattr(llm_interface, "_last_usage", None)
+    fake = SimpleNamespace(session_state={"resume_context": "x" * 4000})
+    pct, used, window, estimated = SessionScreen._context_pct(fake)
+    assert estimated is True and used == 1000          # 4000 chars // 4 tokens
+
+    monkeypatch.setattr(llm_interface, "_last_usage",
+                        llm_interface.TokenUsage(prompt_tokens=500, completion_tokens=0, total_tokens=500))
+    _pct, used2, _w, estimated2 = SessionScreen._context_pct(fake)
+    assert estimated2 is False and used2 == 500        # real measurement takes over
 
 
 class _Host(App):
@@ -154,6 +181,44 @@ def test_conversational_model_no_match_does_not_switch(tmp_path, monkeypatch):
             return calls
 
     assert asyncio.run(_run()) == []
+
+
+def test_compact_replaces_context_with_summary(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch,
+                                      resume_context="You: hi\nKratos: hello\n" * 20)
+    monkeypatch.setattr(llm_interface, "agent_chat",
+                        lambda *a, **k: "SUMMARY: user greeted; nothing security-relevant.")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/compact")
+            await pilot.pause()
+            await pilot.pause()
+            return screen.session_state["resume_context"]
+
+    ctx = asyncio.run(_run())
+    assert "Compacted conversation summary" in ctx
+    assert "SUMMARY: user greeted" in ctx     # memory kept (summarized), not discarded
+
+
+def test_compact_on_empty_context_is_a_noop(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context="")
+    called = {"n": 0}
+    monkeypatch.setattr(llm_interface, "agent_chat",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "x")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/compact")
+            await pilot.pause()
+            await pilot.pause()
+
+    asyncio.run(_run())
+    assert called["n"] == 0  # no LLM call when there's nothing to compact
 
 
 def test_tools_command_renders_without_error(tmp_path, monkeypatch):

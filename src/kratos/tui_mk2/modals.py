@@ -192,6 +192,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/report", "Investigation summary — findings by severity"),
+                ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
                 ("/clear", "Clear the screen + working context (session history kept)"),
                 ("/reset", "Wipe the screen + archive history, start this session fresh"),
                 ("/delete", "Archive (soft-delete) this session, back to picker"),

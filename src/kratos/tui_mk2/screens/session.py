@@ -57,6 +57,7 @@ _PALETTE_COMMANDS = [
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
     ("/target", "set, change, or verify the active target"),
     ("/rename", "name this session"),
+    ("/compact", "summarize the conversation to free context (keeps memory)"),
     ("/clear", "clear the screen + working context (history kept)"),
     ("/reset", "wipe screen + archive history, start fresh"),
     ("/delete", "archive (soft-delete) this session"),
@@ -75,6 +76,11 @@ class _CancelInvestigation(Exception):
 class SessionScreen(Screen):
     BINDINGS = [
         Binding("escape", "interrupt", "interrupt", show=True),
+        # ctrl+c also stops the current response (parity with Claude Code).
+        # priority so it overrides Textual's default ctrl+c quit; a no-op when
+        # idle (nothing running) rather than quitting — leave the session with
+        # /exit or q at the chooser.
+        Binding("ctrl+c", "interrupt", "stop", show=False, priority=True),
         Binding("ctrl+p", "palette", "commands", show=True),
         Binding("ctrl+y", "copy_last", "copy answer", show=True),
         # Design 10a "edit a previous turn": ↑/↓ recall prior turns into the
@@ -318,19 +324,28 @@ class SessionScreen(Screen):
         header.append(clock, style=T.TEXT_DIM)
         self.query_one("#appheader", Static).update(header)
 
-    def _context_pct(self) -> tuple[int, int, int]:
-        # REAL token accounting (feature 7c backend, 2026-09): the last LLM
-        # call's prompt_tokens vs the active model's context window. Returns
-        # (pct, used_tokens, window_tokens). Before any call this turn,
-        # get_last_token_usage() is None -> 0% cleanly. The window is now
-        # MODEL-AWARE (get_context_window_tokens tracks the live /model profile),
-        # so switching to a bigger/smaller model rescales this meter live.
+    def _context_pct(self) -> tuple[int, int, int, bool]:
+        # REAL token accounting (feature 7c): the last LLM call's prompt_tokens
+        # vs the active model's context window. Returns (pct, used, window,
+        # estimated). The window is MODEL-AWARE (get_context_window_tokens
+        # tracks the live /model profile), so a /model switch rescales this live.
+        #
+        # Before the first real LLM call of the process (a fresh OR just-resumed
+        # session), there is no measured usage. Rather than show 0 and then jump
+        # to the real value on the first message (the confusing "[f] resume rolls
+        # to 0, then a short 'ok' shows 47%" report), approximate the loaded
+        # working-context size (~4 chars/token) so the meter reflects a resume's
+        # context immediately. Marked `estimated` so the footer can show a ~.
         from kratos import llm_interface
 
-        usage = llm_interface.get_last_token_usage()
         window = llm_interface.get_context_window_tokens() or 1
-        used = usage.prompt_tokens if usage is not None else 0
-        return min(100, int(100 * used / window)), used, window
+        usage = llm_interface.get_last_token_usage()
+        if usage is not None:
+            used, estimated = usage.prompt_tokens, False
+        else:
+            used = len(self.session_state.get("resume_context", "")) // 4
+            estimated = used > 0
+        return min(100, int(100 * used / window)), used, window, estimated
 
     @staticmethod
     def _fmt_tok(n: int) -> str:
@@ -338,7 +353,7 @@ class SessionScreen(Screen):
 
     def _refresh_footer(self) -> None:
         st = self.session_state
-        pct, used, window = self._context_pct()
+        pct, used, window, estimated = self._context_pct()
         bar_w = 10
         filled = int(bar_w * pct / 100)
         color = T.ATTENTION if pct >= 85 else T.TEXT_FAINTER
@@ -351,7 +366,8 @@ class SessionScreen(Screen):
         footer.append("   ", style=T.TEXT_GHOST)
         footer.append("ctx ", style=T.TEXT_FAINTER)
         footer.append("█" * filled + "░" * (bar_w - filled), style=color)
-        footer.append(f" {pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
+        approx = "~" if estimated else ""  # ~ = estimated from loaded context, not yet measured
+        footer.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
             footer.append(" · will compact soon", style=T.ATTENTION)
         self.query_one("#statusfooter", Static).update(footer)
@@ -400,7 +416,9 @@ class SessionScreen(Screen):
     def _you_header(self, text: str) -> Text:
         label = f"{self._user_name}> " if self._user_name else "you> "
         line = Text()
-        line.append(label, style=f"bold {T.TEXT_DIM}")
+        # The user's voice: ADMIN color (its whole purpose), brighter than the
+        # old TEXT_DIM so the label reads clearly against Kratos's own lines.
+        line.append(label, style=f"bold {T.ADMIN}")
         line.append(text, style=T.TEXT)
         return line
 
@@ -437,7 +455,7 @@ class SessionScreen(Screen):
             )
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · /report summary · /help · esc interrupts", style=T.TEXT_GHOST))
+        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · /compact free context · /help · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
@@ -578,6 +596,8 @@ class SessionScreen(Screen):
         elif cmd == "/clear":
             self._clear_screen(archive=False)
             self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
+        elif cmd == "/compact":
+            self._compact_flow()
         elif cmd == "/reset":
             self._reset_flow()
         elif cmd == "/delete":
@@ -1174,6 +1194,7 @@ class SessionScreen(Screen):
 
         self._last_goal = goal
         self._set_busy(True)
+        started = time.monotonic()
         try:
             route = route_message(goal, self.session_state.get("resume_context", ""))
         except Exception as e:  # noqa: BLE001
@@ -1203,6 +1224,7 @@ class SessionScreen(Screen):
             self._last_commands = []  # a chat reply carries no remediation commands
             self._log_chat_turn(goal, reply)
             self._ctx_chars += len(goal) + len(reply)
+            self._emit_from_worker(Text(f"Done in {time.monotonic() - started:.0f}s", style=T.TEXT_FAINTER))
             self.app.call_from_thread(self._refresh_footer)
             self._set_busy(False)
             return
@@ -1329,7 +1351,7 @@ class SessionScreen(Screen):
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Press Ctrl+R to re-run this goal, or type a new one."))
-            self._append_outcome(goal, "cancelled")
+            self._remember_turn(goal, "(investigation interrupted before it concluded)")
             return
         except Exception as e:  # noqa: BLE001
             self._store.complete_turn(turn_id, "error", transcript_ref=None)
@@ -1371,7 +1393,7 @@ class SessionScreen(Screen):
         transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
         transcript_path.write_text(json.dumps(result.get("transcript", []), indent=2, default=str), encoding="utf-8")
         self._store.complete_turn(turn_id, status, transcript_ref=str(transcript_path))
-        self._append_outcome(goal, status)
+        self._remember_turn(goal, result.get("final_answer") or f"(investigation ended: {status})")
         self._ctx_chars += len(goal) + len(result.get("final_answer", "") or "")
         self.app.call_from_thread(self._refresh_footer)
 
@@ -1411,16 +1433,60 @@ class SessionScreen(Screen):
                 R.compaction_line(step.get("context_tokens", 0), step.get("context_window", 0))
             )
 
-    def _append_outcome(self, goal: str, status: str) -> None:
-        line = f"- Goal: {goal!r} -> {status}"
-        self.session_state["resume_context"] = (self.session_state.get("resume_context", "") + "\n" + line).strip()
+    @work(thread=True)
+    def _compact_flow(self) -> None:
+        """Manual /compact — summarize the working conversation context into a
+        compact summary, freeing token budget while KEEPING the memory (unlike
+        /clear, which discards it). The Claude-Code-style companion to the
+        automatic 14b compaction inside run_agent: this one operates on the
+        session's chat/resume context (`resume_context`), which run_agent's loop
+        never sees, so it's C7-orthogonal (touches no investigation transcript
+        or guard state)."""
+        from kratos.llm_interface import agent_chat, reset_session_token_usage
+
+        ctx = self.session_state.get("resume_context", "").strip()
+        if not ctx:
+            self._emit_from_worker(R.note_line("Nothing to compact yet — the working context is empty."))
+            return
+        self._set_busy(True)
+        try:
+            self._emit_from_worker(R.note_line("Compacting the conversation (summarizing, a moment)…"))
+            summary = agent_chat(
+                "You are a precise conversation summarizer.",
+                "Summarize the following conversation so it can be resumed later with the key facts, "
+                "decisions, findings, targets, and open threads preserved. Be concise but do NOT drop "
+                "concrete details. Write it as notes.\n\n" + ctx,
+                max_tokens=800,
+            )
+            if not summary or not summary.strip():
+                self._emit_from_worker(R.error_line("Compaction failed — the model returned no summary. Context unchanged."))
+                return
+            self.session_state["resume_context"] = f"[Compacted conversation summary:]\n{summary.strip()}"
+            reset_session_token_usage()  # meter now reflects the smaller context
+            self.app.call_from_thread(self._refresh_footer)
+            self._emit_from_worker(R.success_line(
+                "Context compacted — earlier conversation summarized; Kratos still remembers the key points."))
+        finally:
+            self._set_busy(False)
+
+    def _remember_turn(self, user_text: str, kratos_text: str) -> None:
+        """Append a SUBSTANTIVE record of this turn to the model-facing working
+        context, so multi-turn conversation actually remembers what was said.
+        The previous _append_outcome stored only "Goal -> status" — the user's
+        message with no reply — which is why follow-ups (and light resumes) had
+        no memory of the conversation's content: the model literally never saw
+        its own prior answers. Both sides are kept now; auto-compaction (14b) /
+        /compact keep it bounded."""
+        block = f"You: {user_text}\nKratos: {kratos_text}".strip()
+        ctx = self.session_state.get("resume_context", "")
+        self.session_state["resume_context"] = (ctx + "\n\n" + block).strip() if ctx else block
 
     def _log_chat_turn(self, goal: str, reply: str) -> None:
         turn_id = self._store.start_turn(self.session_state["session_id"], goal)
         path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
         path.write_text(json.dumps([{"final_answer": reply}], indent=2), encoding="utf-8")
         self._store.complete_turn(turn_id, "chat_reply", transcript_ref=str(path))
-        self._append_outcome(goal, "chat_reply")
+        self._remember_turn(goal, reply)
 
     def _transcripts_dir(self) -> Path:
         d = self._data_dir / "sessions"
