@@ -1,4 +1,10 @@
 """
+DEPRECATED (2026-09-06): superseded by the durable Sprint 4 eval harness
+(~/kratos_eval_artifacts/) -- it measures the same tool-selection/detection
+behavior on the same backend + target far more thoroughly, and is the current
+source of truth. Kept opt-in (still excluded from bare `pytest`) as a small
+standalone smoke check; not re-baselined against gemini-3.1-flash-lite.
+
 Repeatable test-scenario suite for the Kratos ReAct agent loop
 (agent/loop.py + agent/tools.py) -- so tool-selection behavior can be
 verified with real assertions instead of manually eyeballing transcripts

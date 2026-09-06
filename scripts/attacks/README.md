@@ -32,3 +32,20 @@ incus exec attacker-box -- bash -c "$(cat ssh_bruteforce.sh)"
 (or copy the script + wordlist in via `incus file push` and run it there directly —
 either works; the fixed target host/user embedded in the script itself are unaffected
 either way).
+
+## Container lifecycle policy (DECIDED 2026-09-06)
+
+**Persist both.** `attacker-box` and `kratos-target` are kept running indefinitely on
+purpose — `kratos-target` is the monitored host for essentially all dev/eval work, and
+`attacker-box` is cheap to leave alongside it. This is a deliberate decision, not an
+unaddressed gap: the host has room, and rebuilding the lab image on every use would cost
+more than the idle resources they hold. No automatic teardown.
+
+Tear them down manually only when you genuinely want the host resources back (both are
+recreatable — `kratos-target` from the lab image build, `attacker-box` via the
+`incus launch … && apt-get install hydra …` steps above):
+
+```bash
+incus stop attacker-box kratos-target        # frees CPU/RAM, keeps the containers
+incus delete attacker-box kratos-target       # also frees disk (full teardown)
+```
