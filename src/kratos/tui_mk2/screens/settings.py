@@ -256,7 +256,9 @@ class SettingsScreen(Screen):
         Binding("s", "switch", "switch", show=False),
         Binding("a", "add", "add model", show=False),
         Binding("e", "edit", "edit ctx", show=False),
+        Binding("d", "delete", "delete model", show=False),
         Binding("u", "tz_auto", "tz auto", show=False),
+        Binding("n", "set_name", "your name", show=False),
         Binding("right_square_bracket", "next_tab", "next tab", show=True),
         Binding("left_square_bracket", "prev_tab", "prev tab", show=False),
     ]
@@ -283,7 +285,7 @@ class SettingsScreen(Screen):
             with TabPane("Models", id="tab-models"):
                 yield DataTable(id="ms-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter/s switch · a add model · e edit context window · "
+                    Text("↑↓ select · enter/s switch · a add · e edit context window · d delete · "
                          "] next tab · esc back", style=T.TEXT_DIM),
                     id="ms-hint")
                 yield Static("", id="ms-status")
@@ -298,10 +300,11 @@ class SettingsScreen(Screen):
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
+                yield Static("", id="gen-name")
                 yield Static("", id="gen-tz")
                 yield Static(
-                    Text("enter set a fixed display timezone · u revert to auto-detect · esc back",
-                         style=T.TEXT_DIM),
+                    Text("n set your name · enter set a fixed display timezone · "
+                         "u revert to auto-detect · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
 
@@ -313,6 +316,7 @@ class SettingsScreen(Screen):
         ap.add_columns("Tool", "Kind", "Approval")
         self._reload_approvals()
         self._refresh_tz_status()
+        self._refresh_name_status()
         table.focus()  # so ↑↓ navigate immediately, no click needed
 
     def _active_tab(self) -> str:
@@ -390,6 +394,11 @@ class SettingsScreen(Screen):
         if self._active_tab() != "tab-models":
             return
         self._edit_flow()
+
+    def action_delete(self) -> None:
+        if self._active_tab() != "tab-models":
+            return
+        self._delete_flow()
 
     @on(DataTable.RowSelected, "#ms-table")
     def _row_selected(self, event: DataTable.RowSelected) -> None:
@@ -501,6 +510,51 @@ class SettingsScreen(Screen):
         self._refresh_tz_status()
         self._set_gen_status(f"Display timezone set to {zone} — saved.", T.SAFE)
 
+    # --- General tab (your name) -----------------------------------------
+    def _current_user_name(self) -> str:
+        from kratos import kratos_config as _kconfig
+
+        dd = self._data_dir()
+        if dd is None:
+            return ""
+        return (_kconfig.load_local_config(dd).get("user_name") or "").strip()
+
+    def _refresh_name_status(self) -> None:
+        name = self._current_user_name()
+        shown = name or "not set (messages show 'you>')"
+        self.query_one("#gen-name", Static).update(Text(f"Your name: {shown}", style=T.TEXT))
+
+    @work
+    async def _set_name_flow(self) -> None:
+        if self._active_tab() != "tab-general":
+            return
+        from kratos.tui_mk2.modals import PromptModal
+        from kratos import kratos_config as _kconfig
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save a name.", T.CRITICAL)
+            return
+        answer = await self.app.push_screen_wait(
+            PromptModal("Your name", "Shown as your prompt label (empty = clear, back to 'you')",
+                        initial=self._current_user_name()))
+        if answer is None:
+            return
+        name = answer.strip()
+        _kconfig.save_local_config(dd, user_name=name)
+        # Live-update the session's prompt label if it's a real SessionScreen.
+        setter = getattr(self._session, "_set_user_name", None)
+        if callable(setter):
+            setter(name)
+        self._refresh_name_status()
+        if name:
+            self._set_gen_status(f"Name set to {name} — your messages now show '{name}>'.", T.SAFE)
+        else:
+            self._set_gen_status("Name cleared — your messages show 'you>' again.", T.SAFE)
+
+    def action_set_name(self) -> None:
+        self._set_name_flow()
+
     def action_tz_auto(self) -> None:
         if self._active_tab() != "tab-general":
             return
@@ -554,6 +608,40 @@ class SettingsScreen(Screen):
         self._reload()
         shown = "auto" if window is None else f"{window:,}"
         self._set_status(f"Set {profile.model} context window to {shown}.", T.SAFE)
+
+    @work
+    async def _delete_flow(self) -> None:
+        from kratos.tui_mk2.modals import ConfirmModal
+
+        profile = self._selected_profile()
+        if profile is None:
+            self._set_status("Select a model first, then delete.")
+            return
+        # Never delete the profile the running process is currently using -- that
+        # would leave Kratos pointed at a model no longer in .env. Switch away first.
+        if self._current is not None and self._current.model == profile.model:
+            self._set_status(
+                f"{profile.model} is the active model — switch to another model first, then delete it.",
+                T.ATTENTION)
+            return
+        if len(self._candidates) <= 1:
+            self._set_status("Can't delete the only configured model — add another first.", T.ATTENTION)
+            return
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Delete this model?",
+                f"Removes {profile.model} from .env entirely. This only forgets the connection "
+                "details here — it does not touch the model on its server. Add it again anytime.",
+            )
+        )
+        if not ok:
+            self._set_status("Delete cancelled — nothing changed.")
+            return
+        from kratos.adapters import llm_profiles as _p
+        from kratos.llm_config import ENV_FILE_PATH
+        _p.delete_profile(ENV_FILE_PATH, profile.model)
+        self._reload()
+        self._set_status(f"Deleted {profile.model} from .env.", T.SAFE)
 
     @work(thread=True)
     def _do_switch(self, target) -> None:

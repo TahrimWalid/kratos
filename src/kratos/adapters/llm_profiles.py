@@ -222,6 +222,28 @@ def set_profile_context_window(env_path: Path, model: str, window: int | None) -
     return True
 
 
+def delete_profile(env_path: Path, model: str) -> bool:
+    """Remove the profile whose LLM_MODEL == `model` from `.env` entirely --
+    deletes exactly that block's lines (the 4 PROFILE_KEYS plus an optional
+    LLM_CONTEXT_WINDOW), leaving every other line intact. Returns True iff a
+    matching profile was found. Callers MUST NOT delete the currently-active
+    profile (that would leave the running process pointed at a model no longer
+    in the file); the UI guards that -- this function just does the edit.
+
+    Collapses any run of 3+ blank lines the deletion leaves behind back to a
+    single separator, so repeated add/delete cycles don't accumulate blank
+    lines."""
+    lines = env_path.read_text(encoding="utf-8").split("\n")
+    target = next((p for p in _parse_profiles(lines) if p.model == model), None)
+    if target is None:
+        return False
+    for idx in sorted(target.line_indices.values(), reverse=True):
+        del lines[idx]
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    env_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    return True
+
+
 def switch_profile(env_path: Path, target: EnvProfile, current: EnvProfile | None) -> None:
     """Comments out `current`'s 4 lines (if any, and if it's a different
     profile) and uncomments `target`'s 4 lines -- edits ONLY those specific

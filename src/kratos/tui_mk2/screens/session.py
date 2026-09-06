@@ -52,12 +52,12 @@ _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
     ("/evolve", "write a new tool for the current gap"),
     ("/help", "list all commands"),
-    ("/model", "show / switch the active LLM backend"),
+    ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
-    ("/target", "set or verify the active target"),
+    ("/target", "set, change, or verify the active target"),
     ("/rename", "name this session"),
-    ("/clear", "free up context (visible history stays)"),
-    ("/reset", "archive history, start this session fresh"),
+    ("/clear", "clear the screen + working context (history kept)"),
+    ("/reset", "wipe screen + archive history, start fresh"),
     ("/delete", "archive (soft-delete) this session"),
     ("/settings", "settings — models, tool approvals, timezone"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
@@ -136,6 +136,9 @@ class SessionScreen(Screen):
         # and the header clock all render in the SAME display zone. Storage
         # stays UTC -- this is display-only (see kratos.utils.timeutil).
         self._display_tz = None
+        # Optional user name (General settings): when set, the prompt label is
+        # "<name>>" instead of "you>". Loaded in on_mount, live-updatable.
+        self._user_name = ""
 
     # --- layout ----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -150,6 +153,7 @@ class SessionScreen(Screen):
 
         llm_interface.reset_session_token_usage()  # fresh cumulative accounting for this session
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
+        self._user_name = (_kconfig.load_local_config(self._data_dir).get("user_name") or "").strip()
         if self.session_state["targets"]:
             _kconfig.set_active_target(self.session_state["targets"][0])
         self._refresh_header()
@@ -386,10 +390,17 @@ class SessionScreen(Screen):
         self._emit_bubble_from_worker(R.timestamped(left, time_str), date_str)
 
     def _you_header(self, text: str) -> Text:
+        label = f"{self._user_name}> " if self._user_name else "you> "
         line = Text()
-        line.append("you> ", style=f"bold {T.TEXT_DIM}")
+        line.append(label, style=f"bold {T.TEXT_DIM}")
         line.append(text, style=T.TEXT)
         return line
+
+    def _set_user_name(self, name: str) -> None:
+        """Live-update the prompt label (called by the General settings tab).
+        RichLog is append-only, so this affects lines emitted from here on --
+        prior 'you>' headers stay as they were, which is fine."""
+        self._user_name = (name or "").strip()
 
     def _kratos_header(self) -> Text:
         return Text("Kratos:", style=f"bold {T.KRATOS_RED}")
@@ -556,10 +567,8 @@ class SessionScreen(Screen):
         elif cmd == "/report":
             self._render_report()
         elif cmd == "/clear":
-            self.session_state["resume_context"] = ""
-            self._ctx_chars = 0
-            self._refresh_footer()
-            self._emit(R.success_line("Conversation context cleared for this session."))
+            self._clear_screen(archive=False)
+            self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
         elif cmd == "/reset":
             self._reset_flow()
         elif cmd == "/delete":
@@ -569,7 +578,11 @@ class SessionScreen(Screen):
         elif cmd == "/target":
             self._target_flow(rest)
         elif cmd == "/model":
-            self._model_flow()
+            # /model is a quick shortcut into the Models tab of Settings (full
+            # switch/add/edit/delete manager), not a bare picker.
+            from kratos.tui_mk2.screens.settings import SettingsScreen
+
+            self.app.push_screen(SettingsScreen(self))
         elif cmd == "/timezone":
             self._cmd_timezone(rest)
         elif cmd == "/evolve":
@@ -666,25 +679,41 @@ class SessionScreen(Screen):
         self._last_day = None  # force a fresh date divider in the new zone
         self._refresh_header()
 
+    def _clear_screen(self, archive: bool) -> None:
+        """Shared by /clear and /reset. Wipes the visible transcript (like a
+        shell `clear`), resets the working context + token meter so the next
+        turn starts fresh, and re-renders the idle banner so the screen isn't
+        left blank. When `archive`, the stored goal history is also archived
+        (soft-deleted, recoverable) so a later resume won't bring it back."""
+        from kratos import llm_interface
+
+        if archive:
+            self._store.archive_goal_history(self.session_state["session_id"])
+        llm_interface.reset_session_token_usage()   # drops the 7c context meter to 0
+        self.session_state["resume_context"] = ""
+        self._ctx_chars = 0
+        self._reset_recall()
+        self._last_day = None
+        self._log.clear()
+        self._render_idle()
+        self._refresh_footer()
+
     # --- /reset, /delete (native confirm modals) -------------------------
     @work
     async def _reset_flow(self) -> None:
         ok = await self.app.push_screen_wait(
             ConfirmModal(
-                "Reset session history",
-                "Archives this session's stored history and clears its context. The prior "
-                "history is NOT deleted — it stays recoverable — but this session will present "
-                "as a blank slate going forward.",
+                "Reset session",
+                "Wipes this session's on-screen conversation and archives its stored history, "
+                "starting it as a blank slate. The prior history is NOT deleted — it stays "
+                "recoverable — but won't be shown or resumed here going forward.",
             )
         )
         if not ok:
             self._emit(R.note_line("Reset cancelled — nothing changed."))
             return
-        self._store.archive_goal_history(self.session_state["session_id"])
-        self.session_state["resume_context"] = ""
-        self._ctx_chars = 0
-        self._refresh_footer()
-        self._emit(R.success_line("Session history archived — starting fresh from here."))
+        self._clear_screen(archive=True)
+        self._emit(R.success_line("Session reset — history archived, starting fresh from here."))
 
     @work
     async def _delete_flow(self) -> None:
@@ -726,31 +755,54 @@ class SessionScreen(Screen):
         self._emit(R.success_line(f"Session renamed to {name!r}."))
 
     # --- /target ---------------------------------------------------------
-    @work(thread=True)
-    def _target_flow(self, rest: str) -> None:
+    @work
+    async def _target_flow(self, rest: str) -> None:
+        """`/target verify` re-probes; `/target <ip...>` sets directly; `/target`
+        with no argument opens the same set-target prompt the new-session flow
+        uses, so a mid-session target change is a first-class action rather than
+        just a read-out of the current value."""
         rest = rest.strip()
         if rest == "verify":
-            self._probe_target()
+            self._probe_target_worker()
             return
         if not rest:
-            current = ", ".join(self.session_state["targets"]) or "(none set)"
-            self._emit_from_worker(R.note_line(f"Current target(s): {current}"))
-            return
+            current = ", ".join(self.session_state["targets"])
+            answer = await self.app.push_screen_wait(
+                PromptModal(
+                    "Set target",
+                    "IP/hostname(s) to investigate, space-separated (empty = keep current)",
+                    initial=current,
+                )
+            )
+            if answer is None:
+                return
+            rest = answer.strip()
+            if not rest:
+                self._emit(R.note_line(f"Target unchanged — current: {current or '(none set)'}"))
+                return
         targets = rest.split()
         self.session_state["targets"] = targets
         self._store.set_targets(self.session_state["session_id"], targets)
         _kconfig.set_active_target(targets[0])
-        self.app.call_from_thread(self._refresh_header)
-        self.app.call_from_thread(self._refresh_footer)
+        self._refresh_header()
+        self._refresh_footer()
         if len(targets) > 1:
-            self._emit_from_worker(
+            self._emit(
                 R.note_line(
                     f"Using {targets[0]} — multi-target execution isn't implemented yet, so the "
                     f"other {len(targets) - 1} target(s) are stored but unused."
                 )
             )
-        self._emit_from_worker(R.success_line(f"Target(s) set: {', '.join(targets)}"))
-        self._show_target_setup(targets[0])
+        self._emit(R.success_line(f"Target(s) set: {', '.join(targets)}"))
+        self._setup_target_worker(targets[0])
+
+    @work(thread=True)
+    def _setup_target_worker(self, target_host: str) -> None:
+        self._show_target_setup(target_host)  # blocking SSH checklist + probe
+
+    @work(thread=True)
+    def _probe_target_worker(self) -> None:
+        self._probe_target()
 
     def _show_target_setup(self, target_host: str) -> None:
         from kratos.adapters import target_setup as _ts
@@ -785,34 +837,7 @@ class SessionScreen(Screen):
             table.add_row(c["check"], Text(c["status"], style=colors.get(c["status"], T.TEXT)), c["detail"])
         self._emit_from_worker(table)
 
-    # --- /model (turn 16c) ----------------------------------------------
-    @work
-    async def _model_flow(self) -> None:
-        from kratos.adapters import llm_profiles as _llm_profiles
-        from kratos.llm_config import ENV_FILE_PATH
-
-        candidates, current = _llm_profiles.list_candidate_profiles(ENV_FILE_PATH)
-        if not candidates:
-            self._emit(R.note_line("No LLM profiles found in .env."))
-            return
-        entries = []
-        for c in candidates:
-            marker = "  (active)" if current is not None and c.model == current.model else ""
-            entries.append((c, f"{c.model}{marker}  ·  {self._profile_blurb(c.values)}"))
-        picked = await self.app.push_screen_wait(
-            ListPickerModal(
-                "Switch LLM backend",
-                entries,
-                subtitle=f"Active: {self.session_state['backend']}  ·  honest cost/privacy per option below",
-            )
-        )
-        if picked is None:
-            return
-        if current is not None and picked.model == current.model:
-            self._emit(R.note_line(f"{picked.model} is already active — no change."))
-            return
-        self._apply_model_switch(picked, current)
-
+    # --- model cost/privacy blurb (used by the Settings Models tab) ------
     @staticmethod
     def _profile_blurb(values: dict[str, str]) -> str:
         """Turn 16c -- honest cost/privacy disclosure per backend option,
@@ -823,27 +848,6 @@ class SessionScreen(Screen):
         if any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")):
             return "local · free · private (nothing leaves this host)"
         return "cloud API · sends prompts to a third party · usage-billed"
-
-    @work(thread=True)
-    def _apply_model_switch(self, target: Any, current: Any) -> None:
-        from kratos.adapters import llm_profiles as _llm_profiles
-        from kratos.llm_config import ENV_FILE_PATH, set_active_llm_profile
-        from kratos.llm_interface import check_endpoint_reachable
-
-        problems = _llm_profiles.validate_profile(target)
-        if problems:
-            self._emit_from_worker(R.error_line(f"Can't switch to {target.model}: {'; '.join(problems)}"))
-            return
-        self._emit_from_worker(R.note_line(f"Checking {target.model} is reachable…"))
-        reachable, detail = check_endpoint_reachable(target.values["LLM_BASE_URL"], target.values["LLM_API_KEY"])
-        if not reachable:
-            self._emit_from_worker(R.error_line(f"Can't switch to {target.model} — endpoint not reachable ({detail})."))
-            return
-        set_active_llm_profile(target.values)
-        _llm_profiles.switch_profile(ENV_FILE_PATH, target, current)
-        self.session_state["backend"] = target.model
-        self.app.call_from_thread(self._refresh_footer)
-        self._emit_from_worker(R.success_line(f"Switched to {target.model} — active now, and set as default in .env."))
 
     # --- /evolve ---------------------------------------------------------
     @work

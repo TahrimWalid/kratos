@@ -62,8 +62,13 @@ class KratosTUI(App):
     # (CommandPaletteModal, design turn 7a) owns that trigger instead.
     ENABLE_COMMAND_PALETTE = False
 
-    MIN_WIDTH = 72
-    MIN_HEIGHT = 18
+    # Kept deliberately low so Kratos is usable in a split/half-screen pane on a
+    # small laptop (a 13" display split in two is ~60-71 cols) -- the transcript
+    # wraps and modals cap at 90% width, so the layout stays legible well below
+    # the old 72x18 floor. This is the point below which fixed chrome (header/
+    # footer, tables) genuinely can't render, not a comfort preference.
+    MIN_WIDTH = 56
+    MIN_HEIGHT = 16
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__()

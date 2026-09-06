@@ -146,6 +146,43 @@ def test_set_profile_context_window_on_inactive_profile_keeps_it_commented(tmp_p
     assert current.model == "gemini-3.1-pro"   # active unchanged
 
 
+def test_delete_profile_removes_block_and_keeps_others(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    # qwen2.5:7b is the inactive (commented) block -> deletable.
+    assert P.delete_profile(env, "qwen2.5:7b") is True
+    text = env.read_text()
+    assert "qwen2.5:7b" not in text
+    # the active gemini profile is untouched and still the current one
+    candidates, current = P.list_candidate_profiles(env)
+    assert {c.model for c in candidates} == {"gemini-3.1-pro"}
+    assert current is not None and current.model == "gemini-3.1-pro" and current.active
+
+
+def test_delete_profile_removes_its_window_line_too(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    P.add_profile(env, {
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1", "LLM_API_KEY": "sk",
+        "LLM_MODEL": "qwen/qwen3.6-27b", "KRATOS_LLM_BACKEND": "openai_compatible",
+        "LLM_CONTEXT_WINDOW": "262144",
+    })
+    # switch back to gemini so the openrouter block (with its window line) is inactive, then delete it
+    candidates, current = P.list_candidate_profiles(env)
+    gemini = next(c for c in candidates if c.model == "gemini-3.1-pro")
+    P.switch_profile(env, target=gemini, current=current)
+    assert P.delete_profile(env, "qwen/qwen3.6-27b") is True
+    text = env.read_text()
+    assert "qwen/qwen3.6-27b" not in text
+    assert "262144" not in text          # its trailing LLM_CONTEXT_WINDOW line went with it
+    assert "\n\n\n" not in text          # no accumulated blank-line runs
+
+
+def test_delete_profile_unknown_returns_false(tmp_path):
+    env = _write(tmp_path, _TWO_PROFILES)
+    assert P.delete_profile(env, "no-such-model") is False
+    # nothing removed
+    assert {c.model for c in P.list_candidate_profiles(env)[0]} == {"gemini-3.1-pro", "qwen2.5:7b"}
+
+
 def test_after_switch_absent_window_does_not_use_stale_env(monkeypatch):
     # A profile switch happened whose profile has NO window -> must NOT fall back
     # to a stale os.environ LLM_CONTEXT_WINDOW from a different profile.

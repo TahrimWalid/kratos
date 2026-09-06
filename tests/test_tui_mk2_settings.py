@@ -16,7 +16,7 @@ import asyncio
 from pathlib import Path
 
 from textual.app import App
-from textual.widgets import Button, DataTable, Input, Static
+from textual.widgets import Button, DataTable, Input, Static, TabbedContent
 
 from kratos.tui_mk2.screens.settings import (
     AddModelModal, EditWindowModal, SettingsScreen, _validate_window,
@@ -66,6 +66,8 @@ def test_validate_window_undetectable_allows_any_positive():
 class _FakeSession:
     def __init__(self):
         self.session_state = {"backend": "gemini-3.1-pro"}
+        self._data_dir = None
+        self._name_set = None
 
     @staticmethod
     def _profile_blurb(values):
@@ -74,6 +76,9 @@ class _FakeSession:
 
     def _refresh_footer(self):
         pass
+
+    def _set_user_name(self, name):
+        self._name_set = name
 
 
 def _write_env(tmp_path: Path, monkeypatch) -> Path:
@@ -188,3 +193,79 @@ def test_edit_modal_empty_clears_and_number_sets():
 
     assert asyncio.run(_run("131072", "")) == "clear"     # empty -> clear to auto
     assert asyncio.run(_run("", "48000")) == 48000        # number -> int
+
+
+# ---------------------------------------------------------------------------
+# Model delete -- active is guarded; an inactive profile is removed from .env
+# ---------------------------------------------------------------------------
+def test_delete_active_model_is_guarded(tmp_path, monkeypatch):
+    env = _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(_FakeSession()))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.screen.query_one("#ms-table", DataTable).move_cursor(row=0)  # active gemini
+            app.screen.action_delete()
+            await pilot.pause()
+            return str(app.screen.query_one("#ms-status", Static).render())
+
+    status = asyncio.run(_run())
+    assert "active model" in status.lower()
+    # nothing removed
+    assert "gemini-3.1-pro" in env.read_text()
+
+
+def test_delete_inactive_model_removes_it(tmp_path, monkeypatch):
+    env = _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(_FakeSession()))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _yes(_modal):
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
+            app.screen.query_one("#ms-table", DataTable).move_cursor(row=1)  # inactive qwen
+            app.screen.action_delete()
+            await pilot.pause()
+            await pilot.pause()
+            return str(app.screen.query_one("#ms-status", Static).render())
+
+    status = asyncio.run(_run())
+    assert "deleted" in status.lower()
+    assert "qwen2.5:7b" not in env.read_text()
+
+
+# ---------------------------------------------------------------------------
+# General tab -- setting your name persists + live-updates the session label
+# ---------------------------------------------------------------------------
+def test_general_tab_sets_user_name(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+    fake = _FakeSession()
+    fake._data_dir = tmp_path
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(fake))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _name(_modal):
+                return "Alice"
+
+            monkeypatch.setattr(app, "push_screen_wait", _name)
+            app.screen.query_one(TabbedContent).active = "tab-general"
+            await pilot.pause()
+            app.screen.action_set_name()
+            await pilot.pause()
+            await pilot.pause()
+            return str(app.screen.query_one("#gen-name", Static).render())
+
+    shown = asyncio.run(_run())
+    from kratos import kratos_config as kc
+
+    assert kc.load_local_config(tmp_path).get("user_name") == "Alice"
+    assert fake._name_set == "Alice"
+    assert "Alice" in shown

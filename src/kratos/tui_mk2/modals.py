@@ -170,8 +170,8 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/report", "Investigation summary — findings by severity"),
-                ("/clear", "Reset conversation continuity (visible history stays)"),
-                ("/reset", "Archive this session's history and start fresh"),
+                ("/clear", "Clear the screen + working context (session history kept)"),
+                ("/reset", "Wipe the screen + archive history, start this session fresh"),
                 ("/delete", "Archive (soft-delete) this session, back to picker"),
                 ("/rename <name>", "Name this session — usable anywhere its ID works"),
                 ("/exit, /quit", "Leave the session"),
@@ -182,9 +182,9 @@ class HelpModal(ModalScreen[None]):
                 ("/evolve list", "Browse tools reachable by the agent"),
             ]))
             yield Static(self._table("Configuration", [
-                ("/target <ip> …", "Set active target(s) — shows setup checklist"),
+                ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
                 ("/target verify", "Re-check the active target's setup"),
-                ("/model", "Show / switch the active LLM backend"),
+                ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Settings — models, tool approvals, display timezone"),
                 ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
