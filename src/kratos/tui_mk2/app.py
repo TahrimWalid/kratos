@@ -22,6 +22,7 @@ from pathlib import Path
 from rich.align import Align
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.events import Resize
 from textual.screen import Screen
 from textual.widgets import Static
@@ -96,6 +97,14 @@ class KratosTUI(App):
     # (CommandPaletteModal, design turn 7a) owns that trigger instead.
     ENABLE_COMMAND_PALETTE = False
 
+    # F2 = "copy mode": toggle mouse reporting off so the terminal does a NATIVE
+    # click-drag text selection (which the app's own ?1000h mouse mode otherwise
+    # intercepts, blocking copy), then back on to restore click-to-select +
+    # scroll-wheel. The two can't coexist on one click -- wheel and button
+    # reporting are the same ?1000h mode -- so a deliberate toggle is the clean
+    # way to have both. (Shift+drag also bypasses mouse mode in most terminals.)
+    BINDINGS = [Binding("f2", "toggle_mouse", "copy mode", show=True)]
+
     # Kept deliberately low so Kratos is usable in a split/half-screen pane on a
     # small laptop (a 13" display split in two is ~60-71 cols) -- the transcript
     # wraps and modals cap at 90% width, so the layout stays legible well below
@@ -110,6 +119,7 @@ class KratosTUI(App):
         self.store = SessionStore(data_dir / "kratos.db")
         self._too_small_active = False
         self._booted = False  # gate the resize guard until boot pushed a real screen
+        self._mouse_enabled = True  # F2 copy-mode toggle state
 
     def on_resize(self, event: Resize) -> None:
         # Ignore resizes until boot has pushed the first real screen -- otherwise
@@ -142,6 +152,28 @@ class KratosTUI(App):
         if _ClickOnlyLinuxDriver is not None and base is _LinuxDriver:
             return _ClickOnlyLinuxDriver
         return base
+
+    def action_toggle_mouse(self) -> None:
+        """F2 -- flip mouse reporting so the user can natively select+copy
+        transcript text (mouse OFF) and then restore click-to-select + scroll
+        (mouse ON). Uses the driver's own enable/disable; a no-op if no driver
+        (headless tests). The enable path goes through _ClickOnlyLinuxDriver, so
+        re-enabling still omits ?1003h motion (no ghost-typing regression)."""
+        driver = getattr(self, "_driver", None)
+        disable = getattr(driver, "_disable_mouse_support", None)
+        enable = getattr(driver, "_enable_mouse_support", None)
+        if not callable(disable) or not callable(enable):
+            return  # driver has no runtime mouse toggle (e.g. HeadlessDriver in tests)
+        if self._mouse_enabled:
+            disable()
+            self._mouse_enabled = False
+            self.notify(
+                "Copy mode: mouse OFF — drag to select & copy in your terminal. Press F2 to re-enable click/scroll.",
+                timeout=8)
+        else:
+            enable()
+            self._mouse_enabled = True
+            self.notify("Mouse ON — click-to-select & scroll-wheel active.", timeout=4)
 
     def model_label(self) -> str:
         from kratos.llm_config import get_active_llm_model
