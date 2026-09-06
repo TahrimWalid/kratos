@@ -438,6 +438,7 @@ class SessionScreen(Screen):
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
         self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · /report summary · /help · esc interrupts", style=T.TEXT_GHOST))
+        self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay (turn 6b, [f]) ---------------
@@ -790,7 +791,12 @@ class SessionScreen(Screen):
             if not rest:
                 self._emit(R.note_line(f"Target unchanged — current: {current or '(none set)'}"))
                 return
-        targets = rest.split()
+        self._apply_target(rest.split())
+
+    def _apply_target(self, targets: list[str]) -> None:
+        """Set the active target(s), persist, refresh the header/footer, and run
+        the setup checklist + probe. Shared by /target and the conversational
+        'change target' control (after its approval)."""
         self.session_state["targets"] = targets
         self._store.set_targets(self.session_state["session_id"], targets)
         _kconfig.set_active_target(targets[0])
@@ -1164,36 +1170,143 @@ class SessionScreen(Screen):
 
     @work(thread=True, exclusive=True, group="turn")
     def _run_goal(self, goal: str) -> None:
-        from kratos.cli.repl import _route_input
+        from kratos.tui_mk2.command_intent import route_message
 
         self._last_goal = goal
         self._set_busy(True)
         try:
-            should_investigate, second = _route_input(goal, self.session_state.get("resume_context", ""))
+            route = route_message(goal, self.session_state.get("resume_context", ""))
         except Exception as e:  # noqa: BLE001
             self._emit_from_worker(R.error_line(f"Routing failed: {e}"))
             self._set_busy(False)
             return
 
-        if should_investigate is None:
-            self._emit_from_worker(R.llm_failure_banner(second or "no detail available"))
+        if route.kind == "failed":
+            self._emit_from_worker(R.llm_failure_banner(route.reason or "no detail available"))
             self._set_busy(False)
             return
 
-        if not should_investigate:
+        if route.kind == "command":
+            # A conversational control request. Controls run on the event loop
+            # (they show modals / push screens); the user's line was already
+            # echoed, so this turn is done as far as the thread worker.
+            self.app.call_from_thread(self._on_command_intent, route.command, route.args)
+            self._set_busy(False)
+            return
+
+        if route.kind == "chat":
+            reply = route.reply or ""
             t, d = self._stamp_now()
             self._emit_stamped_from_worker(self._kratos_header(), t, d)
-            self._emit_from_worker(Text(second or "(no reply)", style=T.TEXT))
-            self._last_answer = second or ""
+            self._emit_from_worker(Text(reply or "(no reply)", style=T.TEXT))
+            self._last_answer = reply
             self._last_commands = []  # a chat reply carries no remediation commands
-            self._log_chat_turn(goal, second or "")
-            self._ctx_chars += len(goal) + len(second or "")
+            self._log_chat_turn(goal, reply)
+            self._ctx_chars += len(goal) + len(reply)
             self.app.call_from_thread(self._refresh_footer)
             self._set_busy(False)
             return
 
+        # kind == "investigate"
         self._run_investigation(goal)
         self._set_busy(False)
+
+    # --- conversational controls (design: talk-to-run, approval-gated) ---
+    def _on_command_intent(self, name: str, args: str) -> None:
+        """Dispatch a control the user asked for in plain language (see
+        tui_mk2/command_intent.py). Runs on the event loop. Read-only controls
+        run immediately; model/target (what Kratos talks to) go through an
+        explicit y/n confirm inside their own handlers."""
+        args = (args or "").strip()
+        self._emit(R.note_line(
+            f"Interpreting that as the '{name}' control{f' — {args}' if args else ''}."))
+        if name == "report":
+            self._render_report()
+        elif name == "tools":
+            self._render_tools()
+        elif name == "help":
+            self.app.push_screen(HelpModal())
+        elif name == "rename":
+            self._rename_flow(args)
+        elif name == "timezone":
+            self._cmd_timezone(args)
+        elif name == "model":
+            self._conversational_model(args)
+        elif name == "target":
+            self._conversational_target(args)
+
+    @work
+    async def _conversational_model(self, args: str) -> None:
+        from kratos.adapters import llm_profiles as _p
+        from kratos.llm_config import ENV_FILE_PATH
+
+        candidates, current = _p.list_candidate_profiles(ENV_FILE_PATH)
+        if not args:
+            active = current.model if current else "(none)"
+            listed = ", ".join(c.model for c in candidates) or "(none configured)"
+            self._emit(R.note_line(
+                f"Active model: {active}. Available: {listed}. Say 'switch to <name>', or open /model."))
+            return
+        matches = [c for c in candidates if c.model.lower() == args.lower()]
+        if not matches:
+            matches = [c for c in candidates if args.lower() in c.model.lower()]
+        if not matches:
+            listed = ", ".join(c.model for c in candidates) or "(none)"
+            self._emit(R.error_line(f"No configured model matches {args!r}. Available: {listed}."))
+            return
+        if len(matches) > 1:
+            self._emit(R.note_line(
+                f"{args!r} matches several models: {', '.join(m.model for m in matches)}. Be more specific."))
+            return
+        target = matches[0]
+        if current is not None and target.model == current.model:
+            self._emit(R.note_line(f"{target.model} is already active."))
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Switch model?",
+            f"Switch the active LLM backend to '{target.model}'?\n\n{self._profile_blurb(target.values)}"))
+        if not ok:
+            self._emit(R.note_line("Model switch cancelled — nothing changed."))
+            return
+        self._switch_model_worker(target, current)
+
+    @work(thread=True)
+    def _switch_model_worker(self, target: Any, current: Any) -> None:
+        from kratos.adapters import llm_profiles as _p
+        from kratos.llm_config import ENV_FILE_PATH, set_active_llm_profile
+        from kratos.llm_interface import check_endpoint_reachable
+
+        problems = _p.validate_profile(target)
+        if problems:
+            self._emit_from_worker(R.error_line(f"Can't switch to {target.model}: {'; '.join(problems)}"))
+            return
+        self._emit_from_worker(R.note_line(f"Checking {target.model} is reachable…"))
+        reachable, detail = check_endpoint_reachable(target.values["LLM_BASE_URL"], target.values["LLM_API_KEY"])
+        if not reachable:
+            self._emit_from_worker(R.error_line(f"Can't switch to {target.model} — not reachable ({detail})."))
+            return
+        set_active_llm_profile(target.values)
+        _p.switch_profile(ENV_FILE_PATH, target, current)
+        self.session_state["backend"] = target.model
+        self.app.call_from_thread(self._refresh_footer)
+        self._emit_from_worker(R.success_line(f"Switched to {target.model} — active now, saved to .env."))
+
+    @work
+    async def _conversational_target(self, args: str) -> None:
+        if not args:
+            current = ", ".join(self.session_state["targets"]) or "(none set)"
+            self._emit(R.note_line(f"Current target: {current}. Say 'change target to <ip>' to switch."))
+            return
+        targets = args.split()
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Change target?",
+            f"Change the investigation target to {', '.join(targets)}?\n\n"
+            "Kratos will investigate this host (read/observe-only) from now on. "
+            "Nothing runs on it without a further approval."))
+        if not ok:
+            self._emit(R.note_line("Target change cancelled — nothing changed."))
+            return
+        self._apply_target(targets)
 
     def _run_investigation(self, goal: str) -> None:
         from kratos.agent.loop import run_agent
