@@ -40,6 +40,17 @@ def test_compaction_line_omits_numbers_when_unknown():
     assert "k/" not in plain                         # no bogus 0.0k/0.0k
 
 
+def test_tool_description_prefers_metadata_then_registered_then_placeholder():
+    tool = SimpleNamespace(description="Registered first line.\nsecond line ignored")
+    # metadata description wins
+    assert R.tool_description(tool, {"description": "human note"}) == "human note"
+    # no metadata -> first line of the tool's own registered description
+    assert R.tool_description(tool, None) == "Registered first line."
+    assert R.tool_description(tool, {}) == "Registered first line."
+    # nothing anywhere -> placeholder
+    assert R.tool_description(SimpleNamespace(description=""), None) == "(no description)"
+
+
 def test_render_step_routes_context_compacted_to_compaction_line():
     emitted: list = []
     fake = SimpleNamespace(_emit_from_worker=emitted.append)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from textual import on
@@ -21,6 +22,27 @@ from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.render import approval_panel
+
+
+class CodeModal(ModalScreen[None]):
+    """Read-only source viewer (used by /settings → Tools to review a kept
+    tool's actual code before trusting it). Scrollable; esc closes."""
+
+    BINDINGS = [Binding("escape,q", "close", "close", show=True)]
+
+    def __init__(self, title: str, code: str) -> None:
+        super().__init__()
+        self._title = title
+        self._code = code
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Static(Syntax(self._code, "python", word_wrap=True, background_color="default"))
+            yield Static(Text("esc close", style=T.TEXT_DIM))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
 
 
 class ApprovalModal(ModalScreen[bool]):
@@ -179,14 +201,14 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Evo-loop (write → test → approve → keep a tool)", [
                 ("/evolve", "Build the most recent auto-suggested tool"),
                 ('/evolve "<idea>"', "Start evo-loop with your own idea"),
-                ("/evolve list", "Browse tools reachable by the agent"),
+                ("/tools", "List tools by kind (Default / Kept / Installed)"),
             ]))
             yield Static(self._table("Configuration", [
                 ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
                 ("/target verify", "Re-check the active target's setup"),
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
-                ("/settings", "Settings — models, tool approvals, display timezone"),
+                ("/settings", "Settings — models, tools (approvals + code review), name, timezone"),
                 ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))

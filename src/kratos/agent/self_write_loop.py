@@ -228,11 +228,25 @@ def _write_metadata(kept_tools_dir: Path, tool_name: str, source_file: Path, req
     read+modify+write, not by this function alone.
     """
     metadata = _read_metadata(kept_tools_dir)
-    metadata[tool_name] = {
+    # Merge onto the existing entry rather than replacing it wholesale, so
+    # optional sidecar fields a later feature added (e.g. a human/AI-written
+    # `description`, see set_kept_tool_description) survive an approval toggle
+    # instead of being silently dropped on every re-write.
+    entry = dict(metadata.get(tool_name, {}))
+    entry.update({
         "requires_approval": requires_approval,
         "kept_at": datetime.now().isoformat(timespec="seconds"),
         "source_file": source_file.name,
-    }
+    })
+    metadata[tool_name] = entry
+    _atomic_write_metadata(kept_tools_dir, metadata)
+
+
+def _atomic_write_metadata(kept_tools_dir: Path, metadata: dict[str, Any]) -> None:
+    """Write the whole metadata mapping via a temp file + os.replace() (atomic
+    on POSIX), so a concurrent reader sees either the complete old or complete
+    new file, never a torn mix. Callers hold _kept_tools_lock around their
+    read-modify-write to also prevent lost updates."""
     metadata_file = kept_tools_dir / KEPT_TOOLS_METADATA_FILENAME
     # tempfile.mkstemp() defaults to mode 0600 (owner-only) -- os.replace()
     # keeps the TEMP file's mode, not the destination's, so without this
@@ -252,6 +266,30 @@ def _write_metadata(kept_tools_dir: Path, tool_name: str, source_file: Path, req
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+def set_kept_tool_description(
+    tool_name: str, description: str | None, kept_tools_dir: Path = KEPT_TOOLS_DIR
+) -> None:
+    """Set (or clear, when falsy) a KEPT tool's human/AI-written short
+    description in metadata.json -- the label shown in /tools and the Settings
+    Tools tab. Deliberately does NOT touch the live Tool.description the agent
+    reasons over (changing that could shift tool selection); this is a
+    presentation-layer note only. Held under the same lock + atomic write the
+    approval toggle uses. Raises for a non-kept tool (built-ins have no
+    editable metadata)."""
+    with _kept_tools_lock(kept_tools_dir):
+        metadata = _read_metadata(kept_tools_dir)
+        if tool_name not in metadata:
+            raise KeyError(f"{tool_name!r} is not a kept tool")
+        entry = dict(metadata[tool_name])
+        desc = (description or "").strip()
+        if desc:
+            entry["description"] = desc
+        else:
+            entry.pop("description", None)
+        metadata[tool_name] = entry
+        _atomic_write_metadata(kept_tools_dir, metadata)
 
 
 def _persist_kept_tool(keep_decision: KeepDecision, kept_tools_dir: Path = KEPT_TOOLS_DIR) -> Path:

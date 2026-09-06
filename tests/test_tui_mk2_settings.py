@@ -284,6 +284,35 @@ def test_delete_inactive_model_removes_it(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 # General tab -- setting your name persists + live-updates the session label
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Tools tab -- source resolution for code review (built-in via inspect, kept
+# from its .py file)
+# ---------------------------------------------------------------------------
+def test_tool_source_reads_builtin_via_inspect():
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    name = next(iter(TOOL_REGISTRY))  # any real built-in tool
+    code, title, err = SettingsScreen._tool_source(object(), name, is_kept=False)
+    assert err is None
+    assert "def " in code
+    assert name in title and "built-in" in title
+
+
+def test_tool_source_reads_kept_from_file(tmp_path, monkeypatch):
+    import json
+
+    d = tmp_path / "kept_tools"
+    d.mkdir()
+    (d / "foo.py").write_text("# kept foo tool\ndef handler():\n    return {}\n", encoding="utf-8")
+    (d / "metadata.json").write_text(json.dumps({"foo": {"source_file": "foo.py"}}), encoding="utf-8")
+    monkeypatch.setattr("kratos.agent.self_write_loop.KEPT_TOOLS_DIR", d)
+
+    code, title, err = SettingsScreen._tool_source(object(), "foo", is_kept=True)
+    assert err is None
+    assert "kept foo tool" in code
+    assert "foo.py" in title
+
+
 def test_general_tab_sets_user_name(tmp_path, monkeypatch):
     _write_env(tmp_path, monkeypatch)
     fake = _FakeSession()

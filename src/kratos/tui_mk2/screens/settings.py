@@ -262,6 +262,8 @@ class SettingsScreen(Screen):
         Binding("d", "delete", "delete model", show=False),
         Binding("u", "tz_auto", "tz auto", show=False),
         Binding("n", "set_name", "your name", show=False),
+        Binding("v", "view_source", "view code", show=False),
+        Binding("c", "edit_description", "edit desc", show=False),
         Binding("right_square_bracket", "next_tab", "next tab", show=True),
         Binding("left_square_bracket", "prev_tab", "prev tab", show=False),
     ]
@@ -292,14 +294,16 @@ class SettingsScreen(Screen):
                          "] next tab · esc back", style=T.TEXT_DIM),
                     id="ms-hint")
                 yield Static("", id="ms-status")
-            with TabPane("Tool approvals", id="tab-approvals"):
+            with TabPane("Tools", id="tab-approvals"):
                 yield Static(
-                    Text("Which self-written (kept) tools need a human OK before they run. Built-in "
-                         "tools' approval is fixed in code and shown read-only.", style=T.TEXT_DIM),
+                    Text("Every tool the agent can use. Toggle whether a kept (self-written) tool "
+                         "needs a human OK; view a kept tool's code; edit its short description. "
+                         "Built-in tools' approval is fixed in code (read-only).", style=T.TEXT_DIM),
                     classes="set-placeholder")
                 yield DataTable(id="ap-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter/space toggle a kept tool · ] next tab · esc back", style=T.TEXT_DIM),
+                    Text("↑↓ select · enter/space toggle approval (kept) · v view code · "
+                         "c edit description (kept) · ] next tab · esc back", style=T.TEXT_DIM),
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
@@ -316,7 +320,7 @@ class SettingsScreen(Screen):
         table.add_columns(" ", "Model", "Where", "Context window")
         self._reload()
         ap = self.query_one("#ap-table", DataTable)
-        ap.add_columns("Tool", "Kind", "Approval")
+        ap.add_columns("Tool", "Kind", "Approval", "Description")
         self._reload_approvals()
         self._refresh_tz_status()
         self._refresh_name_status()
@@ -423,6 +427,8 @@ class SettingsScreen(Screen):
         from kratos.agent.tools import TOOL_REGISTRY
         from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
 
+        from kratos.tui_mk2 import render as R
+
         meta = _read_metadata(KEPT_TOOLS_DIR)
         ap = self.query_one("#ap-table", DataTable)
         ap.clear()
@@ -435,6 +441,7 @@ class SettingsScreen(Screen):
                 Text("kept" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
                 Text("required" if tool.requires_approval else "auto",
                      style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM),
+                Text(R.tool_description(tool, meta.get(name)), style=T.TEXT_DIM),
             )
             self._ap_names.append((name, is_kept))
 
@@ -470,6 +477,87 @@ class SettingsScreen(Screen):
     @on(DataTable.RowSelected, "#ap-table")
     def _ap_row_selected(self, event: DataTable.RowSelected) -> None:
         self._toggle_approval()
+
+    def _selected_ap(self) -> tuple[str, bool] | None:
+        ap = self.query_one("#ap-table", DataTable)
+        idx = ap.cursor_row
+        if idx is None or not (0 <= idx < len(self._ap_names)):
+            return None
+        return self._ap_names[idx]
+
+    def _tool_source(self, name: str, is_kept: bool) -> tuple[str, str, str | None]:
+        """(code, title, error). Kept tools: read their real .py from
+        kept_tools/; built-ins: inspect.getsource of the handler. Failure to
+        resolve source returns an error string rather than raising."""
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+
+        if is_kept:
+            meta = _read_metadata(KEPT_TOOLS_DIR)
+            src = KEPT_TOOLS_DIR / (meta.get(name) or {}).get("source_file", f"{name}.py")
+            try:
+                return src.read_text(encoding="utf-8"), f"{name} — kept tool ({src.name})", None
+            except OSError as e:  # noqa: BLE001
+                return "", "", f"Couldn't read {src.name}: {e}"
+        import inspect
+
+        tool = TOOL_REGISTRY.get(name)
+        try:
+            return inspect.getsource(tool.handler), f"{name} — built-in tool", None
+        except (OSError, TypeError) as e:
+            return "", "", f"Couldn't read built-in source for {name}: {e}"
+
+    def action_view_source(self) -> None:
+        if self._active_tab() != "tab-approvals":
+            return
+        sel = self._selected_ap()
+        if sel is None:
+            return
+        name, is_kept = sel
+        code, title, err = self._tool_source(name, is_kept)
+        if err:
+            self._set_ap_status(err, T.ATTENTION)
+            return
+        from kratos.tui_mk2.modals import CodeModal
+
+        self.app.push_screen(CodeModal(title, code))
+
+    def action_edit_description(self) -> None:
+        if self._active_tab() != "tab-approvals":
+            return
+        self._edit_description_flow()
+
+    @work
+    async def _edit_description_flow(self) -> None:
+        sel = self._selected_ap()
+        if sel is None:
+            return
+        name, is_kept = sel
+        if not is_kept:
+            self._set_ap_status(
+                f"{name} is a built-in tool — its description comes from its code, not editable here.",
+                T.ATTENTION)
+            return
+        from kratos.tui_mk2.modals import PromptModal
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata, set_kept_tool_description
+
+        current = (_read_metadata(KEPT_TOOLS_DIR).get(name) or {}).get("description", "")
+        answer = await self.app.push_screen_wait(
+            PromptModal(f"Description — {name}", "Short 'what it does' (empty = clear back to the code's own)",
+                        initial=current))
+        if answer is None:
+            return
+        try:
+            set_kept_tool_description(name, answer.strip())
+        except Exception as e:  # noqa: BLE001
+            self._set_ap_status(f"Couldn't save description: {e}", T.CRITICAL)
+            return
+        idx = self.query_one("#ap-table", DataTable).cursor_row
+        self._reload_approvals()
+        if idx is not None:
+            self.query_one("#ap-table", DataTable).move_cursor(row=idx)
+        self._set_ap_status(
+            f"Description saved for {name}." if answer.strip() else f"Description cleared for {name}.", T.SAFE)
 
     # --- General tab (display timezone) ----------------------------------
     def _data_dir(self):

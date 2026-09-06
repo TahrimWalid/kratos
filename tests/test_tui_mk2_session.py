@@ -52,6 +52,24 @@ def test_clear_wipes_context_and_resets_token_meter(tmp_path, monkeypatch):
     assert usage is None        # meter reset to 0 (was 5000)
 
 
+def test_tools_command_renders_without_error(tmp_path, monkeypatch):
+    # /tools classifies the real TOOL_REGISTRY into Default/Kept/Installed and
+    # writes grouped tables — smoke-check it renders (no crash, content added).
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            before = len(screen._log.lines)
+            screen._dispatch_slash("/tools")
+            await pilot.pause()
+            return before, len(screen._log.lines)
+
+    before, after = asyncio.run(_run())
+    assert after > before  # tables were written to the transcript
+
+
 def test_reset_archives_history_and_clears(tmp_path, monkeypatch):
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
     # Give the session a real turn so /reset has something to archive.

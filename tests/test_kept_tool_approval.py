@@ -52,3 +52,35 @@ def test_toggle_rejects_non_kept_tool(tmp_path):
     d = _seed(tmp_path)
     with pytest.raises(KeyError):
         swl.set_kept_tool_approval("not_a_kept_tool", True, kept_tools_dir=d)
+
+
+def test_set_description_persists_and_clears(tmp_path):
+    d = _seed(tmp_path)
+    swl.set_kept_tool_description("dummy_kept", "counts sudo events", kept_tools_dir=d)
+    meta = json.loads((d / swl.KEPT_TOOLS_METADATA_FILENAME).read_text())
+    assert meta["dummy_kept"]["description"] == "counts sudo events"
+    # clearing (empty) removes the field entirely
+    swl.set_kept_tool_description("dummy_kept", "", kept_tools_dir=d)
+    meta = json.loads((d / swl.KEPT_TOOLS_METADATA_FILENAME).read_text())
+    assert "description" not in meta["dummy_kept"]
+
+
+def test_approval_toggle_preserves_description(tmp_path):
+    # The metadata rewrite must MERGE, not replace -- a description set earlier
+    # must survive an unrelated approval toggle (the merge-preserve fix).
+    d = _seed(tmp_path, requires_approval=True)
+    swl.set_kept_tool_description("dummy_kept", "a useful note", kept_tools_dir=d)
+    TOOL_REGISTRY["dummy_kept"] = types.SimpleNamespace(requires_approval=True)
+    try:
+        swl.set_kept_tool_approval("dummy_kept", False, kept_tools_dir=d)
+    finally:
+        TOOL_REGISTRY.pop("dummy_kept", None)
+    meta = json.loads((d / swl.KEPT_TOOLS_METADATA_FILENAME).read_text())
+    assert meta["dummy_kept"]["requires_approval"] is False
+    assert meta["dummy_kept"]["description"] == "a useful note"  # not dropped
+
+
+def test_set_description_rejects_non_kept_tool(tmp_path):
+    d = _seed(tmp_path)
+    with pytest.raises(KeyError):
+        swl.set_kept_tool_description("not_a_kept_tool", "x", kept_tools_dir=d)

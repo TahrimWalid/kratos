@@ -51,6 +51,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control co
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
     ("/evolve", "write a new tool for the current gap"),
+    ("/tools", "list the tools Kratos can use, by kind"),
     ("/help", "list all commands"),
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
@@ -587,6 +588,8 @@ class SessionScreen(Screen):
             self._cmd_timezone(rest)
         elif cmd == "/evolve":
             self._evolve_flow(rest)
+        elif cmd in ("/tools", "/tool"):
+            self._render_tools()
         elif cmd == "/settings":
             from kratos.tui_mk2.screens.settings import SettingsScreen
 
@@ -990,6 +993,68 @@ class SessionScreen(Screen):
                 desc,
             )
         self._emit(table)
+
+    # --- /tools (classified overview) ------------------------------------
+    def _render_tools(self) -> None:
+        """A read-only peek at every tool the agent can reach, grouped by kind:
+        Default (built into Kratos), Kept (written & approved via /evolve), and
+        Installed (kept tools that needed a package installed first — a future
+        category, empty today). Each row shows a short description: a human/AI
+        note from the tool's metadata if set, else its own registered
+        description. Code review + description editing live in /settings → Tools."""
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+
+        metadata = _read_metadata(KEPT_TOOLS_DIR)
+        default_names: list[str] = []
+        kept_names: list[str] = []
+        installed_names: list[str] = []
+        for name in sorted(TOOL_REGISTRY):
+            entry = metadata.get(name)
+            if entry is None:
+                default_names.append(name)
+            elif entry.get("installed"):
+                installed_names.append(name)
+            else:
+                kept_names.append(name)
+
+        self._emit(Text(""))
+        self._emit(Text(f"Tools Kratos can use — {len(TOOL_REGISTRY)} total", style=f"bold {T.KRATOS_RED}"))
+        self._emit(self._tools_table("Default Tools", "built into Kratos", default_names, metadata, kept=False))
+        self._emit(self._tools_table("Kept Tools", "written & approved via /evolve", kept_names, metadata, kept=True))
+        self._emit(self._tools_table(
+            "Installed Tools", "kept tools backed by a package installed via an approved command",
+            installed_names, metadata, kept=True))
+        if not installed_names:
+            self._emit(Text(
+                "  (none yet — this category is for tools that need a package installed first)",
+                style=T.TEXT_GHOST))
+        self._emit(Text("Review a kept tool's code or edit its description in /settings → Tools.", style=T.TEXT_FAINT))
+
+    def _tools_table(self, heading: str, subtitle: str, names: list[str], metadata: dict, kept: bool):
+        from kratos.agent.tools import TOOL_REGISTRY
+        from rich.table import Table
+
+        table = Table(
+            show_header=True, header_style="bold", title=f"{heading} — {len(names)}",
+            title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
+            caption=subtitle, caption_justify="left", caption_style=T.TEXT_GHOST)
+        table.add_column("Name", no_wrap=True)
+        if kept:
+            table.add_column("Approval")
+            table.add_column("Kept at")
+        table.add_column("Description")
+        for name in names:
+            tool = TOOL_REGISTRY[name]
+            entry = metadata.get(name)
+            row: list[Any] = [Text(name, style=T.ACCENT)]
+            if kept:
+                row.append(Text("required" if tool.requires_approval else "auto",
+                                style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM))
+                row.append(Text(str((entry or {}).get("kept_at", "")), style=T.TEXT_FAINTER))
+            row.append(Text(R.tool_description(tool, entry), style=T.TEXT_MUTED))
+            table.add_row(*row)
+        return table
 
     @work(thread=True)
     def _run_evolve(self, idea: str, harness_path: Path, tool_name: str) -> None:
