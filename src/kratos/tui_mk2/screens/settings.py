@@ -156,6 +156,9 @@ class AddModelModal(ModalScreen):
         if not url or not model:
             self._set_hint("Base URL and model name are required.", T.CRITICAL)
             return
+        if not self.query_one("#add-key", Input).value.strip():
+            self._set_hint("An API key is required — use 'ollama' for a local server that ignores it.", T.CRITICAL)
+            return
         value, hard, soft = _validate_window(
             self.query_one("#add-window", Input).value, self._ctx.detected_max, self._ctx.detected_loaded)
         if hard:
@@ -340,6 +343,8 @@ class SettingsScreen(Screen):
         self._candidates, self._current = _p.list_candidate_profiles(ENV_FILE_PATH)
         table = self.query_one("#ms-table", DataTable)
         table.clear()
+        if not self._candidates:
+            self._set_status("No models configured yet — press 'a' to add one.", T.ATTENTION)
         for c in self._candidates:
             active = self._current is not None and c.model == self._current.model
             win = c.values.get("LLM_CONTEXT_WINDOW")
@@ -573,14 +578,50 @@ class SettingsScreen(Screen):
         values = await self.app.push_screen_wait(AddModelModal())
         if not values:
             return
+        # Edge case: a model with this name already exists. add_profile would
+        # append a second block that list_candidate_profiles then shadows by
+        # name — confusing and unswitchable. Point the user at edit/delete
+        # instead of silently creating a duplicate.
+        if any(c.model == values["LLM_MODEL"] for c in self._candidates):
+            self._set_status(
+                f"A model named {values['LLM_MODEL']} already exists — edit its context window "
+                "or delete it first, rather than adding a duplicate.", T.ATTENTION)
+            return
+        self._apply_add(values)
+
+    @work(thread=True)
+    def _apply_add(self, values: dict[str, str]) -> None:
+        """Validate the new profile, then add it — activating it ONLY if its
+        endpoint is actually reachable, so adding a model that's down (typo,
+        server off) can't strand the live session on a dead backend. An
+        unreachable-but-saved model stays inactive; the user switches to it once
+        it's up. Runs in a thread because the reachability probe is a network
+        call."""
         from kratos.adapters import llm_profiles as _p
+        from kratos.adapters.llm_profiles import EnvProfile
         from kratos.llm_config import ENV_FILE_PATH, set_active_llm_profile
-        _p.add_profile(ENV_FILE_PATH, values, make_active=True)
-        set_active_llm_profile(values)
-        self._session.session_state["backend"] = values["LLM_MODEL"]
-        self._session._refresh_footer()
-        self._reload()
-        self._set_status(f"Added {values['LLM_MODEL']} and switched to it — saved to .env.", T.SAFE)
+        from kratos.llm_interface import check_endpoint_reachable
+
+        problems = _p.validate_profile(EnvProfile(values=values, line_indices={}, active=True))
+        if problems:
+            self.app.call_from_thread(self._set_status, f"Can't add: {'; '.join(problems)}", T.CRITICAL)
+            return
+        self.app.call_from_thread(self._set_status, f"Checking {values['LLM_MODEL']} is reachable…")
+        reachable, detail = check_endpoint_reachable(values["LLM_BASE_URL"], values["LLM_API_KEY"])
+        _p.add_profile(ENV_FILE_PATH, values, make_active=reachable)
+        if reachable:
+            set_active_llm_profile(values)
+            self._session.session_state["backend"] = values["LLM_MODEL"]
+            self.app.call_from_thread(self._session._refresh_footer)
+            self.app.call_from_thread(self._reload)
+            self.app.call_from_thread(
+                self._set_status, f"Added {values['LLM_MODEL']} and switched to it — saved to .env.", T.SAFE)
+        else:
+            self.app.call_from_thread(self._reload)
+            self.app.call_from_thread(
+                self._set_status,
+                f"Saved {values['LLM_MODEL']} to .env, but did NOT switch to it — endpoint not reachable "
+                f"({detail}). Switch to it here once it's running.", T.ATTENTION)
 
     @work
     async def _edit_flow(self) -> None:

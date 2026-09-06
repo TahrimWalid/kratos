@@ -144,6 +144,7 @@ def test_add_modal_saves_values_with_window():
             captured = {}
             modal.dismiss = lambda result=None: captured.__setitem__("r", result)
             modal.query_one("#add-url", Input).value = "http://127.0.0.1:11434/v1"
+            modal.query_one("#add-key", Input).value = "ollama"
             modal.query_one("#add-model", Input).value = "qwen2.5:7b"
             modal.query_one("#add-window", Input).value = "8000"
             modal.action_save()
@@ -166,6 +167,7 @@ def test_add_modal_hard_window_blocks_save():
             dismissed = {"called": False}
             modal.dismiss = lambda result=None: dismissed.__setitem__("called", True)
             modal.query_one("#add-url", Input).value = "https://openrouter.ai/api/v1"
+            modal.query_one("#add-key", Input).value = "sk-x"
             modal.query_one("#add-model", Input).value = "m"
             modal.query_one("#add-window", Input).value = "500000"
             modal._ctx.detected_max = 262144   # a known ceiling
@@ -176,6 +178,46 @@ def test_add_modal_hard_window_blocks_save():
     called, hint = asyncio.run(_run())
     assert called is False               # blocked
     assert "Exceeds" in hint
+
+
+def test_add_modal_requires_api_key():
+    async def _run():
+        app = _ScreenHost(AddModelModal())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            modal = app.screen
+            dismissed = {"called": False}
+            modal.dismiss = lambda result=None: dismissed.__setitem__("called", True)
+            modal.query_one("#add-url", Input).value = "https://api.example/v1"
+            modal.query_one("#add-model", Input).value = "m"  # no key
+            modal.action_save()
+            await pilot.pause()
+            return dismissed["called"], str(modal.query_one("#add-hint", Static).render())
+
+    called, hint = asyncio.run(_run())
+    assert called is False
+    assert "api key" in hint.lower()
+
+
+def test_add_duplicate_model_name_is_rejected(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(_FakeSession()))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _dup(_modal):
+                return {"LLM_BASE_URL": "https://api.gemini.example/v1", "LLM_API_KEY": "k",
+                        "LLM_MODEL": "gemini-3.1-pro", "KRATOS_LLM_BACKEND": "openai_compatible"}
+
+            monkeypatch.setattr(app, "push_screen_wait", _dup)
+            app.screen.action_add()
+            await pilot.pause()
+            await pilot.pause()
+            return str(app.screen.query_one("#ms-status", Static).render())
+
+    assert "already exists" in asyncio.run(_run()).lower()
 
 
 def test_edit_modal_empty_clears_and_number_sets():
