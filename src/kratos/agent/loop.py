@@ -521,8 +521,26 @@ class _Conversation:
     close to the context window, always keeping the goal and the most recent
     turns verbatim."""
 
-    def __init__(self, goal: str) -> None:
-        self._preamble = f"Investigation goal: {goal}\n"
+    def __init__(self, goal: str, prior_context: str | None = None) -> None:
+        # Optional prior CONVERSATION context (the chat/session the user has been
+        # having with Kratos) goes in the preamble, ahead of the goal. The
+        # preamble is never folded by maybe_compact (only _turns are), so this is
+        # C7-safe: it can't cause a tool observation to be dropped, and it doesn't
+        # touch the guard/compaction logic at all. It's the user's own messages +
+        # Kratos's own replies (same trust level as the goal -- NOT untrusted
+        # target data), so it isn't a new injection surface. Callers pass an
+        # already-bounded context (mk2 auto-compacts the chat context), so this
+        # stays modest relative to the window.
+        preamble = ""
+        if prior_context and prior_context.strip():
+            preamble += (
+                "[Conversation so far, for context -- the user has been talking with you; use it to "
+                "resolve references (\"that host\", \"the burst we found\"), but the investigation goal "
+                "below is what to act on now:]\n"
+                f"{prior_context.strip()}\n\n"
+            )
+        preamble += f"Investigation goal: {goal}\n"
+        self._preamble = preamble
         self._turns: list[tuple[str, str]] = []   # (verbatim text, one-line digest)
         self.compaction_count = 0
 
@@ -573,6 +591,7 @@ def run_agent(
     data_dir: Path,
     max_iters: int = DEFAULT_MAX_ITERS,
     on_step: Callable[[dict[str, Any]], None] | None = None,
+    prior_context: str | None = None,
 ) -> dict[str, Any]:
     """
     Runs the ReAct loop for `goal`, returns a dict with the outcome and the
@@ -583,9 +602,15 @@ def run_agent(
     it's produced (useful for live progress in a CLI, since a single LLM call
     can take a minute or more) -- purely a notification hook, doesn't affect
     the loop's decisions or the returned transcript.
+
+    `prior_context` (optional) is the ongoing CONVERSATION the user has been
+    having with Kratos, so an investigation launched mid-conversation can resolve
+    references to earlier turns instead of starting context-blind. It's placed in
+    the (never-compacted) preamble ahead of the goal -- see _Conversation. Default
+    None preserves the exact prior behavior for every other caller (CLI, MCP).
     """
     system_prompt = build_system_prompt()
-    ctx = _Conversation(goal)
+    ctx = _Conversation(goal, prior_context=prior_context)
     transcript: list[dict[str, Any]] = []
 
     # Real per-run token accounting (feature 7c). run_usage sums every LLM

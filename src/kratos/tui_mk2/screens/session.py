@@ -1362,7 +1362,14 @@ class SessionScreen(Screen):
             self.app.call_from_thread(self._refresh_footer)
 
         try:
-            result = run_agent(goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step)
+            # #2: hand the ongoing conversation to the investigation so it can
+            # resolve references to earlier turns (goes in run_agent's
+            # never-compacted preamble — C7-safe, and it's the user's own
+            # conversation, not untrusted target data).
+            result = run_agent(
+                goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step,
+                prior_context=self.session_state.get("resume_context") or None,
+            )
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Press Ctrl+R to re-run this goal, or type a new one."))
