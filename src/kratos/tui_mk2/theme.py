@@ -10,11 +10,19 @@ Every hex here traces to a real value in the canvas mockups:
   - the muted parchment text ramp (#e6e1d8 -> #3f3e3b),
   - KRATOS's oxblood wordmark (#8b1a1a),
   - the three status roles: read-only/safe green (#7f9e79), attention amber
-    (#c9962c), and critical red (#ff3b3b),
-  - tool-blue (#7fa8bf) for tool names / IPs / links, and the Admin voice
-    (#8f9bb0).
+    (#c9962c), and critical red (#ff3b3b).
+
+The grounds, text ramp, and status roles are the shared base across every
+theme pack (see PACKS). Only the identity colors -- the chrome ACCENT (tool
+names / IPs / links / active tab / focus), the KRATOS wordmark, and the ADMIN
+voice -- are re-tinted per pack. The default pack, "kratos-red", uses a warm
+brick accent (#cf7259); "kratos-blue" preserves the original tool-blue
+(#7fa8bf). CRITICAL never changes, so "red = danger" reads the same in every
+theme.
 """
 from __future__ import annotations
+
+import os
 
 # --- Grounds / surfaces --------------------------------------------------
 BG = "#0b0b0d"            # app background (canvas card ground)
@@ -34,14 +42,44 @@ TEXT_FAINTER = "#5e5c58"  # column headers / timestamps
 TEXT_GHOST = "#4d4b48"    # placeholder-adjacent
 TEXT_PLACEHOLDER = "#3f3e3b"  # true placeholder / "type a goal…"
 
+# --- Theme packs: identity colors (chrome accent + brand + admin voice) --
+# The grounds + text ramp above and the status roles below are the shared
+# "warm muted terminal" base and do NOT change between packs -- a pack only
+# re-tints the interactive/identity colors (ACCENT, KRATOS_RED, ADMIN).
+#
+# CRITICAL (danger red) is deliberately NOT a pack color: it must stay a
+# constant, unambiguous alarm regardless of theme, so a red-chromed default
+# can't blur "red = danger". The default pack's ACCENT is a warm brick that
+# reads red-family but is clearly distinct (muted, orange-leaning) from the
+# bright pure-red CRITICAL below.
+PACKS: dict[str, dict[str, str]] = {
+    "kratos-red": {"label": "Kratos Red (default)", "ACCENT": "#cf7259",
+                   "KRATOS_RED": "#8b1a1a", "ADMIN": "#b3968a"},
+    "kratos-blue": {"label": "Slate Blue", "ACCENT": "#7fa8bf",
+                    "KRATOS_RED": "#8b1a1a", "ADMIN": "#8f9bb0"},
+}
+DEFAULT_PACK = "kratos-red"
+
+
+def active_pack_name() -> str:
+    """The active theme pack, resolved once at import. Overridable via the
+    KRATOS_THEME env var (Phase 2's settings switcher persists a choice and sets
+    this env var so a fresh process picks it up); falls back to the red default
+    for an unset/unknown value."""
+    name = os.environ.get("KRATOS_THEME", "").strip()
+    return name if name in PACKS else DEFAULT_PACK
+
+
+_ACTIVE = PACKS[active_pack_name()]
+
 # --- Brand + roles -------------------------------------------------------
-KRATOS_RED = "#8b1a1a"    # the KRATOS wordmark / Kratos's own voice label
-ACCENT = "#7fa8bf"        # tool-blue: tool names, IPs, links, prompts
-ADMIN = "#8f9bb0"         # the Admin/you voice label
+KRATOS_RED = _ACTIVE["KRATOS_RED"]  # the KRATOS wordmark / Kratos's own voice label
+ACCENT = _ACTIVE["ACCENT"]          # chrome: tool names, IPs, links, prompts, active tab, focus
+ADMIN = _ACTIVE["ADMIN"]            # the Admin/you voice label
 
 SAFE = "#7f9e79"          # read-only / passed / clean / success (green)
 ATTENTION = "#c9962c"     # attention / in-progress / decision-needed (amber)
-CRITICAL = "#ff3b3b"      # a real HIGH/CRITICAL finding / hard failure (red)
+CRITICAL = "#ff3b3b"      # a real HIGH/CRITICAL finding / hard failure -- NOT theme-swappable
 
 # macOS traffic lights (launch / titlebar chrome)
 TL_RED = "#ff5f57"
