@@ -215,10 +215,22 @@ class SessionScreen(Screen):
     def action_history_prev(self) -> None:
         """↑ -- back up to an earlier turn, loading its text into the prompt
         for editing. First press snapshots the current draft and jumps to the
-        latest prior turn; further presses go older."""
-        if self._busy:
-            return
+        latest prior turn; further presses go older.
+
+        While a turn is still running (before Kratos has replied), ↑ instead
+        STOPS the turn and loads the message you just sent back into the prompt
+        so you can fix it — the Claude-Code "stop + edit last message" flow. An
+        investigation stops at the next step boundary; a very quick chat reply's
+        single blocking LLM call can't be stopped mid-call, so that one may still
+        land (which is why an instant 'hi' can't be caught)."""
         inp = self.query_one("#goal", Input)
+        if self._busy:
+            self.action_interrupt()
+            if self._last_goal:
+                inp.value = self._last_goal
+                inp.cursor_position = len(inp.value)
+                self._edit_seq = None  # re-send as a fresh turn once the stop settles
+            return
         if self._hist_turns is None:
             self._hist_turns = self._store.get_goal_history(self.session_state["session_id"])
             self._hist_index = len(self._hist_turns)

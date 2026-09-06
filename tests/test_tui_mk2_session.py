@@ -262,6 +262,25 @@ def test_compact_on_empty_context_is_a_noop(tmp_path, monkeypatch):
     assert called["n"] == 0  # no LLM call when there's nothing to compact
 
 
+def test_up_while_busy_stops_and_loads_last_message(tmp_path, monkeypatch):
+    # ↑ during a running turn = stop + load the message you just sent, for editing.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._busy = True
+            screen._last_goal = "investigate ssh brute force"
+            screen.action_history_prev()
+            await pilot.pause()
+            return screen.query_one("#goal").value, screen._edit_seq
+
+    value, edit_seq = asyncio.run(_run())
+    assert value == "investigate ssh brute force"
+    assert edit_seq is None  # re-send as a fresh turn
+
+
 def test_tools_command_renders_without_error(tmp_path, monkeypatch):
     # /tools classifies the real TOOL_REGISTRY into Default/Kept/Installed and
     # writes grouped tables — smoke-check it renders (no crash, content added).
