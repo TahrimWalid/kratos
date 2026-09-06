@@ -133,10 +133,9 @@ class SessionScreen(Screen):
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
         self._last_commands: list[str] = []  # recommended commands from the last turn (19b), for ctrl+y
-        # Design 10a -- edit-a-previous-turn recall state:
+        # ↑/↓ non-destructive message-history recall state (shell-style):
         self._hist_turns: list[dict[str, Any]] | None = None  # loaded lazily on first ↑
         self._hist_index = 0               # position within _hist_turns; == len means "composing new"
-        self._edit_seq: int | None = None  # seq of the recalled turn (None = a fresh turn)
         self._pre_recall_draft = ""        # the in-progress input saved when recall started
         self._last_goal = ""               # most recent goal, for ctrl+r re-run (7b)
         # Resolved once in on_mount (override > system-local > UTC) and passed
@@ -212,26 +211,16 @@ class SessionScreen(Screen):
         self.app.copy_to_clipboard(self._last_answer)
         self.notify("Copied Kratos's last answer to the clipboard.", timeout=3)
 
-    # --- design 10a: edit a previous turn --------------------------------
+    # --- ↑/↓ non-destructive message history recall (shell-style) --------
     def action_history_prev(self) -> None:
-        """↑ -- back up to an earlier turn, loading its text into the prompt
-        for editing. First press snapshots the current draft and jumps to the
-        latest prior turn; further presses go older.
-
-        While a turn is still running (before Kratos has replied), ↑ instead
-        STOPS the turn and loads the message you just sent back into the prompt
-        so you can fix it — the Claude-Code "stop + edit last message" flow. An
-        investigation stops at the next step boundary; a very quick chat reply's
-        single blocking LLM call can't be stopped mid-call, so that one may still
-        land (which is why an instant 'hi' can't be caught)."""
-        inp = self.query_one("#goal", Input)
+        """↑ -- recall an earlier message into the prompt (shell-history style).
+        First press snapshots the current draft and jumps to the latest prior
+        message; further presses go older. Non-destructive: sending is always a
+        fresh turn and never discards history (to fix a message that's mid-reply,
+        press esc/Ctrl+C to stop, then type)."""
         if self._busy:
-            self.action_interrupt()
-            if self._last_goal:
-                inp.value = self._last_goal
-                inp.cursor_position = len(inp.value)
-                self._edit_seq = None  # re-send as a fresh turn once the stop settles
             return
+        inp = self.query_one("#goal", Input)
         if self._hist_turns is None:
             self._hist_turns = self._store.get_goal_history(self.session_state["session_id"])
             self._hist_index = len(self._hist_turns)
@@ -239,43 +228,27 @@ class SessionScreen(Screen):
         if not self._hist_turns or self._hist_index == 0:
             return
         self._hist_index -= 1
-        turn = self._hist_turns[self._hist_index]
-        inp.value = turn["goal"]
+        inp.value = self._hist_turns[self._hist_index]["goal"]
         inp.cursor_position = len(inp.value)
-        self._edit_seq = turn["seq"]
 
     def action_history_next(self) -> None:
-        """↓ -- move back toward newer turns, and past the newest back to the
-        draft you were composing (which restores _edit_seq to None, so the next
-        send is a fresh turn, not an edit)."""
+        """↓ -- move toward newer messages, and past the newest back to the draft
+        you were composing."""
         if self._busy or self._hist_turns is None:
             return
         inp = self.query_one("#goal", Input)
         if self._hist_index < len(self._hist_turns) - 1:
             self._hist_index += 1
-            turn = self._hist_turns[self._hist_index]
-            inp.value = turn["goal"]
-            inp.cursor_position = len(inp.value)
-            self._edit_seq = turn["seq"]
+            inp.value = self._hist_turns[self._hist_index]["goal"]
         else:
             self._hist_index = len(self._hist_turns)
             inp.value = self._pre_recall_draft
-            inp.cursor_position = len(inp.value)
-            self._edit_seq = None
+        inp.cursor_position = len(inp.value)
 
     def _reset_recall(self) -> None:
         self._hist_turns = None
         self._hist_index = 0
-        self._edit_seq = None
         self._pre_recall_draft = ""
-
-    def _rebuild_resume_context(self) -> None:
-        from kratos.cli.repl import _build_light_resume_context
-
-        history = self._store.get_goal_history(self.session_state["session_id"])
-        self.session_state["resume_context"] = _build_light_resume_context(history)
-        self._ctx_chars = len(self.session_state["resume_context"])
-        self._refresh_footer()
 
     # --- header / footer -------------------------------------------------
     def _model_label(self) -> str:
@@ -369,7 +342,12 @@ class SessionScreen(Screen):
         pct, used, window, estimated = self._context_pct()
         bar_w = 10
         filled = int(bar_w * pct / 100)
-        color = T.CRITICAL if pct >= 85 else T.TEXT_FAINTER  # red near/over the window
+        if pct >= 85:
+            color = T.CRITICAL       # red: near/over the window (compaction imminent)
+        elif pct >= 75:
+            color = T.ATTENTION      # amber: getting full
+        else:
+            color = T.TEXT_FAINTER
         footer = Text()
         footer.append(f"session {st['session_id']}", style=T.TEXT_FAINTER)
         footer.append("  ·  ", style=T.TEXT_GHOST)
@@ -568,27 +546,20 @@ class SessionScreen(Screen):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         event.input.value = ""
-        # Capture whether this submission is editing a recalled prior turn,
-        # then reset recall state regardless of what happens next.
-        edit_seq = self._edit_seq
-        self._reset_recall()
+        self._reset_recall()  # sending clears any ↑/↓ history navigation
         if not text:
             return
         if self._busy:
-            self.notify("A turn is already running — press esc to interrupt it first.", timeout=3)
+            self.notify("A turn is already running — press esc or Ctrl+C to stop it first.", timeout=3)
             return
         # echo the user's line (with a trailing timestamp / date divider)
         t, d = self._stamp_now()
         self._emit_stamped(self._you_header(text), t, d)
         self._store.touch_session(self.session_state["session_id"])
-        # Design 10a: resending a recalled prior turn discards that turn and
-        # everything after it (soft-delete, recoverable) before the new goal
-        # runs. Only for real goals -- a slash command isn't a turn edit.
-        if edit_seq is not None and not text.startswith("/"):
-            n = self._store.archive_turns_from(self.session_state["session_id"], edit_seq)
-            if n:
-                self._rebuild_resume_context()
-                self._emit(R.note_line(f"Editing an earlier turn — discarded {n} turn(s) from here (recoverable); re-running."))
+        # ↑/↓ recall is now non-destructive: sending is always a fresh turn, never
+        # discards history (the old "edit a previous turn truncates from here"
+        # design 10a caused a confusing "discarded N turns" line whenever ↑ had
+        # been pressed; ctrl+c-stop-then-retype covers editing instead).
         if text.startswith("/"):
             self._dispatch_slash(text)
         else:
@@ -1552,9 +1523,13 @@ class SessionScreen(Screen):
         soon" warning use — so a long chat stays within the model window without
         the user having to run /compact. Called after each turn appends to the
         working context; a no-op below the threshold. Runs on the calling thread
-        worker (both call sites are workers)."""
-        pct, _used, _window, _est = self._context_pct()
-        if pct >= 85:
+        worker (both call sites are workers).
+
+        Only fires on a REAL measured token fill, never the rough char estimate
+        (`estimated` is True before any real LLM call — e.g. right after a model/
+        window change) so it can't over-eagerly compact off a stale estimate."""
+        pct, _used, _window, estimated = self._context_pct()
+        if not estimated and pct >= 85:
             self._do_compact(manual=False)
 
     def _remember_turn(self, user_text: str, kratos_text: str) -> None:

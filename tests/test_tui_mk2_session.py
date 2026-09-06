@@ -208,8 +208,11 @@ def test_compact_keeps_recent_verbatim_and_summarizes_older(tmp_path, monkeypatc
 def test_chat_auto_compaction_fires_near_limit(tmp_path, monkeypatch):
     store, sid, screen = _make_screen(tmp_path, monkeypatch,
                                       resume_context="You: hi\nKratos: hello there\n" * 10)
-    monkeypatch.setattr(llm_interface, "get_last_token_usage", lambda: None)   # use the estimate path
-    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 40)  # tiny window -> over 85%
+    # A REAL measured fill over 85% (auto-compaction only fires on real usage now,
+    # not the char estimate).
+    monkeypatch.setattr(llm_interface, "get_last_token_usage",
+                        lambda: llm_interface.TokenUsage(prompt_tokens=38, completion_tokens=0, total_tokens=38))
+    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 40)  # 38/40 -> ~95%
     monkeypatch.setattr(llm_interface, "agent_chat", lambda *a, **k: "SUMMARY of the chat.")
 
     async def _run():
@@ -252,8 +255,9 @@ def test_compact_guarantees_result_fits_window(tmp_path, monkeypatch):
 def test_chat_auto_compaction_noop_below_threshold(tmp_path, monkeypatch):
     original = "You: hi\nKratos: hello there\n"
     store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context=original)
-    monkeypatch.setattr(llm_interface, "get_last_token_usage", lambda: None)
-    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 1_000_000)  # huge -> ~0%
+    monkeypatch.setattr(llm_interface, "get_last_token_usage",
+                        lambda: llm_interface.TokenUsage(prompt_tokens=10, completion_tokens=0, total_tokens=10))
+    monkeypatch.setattr(llm_interface, "get_context_window_tokens", lambda: 1_000_000)  # real 10/1M -> ~0%
     called = {"n": 0}
     monkeypatch.setattr(llm_interface, "agent_chat",
                         lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "x")
@@ -289,23 +293,33 @@ def test_compact_on_empty_context_is_a_noop(tmp_path, monkeypatch):
     assert called["n"] == 0  # no LLM call when there's nothing to compact
 
 
-def test_up_while_busy_stops_and_loads_last_message(tmp_path, monkeypatch):
-    # ↑ during a running turn = stop + load the message you just sent, for editing.
+def test_up_recall_is_non_destructive(tmp_path, monkeypatch):
+    # ↑ recalls a prior message into the prompt; sending never truncates history
+    # (the old "discarded N turns" edit behavior is gone).
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    for g in ("first goal", "second goal"):
+        tid = store.start_turn(sid, g)
+        store.complete_turn(tid, "chat_reply", transcript_ref=None)
+    archived = {"n": 0}
+    monkeypatch.setattr(store, "archive_turns_from",
+                        lambda *a, **k: archived.__setitem__("n", archived["n"] + 1) or 0)
+    monkeypatch.setattr(screen, "_run_goal", lambda text: None)  # don't fire a real LLM call
 
     async def _run():
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen._busy = True
-            screen._last_goal = "investigate ssh brute force"
-            screen.action_history_prev()
+            screen.action_history_prev()  # recall newest prior message
             await pilot.pause()
-            return screen.query_one("#goal").value, screen._edit_seq
+            recalled = screen.query_one("#goal").value
+            event = type("E", (), {"value": recalled, "input": screen.query_one("#goal")})()
+            screen.on_input_submitted(event)
+            await pilot.pause()
+            return recalled
 
-    value, edit_seq = asyncio.run(_run())
-    assert value == "investigate ssh brute force"
-    assert edit_seq is None  # re-send as a fresh turn
+    recalled = asyncio.run(_run())
+    assert recalled == "second goal"
+    assert archived["n"] == 0  # sending a recalled message never truncates history
 
 
 def test_tools_command_renders_without_error(tmp_path, monkeypatch):
