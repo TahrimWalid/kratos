@@ -6,7 +6,40 @@ and survives compaction (never dropped, C7-safe).
 """
 from __future__ import annotations
 
-from kratos.agent.loop import _Conversation, COMPACTION_KEEP_RECENT_TURNS
+from kratos.agent.loop import (
+    _Conversation,
+    _bound_prior_context,
+    _PRIOR_CONTEXT_RESERVED_TOKENS,
+    COMPACTION_KEEP_RECENT_TURNS,
+)
+
+
+def test_bound_prior_context_dropped_on_small_local_window():
+    # A local 6144 window can't afford the conversation once the ~4900-token
+    # system prompt + working turns are reserved -> dropped, no overflow risk.
+    assert _bound_prior_context("You: hi\nKratos: hey", window=6144) is None
+
+
+def test_bound_prior_context_kept_on_large_cloud_window():
+    ctx = "You: is 10.0.0.9 bad?\nKratos: yes, brute force."
+    assert _bound_prior_context(ctx, window=262144) == ctx  # plenty of room
+
+
+def test_bound_prior_context_trimmed_to_budget_keeps_tail():
+    window = 262144
+    budget_chars = (window - _PRIOR_CONTEXT_RESERVED_TOKENS) * 4
+    ctx = "OLDEST_MARKER" + ("x" * (budget_chars + 5000)) + "NEWEST_MARKER"
+    out = _bound_prior_context(ctx, window=window)
+    assert out is not None
+    assert "earlier conversation trimmed" in out
+    assert "NEWEST_MARKER" in out          # newest tail kept
+    assert "OLDEST_MARKER" not in out       # oldest dropped
+    assert len(out) <= budget_chars + 100   # bounded (plus the short marker)
+
+
+def test_bound_prior_context_empty_is_none():
+    assert _bound_prior_context(None, window=262144) is None
+    assert _bound_prior_context("   ", window=262144) is None
 
 
 def test_prior_context_appears_before_goal():

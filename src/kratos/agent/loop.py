@@ -466,6 +466,16 @@ def _synthesize_fallback_answer(transcript: list[dict[str, Any]]) -> str:
 #     are always kept verbatim.
 CONTEXT_COMPACTION_TRIGGER_RATIO = 0.85   # matches the 7c meter's "will compact soon" warning
 COMPACTION_KEEP_RECENT_TURNS = 3          # newest turns kept verbatim, never digested
+
+# prior_context (the conversation handed to an investigation, #2) lives in the
+# never-compacted preamble, so it must be bounded to what the window can afford
+# AFTER the large system prompt (~4900 tok) and the investigation's own recent
+# working turns -- else it could push the prompt past the window (a clean error
+# on cloud, but a SILENT truncation on a local backend: the C7 failure class).
+# On a small local window the reserve exceeds the window, so prior_context is
+# dropped entirely (it genuinely doesn't fit); a big cloud window keeps it.
+_PRIOR_CONTEXT_RESERVED_TOKENS = 7000     # system prompt + recent turns + goal headroom
+_PRIOR_CONTEXT_MIN_TOKENS = 200           # below this budget, don't bother — drop it
 _DIGEST_MAX_LEN = 240
 # Result keys worth keeping in a folded turn's digest: pointers a later step
 # may need to cite, plus a few scalar signals that summarize what a tool found.
@@ -510,6 +520,24 @@ def _digest_turn(tool: str | None, observation: Any) -> str:
             parts.append(f"findings={len(findings)}[{','.join(sevs)}]")
     body = ", ".join(parts) if parts else "(ran; full result in transcript)"
     return _truncate_digest(f"{tool}: {body}")
+
+
+def _bound_prior_context(prior_context: str | None, window: int) -> str | None:
+    """Trim (or drop) the conversation context handed to an investigation so it
+    fits the window alongside the system prompt + the investigation's own turns.
+    Returns None when the window can't afford any (a small local window, where
+    the reserve exceeds it) or when there's nothing to add; otherwise the context
+    trimmed to the affordable budget, keeping the newest tail (most relevant to a
+    follow-up) behind a trim marker."""
+    if not prior_context or not prior_context.strip():
+        return None
+    budget_tokens = window - _PRIOR_CONTEXT_RESERVED_TOKENS
+    if budget_tokens < _PRIOR_CONTEXT_MIN_TOKENS:
+        return None
+    budget_chars = budget_tokens * 4  # ~4 chars/token
+    if len(prior_context) > budget_chars:
+        return "[…earlier conversation trimmed to fit the window…]\n" + prior_context[-budget_chars:]
+    return prior_context
 
 
 class _Conversation:
@@ -610,7 +638,10 @@ def run_agent(
     None preserves the exact prior behavior for every other caller (CLI, MCP).
     """
     system_prompt = build_system_prompt()
-    ctx = _Conversation(goal, prior_context=prior_context)
+    # Bound prior_context to a window-aware budget (see the constants above) so a
+    # large conversation handed to a small-window backend can't overflow into a
+    # silent local truncation.
+    ctx = _Conversation(goal, prior_context=_bound_prior_context(prior_context, get_context_window_tokens()))
     transcript: list[dict[str, Any]] = []
 
     # Real per-run token accounting (feature 7c). run_usage sums every LLM
