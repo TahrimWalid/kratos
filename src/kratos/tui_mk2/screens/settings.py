@@ -262,6 +262,7 @@ class SettingsScreen(Screen):
         Binding("d", "delete", "delete model", show=False),
         Binding("u", "tz_auto", "tz auto", show=False),
         Binding("n", "set_name", "your name", show=False),
+        Binding("t", "set_theme", "theme", show=False),
         Binding("v", "view_source", "view code", show=False),
         Binding("c", "edit_description", "edit desc", show=False),
         Binding("right_square_bracket", "next_tab", "next tab", show=True),
@@ -308,9 +309,10 @@ class SettingsScreen(Screen):
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
                 yield Static("", id="gen-name")
+                yield Static("", id="gen-theme")
                 yield Static("", id="gen-tz")
                 yield Static(
-                    Text("n set your name · enter set a fixed display timezone · "
+                    Text("n set your name · t theme · enter set a fixed display timezone · "
                          "u revert to auto-detect · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
@@ -324,7 +326,19 @@ class SettingsScreen(Screen):
         self._reload_approvals()
         self._refresh_tz_status()
         self._refresh_name_status()
+        self._refresh_theme_status()
         table.focus()  # so ↑↓ navigate immediately, no click needed
+
+    def refresh_theme(self) -> None:
+        """Called by KratosTUI.apply_theme_pack after a live pack switch: re-render
+        this screen's dynamic content so its Text (built with T.ACCENT etc. at
+        add-time) picks up the new palette. Frozen CSS title colors update on the
+        next launch; the Textual widget chrome updated already via the theme flip."""
+        self._reload()
+        self._reload_approvals()
+        self._refresh_tz_status()
+        self._refresh_name_status()
+        self._refresh_theme_status()
 
     def _active_tab(self) -> str:
         return self.query_one(TabbedContent).active
@@ -647,6 +661,42 @@ class SettingsScreen(Screen):
 
     def action_set_name(self) -> None:
         self._set_name_flow()
+
+    # --- General tab (theme pack) ----------------------------------------
+    def _refresh_theme_status(self) -> None:
+        active = T.active_pack_name()
+        self.query_one("#gen-theme", Static).update(
+            Text(f"Theme: {T.pack_label(active)}", style=T.TEXT))
+
+    @work
+    async def _set_theme_flow(self) -> None:
+        if self._active_tab() != "tab-general":
+            return
+        from kratos.tui_mk2.modals import ListPickerModal
+
+        active = T.active_pack_name()
+        entries = [
+            (name, f"{T.pack_label(name)}{'  (active)' if name == active else ''}")
+            for name in T.PACKS
+        ]
+        picked = await self.app.push_screen_wait(
+            ListPickerModal("Theme pack", entries,
+                            subtitle="Recolors Kratos's chrome. Danger-red stays constant in every theme."))
+        if picked is None:
+            return
+        if picked == active:
+            self._set_gen_status(f"{T.pack_label(picked)} is already active.")
+            return
+        applied = self.app.apply_theme_pack(picked)  # live swap + persist; also calls refresh_theme
+        if not applied:
+            self._set_gen_status(f"Unknown theme {picked!r}.", T.CRITICAL)
+            return
+        self._set_gen_status(
+            f"Theme set to {T.pack_label(picked)} — applied now; a full repaint of older lines "
+            "happens next launch.", T.SAFE)
+
+    def action_set_theme(self) -> None:
+        self._set_theme_flow()
 
     def action_tz_auto(self) -> None:
         if self._active_tab() != "tab-general":

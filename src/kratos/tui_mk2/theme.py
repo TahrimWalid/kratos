@@ -23,6 +23,7 @@ theme.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 # --- Grounds / surfaces --------------------------------------------------
 BG = "#0b0b0d"            # app background (canvas card ground)
@@ -61,13 +62,57 @@ PACKS: dict[str, dict[str, str]] = {
 DEFAULT_PACK = "kratos-red"
 
 
+def _pref_path() -> Path:
+    """User-level (not per-project) stored theme choice. Read at import so a
+    relaunch starts fully in the chosen pack -- deliberately independent of the
+    app's --data-dir, which isn't known at import time, and of import order."""
+    return Path.home() / ".config" / "kratos" / "mk2_theme"
+
+
 def active_pack_name() -> str:
-    """The active theme pack, resolved once at import. Overridable via the
-    KRATOS_THEME env var (Phase 2's settings switcher persists a choice and sets
-    this env var so a fresh process picks it up); falls back to the red default
-    for an unset/unknown value."""
-    name = os.environ.get("KRATOS_THEME", "").strip()
-    return name if name in PACKS else DEFAULT_PACK
+    """The active theme pack, resolved at import from (1) the KRATOS_THEME env
+    var, else (2) the persisted user pref file, else (3) the red default. An
+    unknown value at any layer falls through to the next."""
+    env = os.environ.get("KRATOS_THEME", "").strip()
+    if env in PACKS:
+        return env
+    try:
+        stored = _pref_path().read_text(encoding="utf-8").strip()
+        if stored in PACKS:
+            return stored
+    except OSError:
+        pass
+    return DEFAULT_PACK
+
+
+def set_active_pack(name: str) -> bool:
+    """Switch the active pack live: re-bind the identity globals (ACCENT/
+    KRATOS_RED/ADMIN) so render-time Text uses the new colors immediately, and
+    persist the choice (env + user pref file) so a fresh launch starts in it.
+    Returns False for an unknown pack.
+
+    CSS f-strings already parsed at import (a few title colors, plus the Textual
+    widget chrome) keep the prior colors until the caller re-registers the
+    Textual theme and re-renders -- see KratosTUI.apply_theme_pack. A full
+    pixel-perfect repaint (including scrolled-back transcript lines) happens on
+    the next launch, which reads the persisted choice at import."""
+    global ACCENT, KRATOS_RED, ADMIN
+    if name not in PACKS:
+        return False
+    pack = PACKS[name]
+    ACCENT, KRATOS_RED, ADMIN = pack["ACCENT"], pack["KRATOS_RED"], pack["ADMIN"]
+    os.environ["KRATOS_THEME"] = name
+    try:
+        path = _pref_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(name + "\n", encoding="utf-8")
+    except OSError:
+        pass  # best-effort persistence; the live swap still took effect
+    return True
+
+
+def pack_label(name: str) -> str:
+    return PACKS.get(name, {}).get("label", name)
 
 
 _ACTIVE = PACKS[active_pack_name()]

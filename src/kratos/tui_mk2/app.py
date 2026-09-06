@@ -117,25 +117,45 @@ class KratosTUI(App):
         self._boot()
 
     def _install_theme(self) -> None:
+        # Register ONE Textual theme per pack (named by the pack) so switching
+        # packs is just `self.theme = <pack>` -- a real reactive change that
+        # live-updates Textual's own widget chrome (tab underline, focus/select,
+        # buttons). The active pack's identity accent drives primary/accent.
         from textual.theme import Theme
 
-        self.register_theme(
-            Theme(
-                name="kratos-mk2",
-                primary=T.ACCENT,        # tool-blue: primary buttons, active tab underline, focus
-                secondary=T.ADMIN,
-                accent=T.ACCENT,
-                foreground=T.TEXT,
-                background=T.BG,
-                surface=T.PANEL_BG,
-                panel=T.TITLEBAR_BG,
-                success=T.SAFE,
-                warning=T.ATTENTION,
-                error=T.CRITICAL,
-                dark=True,
+        for name, pack in T.PACKS.items():
+            accent = pack["ACCENT"]
+            self.register_theme(
+                Theme(
+                    name=name,
+                    primary=accent,        # active tab underline, focus, primary buttons
+                    secondary=pack["ADMIN"],
+                    accent=accent,
+                    foreground=T.TEXT,
+                    background=T.BG,
+                    surface=T.PANEL_BG,
+                    panel=T.TITLEBAR_BG,
+                    success=T.SAFE,
+                    warning=T.ATTENTION,
+                    error=T.CRITICAL,      # CRITICAL is constant across packs (danger red)
+                    dark=True,
+                )
             )
-        )
-        self.theme = "kratos-mk2"
+        self.theme = T.active_pack_name()
+
+    def apply_theme_pack(self, name: str) -> bool:
+        """Switch theme packs live (from the Settings General tab): re-bind the
+        palette globals, flip the Textual theme (updates widget chrome instantly),
+        and ask the current screen to re-render its dynamic content. A full
+        repaint of scrolled-back transcript lines happens on next launch (the
+        persisted choice is read at import). Returns False for an unknown pack."""
+        if not T.set_active_pack(name):
+            return False
+        self.theme = name  # a distinct value -> Textual reactive fires -> live chrome
+        hook = getattr(self.screen, "refresh_theme", None)
+        if callable(hook):
+            hook()
+        return True
 
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)

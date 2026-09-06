@@ -356,6 +356,13 @@ class SessionScreen(Screen):
             footer.append(" · will compact soon", style=T.ATTENTION)
         self.query_one("#statusfooter", Static).update(footer)
 
+    def refresh_theme(self) -> None:
+        """Called after a live theme-pack switch (KratosTUI.apply_theme_pack):
+        re-render the header/footer so they pick up the new palette. Scrolled
+        transcript lines keep their original colors until the next launch."""
+        self._refresh_header()
+        self._refresh_footer()
+
     # --- log helpers -----------------------------------------------------
     @property
     def _log(self) -> RichLog:

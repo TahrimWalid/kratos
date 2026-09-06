@@ -340,3 +340,50 @@ def test_general_tab_sets_user_name(tmp_path, monkeypatch):
     assert kc.load_local_config(tmp_path).get("user_name") == "Alice"
     assert fake._name_set == "Alice"
     assert "Alice" in shown
+
+
+def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+    from kratos.tui_mk2 import theme as T
+
+    # Isolate the pref file + restore palette globals so this never touches
+    # ~/.config or leaks the accent into other tests.
+    monkeypatch.setattr(T, "_pref_path", lambda: tmp_path / "mk2_theme")
+    snap = (T.ACCENT, T.KRATOS_RED, T.ADMIN)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(_FakeSession()))
+        calls = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def _apply(name):  # stand-in for KratosTUI.apply_theme_pack (no theme registry here)
+                calls.append(name)
+                T.set_active_pack(name)
+                app.screen.refresh_theme()
+                return True
+
+            monkeypatch.setattr(app, "apply_theme_pack", _apply, raising=False)
+
+            async def _pick(_modal):
+                return "kratos-blue"
+
+            monkeypatch.setattr(app, "push_screen_wait", _pick)
+            app.screen.query_one(TabbedContent).active = "tab-general"
+            await pilot.pause()
+            app.screen.action_set_theme()
+            await pilot.pause()
+            await pilot.pause()
+            return (calls,
+                    str(app.screen.query_one("#gen-theme", Static).render()),
+                    str(app.screen.query_one("#gen-status", Static).render()))
+
+    try:
+        calls, theme_label, status = asyncio.run(_run())
+    finally:
+        T.ACCENT, T.KRATOS_RED, T.ADMIN = snap
+        monkeypatch.delenv("KRATOS_THEME", raising=False)
+
+    assert calls == ["kratos-blue"]          # switcher delegated to the app
+    assert "Slate Blue" in theme_label       # gen-theme label refreshed live
+    assert "Slate Blue" in status
