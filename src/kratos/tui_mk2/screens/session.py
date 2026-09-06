@@ -46,6 +46,7 @@ from kratos.tui_mk2.modals import (
 
 REPL_MAX_ITERS = 5  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
 FULL_RESUME_DETAILED_TURN_CAP = 5  # matches cli/repl.py -- only the most recent N turns replay in full
+CHAT_COMPACTION_KEEP_RECENT = 3    # turns kept verbatim on /compact (matches loop.py's investigation compactor)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control codes from captured output
 
 _PALETTE_COMMANDS = [
@@ -1474,29 +1475,43 @@ class SessionScreen(Screen):
             if manual:
                 self._emit_from_worker(R.note_line("Nothing to compact yet — the working context is empty."))
             return False
+        # Keep the most recent turns VERBATIM and summarize only the older ones,
+        # matching the investigation compactor (COMPACTION_KEEP_RECENT_TURNS) and
+        # Claude Code — so the last few exchanges aren't blurred into a summary.
+        # Turns are separated by blank lines (_remember_turn joins with "\n\n").
+        chunks = [c for c in ctx.split("\n\n") if c.strip()]
+        if len(chunks) > 1:
+            keep = min(CHAT_COMPACTION_KEEP_RECENT, len(chunks) - 1)  # always summarize >=1
+            older, recent = chunks[:-keep], chunks[-keep:]
+        else:
+            older, recent = chunks, []  # a single blob: summarize it whole
         if manual:
-            self._emit_from_worker(R.note_line("Compacting the conversation (summarizing, a moment)…"))
+            self._emit_from_worker(R.note_line("Compacting the conversation (summarizing older turns, a moment)…"))
         else:
             # Auto-compaction near the window limit — the receding ⤵ notice, same
             # visual language as the investigation loop's 14b compaction event.
             self._emit_from_worker(R.compaction_line())
         summary = agent_chat(
             "You are a precise conversation summarizer.",
-            "Summarize the following conversation so it can be resumed later with the key facts, "
-            "decisions, findings, targets, and open threads preserved. Be concise but do NOT drop "
-            "concrete details. Write it as notes.\n\n" + ctx,
+            "Summarize the following earlier conversation so it can be resumed later with the key "
+            "facts, decisions, findings, targets, and open threads preserved. Be concise but do NOT "
+            "drop concrete details. Write it as notes.\n\n" + "\n\n".join(older),
             max_tokens=800,
         )
         if not summary or not summary.strip():
             if manual:
                 self._emit_from_worker(R.error_line("Compaction failed — the model returned no summary. Context unchanged."))
             return False
-        self.session_state["resume_context"] = f"[Compacted conversation summary:]\n{summary.strip()}"
+        new_ctx = f"[Earlier conversation summary:]\n{summary.strip()}"
+        if recent:
+            new_ctx += "\n\n" + "\n\n".join(recent)
+        self.session_state["resume_context"] = new_ctx
         reset_session_token_usage()  # meter now reflects the smaller context
         self.app.call_from_thread(self._refresh_footer)
         if manual:
+            kept = f" (kept the last {len(recent)} turn(s) verbatim)" if recent else ""
             self._emit_from_worker(R.success_line(
-                "Context compacted — earlier conversation summarized; Kratos still remembers the key points."))
+                f"Context compacted — earlier conversation summarized{kept}; Kratos still remembers the key points."))
         return True
 
     def _maybe_auto_compact(self) -> None:

@@ -183,11 +183,12 @@ def test_conversational_model_no_match_does_not_switch(tmp_path, monkeypatch):
     assert asyncio.run(_run()) == []
 
 
-def test_compact_replaces_context_with_summary(tmp_path, monkeypatch):
-    store, sid, screen = _make_screen(tmp_path, monkeypatch,
-                                      resume_context="You: hi\nKratos: hello\n" * 20)
-    monkeypatch.setattr(llm_interface, "agent_chat",
-                        lambda *a, **k: "SUMMARY: user greeted; nothing security-relevant.")
+def test_compact_keeps_recent_verbatim_and_summarizes_older(tmp_path, monkeypatch):
+    # 6 distinct turns separated by blank lines; the last 3 must stay verbatim,
+    # the older 3 get folded into the summary.
+    turns = "\n\n".join(f"You: q{i}\nKratos: a{i}" for i in range(6))
+    store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context=turns)
+    monkeypatch.setattr(llm_interface, "agent_chat", lambda *a, **k: "OLDSUMMARY")
 
     async def _run():
         app = _Host(screen)
@@ -199,8 +200,9 @@ def test_compact_replaces_context_with_summary(tmp_path, monkeypatch):
             return screen.session_state["resume_context"]
 
     ctx = asyncio.run(_run())
-    assert "Compacted conversation summary" in ctx
-    assert "SUMMARY: user greeted" in ctx     # memory kept (summarized), not discarded
+    assert "Earlier conversation summary" in ctx and "OLDSUMMARY" in ctx
+    assert "a5" in ctx and "a4" in ctx and "a3" in ctx   # last 3 turns kept verbatim
+    assert "a0" not in ctx and "a1" not in ctx           # older turns summarized away
 
 
 def test_chat_auto_compaction_fires_near_limit(tmp_path, monkeypatch):
@@ -219,7 +221,7 @@ def test_chat_auto_compaction_fires_near_limit(tmp_path, monkeypatch):
             return screen.session_state["resume_context"]
 
     ctx = asyncio.run(_run())
-    assert "Compacted conversation summary" in ctx and "SUMMARY of the chat" in ctx
+    assert "Earlier conversation summary" in ctx and "SUMMARY of the chat" in ctx
 
 
 def test_chat_auto_compaction_noop_below_threshold(tmp_path, monkeypatch):
