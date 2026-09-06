@@ -33,6 +33,26 @@ SSH_TARGET_KEY_PATH = Path(
 SSH_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_CONNECT_TIMEOUT", "10"))
 SSH_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_COMMAND_TIMEOUT", "30"))
 
+# SSH host-key verification (Sprint 1 backlog #12). The original behavior was
+# bare TOFU: `StrictHostKeyChecking=accept-new` against the user's GLOBAL
+# ~/.ssh/known_hosts, so a first-contact key was accepted blindly and pins
+# weren't isolated/auditable. These two knobs let an operator move to a pinned,
+# fail-closed posture on an untrusted network WITHOUT breaking the trusted lab:
+#   * KRATOS_SSH_KNOWN_HOSTS -> a Kratos-owned known_hosts file (isolated from
+#     the global one, so `ssh_remote.pin_target_host_key` can pin there and pins
+#     are auditable). Unset -> ssh's default known_hosts (unchanged behavior).
+#   * KRATOS_SSH_STRICT_HOST_KEY_CHECKING -> the OpenSSH StrictHostKeyChecking
+#     value. Default "accept-new" preserves the lab's zero-friction first
+#     contact; set "yes" to REJECT any host key not already pinned (the
+#     untrusted-network posture — pin the key first via pin_target_host_key or
+#     the target-onboarding step). A CHANGED key is rejected under BOTH values;
+#     only unknown-first-contact differs. Read live via the module (not a frozen
+#     import) so tests/callers can toggle mid-process, matching JOURNALCTL_USE_SUDO.
+SSH_KNOWN_HOSTS_PATH = (
+    Path(os.environ["KRATOS_SSH_KNOWN_HOSTS"]) if os.environ.get("KRATOS_SSH_KNOWN_HOSTS") else None
+)
+SSH_STRICT_HOST_KEY_CHECKING = os.environ.get("KRATOS_SSH_STRICT_HOST_KEY_CHECKING", "accept-new")
+
 # run_yara_scan's own timeout, deliberately separate from
 # SSH_COMMAND_TIMEOUT_SECONDS above -- that 30s default is right for the
 # quick, bounded SSH commands it's shared by (list_open_files,

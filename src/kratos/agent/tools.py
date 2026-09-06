@@ -328,7 +328,21 @@ def tool_parse_auth_log(
 ) -> dict[str, Any]:
     resolved_log_path = Path(log_path) if log_path else None
     events_out, stats_out, stats = _parse_auth_log_file(Path(data_dir), resolved_log_path, source)
-    return {"events_file": str(events_out), "stats_file": str(stats_out), "stats": stats}
+    # Also run the burst/brute-force detector on the LOCAL-host events and persist
+    # auth_patterns_*.json (Sprint 1 backlog #5). Without this, parse_auth_log
+    # produced only events/stats, so correlate_findings had no `bursts` to key
+    # CORR-SSH-001 off — a brute force against KRATOS'S OWN HOST went undetected
+    # even though the identical target-facing path (read_journalctl ->
+    # _persist_target_auth_correlation_data) already runs exactly this analysis.
+    # Wired the same way (a direct call, matching that path) so the two auth
+    # sources stay symmetric.
+    patterns_out = _analyze_auth_patterns(Path(data_dir), events_file=events_out)
+    return {
+        "events_file": str(events_out),
+        "stats_file": str(stats_out),
+        "patterns_file": str(patterns_out),
+        "stats": stats,
+    }
 
 
 @register_tool(

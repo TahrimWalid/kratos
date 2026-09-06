@@ -109,6 +109,20 @@ def _is_service_active(system_context: dict[str, Any] | None, unit_name: str) ->
     return False
 
 
+def _logging_services_assessable(system_context: dict[str, Any] | None) -> bool:
+    """Sprint 1 backlog #11: whether we actually have the data to judge logging
+    services active/inactive. `_is_service_active` returns False for a missing
+    system_context OR a context with no services list — indistinguishable from
+    "checked and genuinely off". OBS-001 must fire only when we truly checked,
+    so it can't false-positive ("logging appears off") on data we never had
+    (e.g. an isolated correlate_findings call with no preceding
+    collect_system_context)."""
+    if not system_context:
+        return False
+    services = system_context.get("services") or {}
+    return isinstance(services.get("units"), list)
+
+
 def _auth_failure_count(auth_stats: dict[str, Any] | None) -> int:
     if not auth_stats:
         return 0
@@ -423,9 +437,11 @@ def generate_findings(
                 )
             )
 
-    # Check for auth failures with inactive logging services
+    # Check for auth failures with inactive logging services. Only assess this
+    # when system_context actually carries a services list (#11) -- otherwise
+    # "inactive" is unverifiable and OBS-001 would false-positive on missing data.
     failures = _auth_failure_count(auth_stats)
-    if failures > 0:
+    if failures > 0 and _logging_services_assessable(system_context):
         rsyslog_ok = _is_service_active(system_context, "rsyslog.service")
         journald_ok = _is_service_active(system_context, "systemd-journald.service")
 
@@ -439,11 +455,6 @@ def generate_findings(
             scope_note = _system_context_scope_note(system_context)
             if scope_note:
                 obs_001_evidence.append(scope_note)
-            else:
-                obs_001_evidence.append(
-                    "system_context: not provided in this investigation -- 'inactive' here may "
-                    "simply mean service state could not be checked, not that logging is actually off"
-                )
             findings.append(
                 Finding(
                     id="OBS-001",

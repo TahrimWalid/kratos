@@ -69,15 +69,62 @@ def target_label() -> str:
     return f"{SSH_TARGET_USER}@{get_active_target()}"
 
 
+def _host_key_opts() -> list[str]:
+    """Host-key verification options (Sprint 1 backlog #12). Read live from the
+    module (not frozen imports) so a mid-process toggle takes effect, matching
+    the JOURNALCTL_USE_SUDO pattern. Default is unchanged (accept-new, ssh's own
+    known_hosts); an operator on an untrusted network sets
+    KRATOS_SSH_STRICT_HOST_KEY_CHECKING=yes + KRATOS_SSH_KNOWN_HOSTS to enforce a
+    pinned key (see pin_target_host_key)."""
+    opts = ["-o", f"StrictHostKeyChecking={_kconfig.SSH_STRICT_HOST_KEY_CHECKING}"]
+    if _kconfig.SSH_KNOWN_HOSTS_PATH is not None:
+        opts += ["-o", f"UserKnownHostsFile={_kconfig.SSH_KNOWN_HOSTS_PATH}"]
+    return opts
+
+
 def _base_ssh_argv() -> list[str]:
     return [
         "ssh",
         "-i", str(SSH_TARGET_KEY_PATH),
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
-        "-o", "StrictHostKeyChecking=accept-new",
+        *_host_key_opts(),
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
         f"{SSH_TARGET_USER}@{get_active_target()}",
     ]
+
+
+def pin_target_host_key(target: str | None = None, known_hosts_path: Path | None = None) -> SSHResult:
+    """Pin the target's SSH host key into a Kratos-owned known_hosts (backlog
+    #12) via `ssh-keyscan`, so `StrictHostKeyChecking=yes` can then enforce it
+    (fail closed on any unknown/changed key) instead of blind first-contact TOFU.
+    This is the deliberate, operator-invoked "trust this host's key now" step —
+    the one moment first contact is accepted, unlike TOFU where every first
+    contact is. Appends to `known_hosts_path` (or the configured
+    SSH_KNOWN_HOSTS_PATH); returns an SSHResult (ok=False if keyscan finds
+    nothing or no destination file is configured)."""
+    host = target or get_active_target()
+    dest = known_hosts_path or _kconfig.SSH_KNOWN_HOSTS_PATH
+    if dest is None:
+        return SSHResult(ok=False, returncode=-1, stdout="",
+                         stderr="No known_hosts path configured (set KRATOS_SSH_KNOWN_HOSTS) to pin a key into.")
+    try:
+        scan = subprocess.run(
+            ["ssh-keyscan", "-T", str(SSH_CONNECT_TIMEOUT_SECONDS), host],
+            capture_output=True, text=True, timeout=SSH_CONNECT_TIMEOUT_SECONDS + 5,
+        )
+    except subprocess.TimeoutExpired:
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"ssh-keyscan timed out for {host}")
+    except FileNotFoundError:
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh-keyscan binary not found on PATH")
+    keys = scan.stdout.strip()
+    if not keys:
+        return SSHResult(ok=False, returncode=scan.returncode, stdout="",
+                         stderr=(scan.stderr.strip() or f"ssh-keyscan returned no host key for {host}"))
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("a", encoding="utf-8") as f:
+        f.write(keys + "\n")
+    return SSHResult(ok=True, returncode=0, stdout=f"Pinned {host} host key(s) into {dest}", stderr="")
 
 
 def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
