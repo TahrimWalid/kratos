@@ -237,6 +237,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/report", "Investigation summary — findings by severity"),
+                ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
                 ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
                 ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
                 ("/clear", "Clear the screen + working context (session history kept)"),

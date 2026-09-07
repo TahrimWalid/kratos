@@ -61,3 +61,6 @@ llm/work/
 
 # Local data-directory backups (e.g. data.bak.20260705_pretest/) -- not code
 data.bak*/
+
+# Repomix output
+repomix-output.xml

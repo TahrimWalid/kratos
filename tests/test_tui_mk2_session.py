@@ -635,3 +635,38 @@ def test_apply_target_expands_typed_kratos_host_alias(tmp_path, monkeypatch):
             return screen.session_state["targets"]
 
     assert asyncio.run(_run()) == [KRATOS_HOST_VALUE]
+
+
+def test_doctor_runs_and_renders(tmp_path, monkeypatch):
+    # /doctor runs run_diagnostics off the event loop and writes a result table
+    # to the transcript (run_diagnostics mocked so the test stays offline).
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos.agent import doctor
+
+    called = {"n": 0}
+
+    def _fake_diag():
+        called["n"] += 1
+        return [
+            {"check": "LLM endpoint", "status": "pass", "detail": "reachable"},
+            {"check": "target setup", "status": "fail", "detail": "sshd unreachable"},
+        ]
+
+    monkeypatch.setattr(doctor, "run_diagnostics", _fake_diag)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            log = screen.query_one("#transcript")
+            before = len(log.lines)
+            screen._dispatch_slash("/doctor")
+            for _ in range(200):
+                await pilot.pause()
+                if called["n"] and not screen._busy:
+                    break
+            return called["n"], len(log.lines) - before
+
+    ran, wrote = asyncio.run(_run())
+    assert ran == 1        # diagnostics ran once
+    assert wrote > 0       # the table + summary were rendered

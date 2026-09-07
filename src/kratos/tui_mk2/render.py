@@ -288,3 +288,24 @@ def profile_blurb(values: dict[str, Any]) -> str:
     if any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")):
         return "local · free · private (nothing leaves this host)"
     return "cloud API · sends prompts to a third party · usage-billed"
+
+
+def doctor_table(checks: list[dict[str, str]]) -> Table:
+    """Render /doctor's diagnostic rows as a color-coded status table:
+    ✓ pass (safe) · ✗ fail (critical) · ! warn (attention) · · info (dim)."""
+    icons = {
+        "pass": ("✓", T.SAFE),
+        "fail": ("✗", T.CRITICAL),
+        "warn": ("!", T.ATTENTION),
+        "info": ("·", T.TEXT_DIM),
+    }
+    table = Table(show_header=False, box=None, title="Kratos — self-diagnostic",
+                  title_justify="left", title_style=f"bold {T.ACCENT}")
+    table.add_column(width=1, no_wrap=True)
+    table.add_column(style=T.TEXT_BRIGHT, no_wrap=True)
+    table.add_column(style=T.TEXT_MUTED)
+    for c in checks:
+        icon, color = icons.get(c.get("status", "info"), ("·", T.TEXT_DIM))
+        table.add_row(Text(icon, style=color), Text(str(c.get("check", "")), style=color),
+                      Text(str(c.get("detail", "")), style=T.TEXT_DIM))
+    return table

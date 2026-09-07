@@ -51,6 +51,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control co
 
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
+    ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
@@ -586,6 +587,8 @@ class SessionScreen(Screen):
             self.app.push_screen(HelpModal())
         elif cmd == "/report":
             self._render_report()
+        elif cmd in ("/doctor", "/health"):
+            self._doctor_flow()
         elif cmd == "/clear":
             self._clear_screen(archive=False)
             self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
@@ -626,6 +629,32 @@ class SessionScreen(Screen):
         else:
             # Unmatched /-prefix falls through to a goal (matches classic REPL).
             self._run_goal(text)
+
+    # --- /doctor (self-diagnostic, feature A1) --------------------------
+    @work(thread=True, exclusive=True, group="turn")
+    def _doctor_flow(self) -> None:
+        """Run Kratos's self-diagnostic (LLM endpoint, .env, backend, target
+        setup, kept tools) off the event loop -- the endpoint probe and the
+        target SSH check are blocking network work."""
+        from kratos.agent import doctor
+
+        self._set_busy(True)
+        self._emit_from_worker(R.note_line("Running diagnostics — checking LLM, target, and tools…"))
+        try:
+            checks = doctor.run_diagnostics()
+        except Exception as e:  # noqa: BLE001 -- should not happen (each check is guarded), but never crash the screen
+            self._emit_from_worker(R.error_line(f"Diagnostic run failed: {e}"))
+            self._set_busy(False)
+            return
+        self._emit_bubble_from_worker(R.doctor_table(checks), self._stamp_now()[1])
+        p, w, f = doctor.summarize(checks)
+        if f:
+            self._emit_from_worker(R.error_line(f"{f} problem(s) found — see the failing rows above."))
+        elif w:
+            self._emit_from_worker(R.note_line(f"{p} ok, {w} warning(s) — review the amber rows."))
+        else:
+            self._emit_from_worker(R.success_line(f"All good — {p} checks passed."))
+        self._set_busy(False)
 
     # --- /report (turn 4a) ----------------------------------------------
     def _render_report(self) -> None:
