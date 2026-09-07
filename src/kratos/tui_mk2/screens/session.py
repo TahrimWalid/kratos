@@ -62,6 +62,7 @@ _PALETTE_COMMANDS = [
     ("/clear", "clear the screen + working context (history kept)"),
     ("/reset", "wipe screen + archive history, start fresh"),
     ("/delete", "archive (soft-delete) this session"),
+    ("/sessions", "back to the session picker (keeps this session)"),
     ("/settings", "settings — models, tool approvals, timezone"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
@@ -96,6 +97,10 @@ class SessionScreen(Screen):
         # true mid-loop "resume" isn't possible (run_agent has no checkpoint),
         # so this honestly re-runs the same goal fresh.
         Binding("ctrl+r", "rerun", "re-run last", show=True),
+        # Leave this conversation and return to the session picker (start page).
+        # Confirm-gated so it's never a single-keystroke exit from an active
+        # session; the session is kept and stays resumable (unlike /delete).
+        Binding("ctrl+b", "back_to_sessions", "sessions", show=True),
     ]
 
     CSS = f"""
@@ -446,7 +451,7 @@ class SessionScreen(Screen):
             )
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · /compact free context · /help · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
+        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · /help · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
@@ -573,6 +578,8 @@ class SessionScreen(Screen):
 
         if cmd in ("/exit", "/quit"):
             self.app.exit()
+        elif cmd in ("/sessions", "/back"):
+            self.action_back_to_sessions()
         elif cmd == "/help":
             self.app.push_screen(HelpModal())
         elif cmd == "/report":
@@ -1569,3 +1576,27 @@ class SessionScreen(Screen):
             t, d = self._stamp_now()
             self._emit_stamped(self._you_header(chosen), t, d)
             self._dispatch_slash(chosen)
+
+    @work
+    async def action_back_to_sessions(self) -> None:
+        """Ctrl+B (or /sessions, /back) — leave this conversation and return to
+        the session picker (the start page). Confirm-gated so it can't be a
+        single-keystroke exit from an active session. The session is KEPT and
+        stays resumable from the list — nothing is archived or deleted (that's
+        /delete). A running turn must be stopped first (esc / Ctrl+C), matching
+        how typed slash commands are gated, and so the thread worker isn't left
+        touching a popped screen."""
+        if self._busy:
+            self.notify("A turn is running — press esc or Ctrl+C to stop it first.", timeout=3)
+            return
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Back to session list",
+                "Leave this conversation and return to the session picker.\n\n"
+                "This session is kept and stays resumable from the list — nothing is deleted.",
+            )
+        )
+        if not ok:
+            self._emit(R.note_line("Staying in this session."))
+            return
+        self.app.pop_screen()  # back to the launch chooser (it refreshes on resume)

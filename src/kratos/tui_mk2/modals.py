@@ -196,6 +196,7 @@ class HelpModal(ModalScreen[None]):
                 ("/clear", "Clear the screen + working context (session history kept)"),
                 ("/reset", "Wipe the screen + archive history, start this session fresh"),
                 ("/delete", "Archive (soft-delete) this session, back to picker"),
+                ("/sessions, /back", "Back to the session picker (Ctrl+B) — keeps this session"),
                 ("/rename <name>", "Name this session — usable anywhere its ID works"),
                 ("/exit, /quit", "Leave the session"),
             ]))

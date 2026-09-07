@@ -364,3 +364,78 @@ def test_reset_archives_history_and_clears(tmp_path, monkeypatch):
     ctx = asyncio.run(_run())
     assert ctx == ""
     assert store.get_goal_history(sid) == []  # archived (soft-deleted) — not shown going forward
+
+
+def test_back_to_sessions_confirmed_pops_screen(tmp_path, monkeypatch):
+    # Ctrl+B / /sessions returns to the picker on confirm; the session is KEPT
+    # (never archived), so it stays resumable from the list.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            popped = []
+            monkeypatch.setattr(app, "pop_screen", lambda *a, **k: popped.append(True))
+
+            async def _yes(_modal):
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
+            screen._dispatch_slash("/sessions")
+            await pilot.pause()
+            await pilot.pause()
+            return popped
+
+    popped = asyncio.run(_run())
+    assert popped == [True]                       # returned to the picker
+    assert store.get_session(sid)["status"] != "archived"  # session kept, not deleted
+
+
+def test_back_to_sessions_cancelled_stays(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            popped = []
+            monkeypatch.setattr(app, "pop_screen", lambda *a, **k: popped.append(True))
+
+            async def _no(_modal):
+                return False
+
+            monkeypatch.setattr(app, "push_screen_wait", _no)
+            screen._dispatch_slash("/back")   # alias
+            await pilot.pause()
+            await pilot.pause()
+            return popped
+
+    assert asyncio.run(_run()) == []  # no pop — stayed in the session
+
+
+def test_back_to_sessions_refuses_while_busy(tmp_path, monkeypatch):
+    # A running turn must be stopped first; the confirm modal is never shown and
+    # nothing pops (so the thread worker isn't left touching a popped screen).
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._busy = True
+            popped, prompted = [], []
+            monkeypatch.setattr(app, "pop_screen", lambda *a, **k: popped.append(True))
+
+            async def _prompted(_modal):
+                prompted.append(True)
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _prompted)
+            screen._dispatch_slash("/sessions")
+            await pilot.pause()
+            await pilot.pause()
+            return popped, prompted
+
+    popped, prompted = asyncio.run(_run())
+    assert popped == [] and prompted == []  # refused: no confirm prompt, no pop
