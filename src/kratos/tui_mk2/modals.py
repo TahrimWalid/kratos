@@ -24,6 +24,20 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.render import approval_panel
 
 
+def _decision_hint(affirm: str, refuse: str) -> Text:
+    """Shared y / n / esc key legend so every yes/no soft-warning modal reads
+    the SAME way: y affirms; n or esc backs out (esc is always 'cancel'). No
+    'Enter' and no '(default)' word-salad — three clearly labelled keys."""
+    hint = Text()
+    hint.append("\n  y ", style=f"bold {T.SAFE}")
+    hint.append(f"{affirm}       ", style=T.TEXT)
+    hint.append("n ", style=f"bold {T.TEXT_MUTED}")
+    hint.append(f"{refuse}       ", style=T.TEXT_DIM)
+    hint.append("esc ", style=f"bold {T.TEXT_MUTED}")
+    hint.append("cancel", style=T.TEXT_DIM)
+    return hint
+
+
 class CodeModal(ModalScreen[None]):
     """Read-only source viewer (used by /settings → Tools to review a kept
     tool's actual code before trusting it). Scrollable; esc closes."""
@@ -64,12 +78,7 @@ class ApprovalModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(classes="modal-card"):
             yield Static(approval_panel(self._tool_name, self._details))
-            hint = Text()
-            hint.append("  y", style=f"bold {T.SAFE}")
-            hint.append(" approve    ", style=T.TEXT_DIM)
-            hint.append("Enter / n / esc", style=f"bold {T.TEXT_DIM}")
-            hint.append(" deny (default)", style=T.TEXT_DIM)
-            yield Static(hint)
+            yield Static(_decision_hint("approve", "deny"))
 
     def action_approve(self) -> None:
         self.dismiss(True)
@@ -94,30 +103,46 @@ class ResumeTierModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
-            yield Static(Text(f"Resume {self._session_id}", style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(Text("How much of this session should Kratos reload?", style=T.TEXT))
-            # [l] Light — merits / demerits
-            yield Static(Text("[l] Light  (recommended)", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(Text("      Fast and light on context — Kratos gets your goals, outcomes, and a compact summary.",
+            yield Static(Text(f"Resume  {self._session_id}", style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Static(Text("How much of this session should Kratos reload?", style=T.TEXT_MUTED))
+            yield Static(Text(""))
+
+            # --- Light -------------------------------------------------------
+            light = Text()
+            light.append(" l ", style=f"bold {T.BG} on {T.SAFE}")   # filled key chip
+            light.append("  Light", style=f"bold {T.TEXT_BRIGHT}")
+            light.append("   · recommended", style=T.SAFE)
+            yield Static(light)
+            yield Static(Text("      Fast, light on context — your goals, outcomes, and a compact summary.",
                               style=T.TEXT_MUTED))
-            yield Static(Text("      Trade-off: it won't recall every fine detail of earlier turns word-for-word.",
+            yield Static(Text("      Won't recall every fine detail of earlier turns word-for-word.",
                               style=T.TEXT_DIM))
-            # [f] Full — merits / demerits
-            yield Static(Text("[f] Full", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(Text("      Kratos re-reads the whole prior transcript, so it remembers details precisely.",
+            yield Static(Text(""))
+
+            # --- Full --------------------------------------------------------
+            full = Text()
+            full.append(" f ", style=f"bold {T.BG} on {T.ACCENT}")
+            full.append("  Full", style=f"bold {T.TEXT_BRIGHT}")
+            yield Static(full)
+            yield Static(Text("      Re-reads the whole transcript — precise recall of earlier details.",
                               style=T.TEXT_MUTED))
-            yield Static(Text("      Trade-off: uses much more context — slower to start, and on a small-context "
-                              "(local) model it can overflow and force an immediate compaction.",
+            yield Static(Text("      Uses much more context; on a small-context (local) model it can overflow "
+                              "and force an immediate compaction.",
                               style=T.TEXT_DIM))
-            yield Static(Text("[b] Back to session list", style=T.TEXT_DIM))
             if self._warn:
-                yield Static(
-                    Text(
-                        "! You're on a small-context local model — Full is likely to overflow here. "
-                        "Light is the safe choice.",
-                        style=T.ATTENTION,
-                    )
-                )
+                yield Static(Text("      ! small-context local model — Full will likely overflow here; pick Light.",
+                                  style=T.ATTENTION))
+            yield Static(Text(""))
+
+            # --- key legend --------------------------------------------------
+            legend = Text()
+            legend.append("  l ", style=f"bold {T.SAFE}")
+            legend.append("light       ", style=T.TEXT)
+            legend.append("f ", style=f"bold {T.ACCENT}")
+            legend.append("full       ", style=T.TEXT)
+            legend.append("b / esc ", style=f"bold {T.TEXT_MUTED}")
+            legend.append("back", style=T.TEXT_DIM)
+            yield Static(legend)
 
     def action_light(self) -> None:
         self.dismiss("l")
@@ -148,12 +173,7 @@ class ConfirmModal(ModalScreen[bool]):
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ATTENTION}"), classes="modal-title")
             yield Static(Text(self._body, style=T.TEXT))
-            hint = Text()
-            hint.append("\n  y", style=f"bold {T.SAFE}")
-            hint.append(" confirm    ", style=T.TEXT_DIM)
-            hint.append("Enter / n / esc", style=f"bold {T.TEXT_DIM}")
-            hint.append(" cancel (default)", style=T.TEXT_DIM)
-            yield Static(hint)
+            yield Static(_decision_hint("confirm", "no"))
 
     def action_confirm(self) -> None:
         self.dismiss(True)

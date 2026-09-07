@@ -41,6 +41,7 @@ class LaunchScreen(Screen):
         Binding("enter", "resume_selected", "resume", show=True),
         Binding("n", "new_session", "new", show=True),
         Binding("a", "archived", "archived", show=True),
+        Binding("b", "back", "back", show=False),
         Binding("m", "more", "more", show=False),
         Binding("q", "quit_app", "quit", show=True),
     ]
@@ -129,11 +130,19 @@ class LaunchScreen(Screen):
 
     # --- actions ---------------------------------------------------------
     def action_quit_app(self) -> None:
+        # q always quits the app (the archived view's own hint lists 'b back'
+        # and 'q quit' as distinct — b returns to recent, q leaves Kratos).
+        self.app.exit()
+
+    def action_back(self) -> None:
+        # b = step back to the recent list: out of the archived view, or from a
+        # paged recent list back to page 1. A no-op on the plain first page.
         if self._archived_mode:
             self._archived_mode = False
             self._reload()
-            return
-        self.app.exit()
+        elif self._offset:
+            self._offset = 0
+            self._reload()
 
     def action_archived(self) -> None:
         self._archived_mode = True
@@ -172,15 +181,17 @@ class LaunchScreen(Screen):
 
     @work
     async def _resume_flow(self, session: dict[str, Any]) -> None:
-        if self._archived_mode:
-            self._store.restore_session(session["session_id"])
-        elif session.get("status") == "archived":
-            self._store.restore_session(session["session_id"])
+        was_archived = self._archived_mode or session.get("status") == "archived"
+        # Ask for the tier BEFORE committing anything. If the user backs out of
+        # tier selection, nothing should change: don't un-archive the session,
+        # and stay in whichever view we came from (the archived list if that's
+        # where Enter was pressed) rather than dropping to the recent list.
         tier = await self._pick_tier(session)
         if tier is None:
-            self._archived_mode = False
-            self._reload()
+            self._reload()  # re-render the CURRENT view (mode unchanged)
             return
+        if was_archived:
+            self._store.restore_session(session["session_id"])
         resume_context = self._build_context(session["session_id"], tier)
         self._open_session(session["session_id"], session["targets"], resume_context, full_replay=(tier == "f"))
 
