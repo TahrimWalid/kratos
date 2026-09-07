@@ -1115,37 +1115,52 @@ class SessionScreen(Screen):
 
     # --- /tools (classified overview) ------------------------------------
     # --- /tool <name>: deterministic single-tool run --------------------
-    def _tool_flow(self, rest: str) -> None:
-        """`/tool <name> [json-args]` runs EXACTLY that tool via the real
-        dispatch (execute_tool_call) with NO model tool-selection — the
-        deterministic override for when you know which tool you want. Approval
-        gates and the pre-dispatch guards still apply (this is the same path the
-        agent uses, just chosen by you, not the LLM)."""
+    def _tool_picker_entries(self) -> list[tuple[str, str]]:
         from kratos.agent.tools import TOOL_REGISTRY
 
+        entries = []
+        for n in sorted(TOOL_REGISTRY):
+            desc = (TOOL_REGISTRY[n].description or "").splitlines()[0]
+            entries.append((n, desc[:70]))
+        return entries
+
+    @work
+    async def _tool_flow(self, rest: str) -> None:
+        """`/tool <name> [json-args]` runs EXACTLY that tool via the real
+        dispatch (execute_tool_call) with NO model tool-selection — the
+        deterministic override for when you know which tool you want. Bare
+        `/tool` opens a searchable picker. Approval gates and the pre-dispatch
+        guards still apply (this is the same path the agent uses, chosen by you)."""
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.tui_mk2.modals import ToolPickerModal
+
         parts = rest.split(maxsplit=1)
+        args: dict[str, Any] = {}
         if not parts:
-            self._emit(R.note_line('Usage: /tool <name> [json-args] — e.g. /tool run_nmap_scan. See /tools for the list.'))
-            return
-        name = parts[0]
+            # Bare /tool -> searchable pick-from-list (type to filter).
+            picked = await self.app.push_screen_wait(ToolPickerModal(self._tool_picker_entries()))
+            if not picked:
+                return
+            name = picked
+        else:
+            name = parts[0]
+            argstr = parts[1].strip() if len(parts) > 1 else ""
+            if argstr:
+                try:
+                    parsed = json.loads(argstr)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("args must be a JSON object")
+                    args = parsed
+                except Exception as e:  # noqa: BLE001
+                    self._emit(R.error_line(
+                        f"Couldn't parse args: {e}. Pass a JSON object, e.g. "
+                        '/tool check_ip_reputation {"ip": "1.2.3.4"}'))
+                    return
         if name not in TOOL_REGISTRY:
             near = [t for t in sorted(TOOL_REGISTRY) if name.lower() in t.lower()]
             hint = f" Did you mean: {', '.join(near[:3])}?" if near else ""
             self._emit(R.error_line(f"No tool named '{name}'. See /tools for the list.{hint}"))
             return
-        args: dict[str, Any] = {}
-        argstr = parts[1].strip() if len(parts) > 1 else ""
-        if argstr:
-            try:
-                parsed = json.loads(argstr)
-                if not isinstance(parsed, dict):
-                    raise ValueError("args must be a JSON object")
-                args = parsed
-            except Exception as e:  # noqa: BLE001
-                self._emit(R.error_line(
-                    f"Couldn't parse args: {e}. Pass a JSON object, e.g. "
-                    '/tool check_ip_reputation {"ip": "1.2.3.4"}'))
-                return
         # Arg discovery: if a required arg is missing, show the tool's parameters
         # as usage instead of dispatching into a cryptic "missing argument" error.
         missing = self._missing_required_args(TOOL_REGISTRY[name], args)

@@ -386,6 +386,75 @@ class ClarifyModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class ToolPickerModal(ModalScreen[str | None]):
+    """Searchable tool picker for bare /tool: type to filter by name or
+    description, ↑↓ to move, Enter to pick, esc to cancel. Returns the chosen
+    tool name (or None). `entries` is a list of (name, description)."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("down", "cursor_down", "down", show=False),
+        Binding("up", "cursor_up", "up", show=False),
+    ]
+
+    def __init__(self, entries: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self._entries = entries
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text("Run a tool", style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Input(placeholder="type to filter tools…", id="tp-input")
+            yield ListView(id="tp-list")
+            yield Static(Text("↑↓ select · Enter run · esc cancel", style=T.TEXT_DIM))
+
+    def on_mount(self) -> None:
+        self.query_one("#tp-input", Input).focus()
+        self._refresh("")
+
+    def _matches(self, query: str) -> list[tuple[str, str]]:
+        q = query.strip().lower()
+        return [(n, d) for n, d in self._entries if q in n.lower() or q in d.lower()]
+
+    def _refresh(self, query: str) -> None:
+        lst = self.query_one("#tp-list", ListView)
+        lst.clear()
+        for name, desc in self._matches(query):
+            row = Text()
+            row.append(f"{name:<26}", style=T.ACCENT)
+            row.append(desc, style=T.TEXT_MUTED)
+            lst.append(ListItem(Label(row)))
+        if len(lst):
+            lst.index = 0
+
+    @on(Input.Changed, "#tp-input")
+    def _changed(self, event: Input.Changed) -> None:
+        self._refresh(event.value)
+
+    @on(Input.Submitted, "#tp-input")
+    def _submit(self, event: Input.Submitted) -> None:
+        matches = self._matches(event.value)
+        if matches:
+            idx = max(0, self.query_one("#tp-list", ListView).index or 0)
+            self.dismiss(matches[idx][0])
+
+    @on(ListView.Selected, "#tp-list")
+    def _picked(self, event: ListView.Selected) -> None:
+        matches = self._matches(self.query_one("#tp-input", Input).value)
+        idx = event.list_view.index or 0
+        if 0 <= idx < len(matches):
+            self.dismiss(matches[idx][0])
+
+    def action_cursor_down(self) -> None:
+        self.query_one("#tp-list", ListView).action_cursor_down()
+
+    def action_cursor_up(self) -> None:
+        self.query_one("#tp-list", ListView).action_cursor_up()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class CommandPaletteModal(ModalScreen[str | None]):
     """Turn 7a -- typing '/' opens a filter-as-you-type command palette.
     Returns the chosen command string (e.g. '/report') or None. Purely a

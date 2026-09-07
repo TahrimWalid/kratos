@@ -749,6 +749,43 @@ def test_tool_command_unknown_tool_errors_without_running(tmp_path, monkeypatch)
     assert asyncio.run(_run()) == 0  # rejected before any dispatch
 
 
+def test_bare_tool_opens_picker_then_runs_selection(tmp_path, monkeypatch):
+    # Bare /tool opens the searchable picker; the picked tool is then run.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos.agent import loop as agent_loop
+    from kratos.tui_mk2.modals import ToolPickerModal
+
+    ran = {}
+
+    def _fake_exec(name, args, data_dir):
+        ran["name"] = name
+        return {"status": "ok", "result": {"ok": True}}
+
+    monkeypatch.setattr(agent_loop, "execute_tool_call", _fake_exec)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            opened = {}
+
+            async def _pick(modal):
+                opened["is_picker"] = isinstance(modal, ToolPickerModal)
+                return "run_nmap_scan"  # user selects a tool
+
+            monkeypatch.setattr(app, "push_screen_wait", _pick)
+            screen._dispatch_slash("/tool")  # bare -> picker
+            for _ in range(200):
+                await pilot.pause()
+                if "name" in ran:
+                    break
+            return opened.get("is_picker"), ran.get("name")
+
+    is_picker, name = asyncio.run(_run())
+    assert is_picker is True          # a ToolPickerModal was opened
+    assert name == "run_nmap_scan"    # and the selection was run
+
+
 def test_tool_command_missing_required_arg_shows_usage_not_dispatch(tmp_path, monkeypatch):
     # A tool with a required arg the user didn't pass shows its parameters as
     # usage, WITHOUT dispatching into a cryptic "missing argument" error.
