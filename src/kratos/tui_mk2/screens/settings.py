@@ -23,6 +23,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Select, Static, TabbedContent, TabPane
 
+from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
 
 # Provider presets: label -> (base_url, backend). "" base_url = fill it yourself.
@@ -283,9 +284,15 @@ class SettingsScreen(Screen):
     SettingsScreen .set-placeholder {{ color: {T.TEXT_DIM}; padding: 1 0; }}
     """
 
-    def __init__(self, session: Any) -> None:
+    def __init__(self, session: Any = None, data_dir: Any = None) -> None:
         super().__init__()
+        # `session` is the SessionScreen underneath when opened via /settings
+        # (used for live footer/backend/name/tz updates). Opened from the home
+        # screen (Ctrl+S / 's') there is no session -- `data_dir` is passed
+        # directly and the session-live updates simply no-op. The Models / Tools
+        # / General tabs are all global and work either way.
         self._session = session
+        self._data_dir_direct = data_dir
         self._candidates: list = []
         self._current = None
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
@@ -374,7 +381,7 @@ class SettingsScreen(Screen):
             table.add_row(
                 Text("●", style=T.SAFE) if active else Text(" "),
                 Text(c.model, style=T.TEXT_BRIGHT if active else T.TEXT_MUTED),
-                Text(self._session._profile_blurb(c.values), style=T.TEXT_DIM),
+                Text(R.profile_blurb(c.values), style=T.TEXT_DIM),
                 Text(win_txt, style=T.TEXT_MUTED),
             )
 
@@ -579,7 +586,7 @@ class SettingsScreen(Screen):
 
     # --- General tab (name / theme / timezone -- one navigable table) ----
     def _data_dir(self):
-        return getattr(self._session, "_data_dir", None)
+        return getattr(self._session, "_data_dir", None) or self._data_dir_direct
 
     def _tz_value(self) -> str:
         from kratos.utils import timeutil
@@ -775,8 +782,9 @@ class SettingsScreen(Screen):
         _p.add_profile(ENV_FILE_PATH, values, make_active=reachable)
         if reachable:
             set_active_llm_profile(values)
-            self._session.session_state["backend"] = values["LLM_MODEL"]
-            self.app.call_from_thread(self._session._refresh_footer)
+            if self._session is not None:  # no live session when opened from home
+                self._session.session_state["backend"] = values["LLM_MODEL"]
+                self.app.call_from_thread(self._session._refresh_footer)
             self.app.call_from_thread(self._reload)
             self.app.call_from_thread(
                 self._set_status, f"Added {values['LLM_MODEL']} and switched to it — saved to .env.", T.SAFE)
@@ -809,7 +817,8 @@ class SettingsScreen(Screen):
             else:
                 vals["LLM_CONTEXT_WINDOW"] = str(window)
             set_active_llm_profile(vals)
-            self._session._refresh_footer()
+            if self._session is not None:
+                self._session._refresh_footer()
         self._reload()
         shown = "auto" if window is None else f"{window:,}"
         self._set_status(f"Set {profile.model} context window to {shown}.", T.SAFE)
@@ -865,8 +874,9 @@ class SettingsScreen(Screen):
             return
         set_active_llm_profile(target.values)
         _p.switch_profile(ENV_FILE_PATH, target, self._current)
-        self._session.session_state["backend"] = target.model
-        self.app.call_from_thread(self._session._refresh_footer)
+        if self._session is not None:  # no live session when opened from home
+            self._session.session_state["backend"] = target.model
+            self.app.call_from_thread(self._session._refresh_footer)
         self.app.call_from_thread(self._reload)
         self.app.call_from_thread(self._set_status, f"Switched to {target.model} — active now, saved to .env.", T.SAFE)
 

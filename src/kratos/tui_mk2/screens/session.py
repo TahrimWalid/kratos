@@ -919,14 +919,10 @@ class SessionScreen(Screen):
     # --- model cost/privacy blurb (used by the Settings Models tab) ------
     @staticmethod
     def _profile_blurb(values: dict[str, str]) -> str:
-        """Turn 16c -- honest cost/privacy disclosure per backend option,
-        derived from the profile's own endpoint (not a hardcoded list): a
-        loopback base URL is a local model (free, private); anything else is a
-        remote/cloud endpoint that sees the prompts and is usually billed."""
-        url = (values.get("LLM_BASE_URL") or "").lower()
-        if any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")):
-            return "local · free · private (nothing leaves this host)"
-        return "cloud API · sends prompts to a third party · usage-billed"
+        """Turn 16c -- honest cost/privacy disclosure per backend option. Now a
+        thin delegate to render.profile_blurb so the Settings screen can render
+        the same line with no live session (single source of truth)."""
+        return R.profile_blurb(values)
 
     # --- /evolve ---------------------------------------------------------
     @work

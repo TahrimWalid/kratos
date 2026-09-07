@@ -13,6 +13,7 @@ column is kept for familiarity. Resume-depth (light/full, turn 6b) is a modal.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, Input, Static
 
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
@@ -39,8 +40,15 @@ class LaunchScreen(Screen):
 
     BINDINGS = [
         Binding("enter", "resume_selected", "resume", show=True),
+        Binding("slash", "focus_filter", "search", show=True),
+        Binding("escape", "clear_filter", "clear search", show=False),
         Binding("n", "new_session", "new", show=True),
         Binding("a", "archived", "archived", show=True),
+        Binding("s", "settings", "settings", show=True),
+        # ctrl+s too, since some users reach for it -- but 's' is the reliable
+        # one (ctrl+s is the terminal's XOFF; Textual disables flow control so
+        # it usually still arrives, but don't depend on it).
+        Binding("ctrl+s", "settings", "settings", show=False),
         Binding("b", "back", "back", show=False),
         Binding("m", "more", "more", show=False),
         Binding("q", "quit_app", "quit", show=True),
@@ -49,6 +57,8 @@ class LaunchScreen(Screen):
     CSS = f"""
     LaunchScreen {{ padding: 1 2; }}
     LaunchScreen #title {{ height: 1; }}
+    LaunchScreen #filter {{ margin: 1 0 0 0; border: round {T.TEXT_GHOST}; height: 3; }}
+    LaunchScreen #filter:focus {{ border: round {T.ACCENT}; }}
     LaunchScreen #hints {{ color: {T.TEXT_DIM}; height: auto; margin-top: 1; }}
     LaunchScreen DataTable {{ height: 1fr; }}
     LaunchScreen #empty {{ color: {T.TEXT_DIM}; }}
@@ -58,7 +68,9 @@ class LaunchScreen(Screen):
         super().__init__()
         self._store = store
         self._data_dir = data_dir
-        self._rows: list[dict[str, Any]] = []
+        self._rows: list[dict[str, Any]] = []      # sessions fetched from the store
+        self._display: list[dict[str, Any]] = []   # table rows: {"kind":"header"|"session", ...}
+        self._filter = ""                          # live search text
         self._archived_mode = False
         self._offset = 0          # recent-mode paging (turn 6a "[m] more")
         self._has_more = False    # is there a page after the current one?
@@ -70,6 +82,7 @@ class LaunchScreen(Screen):
             title.append("KRATOS", style=f"bold {T.KRATOS_RED}")
             title.append("  recent sessions", style=T.TEXT_GHOST)
             yield Static(title, id="title")
+            yield Input(placeholder="Filter by name, target, or last goal…  ( / )", id="filter")
             yield DataTable(id="sessions", cursor_type="row", zebra_stripes=False)
             yield Static("", id="hints")
 
@@ -83,11 +96,17 @@ class LaunchScreen(Screen):
         # Returning here after a /delete popped the session screen -- refresh so
         # the just-archived session is gone (list_recent_sessions filters it).
         self._archived_mode = False
+        self._filter = ""
+        try:
+            self.query_one("#filter", Input).value = ""
+        except Exception:  # noqa: BLE001 -- widget may not be mounted yet
+            pass
         self._reload()
 
+    # --- data + rendering ------------------------------------------------
     def _reload(self) -> None:
-        table = self.query_one("#sessions", DataTable)
-        table.clear()
+        """Fetch the current page/mode from the store, then (re)render the
+        table. Focuses the table -- used on load and on a mode/page change."""
         if self._archived_mode:
             self._rows = self._store.list_archived_sessions(limit=CHOOSER_SESSION_LIMIT)
             self._has_more = False
@@ -97,26 +116,99 @@ class LaunchScreen(Screen):
             self._has_more = bool(
                 self._store.list_recent_sessions(limit=1, offset=self._offset + CHOOSER_SESSION_LIMIT)
             )
-        for i, s in enumerate(self._rows, start=1):
+        self._rebuild_display()
+        self.query_one("#sessions", DataTable).focus()
+
+    def _matches(self, s: dict[str, Any], q: str) -> bool:
+        if not q:
+            return True
+        hay = " ".join([
+            s.get("name") or "",
+            " ".join(s.get("targets") or []),
+            s.get("latest_goal") or "",
+            s.get("session_id") or "",
+        ]).lower()
+        return q in hay
+
+    def _bucket_for(self, last_active_at: Any) -> str:
+        """Relative date bucket in the display zone. 'This week' = last 7 days,
+        'This month' = last 30 -- relative labels people actually read, not raw
+        week numbers."""
+        dt = timeutil.parse_stored_instant(last_active_at)
+        if dt is None:
+            return "Older"
+        d = dt.astimezone(self._display_tz).date()
+        today = timeutil.utc_now().astimezone(self._display_tz).date()
+        if d >= today:
+            return "Today"
+        if d == today - timedelta(days=1):
+            return "Yesterday"
+        if d > today - timedelta(days=7):
+            return "This week"
+        if d > today - timedelta(days=30):
+            return "This month"
+        return "Older"
+
+    def _rebuild_display(self) -> None:
+        """Render self._rows into the table applying the live filter and (when
+        browsing unfiltered recent sessions) relative date-bucket headers.
+        Filtered or archived views are flat -- results are already few, and
+        buckets would just be noise there."""
+        table = self.query_one("#sessions", DataTable)
+        table.clear()
+        self._display = []
+        q = self._filter.strip().lower()
+        filtered = [s for s in self._rows if self._matches(s, q)]
+        use_buckets = (not self._archived_mode) and not q
+        n = 0
+        current_bucket = None
+        for s in filtered:
+            if use_buckets:
+                b = self._bucket_for(s["last_active_at"])
+                if b != current_bucket:
+                    current_bucket = b
+                    self._display.append({"kind": "header", "label": b})
+                    table.add_row(Text(""), Text(""), Text(f"▾ {b}", style=f"bold {T.ACCENT}"),
+                                  Text(""), Text(""), Text(""))
+            n += 1
             name = s.get("name") or "(unnamed)"
             targets = ", ".join(s["targets"]) if s["targets"] else "(none)"
             goal = s.get("latest_goal") or "(no turns yet)"
             if len(goal) > 46:
                 goal = goal[:43] + "…"
-            # last_active_at is stored UTC -- render in the display zone
-            # (falls back to the raw string if unparseable).
             last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
-            table.add_row(str(i), s["session_id"], name, targets, goal, last_active)
-        table.focus()
-        self._render_hints()
+            self._display.append({"kind": "session", "session": s})
+            table.add_row(str(n), s["session_id"], name, targets, goal, last_active)
+        first = self._first_session_row()
+        if first is not None:
+            table.move_cursor(row=first)
+        self._render_hints(shown=len(filtered))
 
-    def _render_hints(self) -> None:
+    def _first_session_row(self) -> int | None:
+        for i, item in enumerate(self._display):
+            if item["kind"] == "session":
+                return i
+        return None
+
+    def _session_at(self, row: int | None) -> dict[str, Any] | None:
+        """The session at a table row, or None if the row is a bucket header
+        (or out of range) -- so Enter on a header is an inert no-op."""
+        if row is None or not (0 <= row < len(self._display)):
+            return None
+        item = self._display[row]
+        return item["session"] if item["kind"] == "session" else None
+
+    def _render_hints(self, shown: int | None = None) -> None:
         hints = self.query_one("#hints", Static)
         if not self._rows and not self._archived_mode:
             hints.update(Text("No sessions yet — press n to start one, or q to quit.", style=T.TEXT_DIM))
             return
+        count_txt = ""
+        if self._filter.strip():
+            count_txt = f"showing {shown} of {len(self._rows)}  ·  esc clear  ·  "
         if self._archived_mode:
-            hints.update(Text("Enter restore & resume · b back to recent · q quit", style=T.TEXT_DIM))
+            hints.update(Text(f"{count_txt}Enter restore & resume · / search · b back to recent · q quit",
+                              style=T.TEXT_DIM))
             return
         page = self._offset // CHOOSER_SESSION_LIMIT + 1
         page_txt = f"  ·  page {page}" if self._offset else ""
@@ -126,7 +218,29 @@ class LaunchScreen(Screen):
             more = "  ·  m back to page 1"
         else:
             more = ""
-        hints.update(Text(f"Enter resume · n new · a archived{more}{page_txt} · q quit", style=T.TEXT_DIM))
+        hints.update(Text(f"{count_txt}Enter resume · / search · n new · a archived · s settings{more}{page_txt} · q quit",
+                          style=T.TEXT_DIM))
+
+    # --- filter (search) -------------------------------------------------
+    def action_focus_filter(self) -> None:
+        self.query_one("#filter", Input).focus()
+
+    def action_clear_filter(self) -> None:
+        if self._filter:
+            self._filter = ""
+            self.query_one("#filter", Input).value = ""
+            self._rebuild_display()
+        self.query_one("#sessions", DataTable).focus()
+
+    @on(Input.Changed, "#filter")
+    def _filter_changed(self, event: Input.Changed) -> None:
+        self._filter = event.value
+        self._rebuild_display()  # deliberately does NOT steal focus from the input
+
+    @on(Input.Submitted, "#filter")
+    def _filter_submitted(self, event: Input.Submitted) -> None:
+        # Enter in the filter jumps into the results so ↑↓ + Enter can pick one.
+        self.query_one("#sessions", DataTable).focus()
 
     # --- actions ---------------------------------------------------------
     def action_quit_app(self) -> None:
@@ -149,6 +263,15 @@ class LaunchScreen(Screen):
         self._offset = 0
         self._reload()
 
+    def action_settings(self) -> None:
+        # Global settings (models / tools / general) reachable from the home
+        # screen with no active session -- SettingsScreen handles session=None,
+        # taking the data_dir directly. Session-specific config stays in-session
+        # (/target, /rename); those live-updates just no-op here.
+        from kratos.tui_mk2.screens.settings import SettingsScreen
+
+        self.app.push_screen(SettingsScreen(data_dir=self._data_dir))
+
     def action_more(self) -> None:
         # Turn 6a "[m] more sessions": page forward through recent sessions
         # using the store's offset support; wrap back to page 1 once there are
@@ -165,19 +288,15 @@ class LaunchScreen(Screen):
         # below) before a screen-level binding would ever see it -- this action
         # stays as a keyboard fallback for any focus state where the table
         # isn't focused, and both funnel to the same _resume_flow.
-        if not self._rows:
-            return
-        table = self.query_one("#sessions", DataTable)
-        row = table.cursor_row
-        if row is None or not (0 <= row < len(self._rows)):
-            return
-        self._resume_flow(self._rows[row])
+        session = self._session_at(self.query_one("#sessions", DataTable).cursor_row)
+        if session is not None:
+            self._resume_flow(session)
 
     @on(DataTable.RowSelected, "#sessions")
     def _row_selected(self, event: DataTable.RowSelected) -> None:
-        row = event.cursor_row
-        if row is not None and 0 <= row < len(self._rows):
-            self._resume_flow(self._rows[row])
+        session = self._session_at(event.cursor_row)
+        if session is not None:  # None => a bucket header row, inert
+            self._resume_flow(session)
 
     @work
     async def _resume_flow(self, session: dict[str, Any]) -> None:

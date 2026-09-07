@@ -100,3 +100,63 @@ def test_archived_resume_with_tier_restores_and_opens(tmp_path, monkeypatch):
     status, opened_ok = asyncio.run(_run())
     assert status == "active"       # committing a tier restores it
     assert opened_ok                # and opens the session
+
+
+def test_bucket_for_relative_dates(tmp_path):
+    from datetime import timedelta
+
+    from kratos.utils import timeutil
+
+    store, sid, screen = _make_launch(tmp_path)
+    now = timeutil.utc_now()
+
+    def ago(days):
+        return (now - timedelta(days=days)).isoformat()
+
+    assert screen._bucket_for(now.isoformat()) == "Today"
+    assert screen._bucket_for(ago(1)) == "Yesterday"
+    assert screen._bucket_for(ago(3)) == "This week"
+    assert screen._bucket_for(ago(10)) == "This month"
+    assert screen._bucket_for(ago(60)) == "Older"
+
+
+def test_filter_narrows_sessions(tmp_path):
+    store = SessionStore(tmp_path / "kratos.db")
+    a = store.create_session(["10.0.0.1"], "m")
+    store.rename_session(a, "alpha")
+    b = store.create_session(["10.0.0.2"], "m")
+    store.rename_session(b, "beta")
+    screen = LaunchScreen(store, tmp_path)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            total = sum(1 for d in screen._display if d["kind"] == "session")
+            screen._filter = "alpha"
+            screen._rebuild_display()
+            await pilot.pause()
+            matched = [d["session"]["name"] for d in screen._display if d["kind"] == "session"]
+            return total, matched
+
+    total, matched = asyncio.run(_run())
+    assert total == 2
+    assert matched == ["alpha"]  # filtered to the one match
+
+
+def test_bucket_header_row_is_inert(tmp_path):
+    store = SessionStore(tmp_path / "kratos.db")
+    store.create_session(["10.0.0.1"], "m")  # created now -> "Today" bucket
+    screen = LaunchScreen(store, tmp_path)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            kinds = [d["kind"] for d in screen._display]
+            return kinds, screen._session_at(0), screen._session_at(1)
+
+    kinds, at0, at1 = asyncio.run(_run())
+    assert kinds[0] == "header"   # a bucket header leads the unfiltered list
+    assert at0 is None            # header row is inert (Enter does nothing)
+    assert at1 is not None        # the session sits right beneath it

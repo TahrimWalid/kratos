@@ -417,3 +417,24 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             return fired
 
     assert asyncio.run(_run()) == ["theme", "timezone", "name"]
+
+
+def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
+    # Home-screen path: SettingsScreen(session=None, data_dir=...) must render
+    # the (global) Models + General tabs without a live session, using the
+    # data_dir directly and the shared profile blurb.
+    _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(data_dir=tmp_path))  # no session
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            models = screen.query_one("#ms-table", DataTable).row_count
+            assert screen._data_dir() == tmp_path      # data_dir came through directly
+            gen = screen.query_one("#gen-table", DataTable).row_count
+            return models, gen
+
+    models, gen = asyncio.run(_run())
+    assert models >= 1   # profiles listed (blurb rendered without a session)
+    assert gen == 3      # name / theme / timezone present
