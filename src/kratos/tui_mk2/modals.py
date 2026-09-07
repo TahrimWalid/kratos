@@ -251,6 +251,7 @@ class HelpModal(ModalScreen[None]):
                 ("/evolve", "Build the most recent auto-suggested tool"),
                 ('/evolve "<idea>"', "Start evo-loop with your own idea"),
                 ("/tools", "List tools by kind (Default / Kept / Installed)"),
+                ("/tool <name> [json]", "Run ONE tool directly — deterministic, no model tool-selection"),
             ]))
             yield Static(self._table("Configuration", [
                 ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),

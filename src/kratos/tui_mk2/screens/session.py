@@ -55,6 +55,7 @@ _PALETTE_COMMANDS = [
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
+    ("/tool", "run ONE specific tool directly (deterministic, no model)"),
     ("/help", "list all commands"),
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
@@ -612,8 +613,10 @@ class SessionScreen(Screen):
             self._cmd_timezone(rest)
         elif cmd == "/evolve":
             self._evolve_flow(rest)
-        elif cmd in ("/tools", "/tool"):
+        elif cmd == "/tools":
             self._render_tools()
+        elif cmd in ("/tool", "/run-tool"):
+            self._tool_flow(rest)
         elif cmd == "/settings":
             from kratos.tui_mk2.screens.settings import SettingsScreen
 
@@ -1111,6 +1114,69 @@ class SessionScreen(Screen):
         self._emit(table)
 
     # --- /tools (classified overview) ------------------------------------
+    # --- /tool <name>: deterministic single-tool run --------------------
+    def _tool_flow(self, rest: str) -> None:
+        """`/tool <name> [json-args]` runs EXACTLY that tool via the real
+        dispatch (execute_tool_call) with NO model tool-selection — the
+        deterministic override for when you know which tool you want. Approval
+        gates and the pre-dispatch guards still apply (this is the same path the
+        agent uses, just chosen by you, not the LLM)."""
+        from kratos.agent.tools import TOOL_REGISTRY
+
+        parts = rest.split(maxsplit=1)
+        if not parts:
+            self._emit(R.note_line('Usage: /tool <name> [json-args] — e.g. /tool run_nmap_scan. See /tools for the list.'))
+            return
+        name = parts[0]
+        if name not in TOOL_REGISTRY:
+            near = [t for t in sorted(TOOL_REGISTRY) if name.lower() in t.lower()]
+            hint = f" Did you mean: {', '.join(near[:3])}?" if near else ""
+            self._emit(R.error_line(f"No tool named '{name}'. See /tools for the list.{hint}"))
+            return
+        args: dict[str, Any] = {}
+        argstr = parts[1].strip() if len(parts) > 1 else ""
+        if argstr:
+            try:
+                parsed = json.loads(argstr)
+                if not isinstance(parsed, dict):
+                    raise ValueError("args must be a JSON object")
+                args = parsed
+            except Exception as e:  # noqa: BLE001
+                self._emit(R.error_line(
+                    f"Couldn't parse args: {e}. Pass a JSON object, e.g. "
+                    '/tool check_ip_reputation {"ip": "1.2.3.4"}'))
+                return
+        self._run_tool_worker(name, args)
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _run_tool_worker(self, name: str, args: dict[str, Any]) -> None:
+        from kratos.agent.loop import execute_tool_call
+
+        self._set_busy(True)
+        self._emit_from_worker(R.note_line(f"Running '{name}' directly (deterministic — no model tool-selection)…"))
+        try:
+            result = execute_tool_call(name, args, self._data_dir)
+        except Exception as e:  # noqa: BLE001 -- should be wrapped already, but never crash the screen
+            self._emit_from_worker(R.error_line(f"{name} errored: {e}"))
+            self._set_busy(False)
+            return
+        inner, status = R.unwrap_tool_result(result)
+        if status == "error":
+            self._emit_from_worker(R.error_line(f"{name} failed — {R.error_detail(inner) or 'no error detail'}"))
+        elif name == "correlate_findings" and isinstance(inner, dict) and inner.get("findings"):
+            self._emit_from_worker(R.tool_call_line(name, status))
+            t, d = self._stamp_now()
+            for f in inner["findings"]:
+                self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
+        else:
+            self._emit_from_worker(R.tool_call_line(name, status))
+            body = json.dumps(inner, indent=2, default=str) if isinstance(inner, (dict, list)) else str(inner)
+            if len(body) > 4000:
+                body = body[:4000] + "\n… (truncated)"
+            t, d = self._stamp_now()
+            self._emit_bubble_from_worker(R.result_panel(f"{name} — result", body, T.ACCENT, time_str=t), d)
+        self._set_busy(False)
+
     def _render_tools(self) -> None:
         """A read-only peek at every tool the agent can reach, grouped by kind:
         Default (built into Kratos), Kept (written & approved via /evolve), and

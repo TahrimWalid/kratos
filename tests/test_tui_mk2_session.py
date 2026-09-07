@@ -696,3 +696,54 @@ def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):
 
     titles = asyncio.run(_run())
     assert titles and "what should it do" in titles[0].lower()  # the idea box opened
+
+
+def test_tool_command_runs_named_tool_deterministically(tmp_path, monkeypatch):
+    # /tool <name> runs EXACTLY that tool via execute_tool_call (no LLM),
+    # passing parsed JSON args, and renders the result.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos.agent import loop as agent_loop
+
+    seen = {}
+
+    def _fake_exec(name, args, data_dir):
+        seen["name"] = name
+        seen["args"] = args
+        return {"status": "ok", "result": {"ran": name, "echo": args}}
+
+    monkeypatch.setattr(agent_loop, "execute_tool_call", _fake_exec)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash('/tool run_nmap_scan {"target": "10.9.9.9"}')
+            for _ in range(200):
+                await pilot.pause()
+                if "name" in seen and not screen._busy:
+                    break
+            return seen
+
+    got = asyncio.run(_run())
+    assert got["name"] == "run_nmap_scan"          # the exact named tool
+    assert got["args"] == {"target": "10.9.9.9"}   # JSON args parsed + passed
+
+
+def test_tool_command_unknown_tool_errors_without_running(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos.agent import loop as agent_loop
+
+    called = {"n": 0}
+    monkeypatch.setattr(agent_loop, "execute_tool_call",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/tool no_such_tool_xyz")
+            await pilot.pause()
+            await pilot.pause()
+            return called["n"]
+
+    assert asyncio.run(_run()) == 0  # rejected before any dispatch
