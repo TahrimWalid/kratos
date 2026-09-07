@@ -238,6 +238,8 @@ class HelpModal(ModalScreen[None]):
                 ("/help", "List available commands"),
                 ("/report", "Investigation summary — findings by severity"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
+                ("/usage", "Token usage + estimated cost this session (local models = free)"),
+                ("/context", "What's currently loaded in the context window"),
                 ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
                 ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
                 ("/clear", "Clear the screen + working context (session history kept)"),

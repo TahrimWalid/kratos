@@ -326,3 +326,17 @@ def error_detail(result: Any) -> str:
             return str(v).strip()
     fields = {k: v for k, v in result.items() if k not in ("status", "result") and v not in (None, "", [])}
     return ", ".join(f"{k}={v}" for k, v in fields.items()) if fields else ""
+
+
+def kv_table(title: str, rows: list[tuple]) -> Table:
+    """A simple two-column key/value table (used by /usage and /context). Each
+    row is (key, value) or (key, value, value_style)."""
+    table = Table(show_header=False, box=None, title=title, title_justify="left",
+                  title_style=f"bold {T.ACCENT}")
+    table.add_column(style=T.TEXT_MUTED, no_wrap=True)
+    table.add_column()
+    for r in rows:
+        key, value = r[0], r[1]
+        style = r[2] if len(r) > 2 else T.TEXT
+        table.add_row(Text(str(key)), Text(str(value), style=style))
+    return table

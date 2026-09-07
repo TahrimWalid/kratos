@@ -52,6 +52,8 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control co
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
+    ("/usage", "token usage + estimated cost this session (local = free)"),
+    ("/context", "what's currently loaded in the context window"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
@@ -590,6 +592,10 @@ class SessionScreen(Screen):
             self._render_report()
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
+        elif cmd == "/usage":
+            self._render_usage()
+        elif cmd == "/context":
+            self._render_context()
         elif cmd == "/clear":
             self._clear_screen(archive=False)
             self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
@@ -632,6 +638,62 @@ class SessionScreen(Screen):
         else:
             # Unmatched /-prefix falls through to a goal (matches classic REPL).
             self._run_goal(text)
+
+    # --- /usage (token + cost transparency, feature A3) -----------------
+    # Rough per-1M-token rates (USD input, output) — APPROXIMATE, provider
+    # pricing changes; edit here. Only used to show an estimate, never billed.
+    _MODEL_RATES: dict[str, tuple[float, float]] = {
+        "gemini-3.1-flash-lite": (0.10, 0.40),
+        "gemini-3.1-pro-preview": (1.25, 5.00),
+    }
+
+    def _render_usage(self) -> None:
+        from kratos import llm_interface
+        from kratos.llm_config import get_active_llm_base_url, get_active_llm_model
+
+        u = llm_interface.get_session_token_usage()
+        model = get_active_llm_model()
+        base = (get_active_llm_base_url() or "").lower()
+        local = any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+
+        rows = [
+            ("model", model),
+            ("prompt tokens", f"{u.prompt_tokens:,}"),
+            ("completion tokens", f"{u.completion_tokens:,}"),
+            ("total tokens", f"{u.total_tokens:,}"),
+        ]
+        if local:
+            rows.append(("cost", ("local model — free · private (nothing billed)", T.SAFE)))
+        else:
+            rate = self._MODEL_RATES.get(model)
+            if rate:
+                cost = (u.prompt_tokens / 1e6) * rate[0] + (u.completion_tokens / 1e6) * rate[1]
+                rows.append(("cost (rough est.)", (f"~${cost:.4f} this process — approximate, verify with your provider", T.ATTENTION)))
+            else:
+                rows.append(("cost", (f"cloud · usage-billed — no rate on file for {model}, see your provider's pricing", T.ATTENTION)))
+        self._emit(R.kv_table("Token usage — this session (process)", rows))
+        self._emit(R.note_line("Counts reset when the process restarts. Local models are always free."))
+
+    # --- /context (what's in the window, feature A4) --------------------
+    def _render_context(self) -> None:
+        from kratos.llm_config import get_active_llm_model
+
+        pct, used, window, estimated = self._context_pct()
+        resume = self.session_state.get("resume_context", "") or ""
+        turns = len(self._store.get_goal_history(self.session_state["session_id"]))
+        meter = "estimated from loaded context" if estimated else "measured (last LLM call)"
+        rows = [
+            ("model", get_active_llm_model()),
+            ("context window", f"{window:,} tokens"),
+            ("in use", (f"{used:,} tokens  ({pct}%)  — {meter}", T.ATTENTION if pct >= 75 else T.TEXT)),
+            ("working memory", f"{len(resume):,} chars  (~{len(resume)//4:,} tokens of conversation kept)"),
+            ("turns in this session", str(turns)),
+        ]
+        self._emit(R.kv_table("Context window — what's loaded", rows))
+        if pct >= 75:
+            self._emit(R.note_line("Getting full — /compact summarizes older turns (keeping the recent ones) to free space."))
+        else:
+            self._emit(R.note_line("/compact frees space by summarizing older turns; recent turns are kept verbatim."))
 
     # --- /doctor (self-diagnostic, feature A1) --------------------------
     @work(thread=True, exclusive=True, group="turn")

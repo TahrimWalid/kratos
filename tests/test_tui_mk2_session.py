@@ -637,6 +637,51 @@ def test_apply_target_expands_typed_kratos_host_alias(tmp_path, monkeypatch):
     assert asyncio.run(_run()) == [KRATOS_HOST_VALUE]
 
 
+def test_usage_renders_tokens_and_cost(tmp_path, monkeypatch):
+    # /usage shows cumulative session tokens; cloud model with a known rate
+    # shows an estimated cost, local shows "free".
+    from kratos import llm_interface
+
+    llm_interface._session_usage = llm_interface.TokenUsage(
+        prompt_tokens=100_000, completion_tokens=20_000, total_tokens=120_000)
+
+    def _once(model, base):
+        monkeypatch.setattr("kratos.llm_config.get_active_llm_model", lambda: model)
+        monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url", lambda: base)
+        _store, _sid, screen = _make_screen(tmp_path, monkeypatch)  # fresh screen per loop
+
+        async def _run():
+            app = _Host(screen)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                log = screen.query_one("#transcript")
+                before = len(log.lines)
+                screen._dispatch_slash("/usage")
+                await pilot.pause()
+                return len(log.lines) - before
+
+        return asyncio.run(_run())
+
+    assert _once("gemini-3.1-pro-preview", "https://api.gemini/v1") > 0   # cloud: cost estimated
+    assert _once("qwen2.5:7b", "http://127.0.0.1:11434/v1") > 0          # local: free
+
+
+def test_context_renders_window_breakdown(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch, resume_context="x" * 4000)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            log = screen.query_one("#transcript")
+            before = len(log.lines)
+            screen._dispatch_slash("/context")
+            await pilot.pause()
+            return len(log.lines) - before
+
+    assert asyncio.run(_run()) > 0  # the context table + note rendered
+
+
 def test_doctor_runs_and_renders(tmp_path, monkeypatch):
     # /doctor runs run_diagnostics off the event loop and writes a result table
     # to the transcript (run_diagnostics mocked so the test stays offline).
