@@ -256,7 +256,7 @@ class HelpModal(ModalScreen[None]):
                 ("/target verify", "Re-check the active target's setup"),
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
-                ("/settings", "Settings — models, tools (approvals + code review), name, timezone"),
+                ("/settings", "Settings — models, tools, name, timezone, this session (also 's' at the picker)"),
                 ("Ctrl+T", "Theme picker — from anywhere"),
                 ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))

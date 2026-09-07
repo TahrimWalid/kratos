@@ -81,6 +81,35 @@ class _FakeSession:
         self._name_set = name
 
 
+class _FakeSessionFull(_FakeSession):
+    """A session stub with the bits the 'This session' tab needs: targets, a
+    session_id, a store that returns a name, and the four action flows (which
+    just record the call so we can assert dispatch)."""
+
+    def __init__(self):
+        super().__init__()
+        self.session_state = {"backend": "gemini-3.1-pro", "targets": ["10.0.0.1"], "session_id": "abc123"}
+        self.calls: list = []
+
+        class _Store:
+            def get_session(self, sid):
+                return {"name": "myproj"}
+
+        self._store = _Store()
+
+    def _target_flow(self, rest):
+        self.calls.append(("target", rest))
+
+    def _rename_flow(self, rest):
+        self.calls.append(("name", rest))
+
+    def _reset_flow(self):
+        self.calls.append(("reset",))
+
+    def _delete_flow(self):
+        self.calls.append(("delete",))
+
+
 def _write_env(tmp_path: Path, monkeypatch) -> Path:
     env = tmp_path / ".env"
     env.write_text(_ENV, encoding="utf-8")
@@ -438,3 +467,61 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
     assert gen == 3      # name / theme / timezone present
+
+
+def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(data_dir=tmp_path))  # no session
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            return "tab-session" in screen._TABS, len(screen.query("#sess-table"))
+
+    in_tabs, tables = asyncio.run(_run())
+    assert in_tabs is False   # no session -> no session tab
+    assert tables == 0        # and no session table rendered
+
+
+def test_this_session_tab_dispatches_and_closes(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+    fake = _FakeSessionFull()
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(fake))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert "tab-session" in screen._TABS
+            sess = screen.query_one("#sess-table", DataTable)
+            assert sess.row_count == 4                       # target/name/reset/delete
+            assert sess.get_row_at(0)[1].plain == "10.0.0.1"  # current target shown
+            assert sess.get_row_at(1)[1].plain == "myproj"    # current name shown
+            screen.query_one(TabbedContent).active = "tab-session"
+            await pilot.pause()
+            sess.move_cursor(row=3)          # Delete session
+            screen.action_primary()          # Enter -> closes settings, acts in session
+            await pilot.pause()
+            return fake.calls
+
+    assert asyncio.run(_run()) == [("delete",)]
+
+
+def test_this_session_tab_target_row_dispatches(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+    fake = _FakeSessionFull()
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(fake))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one(TabbedContent).active = "tab-session"
+            await pilot.pause()
+            screen.query_one("#sess-table", DataTable).move_cursor(row=0)  # Target
+            screen.action_primary()
+            await pilot.pause()
+            return fake.calls
+
+    assert asyncio.run(_run()) == [("target", "")]

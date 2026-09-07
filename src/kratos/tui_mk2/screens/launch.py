@@ -45,10 +45,6 @@ class LaunchScreen(Screen):
         Binding("n", "new_session", "new", show=True),
         Binding("a", "archived", "archived", show=True),
         Binding("s", "settings", "settings", show=True),
-        # ctrl+s too, since some users reach for it -- but 's' is the reliable
-        # one (ctrl+s is the terminal's XOFF; Textual disables flow control so
-        # it usually still arrives, but don't depend on it).
-        Binding("ctrl+s", "settings", "settings", show=False),
         Binding("b", "back", "back", show=False),
         Binding("m", "more", "more", show=False),
         Binding("q", "quit_app", "quit", show=True),

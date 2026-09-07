@@ -297,6 +297,12 @@ class SettingsScreen(Screen):
         self._current = None
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
         self._gen_rows = ["name", "theme", "timezone"]  # General tab row order (↑↓ navigable)
+        self._session_rows = ["target", "name", "reset", "delete"]  # This session tab rows
+        # The "This session" tab only exists when opened from a live session
+        # (/settings) — from the home screen there's nothing session-scoped to act on.
+        self._TABS = ["tab-models", "tab-approvals", "tab-general"]
+        if session is not None:
+            self._TABS = self._TABS + ["tab-session"]
 
     def compose(self) -> ComposeResult:
         yield Static("Settings", id="set-title")
@@ -327,6 +333,13 @@ class SettingsScreen(Screen):
                          "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
+            if self._session is not None:
+                with TabPane("This session", id="tab-session"):
+                    yield DataTable(id="sess-table", cursor_type="row", zebra_stripes=False)
+                    yield Static(
+                        Text("↑↓ select · enter act (closes settings, acts in the session) · "
+                             "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
+                        id="sess-hint")
 
     def on_mount(self) -> None:
         table = self.query_one("#ms-table", DataTable)
@@ -338,6 +351,10 @@ class SettingsScreen(Screen):
         gen = self.query_one("#gen-table", DataTable)
         gen.add_columns("Setting", "Value")
         self._reload_general()
+        if self._session is not None:
+            sess = self.query_one("#sess-table", DataTable)
+            sess.add_columns("Setting", "Value")
+            self._reload_session()
         table.focus()  # so ↑↓ navigate immediately, no click needed
 
     def refresh_theme(self) -> None:
@@ -348,6 +365,8 @@ class SettingsScreen(Screen):
         self._reload()
         self._reload_approvals()
         self._reload_general()
+        if self._session is not None:
+            self._reload_session()
 
     def _active_tab(self) -> str:
         return self.query_one(TabbedContent).active
@@ -363,6 +382,8 @@ class SettingsScreen(Screen):
             self.query_one("#ap-table", DataTable).focus()
         elif tab == "tab-general":
             self.query_one("#gen-table", DataTable).focus()
+        elif tab == "tab-session":
+            self.query_one("#sess-table", DataTable).focus()
 
     # --- data ------------------------------------------------------------
     def _reload(self) -> None:
@@ -446,6 +467,8 @@ class SettingsScreen(Screen):
             self._toggle_approval()
         elif tab == "tab-general":
             self._general_primary()
+        elif tab == "tab-session":
+            self._session_primary()
 
     # --- Tool approvals tab (kept tools; built-ins read-only) ------------
     def _reload_approvals(self) -> None:
@@ -627,6 +650,66 @@ class SettingsScreen(Screen):
     @on(DataTable.RowSelected, "#gen-table")
     def _gen_row_selected(self, event: DataTable.RowSelected) -> None:
         self._general_primary()
+
+    # --- This session tab (session-scoped; only present with a session) --
+    def _session_name(self) -> str:
+        st = getattr(self._session, "session_state", {}) or {}
+        sid = st.get("session_id")
+        store = getattr(self._session, "_store", None)
+        if store is None or not sid:
+            return ""
+        try:
+            return (store.get_session(sid) or {}).get("name") or ""
+        except Exception:  # noqa: BLE001 -- a missing/odd row shouldn't break the tab
+            return ""
+
+    def _reload_session(self) -> None:
+        """Rebuild the 'This session' table (target / name / reset / delete)
+        with current values. Defensive: tolerates a minimal session stub."""
+        if self._session is None:
+            return
+        tbl = self.query_one("#sess-table", DataTable)
+        idx = tbl.cursor_row
+        tbl.clear()
+        st = getattr(self._session, "session_state", {}) or {}
+        targets = ", ".join(st.get("targets") or []) or "(none set)"
+        name = self._session_name() or "(unnamed)"
+        tbl.add_row(Text("Target", style=T.TEXT_MUTED), Text(targets, style=T.TEXT))
+        tbl.add_row(Text("Session name", style=T.TEXT_MUTED), Text(name, style=T.TEXT))
+        tbl.add_row(Text("Reset session", style=T.TEXT_MUTED),
+                    Text("wipe screen + archive history, start fresh", style=T.TEXT_DIM))
+        tbl.add_row(Text("Delete session", style=T.TEXT_MUTED),
+                    Text("archive (soft-delete), back to the picker", style=T.TEXT_DIM))
+        if idx is not None and 0 <= idx < len(self._session_rows):
+            tbl.move_cursor(row=idx)
+
+    def _session_primary(self) -> None:
+        idx = self.query_one("#sess-table", DataTable).cursor_row
+        key = self._session_rows[idx] if idx is not None and 0 <= idx < len(self._session_rows) else None
+        if key:
+            self._run_session_action(key)
+
+    def _run_session_action(self, key: str) -> None:
+        """Session actions live on the SessionScreen and push their own modals /
+        navigate (delete pops back to the picker). Running them while Settings
+        sits ON TOP of the session would pop the wrong screen, so close Settings
+        FIRST, then run the action back in the session — where it belongs."""
+        session = self._session
+        if session is None:
+            return
+        self.app.pop_screen()  # close Settings -> the session is active again
+        if key == "target":
+            session._target_flow("")
+        elif key == "name":
+            session._rename_flow("")
+        elif key == "reset":
+            session._reset_flow()
+        elif key == "delete":
+            session._delete_flow()
+
+    @on(DataTable.RowSelected, "#sess-table")
+    def _sess_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._session_primary()
 
     def _set_gen_status(self, msg: str, style: str | None = None) -> None:
         self.query_one("#gen-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
