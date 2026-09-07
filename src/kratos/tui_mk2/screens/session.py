@@ -663,16 +663,21 @@ class SessionScreen(Screen):
             ("total tokens", f"{u.total_tokens:,}"),
         ]
         if local:
-            rows.append(("cost", ("local model — free · private (nothing billed)", T.SAFE)))
+            rows.append(("cost", "local model — free · private (nothing billed)", T.SAFE))
         else:
             rate = self._MODEL_RATES.get(model)
             if rate:
                 cost = (u.prompt_tokens / 1e6) * rate[0] + (u.completion_tokens / 1e6) * rate[1]
-                rows.append(("cost (rough est.)", (f"~${cost:.4f} this process — approximate, verify with your provider", T.ATTENTION)))
+                rows.append(("cost (rough est.)", f"~${cost:.4f} this process — approximate, verify with your provider", T.ATTENTION))
             else:
-                rows.append(("cost", (f"cloud · usage-billed — no rate on file for {model}, see your provider's pricing", T.ATTENTION)))
-        self._emit(R.kv_table("Token usage — this session (process)", rows))
-        self._emit(R.note_line("Counts reset when the process restarts. Local models are always free."))
+                rows.append(("cost", f"cloud · usage-billed — no rate on file for {model}, see your provider's pricing", T.ATTENTION))
+        self._emit(R.kv_table("Token usage — this process", rows))
+        if u.total_tokens == 0:
+            self._emit(R.note_line(
+                "No measured LLM calls yet this run. Counting is per-process (resets on restart), so a "
+                "just-resumed session shows 0 until its next message — prior-run usage isn't tracked."))
+        else:
+            self._emit(R.note_line("Counts are for this process (reset on restart). Local models are always free."))
 
     # --- /context (what's in the window, feature A4) --------------------
     def _render_context(self) -> None:
@@ -685,7 +690,7 @@ class SessionScreen(Screen):
         rows = [
             ("model", get_active_llm_model()),
             ("context window", f"{window:,} tokens"),
-            ("in use", (f"{used:,} tokens  ({pct}%)  — {meter}", T.ATTENTION if pct >= 75 else T.TEXT)),
+            ("in use", f"{used:,} tokens  ({pct}%)  — {meter}", T.ATTENTION if pct >= 75 else T.TEXT),
             ("working memory", f"{len(resume):,} chars  (~{len(resume)//4:,} tokens of conversation kept)"),
             ("turns in this session", str(turns)),
         ]
