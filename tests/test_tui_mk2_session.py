@@ -439,3 +439,199 @@ def test_back_to_sessions_refuses_while_busy(tmp_path, monkeypatch):
 
     popped, prompted = asyncio.run(_run())
     assert popped == [] and prompted == []  # refused: no confirm prompt, no pop
+
+
+def test_apply_target_rejects_pasted_command(tmp_path, monkeypatch):
+    # A pasted command line ('kratos investigate "x"') must not become the
+    # active target -- _apply_target validates and refuses, leaving it unchanged.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(screen, "_setup_target_worker", lambda host: None)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._apply_target('kratos investigate "x"'.split())  # garbage
+            await pilot.pause()
+            unchanged = screen.session_state["targets"]
+            screen._apply_target(["10.2.2.2"])  # a real change still applies
+            await pilot.pause()
+            return unchanged, screen.session_state["targets"]
+
+    unchanged, changed = asyncio.run(_run())
+    assert unchanged == ["10.0.0.1"]   # refused, left as-is
+    assert changed == ["10.2.2.2"]     # valid input still works
+
+
+def test_investigate_host_pins_loopback_and_restores(tmp_path, monkeypatch):
+    # /investigate-host runs the agent against Kratos's own host (127.0.0.1) and
+    # restores the configured target afterwards.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos import kratos_config as kc
+
+    seen = {}
+
+    def _fake_run_agent(goal, data_dir, **kw):
+        seen["target"] = kc.get_active_target()
+        return {"status": "final_answer", "final_answer": "ok", "transcript": [], "recommended_commands": []}
+
+    monkeypatch.setattr("kratos.agent.loop.run_agent", _fake_run_agent)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            kc.set_active_target("10.0.0.1")  # known baseline
+            screen._dispatch_slash("/investigate-host")
+            for _ in range(200):
+                await pilot.pause()
+                if "target" in seen and not screen._busy:
+                    break
+            return seen.get("target"), kc.get_active_target()
+
+    seen_target, after = asyncio.run(_run())
+    assert seen_target == "127.0.0.1"  # the run saw loopback (Kratos's own host)
+    assert after == "10.0.0.1"         # configured target restored afterwards
+
+
+def _clarify_host_calls(tmp_path, monkeypatch, answer):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    calls = {"host": 0, "target": 0}
+    monkeypatch.setattr(screen, "_run_host_investigation", lambda g: calls.__setitem__("host", calls["host"] + 1))
+    monkeypatch.setattr(screen, "_run_target_investigation", lambda g: calls.__setitem__("target", calls["target"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _ans(_modal):
+                return answer
+
+            monkeypatch.setattr(app, "push_screen_wait", _ans)
+            screen._clarify_host_flow("check port 3000")
+            await pilot.pause()
+            await pilot.pause()
+            return calls
+
+    return asyncio.run(_run())
+
+
+def test_clarify_host_flow_routes_to_host(tmp_path, monkeypatch):
+    assert _clarify_host_calls(tmp_path, monkeypatch, "host") == {"host": 1, "target": 0}
+
+
+def test_clarify_host_flow_routes_to_target(tmp_path, monkeypatch):
+    assert _clarify_host_calls(tmp_path, monkeypatch, "target") == {"host": 0, "target": 1}
+
+
+def test_clarify_host_flow_dismissed_does_nothing(tmp_path, monkeypatch):
+    assert _clarify_host_calls(tmp_path, monkeypatch, None) == {"host": 0, "target": 0}
+
+
+def test_apply_target_checked_word_salad_first(tmp_path, monkeypatch):
+    # A phrase typed at the target field triggers a clarify; 'first' uses only
+    # the first token as the host.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    applied: list[list[str]] = []
+    monkeypatch.setattr(screen, "_apply_target", lambda t: applied.append(list(t)))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _ans(_modal):
+                return "first"
+
+            monkeypatch.setattr(app, "push_screen_wait", _ans)
+            await screen._apply_target_checked(["look", "for", "intrusions"], raw="look for intrusions")
+            return applied
+
+    assert asyncio.run(_run()) == [["look"]]
+
+
+def test_apply_target_checked_word_salad_cancel(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    applied: list[list[str]] = []
+    monkeypatch.setattr(screen, "_apply_target", lambda t: applied.append(list(t)))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _ans(_modal):
+                return None  # dismissed
+
+            monkeypatch.setattr(app, "push_screen_wait", _ans)
+            await screen._apply_target_checked(["look", "for", "intrusions"], raw="look for intrusions")
+            return applied
+
+    assert asyncio.run(_run()) == []  # nothing applied — user retypes
+
+
+def test_apply_target_checked_normal_input_skips_clarify(tmp_path, monkeypatch):
+    # Ordinary host input applies directly, with no clarify modal shown.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    applied: list[list[str]] = []
+    shown: list[bool] = []
+    monkeypatch.setattr(screen, "_apply_target", lambda t: applied.append(list(t)))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _ans(_modal):
+                shown.append(True)
+                return "first"
+
+            monkeypatch.setattr(app, "push_screen_wait", _ans)
+            await screen._apply_target_checked(["10.0.0.5", "10.0.0.6"], raw="10.0.0.5 10.0.0.6")
+            return applied, shown
+
+    applied, shown = asyncio.run(_run())
+    assert applied == [["10.0.0.5", "10.0.0.6"]] and shown == []  # no clarify prompt
+
+
+def test_target_flow_kratos_host_option_sets_loopback(tmp_path, monkeypatch):
+    # Picking [Kratos-Host] in the no-arg /target picker makes the session
+    # target the local machine (loopback).
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(screen, "_setup_target_worker", lambda host: None)
+    from kratos.tui_mk2.target_input import KRATOS_HOST_SENTINEL, KRATOS_HOST_VALUE
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _ans(_modal):
+                return KRATOS_HOST_SENTINEL
+
+            monkeypatch.setattr(app, "push_screen_wait", _ans)
+            screen._target_flow("")  # no arg -> picker
+            await pilot.pause()
+            await pilot.pause()
+            return screen.session_state["targets"]
+
+    assert asyncio.run(_run()) == [KRATOS_HOST_VALUE]
+
+
+def test_apply_target_expands_typed_kratos_host_alias(tmp_path, monkeypatch):
+    # `/target kratos-host` resolves to loopback rather than an unresolvable
+    # literal hostname.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(screen, "_setup_target_worker", lambda host: None)
+    from kratos.tui_mk2.target_input import KRATOS_HOST_VALUE
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._apply_target(["kratos-host"])
+            await pilot.pause()
+            return screen.session_state["targets"]
+
+    assert asyncio.run(_run()) == [KRATOS_HOST_VALUE]

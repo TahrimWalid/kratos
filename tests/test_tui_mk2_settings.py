@@ -332,7 +332,8 @@ def test_general_tab_sets_user_name(tmp_path, monkeypatch):
             app.screen.action_set_name()
             await pilot.pause()
             await pilot.pause()
-            return str(app.screen.query_one("#gen-name", Static).render())
+            # General tab is now a table: row 0 = name, col 1 = its value.
+            return app.screen.query_one("#gen-table", DataTable).get_row_at(0)[1].plain
 
     shown = asyncio.run(_run())
     from kratos import kratos_config as kc
@@ -375,7 +376,7 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
             await pilot.pause()
             await pilot.pause()
             return (calls,
-                    str(app.screen.query_one("#gen-theme", Static).render()),
+                    app.screen.query_one("#gen-table", DataTable).get_row_at(1)[1].plain,  # row 1 = theme
                     str(app.screen.query_one("#gen-status", Static).render()))
 
     try:
@@ -387,3 +388,32 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
     assert calls == ["kratos-blue"]          # switcher delegated to the app
     assert "Slate Blue" in theme_label       # gen-theme label refreshed live
     assert "Slate Blue" in status
+
+
+def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
+    # The General tab is a ↑↓ table (name / theme / timezone); Enter on the
+    # highlighted row invokes that setting's flow.
+    _write_env(tmp_path, monkeypatch)
+    fake = _FakeSession()
+    fake._data_dir = tmp_path
+    fired: list[str] = []
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(fake))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            monkeypatch.setattr(screen, "_set_name_flow", lambda: fired.append("name"))
+            monkeypatch.setattr(screen, "_set_theme_flow", lambda: fired.append("theme"))
+            monkeypatch.setattr(screen, "_set_timezone_flow", lambda: fired.append("timezone"))
+            screen.query_one(TabbedContent).active = "tab-general"
+            await pilot.pause()
+            gen = screen.query_one("#gen-table", DataTable)
+            assert gen.row_count == 3            # name / theme / timezone
+            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name")]:
+                gen.move_cursor(row=row)
+                screen.action_primary()          # Enter
+                await pilot.pause()
+            return fired
+
+    assert asyncio.run(_run()) == ["theme", "timezone", "name"]

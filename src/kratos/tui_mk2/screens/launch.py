@@ -188,13 +188,37 @@ class LaunchScreen(Screen):
     async def _new_session_flow(self) -> None:
         from kratos import kratos_config as _kconfig
 
-        default_target = _kconfig.get_active_target()
-        target = await self.app.push_screen_wait(
-            PromptModal("New session", f"Target(s), space-separated [default: {default_target}]", initial="")
+        from kratos.tui_mk2.target_input import (
+            KRATOS_HOST_SENTINEL,
+            KRATOS_HOST_VALUE,
+            expand_host_aliases,
+            validate_targets,
         )
-        if target is None:
-            return
-        targets = target.split() if target.strip() else [default_target]
+
+        default_target = _kconfig.get_active_target()
+        while True:
+            answer = await self.app.push_screen_wait(PromptModal(
+                "New session",
+                f"Target(s), space-separated [default: {default_target}]",
+                initial="",
+                quick_value=KRATOS_HOST_SENTINEL,
+                quick_label="[Kratos-Host] — this machine (127.0.0.1)",
+            ))
+            if answer is None:
+                return  # cancelled
+            if answer == KRATOS_HOST_SENTINEL:
+                targets = [KRATOS_HOST_VALUE]
+                break
+            if not answer.strip():
+                targets = [default_target]
+                break
+            targets, err = validate_targets(expand_host_aliases(answer.split()))
+            if err:
+                # Reject garbage (a pasted command / quoted goal) and re-ask,
+                # rather than letting it become an unresolvable active target.
+                self.app.notify(err, severity="error", timeout=6)
+                continue
+            break
         name = await self.app.push_screen_wait(
             PromptModal("New session", "Name (optional — Enter to leave unnamed)", initial="")
         )

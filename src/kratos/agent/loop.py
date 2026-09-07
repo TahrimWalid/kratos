@@ -38,6 +38,26 @@ from kratos.llm_interface import (
 from kratos.llm_config import MAX_TOKENS_QUESTION
 
 DEFAULT_MAX_ITERS = 10
+
+# Optional human-clarification hook. When the model emits a {"clarify": {...}}
+# action AND a provider is installed (mk2 sets one via set_clarify_provider),
+# the loop asks the user the question and feeds their answer back as an
+# Observation, then continues. Unlike the approval gate, clarify NEVER
+# authorizes an action -- it only gathers intent text -- so it is safe to leave
+# unset: CLI/MCP/headless runs (no provider) simply proceed with best judgment.
+# The provider is called from run_agent's thread (blocking); it returns the
+# user's answer string, or None if the user declined / no answer is available.
+_clarify_provider: Callable[[str, list[dict[str, Any]]], "str | None"] | None = None
+
+
+def set_clarify_provider(provider: "Callable[[str, list[dict[str, Any]]], str | None] | None") -> None:
+    """Install (or clear, with None) the human-clarification provider. Backward
+    compatible: with no provider the {"clarify": ...} action degrades to a
+    'proceed with best judgment' observation, so existing callers are unaffected."""
+    global _clarify_provider
+    _clarify_provider = provider
+
+
 # Keep each tool result bounded before it's fed back into the conversation —
 # the local model's context window (LLAMA_N_CTX) is small, and some tools
 # (e.g. collect_system_context) can return large raw text blobs.
@@ -158,6 +178,10 @@ Set "run_on" to "target" for a command the human runs on the monitored device, o
 To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
 {{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
 This does NOT end the investigation -- after proposing, continue with a tool call or a final_answer as normal. The proposal is surfaced to a human; you never build it yourself and never need to mention it again.
+
+When the goal is genuinely AMBIGUOUS -- more than one reasonable interpretation, and which one you pick would materially change what you investigate or conclude -- you MAY ask the user ONE clarifying question instead of guessing:
+{{"reasoning": "<one sentence: why you're unsure>", "clarify": {{"question": "<your question, plainly worded>", "options": [{{"label": "<a concrete choice>", "explanation": "<what picking this means>", "recommended": true}}, {{"label": "<another choice>", "explanation": "<...>"}}]}}}}
+Mark at most one option "recommended": true (your best guess, with the reason in its explanation). Use this SPARINGLY -- only for real forks a reasonable analyst couldn't resolve alone, never for routine choices you should just make. It does NOT end the investigation: after the user answers (fed back as an Observation), continue normally. If no interactive user is available you'll be told to proceed with your best judgment -- so never depend on an answer.
 
 INVESTIGATION SCOPE:
 Treat any investigation goal as a request for a reasonably thorough security check, not a literal keyword match. "Check for suspicious activity", "has anyone tried to break in", "run a full security check", and "is my server okay" are substantively the same underlying request phrased differently -- a human analyst would not skip network exposure just because the user said "break in" instead of "scan", or skip login activity just because the user said "okay" instead of "auth". Before concluding, briefly consider whether each of these categories is relevant to the goal, even if the wording doesn't mention it directly:
@@ -1133,6 +1157,79 @@ def run_agent(
                 "the human; you do not need to build it or mention it again. Continue the "
                 "investigation and reach a final_answer when ready.\n"
             )
+            continue
+
+        if "clarify" in parsed:
+            # Human-in-the-loop clarifying question (mid-investigation). Like
+            # tool_proposal it is a structured, non-terminal action; unlike an
+            # approval it authorizes NOTHING -- it only pulls the user's intent
+            # back in as an Observation. The Q and the answer both enter the
+            # conversation (C7-safe: never silently dropped). With no provider
+            # installed (CLI/MCP/headless) the model is told to proceed, so a
+            # clarify can never stall a non-interactive run.
+            clarify = parsed.get("clarify") or {}
+            question = str(clarify.get("question") or "").strip()
+            options: list[dict[str, Any]] = []
+            for o in clarify.get("options") if isinstance(clarify.get("options"), list) else []:
+                if isinstance(o, dict) and str(o.get("label") or "").strip():
+                    options.append({
+                        "label": str(o["label"]).strip(),
+                        "explanation": str(o.get("explanation") or "").strip(),
+                        "recommended": bool(o.get("recommended")),
+                    })
+
+            if is_final_iteration:
+                fallback = _synthesize_fallback_answer(transcript)
+                _record({
+                    "iteration": i,
+                    "reasoning": parsed.get("reasoning", ""),
+                    "status": "final_iteration_clarify_ignored",
+                    "attempted_clarify": clarify,
+                    "final_answer": fallback,
+                })
+                return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
+
+            if not question:
+                correction = (
+                    'ERROR: a clarify action needs a non-empty "question". Ask a clear question '
+                    'with {"reasoning": "...", "clarify": {"question": "...", "options": [...]}}, '
+                    "or continue with a tool call / final_answer."
+                )
+                _record({"iteration": i, "status": "clarify_malformed", "raw_response": raw})
+                ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
+                continue
+
+            answer: str | None = None
+            if _clarify_provider is None:
+                observation = (
+                    "No interactive user is available to answer clarifying questions. Proceed with "
+                    "your best interpretation of the goal and state any assumptions explicitly in "
+                    "your final_answer."
+                )
+            else:
+                try:
+                    answer = _clarify_provider(question, options)
+                except Exception:  # noqa: BLE001 -- a broken provider must not crash the run
+                    answer = None
+                if answer is not None and str(answer).strip():
+                    answer = str(answer).strip()
+                    observation = f"The user answered your question: {answer}"
+                else:
+                    answer = None
+                    observation = (
+                        "The user did not choose an answer. Proceed with your best interpretation "
+                        "and state your assumptions in your final_answer."
+                    )
+
+            _record({
+                "iteration": i,
+                "reasoning": parsed.get("reasoning", ""),
+                "status": "clarify",
+                "clarify_question": question,
+                "clarify_options": options,
+                "clarify_answer": answer,
+            })
+            ctx.add(f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation}\n")
             continue
 
         tool_name = parsed.get("tool")

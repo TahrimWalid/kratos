@@ -51,6 +51,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control co
 
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
+    ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
     ("/help", "list all commands"),
@@ -453,6 +454,7 @@ class SessionScreen(Screen):
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
         self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · /help · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
+        self._emit(Text("Investigations target the monitored host by default; ask about “your own host” (or /investigate-host) to check the Kratos machine itself.", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay (turn 6b, [f]) ---------------
@@ -617,6 +619,8 @@ class SessionScreen(Screen):
             from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
 
             self.app.push_screen(Phase2PreviewScreen())
+        elif cmd in ("/investigate-host", "/investigate-self", "/host"):
+            self._investigate_host_flow(rest)
         elif cmd in ("/scan", "/logs-parse", "/findings-generate", "/run"):
             self._run_shortcut(cmd.lstrip("/"), rest)
         else:
@@ -788,26 +792,74 @@ class SessionScreen(Screen):
             self._probe_target_worker()
             return
         if not rest:
+            from kratos.tui_mk2.target_input import KRATOS_HOST_SENTINEL, KRATOS_HOST_VALUE
+
             current = ", ".join(self.session_state["targets"])
-            answer = await self.app.push_screen_wait(
-                PromptModal(
-                    "Set target",
-                    "IP/hostname(s) to investigate, space-separated (empty = keep current)",
-                    initial=current,
-                )
-            )
+            answer = await self.app.push_screen_wait(PromptModal(
+                "Set target",
+                "IP/hostname(s) to investigate, space-separated (empty = keep current)",
+                initial=current,
+                quick_value=KRATOS_HOST_SENTINEL,
+                quick_label="[Kratos-Host] — this machine (127.0.0.1)",
+            ))
             if answer is None:
+                self._emit(R.note_line(f"Target unchanged — current: {current or '(none set)'}"))
+                return
+            if answer == KRATOS_HOST_SENTINEL:
+                self._apply_target([KRATOS_HOST_VALUE])
                 return
             rest = answer.strip()
             if not rest:
                 self._emit(R.note_line(f"Target unchanged — current: {current or '(none set)'}"))
                 return
-        self._apply_target(rest.split())
+        await self._apply_target_checked(rest.split(), raw=rest)
+
+    async def _apply_target_checked(self, tokens: list[str], raw: str) -> None:
+        """Apply typed target tokens, but when they look like a pasted phrase
+        rather than hosts (valid individually, ambiguous together) ASK instead
+        of guessing — the clarify path for the target field."""
+        from kratos.tui_mk2.modals import ClarifyModal
+        from kratos.tui_mk2.target_input import looks_like_word_salad
+
+        if looks_like_word_salad(tokens):
+            n = len(tokens)
+            answer = await self.app.push_screen_wait(ClarifyModal(
+                f"“{raw}” looks more like a phrase than a set of hosts. What did you mean?",
+                [
+                    {"value": "first", "label": f"Just one target: {tokens[0]}",
+                     "explanation": "Use only the first word as the host.", "recommended": True},
+                    {"value": "multi", "label": f"All {n} as separate targets",
+                     "explanation": ", ".join(tokens)},
+                    {"value": "retype", "label": "Let me retype it",
+                     "explanation": "Reopen the target prompt."},
+                ],
+            ))
+            if answer in (None, "retype"):
+                self._emit(R.note_line("Target unchanged — retype it with /target."))
+                return
+            if answer == "first":
+                self._apply_target([tokens[0]])
+                return
+            if answer == "multi":
+                self._apply_target(tokens)
+                return
+            # Typed something else: treat it as fresh target input.
+            self._apply_target(answer.split())
+            return
+        self._apply_target(tokens)
 
     def _apply_target(self, targets: list[str]) -> None:
         """Set the active target(s), persist, refresh the header/footer, and run
         the setup checklist + probe. Shared by /target and the conversational
-        'change target' control (after its approval)."""
+        'change target' control (after its approval). Validates first — the one
+        choke point that stops a pasted command line / quoted goal from becoming
+        an unresolvable active target (Sprint-4 gap)."""
+        from kratos.tui_mk2.target_input import expand_host_aliases, validate_targets
+
+        targets, err = validate_targets(expand_host_aliases(targets))
+        if err:
+            self._emit(R.error_line(err))
+            return
         self.session_state["targets"] = targets
         self._store.set_targets(self.session_state["session_id"], targets)
         _kconfig.set_active_target(targets[0])
@@ -1206,6 +1258,14 @@ class SessionScreen(Screen):
             self._set_busy(False)
             return
 
+        if route.kind == "clarify_host":
+            # The router couldn't tell target vs. Kratos's own host. Ask on the
+            # event loop, then launch the right investigation worker from there
+            # (this worker is done — the follow-up owns its own busy flag).
+            self.app.call_from_thread(self._clarify_host_flow, goal)
+            self._set_busy(False)
+            return
+
         if route.kind == "chat":
             reply = route.reply or ""
             t, d = self._stamp_now()
@@ -1221,10 +1281,80 @@ class SessionScreen(Screen):
             self._set_busy(False)
             return
 
-        # kind == "investigate"
-        self._run_investigation(goal)
+        # kind == "investigate" (monitored target) or "investigate_host"
+        # (Kratos's OWN machine — only when the user unambiguously asked for it).
+        # Handled in THIS worker (not a second one) so the busy flag never hands
+        # off mid-turn. Self-host pins the active target to loopback for the run.
+        if route.kind == "investigate_host":
+            self._run_investigation(goal, target_override="127.0.0.1")
+        else:
+            self._run_investigation(goal)
         self._maybe_auto_compact()
         self._set_busy(False)
+
+    # --- /investigate-host: deliberate self-investigation --------------------
+    _HOST_GOAL_DEFAULT = (
+        "Give a security situation report on THIS Kratos host itself: check its own "
+        "auth/system logs, listening ports, and running processes for anything unusual."
+    )
+
+    def _investigate_host_flow(self, rest: str) -> None:
+        """`/investigate-host [goal]` (aliases /investigate-self, /host) —
+        deliberately investigate the Kratos machine itself instead of the
+        configured target. Explicit-intent only: the default host for any
+        investigation is always the monitored target; self-investigation
+        happens only through this command or an unambiguous NL self-reference
+        (routed as kind='investigate_host'). Reached from the event loop; the
+        actual run is a thread worker so it owns the busy flag cleanly."""
+        goal = rest.strip() or self._HOST_GOAL_DEFAULT
+        self._run_host_investigation(goal)
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _run_host_investigation(self, goal: str) -> None:
+        self._last_goal = goal
+        self._set_busy(True)
+        try:
+            self._run_investigation(goal, target_override="127.0.0.1")
+            self._maybe_auto_compact()
+        finally:
+            self._set_busy(False)
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _run_target_investigation(self, goal: str) -> None:
+        """Investigate the configured monitored target — the worker entry used
+        when a clarify resolves to 'target' (the normal in-`_run_goal` path
+        already covers the unambiguous case)."""
+        self._last_goal = goal
+        self._set_busy(True)
+        try:
+            self._run_investigation(goal)
+            self._maybe_auto_compact()
+        finally:
+            self._set_busy(False)
+
+    @work
+    async def _clarify_host_flow(self, goal: str) -> None:
+        """Router was unsure which host — ask, then launch the right worker.
+        Default/recommended is the monitored target (matching the router's own
+        default-to-target rule); dismiss = do nothing (user can retype)."""
+        from kratos.tui_mk2.modals import ClarifyModal
+
+        current = self.session_state["targets"][0] if self.session_state["targets"] else "(none set)"
+        answer = await self.app.push_screen_wait(ClarifyModal(
+            "Did you mean the monitored target, or the Kratos host itself?",
+            [
+                {"value": "target", "label": "The monitored target",
+                 "explanation": f"{current} — the system Kratos watches.", "recommended": True},
+                {"value": "host", "label": "This Kratos host",
+                 "explanation": "The machine Kratos runs on (a self-check)."},
+            ],
+            subtitle=f"Your request: {goal}",
+        ))
+        if answer == "host":
+            self._run_host_investigation(goal)
+        elif answer == "target":
+            self._run_target_investigation(goal)
+        # None / anything else: let the user retype rather than guess.
 
     # --- conversational controls (design: talk-to-run, approval-gated) ---
     def _on_command_intent(self, name: str, args: str) -> None:
@@ -1312,7 +1442,14 @@ class SessionScreen(Screen):
             current = ", ".join(self.session_state["targets"]) or "(none set)"
             self._emit(R.note_line(f"Current target: {current}. Say 'change target to <ip>' to switch."))
             return
-        targets = args.split()
+        from kratos.tui_mk2.target_input import validate_targets
+
+        targets, err = validate_targets(args.split())
+        if err:
+            # Reject before the approval modal — don't ask the user to confirm
+            # switching to something that isn't a host in the first place.
+            self._emit(R.error_line(err))
+            return
         ok = await self.app.push_screen_wait(ConfirmModal(
             "Change target?",
             f"Change the investigation target to {', '.join(targets)}?\n\n"
@@ -1323,9 +1460,21 @@ class SessionScreen(Screen):
             return
         self._apply_target(targets)
 
-    def _run_investigation(self, goal: str) -> None:
+    def _run_investigation(self, goal: str, target_override: str | None = None) -> None:
         from kratos.agent.loop import run_agent
 
+        # /investigate-host (and its NL trigger) pin the active target to
+        # loopback for THIS run only, so Kratos investigates its own machine on
+        # explicit request. run_agent resolves the host via the global active
+        # target (same pattern the MCP server uses), so we set + restore it
+        # around the call; loop.py's _LOOPBACK_SELF_TARGETS already permits it.
+        prior_active = None
+        if target_override:
+            prior_active = _kconfig.get_active_target()
+            _kconfig.set_active_target(target_override)
+            self._emit_from_worker(R.note_line(
+                f"Investigating THIS Kratos host ({target_override}) — its own logs, ports, and "
+                "posture, not the configured target."))
         self._emit_from_worker(R.note_line(f"Starting investigation (up to {REPL_MAX_ITERS} steps)…"))
         turn_id = self._store.start_turn(self.session_state["session_id"], goal)
         started = time.monotonic()
@@ -1357,6 +1506,11 @@ class SessionScreen(Screen):
             self._store.complete_turn(turn_id, "error", transcript_ref=None)
             self._emit_from_worker(R.error_line(f"Investigation errored: {e}"))
             return
+        finally:
+            # Always restore the configured target after a self-host run,
+            # including on the cancel/error early-returns above.
+            if target_override:
+                _kconfig.set_active_target(prior_active)
 
         duration = time.monotonic() - started
         # The conclusion panel carries its own in-bubble timestamp (subtitle),
@@ -1382,7 +1536,10 @@ class SessionScreen(Screen):
         # agent produced as its own panel, and remember them for ctrl+y copy.
         commands = result.get("recommended_commands") or []
         self._last_commands = [str(c.get("command") or "") for c in commands if c.get("command")]
-        target_label = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        if target_override:
+            target_label = f"this Kratos host ({target_override})"
+        else:
+            target_label = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
         for c in commands:
             self._emit_from_worker(R.recommended_command_panel(c, target_label))
         if self._last_commands:

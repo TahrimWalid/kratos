@@ -93,3 +93,33 @@ def test_app_apply_theme_pack_live_switch(isolated_theme, tmp_path):
     assert ok is True and after == "kratos-blue"
     assert accent == "#7fa8bf"          # globals re-bound live
     assert bad is False                 # unknown pack rejected
+
+
+def test_ctrl_shift_t_theme_picker_applies(isolated_theme, tmp_path):
+    # The app-wide Ctrl+Shift+T action opens the theme picker and applies the
+    # pick via apply_theme_pack (reachable from any screen, not just Settings).
+    import asyncio
+
+    from kratos import kratos_config as kc
+    from kratos.tui_mk2.app import KratosTUI
+
+    kc.save_local_config(tmp_path, trusted=True)
+    calls: list[str] = []
+
+    async def _run():
+        app = KratosTUI(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            app.apply_theme_pack = lambda name: calls.append(name) or True  # type: ignore[assignment]
+
+            async def _pick(_modal):
+                return "kratos-blue"
+
+            app.push_screen_wait = _pick  # type: ignore[assignment]
+            app.action_pick_theme()
+            await pilot.pause()
+            await pilot.pause()
+
+    asyncio.run(_run())
+    assert calls == ["kratos-blue"]  # picked pack applied

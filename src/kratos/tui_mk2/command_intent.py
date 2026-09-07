@@ -49,6 +49,8 @@ CONVERSATIONAL_COMMANDS: dict[str, str] = {
 COMMANDS_NEEDING_APPROVAL = frozenset({"model", "target"})
 
 _INVESTIGATE_SENTINEL = "INVESTIGATE"
+_INVESTIGATE_HOST_SENTINEL = "INVESTIGATE_HOST"
+_CLARIFY_HOST_SENTINEL = "CLARIFY_HOST"
 _COMMAND_PREFIX = "COMMAND:"
 _MAX_TOKENS = 220
 
@@ -65,19 +67,30 @@ def _system_prompt() -> str:
         f"   {_COMMAND_PREFIX} <name> | <arg or empty>\n"
         f"   Examples: '{_COMMAND_PREFIX} model | qwen2.5:7b'  ·  '{_COMMAND_PREFIX} target | 10.0.0.5'  ·  "
         f"'{_COMMAND_PREFIX} report |'\n"
-        f"2. A genuine request to investigate/scan/analyze the target for security issues "
-        f"right now -> respond with EXACTLY this one word: {_INVESTIGATE_SENTINEL}\n"
-        "3. Anything else (greetings, thanks, questions about what you are or can do, small "
+        f"2. A genuine request to investigate/scan/analyze the MONITORED TARGET for security "
+        f"issues right now -> respond with EXACTLY this one word: {_INVESTIGATE_SENTINEL}\n"
+        f"3. A request to investigate YOUR OWN host -- the Kratos machine itself, not the "
+        f"monitored target -> respond with EXACTLY this one word: {_INVESTIGATE_HOST_SENTINEL}\n"
+        "4. Anything else (greetings, thanks, questions about what you are or can do, small "
         "talk) -> reply normally and conversationally as Kratos: helpful, brief, no markdown.\n\n"
         "Only emit a COMMAND line when the user clearly wants that specific control run. "
         "'what can you do?' is chat, not help; but 'show me the report', 'switch to <model>', "
-        "'change the target to <host>' ARE commands. Use only the control names listed above."
+        "'change the target to <host>' ARE commands. Use only the control names listed above.\n"
+        f"For 2 vs 3: default to {_INVESTIGATE_SENTINEL} (the monitored target) whenever the "
+        f"host is unstated or ambiguous. Only pick {_INVESTIGATE_HOST_SENTINEL} when the user "
+        "UNAMBIGUOUSLY means the Kratos machine itself -- e.g. 'check your own host', 'how's "
+        "this machine you run on', 'is the Kratos host itself okay', 'scan yourself'. A bare "
+        "'is everything okay' or 'check for intrusions' means the target, not you.\n"
+        f"5. If -- and only if -- the user clearly wants an investigation but you genuinely cannot "
+        f"tell whether they mean the monitored target or the Kratos host itself, and getting it "
+        f"wrong would investigate the wrong machine -> respond with EXACTLY: {_CLARIFY_HOST_SENTINEL}. "
+        "Use this rarely; when the default-to-target rule resolves it, just use it."
     )
 
 
 @dataclass
 class RouteResult:
-    kind: str                      # "command" | "investigate" | "chat" | "failed"
+    kind: str                      # "command" | "investigate" | "investigate_host" | "clarify_host" | "chat" | "failed"
     command: str | None = None     # for kind == "command"
     args: str = ""                 # for kind == "command"
     reply: str | None = None       # for kind == "chat"
@@ -86,7 +99,14 @@ class RouteResult:
 
 def _parse(response: str) -> RouteResult:
     text = response.strip()
-    if text.strip().rstrip(".").strip().upper() == _INVESTIGATE_SENTINEL:
+    bare = text.rstrip(".").strip().upper()
+    # Check the more specific host sentinel first (its string contains the plain
+    # one as a prefix, though the match is exact-equality either way).
+    if bare == _INVESTIGATE_HOST_SENTINEL:
+        return RouteResult(kind="investigate_host")
+    if bare == _CLARIFY_HOST_SENTINEL:
+        return RouteResult(kind="clarify_host")
+    if bare == _INVESTIGATE_SENTINEL:
         return RouteResult(kind="investigate")
     if text.upper().startswith(_COMMAND_PREFIX):
         body = text[len(_COMMAND_PREFIX):].strip()

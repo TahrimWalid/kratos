@@ -21,6 +21,7 @@ from pathlib import Path
 
 from rich.align import Align
 from rich.text import Text
+from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.events import Resize
@@ -29,11 +30,12 @@ from textual.widgets import Static
 
 from kratos.agent import console as _console
 from kratos.agent.tools import set_approval_prompt_provider
+from kratos.agent.loop import set_clarify_provider
 from kratos.agent.self_write_loop import load_kept_tools
 from kratos import kratos_config as _kconfig
 from kratos.storage.session_store import SessionStore
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.approvals import make_textual_approval_provider
+from kratos.tui_mk2.approvals import make_textual_approval_provider, make_textual_clarify_provider
 from kratos.tui_mk2.modals import ConfirmModal, PromptModal
 from kratos.tui_mk2.screens.launch import LaunchScreen
 
@@ -103,7 +105,14 @@ class KratosTUI(App):
     # scroll-wheel. The two can't coexist on one click -- wheel and button
     # reporting are the same ?1000h mode -- so a deliberate toggle is the clean
     # way to have both. (Shift+drag also bypasses mouse mode in most terminals.)
-    BINDINGS = [Binding("f2", "toggle_mouse", "copy mode", show=True)]
+    BINDINGS = [
+        Binding("f2", "toggle_mouse", "copy mode", show=True),
+        # VS Code-style theme picker, reachable from anywhere. NOTE: some
+        # terminals (e.g. Windows Terminal) grab Ctrl+Shift+T for their own
+        # "reopen closed tab" and never forward it — Settings → General → Theme
+        # (and 't' there) is the always-available fallback.
+        Binding("ctrl+shift+t", "pick_theme", "theme", show=True),
+    ]
 
     # Kept deliberately low so Kratos is usable in a split/half-screen pane on a
     # small laptop (a 13" display split in two is ~60-71 cols) -- the transcript
@@ -175,6 +184,24 @@ class KratosTUI(App):
             self._mouse_enabled = True
             self.notify("Mouse ON — click-to-select & scroll-wheel active.", timeout=4)
 
+    @work
+    async def action_pick_theme(self) -> None:
+        """Ctrl+Shift+T — open the theme picker from anywhere (VS Code style).
+        Self-contained: reuses apply_theme_pack, so it works on any screen, not
+        just Settings."""
+        from kratos.tui_mk2.modals import ListPickerModal
+
+        active = T.active_pack_name()
+        entries = [
+            (name, f"{T.pack_label(name)}{'  (active)' if name == active else ''}")
+            for name in T.PACKS
+        ]
+        picked = await self.push_screen_wait(
+            ListPickerModal("Theme pack", entries,
+                            subtitle="Ctrl+Shift+T from anywhere · recolors Kratos's chrome (danger-red stays constant)."))
+        if picked and picked != active:
+            self.apply_theme_pack(picked)
+
     def model_label(self) -> str:
         from kratos.llm_config import get_active_llm_model
 
@@ -189,6 +216,10 @@ class KratosTUI(App):
         # Route every approval gate (run_linux_command, capture_traffic,
         # self-write keep, threat-intel, vulscan staleness) to a Textual modal.
         set_approval_prompt_provider(make_textual_approval_provider(self))
+        # Let the investigation loop ask the user a clarifying question (a
+        # {"clarify": ...} action) via a Textual modal. Authorizes nothing; only
+        # gathers intent. Cleared on unmount so nothing dangles post-exit.
+        set_clarify_provider(make_textual_clarify_provider(self))
         self._boot()
 
     def _install_theme(self) -> None:
@@ -234,6 +265,7 @@ class KratosTUI(App):
 
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
+        set_clarify_provider(None)
 
     def _boot(self) -> None:
         # Textual runs this as a worker so push_screen_wait can be awaited.
@@ -253,15 +285,24 @@ class KratosTUI(App):
                 self.exit()
                 return
             _kconfig.save_local_config(self.data_dir, trusted=True)
-            target = await self.push_screen_wait(
-                PromptModal(
-                    "Default target (optional)",
-                    f"IP/hostname for investigations (currently {_kconfig.SSH_TARGET_HOST}) — Enter to skip",
+            from kratos.tui_mk2.target_input import validate_targets
+
+            while True:
+                target = await self.push_screen_wait(
+                    PromptModal(
+                        "Default target (optional)",
+                        f"IP/hostname for investigations (currently {_kconfig.SSH_TARGET_HOST}) — Enter to skip",
+                    )
                 )
-            )
-            if target:
-                _kconfig.save_local_config(self.data_dir, default_target=target)
-                _kconfig.set_active_target(target)
+                if not target:  # None (esc) or '' (skip) — leave the default in place
+                    break
+                cleaned, err = validate_targets([target])
+                if err:
+                    self.notify(err, severity="error", timeout=6)
+                    continue
+                _kconfig.save_local_config(self.data_dir, default_target=cleaned[0])
+                _kconfig.set_active_target(cleaned[0])
+                break
         else:
             persisted = config.get("default_target")
             if persisted:

@@ -31,6 +31,32 @@ def test_parse_investigate():
     assert ci._parse("investigate.").kind == "investigate"  # tolerant of trailing period
 
 
+def test_parse_investigate_host():
+    # Self-host investigation is a distinct kind; the host sentinel is NOT
+    # mistaken for the plain one (which is a prefix of it).
+    assert ci._parse("INVESTIGATE_HOST").kind == "investigate_host"
+    assert ci._parse("investigate_host.").kind == "investigate_host"
+    assert ci._parse("INVESTIGATE").kind == "investigate"  # still the target
+
+
+def test_route_message_investigate_host(monkeypatch):
+    monkeypatch.setattr(ci, "agent_chat", lambda *a, **k: "INVESTIGATE_HOST")
+    assert ci.route_message("how's your own host doing?").kind == "investigate_host"
+
+
+def test_parse_clarify_host():
+    assert ci._parse("CLARIFY_HOST").kind == "clarify_host"
+    assert ci._parse("clarify_host.").kind == "clarify_host"
+    # Not confused with the other investigate sentinels.
+    assert ci._parse("INVESTIGATE").kind == "investigate"
+    assert ci._parse("INVESTIGATE_HOST").kind == "investigate_host"
+
+
+def test_route_message_clarify_host(monkeypatch):
+    monkeypatch.setattr(ci, "agent_chat", lambda *a, **k: "CLARIFY_HOST")
+    assert ci.route_message("check port 3000").kind == "clarify_host"
+
+
 def test_parse_unknown_command_falls_through_to_chat():
     # A control name that isn't in the allowed set must NOT be acted on.
     r = ci._parse("COMMAND: shutdown | now")

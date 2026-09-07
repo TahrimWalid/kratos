@@ -95,14 +95,26 @@ class ResumeTierModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
             yield Static(Text(f"Resume {self._session_id}", style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(Text("[l] Light — targets + goal history + compact summary (default)", style=T.TEXT))
-            yield Static(Text("[f] Full  — complete transcript replay into context", style=T.TEXT))
+            yield Static(Text("How much of this session should Kratos reload?", style=T.TEXT))
+            # [l] Light — merits / demerits
+            yield Static(Text("[l] Light  (recommended)", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(Text("      Fast and light on context — Kratos gets your goals, outcomes, and a compact summary.",
+                              style=T.TEXT_MUTED))
+            yield Static(Text("      Trade-off: it won't recall every fine detail of earlier turns word-for-word.",
+                              style=T.TEXT_DIM))
+            # [f] Full — merits / demerits
+            yield Static(Text("[f] Full", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(Text("      Kratos re-reads the whole prior transcript, so it remembers details precisely.",
+                              style=T.TEXT_MUTED))
+            yield Static(Text("      Trade-off: uses much more context — slower to start, and on a small-context "
+                              "(local) model it can overflow and force an immediate compaction.",
+                              style=T.TEXT_DIM))
             yield Static(Text("[b] Back to session list", style=T.TEXT_DIM))
             if self._warn:
                 yield Static(
                     Text(
-                        "! Full replay is not recommended on the current local small-context "
-                        "backend — Light is safe here.",
+                        "! You're on a small-context local model — Full is likely to overflow here. "
+                        "Light is the safe choice.",
                         style=T.ATTENTION,
                     )
                 )
@@ -157,11 +169,17 @@ class PromptModal(ModalScreen[str | None]):
 
     BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
 
-    def __init__(self, title: str, hint: str = "", initial: str = "") -> None:
+    def __init__(self, title: str, hint: str = "", initial: str = "",
+                 quick_value: str = "", quick_label: str = "") -> None:
         super().__init__()
         self._title = title
         self._hint = hint
         self._initial = initial
+        # Optional one-click shortcut rendered as a small button under the input
+        # (e.g. "[Kratos-Host]" on the target prompt). Selecting it dismisses
+        # with quick_value; leaving them empty keeps the plain text-only prompt.
+        self._quick_value = quick_value
+        self._quick_label = quick_label
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
@@ -169,6 +187,9 @@ class PromptModal(ModalScreen[str | None]):
             if self._hint:
                 yield Static(Text(self._hint, style=T.TEXT_DIM))
             yield Input(value=self._initial, id="prompt-input")
+            if self._quick_label:
+                yield Button(self._quick_label, id="prompt-quick", variant="primary")
+                yield Static(Text("Enter to use what you typed · Tab then Enter (or click) for the option · esc cancel", style=T.TEXT_DIM))
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
@@ -176,6 +197,10 @@ class PromptModal(ModalScreen[str | None]):
     @on(Input.Submitted)
     def _submit(self, event: Input.Submitted) -> None:
         self.dismiss(event.value.strip())
+
+    @on(Button.Pressed, "#prompt-quick")
+    def _quick(self, event: Button.Pressed) -> None:
+        self.dismiss(self._quick_value)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -192,6 +217,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/report", "Investigation summary — findings by severity"),
+                ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
                 ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
                 ("/clear", "Clear the screen + working context (session history kept)"),
                 ("/reset", "Wipe the screen + archive history, start this session fresh"),
@@ -211,6 +237,7 @@ class HelpModal(ModalScreen[None]):
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Settings — models, tools (approvals + code review), name, timezone"),
+                ("Ctrl+Shift+T", "Theme picker — from anywhere (VS Code style)"),
                 ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))
@@ -254,6 +281,84 @@ class ListPickerModal(ModalScreen[Any]):
     def _selected(self, event: ListView.Selected) -> None:
         idx = event.list_view.index or 0
         self.dismiss(self._entries[idx][0])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ClarifyModal(ModalScreen[str | None]):
+    """A clarifying question with labeled choices (optionally one 'recommended',
+    each with a short explanation) plus a free-text 'something else' box —
+    Kratos's version of Claude Code's ask-with-choices. Used whenever a request
+    is genuinely ambiguous, rather than guessing (same 'ask, don't assume' grain
+    as the approval gate, but multiple-choice and non-authorizing).
+
+    Returns the chosen option's `value` (falling back to its `label`), the typed
+    free-text, or None if dismissed. Each option is a dict:
+    {label, explanation?, recommended?, value?}. Callers that need to branch
+    programmatically set a machine `value`; the mid-investigation provider omits
+    it, so the model receives the human-meaningful label text as the answer."""
+
+    BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
+
+    def __init__(self, question: str, options: list[dict[str, Any]], subtitle: str = "",
+                 title: str = "Kratos needs a steer") -> None:
+        super().__init__()
+        self._question = question
+        self._options = options or []
+        self._subtitle = subtitle
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Static(Text(self._question, style=T.TEXT))
+            if self._subtitle:
+                yield Static(Text(self._subtitle, style=T.TEXT_DIM))
+            items: list[ListItem] = []
+            for o in self._options:
+                row = Text()
+                row.append(str(o.get("label", "")), style=f"bold {T.TEXT_BRIGHT}")
+                if o.get("recommended"):
+                    row.append("  (recommended)", style=T.SAFE)
+                if o.get("explanation"):
+                    row.append(f"\n    {o['explanation']}", style=T.TEXT_MUTED)
+                items.append(ListItem(Label(row)))
+            if items:
+                yield ListView(*items, id="clarify-list")
+            yield Static(Text("or type your own answer:", style=T.TEXT_DIM))
+            yield Input(placeholder="something else…", id="clarify-input")
+            yield Static(Text("↑↓ + Enter choose · type + Enter for your own · esc skip", style=T.TEXT_DIM))
+
+    def on_mount(self) -> None:
+        if self._options:
+            lst = self.query_one("#clarify-list", ListView)
+            lst.index = self._recommended_index()
+            lst.focus()  # recommended choice is one keypress away
+        else:
+            self.query_one("#clarify-input", Input).focus()
+
+    def _recommended_index(self) -> int:
+        for idx, o in enumerate(self._options):
+            if o.get("recommended"):
+                return idx
+        return 0
+
+    def _value_for(self, idx: int) -> str:
+        o = self._options[idx]
+        val = o.get("value")
+        return str(val) if val is not None else str(o.get("label", ""))
+
+    @on(ListView.Selected, "#clarify-list")
+    def _picked(self, event: ListView.Selected) -> None:
+        idx = event.list_view.index or 0
+        if 0 <= idx < len(self._options):
+            self.dismiss(self._value_for(idx))
+
+    @on(Input.Submitted, "#clarify-input")
+    def _typed(self, event: Input.Submitted) -> None:
+        val = event.value.strip()
+        self.dismiss(val or None)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

@@ -289,6 +289,7 @@ class SettingsScreen(Screen):
         self._candidates: list = []
         self._current = None
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
+        self._gen_rows = ["name", "theme", "timezone"]  # General tab row order (↑↓ navigable)
 
     def compose(self) -> ComposeResult:
         yield Static("Settings", id="set-title")
@@ -313,12 +314,10 @@ class SettingsScreen(Screen):
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
-                yield Static("", id="gen-name")
-                yield Static("", id="gen-theme")
-                yield Static("", id="gen-tz")
+                yield DataTable(id="gen-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("n set your name · t theme · enter set a fixed display timezone · "
-                         "u revert to auto-detect · esc back", style=T.TEXT_DIM),
+                    Text("↑↓ select · enter change · n name · t theme · u timezone auto · "
+                         "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
 
@@ -329,9 +328,9 @@ class SettingsScreen(Screen):
         ap = self.query_one("#ap-table", DataTable)
         ap.add_columns("Tool", "Kind", "Approval", "Description")
         self._reload_approvals()
-        self._refresh_tz_status()
-        self._refresh_name_status()
-        self._refresh_theme_status()
+        gen = self.query_one("#gen-table", DataTable)
+        gen.add_columns("Setting", "Value")
+        self._reload_general()
         table.focus()  # so ↑↓ navigate immediately, no click needed
 
     def refresh_theme(self) -> None:
@@ -341,9 +340,7 @@ class SettingsScreen(Screen):
         next launch; the Textual widget chrome updated already via the theme flip."""
         self._reload()
         self._reload_approvals()
-        self._refresh_tz_status()
-        self._refresh_name_status()
-        self._refresh_theme_status()
+        self._reload_general()
 
     def _active_tab(self) -> str:
         return self.query_one(TabbedContent).active
@@ -357,6 +354,8 @@ class SettingsScreen(Screen):
             self.query_one("#ms-table", DataTable).focus()
         elif tab == "tab-approvals":
             self.query_one("#ap-table", DataTable).focus()
+        elif tab == "tab-general":
+            self.query_one("#gen-table", DataTable).focus()
 
     # --- data ------------------------------------------------------------
     def _reload(self) -> None:
@@ -439,7 +438,7 @@ class SettingsScreen(Screen):
         elif tab == "tab-approvals":
             self._toggle_approval()
         elif tab == "tab-general":
-            self._set_timezone_flow()
+            self._general_primary()
 
     # --- Tool approvals tab (kept tools; built-ins read-only) ------------
     def _reload_approvals(self) -> None:
@@ -578,17 +577,49 @@ class SettingsScreen(Screen):
         self._set_ap_status(
             f"Description saved for {name}." if answer.strip() else f"Description cleared for {name}.", T.SAFE)
 
-    # --- General tab (display timezone) ----------------------------------
+    # --- General tab (name / theme / timezone -- one navigable table) ----
     def _data_dir(self):
         return getattr(self._session, "_data_dir", None)
 
-    def _refresh_tz_status(self) -> None:
+    def _tz_value(self) -> str:
         from kratos.utils import timeutil
 
         source, tz = timeutil.display_tz_status(self._data_dir())
         name = getattr(tz, "key", None) or timeutil.now_for_display("%Z", tz=tz)
         src_txt = {"override": "fixed override", "auto": "auto-detected", "fallback": "UTC fallback"}.get(source, source)
-        self.query_one("#gen-tz", Static).update(Text(f"Display timezone: {name}  ({src_txt})", style=T.TEXT))
+        return f"{name}  ({src_txt})"
+
+    def _reload_general(self) -> None:
+        """Rebuild the General tab's 3-row table (name / theme / timezone) with
+        current values, preserving the cursor. One ↑↓-navigable table, like the
+        Models and Tools tabs -- Enter acts on the highlighted row."""
+        gen = self.query_one("#gen-table", DataTable)
+        idx = gen.cursor_row
+        gen.clear()
+        name = self._current_user_name()
+        gen.add_row(Text("Your name", style=T.TEXT_MUTED),
+                    Text(name or "not set (messages show 'you>')", style=T.TEXT))
+        gen.add_row(Text("Theme", style=T.TEXT_MUTED),
+                    Text(T.pack_label(T.active_pack_name()), style=T.TEXT))
+        gen.add_row(Text("Display timezone", style=T.TEXT_MUTED),
+                    Text(self._tz_value(), style=T.TEXT))
+        if idx is not None and 0 <= idx < len(self._gen_rows):
+            gen.move_cursor(row=idx)
+
+    def _general_primary(self) -> None:
+        """Enter on the General tab acts on the highlighted setting."""
+        idx = self.query_one("#gen-table", DataTable).cursor_row
+        key = self._gen_rows[idx] if idx is not None and 0 <= idx < len(self._gen_rows) else None
+        if key == "name":
+            self._set_name_flow()
+        elif key == "theme":
+            self._set_theme_flow()
+        elif key == "timezone":
+            self._set_timezone_flow()
+
+    @on(DataTable.RowSelected, "#gen-table")
+    def _gen_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._general_primary()
 
     def _set_gen_status(self, msg: str, style: str | None = None) -> None:
         self.query_one("#gen-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
@@ -619,7 +650,7 @@ class SettingsScreen(Screen):
             return
         timeutil.set_display_timezone_override(dd, zone)
         self._apply_tz_to_session()
-        self._refresh_tz_status()
+        self._reload_general()
         self._set_gen_status(f"Display timezone set to {zone} — saved.", T.SAFE)
 
     # --- General tab (your name) -----------------------------------------
@@ -630,11 +661,6 @@ class SettingsScreen(Screen):
         if dd is None:
             return ""
         return (_kconfig.load_local_config(dd).get("user_name") or "").strip()
-
-    def _refresh_name_status(self) -> None:
-        name = self._current_user_name()
-        shown = name or "not set (messages show 'you>')"
-        self.query_one("#gen-name", Static).update(Text(f"Your name: {shown}", style=T.TEXT))
 
     @work
     async def _set_name_flow(self) -> None:
@@ -658,7 +684,7 @@ class SettingsScreen(Screen):
         setter = getattr(self._session, "_set_user_name", None)
         if callable(setter):
             setter(name)
-        self._refresh_name_status()
+        self._reload_general()
         if name:
             self._set_gen_status(f"Name set to {name} — your messages now show '{name}>'.", T.SAFE)
         else:
@@ -668,11 +694,6 @@ class SettingsScreen(Screen):
         self._set_name_flow()
 
     # --- General tab (theme pack) ----------------------------------------
-    def _refresh_theme_status(self) -> None:
-        active = T.active_pack_name()
-        self.query_one("#gen-theme", Static).update(
-            Text(f"Theme: {T.pack_label(active)}", style=T.TEXT))
-
     @work
     async def _set_theme_flow(self) -> None:
         if self._active_tab() != "tab-general":
@@ -713,7 +734,7 @@ class SettingsScreen(Screen):
             return
         timeutil.set_display_timezone_override(dd, None)
         self._apply_tz_to_session()
-        self._refresh_tz_status()
+        self._reload_general()
         self._set_gen_status(f"Reverted to auto-detect ({timeutil.local_tz_name() or 'system local'}).", T.SAFE)
 
     @work

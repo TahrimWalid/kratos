@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from textual.app import App
 
-from kratos.tui_mk2.modals import ApprovalModal
+from kratos.tui_mk2.modals import ApprovalModal, ClarifyModal
 
 
 def make_textual_approval_provider(app: App) -> Callable[[str, dict[str, Any]], bool]:
@@ -48,5 +48,34 @@ def make_textual_approval_provider(app: App) -> Callable[[str, dict[str, Any]], 
 
         done.wait()
         return box["approved"]
+
+    return _provider
+
+
+def make_textual_clarify_provider(app: App) -> Callable[[str, list[dict[str, Any]]], "str | None"]:
+    """Returns a provider for agent.loop.set_clarify_provider. Same thread->modal
+    bridge as the approval provider, but for a multiple-choice clarifying
+    question (ClarifyModal) that AUTHORIZES NOTHING -- it only gathers the user's
+    intent. Returns the chosen/typed answer, or None if dismissed or if
+    scheduling fails; None is safe, the loop then proceeds with best judgment."""
+
+    def _provider(question: str, options: list[dict[str, Any]]) -> "str | None":
+        done = threading.Event()
+        box: dict[str, Any] = {"answer": None}
+
+        def _push() -> None:
+            def _on_dismiss(result: "str | None") -> None:
+                box["answer"] = result
+                done.set()
+
+            app.push_screen(ClarifyModal(question, options), _on_dismiss)
+
+        try:
+            app.call_from_thread(_push)
+        except Exception:  # noqa: BLE001 -- scheduling failed: no answer (proceed)
+            return None
+
+        done.wait()
+        return box["answer"]
 
     return _provider
