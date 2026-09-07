@@ -1504,6 +1504,16 @@ class SessionScreen(Screen):
             self._set_busy(False)
             return
 
+        # If Ctrl+C / esc was pressed DURING the routing call (the first, and on a
+        # thinking model slow, LLM call — which can't be interrupted mid-flight),
+        # honor it the moment that call returns, instead of marching on to
+        # "Starting investigation…" for a turn the user already asked to stop.
+        if get_current_worker().is_cancelled:
+            self._emit_from_worker(R.note_line(
+                "Interrupted — stopped before it started. Press Ctrl+R to run it, or type a new one."))
+            self._set_busy(False)
+            return
+
         if route.kind == "failed":
             self._emit_from_worker(R.llm_failure_banner(route.reason or "no detail available"))
             self._set_busy(False)
