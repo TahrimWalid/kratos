@@ -48,6 +48,7 @@ REPL_MAX_ITERS = 5  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is boun
 FULL_RESUME_DETAILED_TURN_CAP = 5  # matches cli/repl.py -- only the most recent N turns replay in full
 CHAT_COMPACTION_KEEP_RECENT = 3    # turns kept verbatim on /compact (matches loop.py's investigation compactor)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control codes from captured output
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "working…" activity line
 
 _PALETTE_COMMANDS = [
     ("/report", "investigation summary — findings by severity"),
@@ -116,6 +117,7 @@ class SessionScreen(Screen):
         scrollbar-size-vertical: 1;
     }}
     SessionScreen #goal {{ height: 3; margin: 0 1; }}
+    SessionScreen #activity {{ height: 1; margin: 0 2; color: {T.ACCENT}; }}
     """
 
     def __init__(
@@ -139,6 +141,13 @@ class SessionScreen(Screen):
             "pending_evolve_suggestion": None,
         }
         self._busy = False
+        # Live "working…" activity indicator (spinner + elapsed) shown while a
+        # turn runs — covers the silent gap before the first output, especially
+        # for slower thinking models. Driven by a single event-loop interval
+        # that reads the busy flag (thread-safe; workers only set the flag).
+        self._busy_since: float | None = None
+        self._spin_i = 0
+        self._activity_active = False
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
@@ -162,6 +171,7 @@ class SessionScreen(Screen):
         yield Static(id="appheader")
         with Vertical():
             yield RichLog(id="transcript", wrap=True, markup=False, highlight=False)
+        yield Static("", id="activity")  # live "working…" spinner while a turn runs
         yield Input(placeholder="Describe what to investigate…", id="goal")
         yield Static(id="statusfooter")
 
@@ -176,6 +186,7 @@ class SessionScreen(Screen):
         self._refresh_header()
         self._refresh_footer()
         self.set_interval(1.0, self._refresh_header)  # live clock (turn 9a)
+        self.set_interval(0.12, self._tick_activity)  # "working…" spinner while busy
         self._render_idle()
         if self._full_replay:
             self._render_full_replay()
@@ -1443,6 +1454,27 @@ class SessionScreen(Screen):
     # --- goal handling: chat vs investigate ------------------------------
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        # Stamp the start so the activity spinner can show elapsed time. Safe to
+        # set from a worker thread (plain assignment); the spinner tick reads it
+        # on the event loop.
+        self._busy_since = time.monotonic() if busy else None
+
+    def _tick_activity(self) -> None:
+        """Event-loop interval: animate a 'working…' spinner + elapsed time
+        while a turn runs, so the silent gap before the first output (and long
+        thinking-model pauses) shows visible progress. Cleared when idle."""
+        try:
+            act = self.query_one("#activity", Static)
+        except Exception:  # noqa: BLE001 -- widget not mounted yet
+            return
+        if self._busy and self._busy_since is not None:
+            self._spin_i = (self._spin_i + 1) % len(_SPINNER)
+            elapsed = time.monotonic() - self._busy_since
+            act.update(Text(f"{_SPINNER[self._spin_i]} working… {elapsed:.0f}s", style=T.ACCENT))
+            self._activity_active = True
+        elif self._activity_active:
+            act.update("")
+            self._activity_active = False
 
     def action_rerun(self) -> None:
         """Design 7b -- re-run the last goal (honest re-run, not a mid-loop

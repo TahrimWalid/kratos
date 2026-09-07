@@ -637,6 +637,29 @@ def test_apply_target_expands_typed_kratos_host_alias(tmp_path, monkeypatch):
     assert asyncio.run(_run()) == [KRATOS_HOST_VALUE]
 
 
+def test_activity_spinner_shows_while_busy_and_clears(tmp_path, monkeypatch):
+    # While a turn runs, an animated "working…" line shows; it clears when idle.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from textual.widgets import Static
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            act = screen.query_one("#activity", Static)
+            screen._set_busy(True)
+            screen._tick_activity()
+            busy_text = str(act.render())
+            screen._set_busy(False)
+            screen._tick_activity()
+            idle_text = str(act.render())
+            return busy_text, idle_text
+
+    busy_text, idle_text = asyncio.run(_run())
+    assert "working" in busy_text and any(f in busy_text for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    assert idle_text.strip() == ""
+
+
 def test_usage_renders_tokens_and_cost(tmp_path, monkeypatch):
     # /usage shows cumulative session tokens; cloud model with a known rate
     # shows an estimated cost, local shows "free".
