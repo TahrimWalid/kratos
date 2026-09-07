@@ -747,3 +747,36 @@ def test_tool_command_unknown_tool_errors_without_running(tmp_path, monkeypatch)
             return called["n"]
 
     assert asyncio.run(_run()) == 0  # rejected before any dispatch
+
+
+def test_tool_command_missing_required_arg_shows_usage_not_dispatch(tmp_path, monkeypatch):
+    # A tool with a required arg the user didn't pass shows its parameters as
+    # usage, WITHOUT dispatching into a cryptic "missing argument" error.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos.agent import loop as agent_loop
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos.agent.self_write_loop import load_kept_tools
+
+    load_kept_tools()
+    if "count_failed_sudo_attempts" not in TOOL_REGISTRY:
+        import pytest
+        pytest.skip("kept tool not present in this environment")
+
+    called = {"n": 0}
+    monkeypatch.setattr(agent_loop, "execute_tool_call",
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            log = screen.query_one("#transcript")
+            before = len(log.lines)
+            screen._dispatch_slash("/tool count_failed_sudo_attempts")  # required arg omitted
+            await pilot.pause()
+            await pilot.pause()
+            return called["n"], len(log.lines) - before
+
+    dispatched, wrote = asyncio.run(_run())
+    assert dispatched == 0   # usage shown, NOT dispatched
+    assert wrote > 0         # the usage panel was rendered

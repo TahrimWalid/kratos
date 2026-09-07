@@ -1146,7 +1146,46 @@ class SessionScreen(Screen):
                     f"Couldn't parse args: {e}. Pass a JSON object, e.g. "
                     '/tool check_ip_reputation {"ip": "1.2.3.4"}'))
                 return
+        # Arg discovery: if a required arg is missing, show the tool's parameters
+        # as usage instead of dispatching into a cryptic "missing argument" error.
+        missing = self._missing_required_args(TOOL_REGISTRY[name], args)
+        if missing:
+            self._emit(self._tool_usage(name, TOOL_REGISTRY[name], missing))
+            return
         self._run_tool_worker(name, args)
+
+    def _missing_required_args(self, tool: Any, args: dict[str, Any]) -> list[str]:
+        """Required handler params (no default) not satisfied by args. data_dir
+        is auto-injected by execute_tool_call, so it never counts as missing."""
+        import inspect
+
+        try:
+            sig = inspect.signature(tool.handler)
+        except (ValueError, TypeError):
+            return []
+        missing = []
+        for pname, p in sig.parameters.items():
+            if pname == "data_dir" or p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
+                continue
+            if p.default is p.empty and pname not in args:
+                missing.append(pname)
+        return missing
+
+    def _tool_usage(self, name: str, tool: Any, missing: list[str]) -> Text:
+        params = getattr(tool, "parameters", {}) or {}
+        body = Text()
+        body.append(f"/tool {name} needs: ", style=T.ATTENTION)
+        body.append(", ".join(missing), style=f"bold {T.TEXT_BRIGHT}")
+        for pname in missing:
+            spec = params.get(pname) or {}
+            body.append(f"\n  {pname}", style=f"bold {T.ACCENT}")
+            if spec.get("type"):
+                body.append(f" ({spec['type']})", style=T.TEXT_DIM)
+            if spec.get("description"):
+                body.append(f" — {spec['description']}", style=T.TEXT_MUTED)
+        example = "{" + ", ".join(f'"{m}": ...' for m in missing) + "}"
+        body.append(f"\nPass as JSON, e.g.  /tool {name} {example}", style=T.TEXT_DIM)
+        return body
 
     @work(thread=True, exclusive=True, group="turn")
     def _run_tool_worker(self, name: str, args: dict[str, Any]) -> None:
