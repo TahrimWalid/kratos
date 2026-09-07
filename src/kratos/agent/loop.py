@@ -17,6 +17,7 @@ continues until a final_answer is produced or max_iters is reached.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import re
 from pathlib import Path
@@ -27,7 +28,19 @@ from kratos.agent.tools import (
     render_tools_for_prompt,
     approval_log_length,
     approval_was_recorded,
+    request_approval,
 )
+
+
+def _handler_self_gates(tool: Any) -> bool:
+    """True if the tool's OWN handler calls request_approval — built-in gated
+    tools (run_linux_command, capture_traffic) do; kept/self-written tools do
+    NOT (they're generated data-processing code). Fails SAFE to False (→ gate at
+    dispatch) when the source can't be read, so a tool is never left ungated."""
+    try:
+        return "request_approval(" in inspect.getsource(tool.handler)
+    except (OSError, TypeError):
+        return False
 from kratos.kratos_config import get_active_target
 from kratos.llm_interface import (
     agent_chat,
@@ -354,6 +367,26 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
     # refused here rather than silently trusted just because the flag says
     # it should have been gated.
     approval_mark = approval_log_length() if tool.requires_approval else None
+
+    # A requires_approval=True tool whose handler does NOT itself call
+    # request_approval (every KEPT / self-written tool) is gated HERE, at
+    # dispatch, so the approval is actually asked AND recorded (satisfying the
+    # backstop below). Without this a kept tool carrying the flag never records
+    # an approval, so the backstop refuses its result forever — i.e. the flag
+    # made the tool UNRUNNABLE (and the decided default of requires_approval=True
+    # for new kept tools would break every one of them). Built-in tools that
+    # self-gate prompt inside their own handler and are left untouched (no
+    # double prompt). Marked AFTER approval_mark so the recorded approval counts.
+    if tool.requires_approval and not _handler_self_gates(tool):
+        if not request_approval(tool_name, {
+            "tool": tool_name,
+            "action": f"Run the kept (self-written) tool '{tool_name}'",
+            "description": tool.description,
+        }):
+            return {
+                "status": "not_approved",
+                "observation": f"Running '{tool_name}' was not approved by the user.",
+            }
 
     try:
         result = tool.handler(**call_args)

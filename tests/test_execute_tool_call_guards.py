@@ -150,3 +150,45 @@ def test_unknown_tool_name_still_rejected_cleanly(tmp_path):
     result = execute_tool_call("not_a_real_tool", {}, tmp_path)
     assert result["status"] == "error"
     assert "not a real tool" in result["observation"]
+
+
+# ---------------------------------------------------------------------------
+# Kept-tool approval gating at dispatch (2026-09-07): a requires_approval=True
+# tool whose handler does NOT self-gate (every self-written/kept tool) is gated
+# HERE, at dispatch, so the flag is actually enforceable. Without it, such a
+# tool never records an approval and the backstop refuses its result forever.
+# ---------------------------------------------------------------------------
+from pathlib import Path as _Path
+
+from kratos.agent import tools as _tools
+from kratos.agent.loop import execute_tool_call as _exec
+
+
+def _register_kept_style(name):
+    # A self-written/kept tool: requires_approval=True, but the handler is plain
+    # data-processing code that never self-gates (deliberately no approval call
+    # in its source — not even in a comment, which the naive scan would match).
+    @_tools.register_tool(name=name, description="kept-style", parameters={}, requires_approval=True)
+    def _handler():
+        return {"ran": name}
+    return name
+
+
+def test_kept_tool_gated_at_dispatch_runs_when_approved():
+    name = _register_kept_style("_t_kept_ok")
+    _tools.set_approval_prompt_provider(lambda n, d: True)
+    try:
+        res = _exec(name, {}, _Path("data"))
+    finally:
+        _tools.set_approval_prompt_provider(None)
+    assert res["status"] == "ok" and res["result"] == {"ran": name}
+
+
+def test_kept_tool_gated_at_dispatch_refused_when_denied():
+    name = _register_kept_style("_t_kept_deny")
+    _tools.set_approval_prompt_provider(lambda n, d: False)
+    try:
+        res = _exec(name, {}, _Path("data"))
+    finally:
+        _tools.set_approval_prompt_provider(None)
+    assert res["status"] == "not_approved"  # denied -> not run, not refused-as-bug
