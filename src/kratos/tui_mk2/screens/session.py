@@ -964,11 +964,26 @@ class SessionScreen(Screen):
         pending_name = None
         if not idea:
             pending = self.session_state.get("pending_evolve_suggestion")
-            if not pending:
-                self._emit(R.note_line('No pending suggestion. Use /evolve "<your idea>" to propose one.'))
-                return
-            idea = f"{pending.get('name', '')}: {pending.get('description', '')}".strip(": ")
-            pending_name = pending.get("name") or None
+            if pending:
+                idea = f"{pending.get('name', '')}: {pending.get('description', '')}".strip(": ")
+                pending_name = pending.get("name") or None
+            else:
+                # Bare /evolve with no pending suggestion: ASK for the idea in a
+                # box (this used to just print a note and return, so /evolve
+                # looked unwired unless you passed the idea inline as
+                # /evolve "<idea>"). Now typing /evolve opens the flow.
+                answer = await self.app.push_screen_wait(
+                    PromptModal(
+                        "New tool — what should it do?",
+                        'One sentence, e.g. "list which users have sudo on the target"',
+                    )
+                )
+                if answer is None:
+                    return
+                idea = answer.strip().strip('"').strip("'").strip()
+                if not idea:
+                    self._emit(R.note_line("No idea given — nothing to build."))
+                    return
 
         default_name = pending_name or self._slug(idea)
         name = await self.app.push_screen_wait(PromptModal("Name this tool", "snake_case", initial=default_name))

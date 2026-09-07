@@ -670,3 +670,29 @@ def test_doctor_runs_and_renders(tmp_path, monkeypatch):
     ran, wrote = asyncio.run(_run())
     assert ran == 1        # diagnostics ran once
     assert wrote > 0       # the table + summary were rendered
+
+
+def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):
+    # Bare /evolve (no inline idea, no pending suggestion) must OPEN the idea
+    # prompt, not just print a note — the reported "evolve isn't wired" bug.
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    prompted = {"titles": []}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _capture(modal):
+                # record that a prompt opened, then cancel so the flow stops
+                prompted["titles"].append(getattr(modal, "_title", ""))
+                return None
+
+            monkeypatch.setattr(app, "push_screen_wait", _capture)
+            screen._dispatch_slash("/evolve")   # bare, no idea
+            await pilot.pause()
+            await pilot.pause()
+            return prompted["titles"]
+
+    titles = asyncio.run(_run())
+    assert titles and "what should it do" in titles[0].lower()  # the idea box opened
