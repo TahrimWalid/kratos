@@ -107,11 +107,10 @@ class KratosTUI(App):
     # way to have both. (Shift+drag also bypasses mouse mode in most terminals.)
     BINDINGS = [
         Binding("f2", "toggle_mouse", "copy mode", show=True),
-        # VS Code-style theme picker, reachable from anywhere. NOTE: some
-        # terminals (e.g. Windows Terminal) grab Ctrl+Shift+T for their own
-        # "reopen closed tab" and never forward it — Settings → General → Theme
-        # (and 't' there) is the always-available fallback.
-        Binding("ctrl+shift+t", "pick_theme", "theme", show=True),
+        # Theme picker, reachable from anywhere. Ctrl+T (not Ctrl+Shift+T, which
+        # terminals like Windows Terminal reserve for "reopen closed tab" and
+        # never forward). Settings → General → Theme (and 't' there) also works.
+        Binding("ctrl+t", "pick_theme", "theme", show=True),
     ]
 
     # Kept deliberately low so Kratos is usable in a split/half-screen pane on a
@@ -186,9 +185,8 @@ class KratosTUI(App):
 
     @work
     async def action_pick_theme(self) -> None:
-        """Ctrl+Shift+T — open the theme picker from anywhere (VS Code style).
-        Self-contained: reuses apply_theme_pack, so it works on any screen, not
-        just Settings."""
+        """Ctrl+T — open the theme picker from anywhere. Self-contained: reuses
+        apply_theme_pack, so it works on any screen, not just Settings."""
         from kratos.tui_mk2.modals import ListPickerModal
 
         active = T.active_pack_name()
@@ -198,7 +196,7 @@ class KratosTUI(App):
         ]
         picked = await self.push_screen_wait(
             ListPickerModal("Theme pack", entries,
-                            subtitle="Ctrl+Shift+T from anywhere · recolors Kratos's chrome (danger-red stays constant)."))
+                            subtitle="Ctrl+T from anywhere · recolors Kratos's chrome (danger-red stays constant)."))
         if picked and picked != active:
             self.apply_theme_pack(picked)
 

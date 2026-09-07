@@ -95,9 +95,9 @@ def test_app_apply_theme_pack_live_switch(isolated_theme, tmp_path):
     assert bad is False                 # unknown pack rejected
 
 
-def test_ctrl_shift_t_theme_picker_applies(isolated_theme, tmp_path):
-    # The app-wide Ctrl+Shift+T action opens the theme picker and applies the
-    # pick via apply_theme_pack (reachable from any screen, not just Settings).
+def test_ctrl_t_theme_picker_applies(isolated_theme, tmp_path):
+    # The app-wide Ctrl+T action opens the theme picker and applies the pick
+    # via apply_theme_pack (reachable from any screen, not just Settings).
     import asyncio
 
     from kratos import kratos_config as kc

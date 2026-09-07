@@ -237,7 +237,7 @@ class HelpModal(ModalScreen[None]):
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Settings — models, tools (approvals + code review), name, timezone"),
-                ("Ctrl+Shift+T", "Theme picker — from anywhere (VS Code style)"),
+                ("Ctrl+T", "Theme picker — from anywhere"),
                 ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))
