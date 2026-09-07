@@ -309,3 +309,20 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
         table.add_row(Text(icon, style=color), Text(str(c.get("check", "")), style=color),
                       Text(str(c.get("detail", "")), style=T.TEXT_DIM))
     return table
+
+
+def error_detail(result: Any) -> str:
+    """Best-effort human error message from a FAILED tool result. The loop wraps
+    its own errors under 'observation', but a tool's OWN error dict may use
+    'message' / 'error' / 'detail' / 'stderr' (e.g. a self-written/kept tool).
+    Reading only 'observation' rendered a real error as "no error detail" — this
+    checks the common keys, then falls back to a compact repr of the informative
+    fields, so that phrase only shows when there genuinely is nothing."""
+    if not isinstance(result, dict):
+        return str(result).strip() if result else ""
+    for key in ("observation", "message", "error", "detail", "stderr"):
+        v = result.get(key)
+        if v and str(v).strip():
+            return str(v).strip()
+    fields = {k: v for k, v in result.items() if k not in ("status", "result") and v not in (None, "", [])}
+    return ", ".join(f"{k}={v}" for k, v in fields.items()) if fields else ""

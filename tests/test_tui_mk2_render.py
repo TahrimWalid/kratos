@@ -77,3 +77,19 @@ def test_render_step_ignores_other_tool_less_status_entries():
     SessionScreen._render_step(fake, {"status": "parse_error", "raw_response": "{"})
 
     assert emitted == []
+
+
+def test_error_detail_reads_common_keys_and_falls_back():
+    from kratos.tui_mk2.render import error_detail
+    # a tool's own error uses 'message' (the sudo_command_check case), not 'observation'
+    assert error_detail({"status": "error", "message": "permission denied"}) == "permission denied"
+    # the loop's wrapper error uses 'observation'
+    assert error_detail({"status": "error", "observation": "boom"}) == "boom"
+    # 'observation' wins when both are present
+    assert error_detail({"observation": "outer", "message": "inner"}) == "outer"
+    # message-less error -> informative fallback instead of empty
+    got = error_detail({"command": "ls", "found": False, "status": "error", "message": ""})
+    assert "command=ls" in got and "found=False" in got
+    # genuinely nothing -> empty (caller shows 'no error detail')
+    assert error_detail({"status": "error"}) == ""
+    assert error_detail("plain string") == "plain string"

@@ -526,7 +526,7 @@ class SessionScreen(Screen):
             return
         result, effective_status = R.unwrap_tool_result(step.get("observation"))
         if effective_status == "error":
-            err = result.get("observation") if isinstance(result, dict) else None
+            err = R.error_detail(result)
             self._emit(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
         elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
             findings = result["findings"]
@@ -1584,7 +1584,7 @@ class SessionScreen(Screen):
         if tool_name:
             result, effective_status = R.unwrap_tool_result(step.get("observation"))
             if effective_status == "error":
-                err = result.get("observation") if isinstance(result, dict) else None
+                err = R.error_detail(result)
                 self._emit_from_worker(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
             elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
                 findings = result["findings"]
