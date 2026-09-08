@@ -378,11 +378,14 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
     # self-gate prompt inside their own handler and are left untouched (no
     # double prompt). Marked AFTER approval_mark so the recorded approval counts.
     if tool.requires_approval and not _handler_self_gates(tool):
-        if not request_approval(tool_name, {
+        _details = {
             "tool": tool_name,
             "action": f"Run the kept (self-written) tool '{tool_name}'",
             "description": tool.description,
-        }):
+        }
+        if args:
+            _details["args"] = json.dumps(args)
+        if not request_approval(tool_name, _details):
             return {
                 "status": "not_approved",
                 "observation": f"Running '{tool_name}' was not approved by the user.",

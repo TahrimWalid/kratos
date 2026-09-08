@@ -107,6 +107,9 @@ class SessionScreen(Screen):
         # Confirm-gated so it's never a single-keystroke exit from an active
         # session; the session is kept and stays resumable (unlike /delete).
         Binding("ctrl+b", "back_to_sessions", "sessions", show=True),
+        # F1 = help (the universal, terminal-reliable help key; a bare '?' would
+        # be typed into the input, and ctrl+? is the ambiguous ctrl+shift+/).
+        Binding("f1", "help", "help", show=True),
     ]
 
     CSS = f"""
@@ -467,7 +470,7 @@ class SessionScreen(Screen):
             )
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · /help · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
+        self._emit(Text("Tips:  F1 help · Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text("Investigations target the monitored host by default; ask about “your own host” (or /investigate-host) to check the Kratos machine itself.", style=T.TEXT_GHOST))
         self._emit(Text(""))
@@ -608,8 +611,7 @@ class SessionScreen(Screen):
         elif cmd == "/context":
             self._render_context()
         elif cmd == "/clear":
-            self._clear_screen(archive=False)
-            self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
+            self._clear_flow()
         elif cmd == "/compact":
             self._compact_flow()
         elif cmd == "/reset":
@@ -834,7 +836,23 @@ class SessionScreen(Screen):
         self._render_idle()
         self._refresh_footer()
 
-    # --- /reset, /delete (native confirm modals) -------------------------
+    # --- /clear, /reset, /delete (native confirm modals) -----------------
+    @work
+    async def _clear_flow(self) -> None:
+        ok = await self.app.push_screen_wait(
+            ConfirmModal(
+                "Clear screen",
+                "Wipes the on-screen conversation and resets the working context (and the token "
+                "meter) so the next turn starts fresh — like a shell 'clear'. Your session HISTORY "
+                "is kept and can still be resumed; only the current view and in-memory context go.",
+            )
+        )
+        if not ok:
+            self._emit(R.note_line("Clear cancelled — nothing changed."))
+            return
+        self._clear_screen(archive=False)
+        self._emit(R.success_line("Cleared — screen wiped and working context reset. Session history kept."))
+
     @work
     async def _reset_flow(self) -> None:
         ok = await self.app.push_screen_wait(
@@ -1470,7 +1488,7 @@ class SessionScreen(Screen):
         if self._busy and self._busy_since is not None:
             self._spin_i = (self._spin_i + 1) % len(_SPINNER)
             elapsed = time.monotonic() - self._busy_since
-            act.update(Text(f"{_SPINNER[self._spin_i]} working… {elapsed:.0f}s", style=T.ACCENT))
+            act.update(Text(f"{_SPINNER[self._spin_i]} hacking… {elapsed:.0f}s", style=T.ACCENT))
             self._activity_active = True
         elif self._activity_active:
             act.update("")
@@ -1994,6 +2012,9 @@ class SessionScreen(Screen):
         if self._busy:
             self.workers.cancel_group(self, "turn")
             self._emit(R.note_line("Interrupting at the next step boundary…"))
+
+    def action_help(self) -> None:
+        self.app.push_screen(HelpModal())
 
     @work
     async def action_palette(self) -> None:

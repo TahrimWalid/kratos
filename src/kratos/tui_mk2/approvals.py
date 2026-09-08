@@ -39,6 +39,14 @@ def make_textual_approval_provider(app: App) -> Callable[[str, dict[str, Any]], 
                 box["approved"] = bool(result)
                 done.set()
 
+            # Legibility: drop a "paused for approval" line into the transcript
+            # so a mid-investigation approval reads as a deliberate pause, not a
+            # modal out of nowhere. Only when the live screen is the conversation
+            # (has _emit); harmless otherwise.
+            emit = getattr(app.screen, "_emit", None)
+            if callable(emit):
+                from kratos.tui_mk2 import render as _R
+                emit(_R.note_line(f"⏸ paused — approve '{tool_name}' to continue (answer the prompt)"))
             app.push_screen(ApprovalModal(tool_name, details), _on_dismiss)
 
         try:

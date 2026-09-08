@@ -70,7 +70,13 @@ def test_clear_wipes_context_and_resets_token_meter(tmp_path, monkeypatch):
             # Simulate a prior LLM call that filled the 7c context meter.
             llm_interface._last_usage = llm_interface.TokenUsage(
                 prompt_tokens=5000, completion_tokens=0, total_tokens=5000)
+
+            async def _yes(_modal):  # /clear now confirms first
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
             screen._dispatch_slash("/clear")
+            await pilot.pause()
             await pilot.pause()
             return screen.session_state["resume_context"], llm_interface.get_last_token_usage()
 
@@ -656,7 +662,7 @@ def test_activity_spinner_shows_while_busy_and_clears(tmp_path, monkeypatch):
             return busy_text, idle_text
 
     busy_text, idle_text = asyncio.run(_run())
-    assert "working" in busy_text and any(f in busy_text for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+    assert "hacking" in busy_text and any(f in busy_text for f in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
     assert idle_text.strip() == ""
 
 
