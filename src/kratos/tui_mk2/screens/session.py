@@ -44,7 +44,11 @@ from kratos.tui_mk2.modals import (
     PromptModal,
 )
 
-REPL_MAX_ITERS = 5  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
+REPL_MAX_ITERS = 7  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
+# Raised 5 -> 7 (2026-09-08): a vuln sweep legitimately needs nmap + vuln + config
+# + correlate_findings + conclude = 5 steps with ZERO slack, so any single
+# rejected-early-conclusion (guard 1) pushed correlate_findings out of budget and
+# the run concluded without the correlation engine ever running. 7 leaves room.
 FULL_RESUME_DETAILED_TURN_CAP = 5  # matches cli/repl.py -- only the most recent N turns replay in full
 CHAT_COMPACTION_KEEP_RECENT = 3    # turns kept verbatim on /compact (matches loop.py's investigation compactor)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control codes from captured output

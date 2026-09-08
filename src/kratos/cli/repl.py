@@ -91,7 +91,10 @@ def _display_stored(value: Any, fmt: str = "%H:%M") -> str:
 # -- design doc §4.1: a REPL turn is the repeatedly-invoked case (keep it
 # bounded/cheap), a deliberate `kratos investigate` call (in or out of the
 # REPL) is the exploratory one and keeps its own existing default unchanged.
-REPL_MAX_ITERS = 5
+# Raised 5 -> 7 (2026-09-08): a vuln sweep needs nmap + vuln + config +
+# correlate_findings + conclude = 5 steps with no slack, so a single early
+# guard-1-rejected conclusion pushed correlate_findings out of budget entirely.
+REPL_MAX_ITERS = 7
 
 # Bug fix (2026-07-16, real user report): plain input used to go straight to
 # implicit investigate unconditionally -- "hi" launched a full bounded

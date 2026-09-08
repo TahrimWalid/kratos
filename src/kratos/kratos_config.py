@@ -182,3 +182,14 @@ NTFY_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_NTFY_TIMEOUT", "10"))
 OTX_API_KEY = os.environ.get("OTX_API_KEY")
 ABUSEIPDB_API_KEY = os.environ.get("ABUSEIPDB_API_KEY")
 THREAT_INTEL_ENABLED = os.environ.get("KRATOS_THREAT_INTEL_ENABLED", "0") == "1"
+
+# When a run_vuln_scan finds the local vulscan CVE database stale, whether to
+# INTERRUPT the scan with a live "download a fresh copy now?" approval prompt.
+# Default OFF (2026-09-08): a plain investigation shouldn't be interrupted by a
+# download modal it can only decline -- especially since the scan proceeds with
+# the current database either way, and the upstream mirror is Cloudflare-blocked
+# so the update usually fails anyway. When OFF, staleness is still ALWAYS
+# reported passively (database_stale/database_age_days in the result), so nothing
+# is hidden -- the visibility is preserved, only the interruption is dropped.
+# Set KRATOS_VULSCAN_UPDATE_PROMPT=1 to restore the interactive update prompt.
+VULSCAN_UPDATE_PROMPT = os.environ.get("KRATOS_VULSCAN_UPDATE_PROMPT", "0") == "1"

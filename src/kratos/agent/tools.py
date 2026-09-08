@@ -31,6 +31,7 @@ from kratos.adapters.auth_log_patterns import analyze_auth_patterns as _analyze_
 from kratos.adapters.findings_engine import write_findings_report as _write_findings_report
 from kratos.kratos_config import (
     THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED,
+    VULSCAN_UPDATE_PROMPT as _VULSCAN_UPDATE_PROMPT,
     get_active_target,
 )
 from kratos.agent import console as _console
@@ -784,7 +785,14 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     resolved_tags = nuclei_tags or _DEFAULT_NUCLEI_TAGS
 
     staleness = _check_vulscan_db_staleness()
-    if staleness["stale"]:
+    # A stale CVE database is ALWAYS reported passively (database_stale /
+    # database_age_days in the result below), so its state is never hidden. The
+    # INTERACTIVE "download now?" approval prompt, however, is off by default
+    # (KRATOS_VULSCAN_UPDATE_PROMPT) -- it interrupted a plain investigation with
+    # a modal the user can only decline, while the scan proceeds either way and
+    # the upstream mirror is Cloudflare-blocked so the update usually fails. Opt
+    # in to restore the prompt. See kratos_config.VULSCAN_UPDATE_PROMPT.
+    if staleness["stale"] and _VULSCAN_UPDATE_PROMPT:
         age_desc = f"{staleness['age_days']} days old" if staleness["exists"] else "missing"
         approved = request_approval(
             "UPDATE VULSCAN CVE DATABASE",

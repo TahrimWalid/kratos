@@ -46,7 +46,7 @@ def make_textual_approval_provider(app: App) -> Callable[[str, dict[str, Any]], 
             emit = getattr(app.screen, "_emit", None)
             if callable(emit):
                 from kratos.tui_mk2 import render as _R
-                emit(_R.note_line(f"⏸ paused — approve '{tool_name}' to continue (answer the prompt)"))
+                emit(_R.note_line(f"paused — approve '{tool_name}' to continue (answer the prompt)"))
             app.push_screen(ApprovalModal(tool_name, details), _on_dismiss)
 
         try:
