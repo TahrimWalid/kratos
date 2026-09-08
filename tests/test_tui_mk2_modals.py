@@ -93,3 +93,27 @@ def test_prompt_modal_typed_input_still_returned():
             return app.result
 
     assert asyncio.run(_run()) == "10.9.9.9"
+
+
+def test_confirm_modal_any_key_is_no_but_y_confirms():
+    # Fail-safe: only 'y' confirms; n / esc / any other key cancels.
+    from kratos.tui_mk2.modals import ConfirmModal
+
+    class _CH(App):
+        def on_mount(self):
+            self.result = "unset"
+            self.push_screen(ConfirmModal("T", "body"), lambda r: setattr(self, "result", r))
+
+    def _press(key):
+        async def _run():
+            app = _CH()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await pilot.press(key)
+                await pilot.pause()
+                return app.result
+        return asyncio.run(_run())
+
+    assert _press("y") is True
+    for k in ("n", "escape", "a", "space", "z"):
+        assert _press(k) is False, f"{k} should cancel"

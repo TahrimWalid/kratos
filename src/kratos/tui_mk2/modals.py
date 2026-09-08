@@ -5,6 +5,24 @@ Keyboard-first, matching the canvas mockups (every mockup documents single-key
 affordances -- `y`/`esc`, `l`/`f`/`b`, etc.). Each modal is typed on its
 dismiss value so callers can `await self.app.push_screen_wait(Modal(...))` and
 get a real result, or pass a callback for the thread-worker case (approvals).
+
+NAVIGATION / CONFIRMATION STANDARD (agreed 2026-09-08 — keep every new modal
+consistent with it):
+  * Escape = close the CURRENT layer / back one level (the universal
+    convention). Repeated Escape backs out of nesting. Escape is non-printable,
+    so it works even when a text Input is focused.
+  * ctrl+b = the jump-all-the-way-back-to-the-conversation hatch (SessionScreen).
+    A ctrl-combo so it never collides with a focused input.
+  * `b` = an OPTIONAL secondary "back" ONLY on no-input list/menu screens where
+    it's a meaningful one-level back (ResumeTierModal -> session list, Launch ->
+    recent, Phase-2 gallery). Never on input modals (a bare letter is typed into
+    the field), never mandatory.
+  * Yes/no confirmations: `y` = yes; `n`/`esc`/ANY OTHER KEY = No (fail-safe --
+    a stray keypress never confirms). The ONE exception is the scrollable
+    ApprovalModal, which keeps explicit y/n/esc so scroll keys still work to read
+    a long approval before deciding. Both share the same key legend.
+  * Every simple yes/no goes through ConfirmModal (never an ad-hoc dialog), so
+    the confirm UI is identical by construction.
 """
 from __future__ import annotations
 
@@ -13,7 +31,7 @@ from typing import Any
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
@@ -155,14 +173,24 @@ class ResumeTierModal(ModalScreen[str | None]):
 
 
 class ConfirmModal(ModalScreen[bool]):
-    """Generic native confirm (used by /reset, /delete). No force-accept:
-    escape / n / anything but `y` denies. Distinct from ApprovalModal only in
-    that it takes plain title/body text rather than a tool details dict."""
+    """Generic native confirm (used by /reset, /delete, model/target switch,
+    draft-harness, back-to-sessions). No force-accept: only `y` confirms; `n`,
+    `escape`, and ANY OTHER KEY cancel (fail-safe — a stray keypress never
+    confirms). No text input and no scroll here, so a catch-all key = No is safe
+    (unlike the scrollable ApprovalModal, which keeps explicit keys so scroll
+    still works). Distinct from ApprovalModal only in that it takes plain
+    title/body text rather than a tool details dict."""
 
     BINDINGS = [
         Binding("y", "confirm", "confirm", show=True),
         Binding("n,escape", "cancel", "cancel", show=True),
     ]
+
+    def on_key(self, event: events.Key) -> None:
+        # Fail-safe: any key other than 'y' cancels. 'y' is left to its binding.
+        if event.key != "y":
+            event.stop()
+            self.action_cancel()
 
     def __init__(self, title: str, body: str) -> None:
         super().__init__()
