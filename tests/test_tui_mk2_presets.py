@@ -209,6 +209,137 @@ def test_preset_run_guided_empty_hints_to_new(tmp_path, monkeypatch):
     assert ran["n"] == 0  # nothing to run; guided flow just hints
 
 
+def test_forgotten_slash_interceptor_runs_command(tmp_path, monkeypatch):
+    """Typing a bare command word (no slash) is caught deterministically and run
+    as the command — 'preset new ...' creates the preset instead of going to the
+    LLM as a goal."""
+    from textual.widgets import Input
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    # Guard: if it wrongly went to the LLM, this would be called.
+    monkeypatch.setattr(screen, "_run_goal",
+                        lambda *a, **k: pytest.fail("bare command leaked to _run_goal"))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = screen.query_one("#goal", Input)
+            inp.value = 'preset new "weekly audit" "full ssh review"'
+            screen.on_input_submitted(Input.Submitted(inp, inp.value))
+            for _ in range(80):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "weekly-audit"):
+                    break
+
+    asyncio.run(_run())
+    assert P.load_preset(tmp_path, "weekly-audit").goal == "full ssh review"
+
+
+def test_ambiguous_verb_is_not_intercepted(tmp_path, monkeypatch):
+    """A goal that merely starts with an ambiguous verb ('run a scan …') must NOT
+    be hijacked by the interceptor — it goes to the normal goal path."""
+    from textual.widgets import Input
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    seen = {}
+    monkeypatch.setattr(screen, "_run_goal", lambda goal, **k: seen.__setitem__("goal", goal))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = screen.query_one("#goal", Input)
+            inp.value = "run a full scan on the target"
+            screen.on_input_submitted(Input.Submitted(inp, inp.value))
+            for _ in range(20):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert seen.get("goal") == "run a full scan on the target"  # went to the LLM, not /run
+
+
+def test_preset_new_conversational_saves_on_confirm(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _yes(_m):
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
+            screen._preset_new_conversational("Weekly Audit", "review ssh hardening")
+            for _ in range(80):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "weekly-audit"):
+                    break
+
+    asyncio.run(_run())
+    assert P.load_preset(tmp_path, "weekly-audit").goal == "review ssh hardening"
+
+
+def test_preset_new_conversational_declined_saves_nothing(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _no(_m):
+                return False
+
+            monkeypatch.setattr(app, "push_screen_wait", _no)
+            screen._preset_new_conversational("weekly", "goal")
+            for _ in range(30):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert not P.preset_exists(tmp_path, "weekly")
+
+
+def test_preset_run_conversational_runs_existing(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="nightly", goal="nightly checks")
+    recorded = {}
+    monkeypatch.setattr(screen, "_run_investigation",
+                        lambda goal, **kw: recorded.__setitem__("goal", goal))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._preset_run_conversational("nightly")
+            for _ in range(120):
+                await pilot.pause()
+                if "goal" in recorded:
+                    break
+
+    asyncio.run(_run())
+    assert recorded.get("goal") == "nightly checks"
+
+
+def test_preset_run_conversational_unknown_is_safe(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    ran = {"n": 0}
+    monkeypatch.setattr(screen, "_run_investigation",
+                        lambda *a, **k: ran.__setitem__("n", ran["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._preset_run_conversational("does-not-exist")
+            for _ in range(20):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert ran["n"] == 0  # unknown preset: helpful error, nothing run
+
+
 def test_preset_list_renders_without_crashing(tmp_path, monkeypatch):
     _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
     P.save_preset(tmp_path, name="a", goal="ga")

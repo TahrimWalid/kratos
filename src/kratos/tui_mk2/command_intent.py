@@ -52,6 +52,8 @@ _INVESTIGATE_SENTINEL = "INVESTIGATE"
 _INVESTIGATE_HOST_SENTINEL = "INVESTIGATE_HOST"
 _CLARIFY_HOST_SENTINEL = "CLARIFY_HOST"
 _COMMAND_PREFIX = "COMMAND:"
+_PRESET_NEW_PREFIX = "PRESET_NEW:"
+_PRESET_RUN_PREFIX = "PRESET_RUN:"
 _MAX_TOKENS = 220
 
 
@@ -99,8 +101,23 @@ def _system_prompt() -> str:
         f"issues right now -> respond with EXACTLY this one word: {_INVESTIGATE_SENTINEL}\n"
         f"3. A request to investigate YOUR OWN host -- the Kratos machine itself, not the "
         f"monitored target -> respond with EXACTLY this one word: {_INVESTIGATE_HOST_SENTINEL}\n"
-        "4. Anything else (greetings, thanks, questions about what you are or can do, small "
+        f"4. A request to SAVE a reusable preset (a named investigation to re-run later) -> "
+        f"respond with EXACTLY one line:\n"
+        f"   {_PRESET_NEW_PREFIX} <short-name> | <the investigation goal in plain words>\n"
+        f"   Examples: 'save a preset called weekly-audit that reviews SSH + firewall hardening' -> "
+        f"'{_PRESET_NEW_PREFIX} weekly-audit | review SSH and firewall hardening on the target'  ·  "
+        f"'remember this as my-check: look for brute-force attempts' -> "
+        f"'{_PRESET_NEW_PREFIX} my-check | look for brute-force attempts'\n"
+        f"5. A request to RUN/execute an already-saved preset BY NAME -> respond with EXACTLY:\n"
+        f"   {_PRESET_RUN_PREFIX} <name>\n"
+        f"   Examples: 'run my weekly-audit preset' -> '{_PRESET_RUN_PREFIX} weekly-audit'  ·  "
+        f"'execute the preset called nightly' -> '{_PRESET_RUN_PREFIX} nightly'\n"
+        "6. Anything else (greetings, thanks, questions about what you are or can do, small "
         "talk) -> reply normally and conversationally as Kratos: helpful, brief, no markdown.\n\n"
+        "For 4 vs 5: use PRESET_NEW only when the user clearly wants to SAVE/CREATE a preset "
+        "(save/remember/create a preset/macro), and PRESET_RUN only when they clearly want to RUN "
+        "an EXISTING one by name. A plain 'investigate the target' with no mention of a preset is "
+        f"{_INVESTIGATE_SENTINEL}, not a preset action. Never invent a preset name the user didn't give.\n\n"
         "Only emit a COMMAND line when the user clearly wants that specific control run. "
         "'what can you do?' is chat, not help; but 'show me the report', 'switch to <model>', "
         "'change the target to <host>' ARE commands. Use only the control names listed above.\n"
@@ -109,7 +126,7 @@ def _system_prompt() -> str:
         "UNAMBIGUOUSLY means the Kratos machine itself -- e.g. 'check your own host', 'how's "
         "this machine you run on', 'is the Kratos host itself okay', 'scan yourself'. A bare "
         "'is everything okay' or 'check for intrusions' means the target, not you.\n"
-        f"5. If -- and only if -- the user clearly wants an investigation but you genuinely cannot "
+        f"7. If -- and only if -- the user clearly wants an investigation but you genuinely cannot "
         f"tell whether they mean the monitored target or the Kratos host itself, and getting it "
         f"wrong would investigate the wrong machine -> respond with EXACTLY: {_CLARIFY_HOST_SENTINEL}. "
         "Use this rarely; when the default-to-target rule resolves it, just use it."
@@ -118,11 +135,13 @@ def _system_prompt() -> str:
 
 @dataclass
 class RouteResult:
-    kind: str                      # "command" | "investigate" | "investigate_host" | "clarify_host" | "chat" | "failed"
+    kind: str                      # "command"|"investigate"|"investigate_host"|"clarify_host"|"preset_new"|"preset_run"|"chat"|"failed"
     command: str | None = None     # for kind == "command"
     args: str = ""                 # for kind == "command"
     reply: str | None = None       # for kind == "chat"
     reason: str | None = None      # for kind == "failed"
+    preset_name: str | None = None  # for kind in ("preset_new", "preset_run")
+    preset_goal: str | None = None  # for kind == "preset_new"
 
 
 def _parse(response: str) -> RouteResult:
@@ -136,6 +155,20 @@ def _parse(response: str) -> RouteResult:
         return RouteResult(kind="clarify_host")
     if bare == _INVESTIGATE_SENTINEL:
         return RouteResult(kind="investigate")
+    if text.upper().startswith(_PRESET_NEW_PREFIX):
+        body = text[len(_PRESET_NEW_PREFIX):].strip()
+        name, _, goal = body.partition("|")
+        name, goal = name.strip(), goal.strip()
+        # Both parts required; a malformed extraction falls through to chat
+        # rather than saving a nameless/goalless preset.
+        if name and goal:
+            return RouteResult(kind="preset_new", preset_name=name, preset_goal=goal)
+        return RouteResult(kind="chat", reply=text)
+    if text.upper().startswith(_PRESET_RUN_PREFIX):
+        name = text[len(_PRESET_RUN_PREFIX):].strip()
+        if name:
+            return RouteResult(kind="preset_run", preset_name=name)
+        return RouteResult(kind="chat", reply=text)
     if text.upper().startswith(_COMMAND_PREFIX):
         body = text[len(_COMMAND_PREFIX):].strip()
         if "|" in body:

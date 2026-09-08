@@ -85,6 +85,24 @@ _PALETTE_COMMANDS = [
 ]
 
 
+# Forgotten-slash safety net: bare words that are UNAMBIGUOUSLY a command (they
+# would essentially never begin a real investigation goal or an English sentence)
+# AND whose command is non-destructive. A line starting with one of these is
+# treated as the slash command the user meant, with a one-line hint. DELIBERATELY
+# EXCLUDES: verb-like/ambiguous words that can legitimately start a goal (run,
+# use, report, scan, host, model, preview) -- those stay with the LLM router,
+# whose capability-aware nudge points to the slash command when appropriate, so
+# the two layers fire on DISJOINT inputs and never fight; and destructive/heavy
+# commands (clear, reset, delete, rename, compact) -- never auto-run from a typo.
+_BARE_COMMAND_WORDS = frozenset({
+    "preset", "presets",
+    "preset-new", "preset-list", "preset-ls", "preset-run", "preset-edit",
+    "preset-delete", "preset-del", "preset-show",
+    "doctor", "health", "usage", "context", "tools", "evolve", "help",
+    "settings", "timezone",
+})
+
+
 class _CancelInvestigation(Exception):
     """Raised inside on_step when the user pressed esc -- lets run_agent unwind
     at a step boundary (a blocking LLM/tool call can't be interrupted mid-call,
@@ -600,6 +618,16 @@ class SessionScreen(Screen):
         # been pressed; ctrl+c-stop-then-retype covers editing instead).
         if text.startswith("/"):
             self._dispatch_slash(text)
+        elif text.split(maxsplit=1)[0].lower() in _BARE_COMMAND_WORDS:
+            # Forgotten-slash safety net (deterministic, pre-LLM): the line starts
+            # with an unambiguous command word, so the user clearly meant the
+            # command and just dropped the "/". Run it, with a hint. Disjoint from
+            # the LLM router's capability nudge (which handles natural-language
+            # questions), so they never overpower each other.
+            self._emit(R.note_line(
+                f"“{text.split(maxsplit=1)[0].lower()}” is a command — running /{text}. "
+                "(Commands start with a slash.)"))
+            self._dispatch_slash("/" + text)
         else:
             self._run_goal(text)
 
@@ -899,6 +927,65 @@ class SessionScreen(Screen):
             await self._preset_delete([name])
         elif action == "show":
             self._preset_show([name])
+
+    @work
+    async def _preset_new_conversational(self, name: str, goal: str) -> None:
+        """NL preset creation ("save this as a preset called X to do Y"): the
+        model extracted name+goal; confirm with the human before writing (a weak
+        model can mis-extract), then save. On decline, point at the guided flow."""
+        from kratos.agent import presets as _P
+
+        ok, canonical, err = _P.validate_preset_name(name or "")
+        if not ok:
+            self._emit(R.error_line(
+                f"Couldn't use that as a preset name ({err}) Try /preset-new to create one."))
+            return
+        goal = (goal or "").strip()
+        if not goal:
+            self._emit(R.note_line("I didn't catch a goal to save. Try /preset-new."))
+            return
+        confirm = await self.app.push_screen_wait(ConfirmModal(
+            "Save this preset?",
+            f"Save preset {canonical!r} with this goal?\n\n{goal}"))
+        if not confirm:
+            self._emit(R.note_line("Didn't save it. Use /preset-new if you want to create it yourself."))
+            return
+        if _P.preset_exists(self._data_dir, canonical):
+            overwrite = await self.app.push_screen_wait(ConfirmModal(
+                "Overwrite preset?",
+                f"A preset named {canonical!r} already exists. Replace it?"))
+            if not overwrite:
+                self._emit(R.note_line("Kept the existing preset — nothing changed."))
+                return
+        try:
+            preset = _P.save_preset(self._data_dir, name=canonical, goal=goal)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.success_line(
+            f"Saved preset {preset.name!r}. Run it anytime with /preset-run (or /preset run \"{preset.name}\")."))
+
+    def _preset_run_conversational(self, name: str) -> None:
+        """NL preset run ("run my X preset"): resolve by name and run, or give a
+        helpful error naming the presets that do exist."""
+        from kratos.agent import presets as _P
+
+        try:
+            preset = _P.load_preset(self._data_dir, name or "")
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        if preset is None:
+            existing = [p.name for p in _P.list_presets(self._data_dir)[0]]
+            hint = (f" Your presets: {', '.join(existing)}." if existing
+                    else " You have no presets yet — create one with /preset-new.")
+            self._emit(R.error_line(f"No preset named {name!r}.{hint}"))
+            return
+        if not preset.is_runnable_tier1:
+            self._emit(R.note_line(preset.unsupported_reason))
+            return
+        self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
+        self._preset_run_worker(preset.goal, preset.target)
 
     def _preset_resolve(self, args: list[str], action: str):
         """Load a single named preset from args[0], emitting a clear error and
@@ -1912,6 +1999,22 @@ class SessionScreen(Screen):
             # event loop, then launch the right investigation worker from there
             # (this worker is done — the follow-up owns its own busy flag).
             self.app.call_from_thread(self._clarify_host_flow, goal)
+            self._set_busy(False)
+            return
+
+        if route.kind == "preset_new":
+            # "save this as a preset called X …" — extracted name+goal. Confirm on
+            # the event loop before writing (the model extracted it; the human
+            # gets the last word), then this worker is done.
+            self.app.call_from_thread(
+                self._preset_new_conversational, route.preset_name, route.preset_goal)
+            self._set_busy(False)
+            return
+
+        if route.kind == "preset_run":
+            # "run my X preset" — resolve + run on the event loop (which may kick
+            # its own investigation worker).
+            self.app.call_from_thread(self._preset_run_conversational, route.preset_name)
             self._set_busy(False)
             return
 

@@ -44,6 +44,32 @@ def test_route_message_investigate_host(monkeypatch):
     assert ci.route_message("how's your own host doing?").kind == "investigate_host"
 
 
+def test_parse_preset_new():
+    r = ci._parse("PRESET_NEW: weekly-audit | review ssh and firewall hardening")
+    assert r.kind == "preset_new"
+    assert r.preset_name == "weekly-audit"
+    assert r.preset_goal == "review ssh and firewall hardening"
+
+
+def test_parse_preset_run():
+    r = ci._parse("PRESET_RUN: nightly")
+    assert r.kind == "preset_run" and r.preset_name == "nightly"
+
+
+def test_parse_preset_new_malformed_falls_through_to_chat():
+    # No goal after the pipe -> don't save a goalless preset; treat as chat.
+    assert ci._parse("PRESET_NEW: onlyname").kind == "chat"
+    assert ci._parse("PRESET_RUN:").kind == "chat"
+
+
+def test_capabilities_are_in_system_prompt():
+    # The capability-awareness nudge must actually be present (regression guard
+    # for the "I don't support presets" false-denial bug).
+    prompt = ci._system_prompt()
+    assert "/preset-new" in prompt
+    assert "PRESET_NEW:" in prompt and "PRESET_RUN:" in prompt
+
+
 def test_parse_clarify_host():
     assert ci._parse("CLARIFY_HOST").kind == "clarify_host"
     assert ci._parse("clarify_host.").kind == "clarify_host"
