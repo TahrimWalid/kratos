@@ -58,7 +58,7 @@ _PALETTE_COMMANDS = [
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
-    ("/tool", "run ONE specific tool directly (deterministic, no model)"),
+    ("/use", "run ONE specific tool directly (deterministic, no model)"),
     ("/help", "list all commands"),
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
@@ -634,7 +634,7 @@ class SessionScreen(Screen):
             self._evolve_flow(rest)
         elif cmd == "/tools":
             self._render_tools()
-        elif cmd in ("/tool", "/run-tool"):
+        elif cmd in ("/use", "/tool", "/run-tool"):
             self._tool_flow(rest)
         elif cmd == "/settings":
             from kratos.tui_mk2.screens.settings import SettingsScreen
@@ -1222,10 +1222,10 @@ class SessionScreen(Screen):
 
     @work
     async def _tool_flow(self, rest: str) -> None:
-        """`/tool <name> [json-args]` runs EXACTLY that tool via the real
+        """`/use <name> [json-args]` runs EXACTLY that tool via the real
         dispatch (execute_tool_call) with NO model tool-selection — the
         deterministic override for when you know which tool you want. Bare
-        `/tool` opens a searchable picker. Approval gates and the pre-dispatch
+        `/use` opens a searchable picker. Approval gates and the pre-dispatch
         guards still apply (this is the same path the agent uses, chosen by you)."""
         from kratos.agent.tools import TOOL_REGISTRY
         from kratos.tui_mk2.modals import ToolPickerModal
@@ -1233,7 +1233,7 @@ class SessionScreen(Screen):
         parts = rest.split(maxsplit=1)
         args: dict[str, Any] = {}
         if not parts:
-            # Bare /tool -> searchable pick-from-list (type to filter).
+            # Bare /use -> searchable pick-from-list (type to filter).
             picked = await self.app.push_screen_wait(ToolPickerModal(self._tool_picker_entries()))
             if not picked:
                 return
@@ -1250,7 +1250,7 @@ class SessionScreen(Screen):
                 except Exception as e:  # noqa: BLE001
                     self._emit(R.error_line(
                         f"Couldn't parse args: {e}. Pass a JSON object, e.g. "
-                        '/tool check_ip_reputation {"ip": "1.2.3.4"}'))
+                        '/use check_ip_reputation {"ip": "1.2.3.4"}'))
                     return
         if name not in TOOL_REGISTRY:
             near = [t for t in sorted(TOOL_REGISTRY) if name.lower() in t.lower()]
@@ -1285,7 +1285,7 @@ class SessionScreen(Screen):
     def _tool_usage(self, name: str, tool: Any, missing: list[str]) -> Text:
         params = getattr(tool, "parameters", {}) or {}
         body = Text()
-        body.append(f"/tool {name} needs: ", style=T.ATTENTION)
+        body.append(f"/use {name} needs: ", style=T.ATTENTION)
         body.append(", ".join(missing), style=f"bold {T.TEXT_BRIGHT}")
         for pname in missing:
             spec = params.get(pname) or {}
@@ -1295,7 +1295,7 @@ class SessionScreen(Screen):
             if spec.get("description"):
                 body.append(f" — {spec['description']}", style=T.TEXT_MUTED)
         example = "{" + ", ".join(f'"{m}": ...' for m in missing) + "}"
-        body.append(f"\nPass as JSON, e.g.  /tool {name} {example}", style=T.TEXT_DIM)
+        body.append(f"\nPass as JSON, e.g.  /use {name} {example}", style=T.TEXT_DIM)
         return body
 
     @work(thread=True, exclusive=True, group="turn")

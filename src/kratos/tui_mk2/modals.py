@@ -281,7 +281,7 @@ class HelpModal(ModalScreen[None]):
                 ("/evolve", "Build the most recent auto-suggested tool"),
                 ('/evolve "<idea>"', "Start evo-loop with your own idea"),
                 ("/tools", "List tools by kind (Default / Kept / Installed)"),
-                ("/tool <name> [json]", "Run ONE tool directly — deterministic, no model tool-selection"),
+                ("/use <name> [json]", "Run ONE tool directly — deterministic, no model tool-selection"),
             ]))
             yield Static(self._table("Configuration", [
                 ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
@@ -417,7 +417,7 @@ class ClarifyModal(ModalScreen[str | None]):
 
 
 class ToolPickerModal(ModalScreen[str | None]):
-    """Searchable tool picker for bare /tool: type to filter by name or
+    """Searchable tool picker for bare /use: type to filter by name or
     description, ↑↓ to move, Enter to pick, esc to cancel. Returns the chosen
     tool name (or None). `entries` is a list of (name, description)."""
 

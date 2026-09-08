@@ -791,7 +791,7 @@ def test_tool_command_runs_named_tool_deterministically(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen._dispatch_slash('/tool run_nmap_scan {"target": "10.9.9.9"}')
+            screen._dispatch_slash('/use run_nmap_scan {"target": "10.9.9.9"}')
             for _ in range(200):
                 await pilot.pause()
                 if "name" in seen and not screen._busy:
@@ -815,7 +815,7 @@ def test_tool_command_unknown_tool_errors_without_running(tmp_path, monkeypatch)
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            screen._dispatch_slash("/tool no_such_tool_xyz")
+            screen._dispatch_slash("/use no_such_tool_xyz")
             await pilot.pause()
             await pilot.pause()
             return called["n"]
@@ -848,7 +848,7 @@ def test_bare_tool_opens_picker_then_runs_selection(tmp_path, monkeypatch):
                 return "run_nmap_scan"  # user selects a tool
 
             monkeypatch.setattr(app, "push_screen_wait", _pick)
-            screen._dispatch_slash("/tool")  # bare -> picker
+            screen._dispatch_slash("/use")  # bare -> picker
             for _ in range(200):
                 await pilot.pause()
                 if "name" in ran:
@@ -883,7 +883,7 @@ def test_tool_command_missing_required_arg_shows_usage_not_dispatch(tmp_path, mo
             await pilot.pause()
             log = screen.query_one("#transcript")
             before = len(log.lines)
-            screen._dispatch_slash("/tool count_failed_sudo_attempts")  # required arg omitted
+            screen._dispatch_slash("/use count_failed_sudo_attempts")  # required arg omitted
             await pilot.pause()
             await pilot.pause()
             return called["n"], len(log.lines) - before
