@@ -117,3 +117,31 @@ def test_confirm_modal_any_key_is_no_but_y_confirms():
     assert _press("y") is True
     for k in ("n", "escape", "a", "space", "z"):
         assert _press(k) is False, f"{k} should cancel"
+
+
+def test_command_palette_prefers_exact_match():
+    # Typing "/tool" + Enter must run /tool, not the first substring match /tools.
+    from kratos.tui_mk2.modals import CommandPaletteModal
+    cmds = [("/tools", "list"), ("/tool", "run one"), ("/target", "t")]
+
+    def _type_and_enter(text):
+        class _H(App):
+            def on_mount(self):
+                self.result = "unset"
+                self.push_screen(CommandPaletteModal(cmds), lambda r: setattr(self, "result", r))
+
+        async def _run():
+            app = _H()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                for ch in text:
+                    await pilot.press("slash" if ch == "/" else ch)
+                await pilot.pause()
+                await pilot.press("enter")
+                await pilot.pause()
+                return app.result
+        return asyncio.run(_run())
+
+    assert _type_and_enter("/tool") == "/tool"      # exact wins over /tools
+    assert _type_and_enter("/tools") == "/tools"
+    assert _type_and_enter("/tar") == "/target"     # substring fallback still works

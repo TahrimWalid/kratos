@@ -542,6 +542,15 @@ class CommandPaletteModal(ModalScreen[str | None]):
             return
         matches = self._matches(val)
         if matches:
+            # Prefer an EXACT command match over the highlighted substring match,
+            # so typing "/tool" and hitting Enter runs /tool, not /tools (which
+            # is listed first and also contains "tool"). Only fall back to the
+            # highlighted row when there's no exact hit.
+            norm = val.lstrip("/").lower()
+            exact = next((c for c, _ in matches if c.lstrip("/").lower() == norm), None)
+            if exact:
+                self.dismiss(exact)
+                return
             idx = max(0, self.query_one("#palette-list", ListView).index or 0)
             self.dismiss(matches[idx][0])
             return
