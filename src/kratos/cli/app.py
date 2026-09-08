@@ -535,122 +535,62 @@ def cmd_findings_generate(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    """Standard audit — a fixed, deterministic security sweep of the target.
+
+    Re-pointed (2026-09-08, PreA2) at the new deterministic engine
+    (``agent/pipeline.py``), replacing the legacy hardcoded pipeline. The old
+    version was frozen at Sprint 1, bypassed the tool registry (so no approval-
+    gating / target resolution), and — the real bug — silently mixed KRATOS-HOST
+    auth-log/context analysis into "the target's findings"
+    (``docs/a2_custom_presets_and_pipelines.md`` §6.2). The new engine is
+    target-correct by construction and runs over ``TOOL_REGISTRY`` via
+    ``execute_tool_call``, inheriting every guard. Same recipe shape (scan →
+    config → auth → correlate), done right.
     """
-    Run the full pipeline as a single transaction.
-    Each step passes its outputs directly to the next step (no "latest file" lookups).
-    """
-    # 1) scan + parse
+    from kratos.agent.pipeline import run_pipeline, standard_audit_steps
+    from kratos.kratos_config import get_active_target, set_active_target
+
+    prior_active = None
+    if args.target:
+        prior_active = get_active_target()
+        set_active_target(args.target)
+
+    target = get_active_target()
+    print(f"[KRATOS] Standard audit — deterministic security sweep of {target} (no LLM).")
     try:
-        nmap_xml = run_nmap_scan(args.data_dir, args.target)
-        print(f"[KRATOS] Scan complete -> {nmap_xml}")
-        
-        parsed = parse_nmap_xml_to_dict(nmap_xml)
-        parsed_json = write_parsed_json(args.data_dir, parsed)
-        
-        host_count = len(parsed["hosts"])
-        open_ports_total = sum(len(h["open_ports"]) for h in parsed["hosts"])
-        print(f"[KRATOS] Parsed scan: {nmap_xml.name}")
-        print(f"[KRATOS] Hosts: {host_count}, total open ports: {open_ports_total}")
-        print(f"[KRATOS] JSON written -> {parsed_json}")
-    except RuntimeError as e:
-        print(f"[KRATOS] ERROR: {e}")
-        return 1
+        outcome = run_pipeline(standard_audit_steps(), args.data_dir)
+    finally:
+        if prior_active is not None:
+            set_active_target(prior_active)
 
-    # 2) logs + patterns
-    log_file = getattr(args, "log_file", None)
-    source = getattr(args, "source", "auto")
-    
-    try:
-        events_out, stats_out, stats = parse_auth_log_file(
-            args.data_dir,
-            log_file,
-            source
-        )
-    except RuntimeError as e:
-        print(f"[KRATOS] ERROR: {e}")
-        return 1
+    for s in outcome.steps:
+        if s.status == "ok":
+            print(f"[KRATOS]   ✓ {s.tool} — {s.label}")
+        elif s.status == "skipped":
+            print(f"[KRATOS]   – {s.tool} — skipped ({s.detail or 'condition not met'})")
+        elif s.status == "not_approved":
+            print(f"[KRATOS]   – {s.tool} — not approved; skipped")
+        else:
+            print(f"[KRATOS]   ✗ {s.tool} FAILED — {s.detail or 'no detail'}")
 
-    # Check if user-provided file was not found
-    if "_warn_explicit_file_not_found" in stats:
-        not_found_path = stats["_warn_explicit_file_not_found"]
-        print(f"[KRATOS] WARN: Provided --log-file not found: {not_found_path} (continuing with auto-detect)")
-
-    source_info = stats.get("source", "unknown")
-    
-    # Check if no logs were found
-    if source_info == "none":
-        print(f"[KRATOS] No supported auth log source found (auth.log/secure/journald).")
-        print(f"[KRATOS] Generated empty outputs: events: {events_out.name}, stats: {stats_out.name}")
+    tally = outcome.severity_tally
+    if outcome.findings:
+        summary = "  ".join(f"{tally[k]} {k}" for k in
+                            ("critical", "high", "medium", "low", "info") if tally.get(k))
+        print(f"[KRATOS] Findings: {summary}")
+        # Surface the report files the correlation step wrote, for traceability.
+        for s in outcome.steps:
+            if s.tool == "correlate_findings" and s.result:
+                if s.result.get("findings_json_file"):
+                    print(f"[KRATOS] Findings JSON -> {s.result['findings_json_file']}")
+                if s.result.get("findings_md_file"):
+                    print(f"[KRATOS] Findings MD   -> {s.result['findings_md_file']}")
     else:
-        print(f"[KRATOS] Parsed auth log -> source: {source_info}")
-        print(f"[KRATOS] Output files: events: {events_out.name}, stats: {stats_out.name}")
-        print(f"[KRATOS] Total events: {stats.get('total_events', 0)}")
+        print("[KRATOS] No findings raised by the correlation engine.")
 
-        # nice quick summary
-        by_type = stats.get("events_by_type", {})
-        if by_type:
-            print("[KRATOS] Event types:")
-            for k, v in sorted(by_type.items(), key=lambda x: (-x[1], x[0])):
-                print(f"  - {k}: {v}")
-
-        top_ips = stats.get("top_failed_login_ips", [])
-        if top_ips:
-            print("[KRATOS] Top failed-login IPs:")
-            for item in top_ips:
-                print(f"  - {item['ip']}: {item['count']}")
-    
-    # Run patterns analysis using the events file we just created
-    if events_out:
-        try:
-            patterns_out = analyze_auth_patterns(
-                data_dir=args.data_dir,
-                events_file=events_out,
-                event_types=getattr(args, "event_types", None),
-                window_minutes=getattr(args, "window_minutes", 5),
-                threshold=getattr(args, "threshold", 3),
-            )
-            print(f"[KRATOS] Patterns written -> {patterns_out}")
-        except RuntimeError as e:
-            print(f"[KRATOS] WARNING: Pattern detection failed: {e}, continuing pipeline.")
-            patterns_out = None
-    else:
-        patterns_out = None
-
-    # 3) context
-    try:
-        context_out = write_system_context(args.data_dir)
-        print(f"[KRATOS] System context written -> {context_out}")
-    except Exception as e:
-        print(f"[KRATOS] ERROR: {e}")
+    if outcome.status != "completed":
+        print(f"[KRATOS] ERROR: audit aborted — required step '{outcome.aborted_on}' did not succeed.")
         return 1
-
-    # 4) findings (uses the files we just created in this run)
-    try:
-        out_json, out_md = write_findings_report(
-            data_dir=args.data_dir,
-            nmap_parsed_file=parsed_json,
-            auth_stats_file=stats_out,
-            auth_patterns_file=patterns_out,
-            system_context_file=context_out,
-            auth_trends_file=None,  # trends not generated in run (optional)
-        )
-        print(f"[KRATOS] Findings JSON -> {out_json}")
-        print(f"[KRATOS] Findings MD   -> {out_md}")
-        
-        # Show which context snapshot was used for traceability
-        import json
-        data = json.loads(out_json.read_text(encoding="utf-8", errors="replace"))
-        ctx_file = data.get("inputs", {}).get("system_context")
-        if ctx_file:
-            print(f"[KRATOS] Context snapshot used -> {ctx_file}")
-        
-        # Extract timestamp from any output file to show artifact set tag
-        artifact_tag = parsed_json.stem.split('_', 1)[1] if '_' in parsed_json.stem else "unknown"
-        print(f"[KRATOS] Run artifact set: {artifact_tag} (all files use this timestamp)")
-    except Exception as e:
-        print(f"[KRATOS] ERROR: {e}")
-        return 1
-    
     return 0
 
 
@@ -915,27 +855,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = p.add_subparsers(dest="command", required=True)
 
-    runp = sub.add_parser("run", help="Run the full pipeline (scan→logs→context→findings)")
-    runp.add_argument("--target", default="127.0.0.1", help="Scan target (default: 127.0.0.1)")
+    runp = sub.add_parser(
+        "run",
+        help="Standard audit — a fixed, deterministic security sweep of the target",
+    )
     runp.add_argument(
-        "--log-file",
-        type=Path,
+        "--target",
         default=None,
-        help="Path to auth log file (optional, auto-detect if not provided)",
-    )
-    runp.add_argument(
-        "--source",
-        choices=["auto", "file", "journald"],
-        default="auto",
-        help="Auth log source (default: auto)",
-    )
-    runp.add_argument("--threshold", type=int, default=3, help="Burst threshold (default: 3)")
-    runp.add_argument("--window-minutes", type=int, default=5, help="Burst window in minutes (default: 5)")
-    runp.add_argument(
-        "--event-types",
-        nargs="+",
-        default=["sudo_pam_auth_failure", "sudo_auth_failure", "ssh_failed_login"],
-        help="Event types to analyze (default: sudo_pam_auth_failure sudo_auth_failure ssh_failed_login)",
+        help="Target to audit (default: the configured active target, same as `investigate`)",
     )
     runp.set_defaults(func=cmd_run)
 

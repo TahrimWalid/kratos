@@ -164,6 +164,71 @@ def result_panel(title: str, body: str, color: str, time_str: str | None = None)
     )
 
 
+# Severity ordering + colors for the audit summary's finding tally (high→low).
+_AUDIT_SEVERITIES = ("critical", "high", "medium", "low", "info")
+
+
+def audit_summary_panel(
+    *,
+    status: str,
+    ran: int,
+    total: int,
+    severity_tally: dict[str, int],
+    duration_s: float,
+    aborted_on: str | None = None,
+    time_str: str | None = None,
+) -> Panel:
+    """PreA2 run-summary: a first-class close-out panel for a deterministic
+    standard audit (agent/pipeline.py). Distinct from the agentic investigation's
+    conclusion panel -- this one has no LLM narrative; it reports, plainly, what
+    the fixed pipeline did and what it found. Green when it completed clean, amber
+    when it completed with findings or a required step aborted it."""
+    completed = status == "completed"
+    total_findings = sum(severity_tally.values())
+    worst = next((s for s in _AUDIT_SEVERITIES if severity_tally.get(s)), None)
+
+    if not completed:
+        color = T.CRITICAL
+    elif worst in ("critical", "high"):
+        color = T.CRITICAL
+    elif total_findings:
+        color = T.ATTENTION
+    else:
+        color = T.SAFE
+
+    body = Text()
+    if completed:
+        body.append("Deterministic audit complete", style=f"bold {T.TEXT_BRIGHT}")
+    else:
+        body.append("Deterministic audit aborted", style=f"bold {T.TEXT_BRIGHT}")
+        if aborted_on:
+            body.append(f" — required step '{aborted_on}' did not succeed", style=T.CRITICAL)
+    body.append(f"\n{ran} of {total} steps completed  ·  {duration_s:.0f}s", style=T.TEXT_MUTED)
+
+    if total_findings:
+        body.append("\n\nFindings: ", style=T.TEXT_DIM)
+        parts = [f"{severity_tally[s]} {s}" for s in _AUDIT_SEVERITIES if severity_tally.get(s)]
+        body.append("  ".join(parts), style=T.SEVERITY_COLOR.get(worst or "info", T.TEXT))
+        body.append("   (see /report for the full report)", style=T.TEXT_FAINT)
+    else:
+        body.append("\n\nNo findings raised by the correlation engine.", style=T.TEXT_MUTED)
+
+    body.append(
+        "\n\nSame steps, same logic every run (no LLM). The target itself can vary "
+        "between runs, so findings can too.",
+        style=T.TEXT_FAINT,
+    )
+
+    return Panel(
+        body,
+        title="Kratos — standard audit",
+        title_align="left",
+        subtitle=_time_subtitle(time_str),
+        subtitle_align="right",
+        border_style=color,
+    )
+
+
 def _prefixed(symbol: str, text: str, color: str) -> Text:
     t = Text()
     t.append(f"{symbol} ", style=color)

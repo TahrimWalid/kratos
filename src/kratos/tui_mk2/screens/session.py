@@ -653,7 +653,11 @@ class SessionScreen(Screen):
             self.app.push_screen(Phase2PreviewScreen())
         elif cmd in ("/investigate-host", "/investigate-self", "/host"):
             self._investigate_host_flow(rest)
-        elif cmd in ("/scan", "/logs-parse", "/findings-generate", "/run"):
+        elif cmd == "/run":
+            # PreA2: the deterministic standard audit (agent/pipeline.py), NOT
+            # the retired legacy cmd_run. Target-correct, mk2-rendered, no LLM.
+            self._run_standard_audit()
+        elif cmd in ("/scan", "/logs-parse", "/findings-generate"):
             self._run_shortcut(cmd.lstrip("/"), rest)
         else:
             # Unmatched /-prefix falls through to a goal (matches classic REPL).
@@ -1475,6 +1479,96 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.result_panel(f"kratos {subcommand}", text or "(no output)", T.ACCENT))
         finally:
             self._set_busy(False)
+
+    # --- /run: the PreA2 deterministic standard audit --------------------
+    @work(thread=True, exclusive=True, group="turn")
+    def _run_standard_audit(self) -> None:
+        """Run the built-in deterministic standard audit (agent/pipeline.py) and
+        render it mk2-first: per-step tool-call lines and finding panels while it
+        runs, then a run-summary panel. No LLM in the decision path -- the step
+        sequence is fixed and target-correct (target-facing tools only; nothing
+        about Kratos's own host is folded into the target's findings)."""
+        from kratos.agent.pipeline import run_pipeline, standard_audit_steps
+
+        self._set_busy(True)
+        target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        self._emit_from_worker(R.note_line(
+            f"Standard audit — a fixed, deterministic security sweep of {target} "
+            "(no LLM; same steps every run)."))
+        turn_id = self._store.start_turn(self.session_state["session_id"], "/run — standard audit")
+        started = time.monotonic()
+        worker = get_current_worker()
+
+        def _on_step(sr) -> None:
+            if worker.is_cancelled:
+                raise _CancelInvestigation()
+            if sr.status == "ok":
+                if sr.tool == "correlate_findings" and sr.result and sr.result.get("findings"):
+                    findings = sr.result["findings"]
+                    line = Text()
+                    line.append("✓ ", style=T.SAFE)
+                    line.append(sr.tool, style=f"bold {T.ACCENT}")
+                    line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
+                    self._emit_from_worker(line)
+                    for f in findings:
+                        t, d = self._stamp_now()
+                        self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
+                else:
+                    self._emit_from_worker(R.tool_call_line(sr.tool, "done"))
+            elif sr.status == "skipped":
+                self._emit_from_worker(R.note_line(f"{sr.label} — skipped ({sr.detail or 'condition not met'})"))
+            elif sr.status == "not_approved":
+                self._emit_from_worker(R.note_line(f"{sr.tool} — not approved; skipped"))
+            else:
+                self._emit_from_worker(R.error_line(f"{sr.tool} failed — {sr.detail or 'no error detail'}"))
+            self.app.call_from_thread(self._refresh_footer)
+
+        try:
+            outcome = run_pipeline(standard_audit_steps(), self._data_dir, on_step=_on_step)
+        except _CancelInvestigation:
+            self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
+            self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target."))
+            self._remember_turn("/run — standard audit", "(audit interrupted before it concluded)")
+            return
+        except Exception as e:  # noqa: BLE001
+            self._store.complete_turn(turn_id, "error", transcript_ref=None)
+            self._emit_from_worker(R.error_line(f"Standard audit errored: {e}"))
+            return
+        finally:
+            self._set_busy(False)
+
+        duration = time.monotonic() - started
+        t, d = self._stamp_now()
+        self._emit_bubble_from_worker(
+            R.audit_summary_panel(
+                status=outcome.status,
+                ran=outcome.ran,
+                total=len(outcome.steps),
+                severity_tally=outcome.severity_tally,
+                duration_s=duration,
+                aborted_on=outcome.aborted_on,
+                time_str=t,
+            ),
+            d,
+        )
+        self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
+
+        # Persist a lightweight step transcript for the turn record (not a
+        # run_agent transcript -- a deterministic pipeline has no LLM reasoning).
+        transcript = [
+            {"tool": s.tool, "label": s.label, "status": s.status, "detail": s.detail}
+            for s in outcome.steps
+        ]
+        transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
+        transcript_path.write_text(json.dumps(transcript, indent=2, default=str), encoding="utf-8")
+        status = "final_answer" if outcome.status == "completed" else "error"
+        self._store.complete_turn(turn_id, status, transcript_ref=str(transcript_path))
+        n = sum(outcome.severity_tally.values())
+        self._remember_turn(
+            "/run — standard audit",
+            f"(deterministic audit {outcome.status}; {outcome.ran}/{len(outcome.steps)} steps, {n} finding(s))",
+        )
+        self.app.call_from_thread(self._refresh_footer)
 
     # --- goal handling: chat vs investigate ------------------------------
     def _set_busy(self, busy: bool) -> None:
