@@ -376,6 +376,44 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
     return table
 
 
+def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None) -> Group:
+    """Render saved presets (A2 Tier 1) as a table: name, kind, target, and a
+    one-line goal preview. A non-runnable preset (a Tier-2 pipeline, or unknown
+    kind) is shown dimmed with its kind so it reads as 'kept but not runnable
+    here', never hidden. Unreadable files are surfaced as a trailing note rather
+    than silently dropped."""
+    table = Table(show_header=True, box=None, title="Saved presets",
+                  title_justify="left", title_style=f"bold {T.ACCENT}",
+                  header_style=f"bold {T.TEXT_DIM}")
+    table.add_column("name", style=T.ACCENT, no_wrap=True)
+    table.add_column("kind", no_wrap=True)
+    table.add_column("target", style=T.TEXT_MUTED, no_wrap=True)
+    table.add_column("goal", style=T.TEXT_MUTED)
+    for p in presets:
+        runnable = getattr(p, "is_runnable_tier1", True)
+        kind = getattr(p, "kind", "goal")
+        goal_preview = (getattr(p, "goal", None) or "").splitlines()[0] if getattr(p, "goal", None) else ""
+        if len(goal_preview) > 60:
+            goal_preview = goal_preview[:57] + "…"
+        if not runnable and not goal_preview:
+            goal_preview = "(pipeline steps — not runnable in this build)"
+        name_style = T.ACCENT if runnable else T.TEXT_FAINT
+        kind_style = T.SAFE if kind == "goal" else T.TEXT_FAINT
+        table.add_row(
+            Text(getattr(p, "name", "?"), style=name_style),
+            Text(kind, style=kind_style),
+            Text(getattr(p, "target", None) or "—"),
+            Text(goal_preview),
+        )
+    parts: list[Any] = [table]
+    if not presets:
+        parts = [Text("No saved presets yet. Create one with /preset new \"<name>\" \"<goal>\".",
+                      style=T.TEXT_MUTED)]
+    for fname, err in (errors or []):
+        parts.append(Text(f"! {fname} couldn't be read: {err}", style=T.ATTENTION))
+    return Group(*parts)
+
+
 def error_detail(result: Any) -> str:
     """Best-effort human error message from a FAILED tool result. The loop wraps
     its own errors under 'observation', but a tool's OWN error dict may use

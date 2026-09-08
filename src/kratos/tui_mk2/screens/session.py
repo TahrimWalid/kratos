@@ -56,6 +56,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "w
 
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
+    ("/preset", "saved investigations — new / list / run / edit / delete"),
     ("/report", "investigation summary — findings by severity"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/usage", "token usage + estimated cost this session (local = free)"),
@@ -612,6 +613,8 @@ class SessionScreen(Screen):
             self.app.push_screen(HelpModal())
         elif cmd == "/report":
             self._render_report()
+        elif cmd in ("/preset", "/presets"):
+            self._preset_flow(rest)
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
         elif cmd == "/usage":
@@ -793,6 +796,194 @@ class SessionScreen(Screen):
                 if isinstance(result, dict) and isinstance(result.get("findings"), list):
                     out.extend((f, when_value) for f in result["findings"])
         return out
+
+    # --- /preset (A2 Tier 1: saved natural-language investigation goals) ---
+    _PRESET_USAGE = (
+        "Usage: /preset list  ·  /preset new \"<name>\" [\"<goal>\"]  ·  "
+        "/preset run \"<name>\"  ·  /preset show \"<name>\"  ·  "
+        "/preset edit \"<name>\"  ·  /preset delete \"<name>\""
+    )
+
+    @work
+    async def _preset_flow(self, rest: str) -> None:
+        import shlex
+        from kratos.agent import presets as _P
+
+        try:
+            tokens = shlex.split(rest) if rest.strip() else []
+        except ValueError:
+            self._emit(R.error_line(
+                "Couldn't parse that — check your quotes. " + self._PRESET_USAGE))
+            return
+
+        sub = tokens[0].lower() if tokens else "list"
+        args = tokens[1:]
+        if sub in ("list", "ls"):
+            self._preset_render_list()
+        elif sub in ("new", "add", "create"):
+            await self._preset_new(args)
+        elif sub == "run":
+            self._preset_run(args)
+        elif sub in ("edit", "update"):
+            await self._preset_edit(args)
+        elif sub in ("delete", "del", "rm", "remove"):
+            await self._preset_delete(args)
+        elif sub in ("show", "view"):
+            self._preset_show(args)
+        elif tokens and _P.preset_exists(self._data_dir, tokens[0]):
+            # /preset <existing-name> is a convenient shorthand for run.
+            self._preset_run([tokens[0]])
+        else:
+            self._emit(R.note_line(self._PRESET_USAGE))
+
+    def _preset_render_list(self) -> None:
+        from kratos.agent import presets as _P
+
+        presets, errors = _P.list_presets(self._data_dir)
+        self._emit(R.preset_table(presets, errors))
+
+    def _preset_resolve(self, args: list[str], action: str):
+        """Load a single named preset from args[0], emitting a clear error and
+        returning None on a missing arg / unknown name / corrupt file."""
+        from kratos.agent import presets as _P
+
+        if not args:
+            self._emit(R.error_line(f"Which preset? Usage: /preset {action} \"<name>\""))
+            return None
+        try:
+            preset = _P.load_preset(self._data_dir, args[0])
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return None
+        if preset is None:
+            self._emit(R.error_line(f"No preset named {args[0]!r}. See /preset list."))
+            return None
+        return preset
+
+    def _preset_show(self, args: list[str]) -> None:
+        preset = self._preset_resolve(args, "show")
+        if preset is None:
+            return
+        body = (f"kind: {preset.kind}\n"
+                f"target: {preset.target or '— (uses the active target)'}\n\n"
+                f"{preset.goal or '(no goal — pipeline steps in the file)'}")
+        self._emit(R.result_panel(f"preset — {preset.name}", body, T.ACCENT))
+
+    def _preset_run(self, args: list[str]) -> None:
+        preset = self._preset_resolve(args, "run")
+        if preset is None:
+            return
+        if not preset.is_runnable_tier1:
+            # Forward-compat: a pipeline / unknown-kind preset is kept and shown,
+            # just not runnable in this build. Say so plainly, don't error out.
+            self._emit(R.note_line(preset.unsupported_reason))
+            return
+        self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
+        self._preset_run_worker(preset.goal, preset.target)
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _preset_run_worker(self, goal: str, target: str | None) -> None:
+        # Run the preset's goal through the SAME agentic loop typing it would use
+        # (so all guards / approval-gating / the observe-and-recommend boundary
+        # hold — a preset stores a goal, never actions). If the preset pins its
+        # own target, set it for this run and restore after (same set/restore
+        # mechanism /investigate-host uses), so a preset can target a specific
+        # host without permanently changing the session's target.
+        prior = None
+        active = self.session_state["targets"][0] if self.session_state["targets"] else None
+        if target and target != active:
+            prior = _kconfig.get_active_target()
+            _kconfig.set_active_target(target)
+            self._emit_from_worker(R.note_line(
+                f"Preset target: {target} (the session target is restored afterward)."))
+        try:
+            self._run_investigation(goal)
+        finally:
+            if prior is not None:
+                _kconfig.set_active_target(prior)
+
+    async def _preset_new(self, args: list[str]) -> None:
+        from kratos.agent import presets as _P
+
+        if args:
+            name_raw = args[0]
+        else:
+            name_raw = await self.app.push_screen_wait(
+                PromptModal("New preset", "Short name (e.g. weekly-audit)"))
+            if name_raw is None:
+                return
+        ok, canonical, err = _P.validate_preset_name(name_raw)
+        if not ok:
+            self._emit(R.error_line(err or "Invalid preset name."))
+            return
+        if _P.preset_exists(self._data_dir, canonical):
+            overwrite = await self.app.push_screen_wait(ConfirmModal(
+                "Overwrite preset?",
+                f"A preset named {canonical!r} already exists. Replace it?"))
+            if not overwrite:
+                self._emit(R.note_line("Kept the existing preset — nothing changed."))
+                return
+
+        goal = args[1] if len(args) > 1 else None
+        if goal is None:
+            goal = await self.app.push_screen_wait(PromptModal(
+                f"Goal for {canonical!r}", "What should this preset investigate?"))
+            if goal is None:
+                return
+        goal = (goal or "").strip()
+        if not goal:
+            self._emit(R.note_line("No goal given — preset not created."))
+            return
+        try:
+            preset = _P.save_preset(self._data_dir, name=canonical, goal=goal)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.success_line(
+            f"Saved preset {preset.name!r}. Run it with /preset run \"{preset.name}\"."))
+
+    async def _preset_edit(self, args: list[str]) -> None:
+        from kratos.agent import presets as _P
+
+        preset = self._preset_resolve(args, "edit")
+        if preset is None:
+            return
+        if preset.kind != "goal":
+            self._emit(R.note_line(
+                (preset.unsupported_reason or "") + " Edit the file in your text editor for now."))
+            return
+        new_goal = await self.app.push_screen_wait(PromptModal(
+            f"Edit {preset.name!r}", "New goal", initial=preset.goal or ""))
+        if new_goal is None:
+            return
+        new_goal = new_goal.strip()
+        if not new_goal:
+            self._emit(R.note_line("Empty goal — preset unchanged."))
+            return
+        try:
+            _P.save_preset(self._data_dir, name=preset.name, goal=new_goal,
+                           target=preset.target, created_at=preset.created_at)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.success_line(f"Updated preset {preset.name!r}."))
+
+    async def _preset_delete(self, args: list[str]) -> None:
+        from kratos.agent import presets as _P
+
+        preset = self._preset_resolve(args, "delete")
+        if preset is None:
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Delete preset?",
+            f"Delete preset {preset.name!r}? This removes {preset.path.name}."))
+        if not ok:
+            self._emit(R.note_line("Kept the preset — nothing deleted."))
+            return
+        if _P.delete_preset(self._data_dir, preset.name):
+            self._emit(R.success_line(f"Deleted preset {preset.name!r}."))
+        else:
+            self._emit(R.error_line(f"Couldn't delete {preset.name!r}."))
 
     # --- /timezone (display-only override; storage stays UTC) ------------
     def _cmd_timezone(self, rest: str) -> None:

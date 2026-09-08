@@ -265,6 +265,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
+                ('/preset [new|list|run|edit|delete]', "Saved investigations — name a goal once, re-run it anytime"),
                 ("/report", "Investigation summary — findings by severity"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
                 ("/usage", "Token usage + estimated cost this session (local models = free)"),
