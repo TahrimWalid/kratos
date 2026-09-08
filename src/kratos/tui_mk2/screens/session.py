@@ -56,7 +56,11 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "w
 
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
-    ("/preset", "saved investigations — new / list / run / edit / delete"),
+    ("/preset-new", "save a reusable investigation (guided: name + goal)"),
+    ("/preset-run", "run a saved investigation (pick from a list)"),
+    ("/preset-list", "list saved investigations"),
+    ("/preset-edit", "edit a saved investigation's goal (pick from a list)"),
+    ("/preset-delete", "delete a saved investigation (pick from a list)"),
     ("/report", "investigation summary — findings by severity"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/usage", "token usage + estimated cost this session (local = free)"),
@@ -615,6 +619,22 @@ class SessionScreen(Screen):
             self._render_report()
         elif cmd in ("/preset", "/presets"):
             self._preset_flow(rest)
+        # Discrete, guided preset commands (hyphenated so they're single tokens
+        # that pick cleanly from the / completion menu, and each drives the rest
+        # of the flow via modals — name/goal prompts, or a picker — instead of
+        # needing inline quoted args typed past the menu).
+        elif cmd == "/preset-new":
+            self._preset_flow("new")
+        elif cmd in ("/preset-list", "/preset-ls"):
+            self._preset_render_list()
+        elif cmd == "/preset-run":
+            self._preset_guided("run")
+        elif cmd == "/preset-edit":
+            self._preset_guided("edit")
+        elif cmd in ("/preset-delete", "/preset-del"):
+            self._preset_guided("delete")
+        elif cmd == "/preset-show":
+            self._preset_guided("show")
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
         elif cmd == "/usage":
@@ -841,6 +861,44 @@ class SessionScreen(Screen):
 
         presets, errors = _P.list_presets(self._data_dir)
         self._emit(R.preset_table(presets, errors))
+
+    @work
+    async def _preset_guided(self, action: str) -> None:
+        """The guided (menu-friendly) path for run/edit/delete/show: pick a
+        preset from a list instead of typing its name. `run` and `edit` only
+        offer runnable (goal) presets; delete/show offer all. Then hands off to
+        the same sub-flow the inline `/preset <sub> <name>` form uses."""
+        from kratos.agent import presets as _P
+
+        presets, _errors = _P.list_presets(self._data_dir)
+        if action in ("run", "edit"):
+            candidates = [p for p in presets if p.is_runnable_tier1]
+            empty_hint = ("No runnable presets yet. Create one with /preset-new."
+                          if action == "run"
+                          else "No goal presets to edit yet. Create one with /preset-new.")
+        else:
+            candidates = presets
+            empty_hint = "No saved presets yet. Create one with /preset-new."
+        if not candidates:
+            self._emit(R.note_line(empty_hint))
+            return
+
+        entries = [
+            (p.name, f"{p.name}   {((p.goal or f'({p.kind})') or '')[:56]}")
+            for p in candidates
+        ]
+        name = await self.app.push_screen_wait(
+            ListPickerModal(f"Preset to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+        if name is None:
+            return
+        if action == "run":
+            self._preset_run([name])
+        elif action == "edit":
+            await self._preset_edit([name])
+        elif action == "delete":
+            await self._preset_delete([name])
+        elif action == "show":
+            self._preset_show([name])
 
     def _preset_resolve(self, args: list[str], action: str):
         """Load a single named preset from args[0], emitting a clear error and

@@ -55,13 +55,41 @@ _COMMAND_PREFIX = "COMMAND:"
 _MAX_TOKENS = 220
 
 
+# Capabilities the user reaches via slash commands. This is fed into the router's
+# system prompt so a CHAT reply is capability-aware: when a user asks whether
+# Kratos can do one of these, it says YES and names the command, instead of
+# wrongly claiming the feature doesn't exist (a real 2026-09-08 failure: asked
+# "can I set a preset?", the model answered "I don't support presets" — which is
+# false; /preset exists). These are NOT routing outcomes — the router still only
+# emits the control/investigate/host outcomes below; this list only shapes the
+# wording of a normal chat answer.
+CAPABILITIES: list[tuple[str, str]] = [
+    ("/preset-new, /preset-run, /preset-list",
+     "SAVE a named investigation (a 'preset' / reusable macro) once and re-run it anytime"),
+    ("/run", "run a fixed, deterministic 'standard audit' of the target (same checks every run)"),
+    ("/evolve", "write a brand-new tool when an existing one doesn't cover a gap"),
+    ("/doctor", "self-diagnostic of Kratos's own setup (LLM, target, tools)"),
+    ("/usage, /context", "show token usage/cost, and what's in the context window"),
+    ("/report", "show the findings gathered so far"),
+]
+
+
 def _system_prompt() -> str:
     lines = "\n".join(f"  - {name} <arg>: {desc}" for name, desc in CONVERSATIONAL_COMMANDS.items())
+    caps = "\n".join(f"  - {cmd}: {desc}" for cmd, desc in CAPABILITIES)
     return (
         "You are Kratos, an offline cybersecurity assistant. Besides chatting and "
         "investigating a monitored target, the user can drive your built-in CONTROLS "
         "by talking to you naturally. The controls are:\n"
         f"{lines}\n\n"
+        "You ALSO have these features, reachable via slash commands:\n"
+        f"{caps}\n"
+        "When the user asks whether you can do one of these (e.g. 'can I save a preset "
+        "to re-run some checks?', 'can you make a new tool?', 'is there a standard audit?'), "
+        "the answer is YES — briefly say so and name the exact slash command to use. NEVER "
+        "claim you lack presets/macros, a standard audit, tool-creation, or a report; you "
+        "have them. (You cannot run these commands yourself from here — tell the user the "
+        "command to type.)\n\n"
         "Classify the user's latest message into exactly ONE of these:\n"
         f"1. A request to run one of the controls above -> respond with EXACTLY one line:\n"
         f"   {_COMMAND_PREFIX} <name> | <arg or empty>\n"

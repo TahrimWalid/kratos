@@ -162,6 +162,53 @@ def test_preset_delete_cancelled_keeps_it(tmp_path, monkeypatch):
     assert P.preset_exists(tmp_path, "safe")  # decline keeps it
 
 
+def test_preset_run_guided_picks_from_list_and_runs(tmp_path, monkeypatch):
+    """/preset-run (the guided, menu-friendly form) offers a picker and runs the
+    chosen preset -- no inline name typing."""
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="alpha", goal="goal alpha")
+    P.save_preset(tmp_path, name="beta", goal="goal beta")
+    recorded = {}
+    monkeypatch.setattr(screen, "_run_investigation",
+                        lambda goal, **kw: recorded.__setitem__("goal", goal))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _pick_beta(_modal):  # the ListPickerModal returns a name
+                return "beta"
+
+            monkeypatch.setattr(app, "push_screen_wait", _pick_beta)
+            screen._dispatch_slash("/preset-run")
+            for _ in range(120):
+                await pilot.pause()
+                if "goal" in recorded:
+                    break
+
+    asyncio.run(_run())
+    assert recorded.get("goal") == "goal beta"
+
+
+def test_preset_run_guided_empty_hints_to_new(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    ran = {"n": 0}
+    monkeypatch.setattr(screen, "_run_investigation",
+                        lambda *a, **k: ran.__setitem__("n", ran["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/preset-run")  # no presets exist
+            for _ in range(20):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert ran["n"] == 0  # nothing to run; guided flow just hints
+
+
 def test_preset_list_renders_without_crashing(tmp_path, monkeypatch):
     _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
     P.save_preset(tmp_path, name="a", goal="ga")
