@@ -55,6 +55,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control co
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "working…" activity line
 
 _PALETTE_COMMANDS = [
+    ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
     ("/report", "investigation summary — findings by severity"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/usage", "token usage + estimated cost this session (local = free)"),
@@ -1553,10 +1554,21 @@ class SessionScreen(Screen):
         )
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
-        # Persist a lightweight step transcript for the turn record (not a
-        # run_agent transcript -- a deterministic pipeline has no LLM reasoning).
+        # Persist a step transcript for the turn record (not a run_agent
+        # transcript -- a deterministic pipeline has no LLM reasoning). Each step
+        # carries an `observation` in execute_tool_call's wrapped shape
+        # ({"status": "ok", "result": <tool return>}), so /report's
+        # _collect_session_findings (and mcp_server.kratos_get_findings, same
+        # path) can pull the correlate_findings findings out of an audit turn
+        # exactly as it does for an agentic investigation turn.
+        def _step_observation(s) -> dict[str, Any]:
+            if s.status == "ok":
+                return {"status": "ok", "result": s.result or {}}
+            return {"status": s.status, "observation": s.detail}
+
         transcript = [
-            {"tool": s.tool, "label": s.label, "status": s.status, "detail": s.detail}
+            {"tool": s.tool, "label": s.label, "status": s.status,
+             "detail": s.detail, "observation": _step_observation(s)}
             for s in outcome.steps
         ]
         transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"

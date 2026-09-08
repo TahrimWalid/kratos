@@ -57,11 +57,16 @@ def test_run_standard_audit_end_to_end(tmp_path, monkeypatch):
                 await pilot.pause()
                 if not screen._busy and screen._busy_since is None:
                     break
-            return
+            return screen._collect_session_findings()
 
-    asyncio.run(_run())
+    collected = asyncio.run(_run())
 
     # A completed turn was recorded for the audit.
     turns = store.get_goal_history(sid)
     assert any(t.get("status") == "final_answer" for t in turns), turns
     assert any("standard audit" in (t.get("goal") or "") for t in turns), turns
+
+    # /report's data path (_collect_session_findings) must surface the audit's
+    # findings -- regression guard for the "no findings recorded" bug where the
+    # audit transcript stored no wrapped `observation` for correlate_findings.
+    assert [f[0]["id"] for f in collected] == ["NET-001"], collected

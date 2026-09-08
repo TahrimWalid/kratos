@@ -264,6 +264,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(Text("Kratos — commands", style=f"bold {T.ACCENT}"), classes="modal-title")
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
+                ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
                 ("/report", "Investigation summary — findings by severity"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
                 ("/usage", "Token usage + estimated cost this session (local models = free)"),
