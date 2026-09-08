@@ -13,7 +13,7 @@ Since then it has grown from a fixed five-stage pipeline into an **agentic assis
 - **Offline / local-first.** Primary analysis runs on a local model (default: `qwen2.5:7b` via Ollama). No cloud, no internet, no third-party API required. The *inference layer* is fully local; the only optional online piece is threat-intel enrichment, disabled by default (see below).
 - **Observe-and-recommend, not autonomous.** Kratos reads and investigates; it recommends remediation to a human via findings and its final answer. **It never executes state-changing actions on the monitored target.** This boundary is foundational, not a limitation (a narrow, opt-in, whitelisted sub-agent for direct execution is *designed but not built* — see the boundary note below).
 - **Two analysis modes.** A **deterministic pipeline** (fast, reproducible, zero LLM variance) *and* an **agentic ReAct loop** (the LLM picks tools based on what it finds). Use whichever fits the job.
-- **Backend-flexible.** The same OpenAI-compatible client drives a local Ollama server, a local llama.cpp/vLLM server, or a cloud provider — swapping is just changing three env vars. Local ships unconditionally; cloud is a dev/testing convenience, never required.
+- **Backend-flexible.** The same OpenAI-compatible client drives a local Ollama server, a local llama.cpp/vLLM server, or a **cloud provider via API key** — swapping is just changing three env vars (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`). Local ships unconditionally; **cloud LLMs are supported and have been used through the development phase** (for faster iteration), but they're a dev/testing convenience — never required, and never the shipped default.
 
 Kratos is a **defensive** assistant for blue-teamers, homelabbers, and small teams who need explainable security analysis on infrastructure where sending logs to a cloud API is a non-starter — not an autonomous offensive/pentest agent.
 
@@ -88,7 +88,7 @@ Threat-intel enrichment runs an **offline** OTX-cache lookup on suspicious sourc
 
 ## Thesis evaluation (v0.1 — the empirical grounding)
 
-The original prototype was evaluated across three adversarial runs against a **Zyxel VMG3625-T50B** gateway on a physical home lab (a Mixtile Blade 3 monitoring forwarded syslog). These results are from that thesis-era evaluation and remain the empirical backbone of the "an offline LLM adds real synthesis over rules" claim. *(The agentic loop, evo-loop, TUI, and MCP surfaces below were built after the thesis and are lab-tested against a live Incus target, not part of these published benchmarks.)*
+The original prototype was evaluated across three adversarial runs against a **Zyxel VMG3625-T50B** gateway on a physical home lab (a Mixtile Blade 3 monitoring forwarded syslog), using **`qwen2.5-coder-7b` (Q4_K_M) as the reference offline model**. These results are from that thesis-era evaluation and remain the empirical backbone of the "an offline LLM adds real synthesis over rules" claim. *(The agentic loop, evo-loop, TUI, and MCP surfaces below were built after the thesis and are lab-tested against a live Incus target, not part of these published benchmarks.)*
 
 - **Run 1 (MEDIUM):** SSH exposure + 5 failed logins, 12 open ports enumerated. LLM recommended rate-limiting and key-based auth.
 - **Run 2 (MEDIUM → escalation):** Repeated failed SSH → account lockout observed. LLM escalated from hygiene advice to "stop the service immediately."
