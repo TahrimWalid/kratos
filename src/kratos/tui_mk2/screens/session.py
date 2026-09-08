@@ -107,9 +107,6 @@ class SessionScreen(Screen):
         # Confirm-gated so it's never a single-keystroke exit from an active
         # session; the session is kept and stays resumable (unlike /delete).
         Binding("ctrl+b", "back_to_sessions", "sessions", show=True),
-        # F1 = help (the universal, terminal-reliable help key; a bare '?' would
-        # be typed into the input, and ctrl+? is the ambiguous ctrl+shift+/).
-        Binding("f1", "help", "help", show=True),
     ]
 
     CSS = f"""
@@ -470,7 +467,7 @@ class SessionScreen(Screen):
             )
         )
         # First-run tips (turn 10b): shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  F1 help · Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
+        self._emit(Text("Tips:  ? help · Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text("Investigations target the monitored host by default; ask about “your own host” (or /investigate-host) to check the Kratos machine itself.", style=T.TEXT_GHOST))
         self._emit(Text(""))
@@ -567,6 +564,12 @@ class SessionScreen(Screen):
             event.input.value = ""
             self._reset_recall()  # opening the palette abandons any in-progress turn recall
             self.action_palette()
+        elif event.value == "?" and not self._busy:
+            # A lone "?" on the empty prompt opens help (vim/less convention,
+            # always terminal-deliverable — unlike F1/ctrl+?). Typing "?" inside
+            # a longer message is untouched (only a sole "?" triggers it).
+            event.input.value = ""
+            self.action_help()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()

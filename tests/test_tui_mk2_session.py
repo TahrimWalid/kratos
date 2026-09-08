@@ -891,3 +891,22 @@ def test_tool_command_missing_required_arg_shows_usage_not_dispatch(tmp_path, mo
     dispatched, wrote = asyncio.run(_run())
     assert dispatched == 0   # usage shown, NOT dispatched
     assert wrote > 0         # the usage panel was rendered
+
+
+def test_question_mark_on_empty_prompt_opens_help(tmp_path, monkeypatch):
+    # Typing a lone "?" on the empty prompt opens help (and clears the input).
+    from textual.widgets import Input
+    from kratos.tui_mk2.modals import HelpModal
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen.query_one("#goal", Input).value = "?"   # fires Input.Changed
+            await pilot.pause()
+            return isinstance(app.screen, HelpModal), screen.query_one("#goal", Input).value
+
+    opened_help, input_after = asyncio.run(_run())
+    assert opened_help is True   # help opened
+    assert input_after == ""     # the "?" was consumed, not left in the box
