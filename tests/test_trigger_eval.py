@@ -239,3 +239,27 @@ def test_run_headless_investigation_excludes_gated_tools(tmp_path, monkeypatch):
     assert "run_linux_command" not in seen["registry"]
     assert "capture_traffic" not in seen["registry"]
     assert set(T.TOOL_REGISTRY.keys()) == before  # restored
+
+
+def test_investigate_action_does_not_recurse(tmp_path):
+    """A trigger's investigate action must NEVER re-evaluate triggers on its own
+    findings (the infinite-loop guard). Two independent proofs so a future edit
+    that wires evaluate_triggers into the headless investigation is caught."""
+    from kratos.agent import scheduled_run as W
+
+    # (1) Structural: the real headless investigation never calls evaluate_triggers.
+    assert "evaluate_triggers" not in inspect.getsource(W.run_headless_investigation)
+
+    # (2) Functional: an investigate trigger whose investigation returns a finding
+    # that WOULD match the trigger again still fires exactly ONCE per evaluation —
+    # the investigation's findings are not fed back into trigger evaluation.
+    TR.save_trigger(tmp_path, name="inv", action="investigate", finding_id="CORR-SSH-001")
+
+    def re_matching_investigate(goal, data_dir):
+        return {"status": "final_answer",
+                "findings": [{"id": "CORR-SSH-001", "severity": "critical", "title": "again"}],
+                "final_answer": "found it again"}
+
+    fired = TE.evaluate_triggers(tmp_path, _findings(), "10.0.0.1", now=_NOW, notifier=_Spy(),
+                                 investigate_fn=re_matching_investigate)
+    assert len([f for f in fired if f["trigger"] == "inv"]) == 1

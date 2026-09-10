@@ -1480,6 +1480,16 @@ class SessionScreen(Screen):
             if not ok:
                 self._emit(R.note_line("Trigger not created. Switch to a local backend with /model, or pick notify/playbook."))
                 return
+        # Coverage honesty: an investigate action's deep-dive runs on the SCHEDULED
+        # cadence (interactive /run only notifies it's deferred). With no schedule,
+        # that deeper investigation never actually happens — nudge, don't block.
+        if action == "investigate":
+            from kratos.agent import schedules as _S
+            if not _S.list_schedules(self._data_dir)[0]:
+                self._emit(R.note_line(
+                    "Note: an 'investigate' trigger runs its deeper look during SCHEDULED runs. "
+                    "You have no schedules yet — create one with /schedule new so it actually "
+                    "runs; otherwise it will only notify that the deep-dive is deferred."))
 
         cooldown = await self.app.push_screen_wait(ListPickerModal(
             "Cooldown — how long to wait before it can fire again?",
