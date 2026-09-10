@@ -594,6 +594,48 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_scheduled_run(args: argparse.Namespace) -> int:
+    """A6.3 -- run ONE schedule headlessly (what a systemd user timer invokes).
+
+    UI-free: runs the schedule's unit of work with approval-gated tools excluded
+    by construction, persists a findings report, and delivers a notification.
+    Never hangs on an approval prompt (there's no human here)."""
+    from kratos.agent import schedules as _sched
+    from kratos.agent.scheduled_run import run_scheduled
+
+    try:
+        schedule = _sched.load_schedule(args.data_dir, args.name)
+    except _sched.ScheduleError as e:
+        print(f"[KRATOS] {e}")
+        return 1
+    if schedule is None:
+        print(f"[KRATOS] No schedule named '{args.name}'. See: kratos-mk2 → /schedule list")
+        return 1
+
+    print(f"[KRATOS] Scheduled run '{schedule.name}' ({schedule.kind}) → target "
+          f"{schedule.target or 'active'} …")
+    record = run_scheduled(schedule, args.data_dir, deliver=not args.no_deliver)
+
+    print(f"[KRATOS]   status: {record['status']}")
+    if record.get("omitted_gated_tools"):
+        print(f"[KRATOS]   omitted (approval-gated, unattended): "
+              f"{', '.join(record['omitted_gated_tools'])}")
+    tally = record.get("severity_tally") or {}
+    if tally:
+        order = ("critical", "high", "medium", "low", "info")
+        print("[KRATOS]   findings: " + "  ".join(f"{tally[k]} {k}" for k in order if tally.get(k)))
+    if record.get("report_md"):
+        print(f"[KRATOS]   report: {record['report_md']}")
+    if record.get("notified"):
+        d = record.get("delivered") or {}
+        print(f"[KRATOS]   notify: {d.get('status', 'sent')}")
+    if record.get("error"):
+        print(f"[KRATOS]   note: {record['error']}")
+    # Exit 0 for a run that completed (clean or with findings); 1 for a failure
+    # so a systemd unit / cron wrapper can detect a genuinely failed run.
+    return 0 if record["status"] in ("completed", "final_answer", "max_iters_reached") else 1
+
+
 # ============================================================================
 # PHASE 2 - Network Anomaly Detection (Tier 2 Aggregator)
 # ============================================================================
@@ -865,6 +907,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target to audit (default: the configured active target, same as `investigate`)",
     )
     runp.set_defaults(func=cmd_run)
+
+    schedrun = sub.add_parser(
+        "scheduled-run",
+        help="Run ONE saved schedule headlessly (invoked by a systemd user timer)",
+    )
+    schedrun.add_argument("name", help="Name of the saved schedule to run")
+    schedrun.add_argument(
+        "--no-deliver", action="store_true",
+        help="Run + write the report but skip the notification (for testing)",
+    )
+    schedrun.set_defaults(func=cmd_scheduled_run)
 
     scan = sub.add_parser("scan", help="Run an Nmap scan and save XML output")
     scan.add_argument("--target", default="127.0.0.1", help="Scan target (default: 127.0.0.1)")

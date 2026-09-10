@@ -32,6 +32,7 @@ from textual.widgets import Input, RichLog, Static
 from textual.worker import get_current_worker
 
 from kratos import kratos_config as _kconfig
+from kratos.agent import target_lock as _target_lock
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
 from kratos.tui_mk2 import render as R
@@ -64,6 +65,7 @@ _PALETTE_COMMANDS = [
     ("/preset-edit", "edit a saved investigation's goal (pick from a list)"),
     ("/preset-delete", "delete a saved investigation (pick from a list)"),
     ("/report", "investigation summary — findings by severity"),
+    ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/usage", "token usage + estimated cost this session (local = free)"),
     ("/context", "what's currently loaded in the context window"),
@@ -647,6 +649,8 @@ class SessionScreen(Screen):
             self.app.push_screen(HelpModal())
         elif cmd == "/report":
             self._render_report()
+        elif cmd in ("/schedule", "/schedules"):
+            self._schedule_flow(rest)
         elif cmd in ("/preset", "/presets"):
             self._preset_flow(rest)
         # Discrete, guided preset commands (hyphenated so they're single tokens
@@ -1148,6 +1152,222 @@ class SessionScreen(Screen):
             self._emit(R.success_line(f"Deleted preset {preset.name!r}."))
         else:
             self._emit(R.error_line(f"Couldn't delete {preset.name!r}."))
+
+    # --- /schedule (A6.3: run a preset/audit on a cadence, deliver report) ---
+    _SCHEDULE_USAGE = (
+        "Usage: /schedule list  ·  /schedule new  ·  /schedule show \"<name>\"  ·  "
+        "/schedule run-now \"<name>\"  ·  /schedule install \"<name>\"  ·  "
+        "/schedule delete \"<name>\""
+    )
+
+    @work
+    async def _schedule_flow(self, rest: str) -> None:
+        import shlex
+        from kratos.agent import schedules as _S
+
+        try:
+            tokens = shlex.split(rest) if rest.strip() else []
+        except ValueError:
+            self._emit(R.error_line("Couldn't parse that — check your quotes. " + self._SCHEDULE_USAGE))
+            return
+        sub = tokens[0].lower() if tokens else "list"
+        args = tokens[1:]
+        if sub in ("list", "ls"):
+            self._schedule_render_list()
+        elif sub in ("new", "add", "create"):
+            await self._schedule_new()
+        elif sub in ("show", "view"):
+            await self._schedule_show(args)
+        elif sub in ("delete", "del", "rm", "remove"):
+            await self._schedule_delete(args)
+        elif sub in ("run-now", "run"):
+            await self._schedule_run_now(args)
+        elif sub == "install":
+            await self._schedule_install(args)
+        elif tokens and _S.schedule_exists(self._data_dir, tokens[0]):
+            await self._schedule_show([tokens[0]])
+        else:
+            self._emit(R.note_line(self._SCHEDULE_USAGE))
+
+    def _schedule_render_list(self) -> None:
+        from kratos.agent import schedules as _S
+
+        schedules, errors = _S.list_schedules(self._data_dir)
+        last: dict[str, str] = {}
+        for s in schedules:
+            rec = _S.last_run_record(self._data_dir, s.name)
+            if rec:
+                last[s.name] = f"{rec.get('finished_at', '?')[:16]} · {rec.get('status')}"
+        self._emit(R.schedule_table(schedules, errors, last))
+
+    async def _schedule_resolve(self, args: list[str], action: str):
+        """Resolve a schedule from an inline name or a picker."""
+        from kratos.agent import schedules as _S
+
+        if args:
+            try:
+                sch = _S.load_schedule(self._data_dir, args[0])
+            except _S.ScheduleError as e:
+                self._emit(R.error_line(str(e)))
+                return None
+            if sch is None:
+                self._emit(R.error_line(f"No schedule named {args[0]!r}."))
+            return sch
+        schedules, _errors = _S.list_schedules(self._data_dir)
+        if not schedules:
+            self._emit(R.note_line("No schedules yet. Create one with /schedule new."))
+            return None
+        entries = [(s.name, f"{s.name}   {s.kind} · {s.cadence}") for s in schedules]
+        name = await self.app.push_screen_wait(
+            ListPickerModal(f"Schedule to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+        if name is None:
+            return None
+        return _S.load_schedule(self._data_dir, name)
+
+    async def _schedule_new(self) -> None:
+        from kratos.agent import schedules as _S
+        from kratos.agent import presets as _P
+        from kratos.agent import schedule_units as _U
+        from kratos.agent.scheduled_run import active_backend_is_cloud
+
+        kind = await self.app.push_screen_wait(ListPickerModal(
+            "What should this schedule run?",
+            [("audit", "audit   Standard audit — deterministic, no LLM, free"),
+             ("preset", "preset  A saved goal preset — runs the AI agent")],
+            subtitle="↑↓ pick · esc cancel"))
+        if kind is None:
+            return
+
+        preset_name = None
+        if kind == "preset":
+            presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable_tier1]
+            if not presets:
+                self._emit(R.note_line("No runnable goal presets yet. Create one with /preset-new first."))
+                return
+            preset_name = await self.app.push_screen_wait(ListPickerModal(
+                "Which preset should it run?",
+                [(p.name, f"{p.name}   {(p.goal or '')[:52]}") for p in presets],
+                subtitle="↑↓ pick · esc cancel"))
+            if preset_name is None:
+                return
+            # Guardrail 2: warn before scheduling an agentic run on a paid backend.
+            if active_backend_is_cloud():
+                ok = await self.app.push_screen_wait(ConfirmModal(
+                    "Cloud backend — unattended cost",
+                    "This preset runs the AI model, and the active backend is a paid cloud "
+                    "endpoint. A scheduled run will spend money every time it fires, unattended. "
+                    "Prefer a local model for schedules. Continue anyway?"))
+                if not ok:
+                    self._emit(R.note_line("Schedule not created. Switch to a local backend with /model, or pick the standard audit."))
+                    return
+
+        name_raw = await self.app.push_screen_wait(PromptModal(
+            "Schedule name", "Short name (e.g. weekly-audit)"))
+        if name_raw is None:
+            return
+        cadence = await self.app.push_screen_wait(ListPickerModal(
+            "How often?",
+            [(c, c) for c in ("hourly", "daily", "weekly", "monthly")],
+            subtitle="↑↓ pick · esc cancel"))
+        if cadence is None:
+            return
+        min_sev = await self.app.push_screen_wait(ListPickerModal(
+            "Notify when?",
+            [("", "Always — every run sends a report"),
+             ("medium", "Only if a MEDIUM+ finding is raised"),
+             ("high", "Only if a HIGH+ finding is raised"),
+             ("critical", "Only if a CRITICAL finding is raised")],
+            subtitle="↑↓ pick · esc cancel"))
+        if min_sev is None:
+            return
+
+        try:
+            sch = _S.save_schedule(
+                self._data_dir, name=name_raw, kind=kind, preset=preset_name,
+                cadence=cadence, deliver=["ntfy"], min_severity=(min_sev or None))
+        except _S.ScheduleError as e:
+            self._emit(R.error_line(str(e)))
+            return
+
+        service_path, timer_path = _U.write_units(sch, self._data_dir)
+        cmds = _U.install_commands(sch, service_path, timer_path)
+        self._emit(R.success_line(f"Saved schedule {sch.name!r} ({sch.kind}, {sch.cadence})."))
+        self._emit(R.command_block_panel(
+            "Activate it — run these once (Kratos never runs systemctl for you)", cmds,
+            note="systemd then owns the timing, reboot-survival, and catch-up. "
+                 "Test it any time with /schedule run-now."))
+
+    async def _schedule_show(self, args: list[str]) -> None:
+        from kratos.agent import schedules as _S
+        from kratos.agent import schedule_units as _U
+
+        sch = await self._schedule_resolve(args, "show")
+        if sch is None:
+            return
+        records = _S.read_run_records(self._data_dir, sch.name)
+        service_path, timer_path = _U.write_units(sch, self._data_dir)
+        cmds = _U.install_commands(sch, service_path, timer_path)
+        self._emit(R.schedule_detail_panel(sch, records, cmds))
+
+    async def _schedule_install(self, args: list[str]) -> None:
+        from kratos.agent import schedule_units as _U
+
+        sch = await self._schedule_resolve(args, "install")
+        if sch is None:
+            return
+        service_path, timer_path = _U.write_units(sch, self._data_dir)
+        self._emit(R.command_block_panel(
+            f"Install {sch.unit_name}.timer", _U.install_commands(sch, service_path, timer_path)))
+
+    async def _schedule_delete(self, args: list[str]) -> None:
+        from kratos.agent import schedules as _S
+        from kratos.agent import schedule_units as _U
+
+        sch = await self._schedule_resolve(args, "delete")
+        if sch is None:
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Delete schedule?",
+            f"Delete schedule {sch.name!r}? This removes its definition and run history."))
+        if not ok:
+            self._emit(R.note_line("Kept the schedule — nothing deleted."))
+            return
+        if _S.delete_schedule(self._data_dir, sch.name):
+            self._emit(R.success_line(f"Deleted schedule {sch.name!r}."))
+            self._emit(R.command_block_panel(
+                "If you installed its timer, remove it too", _U.uninstall_commands(sch)))
+        else:
+            self._emit(R.error_line(f"Couldn't delete {sch.name!r}."))
+
+    async def _schedule_run_now(self, args: list[str]) -> None:
+        sch = await self._schedule_resolve(args, "run now")
+        if sch is None:
+            return
+        if not sch.is_runnable:
+            self._emit(R.note_line(sch.unsupported_reason))
+            return
+        self._emit(R.note_line(
+            f"Running schedule {sch.name!r} now (headless, approval-gated tools excluded)…"))
+        self._schedule_run_now_worker(sch.name)
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _schedule_run_now_worker(self, name: str) -> None:
+        from kratos.agent import schedules as _S
+        from kratos.agent.scheduled_run import run_scheduled
+
+        self._set_busy(True)
+        try:
+            sch = _S.load_schedule(self._data_dir, name)
+            if sch is None:
+                self._emit_from_worker(R.error_line(f"Schedule {name!r} vanished."))
+                return
+            record = run_scheduled(sch, self._data_dir, deliver=True)
+            self._emit_from_worker(R.scheduled_run_result_panel(record))
+        except Exception as e:  # noqa: BLE001
+            self._emit_from_worker(R.error_line(f"Scheduled run errored: {e}"))
+        finally:
+            self._set_busy(False)
+            self.app.call_from_thread(self._refresh_footer)
 
     # --- /timezone (display-only override; storage stays UTC) ------------
     def _cmd_timezone(self, rest: str) -> None:
@@ -1950,6 +2170,15 @@ class SessionScreen(Screen):
 
         self._set_busy(True)
         target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        # Concurrency (A6 §6): one run per target at a time. Bail cleanly if a
+        # background scheduled run (or another investigation) holds the target.
+        audit_lock = _target_lock.try_acquire_target(self._data_dir, _kconfig.get_active_target())
+        if audit_lock is None:
+            self._emit_from_worker(R.note_line(
+                f"A run is already active on {target} (likely a scheduled audit) — it'll "
+                "finish shortly. Try again in a moment."))
+            self._set_busy(False)
+            return
         self._emit_from_worker(R.note_line(
             f"Standard audit — a fixed, deterministic security sweep of {target} "
             "(no LLM; same steps every run)."))
@@ -1994,6 +2223,7 @@ class SessionScreen(Screen):
             return
         finally:
             self._set_busy(False)
+            _target_lock.release_target(audit_lock)
 
         duration = time.monotonic() - started
         t, d = self._stamp_now()
@@ -2348,6 +2578,19 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.note_line(
                 f"Investigating THIS Kratos host ({target_override}) — its own logs, ports, and "
                 "posture, not the configured target."))
+        # Concurrency (A6 §6): take the per-target run lock so this and a
+        # background scheduled run never hit the same host at once. Non-blocking:
+        # if busy, say so and bail cleanly rather than colliding. Keyed by the
+        # effective target, so a self-host run doesn't block a target run.
+        _eff_target = target_override or _kconfig.get_active_target()
+        _lock = _target_lock.try_acquire_target(self._data_dir, _eff_target)
+        if _lock is None:
+            self._emit_from_worker(R.note_line(
+                f"A run is already active on {_eff_target} (likely a scheduled audit) — it'll "
+                "finish shortly. Try again in a moment."))
+            if target_override:
+                _kconfig.set_active_target(prior_active)
+            return
         self._emit_from_worker(R.note_line(f"Starting investigation (up to {REPL_MAX_ITERS} steps)…"))
         turn_id = self._store.start_turn(self.session_state["session_id"], goal)
         started = time.monotonic()
@@ -2381,9 +2624,12 @@ class SessionScreen(Screen):
             return
         finally:
             # Always restore the configured target after a self-host run,
-            # including on the cancel/error early-returns above.
+            # including on the cancel/error early-returns above, and release the
+            # per-target lock (the target is no longer being contacted once
+            # run_agent has returned; the rest is local rendering/DB).
             if target_override:
                 _kconfig.set_active_target(prior_active)
+            _target_lock.release_target(_lock)
 
         duration = time.monotonic() - started
         # The conclusion panel carries its own in-bubble timestamp (subtitle),

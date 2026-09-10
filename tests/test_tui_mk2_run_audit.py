@@ -75,3 +75,38 @@ def test_run_standard_audit_end_to_end(tmp_path, monkeypatch):
     # findings -- regression guard for the "no findings recorded" bug where the
     # audit transcript stored no wrapped `observation` for correlate_findings.
     assert [f[0]["id"] for f in collected] == ["NET-001"], collected
+
+
+def test_run_audit_defers_when_target_busy(tmp_path, monkeypatch):
+    """A6 §6: if the target is already locked (e.g. a background scheduled run),
+    an interactive /run must defer -- dispatch nothing, record no turn."""
+    from kratos.agent import target_lock as L
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    ran = {"n": 0}
+
+    def _canned(tool, args, data_dir):
+        ran["n"] += 1
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _canned)
+    held = L.try_acquire_target(tmp_path, "10.0.0.1")  # the session's active target
+    assert held is not None
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/run")
+            for _ in range(60):
+                await pilot.pause()
+                if not screen._busy and screen._busy_since is None:
+                    break
+
+    try:
+        asyncio.run(_run())
+    finally:
+        L.release_target(held)
+
+    assert ran["n"] == 0  # deferred: nothing dispatched
+    assert not any("standard audit" in (t.get("goal") or "") for t in store.get_goal_history(sid))

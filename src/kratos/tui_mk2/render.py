@@ -346,7 +346,7 @@ def plan_preview_panel(preview: Any) -> Panel:
         if not item.known:
             tags.append("tool not installed")
         if item.approval_gated:
-            tags.append("may ask you to approve")
+            tags.append("approval: required")
         if tags:
             body.append("  [" + " · ".join(tags) + "]", style=T.TEXT_FAINT)
         if item.reason:
@@ -354,7 +354,9 @@ def plan_preview_panel(preview: Any) -> Panel:
 
     if preview.approval_gated_any:
         body.append(
-            "\n\nOne or more steps may pause to ask you to approve an action before continuing.",
+            "\n\nOne or more steps are set to approval: required — they'll pause to ask you "
+            "live (and are skipped in unattended scheduled runs). Set a tool to 'auto' in "
+            "Settings → Tools to run it without asking. Run anyway?",
             style=T.ATTENTION,
         )
     for caveat in preview.caveats:
@@ -448,6 +450,101 @@ def approval_panel(title: str, details: dict[str, Any]) -> Panel:
             parts.append(Text(text, style=T.TEXT))
         parts.append(Text(""))
     return Panel(Group(*parts), title=f"Approval needed: {title}", title_align="left", border_style=T.ATTENTION)
+
+
+def command_block_panel(title: str, commands: list[str], note: str | None = None) -> Panel:
+    """A6.3 -- a copy-pasteable block of shell commands (systemd install steps).
+    word_wrap=False so a long line is never soft-wrapped into a broken copy
+    (the exact bug fixed for the target-onboarding checklist)."""
+    body: list[Any] = []
+    if note:
+        body.append(Text(note, style=T.TEXT_MUTED))
+        body.append(Text(""))
+    body.append(Syntax("\n".join(commands), "bash", word_wrap=False, background_color="default"))
+    return Panel(Group(*body), title=title, title_align="left", border_style=T.ACCENT)
+
+
+def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
+                   last_status: dict[str, str] | None = None) -> Group:
+    """A6.3 -- list saved schedules with their cadence, unit of work, and last
+    run status. Corrupt files (from list_schedules' error list) are surfaced,
+    never hidden."""
+    last_status = last_status or {}
+    if not schedules and not errors:
+        return Group(Text("No schedules yet. Create one with /schedule new.", style=T.TEXT_MUTED))
+    table = Table(show_header=True, header_style="bold", expand=False)
+    for col in ("name", "runs", "cadence", "target", "deliver", "last run"):
+        table.add_column(col)
+    for s in schedules:
+        unit = s.kind if s.kind == "audit" else f"preset:{s.preset}"
+        runnable = "" if s.is_runnable else "  (not runnable)"
+        table.add_row(
+            Text(s.name, style=T.ACCENT),
+            Text(unit + runnable, style=T.TEXT if s.is_runnable else T.ATTENTION),
+            s.cadence,
+            s.target or "active",
+            ", ".join(s.deliver),
+            Text(last_status.get(s.name, "—"), style=T.TEXT_MUTED),
+        )
+    parts: list[Any] = [table]
+    for fn, err in errors:
+        parts.append(Text(f"! {fn}: {err}", style=T.CRITICAL))
+    return Group(*parts)
+
+
+def schedule_detail_panel(schedule: Any, records: list[dict], install_commands: list[str]) -> Panel:
+    """A6.3 -- one schedule's definition + recent run history + install commands."""
+    body = Text()
+    body.append(f"{schedule.name}", style=f"bold {T.TEXT_BRIGHT}")
+    unit = "standard audit" if schedule.kind == "audit" else f"preset '{schedule.preset}'"
+    body.append(f"\nruns: {unit}", style=T.TEXT)
+    body.append(f"\ncadence: {schedule.cadence}  (systemd OnCalendar={schedule.oncalendar})", style=T.TEXT_MUTED)
+    body.append(f"\ntarget: {schedule.target or 'active target at run time'}", style=T.TEXT_MUTED)
+    body.append(f"\ndeliver: {', '.join(schedule.deliver)}"
+                + (f"  ·  notify only on ≥ {schedule.min_severity}" if schedule.min_severity else ""),
+                style=T.TEXT_MUTED)
+    if records:
+        body.append("\n\nRecent runs:", style=T.TEXT_DIM)
+        for r in records[-5:]:
+            sev = r.get("severity_tally") or {}
+            tally = "  ".join(f"{sev[k]} {k}" for k in ("critical", "high", "medium", "low", "info") if sev.get(k)) or "no findings"
+            when = r.get("finished_at", "?")
+            body.append(f"\n  • {when} — {r.get('status')} — {tally}", style=T.TEXT_MUTED)
+    else:
+        body.append("\n\nNo runs recorded yet.", style=T.TEXT_FAINT)
+    body.append("\n\nInstall (activate the systemd user timer):", style=T.TEXT_DIM)
+    return Panel(
+        Group(body, Syntax("\n".join(install_commands), "bash", word_wrap=False, background_color="default")),
+        title=f"Schedule — {schedule.name}", title_align="left", border_style=T.ACCENT)
+
+
+def scheduled_run_result_panel(record: dict) -> Panel:
+    """A6.3 -- the result of a run-now (or a reported past run)."""
+    status = str(record.get("status", "?"))
+    ok = status in ("completed", "final_answer", "max_iters_reached")
+    color = T.SAFE if ok else T.CRITICAL
+    sev = record.get("severity_tally") or {}
+    worst = next((s for s in ("critical", "high", "medium", "low", "info") if sev.get(s)), None)
+    if worst in ("critical", "high"):
+        color = T.CRITICAL
+    elif sev:
+        color = T.ATTENTION
+    body = Text()
+    body.append(f"Scheduled run '{record.get('schedule')}'", style=f"bold {T.TEXT_BRIGHT}")
+    body.append(f"\nstatus: {status}   target: {record.get('target')}", style=T.TEXT_MUTED)
+    if record.get("omitted_gated_tools"):
+        body.append(f"\nomitted (approval-gated, unattended): {', '.join(record['omitted_gated_tools'])}", style=T.TEXT_FAINT)
+    if sev:
+        body.append("\nfindings: " + "  ".join(f"{sev[k]} {k}" for k in ("critical", "high", "medium", "low", "info") if sev.get(k)),
+                    style=T.SEVERITY_COLOR.get(worst or "info", T.TEXT))
+    else:
+        body.append("\nfindings: none raised", style=T.TEXT_MUTED)
+    if record.get("report_md"):
+        body.append(f"\nreport: {record['report_md']}", style=T.TEXT_FAINT)
+    body.append(f"\nnotified: {'yes' if record.get('notified') else 'no'}", style=T.TEXT_FAINT)
+    if record.get("error"):
+        body.append(f"\nnote: {record['error']}", style=T.ATTENTION)
+    return Panel(body, title="Kratos — scheduled run", title_align="left", border_style=color)
 
 
 def _subtest_table(value: str) -> Table:
