@@ -39,7 +39,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.render import approval_panel
+from kratos.tui_mk2.render import approval_panel, plan_preview_panel
 
 
 def _decision_hint(affirm: str, refuse: str) -> Text:
@@ -102,6 +102,36 @@ class ApprovalModal(ModalScreen[bool]):
         self.dismiss(True)
 
     def action_deny(self) -> None:
+        self.dismiss(False)
+
+
+class PlanPreviewModal(ModalScreen[bool]):
+    """A6.1 -- the pre-run confirm gate. Shows the plan (agent/plan_preview.py)
+    and asks run/cancel. Scrollable (a plan can be long), so it keeps EXPLICIT
+    y/n/esc bindings like ApprovalModal rather than a catch-all-cancels key, so
+    scroll keys still work while reading. Fail-safe: n / esc / dismissing without
+    an explicit `y` all CANCEL (nothing runs) -- the safe default for a
+    consequential multi-minute run (INVARIANT 2, no force-accept)."""
+
+    BINDINGS = [
+        Binding("y", "run", "run", show=True),
+        Binding("n", "cancel", "cancel", show=True),
+        Binding("escape", "cancel", "cancel", show=False),
+    ]
+
+    def __init__(self, preview: Any) -> None:
+        super().__init__()
+        self._preview = preview
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="modal-card"):
+            yield Static(plan_preview_panel(self._preview))
+            yield Static(_decision_hint("run it", "cancel"))
+
+    def action_run(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
         self.dismiss(False)
 
 
@@ -265,6 +295,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
                 ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
+                ("/plan [preset|goal]", "Preview a run's steps before it runs (/plan gate on|off toggles auto-preview)"),
                 ("/preset-new", "Save a reusable investigation (guided: name + goal)"),
                 ("/preset-run / -list", "Run (pick from a list) or list your saved investigations"),
                 ("/preset-edit / -delete", "Edit or delete a saved investigation (pick from a list)"),

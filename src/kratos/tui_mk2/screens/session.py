@@ -41,6 +41,7 @@ from kratos.tui_mk2.modals import (
     ConfirmModal,
     HelpModal,
     ListPickerModal,
+    PlanPreviewModal,
     PromptModal,
 )
 
@@ -56,6 +57,7 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "w
 
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
+    ("/plan", "preview a run's steps before it runs (or /plan gate on|off)"),
     ("/preset-new", "save a reusable investigation (guided: name + goal)"),
     ("/preset-run", "run a saved investigation (pick from a list)"),
     ("/preset-list", "list saved investigations"),
@@ -708,7 +710,13 @@ class SessionScreen(Screen):
         elif cmd == "/run":
             # PreA2: the deterministic standard audit (agent/pipeline.py), NOT
             # the retired legacy cmd_run. Target-correct, mk2-rendered, no LLM.
-            self._run_standard_audit()
+            # A6.1: gated by a pre-run preview+confirm (default on) for heavy runs.
+            self._run_standard_audit_gated()
+        elif cmd == "/plan":
+            # A6.1: preview a run's plan WITHOUT running it. No arg = the standard
+            # audit (exact); a preset name = that preset; free text = a predicted
+            # agentic plan. Also toggles the auto-gate: /plan gate on|off.
+            self._plan_flow(rest)
         elif cmd in ("/scan", "/logs-parse", "/findings-generate"):
             self._run_shortcut(cmd.lstrip("/"), rest)
         else:
@@ -814,11 +822,22 @@ class SessionScreen(Screen):
         t, d = self._stamp_now()
         self._emit_stamped(self._kratos_header(), t, d)
         self._emit(Text(f"investigation summary — {len(findings)} finding(s), high → low severity", style=T.TEXT_MUTED))
+        from kratos.agent.ir_playbooks import build_response_plan
+
         for f, when_value in findings:
             # Each finding keeps the time it was ORIGINALLY found (its turn's
             # completion time, a stored UTC value), rendered in the display
             # zone -- not when /report was run.
-            self._emit(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)))
+            when_str = self._fmt_stored_time(when_value)
+            self._emit(R.finding_panel(f, time_str=when_str))
+            # A6.2: auto-attach a recommend-only response plan for HIGH/CRITICAL
+            # findings (build_response_plan returns None below that, so no
+            # manufactured urgency on info/low). Recommend-only, curated
+            # templates -- Kratos runs nothing.
+            if str(f.get("severity", "")).lower() in ("high", "critical"):
+                plan = build_response_plan(f, found_at=when_str)
+                if plan is not None:
+                    self._emit(R.response_plan_panel(plan, time_str=when_str))
 
     def _collect_session_findings(self) -> list[tuple[dict[str, Any], str | None]]:
         """Aggregate correlate_findings output across this session's turns'
@@ -1818,6 +1837,108 @@ class SessionScreen(Screen):
             self._set_busy(False)
 
     # --- /run: the PreA2 deterministic standard audit --------------------
+    # --- A6.1 preview-plan: pre-run confirm gate + /plan on demand -------
+    def _plan_gate_enabled(self) -> bool:
+        """Whether heavy deterministic runs (the standard audit / future
+        pipelines) show a preview+confirm before running. Default ON (novice-
+        facing + a slow backend -> automatic protection beats a command you have
+        to remember). Persisted in local config; toggle with `/plan gate off`."""
+        cfg = _kconfig.load_local_config(self._data_dir)
+        return bool(cfg.get("plan_gate", True))
+
+    def _target_label(self) -> str:
+        return self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+
+    @work
+    async def _run_standard_audit_gated(self) -> None:
+        """A6.1 gate: build the EXACT preview (cheap, no LLM, no target contact),
+        show it for confirm/cancel if the gate is on, then run the existing
+        deterministic audit worker. Cancel runs nothing and leaves clean state."""
+        from kratos.agent.plan_preview import preview_pipeline
+        from kratos.agent.pipeline import standard_audit_steps
+
+        if self._plan_gate_enabled():
+            preview = preview_pipeline(standard_audit_steps(), self._target_label())
+            proceed = await self.app.push_screen_wait(PlanPreviewModal(preview))
+            if not proceed:
+                self._emit(R.note_line("Standard audit cancelled — nothing ran."))
+                return
+        self._run_standard_audit()
+
+    @work(thread=True)
+    def _plan_flow(self, rest: str) -> None:
+        """/plan -- preview a run's plan WITHOUT running it (the same renderer the
+        gate uses). No arg -> the standard audit (exact). A preset name -> that
+        preset (exact if it's a pipeline, predicted if it's an agentic goal).
+        Free text -> a predicted agentic plan. `/plan gate [on|off]` toggles the
+        auto-gate. A thread worker because the predicted path makes one LLM call;
+        the cheap paths just render."""
+        from kratos.agent.plan_preview import preview_agentic, preview_pipeline
+        from kratos.agent.pipeline import standard_audit_steps
+        from kratos.agent import presets as _P
+
+        rest = (rest or "").strip()
+        parts = rest.split(maxsplit=1)
+
+        # `/plan gate [on|off]`
+        if parts and parts[0].lower() == "gate":
+            arg = parts[1].strip().lower() if len(parts) > 1 else ""
+            if arg in ("on", "off"):
+                _kconfig.save_local_config(self._data_dir, plan_gate=(arg == "on"))
+                state = "on" if arg == "on" else "off"
+                self._emit_from_worker(R.note_line(
+                    f"Pre-run plan gate is now {state}. "
+                    + ("Heavy runs will preview + ask before running." if arg == "on"
+                       else "Heavy runs start immediately; use /plan to preview on demand.")))
+            else:
+                cur = "on" if self._plan_gate_enabled() else "off"
+                self._emit_from_worker(R.note_line(
+                    f"Pre-run plan gate is {cur}. Use /plan gate on  or  /plan gate off to change it."))
+            return
+
+        target = self._target_label()
+
+        # No arg -> the deterministic standard audit's exact plan.
+        if not rest:
+            self._emit_from_worker(R.plan_preview_panel(
+                preview_pipeline(standard_audit_steps(), target)))
+            return
+
+        # An existing preset name -> preview that preset.
+        preset = _P.load_preset(self._data_dir, rest) if _P.preset_exists(self._data_dir, rest) else None
+        if preset is not None:
+            ptarget = preset.target or target
+            if preset.kind == "pipeline":
+                # Forward-compat: Tier-2 pipeline presets aren't runnable yet, but
+                # if one exists we can still preview its declared steps as exact.
+                steps = preset.raw.get("steps")
+                if isinstance(steps, list) and steps:
+                    from kratos.agent.pipeline import PipelineStep
+                    pipe = [PipelineStep(tool=str(s.get("tool")),
+                                         args=dict(s.get("args") or {}),
+                                         label=s.get("label"),
+                                         required=bool(s.get("required", True)))
+                            for s in steps if isinstance(s, dict) and s.get("tool")]
+                    self._emit_from_worker(R.plan_preview_panel(
+                        preview_pipeline(pipe, ptarget, title=f"Preset: {preset.name}")))
+                    return
+                self._emit_from_worker(R.note_line(
+                    f"Preset {preset.name!r} is a pipeline but declares no steps to preview."))
+                return
+            if preset.goal:
+                self._emit_from_worker(R.note_line(
+                    f"Predicting the plan for preset {preset.name!r} (one quick model call)…"))
+                self._emit_from_worker(R.plan_preview_panel(
+                    preview_agentic(preset.goal, ptarget)))
+                return
+            self._emit_from_worker(R.note_line(
+                f"Preset {preset.name!r} has no goal to preview."))
+            return
+
+        # Free text -> a predicted agentic plan for that goal.
+        self._emit_from_worker(R.note_line("Predicting the plan (one quick model call)…"))
+        self._emit_from_worker(R.plan_preview_panel(preview_agentic(rest, target)))
+
     @work(thread=True, exclusive=True, group="turn")
     def _run_standard_audit(self) -> None:
         """Run the built-in deterministic standard audit (agent/pipeline.py) and

@@ -137,7 +137,6 @@ shared mutable state to protect.
 """
 from __future__ import annotations
 
-import inspect
 import json
 import threading
 from pathlib import Path
@@ -148,7 +147,7 @@ from mcp.server.fastmcp import FastMCP
 from kratos import kratos_config as _kconfig
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.notify import send_notification
-from kratos.agent.tools import TOOL_REGISTRY, Tool
+from kratos.agent.tools import TOOL_REGISTRY, Tool, tool_reaches_approval
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
 
@@ -167,28 +166,12 @@ _data_dir: Path = Path("data")
 mcp = FastMCP(name="kratos")
 
 
-def _tool_reaches_approval(tool: Tool) -> bool:
-    """True if this tool must be excluded from an MCP-invoked investigation
-    because SOMETHING in its own handler can call request_approval --
-    either the registry's own requires_approval=True (an always-gated
-    tool), or (checked independently, since that flag is not a complete
-    signal -- see module docstring) the handler's actual source text
-    containing a request_approval( call, catching tools that only reach it
-    CONDITIONALLY. inspect.getsource() failing (e.g. a kept tool whose
-    source file went missing) fails SAFE -- treated as reaching approval,
-    excluded, never assumed fine just because it couldn't be checked.
-    Known, accepted limit: only scans the handler's own source text, not
-    functions it calls indirectly -- true for all 4 real tools that
-    actually reach request_approval today (confirmed by direct reading,
-    2026-07-19), revisit if a future tool delegates its approval call to a
-    private helper instead of calling it inline."""
-    if tool.requires_approval:
-        return True
-    try:
-        source = inspect.getsource(tool.handler)
-    except (OSError, TypeError):
-        return True
-    return "request_approval(" in source
+# Which tools to exclude from an MCP-invoked investigation (anything that could
+# pause for human approval — impossible over a headless stdio transport). The
+# check is the shared single-source-of-truth helper in agent/tools.py; imported,
+# not re-implemented, so the MCP exclusion and the plan-preview warning can never
+# drift apart. Aliased to keep the existing call site + module docstring stable.
+_tool_reaches_approval = tool_reaches_approval
 
 
 def _unwrap_tool_result(observation: Any) -> Any:

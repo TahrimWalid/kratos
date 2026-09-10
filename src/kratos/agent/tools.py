@@ -8,6 +8,7 @@ or later by an LLM-driven agent loop.
 """
 from __future__ import annotations
 
+import inspect
 import json
 import shlex
 import subprocess
@@ -79,6 +80,37 @@ class Tool:
 
 
 TOOL_REGISTRY: dict[str, Tool] = {}
+
+
+def tool_reaches_approval(tool: Tool | None) -> bool:
+    """True if a tool COULD pause to ask a human to approve something mid-run —
+    used to EXCLUDE such tools from a headless surface (the MCP server) and to
+    WARN about them in a plan preview. Two independent signals, because the
+    registry flag alone is not complete (a tool may reach request_approval only
+    CONDITIONALLY from inside its handler with requires_approval=False, e.g.
+    run_vuln_scan's staleness prompt / check_ip_reputation's live tier): the
+    registry's requires_approval, OR the handler's own source text containing a
+    `request_approval(` call. Fails SAFE — a None tool (an unknown/dangling step)
+    or an unreadable handler source is treated as reaching approval, never
+    assumed fine because it couldn't be checked.
+
+    Single source of truth for this check (mcp_server.py and
+    tui_mk2/agent/plan_preview.py both import it). NOTE the DIFFERENT, deliberate
+    sibling in agent/loop.py::_handler_self_gates — that answers the OPPOSITE
+    question ("does the handler gate ITSELF, so dispatch needn't add a gate?")
+    with the OPPOSITE fail-safe (False → gate at dispatch); do not merge them.
+    Known limit: scans only the handler's own source, not helpers it calls — true
+    for every tool that reaches request_approval today.
+    """
+    if tool is None:
+        return True
+    if tool.requires_approval:
+        return True
+    try:
+        source = inspect.getsource(tool.handler)
+    except (OSError, TypeError):
+        return True
+    return "request_approval(" in source
 
 
 def register_tool(

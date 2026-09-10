@@ -39,6 +39,8 @@ __all__ = [
     "day_divider",
     "approval_panel",
     "recommended_fix_panel",
+    "plan_preview_panel",
+    "response_plan_panel",
 ]
 
 
@@ -300,6 +302,128 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
     parts.append(Syntax(str(cmd.get("command") or ""), "bash", word_wrap=False, background_color="default"))
     parts.append(Text(f"Run this yourself on {where} — Kratos does not execute it.", style=T.TEXT_FAINT))
     return Panel(Group(*parts), title="✓ recommended fix", title_align="left", border_style=T.SAFE)
+
+
+def plan_preview_panel(preview: Any) -> Panel:
+    """A6.1 -- render a PlanPreview (agent/plan_preview.py). Deterministic
+    ('exact') and agentic ('predicted') plans are deliberately visually distinct:
+    the exact plan is numbered guaranteed steps in a calm border; the predicted
+    plan is a bulleted 'likely areas' list in an amber border, so a prediction is
+    never mistaken for a guarantee. Used both by the pre-run confirm gate and by
+    /plan on demand (same renderer, two surfaces)."""
+    kind = preview.kind
+    if kind == "exact":
+        border = T.ACCENT
+        heading = "will run these exact steps, in order"
+        bullet_style = T.SAFE
+    elif kind == "predicted":
+        border = T.ATTENTION
+        heading = "will likely look at these areas — it decides the real steps live"
+        bullet_style = T.ATTENTION
+    else:  # unavailable
+        border = T.TEXT_DIM
+        heading = "couldn't be previewed"
+        bullet_style = T.TEXT_DIM
+
+    body = Text()
+    body.append("Kratos ", style=f"bold {T.KRATOS_RED}")
+    body.append(heading, style=f"bold {T.TEXT_BRIGHT}")
+    body.append(f"\nTarget: {preview.target}", style=T.TEXT_DIM)
+
+    if preview.note:
+        body.append(f"\n\n{preview.note}", style=T.TEXT_MUTED)
+
+    for idx, item in enumerate(preview.items, start=1):
+        body.append("\n\n")
+        marker = f"{idx}. " if kind == "exact" else "• "
+        body.append(marker, style=bullet_style)
+        body.append(item.label, style=T.TEXT if item.known else T.TEXT_DIM)
+        tags = []
+        if kind == "exact":
+            tags.append("required" if item.required else "optional")
+            if item.conditional:
+                tags.append("may be skipped")
+        if not item.known:
+            tags.append("tool not installed")
+        if item.approval_gated:
+            tags.append("may ask you to approve")
+        if tags:
+            body.append("  [" + " · ".join(tags) + "]", style=T.TEXT_FAINT)
+        if item.reason:
+            body.append(f"\n    {item.reason}", style=T.TEXT_MUTED)
+
+    if preview.approval_gated_any:
+        body.append(
+            "\n\nOne or more steps may pause to ask you to approve an action before continuing.",
+            style=T.ATTENTION,
+        )
+    for caveat in preview.caveats:
+        body.append(f"\n\n{caveat}", style=T.TEXT_FAINT)
+
+    title = "Plan — exact steps" if kind == "exact" else ("Plan — likely areas (agent adapts)" if kind == "predicted" else "Plan — unavailable")
+    return Panel(body, title=title, title_align="left", border_style=border)
+
+
+def response_plan_panel(plan: Any, time_str: str | None = None) -> Panel:
+    """A6.2 -- render a recommend-only ResponsePlan (agent/ir_playbooks.py) for a
+    HIGH/CRITICAL finding: ordered steps, each command host-attributed and (if it
+    changes state) flagged, plus what to verify and when to escalate. The border
+    is the finding's severity colour; a footer states plainly that Kratos runs
+    none of it (the permanent observe-and-recommend boundary)."""
+    color = T.SEVERITY_COLOR.get(str(plan.severity).lower(), T.CRITICAL)
+    body: list[Any] = []
+
+    head = Text()
+    head.append("Response plan", style=f"bold {T.TEXT_BRIGHT}")
+    head.append(f"  ·  {plan.finding_id}", style=T.TEXT_DIM)
+    if not plan.curated:
+        head.append("  ·  generic (no curated playbook)", style=T.ATTENTION)
+    head.append("\nFor you to run in your own session — Kratos executes none of these steps.", style=T.TEXT_MUTED)
+    if plan.found_at:
+        head.append(f"\nFor the finding observed at {plan.found_at} — re-verify it's still current.", style=T.TEXT_FAINT)
+    body.append(head)
+
+    for idx, step in enumerate(plan.steps, start=1):
+        body.append(Text(""))
+        st = Text()
+        st.append(f"{idx}. {step.title}", style=f"bold {T.TEXT}")
+        body.append(st)
+        if step.note:
+            body.append(Text(f"   {step.note}", style=T.TEXT_MUTED))
+        for cmd in step.commands:
+            meta = Text()
+            meta.append("   run on ", style=T.TEXT_FAINT)
+            meta.append(cmd.where, style=T.TEXT_DIM)
+            if cmd.destructive:
+                meta.append("   ! changes state — review before running", style=T.CRITICAL)
+            body.append(meta)
+            body.append(Syntax(cmd.command, "bash", word_wrap=False, background_color="default"))
+            if cmd.explanation:
+                body.append(Text(f"   {cmd.explanation}", style=T.TEXT_FAINT))
+
+    if plan.verify:
+        body.append(Text(""))
+        body.append(Text("Verify", style=f"bold {T.SAFE}"))
+        for v in plan.verify:
+            body.append(Text(f"  • {v}", style=T.TEXT_MUTED))
+
+    if plan.escalate:
+        body.append(Text(""))
+        body.append(Text("Escalate", style=f"bold {T.CRITICAL}"))
+        for e in plan.escalate:
+            body.append(Text(f"  • {e}", style=T.TEXT_MUTED))
+
+    for caveat in plan.caveats:
+        body.append(Text(f"\n{caveat}", style=T.TEXT_FAINT))
+
+    return Panel(
+        Group(*body),
+        title=f"Recommended response — {str(plan.severity).upper()}",
+        title_align="left",
+        subtitle=_time_subtitle(time_str),
+        subtitle_align="right",
+        border_style=color,
+    )
 
 
 _SUBTEST_MARKERS = ("PASSED", "FAILED", "ERROR", "SKIPPED")

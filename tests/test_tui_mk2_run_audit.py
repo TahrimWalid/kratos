@@ -27,6 +27,11 @@ class _Host(App):
 def _make_screen(tmp_path, monkeypatch):
     monkeypatch.setattr("kratos.llm_config.ENV_FILE_PATH", tmp_path / ".env")
     (tmp_path / ".env").write_text("LLM_MODEL=m\n", encoding="utf-8")
+    # A6.1: /run is now gated by a pre-run preview+confirm (default on). This
+    # test targets the engine-wiring path, so disable the gate to run directly;
+    # the gate itself is covered by test_tui_mk2_plan_gate.py.
+    from kratos import kratos_config as _kc
+    _kc.save_local_config(tmp_path, plan_gate=False)
     store = SessionStore(tmp_path / "kratos.db")
     sid = store.create_session(["10.0.0.1"], "m")
     return store, sid, SessionScreen(store, tmp_path, sid, ["10.0.0.1"], "")
