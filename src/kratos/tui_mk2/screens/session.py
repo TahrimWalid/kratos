@@ -66,6 +66,7 @@ _PALETTE_COMMANDS = [
     ("/preset-delete", "delete a saved investigation (pick from a list)"),
     ("/report", "investigation summary — findings by severity"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
+    ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/usage", "token usage + estimated cost this session (local = free)"),
     ("/context", "what's currently loaded in the context window"),
@@ -651,6 +652,8 @@ class SessionScreen(Screen):
             self._render_report()
         elif cmd in ("/schedule", "/schedules"):
             self._schedule_flow(rest)
+        elif cmd in ("/trigger", "/triggers"):
+            self._trigger_flow(rest)
         elif cmd in ("/preset", "/presets"):
             self._preset_flow(rest)
         # Discrete, guided preset commands (hyphenated so they're single tokens
@@ -1368,6 +1371,189 @@ class SessionScreen(Screen):
         finally:
             self._set_busy(False)
             self.app.call_from_thread(self._refresh_footer)
+
+    # --- /trigger (A6.4: if condition detected, notify/playbook/investigate) ---
+    _TRIGGER_USAGE = (
+        "Usage: /trigger list  ·  /trigger new  ·  /trigger show \"<name>\"  ·  "
+        "/trigger test \"<name>\"  ·  /trigger delete \"<name>\""
+    )
+
+    @work
+    async def _trigger_flow(self, rest: str) -> None:
+        import shlex
+        from kratos.agent import triggers as _T
+
+        try:
+            tokens = shlex.split(rest) if rest.strip() else []
+        except ValueError:
+            self._emit(R.error_line("Couldn't parse that — check your quotes. " + self._TRIGGER_USAGE))
+            return
+        sub = tokens[0].lower() if tokens else "list"
+        args = tokens[1:]
+        if sub in ("list", "ls"):
+            self._trigger_render_list()
+        elif sub in ("new", "add", "create"):
+            await self._trigger_new()
+        elif sub in ("show", "view"):
+            await self._trigger_show(args)
+        elif sub in ("delete", "del", "rm", "remove"):
+            await self._trigger_delete(args)
+        elif sub == "test":
+            await self._trigger_test(args)
+        elif tokens and _T.trigger_exists(self._data_dir, tokens[0]):
+            await self._trigger_show([tokens[0]])
+        else:
+            self._emit(R.note_line(self._TRIGGER_USAGE))
+
+    def _trigger_render_list(self) -> None:
+        from kratos.agent import triggers as _T
+
+        triggers, errors = _T.list_triggers(self._data_dir)
+        last: dict[str, str] = {}
+        for tg in triggers:
+            rec = _T.last_fire_record(self._data_dir, tg.name)
+            if rec:
+                last[tg.name] = f"{str(rec.get('fired_at', '?'))[:16]} · {rec.get('action')}"
+        self._emit(R.trigger_table(triggers, errors, last))
+
+    async def _trigger_resolve(self, args: list[str], action: str):
+        from kratos.agent import triggers as _T
+
+        if args:
+            try:
+                tg = _T.load_trigger(self._data_dir, args[0])
+            except _T.TriggerError as e:
+                self._emit(R.error_line(str(e)))
+                return None
+            if tg is None:
+                self._emit(R.error_line(f"No trigger named {args[0]!r}."))
+            return tg
+        triggers, _errors = _T.list_triggers(self._data_dir)
+        if not triggers:
+            self._emit(R.note_line("No triggers yet. Create one with /trigger new."))
+            return None
+        entries = [(t.name, f"{t.name}   {t.condition_text} → {t.action}") for t in triggers]
+        name = await self.app.push_screen_wait(
+            ListPickerModal(f"Trigger to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+        if name is None:
+            return None
+        return _T.load_trigger(self._data_dir, name)
+
+    async def _trigger_new(self) -> None:
+        from kratos.agent import triggers as _T
+        from kratos.agent.scheduled_run import active_backend_is_cloud
+
+        sev = await self.app.push_screen_wait(ListPickerModal(
+            "Fire when the findings reach which severity?",
+            [("", "Any severity — match on a specific finding-ID instead"),
+             ("medium", "MEDIUM or higher"),
+             ("high", "HIGH or higher"),
+             ("critical", "CRITICAL only")],
+            subtitle="↑↓ pick · esc cancel"))
+        if sev is None:
+            return
+        fid = await self.app.push_screen_wait(PromptModal(
+            "Specific finding-ID? (optional)",
+            "e.g. CORR-SSH-001 — or leave blank to match on severity only"))
+        if fid is None:
+            return
+        fid = fid.strip()
+        if not sev and not fid:
+            self._emit(R.error_line("A trigger needs a condition — pick a severity and/or a finding-ID."))
+            return
+
+        action = await self.app.push_screen_wait(ListPickerModal(
+            "What should happen when it fires?",
+            [("notify", "notify — send a sharp alert"),
+             ("playbook", "playbook — alert + the response plan (what to do)"),
+             ("investigate", "investigate — a deeper read-only investigation, then alert")],
+            subtitle="↑↓ pick · esc cancel"))
+        if action is None:
+            return
+        # Cost gate: an investigate action runs the AI model unattended on the cadence.
+        if action == "investigate" and active_backend_is_cloud():
+            ok = await self.app.push_screen_wait(ConfirmModal(
+                "Cloud backend — unattended cost",
+                "The 'investigate' action runs the AI model, and the active backend is a paid "
+                "cloud endpoint. Every time this trigger fires on a scheduled run it spends money, "
+                "unattended. Prefer a local model. Continue anyway?"))
+            if not ok:
+                self._emit(R.note_line("Trigger not created. Switch to a local backend with /model, or pick notify/playbook."))
+                return
+
+        cooldown = await self.app.push_screen_wait(ListPickerModal(
+            "Cooldown — how long to wait before it can fire again?",
+            [(str(v), f"{k}  (won't re-alert for {k})") for k, v in _T.COOLDOWN_CHOICES.items()],
+            subtitle="↑↓ pick · esc cancel"))
+        if cooldown is None:
+            return
+
+        name_raw = await self.app.push_screen_wait(PromptModal(
+            "Trigger name", "Short name (e.g. high-severity-alert)"))
+        if name_raw is None:
+            return
+        try:
+            tg = _T.save_trigger(self._data_dir, name=name_raw, action=action,
+                                 min_severity=(sev or None), finding_id=(fid or None),
+                                 cooldown_minutes=int(cooldown))
+        except _T.TriggerError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.success_line(
+            f"Saved trigger {tg.name!r}: when {tg.condition_text} → {tg.action}."))
+        self._emit(R.note_line(
+            "It's evaluated after every scheduled run (and after /run). "
+            "Try it now with /trigger test."))
+
+    async def _trigger_show(self, args: list[str]) -> None:
+        from kratos.agent import triggers as _T
+
+        tg = await self._trigger_resolve(args, "show")
+        if tg is None:
+            return
+        self._emit(R.trigger_detail_panel(tg, _T.read_fire_records(self._data_dir, tg.name)))
+
+    async def _trigger_delete(self, args: list[str]) -> None:
+        from kratos.agent import triggers as _T
+
+        tg = await self._trigger_resolve(args, "delete")
+        if tg is None:
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Delete trigger?",
+            f"Delete trigger {tg.name!r}? This removes its definition and fire history."))
+        if not ok:
+            self._emit(R.note_line("Kept the trigger — nothing deleted."))
+            return
+        if _T.delete_trigger(self._data_dir, tg.name):
+            self._emit(R.success_line(f"Deleted trigger {tg.name!r}."))
+        else:
+            self._emit(R.error_line(f"Couldn't delete {tg.name!r}."))
+
+    async def _trigger_test(self, args: list[str]) -> None:
+        """Show what a trigger WOULD do on a matching finding — no delivery, no
+        real investigation, no cooldown side effects."""
+        from kratos.agent import triggers as _T
+        from kratos.agent.trigger_eval import preview_trigger
+
+        tg = await self._trigger_resolve(args, "test")
+        if tg is None:
+            return
+        # A synthetic finding that satisfies this trigger's condition, so the test
+        # always demonstrates a fire (structured fields only — no evidence).
+        synthetic = {
+            "id": tg.finding_id or "CORR-SSH-001",
+            "severity": tg.min_severity or "high",
+            "title": "sample finding for a trigger test",
+        }
+        target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        preview = preview_trigger(self._data_dir, tg, [synthetic], target)
+        self._emit(R.note_line(
+            f"Test — if a {synthetic['severity']} finding "
+            f"{'(' + synthetic['id'] + ') ' if tg.finding_id else ''}appears on {target}, "
+            f"trigger {tg.name!r} would fire ({tg.action}). No notification was sent."))
+        if preview.get("body"):
+            self._emit(R.result_panel(f"Would send — {tg.action}", preview["body"], T.ACCENT))
 
     # --- /timezone (display-only override; storage stays UTC) ------------
     def _cmd_timezone(self, rest: str) -> None:
@@ -2247,6 +2433,19 @@ class SessionScreen(Screen):
             d,
         )
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
+
+        # A6.4: evaluate triggers against this run's findings. run_investigations
+        # =False keeps an interactive /run snappy — an investigate-action trigger
+        # notifies that the deeper look runs on the scheduled cadence rather than
+        # blocking here on an LLM call (the target lock is already released too).
+        try:
+            from kratos.agent.trigger_eval import evaluate_triggers
+            _audit_target = self.session_state["targets"][0] if self.session_state["targets"] else _kconfig.get_active_target()
+            for tf in evaluate_triggers(self._data_dir, outcome.findings, _audit_target,
+                                        run_investigations=False):
+                self._emit_from_worker(R.trigger_fire_line(tf))
+        except Exception as e:  # noqa: BLE001
+            self._emit_from_worker(R.note_line(f"(trigger evaluation skipped: {e})"))
 
         # Persist a step transcript for the turn record (not a run_agent
         # transcript -- a deterministic pipeline has no LLM reasoning). Each step

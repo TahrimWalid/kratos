@@ -301,6 +301,7 @@ class HelpModal(ModalScreen[None]):
                 ("/preset-edit / -delete", "Edit or delete a saved investigation (pick from a list)"),
                 ("/report", "Investigation summary — findings by severity"),
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
+                ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
                 ("/usage", "Token usage + estimated cost this session (local models = free)"),
                 ("/context", "What's currently loaded in the context window"),

@@ -547,6 +547,69 @@ def scheduled_run_result_panel(record: dict) -> Panel:
     return Panel(body, title="Kratos — scheduled run", title_align="left", border_style=color)
 
 
+def trigger_fire_line(record: dict) -> Text:
+    """A6.4 -- a one-line 'trigger X fired' notice in the transcript."""
+    worst = str(record.get("worst_severity") or "info").lower()
+    color = T.SEVERITY_COLOR.get(worst, T.ATTENTION)
+    t = Text()
+    t.append("⚡ ", style=color)
+    t.append(f"trigger {record.get('trigger')} fired", style=f"bold {color}")
+    ids = ", ".join(record.get("matched_ids") or []) or "(finding)"
+    t.append(f"  {record.get('action')} · {ids}", style=T.TEXT_MUTED)
+    if record.get("error"):
+        t.append(f"  — {record['error']}", style=T.CRITICAL)
+    elif record.get("notified"):
+        t.append("  · notified", style=T.TEXT_FAINT)
+    return t
+
+
+def trigger_table(triggers: list[Any], errors: list[tuple[str, str]],
+                  last_fired: dict[str, str] | None = None) -> Group:
+    """A6.4 -- list saved triggers with condition, action, target, cooldown, last fire."""
+    last_fired = last_fired or {}
+    if not triggers and not errors:
+        return Group(Text("No triggers yet. Create one with /trigger new.", style=T.TEXT_MUTED))
+    table = Table(show_header=True, header_style="bold", expand=False)
+    for col in ("name", "when", "action", "target", "cooldown", "last fired"):
+        table.add_column(col)
+    for tg in triggers:
+        table.add_row(
+            Text(tg.name, style=T.ACCENT),
+            Text(tg.condition_text, style=T.TEXT if tg.is_valid else T.ATTENTION),
+            tg.action,
+            tg.target or "any",
+            f"{tg.cooldown_minutes}m",
+            Text(last_fired.get(tg.name, "—"), style=T.TEXT_MUTED),
+        )
+    parts: list[Any] = [table]
+    for fn, err in errors:
+        parts.append(Text(f"! {fn}: {err}", style=T.CRITICAL))
+    return Group(*parts)
+
+
+def trigger_detail_panel(trigger: Any, records: list[dict]) -> Panel:
+    """A6.4 -- one trigger's definition + recent fire history."""
+    body = Text()
+    body.append(trigger.name, style=f"bold {T.TEXT_BRIGHT}")
+    body.append(f"\nwhen: {trigger.condition_text}", style=T.TEXT)
+    action_help = {
+        "notify": "send a sharp alert",
+        "playbook": "alert + the response plan (what to do)",
+        "investigate": "launch a deeper read-only investigation, then alert",
+    }.get(trigger.action, trigger.action)
+    body.append(f"\naction: {trigger.action} — {action_help}", style=T.TEXT_MUTED)
+    body.append(f"\ntarget: {trigger.target or 'any'}   ·   cooldown: {trigger.cooldown_minutes} min", style=T.TEXT_MUTED)
+    body.append("\n\nRecommend/notify/read-only only — Kratos never acts on the target.", style=T.TEXT_FAINT)
+    if records:
+        body.append("\n\nRecent fires:", style=T.TEXT_DIM)
+        for r in records[-5:]:
+            ids = ", ".join(r.get("matched_ids") or []) or "(finding)"
+            body.append(f"\n  • {r.get('fired_at', '?')[:16]} — {r.get('action')} — {ids}", style=T.TEXT_MUTED)
+    else:
+        body.append("\n\nHasn't fired yet.", style=T.TEXT_FAINT)
+    return Panel(body, title=f"Trigger — {trigger.name}", title_align="left", border_style=T.ACCENT)
+
+
 def _subtest_table(value: str) -> Table:
     import re
 

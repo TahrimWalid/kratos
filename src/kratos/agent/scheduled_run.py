@@ -168,6 +168,39 @@ def _run_preset(schedule: "_sched.Schedule", data_dir: Path) -> tuple[str, list[
     return status, findings, error
 
 
+def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) -> dict[str, Any]:
+    """Run an agentic investigation with NO human present -- the self-contained
+    headless guard used by A6.4's ``investigate`` trigger action (design doc §7
+    "deeper read-only investigation"). Installs the deny-everything approval
+    provider (belt) and removes every ``requires_approval``-flagged tool from the
+    registry (suspenders) so a state-changing/approval tool can never be selected,
+    then restores both. Read-only + recommend-only by construction: run_agent's
+    observe-and-recommend boundary holds and nothing acts on the target.
+
+    Does NOT acquire the target lock -- callers (the scheduled worker, the
+    interactive /run worker) already hold it for the surrounding run. Returns
+    {status, findings, final_answer}."""
+    if run_agent_fn is None:
+        from kratos.agent.loop import run_agent as run_agent_fn
+
+    prior_provider = _tools._approval_prompt_provider
+    _tools.set_approval_prompt_provider(lambda tool, details: False)
+    gated = {name for name, tool in _tools.TOOL_REGISTRY.items() if tool.requires_approval}
+    excluded = {name: _tools.TOOL_REGISTRY[name] for name in gated}
+    for name in excluded:
+        del _tools.TOOL_REGISTRY[name]
+    try:
+        result = run_agent_fn(goal, data_dir)
+    finally:
+        _tools.TOOL_REGISTRY.update(excluded)
+        _tools.set_approval_prompt_provider(prior_provider)
+    return {
+        "status": str(result.get("status") or "error"),
+        "findings": _extract_findings(result.get("transcript", [])),
+        "final_answer": result.get("final_answer"),
+    }
+
+
 def run_scheduled(
     schedule: "_sched.Schedule",
     data_dir: Path,
@@ -287,6 +320,17 @@ def run_scheduled(
                                  omitted=omitted)
         delivered = notifier(message, ntfy_sev)
 
+    # A6.4: evaluate triggers against this run's structured findings (the
+    # monitoring step rides the scheduled cadence). Investigations may run here
+    # (this run still holds the target lock). Never sinks the run on failure.
+    triggers_fired: list[dict[str, Any]] = []
+    try:
+        from kratos.agent.trigger_eval import evaluate_triggers
+        triggers_fired = evaluate_triggers(data_dir, findings, target,
+                                           notifier=notifier, deliver=deliver)
+    except Exception as e:  # noqa: BLE001
+        error = (error + "; " if error else "") + f"trigger evaluation failed: {e}"
+
     record = {
         "schedule": schedule.name,
         "started_at": started_at,
@@ -301,6 +345,7 @@ def run_scheduled(
         "report_md": report_md,
         "delivered": delivered,
         "notified": delivered is not None,
+        "triggers_fired": [t.get("trigger") for t in triggers_fired],
         "error": error,
     }
     _sched.append_run_record(data_dir, schedule.name, record)
