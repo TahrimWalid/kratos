@@ -90,6 +90,9 @@ def test_run_audit_defers_when_target_busy(tmp_path, monkeypatch):
         return {"status": "ok", "result": {}}
 
     monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _canned)
+    # Don't actually wait 20s in the test — simulate "waited, still busy".
+    monkeypatch.setattr("kratos.agent.target_lock.acquire_target_blocking",
+                        lambda *a, **k: None)
     held = L.try_acquire_target(tmp_path, "10.0.0.1")  # the session's active target
     assert held is not None
 

@@ -2172,11 +2172,18 @@ class SessionScreen(Screen):
         target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
         # Concurrency (A6 §6): one run per target at a time. Bail cleanly if a
         # background scheduled run (or another investigation) holds the target.
-        audit_lock = _target_lock.try_acquire_target(self._data_dir, _kconfig.get_active_target())
+        _audit_target = _kconfig.get_active_target()
+        audit_lock = _target_lock.try_acquire_target(self._data_dir, _audit_target)
         if audit_lock is None:
             self._emit_from_worker(R.note_line(
-                f"A run is already active on {target} (likely a scheduled audit) — it'll "
-                "finish shortly. Try again in a moment."))
+                f"A run is active on {target} (likely a scheduled audit) — waiting for it to "
+                "finish… (usually quick; press esc to stop)"))
+            audit_lock = _target_lock.acquire_target_blocking(
+                self._data_dir, _audit_target, timeout=20.0,
+                should_stop=lambda: get_current_worker().is_cancelled)
+        if audit_lock is None:
+            self._emit_from_worker(R.note_line(
+                f"{target} is still busy (it may be a long run) — try again in a bit."))
             self._set_busy(False)
             return
         self._emit_from_worker(R.note_line(
@@ -2583,11 +2590,19 @@ class SessionScreen(Screen):
         # if busy, say so and bail cleanly rather than colliding. Keyed by the
         # effective target, so a self-host run doesn't block a target run.
         _eff_target = target_override or _kconfig.get_active_target()
+        _w = get_current_worker()
         _lock = _target_lock.try_acquire_target(self._data_dir, _eff_target)
         if _lock is None:
+            # Busy: wait out a quick collision (a scheduled audit is usually
+            # short) rather than making the user retry; esc stops the wait.
             self._emit_from_worker(R.note_line(
-                f"A run is already active on {_eff_target} (likely a scheduled audit) — it'll "
-                "finish shortly. Try again in a moment."))
+                f"A run is active on {_eff_target} (likely a scheduled audit) — waiting for it "
+                "to finish… (usually quick; press esc to stop)"))
+            _lock = _target_lock.acquire_target_blocking(
+                self._data_dir, _eff_target, timeout=20.0, should_stop=lambda: _w.is_cancelled)
+        if _lock is None:
+            self._emit_from_worker(R.note_line(
+                f"{_eff_target} is still busy (it may be a long run) — try again in a bit."))
             if target_override:
                 _kconfig.set_active_target(prior_active)
             return

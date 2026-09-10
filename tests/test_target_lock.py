@@ -32,6 +32,29 @@ def test_release_none_is_safe(tmp_path):
     L.release_target(None)  # no raise
 
 
+def test_blocking_returns_immediately_when_free(tmp_path):
+    h = L.acquire_target_blocking(tmp_path, "10.0.0.1", timeout=5.0)
+    assert h is not None
+    L.release_target(h)
+
+
+def test_blocking_times_out_when_held(tmp_path):
+    held = L.try_acquire_target(tmp_path, "10.0.0.1")
+    assert held is not None
+    # Short timeout so the test is fast; must give up (never hang).
+    got = L.acquire_target_blocking(tmp_path, "10.0.0.1", timeout=0.3, poll=0.05)
+    assert got is None
+    L.release_target(held)
+
+
+def test_blocking_aborts_on_should_stop(tmp_path):
+    held = L.try_acquire_target(tmp_path, "10.0.0.1")
+    got = L.acquire_target_blocking(tmp_path, "10.0.0.1", timeout=10.0,
+                                    should_stop=lambda: True)
+    assert got is None  # cancelled immediately, didn't wait the 10s
+    L.release_target(held)
+
+
 def test_target_slug_neutralizes_odd_values(tmp_path):
     # A weird/empty target still yields a usable, path-safe lockfile.
     p = L.target_lock_path(tmp_path, "a/b c:d")

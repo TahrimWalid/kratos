@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import fcntl
 import re
+import time
 from pathlib import Path
-from typing import IO, Optional
+from typing import Callable, IO, Optional
 
 _SLUG_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -55,6 +56,33 @@ def try_acquire_target(data_dir: Path, target: Optional[str]) -> Optional[IO]:
         f.close()
         return None
     return f
+
+
+def acquire_target_blocking(
+    data_dir: Path,
+    target: Optional[str],
+    *,
+    timeout: float,
+    poll: float = 0.5,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Optional[IO]:
+    """Try to take the lock, WAITING up to ``timeout`` seconds for a busy target
+    to free (re-checking every ``poll`` s). Returns a held handle as soon as it's
+    free, or ``None`` on timeout or if ``should_stop()`` becomes true (e.g. the
+    user cancelled). Bounded on purpose: the caller (an interactive run) waits out
+    a quick collision but never freezes indefinitely on a long one. Each attempt
+    is non-blocking, so this never wedges even if the holder never releases."""
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        handle = try_acquire_target(data_dir, target)
+        if handle is not None:
+            return handle
+        if should_stop is not None and should_stop():
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(poll, remaining))
 
 
 def release_target(handle: Optional[IO]) -> None:
