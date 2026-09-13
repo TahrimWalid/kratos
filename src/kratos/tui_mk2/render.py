@@ -476,7 +476,12 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
     for col in ("name", "runs", "cadence", "target", "deliver", "last run"):
         table.add_column(col)
     for s in schedules:
-        unit = s.kind if s.kind == "audit" else f"preset:{s.preset}"
+        if s.kind == "group":
+            unit = f"group: {len(s.jobs)} jobs"
+        elif s.kind == "preset":
+            unit = f"preset:{s.preset}"
+        else:
+            unit = s.kind
         runnable = "" if s.is_runnable else "  (not runnable)"
         table.add_row(
             Text(s.name, style=T.ACCENT),
@@ -496,8 +501,13 @@ def schedule_detail_panel(schedule: Any, records: list[dict], install_commands: 
     """A6.3 -- one schedule's definition + recent run history + install commands."""
     body = Text()
     body.append(f"{schedule.name}", style=f"bold {T.TEXT_BRIGHT}")
-    unit = "standard audit" if schedule.kind == "audit" else f"preset '{schedule.preset}'"
-    body.append(f"\nruns: {unit}", style=T.TEXT)
+    if schedule.kind == "group":
+        body.append(f"\nruns: group of {len(schedule.jobs)} jobs (on_failure={schedule.on_failure})", style=T.TEXT)
+        for i, job in enumerate(schedule.jobs, start=1):
+            body.append(f"\n    {i}. {schedule.job_label(job, i - 1)}", style=T.TEXT_MUTED)
+    else:
+        unit = "standard audit" if schedule.kind == "audit" else f"preset '{schedule.preset}'"
+        body.append(f"\nruns: {unit}", style=T.TEXT)
     body.append(f"\ncadence: {schedule.cadence}  (systemd OnCalendar={schedule.oncalendar})", style=T.TEXT_MUTED)
     body.append(f"\ntarget: {schedule.target or 'active target at run time'}", style=T.TEXT_MUTED)
     body.append(f"\ndeliver: {', '.join(schedule.deliver)}"
@@ -532,6 +542,13 @@ def scheduled_run_result_panel(record: dict) -> Panel:
     body = Text()
     body.append(f"Scheduled run '{record.get('schedule')}'", style=f"bold {T.TEXT_BRIGHT}")
     body.append(f"\nstatus: {status}   target: {record.get('target')}", style=T.TEXT_MUTED)
+    # A6.5: per-job breakdown for a group run.
+    for j in (record.get("jobs") or []):
+        jt = j.get("severity_tally") or {}
+        found = sum(jt.values())
+        jok = j.get("status") in ("completed", "final_answer", "max_iters_reached")
+        line = f"\n  · {j.get('label')}: {j.get('status')}" + (f", {found} finding(s)" if found else "")
+        body.append(line, style=T.TEXT_MUTED if jok else T.CRITICAL)
     if record.get("omitted_gated_tools"):
         body.append(f"\nomitted (approval-gated, unattended): {', '.join(record['omitted_gated_tools'])}", style=T.TEXT_FAINT)
     if sev:

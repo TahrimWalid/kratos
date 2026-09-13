@@ -36,7 +36,19 @@ from typing import Any, Optional
 from kratos.utils.timeutil import utc_now_iso
 
 # Runnable kinds this build supports. Closed set; anything else is declined.
-RUNNABLE_KINDS = {"audit", "preset"}
+#   audit  -> the deterministic standard audit
+#   preset -> a saved goal preset (agentic)
+#   group  -> A6.5 multi-run: an ORDERED list of audit/preset jobs run as ONE
+#             unit on one cadence, under one target lock, with an on_failure policy
+RUNNABLE_KINDS = {"audit", "preset", "group"}
+
+# What a group does when one of its jobs fails (design doc §8 ordering/dependency).
+#   continue -> run the remaining jobs anyway (default; more data is better)
+#   abort    -> stop; the remaining jobs are marked skipped (a true dependency)
+ON_FAILURE_POLICIES = {"continue", "abort"}
+
+# The kinds a single group JOB may be (a job is never itself a group -- no nesting).
+_JOB_KINDS = {"audit", "preset"}
 
 # Named cadences -> systemd OnCalendar expressions. A small, closed, honestly-
 # validatable set for the first slice (a raw OnCalendar override is a later
@@ -82,6 +94,8 @@ class Schedule:
     created_at: Optional[str]
     path: Path
     raw: dict[str, Any] = field(default_factory=dict)
+    jobs: list[dict[str, Any]] = field(default_factory=list)   # kind == "group": ordered [{kind, preset, label}]
+    on_failure: str = "continue"                                # kind == "group": ON_FAILURE_POLICIES
 
     @property
     def is_runnable(self) -> bool:
@@ -89,6 +103,8 @@ class Schedule:
             return False
         if self.kind == "preset":
             return bool(self.preset and self.preset.strip())
+        if self.kind == "group":
+            return len(self.jobs) > 0
         return True
 
     @property
@@ -97,8 +113,19 @@ class Schedule:
             return None
         if self.kind not in RUNNABLE_KINDS:
             return (f"'{self.name}' has an unsupported kind '{self.kind}'. "
-                    "Supported: 'audit' (standard audit) or 'preset' (a saved goal preset).")
+                    "Supported: 'audit' (standard audit), 'preset' (a saved goal preset), "
+                    "or 'group' (an ordered set of jobs).")
+        if self.kind == "group":
+            return f"'{self.name}' is a group but has no runnable jobs."
         return f"'{self.name}' is a preset schedule but names no preset to run."
+
+    def job_label(self, job: dict[str, Any], index: int) -> str:
+        """A human label for one group job (its own label, else audit/preset:name)."""
+        if job.get("label"):
+            return str(job["label"])
+        if job.get("kind") == "preset":
+            return f"preset:{job.get('preset')}"
+        return "standard audit"
 
     @property
     def oncalendar(self) -> str:
@@ -162,10 +189,32 @@ def _toml_string_array(items: list[str]) -> str:
     return "[" + ", ".join(_toml_basic_string(i) for i in items) + "]"
 
 
+def normalize_job(raw: Any) -> Optional[dict[str, Any]]:
+    """Coerce one raw group-job into {kind, preset, label} or None if invalid
+    (unknown kind, or a preset job with no preset name). A job is CONFIG ONLY --
+    an audit or a named preset, never inline commands, and never a nested group."""
+    if not isinstance(raw, dict):
+        return None
+    kind = str(raw.get("kind") or "").strip().lower()
+    if kind not in _JOB_KINDS:
+        return None
+    preset = str(raw["preset"]).strip() if raw.get("preset") else None
+    if kind == "preset" and not preset:
+        return None
+    label = str(raw["label"]).strip() if raw.get("label") else None
+    job: dict[str, Any] = {"kind": kind}
+    if preset:
+        job["preset"] = preset
+    if label:
+        job["label"] = label
+    return job
+
+
 def _dump_schedule_toml(
     *, name: str, kind: str, preset: Optional[str], target: Optional[str],
     cadence: str, deliver: list[str], min_severity: Optional[str],
-    created_at: Optional[str],
+    created_at: Optional[str], jobs: Optional[list[dict[str, Any]]] = None,
+    on_failure: Optional[str] = None,
 ) -> str:
     lines = [
         "# Kratos schedule — a saved 'run X on a cadence, deliver the report'.",
@@ -181,8 +230,19 @@ def _dump_schedule_toml(
         lines.append(f"target = {_toml_basic_string(target)}")
     if min_severity:
         lines.append(f"min_severity = {_toml_basic_string(min_severity)}")
+    if kind == "group" and on_failure:
+        lines.append(f"on_failure = {_toml_basic_string(on_failure)}")
     if created_at:
         lines.append(f"created_at = {_toml_basic_string(created_at)}")
+    # A group's ordered jobs, as a TOML array-of-tables ([[jobs]]).
+    for job in (jobs or []):
+        lines.append("")
+        lines.append("[[jobs]]")
+        lines.append(f"kind = {_toml_basic_string(str(job.get('kind')))}")
+        if job.get("preset"):
+            lines.append(f"preset = {_toml_basic_string(str(job['preset']))}")
+        if job.get("label"):
+            lines.append(f"label = {_toml_basic_string(str(job['label']))}")
     return "\n".join(lines) + "\n"
 
 
@@ -217,9 +277,15 @@ def _schedule_from_dict(data: dict[str, Any], path: Path, stem: str) -> Schedule
         deliver = ["ntfy"]
     min_sev = str(data["min_severity"]).strip().lower() if data.get("min_severity") else None
     created_at = str(data["created_at"]) if data.get("created_at") else None
+    jobs_raw = data.get("jobs")
+    jobs = [j for j in (normalize_job(x) for x in jobs_raw) if j] if isinstance(jobs_raw, list) else []
+    on_failure = str(data.get("on_failure") or "continue").strip().lower()
+    if on_failure not in ON_FAILURE_POLICIES:
+        on_failure = "continue"
     return Schedule(name=name, kind=kind, preset=preset, target=target,
                     cadence=cadence, deliver=deliver, min_severity=min_sev,
-                    created_at=created_at, path=path, raw=dict(data))
+                    created_at=created_at, path=path, raw=dict(data),
+                    jobs=jobs, on_failure=on_failure)
 
 
 def schedule_exists(data_dir: Path, name: str) -> bool:
@@ -272,6 +338,8 @@ def save_schedule(
     deliver: Optional[list[str]] = None,
     min_severity: Optional[str] = None,
     created_at: Optional[str] = None,
+    jobs: Optional[list[dict[str, Any]]] = None,
+    on_failure: str = "continue",
 ) -> Schedule:
     """Validate and atomically write a schedule, returning the reloaded object.
     Raises ScheduleError on any invalid field (the TUI surfaces the message)."""
@@ -280,9 +348,21 @@ def save_schedule(
         raise ScheduleError(err or "Invalid schedule name.")
     kind = (kind or "audit").strip().lower()
     if kind not in RUNNABLE_KINDS:
-        raise ScheduleError(f"Unsupported kind '{kind}'. Use 'audit' or 'preset'.")
+        raise ScheduleError(f"Unsupported kind '{kind}'. Use 'audit', 'preset', or 'group'.")
     if kind == "preset" and not (preset and preset.strip()):
         raise ScheduleError("A preset schedule needs the name of a saved preset to run.")
+    norm_jobs: list[dict[str, Any]] = []
+    if kind == "group":
+        for raw in (jobs or []):
+            j = normalize_job(raw)
+            if j is None:
+                raise ScheduleError("A group job must be an audit, or a preset with a preset name.")
+            norm_jobs.append(j)
+        if not norm_jobs:
+            raise ScheduleError("A group needs at least one job (an audit and/or a saved preset).")
+        on_failure = (on_failure or "continue").strip().lower()
+        if on_failure not in ON_FAILURE_POLICIES:
+            raise ScheduleError(f"Unknown on_failure '{on_failure}'. Use 'continue' or 'abort'.")
     cadence = (cadence or "weekly").strip().lower()
     if cadence not in CADENCE_ONCALENDAR:
         raise ScheduleError(
@@ -309,6 +389,7 @@ def save_schedule(
         name=canonical, kind=kind, preset=(preset.strip() if preset else None),
         target=(target or None), cadence=cadence, deliver=deliver,
         min_severity=min_severity, created_at=(created_at or utc_now_iso()),
+        jobs=norm_jobs, on_failure=on_failure,
     )
     _atomic_write(path, text)
     reloaded = load_schedule(data_dir, canonical)

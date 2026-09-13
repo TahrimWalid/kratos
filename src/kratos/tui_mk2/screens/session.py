@@ -1236,12 +1236,15 @@ class SessionScreen(Screen):
         kind = await self.app.push_screen_wait(ListPickerModal(
             "What should this schedule run?",
             [("audit", "audit   Standard audit — deterministic, no LLM, free"),
-             ("preset", "preset  A saved goal preset — runs the AI agent")],
+             ("preset", "preset  A saved goal preset — runs the AI agent"),
+             ("group", "group   Several jobs in order, on one cadence (A6.5)")],
             subtitle="↑↓ pick · esc cancel"))
         if kind is None:
             return
 
         preset_name = None
+        jobs: list[dict] = []
+        on_failure = "continue"
         if kind == "preset":
             presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable_tier1]
             if not presets:
@@ -1263,6 +1266,29 @@ class SessionScreen(Screen):
                 if not ok:
                     self._emit(R.note_line("Schedule not created. Switch to a local backend with /model, or pick the standard audit."))
                     return
+        elif kind == "group":
+            jobs = await self._schedule_build_group_jobs()
+            if jobs is None or not jobs:
+                if jobs is not None:  # None = cancelled; [] = added nothing
+                    self._emit(R.note_line("A group needs at least one job — nothing created."))
+                return
+            # Cost warning once if any job is an agentic preset on a paid backend.
+            if any(j["kind"] == "preset" for j in jobs) and active_backend_is_cloud():
+                ok = await self.app.push_screen_wait(ConfirmModal(
+                    "Cloud backend — unattended cost",
+                    "This group includes a preset that runs the AI model, and the active backend "
+                    "is a paid cloud endpoint. Each scheduled run spends money, unattended. "
+                    "Prefer a local model. Continue anyway?"))
+                if not ok:
+                    self._emit(R.note_line("Group not created. Switch to a local backend with /model."))
+                    return
+            on_failure = await self.app.push_screen_wait(ListPickerModal(
+                "If a job fails…",
+                [("continue", "continue — run the remaining jobs anyway"),
+                 ("abort", "abort — stop; skip the remaining jobs")],
+                subtitle="↑↓ pick · esc cancel"))
+            if on_failure is None:
+                return
 
         name_raw = await self.app.push_screen_wait(PromptModal(
             "Schedule name", "Short name (e.g. weekly-audit)"))
@@ -1287,18 +1313,45 @@ class SessionScreen(Screen):
         try:
             sch = _S.save_schedule(
                 self._data_dir, name=name_raw, kind=kind, preset=preset_name,
-                cadence=cadence, deliver=["ntfy"], min_severity=(min_sev or None))
+                cadence=cadence, deliver=["ntfy"], min_severity=(min_sev or None),
+                jobs=jobs, on_failure=on_failure)
         except _S.ScheduleError as e:
             self._emit(R.error_line(str(e)))
             return
 
         service_path, timer_path = _U.write_units(sch, self._data_dir)
         cmds = _U.install_commands(sch, service_path, timer_path)
-        self._emit(R.success_line(f"Saved schedule {sch.name!r} ({sch.kind}, {sch.cadence})."))
+        detail = f"{sch.kind}, {sch.cadence}" + (f", {len(sch.jobs)} jobs" if sch.kind == "group" else "")
+        self._emit(R.success_line(f"Saved schedule {sch.name!r} ({detail})."))
         self._emit(R.command_block_panel(
             "Activate it — run these once (Kratos never runs systemctl for you)", cmds,
             note="systemd then owns the timing, reboot-survival, and catch-up. "
                  "Test it any time with /schedule run-now."))
+
+    async def _schedule_build_group_jobs(self):
+        """Guided loop to build a group's ordered job list. Returns the list of
+        jobs, or None if the user cancelled before adding any."""
+        from kratos.agent import presets as _P
+
+        presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable_tier1]
+        jobs: list[dict] = []
+        while True:
+            entries = [("audit", "+ standard audit (deterministic, free)")]
+            entries += [(f"preset:{p.name}", f"+ preset: {p.name}") for p in presets]
+            if jobs:
+                entries.append(("__done__", f"✓ done — {len(jobs)} job(s) added, in this order"))
+            title = ("Add the first job to the group" if not jobs
+                     else f"Add another job (or finish) — {len(jobs)} so far")
+            pick = await self.app.push_screen_wait(ListPickerModal(
+                title, entries, subtitle="↑↓ pick · jobs run in the order you add them · esc cancel"))
+            if pick is None:
+                return jobs if jobs else None
+            if pick == "__done__":
+                return jobs
+            if pick == "audit":
+                jobs.append({"kind": "audit"})
+            elif pick.startswith("preset:"):
+                jobs.append({"kind": "preset", "preset": pick.split(":", 1)[1]})
 
     async def _schedule_show(self, args: list[str]) -> None:
         from kratos.agent import schedules as _S

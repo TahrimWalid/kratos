@@ -617,6 +617,9 @@ def cmd_scheduled_run(args: argparse.Namespace) -> int:
     record = run_scheduled(schedule, args.data_dir, deliver=not args.no_deliver)
 
     print(f"[KRATOS]   status: {record['status']}")
+    for j in (record.get("jobs") or []):  # A6.5: per-job breakdown for a group
+        print(f"[KRATOS]     job {j.get('label')}: {j.get('status')}"
+              + (f" — {j['error']}" if j.get("error") else ""))
     if record.get("omitted_gated_tools"):
         print(f"[KRATOS]   omitted (approval-gated, unattended): "
               f"{', '.join(record['omitted_gated_tools'])}")
