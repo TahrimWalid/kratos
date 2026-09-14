@@ -677,12 +677,15 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
     return table
 
 
-def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None) -> Group:
-    """Render saved presets (A2 Tier 1) as a table: name, kind, target, and a
-    one-line goal preview. A non-runnable preset (a Tier-2 pipeline, or unknown
-    kind) is shown dimmed with its kind so it reads as 'kept but not runnable
-    here', never hidden. Unreadable files are surfaced as a trailing note rather
-    than silently dropped."""
+def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None,
+                 last_run: dict[str, str] | None = None) -> Group:
+    """Render saved presets (A2) as a table: name, kind, target, a one-line
+    goal/pipeline preview, and (when known) the last-run time. A goal AND a valid
+    pipeline preset are both runnable (shown in accent); a non-runnable one (an
+    invalid pipeline, or unknown kind) is dimmed so it reads as 'kept but not
+    runnable here', never hidden. Unreadable files are surfaced as a trailing note
+    rather than silently dropped."""
+    last_run = last_run or {}
     table = Table(show_header=True, box=None, title="Saved presets",
                   title_justify="left", title_style=f"bold {T.ACCENT}",
                   header_style=f"bold {T.TEXT_DIM}")
@@ -690,21 +693,29 @@ def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None
     table.add_column("kind", no_wrap=True)
     table.add_column("target", style=T.TEXT_MUTED, no_wrap=True)
     table.add_column("goal", style=T.TEXT_MUTED)
+    table.add_column("last run", style=T.TEXT_FAINT, no_wrap=True)
     for p in presets:
-        runnable = getattr(p, "is_runnable_tier1", True)
+        # "runnable" now spans goal AND pipeline presets (A2 Tier 2); fall back to
+        # the tier1 flag for any object that predates is_runnable.
+        runnable = getattr(p, "is_runnable", getattr(p, "is_runnable_tier1", True))
         kind = getattr(p, "kind", "goal")
         goal_preview = (getattr(p, "goal", None) or "").splitlines()[0] if getattr(p, "goal", None) else ""
         if len(goal_preview) > 60:
             goal_preview = goal_preview[:57] + "…"
-        if not runnable and not goal_preview:
-            goal_preview = "(pipeline steps — not runnable in this build)"
+        if not goal_preview and kind == "pipeline":
+            n = len(getattr(p, "steps", []) or [])
+            goal_preview = (f"{n}-step pipeline" if runnable
+                            else "pipeline — not runnable (see /preset show)")
+        elif not runnable and not goal_preview:
+            goal_preview = "(not runnable in this build)"
         name_style = T.ACCENT if runnable else T.TEXT_FAINT
-        kind_style = T.SAFE if kind == "goal" else T.TEXT_FAINT
+        kind_style = T.SAFE if runnable else T.TEXT_FAINT
         table.add_row(
             Text(getattr(p, "name", "?"), style=name_style),
             Text(kind, style=kind_style),
             Text(getattr(p, "target", None) or "—"),
             Text(goal_preview),
+            Text(last_run.get(getattr(p, "name", ""), "—")),
         )
     parts: list[Any] = [table]
     if not presets:

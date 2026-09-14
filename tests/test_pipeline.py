@@ -13,10 +13,13 @@ from pathlib import Path
 import pytest
 
 from kratos.agent.pipeline import (
+    LOCAL_HOST_TOOLS,
     PipelineStep,
     PipelineContext,
+    is_local_host_tool,
     run_pipeline,
     standard_audit_steps,
+    steps_from_specs,
 )
 
 
@@ -195,3 +198,91 @@ def test_default_dispatch_is_execute_tool_call_and_rejects_unknown_tool():
     assert outcome.aborted_on == "this_tool_does_not_exist"
     assert outcome.steps[0].status == "error"
     assert "not a real tool" in (outcome.steps[0].detail or "")
+
+
+# --------------------------------------------------------------------------- #
+# A2 Tier 2 -- local/target classification + spec->PipelineStep conversion
+# --------------------------------------------------------------------------- #
+def test_local_host_tool_classification():
+    # The four Kratos-host tools (Piece D target-correctness source of truth).
+    for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command"):
+        assert is_local_host_tool(t) is True
+        assert t in LOCAL_HOST_TOOLS
+    # Target-facing / host-agnostic tools are NOT local.
+    for t in ("run_nmap_scan", "read_journalctl", "correlate_findings", "run_config_audit"):
+        assert is_local_host_tool(t) is False
+
+
+def test_steps_from_specs_builds_pipeline_steps():
+    specs = [
+        {"tool": "run_nmap_scan", "required": True, "label": "ports", "args": {"a": 1}},
+        {"tool": "run_vuln_scan", "required": False},
+    ]
+    steps = steps_from_specs(specs)
+    assert [s.tool for s in steps] == ["run_nmap_scan", "run_vuln_scan"]
+    assert steps[0].required is True and steps[0].label == "ports" and steps[0].args == {"a": 1}
+    assert steps[1].required is False
+    # No `when` -> plain linear steps.
+    assert all(s.when is None for s in steps)
+
+
+def test_steps_from_specs_when_becomes_conditional_marker():
+    steps = steps_from_specs([{"tool": "run_config_audit", "when": "has_finding()"}])
+    # A `when` spec produces a non-None marker so a preview flags it conditional;
+    # it is never executed (a when-bearing preset is blocked from running upstream).
+    assert steps[0].when is not None
+
+
+def test_steps_from_specs_compiles_when_into_real_predicate():
+    from kratos.agent.pipeline import PipelineContext
+    steps = steps_from_specs([{"tool": "run_vuln_scan", "when": "has_finding(min_severity='high')"}])
+    pred = steps[0].when
+    assert pred is not None
+    assert pred(PipelineContext(data_dir=DATA_DIR, findings=[{"severity": "high"}])) is True
+    assert pred(PipelineContext(data_dir=DATA_DIR, findings=[{"severity": "low"}])) is False
+
+
+def test_run_pipeline_compiled_when_skips_and_runs():
+    # A real compiled predicate gates a step on a prior step's findings.
+    high = [{"id": "CORR-001", "severity": "high"}]
+    dispatch, calls = _canned({
+        "correlate_findings": _ok({"findings": high}),
+        "run_vuln_scan": _ok(),
+    })
+    steps = steps_from_specs([
+        {"tool": "correlate_findings", "required": True},
+        {"tool": "run_vuln_scan", "required": False, "when": "has_finding(min_severity='high')"},
+    ])
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert outcome.status == "completed"
+    assert "run_vuln_scan" in calls  # a HIGH finding existed -> the gated step ran
+
+    # Now with no HIGH finding: the gated step skips.
+    dispatch2, calls2 = _canned({"correlate_findings": _ok({"findings": []}), "run_vuln_scan": _ok()})
+    steps2 = steps_from_specs([
+        {"tool": "correlate_findings", "required": True},
+        {"tool": "run_vuln_scan", "required": True, "when": "has_finding(min_severity='high')"},
+    ])
+    outcome2 = run_pipeline(steps2, DATA_DIR, dispatch=dispatch2)
+    assert outcome2.status == "completed"        # a skipped required step is NOT a failure
+    assert "run_vuln_scan" not in calls2
+    assert outcome2.steps[1].status == "skipped"
+
+
+def test_run_pipeline_when_that_raises_is_failsafe_skip():
+    # A predicate that throws at run time -> the step is SKIPPED (fail-safe),
+    # recorded with a reason, and the run continues -- never crashes.
+    def boom(_ctx):
+        raise RuntimeError("kaboom")
+
+    dispatch, calls = _canned({"run_nmap_scan": _ok(), "correlate_findings": _ok({"findings": []})})
+    steps = [
+        PipelineStep("run_nmap_scan", required=True),
+        PipelineStep("run_vuln_scan", required=True, when=boom),
+        PipelineStep("correlate_findings", required=True),
+    ]
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert outcome.status == "completed"
+    assert "run_vuln_scan" not in calls
+    skipped = outcome.steps[1]
+    assert skipped.status == "skipped" and "fail-safe" in (skipped.detail or "")

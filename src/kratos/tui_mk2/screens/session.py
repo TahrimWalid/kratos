@@ -59,11 +59,14 @@ _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "w
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
     ("/plan", "preview a run's steps before it runs (or /plan gate on|off)"),
-    ("/preset-new", "save a reusable investigation (guided: name + goal)"),
-    ("/preset-run", "run a saved investigation (pick from a list)"),
+    ("/preset-new", "save a reusable investigation (guided: goal, or a tool pipeline)"),
+    ("/preset-run", "run a saved investigation or pipeline (pick from a list)"),
+    ("/preset-scaffold", "write an editable pipeline-preset template file"),
     ("/preset-list", "list saved investigations"),
-    ("/preset-edit", "edit a saved investigation's goal (pick from a list)"),
+    ("/preset-edit", "edit a saved goal, or a pipeline's steps (pick from a list)"),
     ("/preset-delete", "delete a saved investigation (pick from a list)"),
+    ("/preset-export", "show a preset's file to share/back up (pick from a list)"),
+    ("/preset-import", "import a preset from a .toml file"),
     ("/report", "investigation summary — findings by severity"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
@@ -102,10 +105,16 @@ _PALETTE_COMMANDS = [
 _BARE_COMMAND_WORDS = frozenset({
     "preset", "presets",
     "preset-new", "preset-list", "preset-ls", "preset-run", "preset-edit",
-    "preset-delete", "preset-del", "preset-show",
+    "preset-delete", "preset-del", "preset-show", "preset-scaffold",
+    "preset-export", "preset-import",
     "doctor", "health", "usage", "context", "tools", "evolve", "help",
     "settings", "timezone",
 })
+
+
+# Sentinel distinguishing "user cancelled this step" from "" (always-run / no
+# condition) in the guided pipeline-step condition picker.
+_CANCELLED = object()
 
 
 class _CancelInvestigation(Exception):
@@ -661,7 +670,9 @@ class SessionScreen(Screen):
         # of the flow via modals — name/goal prompts, or a picker — instead of
         # needing inline quoted args typed past the menu).
         elif cmd == "/preset-new":
-            self._preset_flow("new")
+            self._preset_new_guided()
+        elif cmd in ("/preset-scaffold", "/preset-new-pipeline"):
+            self._preset_scaffold(rest)
         elif cmd in ("/preset-list", "/preset-ls"):
             self._preset_render_list()
         elif cmd == "/preset-run":
@@ -672,6 +683,10 @@ class SessionScreen(Screen):
             self._preset_guided("delete")
         elif cmd == "/preset-show":
             self._preset_guided("show")
+        elif cmd == "/preset-export":
+            self._preset_guided("export")
+        elif cmd == "/preset-import":
+            self._preset_flow("import " + rest if rest else "import")
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
         elif cmd == "/usage":
@@ -726,9 +741,27 @@ class SessionScreen(Screen):
             self._plan_flow(rest)
         elif cmd in ("/scan", "/logs-parse", "/findings-generate"):
             self._run_shortcut(cmd.lstrip("/"), rest)
+        elif self._run_named_preset(cmd.lstrip("/")):
+            # A2 Piece H: /<name> runs a saved preset as a first-class command.
+            # Reached ONLY after every built-in above, so a preset can never
+            # shadow a built-in command (built-in always wins). Handled inside
+            # _run_named_preset, which returns True iff it matched a preset.
+            pass
         else:
             # Unmatched /-prefix falls through to a goal (matches classic REPL).
             self._run_goal(text)
+
+    def _run_named_preset(self, bare: str) -> bool:
+        """A2 Piece H: if `bare` (a /-stripped command word) names a saved preset,
+        run it and return True; else return False so dispatch falls through to a
+        goal. Checked live, so presets added/deleted mid-session resolve correctly
+        with no caching."""
+        from kratos.agent import presets as _P
+
+        if bare and _P.preset_exists(self._data_dir, bare):
+            self._preset_run([bare])
+            return True
+        return False
 
     # --- /usage (token + cost transparency, feature A3) -----------------
     # Rough per-1M-token rates (USD input, output) — APPROXIMATE, provider
@@ -873,9 +906,11 @@ class SessionScreen(Screen):
 
     # --- /preset (A2 Tier 1: saved natural-language investigation goals) ---
     _PRESET_USAGE = (
-        "Usage: /preset list  ·  /preset new \"<name>\" [\"<goal>\"]  ·  "
+        "Usage: /preset list  ·  /preset new  (guided: goal or pipeline)  ·  "
         "/preset run \"<name>\"  ·  /preset show \"<name>\"  ·  "
-        "/preset edit \"<name>\"  ·  /preset delete \"<name>\""
+        "/preset edit \"<name>\"  ·  /preset delete \"<name>\"  ·  "
+        "/preset scaffold \"<name>\"  ·  /preset export \"<name>\"  ·  "
+        "/preset import <path>  ·  or just /<name> to run one"
     )
 
     @work
@@ -895,7 +930,17 @@ class SessionScreen(Screen):
         if sub in ("list", "ls"):
             self._preset_render_list()
         elif sub in ("new", "add", "create"):
-            await self._preset_new(args)
+            if args:
+                # Inline power-user form always creates a GOAL preset.
+                await self._preset_new(args)
+            else:
+                self._preset_new_guided()
+        elif sub in ("scaffold", "new-pipeline"):
+            self._preset_scaffold(args[0] if args else "")
+        elif sub == "export":
+            self._preset_export(args)
+        elif sub == "import":
+            await self._preset_import(args)
         elif sub == "run":
             self._preset_run(args)
         elif sub in ("edit", "update"):
@@ -914,7 +959,11 @@ class SessionScreen(Screen):
         from kratos.agent import presets as _P
 
         presets, errors = _P.list_presets(self._data_dir)
-        self._emit(R.preset_table(presets, errors))
+        run_meta = _P.preset_run_meta(self._data_dir)
+        # Render each preset's last-run time in the display timezone (stored UTC).
+        last_run = {name: self._fmt_stored_time(meta.get("last_run_at"))
+                    for name, meta in run_meta.items() if meta.get("last_run_at")}
+        self._emit(R.preset_table(presets, errors, last_run=last_run))
 
     @work
     async def _preset_guided(self, action: str) -> None:
@@ -925,11 +974,16 @@ class SessionScreen(Screen):
         from kratos.agent import presets as _P
 
         presets, _errors = _P.list_presets(self._data_dir)
-        if action in ("run", "edit"):
-            candidates = [p for p in presets if p.is_runnable_tier1]
-            empty_hint = ("No runnable presets yet. Create one with /preset-new."
-                          if action == "run"
-                          else "No goal presets to edit yet. Create one with /preset-new.")
+        if action == "run":
+            # Both goal AND pipeline presets are runnable now (Tier 2).
+            candidates = [p for p in presets if p.is_runnable]
+            empty_hint = "No runnable presets yet. Create one with /preset-new."
+        elif action == "edit":
+            # Editable kinds: goal presets (edit the goal) and pipeline presets
+            # (the in-place step editor) — including a broken pipeline, so it can
+            # be fixed. Unknown-kind presets aren't editable here.
+            candidates = [p for p in presets if p.kind in ("goal", "pipeline")]
+            empty_hint = "No editable presets yet. Create one with /preset-new."
         else:
             candidates = presets
             empty_hint = "No saved presets yet. Create one with /preset-new."
@@ -937,10 +991,14 @@ class SessionScreen(Screen):
             self._emit(R.note_line(empty_hint))
             return
 
-        entries = [
-            (p.name, f"{p.name}   {((p.goal or f'({p.kind})') or '')[:56]}")
-            for p in candidates
-        ]
+        def _preview(p: Any) -> str:
+            if p.goal:
+                return p.goal[:56]
+            if p.is_pipeline:
+                return f"({len(p.steps)}-step pipeline)"
+            return f"({p.kind})"
+
+        entries = [(p.name, f"{p.name}   {_preview(p)}") for p in candidates]
         name = await self.app.push_screen_wait(
             ListPickerModal(f"Preset to {action}", entries, subtitle="↑↓ pick · esc cancel"))
         if name is None:
@@ -953,6 +1011,8 @@ class SessionScreen(Screen):
             await self._preset_delete([name])
         elif action == "show":
             self._preset_show([name])
+        elif action == "export":
+            self._preset_export([name])
 
     @work
     async def _preset_new_conversational(self, name: str, goal: str) -> None:
@@ -1007,11 +1067,7 @@ class SessionScreen(Screen):
                     else " You have no presets yet — create one with /preset-new.")
             self._emit(R.error_line(f"No preset named {name!r}.{hint}"))
             return
-        if not preset.is_runnable_tier1:
-            self._emit(R.note_line(preset.unsupported_reason))
-            return
-        self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
-        self._preset_run_worker(preset.goal, preset.target)
+        self._preset_dispatch_run(preset)
 
     def _preset_resolve(self, args: list[str], action: str):
         """Load a single named preset from args[0], emitting a clear error and
@@ -1035,22 +1091,121 @@ class SessionScreen(Screen):
         preset = self._preset_resolve(args, "show")
         if preset is None:
             return
-        body = (f"kind: {preset.kind}\n"
-                f"target: {preset.target or '— (uses the active target)'}\n\n"
-                f"{preset.goal or '(no goal — pipeline steps in the file)'}")
+        head = (f"kind: {preset.kind}\n"
+                f"target: {preset.target or '— (uses the active target)'}\n")
+        if preset.is_pipeline:
+            from kratos.agent.pipeline import is_local_host_tool
+
+            lines = [head]
+            if preset.steps:
+                lines.append("steps (run top-to-bottom):")
+                for i, s in enumerate(preset.steps, 1):
+                    host = "Kratos host" if is_local_host_tool(s["tool"]) else "target"
+                    flags = "required" if s.get("required", True) else "optional"
+                    argstr = f"  args={s['args']}" if s.get("args") else ""
+                    whenstr = f"  when={s['when']!r}" if s.get("when") else ""
+                    lines.append(f"  {i}. {s['tool']}  [{host}, {flags}]{argstr}{whenstr}")
+            else:
+                lines.append("(no valid steps)")
+            if not preset.is_runnable and preset.unsupported_reason:
+                lines.append("")
+                lines.append(f"⚠ {preset.unsupported_reason}")
+            body = "\n".join(lines)
+        else:
+            body = head + "\n" + (preset.goal or "(no goal)")
         self._emit(R.result_panel(f"preset — {preset.name}", body, T.ACCENT))
+
+    def _preset_export(self, args: list[str]) -> None:
+        """Show a preset's file path + its full TOML so it can be shared/backed up
+        (the file IS the portable artifact — copy it, drop it in another Kratos's
+        presets dir, or import it with /preset import)."""
+        preset = self._preset_resolve(args, "export")
+        if preset is None:
+            return
+        try:
+            content = preset.path.read_text(encoding="utf-8")
+        except OSError as e:
+            self._emit(R.error_line(f"Couldn't read {preset.path.name}: {e}"))
+            return
+        self._emit(R.result_panel(
+            f"preset {preset.name!r} — {preset.path}", content, T.ACCENT))
+        self._emit(R.note_line(
+            "Share this file, or copy it into another Kratos's presets folder. "
+            "Import one with  /preset import <path>."))
+
+    async def _preset_import(self, args: list[str]) -> None:
+        """Import a preset TOML from a path into this Kratos's presets, validated
+        through the normal save path (a broken/foreign file is rejected clearly)."""
+        from kratos.agent import presets as _P
+
+        if args:
+            src = args[0]
+        else:
+            src = await self.app.push_screen_wait(PromptModal(
+                "Import a preset", "Path to a .toml preset file"))
+            if src is None or not src.strip():
+                return
+            src = src.strip()
+        try:
+            preset, warnings = _P.import_preset_file(self._data_dir, src)
+        except _P.PresetError as e:
+            # If it already exists, offer to overwrite.
+            if "already exists" in str(e):
+                overwrite = await self.app.push_screen_wait(ConfirmModal(
+                    "Overwrite preset?", str(e) + "\n\nReplace the existing one?"))
+                if not overwrite:
+                    self._emit(R.note_line("Kept the existing preset — nothing imported."))
+                    return
+                try:
+                    preset, warnings = _P.import_preset_file(self._data_dir, src, overwrite=True)
+                except _P.PresetError as e2:
+                    self._emit(R.error_line(str(e2)))
+                    return
+            else:
+                self._emit(R.error_line(str(e)))
+                return
+        for w in warnings:
+            self._emit(R.note_line(f"⚠ {w}"))
+        self._emit(R.success_line(
+            f"Imported preset {preset.name!r} ({preset.kind}). Run it with /preset-run."))
 
     def _preset_run(self, args: list[str]) -> None:
         preset = self._preset_resolve(args, "run")
         if preset is None:
             return
-        if not preset.is_runnable_tier1:
-            # Forward-compat: a pipeline / unknown-kind preset is kept and shown,
-            # just not runnable in this build. Say so plainly, don't error out.
+        self._preset_dispatch_run(preset)
+
+    def _preset_dispatch_run(self, preset: Any) -> None:
+        """Route a resolved preset to the right runner: a deterministic PIPELINE
+        goes to the pipeline turn worker (no LLM), a GOAL goes to the agentic
+        loop. A not-yet-runnable preset (unknown kind, empty, or a pipeline with
+        an invalid condition) is kept and its reason shown, never errored out."""
+        from kratos.agent import presets as _P
+
+        if preset.is_runnable:
+            # Piece H: stamp last-run at launch (best-effort; the sidecar write
+            # never blocks or sinks the run).
+            _P.record_preset_run(self._data_dir, preset.name)
+        if preset.is_runnable_pipeline:
+            from kratos.agent.pipeline import steps_from_specs
+
+            steps = steps_from_specs(preset.steps)
+            self._emit(R.note_line(
+                f"Running pipeline preset {preset.name!r} — {len(steps)} deterministic step(s), no LLM."))
+            self._run_pipeline_turn(
+                steps,
+                turn_label=f"/preset run {preset.name} (pipeline)",
+                intro=f"Pipeline preset {preset.name!r}: {len(steps)} step(s), same sequence every run.",
+                remember_label=f"/preset {preset.name}",
+                remember_kind="pipeline preset",
+                pin_target=preset.target or None,
+            )
+        elif preset.is_runnable_tier1:
+            self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
+            self._preset_run_worker(preset.goal, preset.target)
+        else:
+            # Forward-compat: kept and shown, just not runnable in this build.
             self._emit(R.note_line(preset.unsupported_reason))
-            return
-        self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
-        self._preset_run_worker(preset.goal, preset.target)
 
     @work(thread=True, exclusive=True, group="turn")
     def _preset_run_worker(self, goal: str, target: str | None) -> None:
@@ -1113,15 +1268,370 @@ class SessionScreen(Screen):
         self._emit(R.success_line(
             f"Saved preset {preset.name!r}. Run it with /preset run \"{preset.name}\"."))
 
+    # --- A2 Tier 2: guided pipeline authoring ---------------------------
+    @work
+    async def _preset_new_guided(self) -> None:
+        """/preset-new entry: choose GOAL (natural-language, agentic) vs PIPELINE
+        (an ordered, deterministic list of tool steps — no LLM), then run the
+        matching authoring flow."""
+        kind = await self.app.push_screen_wait(ListPickerModal(
+            "What kind of preset?",
+            [("goal", "goal      A plain-language investigation — the AI agent decides the steps"),
+             ("pipeline", "pipeline  An ordered list of tool steps — deterministic, no LLM, repeatable")],
+            subtitle="↑↓ pick · esc cancel"))
+        if kind is None:
+            return
+        if kind == "goal":
+            await self._preset_new([])
+        else:
+            await self._preset_new_pipeline()
+
+    async def _preset_new_pipeline(self, name_raw: str | None = None) -> None:
+        """Build a kind='pipeline' preset via the guided step builder (Piece F)."""
+        from kratos.agent import presets as _P
+
+        if not name_raw:
+            name_raw = await self.app.push_screen_wait(
+                PromptModal("New pipeline preset", "Short name (e.g. nightly-audit)"))
+            if name_raw is None:
+                return
+        ok, canonical, err = _P.validate_preset_name(name_raw)
+        if not ok:
+            self._emit(R.error_line(err or "Invalid preset name."))
+            return
+        if _P.preset_exists(self._data_dir, canonical):
+            overwrite = await self.app.push_screen_wait(ConfirmModal(
+                "Overwrite preset?",
+                f"A preset named {canonical!r} already exists. Replace it?"))
+            if not overwrite:
+                self._emit(R.note_line("Kept the existing preset — nothing changed."))
+                return
+
+        self._emit(R.note_line(
+            "Build the pipeline: pick tools in the order they should run. It's deterministic "
+            "(same steps every run, no AI deciding)."))
+        steps = await self._build_pipeline_steps()
+        if not steps:
+            self._emit(R.note_line("Cancelled — no pipeline created (a pipeline needs at least one step)."))
+            return
+
+        target = await self.app.push_screen_wait(PromptModal(
+            f"Target for {canonical!r} (optional)",
+            "Leave blank to use whatever target is active when it runs", initial=""))
+        target = (target or "").strip() or None  # esc/blank => no pinned target
+
+        try:
+            preset, warnings = _P.save_preset_with_warnings(
+                self._data_dir, name=canonical, kind="pipeline", steps=steps, target=target)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        for w in warnings:
+            self._emit(R.note_line(f"⚠ {w}"))
+        self._emit(R.success_line(
+            f"Saved pipeline preset {preset.name!r} ({len(preset.steps)} step(s)). "
+            "Run it with /preset-run, or schedule it with /schedule."))
+
+    def _pipeline_steps_note(self, steps: list[dict[str, Any]]) -> Any:
+        """A compact, host/required/condition-labeled listing of a pipeline's
+        steps (used by the in-place editor between actions)."""
+        from kratos.agent.pipeline import is_local_host_tool
+
+        if not steps:
+            return R.note_line("(no steps yet)")
+        body = Text()
+        for i, s in enumerate(steps, 1):
+            host = "Kratos host" if is_local_host_tool(s["tool"]) else "target"
+            flags = "required" if s.get("required", True) else "optional"
+            body.append(f"  {i}. ", style=T.TEXT_DIM)
+            body.append(s["tool"], style=f"bold {T.ACCENT}")
+            body.append(f"  [{host}, {flags}]", style=T.TEXT_MUTED)
+            if s.get("args"):
+                body.append(f"  args={s['args']}", style=T.TEXT_FAINT)
+            if s.get("when"):
+                body.append(f"  when={s['when']!r}", style=T.TEXT_FAINT)
+            if i < len(steps):
+                body.append("\n")
+        return body
+
+    async def _preset_edit_pipeline(self, preset: Any) -> None:
+        """In-place pipeline step editor (Piece F's deferred slice): add / remove /
+        reorder / retarget a step's condition & fail-fast, on a working copy;
+        nothing is written until 'save'. Cancel discards. Re-validated on save."""
+        from kratos.agent import presets as _P
+
+        steps: list[dict[str, Any]] = [dict(s) for s in preset.steps]  # working copy
+        while True:
+            self._emit(self._pipeline_steps_note(steps))
+            entries: list[tuple[str, str]] = [("__add__", "+ add a step")]
+            for i, s in enumerate(steps):
+                entries.append((f"edit:{i}", f"✎ step {i + 1}: {s['tool']}"))
+            if steps:
+                entries.append(("__save__", f"✓ save changes ({len(steps)} step(s))"))
+            entries.append(("__cancel__", "✗ cancel (discard changes)"))
+            pick = await self.app.push_screen_wait(ListPickerModal(
+                f"Edit pipeline {preset.name!r}", entries, subtitle="↑↓ pick · esc cancel"))
+            if pick is None or pick == "__cancel__":
+                self._emit(R.note_line("No changes saved — the preset is unchanged."))
+                return
+            if pick == "__save__":
+                if not steps:
+                    self._emit(R.note_line("A pipeline needs at least one step — add one before saving."))
+                    continue
+                try:
+                    _saved, warnings = _P.save_preset_with_warnings(
+                        self._data_dir, name=preset.name, kind="pipeline", steps=steps,
+                        target=preset.target, created_at=preset.created_at)
+                except _P.PresetError as e:
+                    self._emit(R.error_line(str(e)))
+                    continue
+                for w in warnings:
+                    self._emit(R.note_line(f"⚠ {w}"))
+                self._emit(R.success_line(f"Updated pipeline preset {preset.name!r} ({len(steps)} step(s))."))
+                return
+            if pick == "__add__":
+                name = await self._pick_pipeline_tool()
+                if name is not None:
+                    step = await self._build_pipeline_step(name, is_first=not steps)
+                    if step is not None:
+                        steps.append(step)
+                continue
+            if pick.startswith("edit:"):
+                await self._edit_pipeline_step(steps, int(pick.split(":", 1)[1]))
+
+    async def _pick_pipeline_tool(self) -> str | None:
+        """Pick a single tool for a new step; returns the tool name or None."""
+        pick = await self.app.push_screen_wait(ListPickerModal(
+            "Which tool?", self._pipeline_tool_entries(), subtitle="↑↓ pick · esc cancel"))
+        return pick.split(":", 1)[1] if pick else None
+
+    async def _edit_pipeline_step(self, steps: list[dict[str, Any]], idx: int) -> None:
+        """Sub-menu for one step: condition / fail-fast toggle / move / remove."""
+        if not (0 <= idx < len(steps)):
+            return
+        s = steps[idx]
+        opts: list[tuple[str, str]] = [
+            ("condition", f"change condition (now: {s.get('when') or 'always'})"),
+            ("required", f"toggle fail-fast (now: {'required' if s.get('required', True) else 'optional'})"),
+        ]
+        if idx > 0:
+            opts.append(("up", "move up"))
+        if idx < len(steps) - 1:
+            opts.append(("down", "move down"))
+        opts.append(("remove", "remove this step"))
+        opts.append(("back", "back"))
+        pick = await self.app.push_screen_wait(ListPickerModal(
+            f"Step {idx + 1}: {s['tool']}", opts, subtitle="↑↓ pick · esc back"))
+        if pick in (None, "back"):
+            return
+        if pick == "condition":
+            when = await self._pick_step_condition(s["tool"], is_first=(idx == 0))
+            if when is not _CANCELLED:
+                if when:
+                    s["when"] = when
+                else:
+                    s.pop("when", None)
+        elif pick == "required":
+            s["required"] = not s.get("required", True)
+        elif pick == "up" and idx > 0:
+            steps[idx - 1], steps[idx] = steps[idx], steps[idx - 1]
+        elif pick == "down" and idx < len(steps) - 1:
+            steps[idx + 1], steps[idx] = steps[idx], steps[idx + 1]
+        elif pick == "remove":
+            steps.pop(idx)
+
+    def _pipeline_tool_entries(self) -> list[tuple[str, str]]:
+        """`(f"tool:<name>", label)` entries for every registry tool, host/target
+        labeled — shared by the builder and the step editor's 'add'."""
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.pipeline import is_local_host_tool
+
+        out: list[tuple[str, str]] = []
+        for n in sorted(TOOL_REGISTRY):
+            host = "host" if is_local_host_tool(n) else "target"
+            desc = (TOOL_REGISTRY[n].description or "").splitlines()[0][:40]
+            out.append((f"tool:{n}", f"+ {n}  [{host}]  {desc}"))
+        return out
+
+    async def _build_pipeline_steps(self) -> list[dict[str, Any]] | None:
+        """Guided step builder (Piece F): pick-a-tool → add → remove → done,
+        mirroring the A6.5 group-job builder. Returns the ordered step dicts, or
+        None if cancelled before adding any."""
+        steps: list[dict[str, Any]] = []
+        while True:
+            entries: list[tuple[str, str]] = list(self._pipeline_tool_entries())
+            if steps:
+                entries.append(("__remove__", f"− remove a step  ({len(steps)} added)"))
+                entries.append(("__done__", f"✓ done — save these {len(steps)} step(s)"))
+            title = ("Add the first step" if not steps
+                     else f"Add another step, or finish — {len(steps)} so far")
+            pick = await self.app.push_screen_wait(ListPickerModal(
+                title, entries,
+                subtitle="↑↓ pick · steps run top-to-bottom · esc cancel"))
+            if pick is None:
+                return steps or None
+            if pick == "__done__":
+                return steps
+            if pick == "__remove__":
+                if steps:
+                    which = await self.app.push_screen_wait(ListPickerModal(
+                        "Remove which step?",
+                        [(str(i), f"{i + 1}. {s['tool']}") for i, s in enumerate(steps)],
+                        subtitle="↑↓ pick · esc keep all"))
+                    if which is not None:
+                        steps.pop(int(which))
+                continue
+            if pick.startswith("tool:"):
+                step = await self._build_pipeline_step(
+                    pick.split(":", 1)[1], is_first=not steps)
+                if step is not None:
+                    steps.append(step)
+
+    async def _build_pipeline_step(self, name: str, *, is_first: bool = False) -> dict[str, Any] | None:
+        """Collect one step: prompt for any REQUIRED args (data_dir/target are
+        auto-handled), the fail-fast vs resilient choice (default fail-fast, per
+        the A2 decision), and an optional `when` condition (slice 4). Returns the
+        step dict, or None if cancelled."""
+        from kratos.agent.tools import TOOL_REGISTRY
+
+        tool = TOOL_REGISTRY[name]
+        params = getattr(tool, "parameters", {}) or {}
+        args: dict[str, Any] = {}
+        for pname in self._missing_required_args(tool, {}):
+            spec = params.get(pname) or {}
+            hint = str(spec.get("description") or f"value for {pname}")[:80]
+            val = await self.app.push_screen_wait(PromptModal(f"{name}: {pname}", hint))
+            if val is None or not val.strip():
+                self._emit(R.note_line(f"Step {name} skipped (it needs '{pname}')."))
+                return None
+            args[pname] = self._coerce_arg(val.strip(), spec)
+
+        required = await self.app.push_screen_wait(ListPickerModal(
+            f"If '{name}' fails…",
+            [("required", "abort the whole run (fail-fast — recommended)"),
+             ("optional", "carry on with the next step (skip just this one)")],
+            subtitle="↑↓ pick · esc cancel this step"))
+        if required is None:
+            return None
+
+        when = await self._pick_step_condition(name, is_first=is_first)
+        if when is _CANCELLED:
+            return None
+        step: dict[str, Any] = {"tool": name, "args": args, "required": required == "required"}
+        if when:
+            step["when"] = when
+        return step
+
+    async def _pick_step_condition(self, name: str, *, is_first: bool) -> Any:
+        """Offer an optional `when` condition for a step: always-run (the default),
+        a couple of common finding-based predicates, or a validated custom one.
+        Returns the condition string ("" = always run) or the _CANCELLED sentinel
+        if the user escaped out of authoring this step."""
+        choice = await self.app.push_screen_wait(ListPickerModal(
+            f"When should '{name}' run?",
+            [("", "always — run it every time (simplest)"),
+             ("has_finding()", "only if an earlier step found something"),
+             ("has_finding(min_severity='high')", "only if a HIGH or CRITICAL finding exists"),
+             ("has_finding(min_severity='medium')", "only if a MEDIUM+ finding exists"),
+             ("__custom__", "custom condition… (advanced)")],
+            subtitle="↑↓ pick · esc cancel this step"))
+        if choice is None:
+            return _CANCELLED
+        if choice == "__custom__":
+            return await self._prompt_custom_condition(name)
+        if choice and is_first:
+            self._emit(R.note_line(
+                f"Heads up: '{name}' is the first step, so no findings exist yet — this "
+                "condition will always skip it. Conditions usually go on LATER steps."))
+        return choice
+
+    async def _prompt_custom_condition(self, name: str) -> Any:
+        """Prompt for a custom `when` predicate and validate it against the
+        whitelisted grammar (never eval). Re-prompts on an invalid predicate;
+        empty/esc cancels the whole step (fail-safe, no half-authored condition)."""
+        from kratos.agent.pipeline_when import WhenError, compile_when
+
+        hint = ("e.g.  has_finding(min_severity='high')  ·  finding_count >= 3  ·  "
+                "finding_id == 'CORR-SSH-001'")
+        while True:
+            raw = await self.app.push_screen_wait(PromptModal(
+                f"Condition for '{name}'", hint))
+            if raw is None or not raw.strip():
+                self._emit(R.note_line(f"No condition set — step '{name}' not added."))
+                return _CANCELLED
+            try:
+                compile_when(raw.strip())  # validate only
+            except WhenError as e:
+                self._emit(R.error_line(f"That condition isn't valid: {e}. Try again, or esc to cancel."))
+                continue
+            return raw.strip()
+
+    @staticmethod
+    def _coerce_arg(value: str, spec: dict[str, Any]) -> Any:
+        """Coerce a typed-in arg to the tool parameter's declared type when it's
+        known (integer/number/boolean); otherwise keep the string. A failed
+        numeric coercion falls back to the raw string rather than erroring — the
+        tool's own arg handling reports a bad value at run time."""
+        t = str(spec.get("type") or "").lower()
+        try:
+            if t in ("integer", "int"):
+                return int(value)
+            if t in ("number", "float"):
+                return float(value)
+        except ValueError:
+            return value
+        if t in ("boolean", "bool"):
+            return value.lower() in ("true", "yes", "1", "y", "on")
+        return value
+
+    @work
+    async def _preset_scaffold(self, name_raw: str) -> None:
+        """Files-first bridge (Piece F): write a commented, valid pipeline
+        template into the presets dir for hand-editing, then point at /preset-run.
+        The guided builder (/preset-new → pipeline) is the primary path; this is
+        for power users who prefer their own editor."""
+        from kratos.agent import presets as _P
+
+        if not name_raw.strip():
+            name_raw = await self.app.push_screen_wait(
+                PromptModal("Scaffold a pipeline preset", "Short name (e.g. nightly-audit)"))
+            if name_raw is None:
+                return
+        ok, canonical, err = _P.validate_preset_name(name_raw)
+        if not ok:
+            self._emit(R.error_line(err or "Invalid preset name."))
+            return
+        if _P.preset_exists(self._data_dir, canonical):
+            overwrite = await self.app.push_screen_wait(ConfirmModal(
+                "Overwrite preset?",
+                f"A preset named {canonical!r} already exists. Replace it with a fresh template?"))
+            if not overwrite:
+                self._emit(R.note_line("Kept the existing preset — nothing changed."))
+                return
+        try:
+            path = _P.write_pipeline_scaffold(self._data_dir, canonical)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.command_block_panel(
+            "Pipeline template written — edit it, then run it", [str(path)],
+            note="It's a valid starter pipeline (nmap → correlate). Edit the [[steps]], then "
+                 "run with /preset-run. Kratos validates it on load and shows any problems."))
+
     async def _preset_edit(self, args: list[str]) -> None:
         from kratos.agent import presets as _P
 
         preset = self._preset_resolve(args, "edit")
         if preset is None:
             return
+        if preset.is_pipeline:
+            await self._preset_edit_pipeline(preset)
+            return
         if preset.kind != "goal":
+            reason = preset.unsupported_reason
+            prefix = (reason + " ") if reason else ""
             self._emit(R.note_line(
-                (preset.unsupported_reason or "") + " Edit the file in your text editor for now."))
+                prefix + f"This preset kind can't be edited here — edit {preset.path.name} directly."))
             return
         new_goal = await self.app.push_screen_wait(PromptModal(
             f"Edit {preset.name!r}", "New goal", initial=preset.goal or ""))
@@ -1246,18 +1756,27 @@ class SessionScreen(Screen):
         jobs: list[dict] = []
         on_failure = "continue"
         if kind == "preset":
-            presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable_tier1]
+            presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable]
             if not presets:
-                self._emit(R.note_line("No runnable goal presets yet. Create one with /preset-new first."))
+                self._emit(R.note_line("No runnable presets yet. Create one with /preset-new first."))
                 return
+
+            def _row(p: Any) -> str:
+                body = p.goal or (f"{len(p.steps)}-step pipeline" if p.is_pipeline else "")
+                tag = "pipeline · no LLM" if p.is_runnable_pipeline else "goal · AI"
+                return f"{p.name}   [{tag}]  {body[:44]}"
+
             preset_name = await self.app.push_screen_wait(ListPickerModal(
                 "Which preset should it run?",
-                [(p.name, f"{p.name}   {(p.goal or '')[:52]}") for p in presets],
+                [(p.name, _row(p)) for p in presets],
                 subtitle="↑↓ pick · esc cancel"))
             if preset_name is None:
                 return
-            # Guardrail 2: warn before scheduling an agentic run on a paid backend.
-            if active_backend_is_cloud():
+            picked = next((p for p in presets if p.name == preset_name), None)
+            # Guardrail 2: warn before scheduling an AGENTIC (goal) run on a paid
+            # backend. A pipeline preset makes no LLM calls, so it costs nothing
+            # unattended — no warning for it.
+            if picked is not None and picked.is_runnable_tier1 and active_backend_is_cloud():
                 ok = await self.app.push_screen_wait(ConfirmModal(
                     "Cloud backend — unattended cost",
                     "This preset runs the AI model, and the active backend is a paid cloud "
@@ -1272,8 +1791,9 @@ class SessionScreen(Screen):
                 if jobs is not None:  # None = cancelled; [] = added nothing
                     self._emit(R.note_line("A group needs at least one job — nothing created."))
                 return
-            # Cost warning once if any job is an agentic preset on a paid backend.
-            if any(j["kind"] == "preset" for j in jobs) and active_backend_is_cloud():
+            # Cost warning once if any job is an AGENTIC (goal) preset on a paid
+            # backend. Pipeline preset jobs make no LLM calls, so they don't count.
+            if active_backend_is_cloud() and self._group_has_agentic_job(jobs):
                 ok = await self.app.push_screen_wait(ConfirmModal(
                     "Cloud backend — unattended cost",
                     "This group includes a preset that runs the AI model, and the active backend "
@@ -1328,16 +1848,32 @@ class SessionScreen(Screen):
             note="systemd then owns the timing, reboot-survival, and catch-up. "
                  "Test it any time with /schedule run-now."))
 
+    def _group_has_agentic_job(self, jobs: list[dict]) -> bool:
+        """True if any group job runs the LLM (a goal preset) — the only kind
+        that costs money on a paid backend. An audit job and a pipeline preset
+        job are both deterministic/LLM-free."""
+        from kratos.agent import presets as _P
+
+        for j in jobs:
+            if j.get("kind") != "preset":
+                continue
+            p = _P.load_preset(self._data_dir, j.get("preset") or "")
+            if p is not None and p.is_runnable_tier1:
+                return True
+        return False
+
     async def _schedule_build_group_jobs(self):
         """Guided loop to build a group's ordered job list. Returns the list of
         jobs, or None if the user cancelled before adding any."""
         from kratos.agent import presets as _P
 
-        presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable_tier1]
+        presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable]
         jobs: list[dict] = []
         while True:
             entries = [("audit", "+ standard audit (deterministic, free)")]
-            entries += [(f"preset:{p.name}", f"+ preset: {p.name}") for p in presets]
+            entries += [(f"preset:{p.name}",
+                         f"+ preset: {p.name} ({'pipeline · no LLM' if p.is_runnable_pipeline else 'goal · AI'})")
+                        for p in presets]
             if jobs:
                 entries.append(("__done__", f"✓ done — {len(jobs)} job(s) added, in this order"))
             title = ("Add the first job to the group" if not jobs
@@ -2378,21 +2914,16 @@ class SessionScreen(Screen):
         if preset is not None:
             ptarget = preset.target or target
             if preset.kind == "pipeline":
-                # Forward-compat: Tier-2 pipeline presets aren't runnable yet, but
-                # if one exists we can still preview its declared steps as exact.
-                steps = preset.raw.get("steps")
-                if isinstance(steps, list) and steps:
-                    from kratos.agent.pipeline import PipelineStep
-                    pipe = [PipelineStep(tool=str(s.get("tool")),
-                                         args=dict(s.get("args") or {}),
-                                         label=s.get("label"),
-                                         required=bool(s.get("required", True)))
-                            for s in steps if isinstance(s, dict) and s.get("tool")]
+                # A pipeline preset has an EXACT declared step list (a `when` step
+                # renders as conditional). Preview the parsed, normalized steps.
+                if preset.steps:
+                    from kratos.agent.pipeline import steps_from_specs
                     self._emit_from_worker(R.plan_preview_panel(
-                        preview_pipeline(pipe, ptarget, title=f"Preset: {preset.name}")))
+                        preview_pipeline(steps_from_specs(preset.steps), ptarget,
+                                         title=f"Preset: {preset.name}")))
                     return
                 self._emit_from_worker(R.note_line(
-                    f"Preset {preset.name!r} is a pipeline but declares no steps to preview."))
+                    f"Preset {preset.name!r} is a pipeline but declares no valid steps to preview."))
                 return
             if preset.goal:
                 self._emit_from_worker(R.note_line(
@@ -2408,37 +2939,96 @@ class SessionScreen(Screen):
         self._emit_from_worker(R.note_line("Predicting the plan (one quick model call)…"))
         self._emit_from_worker(R.plan_preview_panel(preview_agentic(rest, target)))
 
-    @work(thread=True, exclusive=True, group="turn")
     def _run_standard_audit(self) -> None:
-        """Run the built-in deterministic standard audit (agent/pipeline.py) and
-        render it mk2-first: per-step tool-call lines and finding panels while it
-        runs, then a run-summary panel. No LLM in the decision path -- the step
-        sequence is fixed and target-correct (target-facing tools only; nothing
-        about Kratos's own host is folded into the target's findings)."""
-        from kratos.agent.pipeline import run_pipeline, standard_audit_steps
+        """PreA2 built-in standard audit -- a thin call into the shared pipeline
+        turn worker with the fixed, target-correct step sequence. No LLM in the
+        decision path; nothing about Kratos's own host is folded into the
+        target's findings (standard_audit_steps is target-facing by design)."""
+        from kratos.agent.pipeline import standard_audit_steps
+
+        target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        self._run_pipeline_turn(
+            standard_audit_steps(),
+            turn_label="/run — standard audit",
+            intro=(f"Standard audit — a fixed, deterministic security sweep of {target} "
+                   "(no LLM; same steps every run)."),
+            remember_label="/run — standard audit",
+            remember_kind="deterministic audit",
+        )
+
+    def _pipeline_host_note(self, steps: list[Any], target_label: str) -> Text | None:
+        """Piece D (target-correctness): a labeled note when a pipeline includes
+        Kratos-HOST tools, so their output is never silently read as the target's.
+        Returns None for a purely target-facing pipeline (the common case)."""
+        from kratos.agent.pipeline import is_local_host_tool
+
+        local = sorted({s.tool for s in steps if is_local_host_tool(s.tool)})
+        has_target = any(not is_local_host_tool(s.tool) for s in steps)
+        if local and has_target:
+            return R.note_line(
+                f"Note: this pipeline mixes checks — {', '.join(local)} run on THIS Kratos "
+                f"host, the rest on {target_label}. Host-tool results describe the Kratos "
+                "machine, never the target.")
+        if local and not has_target:
+            return R.note_line(
+                f"Note: every step here inspects THIS Kratos host, not {target_label} — the "
+                "findings describe the Kratos machine, not the target.")
+        return None
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _run_pipeline_turn(
+        self,
+        steps: list[Any],
+        *,
+        turn_label: str,
+        intro: str,
+        remember_label: str,
+        remember_kind: str = "pipeline",
+        pin_target: str | None = None,
+    ) -> None:
+        """Shared worker for any deterministic pipeline run (the built-in
+        standard audit AND a user's kind='pipeline' preset). Renders mk2-first:
+        per-step tool-call lines and finding panels while it runs, then a
+        run-summary panel; persists the step transcript so /report can pull an
+        audit turn's findings; evaluates triggers. A per-preset `pin_target` is
+        set for this run and restored after (like /investigate-host), so a
+        pipeline preset can target a specific host without changing the session
+        target."""
+        from kratos.agent.pipeline import run_pipeline
 
         self._set_busy(True)
-        target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
+        # Per-preset target pin (restored in every exit path below).
+        prior_target = None
+        if pin_target and pin_target != _kconfig.get_active_target():
+            prior_target = _kconfig.get_active_target()
+            _kconfig.set_active_target(pin_target)
+        run_target = _kconfig.get_active_target()
+        target_label = pin_target or (
+            self.session_state["targets"][0] if self.session_state["targets"] else "the target")
+
         # Concurrency (A6 §6): one run per target at a time. Bail cleanly if a
         # background scheduled run (or another investigation) holds the target.
-        _audit_target = _kconfig.get_active_target()
-        audit_lock = _target_lock.try_acquire_target(self._data_dir, _audit_target)
+        audit_lock = _target_lock.try_acquire_target(self._data_dir, run_target)
         if audit_lock is None:
             self._emit_from_worker(R.note_line(
-                f"A run is active on {target} (likely a scheduled audit) — waiting for it to "
-                "finish… (usually quick; press esc to stop)"))
+                f"A run is active on {target_label} (likely a scheduled audit) — waiting for it "
+                "to finish… (usually quick; press esc to stop)"))
             audit_lock = _target_lock.acquire_target_blocking(
-                self._data_dir, _audit_target, timeout=20.0,
+                self._data_dir, run_target, timeout=20.0,
                 should_stop=lambda: get_current_worker().is_cancelled)
         if audit_lock is None:
             self._emit_from_worker(R.note_line(
-                f"{target} is still busy (it may be a long run) — try again in a bit."))
+                f"{target_label} is still busy (it may be a long run) — try again in a bit."))
+            if prior_target is not None:
+                _kconfig.set_active_target(prior_target)
             self._set_busy(False)
             return
-        self._emit_from_worker(R.note_line(
-            f"Standard audit — a fixed, deterministic security sweep of {target} "
-            "(no LLM; same steps every run)."))
-        turn_id = self._store.start_turn(self.session_state["session_id"], "/run — standard audit")
+
+        self._emit_from_worker(R.note_line(intro))
+        host_note = self._pipeline_host_note(steps, target_label)
+        if host_note is not None:
+            self._emit_from_worker(host_note)
+        turn_id = self._store.start_turn(self.session_state["session_id"], turn_label)
         started = time.monotonic()
         worker = get_current_worker()
 
@@ -2467,19 +3057,21 @@ class SessionScreen(Screen):
             self.app.call_from_thread(self._refresh_footer)
 
         try:
-            outcome = run_pipeline(standard_audit_steps(), self._data_dir, on_step=_on_step)
+            outcome = run_pipeline(steps, self._data_dir, on_step=_on_step)
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target."))
-            self._remember_turn("/run — standard audit", "(audit interrupted before it concluded)")
+            self._remember_turn(remember_label, "(run interrupted before it concluded)")
             return
         except Exception as e:  # noqa: BLE001
             self._store.complete_turn(turn_id, "error", transcript_ref=None)
-            self._emit_from_worker(R.error_line(f"Standard audit errored: {e}"))
+            self._emit_from_worker(R.error_line(f"{remember_label} errored: {e}"))
             return
         finally:
             self._set_busy(False)
             _target_lock.release_target(audit_lock)
+            if prior_target is not None:
+                _kconfig.set_active_target(prior_target)
 
         duration = time.monotonic() - started
         t, d = self._stamp_now()
@@ -2498,13 +3090,12 @@ class SessionScreen(Screen):
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
         # A6.4: evaluate triggers against this run's findings. run_investigations
-        # =False keeps an interactive /run snappy — an investigate-action trigger
+        # =False keeps an interactive run snappy — an investigate-action trigger
         # notifies that the deeper look runs on the scheduled cadence rather than
         # blocking here on an LLM call (the target lock is already released too).
         try:
             from kratos.agent.trigger_eval import evaluate_triggers
-            _audit_target = self.session_state["targets"][0] if self.session_state["targets"] else _kconfig.get_active_target()
-            for tf in evaluate_triggers(self._data_dir, outcome.findings, _audit_target,
+            for tf in evaluate_triggers(self._data_dir, outcome.findings, run_target,
                                         run_investigations=False):
                 self._emit_from_worker(R.trigger_fire_line(tf))
         except Exception as e:  # noqa: BLE001
@@ -2533,8 +3124,8 @@ class SessionScreen(Screen):
         self._store.complete_turn(turn_id, status, transcript_ref=str(transcript_path))
         n = sum(outcome.severity_tally.values())
         self._remember_turn(
-            "/run — standard audit",
-            f"(deterministic audit {outcome.status}; {outcome.ran}/{len(outcome.steps)} steps, {n} finding(s))",
+            remember_label,
+            f"({remember_kind} {outcome.status}; {outcome.ran}/{len(outcome.steps)} steps, {n} finding(s))",
         )
         self.app.call_from_thread(self._refresh_footer)
 
@@ -3125,9 +3716,28 @@ class SessionScreen(Screen):
     def action_help(self) -> None:
         self.app.push_screen(HelpModal())
 
+    def _palette_commands(self) -> list[tuple[str, str]]:
+        """The static command list PLUS a live `/<name>` entry per saved runnable
+        preset (A2 Piece H), so the palette reflects presets added/deleted this
+        session with no caching."""
+        from kratos.agent import presets as _P
+
+        commands = list(_PALETTE_COMMANDS)
+        try:
+            presets, _errors = _P.list_presets(self._data_dir)
+        except Exception:  # noqa: BLE001 -- palette must never fail to open
+            presets = []
+        for p in presets:
+            if not p.is_runnable:
+                continue
+            kind = "pipeline" if p.is_pipeline else "goal"
+            summary = (p.goal or (f"{len(p.steps)}-step pipeline" if p.is_pipeline else ""))[:48]
+            commands.append((f"/{p.name}", f"run saved {kind} preset — {summary}"))
+        return commands
+
     @work
     async def action_palette(self) -> None:
-        chosen = await self.app.push_screen_wait(CommandPaletteModal(_PALETTE_COMMANDS))
+        chosen = await self.app.push_screen_wait(CommandPaletteModal(self._palette_commands()))
         if chosen:
             t, d = self._stamp_now()
             self._emit_stamped(self._you_header(chosen), t, d)

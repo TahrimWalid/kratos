@@ -157,16 +157,43 @@ def _run_audit(data_dir: Path, gated: set[str]) -> tuple[str, list[dict[str, Any
 
 
 def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[str, Any]], Optional[str]]:
-    """Run a named goal preset through the agentic loop with gated tools already
-    removed from the registry by the caller. Returns (status, findings, error)."""
+    """Run a named preset headlessly, with gated tools already removed from the
+    registry by the caller (belt: the deny-provider; suspenders: the stripped
+    registry). Returns (status, findings, error).
+
+    Two arms, on the preset's kind (the A2 §4.1 seam):
+      * a GOAL preset -> the agentic run_agent loop, and
+      * a runnable PIPELINE preset -> the deterministic run_pipeline engine
+        (A6 interlock: a deterministic pipeline is cheaper/safer to run
+        unattended than an agentic goal, so this is the strongest reason to wire
+        it). A pipeline step that names a gated (now-stripped) tool dispatches to
+        an "unknown tool" error via execute_tool_call -> a required such step
+        aborts, an optional one continues, both recorded honestly.
+    A pipeline that isn't runnable (empty, malformed, or an invalid `when`) or an
+    unknown kind is DECLINED with its reason, never crashed. A valid `when`
+    predicate runs headless like any other step (skipped when its condition is
+    falsey)."""
     from kratos.agent import presets as _presets
-    from kratos.agent.loop import run_agent
 
     preset = _presets.load_preset(data_dir, preset_name or "")
     if preset is None:
         return "error", [], f"preset '{preset_name}' is missing (was it deleted?)"
+
+    if preset.is_runnable_pipeline:
+        from kratos.agent.pipeline import run_pipeline, steps_from_specs
+
+        outcome = run_pipeline(steps_from_specs(preset.steps), data_dir)
+        status = "completed" if outcome.status == "completed" else "aborted"
+        error = None if outcome.status == "completed" else (
+            f"pipeline aborted at required step '{outcome.aborted_on}' "
+            "(target unreachable, or the step needs an approval-gated tool "
+            "that's excluded from unattended runs)")
+        return status, outcome.findings, error
+
     if not preset.is_runnable_tier1:
         return "error", [], preset.unsupported_reason or "preset is not runnable"
+
+    from kratos.agent.loop import run_agent
 
     result = run_agent(preset.goal, data_dir)
     status = str(result.get("status") or "error")

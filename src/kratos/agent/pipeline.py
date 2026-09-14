@@ -25,11 +25,14 @@ that are the whole reason a deterministic engine exists:
   recur here because the local-only tools simply aren't in the default sequence.
 
 Design intent (A2 Tier 2 foundation): a *built-in* step below has the exact same
-shape a *user-defined* step will have later, so comprehensive A2 Tier 2 becomes
-"let the user supply the step list", not a from-scratch workflow engine. The
-conditional ``when`` hook is deliberately present but UNUSED by the default audit
--- Tier 2 starts linear (design doc §5: "a branching DSL is where this feature
-goes to die"); the seam exists, the branching does not.
+shape a *user-defined* step has, so comprehensive A2 Tier 2 is "let the user
+supply the step list", not a from-scratch workflow engine. The conditional
+``when`` hook is a bounded, WHITELISTED predicate (``agent/pipeline_when.py`` --
+never ``eval()``); a step whose predicate is falsey is SKIPPED, and one whose
+predicate raises is fail-safe-SKIPPED with a recorded reason. The default audit
+sets no ``when`` -- it is strictly linear (design doc §5: "a branching DSL is
+where this feature goes to die"), and the conditional stays a single bounded
+predicate, deliberately not a general expression language.
 
 The engine itself is UI-agnostic: it returns a structured ``PipelineOutcome`` and
 emits per-step progress via an optional ``on_step`` callback (mirroring
@@ -51,6 +54,60 @@ from kratos.agent.loop import execute_tool_call
 # without real SSH/LLM, exactly like test_execute_tool_call_guards.py swaps tool
 # handlers.
 Dispatch = Callable[[str, dict[str, Any], Path], dict[str, Any]]
+
+# Tools that analyze/act on KRATOS'S OWN HOST, not the monitored target. The
+# single source of truth for the target-correctness check (design doc §6.2 /
+# Piece D): a user pipeline may legitimately include one, but the runner/builder
+# must LABEL it as "Kratos host", never fold its output into "the target's
+# findings" (the exact cmd_run bug). Everything else in the registry is
+# target-facing (a network scan or an SSH-to-target probe) or host-agnostic
+# (correlate_findings synthesizes collected data; send_notification/
+# check_ip_reputation aren't about either host).
+LOCAL_HOST_TOOLS = frozenset({
+    "parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command",
+})
+
+
+def is_local_host_tool(tool: str) -> bool:
+    """True if `tool` runs against Kratos's own host rather than the target."""
+    return tool in LOCAL_HOST_TOOLS
+
+
+def _condition_placeholder(_ctx: "PipelineContext") -> bool:  # pragma: no cover - preview fallback
+    """A non-None `when` marker used ONLY so a preview can flag a step conditional
+    when its predicate string couldn't be compiled (a broken-`when` preset, which
+    is not runnable and so never reaches a real dispatch). Returns True defensively
+    so that even if it were somehow reached, the step would run rather than vanish."""
+    return True
+
+
+def steps_from_specs(specs: list[dict[str, Any]]) -> list["PipelineStep"]:
+    """Convert normalized preset step dicts (from
+    `agent/presets.py::parse_pipeline`) into engine `PipelineStep`s. A spec's
+    string `when` is COMPILED into a safe, whitelisted predicate
+    (`agent/pipeline_when.compile_when` -- never eval()); a `when` that fails to
+    compile falls back to the preview-only conditional marker (such a preset is
+    not runnable, so this path is preview-only). Extra spec keys are ignored
+    (forward-compat)."""
+    from kratos.agent.pipeline_when import WhenError, compile_when
+
+    out: list[PipelineStep] = []
+    for spec in specs:
+        when_str = spec.get("when")
+        when_cb: Optional[Callable[["PipelineContext"], bool]] = None
+        if when_str:
+            try:
+                when_cb = compile_when(str(when_str))
+            except WhenError:
+                when_cb = _condition_placeholder  # preview-only; unrunnable upstream
+        out.append(PipelineStep(
+            tool=str(spec.get("tool", "")),
+            args=dict(spec.get("args") or {}),
+            label=spec.get("label"),
+            required=bool(spec.get("required", True)),
+            when=when_cb,
+        ))
+    return out
 
 
 @dataclass(frozen=True)
@@ -169,15 +226,25 @@ def run_pipeline(
     outcome = PipelineOutcome(status="completed")
 
     for step in steps:
-        # Tier-2 conditional seam (unused by the standard audit).
-        if step.when is not None and not step.when(ctx):
-            sr = StepResult(step=step, status="skipped",
-                            detail="condition not met — step skipped")
-            ctx.results.append(sr)
-            outcome.steps.append(sr)
-            if on_step is not None:
-                on_step(sr)
-            continue
+        # Tier-2 conditional seam (slice 4). A predicate that RAISES is fail-safe:
+        # treat the condition as unknown and SKIP the step with a recorded reason,
+        # never crash the whole run (design doc Piece B). A well-formed predicate
+        # over not-yet-produced data just returns False (e.g. has_finding() on an
+        # empty context) and skips cleanly.
+        if step.when is not None:
+            try:
+                should_run = bool(step.when(ctx))
+                skip_detail = "condition not met — step skipped"
+            except Exception as e:  # noqa: BLE001 -- a predicate error must not sink the run
+                should_run = False
+                skip_detail = f"condition could not be evaluated ({e}) — step skipped (fail-safe)"
+            if not should_run:
+                sr = StepResult(step=step, status="skipped", detail=skip_detail)
+                ctx.results.append(sr)
+                outcome.steps.append(sr)
+                if on_step is not None:
+                    on_step(sr)
+                continue
 
         raw = dispatch(step.tool, dict(step.args), data_dir)
         status = raw.get("status")

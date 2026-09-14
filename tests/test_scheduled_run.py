@@ -186,3 +186,140 @@ def test_active_backend_is_cloud_detection(monkeypatch):
     monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url",
                         lambda: "http://127.0.0.1:11434/v1")
     assert W.active_backend_is_cloud() is False
+
+
+# --------------------------------------------------------------------------- #
+# A2 Tier 2 interlock -- a kind="pipeline" preset runs headless (schedule+group)
+# --------------------------------------------------------------------------- #
+def _pipeline_dispatch(findings=None, fail_nmap=False):
+    """Canned execute_tool_call recording call order, for pipeline-preset runs."""
+    calls: list[str] = []
+
+    def dispatch(tool, args, data_dir):
+        calls.append(tool)
+        if fail_nmap and tool == "run_nmap_scan":
+            return {"status": "error", "observation": "target unreachable"}
+        if tool == "correlate_findings":
+            return {"status": "ok", "result": {"findings": findings or []}}
+        return {"status": "ok", "result": {}}
+
+    return dispatch, calls
+
+
+def test_pipeline_preset_scheduled_runs_via_engine(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    P.save_preset(tmp_path, name="sweep", kind="pipeline", steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True},
+    ])
+    sch = S.save_schedule(tmp_path, name="nightly-pipe", kind="preset", preset="sweep",
+                          cadence="daily", deliver=["ntfy"])
+    findings = [{"id": "CORR-SSH-001", "severity": "high", "title": "x"}]
+    dispatch, calls = _pipeline_dispatch(findings)
+    # A pipeline preset dispatches through run_pipeline's execute_tool_call, NOT
+    # run_agent -- so make run_agent explode to prove the deterministic path is used.
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
+    monkeypatch.setattr("kratos.agent.loop.run_agent",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_agent must not run for a pipeline preset")))
+
+    rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
+
+    assert rec["status"] == "completed"
+    assert rec["findings_count"] == 1
+    assert calls == ["run_nmap_scan", "correlate_findings"]  # deterministic, in order
+
+
+def test_pipeline_preset_required_step_abort_notifies(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    P.save_preset(tmp_path, name="sweep", kind="pipeline", steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True},
+    ])
+    sch = S.save_schedule(tmp_path, name="np", kind="preset", preset="sweep",
+                          cadence="daily", deliver=["ntfy"])
+    dispatch, _ = _pipeline_dispatch(fail_nmap=True)
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
+    spy = _Spy()
+
+    rec = W.run_scheduled(sch, tmp_path, notifier=spy)
+
+    assert rec["status"] == "aborted"
+    assert rec["error"] and "aborted" in rec["error"]
+    assert rec["notified"] is True and spy.calls[0][1] == "warning"
+
+
+def test_valid_when_pipeline_preset_runs_headless(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    # Slice 4: a VALID bounded `when` runs headless. The condition is false
+    # (no HIGH finding), so the gated step SKIPS, and the run still completes.
+    P.save_preset(tmp_path, name="cond", kind="pipeline", steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "run_vuln_scan", "required": False, "when": "has_finding(min_severity='high')"},
+        {"tool": "correlate_findings", "required": True},
+    ])
+    sch = S.save_schedule(tmp_path, name="csched", kind="preset", preset="cond",
+                          cadence="daily", deliver=["ntfy"])
+    calls = []
+
+    def dispatch(tool, args, data_dir):
+        calls.append(tool)
+        if tool == "correlate_findings":
+            return {"status": "ok", "result": {"findings": []}}  # no HIGH -> when skips vuln
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
+    rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
+
+    assert rec["status"] == "completed"
+    # The conditional step was SKIPPED (no HIGH finding existed when it was reached).
+    assert calls == ["run_nmap_scan", "correlate_findings"]
+
+
+def test_invalid_when_pipeline_preset_declined_not_crashed(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    # A pipeline with an INVALID `when` predicate is a structural error -> not
+    # runnable -> the headless worker DECLINES it with a reason, never crashes.
+    d = P.presets_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / "bad.toml").write_text(
+        'name = "bad"\nkind = "pipeline"\n'
+        '[[steps]]\ntool = "run_nmap_scan"\n'
+        '[[steps]]\ntool = "run_config_audit"\nwhen = "__import__(\'os\')"\n',
+        encoding="utf-8")
+    sch = S.save_schedule(tmp_path, name="bsched", kind="preset", preset="bad",
+                          cadence="daily", deliver=["ntfy"])
+    spy = _Spy()
+
+    rec = W.run_scheduled(sch, tmp_path, notifier=spy)
+
+    assert rec["status"] == "error"
+    assert rec["error"] and "invalid" in rec["error"].lower()
+    assert rec["notified"] is True  # a failed run always notifies
+
+
+def test_pipeline_preset_in_group_runs(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    P.save_preset(tmp_path, name="sweep", kind="pipeline", steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True},
+    ])
+    findings = [{"id": "CORR-001", "severity": "medium", "title": "y"}]
+    dispatch, _ = _pipeline_dispatch(findings)
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
+    sch = S.save_schedule(
+        tmp_path, name="grp", kind="group", cadence="daily", deliver=["ntfy"],
+        jobs=[{"kind": "audit"}, {"kind": "preset", "preset": "sweep"}],
+        on_failure="continue")
+
+    rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
+
+    assert rec["status"] == "completed"
+    # Two jobs recorded; the pipeline preset job completed.
+    assert len(rec["jobs"]) == 2
+    preset_job = [j for j in rec["jobs"] if j["kind"] == "preset"][0]
+    assert preset_job["status"] == "completed"

@@ -113,3 +113,46 @@ def test_run_audit_defers_when_target_busy(tmp_path, monkeypatch):
 
     assert ran["n"] == 0  # deferred: nothing dispatched
     assert not any("standard audit" in (t.get("goal") or "") for t in store.get_goal_history(sid))
+
+
+def test_pipeline_preset_run_records_turn_and_surfaces_findings(tmp_path, monkeypatch):
+    """A2 Tier 2: running a kind='pipeline' preset drives the SAME shared
+    _run_pipeline_turn worker, records a completed turn, and its findings reach
+    /report (the wrapped-observation path). Canned dispatch -- no real SSH."""
+    from kratos.agent import presets as P
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="sweep", kind="pipeline", steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True},
+    ])
+    findings = [{"id": "CORR-SSH-001", "severity": "high", "title": "brute force",
+                 "evidence": ["many failed logins"]}]
+    calls = []
+
+    def _canned(tool, args, data_dir):
+        calls.append(tool)
+        if tool == "correlate_findings":
+            return {"status": "ok", "result": {"findings": findings, "count": 1}}
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _canned)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/preset run sweep")
+            for _ in range(400):
+                await pilot.pause()
+                if not screen._busy and screen._busy_since is None and calls:
+                    break
+            return screen._collect_session_findings()
+
+    collected = asyncio.run(_run())
+
+    assert calls == ["run_nmap_scan", "correlate_findings"]  # deterministic order
+    turns = store.get_goal_history(sid)
+    assert any(t.get("status") == "final_answer"
+               and "sweep" in (t.get("goal") or "") for t in turns), turns
+    assert [f[0]["id"] for f in collected] == ["CORR-SSH-001"], collected
