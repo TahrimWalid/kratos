@@ -286,3 +286,51 @@ def test_run_pipeline_when_that_raises_is_failsafe_skip():
     assert "run_vuln_scan" not in calls
     skipped = outcome.steps[1]
     assert skipped.status == "skipped" and "fail-safe" in (skipped.detail or "")
+
+
+# --------------------------------------------------------------------------- #
+# A2 Piece C -- output threading through the engine
+# --------------------------------------------------------------------------- #
+def test_run_pipeline_threads_output_into_later_step():
+    captured = {}
+
+    def dispatch(tool, args, data_dir):
+        if tool == "correlate_findings":
+            return _ok({"findings": [{"id": "CORR-SSH-001", "severity": "high",
+                                      "source_ips": ["203.0.113.7"]}]})
+        if tool == "check_ip_reputation":
+            captured["ip"] = args.get("ip")
+            return _ok({"source": "none"})
+        return _ok()
+
+    steps = steps_from_specs([
+        {"tool": "correlate_findings", "label": "correlate", "required": True},
+        {"tool": "check_ip_reputation", "required": False,
+         "args": {"ip": {"from": "correlate", "field": "top_source_ip"}}},
+    ])
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert outcome.status == "completed"
+    assert captured["ip"] == "203.0.113.7"          # a real value was threaded, not the ref dict
+
+
+def test_run_pipeline_failsafe_skips_consumer_when_producer_has_no_value():
+    captured = {}
+
+    def dispatch(tool, args, data_dir):
+        if tool == "correlate_findings":
+            return _ok({"findings": [{"id": "NET-002", "severity": "medium"}]})  # no source_ips
+        if tool == "check_ip_reputation":
+            captured["ran"] = True
+            return _ok()
+        return _ok()
+
+    steps = steps_from_specs([
+        {"tool": "correlate_findings", "label": "correlate", "required": True},
+        {"tool": "check_ip_reputation", "required": True,
+         "args": {"ip": {"from": "correlate", "field": "top_source_ip"}}},
+    ])
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert outcome.status == "completed"            # a fail-safe skip is not a failure
+    assert "ran" not in captured                    # consumer never dispatched with a bad value
+    assert outcome.steps[1].status == "skipped"
+    assert "no 'top_source_ip'" in (outcome.steps[1].detail or "")

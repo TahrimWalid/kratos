@@ -120,6 +120,13 @@ def preview_pipeline(steps: list[Any], target: str, *, title: str = "Standard au
         f"Runs against {target}. Target state can change between preview and run, "
         "so findings can differ; the steps won't.",
     ]
+    # A2 Piece C: if any step threads a value from an earlier step, note the
+    # dependency — a skipped/failed producer fail-safe-skips its consumer.
+    from kratos.agent.pipeline_refs import is_reference
+    if any(is_reference(v) for s in steps for v in (getattr(s, "args", {}) or {}).values()):
+        caveats.append(
+            "Some steps use a value from an earlier step; if that earlier step is skipped "
+            "(its condition, or approval in an unattended run), the dependent step is skipped too.")
     preview = PlanPreview(kind="exact", target=target, title=title, items=items, caveats=caveats)
     if preview.empty:
         preview.note = (

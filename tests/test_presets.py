@@ -530,3 +530,52 @@ def test_import_unknown_kind_rejected(tmp_path):
     src.write_text('name = "weird"\nkind = "from-the-future"\ngoal = "x"\n', encoding="utf-8")
     with pytest.raises(PresetError):
         P.import_preset_file(tmp_path, src)
+
+
+# --------------------------------------------------------------------------- #
+# A2 Piece C -- step-output threading (save/round-trip/reject)
+# --------------------------------------------------------------------------- #
+def test_save_pipeline_with_reference_round_trips(tmp_path):
+    saved = P.save_preset(tmp_path, name="thread", kind="pipeline", steps=[
+        {"tool": "correlate_findings", "label": "correlate", "required": True},
+        {"tool": "check_ip_reputation", "required": False,
+         "args": {"ip": {"from": "correlate", "field": "top_source_ip"}}},
+    ])
+    assert saved.is_runnable_pipeline
+    reloaded = P.load_preset(tmp_path, "thread")
+    assert reloaded.steps[1]["args"]["ip"] == {"from": "correlate", "field": "top_source_ip"}
+    # The nested reference table is valid TOML read back identically by tomllib.
+    data = tomllib.loads(saved.path.read_text(encoding="utf-8"))
+    assert data["steps"][1]["args"]["ip"] == {"from": "correlate", "field": "top_source_ip"}
+
+
+def test_save_pipeline_rejects_forward_reference(tmp_path):
+    with pytest.raises(PresetError):
+        P.save_preset(tmp_path, name="fwd", kind="pipeline", steps=[
+            {"tool": "check_ip_reputation",
+             "args": {"ip": {"from": "correlate", "field": "top_source_ip"}}},
+            {"tool": "correlate_findings", "label": "correlate"},
+        ])
+
+
+def test_save_pipeline_rejects_type_mismatched_reference(tmp_path):
+    with pytest.raises(PresetError):
+        P.save_preset(tmp_path, name="tm", kind="pipeline", steps=[
+            {"tool": "correlate_findings", "label": "c"},
+            {"tool": "check_ip_reputation", "args": {"ip": {"from": "c", "field": "finding_count"}}},
+        ])
+
+
+def test_reference_pipeline_lists_when_broken(tmp_path):
+    # A hand-edited file with a bad reference is TOML-valid -> lists, non-runnable.
+    d = P.presets_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / "bad.toml").write_text(
+        'name = "bad"\nkind = "pipeline"\n'
+        '[[steps]]\ntool = "check_ip_reputation"\n'
+        'args = { ip = { from = "nope", field = "top_source_ip" } }\n',
+        encoding="utf-8")
+    loaded = P.load_preset(tmp_path, "bad")
+    assert loaded.is_runnable_pipeline is False and loaded.pipeline_errors
+    presets, errors = P.list_presets(tmp_path)
+    assert "bad" in [p.name for p in presets] and errors == []

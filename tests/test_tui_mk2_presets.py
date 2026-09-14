@@ -685,3 +685,56 @@ def test_pipeline_step_editor_cancel_keeps_original(tmp_path, monkeypatch):
     asyncio.run(_run())
     p = P.load_preset(tmp_path, "ed2")
     assert [s["tool"] for s in p.steps] == ["run_nmap_scan", "correlate_findings"]  # unchanged
+
+
+def test_preset_builder_threads_output_no_syntax(tmp_path, monkeypatch):
+    """A2 Piece C usability: the guided builder threads correlate_findings.
+    top_source_ip into check_ip_reputation.ip with NO reference syntax typed —
+    just menu picks. Grounds the owner's 'genuinely usable' requirement."""
+    from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    step_picks = iter(["tool:correlate_findings", "tool:check_ip_reputation", "__done__"])
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _answer(modal):
+                title = getattr(modal, "_title", "") or ""
+                if isinstance(modal, ListPickerModal):
+                    if "kind of preset" in title:
+                        return "pipeline"
+                    if title.startswith("Add "):
+                        return next(step_picks)
+                    if "fails" in title:
+                        return "required"
+                    if title.startswith("When should"):
+                        return ""
+                    # Piece C arg pickers:
+                    if title == "check_ip_reputation: ip":
+                        return "__thread__"                    # use a result, don't type
+                    if title == "Use a result from which step?":
+                        return "correlate_findings"            # the producer step's auto-label
+                    if title == "Which value?":
+                        return "top_source_ip"
+                if isinstance(modal, PromptModal):
+                    if "New pipeline preset" in title:
+                        return "threaded"
+                    if title.startswith("Target for"):
+                        return ""
+                return None
+
+            monkeypatch.setattr(app, "push_screen_wait", _answer)
+            screen._dispatch_slash("/preset-new")
+            for _ in range(200):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "threaded"):
+                    break
+
+    asyncio.run(_run())
+    p = P.load_preset(tmp_path, "threaded")
+    assert p is not None and p.is_runnable_pipeline
+    # The second step's ip arg is a structured reference (no syntax was typed).
+    assert p.steps[1]["args"]["ip"] == {"from": "correlate_findings", "field": "top_source_ip"}

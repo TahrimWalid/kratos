@@ -141,6 +141,11 @@ class Finding:
     evidence: list[str]
     recommendation: list[str]
     playbooks: list[dict[str, Any]] = field(default_factory=list)
+    # Structured attacking source IP(s) behind this finding, most-active first.
+    # Populated by _surface_source_ips_in_evidence alongside the human evidence
+    # line, so consumers (A2 Piece C output-threading's `top_source_ip` field, an
+    # answer that names the attacker) read a real field instead of parsing text.
+    source_ips: list[str] = field(default_factory=list)
 
 
 def _severity_rank(sev: str) -> int:
@@ -233,10 +238,12 @@ def _surface_source_ips_in_evidence(
     counts = _suspicious_source_ip_counts(auth_patterns)
     if not counts:
         return
+    ordered_ips = [ip for ip, _n in counts]  # most-active first
     summary = ", ".join(f"{ip} ({n} events)" for ip, n in counts)
     for f in findings:
         if f.id in _IP_SOURCED_SUSPICIOUS_IDS:
             f.evidence.append(f"Source IP(s) behind this activity: {summary}.")
+            f.source_ips = list(ordered_ips)  # structured, for output-threading / naming
 
 
 def _enrich_findings_with_offline_reputation(

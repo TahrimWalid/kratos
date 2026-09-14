@@ -124,6 +124,7 @@ def parse_pipeline(raw_steps: Any, *, registry: Optional[dict[str, Any]] = None)
         parse.errors.append("a pipeline needs at least one step")
         return parse
 
+    prior_steps: list[tuple[Optional[str], str]] = []  # (label, tool) of EARLIER steps (Piece C)
     for i, raw in enumerate(raw_steps, start=1):
         if not isinstance(raw, dict):
             parse.errors.append(f"step {i} is not a table (each step needs a `tool`)")
@@ -180,6 +181,24 @@ def parse_pipeline(raw_steps: Any, *, registry: Optional[dict[str, Any]] = None)
         label_raw = raw.get("label")
         label = str(label_raw).strip() if label_raw else None
 
+        # A2 Piece C: resolve step-output references in args (forward-only,
+        # whitelisted, never eval). A malformed/invalid reference is a STRUCTURAL
+        # error (reject at save); the normalized ref is stored so the step shows
+        # its dependency. prior_steps carries (label, tool) of EARLIER steps only,
+        # so a reference can never name a later/same step.
+        from kratos.agent import pipeline_refs as _refs
+        for arg_name, arg_val in list(args.items()):
+            if not _refs.is_reference(arg_val):
+                continue
+            try:
+                ref = _refs.normalize_reference(arg_val)
+                _refs.validate_reference(
+                    ref, prior_steps=prior_steps, consumer_tool=tool,
+                    consumer_arg=arg_name, registry=registry)
+                args[arg_name] = ref
+            except _refs.RefError as e:
+                parse.errors.append(f"step {i} ({tool}): {arg_name} — {e}")
+
         if registry is not None:
             reg_tool = registry.get(tool)
             if reg_tool is None:
@@ -200,6 +219,7 @@ def parse_pipeline(raw_steps: Any, *, registry: Optional[dict[str, Any]] = None)
         if when_clean:
             step["when"] = when_clean
         parse.steps.append(step)
+        prior_steps.append((label, tool))  # visible to LATER steps' references
 
     if not parse.steps and not parse.errors:
         parse.errors.append("a pipeline needs at least one valid step")
@@ -337,10 +357,11 @@ def _toml_basic_string(s: str) -> str:
 
 
 def _toml_scalar(v: Any) -> str:
-    """Serialize a scalar (or a flat list of scalars) as TOML. Bools/ints/floats
-    render natively; everything else (incl. anything unexpected) falls back to a
-    basic string, so the writer can never emit a value tomllib won't read back —
-    round-trip-verified in tests, same guarantee as `_toml_basic_string`."""
+    """Serialize a scalar (or a flat list of scalars, or a nested table — a Piece
+    C step-output reference `{from, field, select?}`) as TOML. Bools/ints/floats
+    render natively; a dict becomes an inline table; everything else (incl.
+    anything unexpected) falls back to a basic string, so the writer can never
+    emit a value tomllib won't read back — round-trip-verified in tests."""
     if isinstance(v, bool):
         return "true" if v else "false"
     if isinstance(v, int):
@@ -349,6 +370,8 @@ def _toml_scalar(v: Any) -> str:
         return repr(v)
     if isinstance(v, list):
         return "[" + ", ".join(_toml_scalar(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return _toml_inline_table(v)
     return _toml_basic_string(str(v))
 
 

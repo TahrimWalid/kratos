@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kratos.agent.loop import execute_tool_call
+from kratos.agent.pipeline_refs import resolve_step_args as _resolve_step_args
 
 # A dispatcher has execute_tool_call's shape: (tool_name, args, data_dir) -> dict
 # with {"status": "ok", "result": ...} or {"status": "error"|"not_approved",
@@ -246,7 +247,20 @@ def run_pipeline(
                     on_step(sr)
                 continue
 
-        raw = dispatch(step.tool, dict(step.args), data_dir)
+        # A2 Piece C: resolve any step-output references in this step's args from
+        # PRIOR results. If a referenced value wasn't produced (its producer step
+        # was skipped/failed/excluded, or the field is empty), fail-safe SKIP this
+        # step -- never dispatch it with a missing/garbage value.
+        resolved_args, ref_skip = _resolve_step_args(dict(step.args), ctx.results)
+        if ref_skip is not None:
+            sr = StepResult(step=step, status="skipped", detail=f"{ref_skip} — step skipped")
+            ctx.results.append(sr)
+            outcome.steps.append(sr)
+            if on_step is not None:
+                on_step(sr)
+            continue
+
+        raw = dispatch(step.tool, resolved_args, data_dir)
         status = raw.get("status")
         if status == "ok":
             result = raw.get("result")

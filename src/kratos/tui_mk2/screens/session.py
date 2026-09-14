@@ -1102,7 +1102,7 @@ class SessionScreen(Screen):
                 for i, s in enumerate(preset.steps, 1):
                     host = "Kratos host" if is_local_host_tool(s["tool"]) else "target"
                     flags = "required" if s.get("required", True) else "optional"
-                    argstr = f"  args={s['args']}" if s.get("args") else ""
+                    argstr = f"  args: {self._format_step_args(s['args'])}" if s.get("args") else ""
                     whenstr = f"  when={s['when']!r}" if s.get("when") else ""
                     lines.append(f"  {i}. {s['tool']}  [{host}, {flags}]{argstr}{whenstr}")
             else:
@@ -1332,6 +1332,20 @@ class SessionScreen(Screen):
             f"Saved pipeline preset {preset.name!r} ({len(preset.steps)} step(s)). "
             "Run it with /preset-run, or schedule it with /schedule."))
 
+    def _format_step_args(self, args: dict[str, Any]) -> str:
+        """Human-readable step args, rendering a Piece C reference in plain
+        language ('ip = the top source IP from the "correlate" step') rather than
+        raw {from=…} syntax."""
+        from kratos.agent import pipeline_refs as _refs
+
+        parts: list[str] = []
+        for k, v in (args or {}).items():
+            if _refs.is_reference(v):
+                parts.append(f"{k} = {_refs.describe_reference(v)}")
+            else:
+                parts.append(f"{k}={v!r}")
+        return ", ".join(parts)
+
     def _pipeline_steps_note(self, steps: list[dict[str, Any]]) -> Any:
         """A compact, host/required/condition-labeled listing of a pipeline's
         steps (used by the in-place editor between actions)."""
@@ -1347,7 +1361,7 @@ class SessionScreen(Screen):
             body.append(s["tool"], style=f"bold {T.ACCENT}")
             body.append(f"  [{host}, {flags}]", style=T.TEXT_MUTED)
             if s.get("args"):
-                body.append(f"  args={s['args']}", style=T.TEXT_FAINT)
+                body.append(f"  {self._format_step_args(s['args'])}", style=T.TEXT_FAINT)
             if s.get("when"):
                 body.append(f"  when={s['when']!r}", style=T.TEXT_FAINT)
             if i < len(steps):
@@ -1392,7 +1406,8 @@ class SessionScreen(Screen):
             if pick == "__add__":
                 name = await self._pick_pipeline_tool()
                 if name is not None:
-                    step = await self._build_pipeline_step(name, is_first=not steps)
+                    step = await self._build_pipeline_step(
+                        name, is_first=not steps, prior_steps=steps)
                     if step is not None:
                         steps.append(step)
                 continue
@@ -1483,22 +1498,32 @@ class SessionScreen(Screen):
                 continue
             if pick.startswith("tool:"):
                 step = await self._build_pipeline_step(
-                    pick.split(":", 1)[1], is_first=not steps)
+                    pick.split(":", 1)[1], is_first=not steps, prior_steps=steps)
                 if step is not None:
                     steps.append(step)
 
-    async def _build_pipeline_step(self, name: str, *, is_first: bool = False) -> dict[str, Any] | None:
-        """Collect one step: prompt for any REQUIRED args (data_dir/target are
-        auto-handled), the fail-fast vs resilient choice (default fail-fast, per
-        the A2 decision), and an optional `when` condition (slice 4). Returns the
-        step dict, or None if cancelled."""
+    async def _build_pipeline_step(self, name: str, *, is_first: bool = False,
+                                   prior_steps: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+        """Collect one step: for each REQUIRED arg, either type a value OR thread
+        it from an earlier step's output (Piece C — menu-driven, no syntax);
+        then the fail-fast vs resilient choice (default fail-fast, per the A2
+        decision) and an optional `when` condition (slice 4). Returns the step
+        dict, or None if cancelled."""
         from kratos.agent.tools import TOOL_REGISTRY
 
+        prior_steps = prior_steps or []
         tool = TOOL_REGISTRY[name]
         params = getattr(tool, "parameters", {}) or {}
         args: dict[str, Any] = {}
         for pname in self._missing_required_args(tool, {}):
             spec = params.get(pname) or {}
+            # Piece C: offer threading this arg from an earlier compatible step.
+            ref = await self._maybe_thread_arg(name, pname, spec, prior_steps)
+            if ref is _CANCELLED:
+                return None
+            if ref is not None:
+                args[pname] = ref
+                continue
             hint = str(spec.get("description") or f"value for {pname}")[:80]
             val = await self.app.push_screen_wait(PromptModal(f"{name}: {pname}", hint))
             if val is None or not val.strip():
@@ -1517,10 +1542,82 @@ class SessionScreen(Screen):
         when = await self._pick_step_condition(name, is_first=is_first)
         if when is _CANCELLED:
             return None
-        step: dict[str, Any] = {"tool": name, "args": args, "required": required == "required"}
+        # Auto-assign a stable, unique label so a later step can reference this
+        # one BY NAME (Piece C) — a label survives reordering in the editor,
+        # unlike a positional index. (A forward reference created by reordering is
+        # caught at save-time re-validation.)
+        step: dict[str, Any] = {
+            "tool": name, "args": args, "required": required == "required",
+            "label": self._unique_step_label(name, prior_steps),
+        }
         if when:
             step["when"] = when
         return step
+
+    @staticmethod
+    def _unique_step_label(name: str, prior_steps: list[dict[str, Any]]) -> str:
+        """A label unique within the pipeline (the tool name, deduped) so
+        step-output references (Piece C) resolve by a stable name."""
+        existing = {s.get("label") for s in prior_steps if s.get("label")}
+        label, n = name, 2
+        while label in existing:
+            label, n = f"{name}-{n}", n + 1
+        return label
+
+    async def _maybe_thread_arg(self, consumer_tool: str, arg_name: str,
+                                spec: dict[str, Any], prior_steps: list[dict[str, Any]]) -> Any:
+        """Piece C usability: if an earlier step exposes a type-compatible
+        whitelisted output, offer to thread it into this arg — a producer picker
+        then a field picker, no reference syntax typed. Returns a reference dict
+        (thread it), None (type a value instead), or _CANCELLED (abort the step)."""
+        from kratos.agent import pipeline_refs as _refs
+
+        arg_type = str(spec.get("type") or "")
+        # (ref_from, display, [(field, label, needs_first)]) for each compatible producer.
+        producers: list[tuple[str, str, list[tuple[str, str, bool]]]] = []
+        for idx, s in enumerate(prior_steps, start=1):
+            fields = _refs.compatible_fields(arg_type, s.get("tool", ""))
+            if fields:
+                ref_from = s.get("label") or str(idx)
+                display = s.get("label") or f"step {idx}: {s.get('tool')}"
+                producers.append((ref_from, display, fields))
+        if not producers:
+            return None  # nothing to thread — caller prompts for a typed value
+
+        choice = await self.app.push_screen_wait(ListPickerModal(
+            f"{consumer_tool}: {arg_name}",
+            [("__type__", "type a value"),
+             ("__thread__", "use a result from an earlier step")],
+            subtitle="↑↓ pick · esc cancel this step"))
+        if choice is None:
+            return _CANCELLED
+        if choice == "__type__":
+            return None
+
+        prod = await self.app.push_screen_wait(ListPickerModal(
+            "Use a result from which step?",
+            [(rf, disp) for rf, disp, _ in producers], subtitle="↑↓ pick · esc cancel"))
+        if prod is None:
+            return _CANCELLED
+        fields = next(f for rf, _d, f in producers if rf == prod)
+        fpick = await self.app.push_screen_wait(ListPickerModal(
+            "Which value?",
+            [(fname, label + (" (first match)" if nf else "")) for fname, label, nf in fields],
+            subtitle="↑↓ pick · esc cancel"))
+        if fpick is None:
+            return _CANCELLED
+        needs_first = next(nf for fn, _l, nf in fields if fn == fpick)
+        ref: dict[str, Any] = {"from": prod, "field": fpick}
+        if needs_first:
+            ref["select"] = "first"
+        # Dependency warning (create-time) if the producer is optional/conditional.
+        prod_step = next((s for i, s in enumerate(prior_steps, 1)
+                          if (s.get("label") or str(i)) == prod), None)
+        if prod_step is not None and (not prod_step.get("required", True) or prod_step.get("when")):
+            self._emit(R.note_line(
+                f"Note: this step needs a value from '{prod}'. If '{prod}' is skipped (its "
+                "condition, or approval in an unattended run), this step is skipped too."))
+        return ref
 
     async def _pick_step_condition(self, name: str, *, is_first: bool) -> Any:
         """Offer an optional `when` condition for a step: always-run (the default),
