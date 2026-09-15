@@ -2012,9 +2012,21 @@ class SessionScreen(Screen):
             return None
         return _S.load_schedule(self._data_dir, name)
 
+    def _schedulable_presets(self) -> tuple[list, list]:
+        """Runnable presets split into (schedulable, ungraduated_generated). An
+        AI-drafted (`generated=True`) pipeline is EXCLUDED from schedules/groups
+        until it's been confirmed once interactively — it can't run unattended
+        (the headless runner refuses it), so scheduling it would just skip every
+        fire. Confirming it once (running /<name>) graduates it to schedulable."""
+        from kratos.agent import presets as _P
+
+        runnable = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable]
+        schedulable = [p for p in runnable if not getattr(p, "generated", False)]
+        ungraduated = [p for p in runnable if getattr(p, "generated", False)]
+        return schedulable, ungraduated
+
     async def _schedule_new(self) -> None:
         from kratos.agent import schedules as _S
-        from kratos.agent import presets as _P
         from kratos.agent import schedule_units as _U
         from kratos.agent.scheduled_run import active_backend_is_cloud
 
@@ -2031,10 +2043,19 @@ class SessionScreen(Screen):
         jobs: list[dict] = []
         on_failure = "continue"
         if kind == "preset":
-            presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable]
+            presets, ungraduated = self._schedulable_presets()
             if not presets:
-                self._emit(R.note_line("No runnable presets yet. Create one with /preset-new first."))
+                if ungraduated:
+                    self._emit(R.note_line(
+                        "Your runnable presets are all AI-drafted and not confirmed yet. Run one and "
+                        f"confirm it first (e.g. /{ungraduated[0].name}), then it can be scheduled."))
+                else:
+                    self._emit(R.note_line("No runnable presets yet. Create one with /preset-new first."))
                 return
+            if ungraduated:
+                self._emit(R.note_line(
+                    f"Not shown: {len(ungraduated)} AI-drafted preset(s) not confirmed yet — run one "
+                    "(/<name>) and confirm it to make it schedulable."))
 
             def _row(p: Any) -> str:
                 body = p.goal or (f"{len(p.steps)}-step pipeline" if p.is_pipeline else "")
@@ -2140,9 +2161,11 @@ class SessionScreen(Screen):
     async def _schedule_build_group_jobs(self):
         """Guided loop to build a group's ordered job list. Returns the list of
         jobs, or None if the user cancelled before adding any."""
-        from kratos.agent import presets as _P
-
-        presets = [p for p in _P.list_presets(self._data_dir)[0] if p.is_runnable]
+        presets, ungraduated = self._schedulable_presets()
+        if ungraduated:
+            self._emit(R.note_line(
+                f"Not shown as group jobs: {len(ungraduated)} AI-drafted preset(s) not confirmed yet "
+                "— run one (/<name>) and confirm it to make it schedulable."))
         jobs: list[dict] = []
         while True:
             entries = [("audit", "+ standard audit (deterministic, free)")]

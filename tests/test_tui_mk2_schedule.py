@@ -92,6 +92,31 @@ def test_schedule_new_preset_on_cloud_warns_and_can_abort(tmp_path, monkeypatch)
     assert S.list_schedules(tmp_path)[0] == []
 
 
+def test_schedulable_presets_excludes_ungraduated_generated(tmp_path, monkeypatch):
+    """A generated (AI-drafted, un-acknowledged) pipeline is excluded from the
+    schedulable set until it's graduated (confirmed once interactively) — so it
+    can't be scheduled into a timer that would skip every fire. Confirming it
+    (generated=False) makes it schedulable."""
+    from kratos.agent import presets as P
+
+    store, sid, screen = _make(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="normal", goal="hunt ssh brute force")
+    P.save_preset(tmp_path, name="drafted", kind="pipeline", generated=True,
+                  steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+
+    schedulable, ungraduated = screen._schedulable_presets()
+    assert "normal" in {p.name for p in schedulable}
+    assert "drafted" not in {p.name for p in schedulable}
+    assert [p.name for p in ungraduated] == ["drafted"]
+
+    # Graduate it -> now schedulable, no longer flagged.
+    P.save_preset(tmp_path, name="drafted", kind="pipeline", generated=False,
+                  steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+    schedulable2, ungraduated2 = screen._schedulable_presets()
+    assert "drafted" in {p.name for p in schedulable2}
+    assert ungraduated2 == []
+
+
 def test_schedule_run_now_invokes_worker(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
     S.save_schedule(tmp_path, name="wk", kind="audit", cadence="weekly")
