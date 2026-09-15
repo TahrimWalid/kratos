@@ -121,3 +121,16 @@ def test_model_and_target_need_approval_others_dont():
     assert ci.COMMANDS_NEEDING_APPROVAL == frozenset({"model", "target"})
     for name in ("report", "tools", "help", "rename", "timezone"):
         assert name not in ci.COMMANDS_NEEDING_APPROVAL
+
+
+def test_parse_pipeline_describe_nudge():
+    r = ci._parse("PIPELINE_DESCRIBE: scan then look up the top source IP")
+    assert r.kind == "pipeline_suggest"
+    assert r.preset_goal == "scan then look up the top source IP"
+    # No goal still surfaces the nudge (the flow prompts for a description).
+    assert ci._parse("PIPELINE_DESCRIBE:").kind == "pipeline_suggest"
+
+
+def test_pipeline_describe_capability_in_prompt():
+    sys = ci._system_prompt()
+    assert "PIPELINE_DESCRIBE" in sys and "/preset-describe" in sys

@@ -60,6 +60,7 @@ _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
     ("/plan", "preview a run's steps before it runs (or /plan gate on|off)"),
     ("/preset-new", "save a reusable investigation (guided: goal, or a tool pipeline)"),
+    ("/preset-describe", "describe a pipeline in words → Kratos drafts it for review"),
     ("/preset-run", "run a saved investigation or pipeline (pick from a list)"),
     ("/preset-scaffold", "write an editable pipeline-preset template file"),
     ("/preset-list", "list saved investigations"),
@@ -106,7 +107,7 @@ _BARE_COMMAND_WORDS = frozenset({
     "preset", "presets",
     "preset-new", "preset-list", "preset-ls", "preset-run", "preset-edit",
     "preset-delete", "preset-del", "preset-show", "preset-scaffold",
-    "preset-export", "preset-import",
+    "preset-export", "preset-import", "preset-describe",
     "doctor", "health", "usage", "context", "tools", "evolve", "help",
     "settings", "timezone",
 })
@@ -671,6 +672,8 @@ class SessionScreen(Screen):
         # needing inline quoted args typed past the menu).
         elif cmd == "/preset-new":
             self._preset_new_guided()
+        elif cmd in ("/preset-describe", "/describe"):
+            self._preset_describe_flow(rest)
         elif cmd in ("/preset-scaffold", "/preset-new-pipeline"):
             self._preset_scaffold(rest)
         elif cmd in ("/preset-list", "/preset-ls"):
@@ -907,7 +910,7 @@ class SessionScreen(Screen):
     # --- /preset (A2 Tier 1: saved natural-language investigation goals) ---
     _PRESET_USAGE = (
         "Usage: /preset list  ·  /preset new  (guided: goal or pipeline)  ·  "
-        "/preset run \"<name>\"  ·  /preset show \"<name>\"  ·  "
+        "/preset describe \"<goal>\"  ·  /preset run \"<name>\"  ·  /preset show \"<name>\"  ·  "
         "/preset edit \"<name>\"  ·  /preset delete \"<name>\"  ·  "
         "/preset scaffold \"<name>\"  ·  /preset export \"<name>\"  ·  "
         "/preset import <path>  ·  or just /<name> to run one"
@@ -937,6 +940,8 @@ class SessionScreen(Screen):
                 self._preset_new_guided()
         elif sub in ("scaffold", "new-pipeline"):
             self._preset_scaffold(args[0] if args else "")
+        elif sub == "describe":
+            self._preset_describe_flow(" ".join(args))
         elif sub == "export":
             self._preset_export(args)
         elif sub == "import":
@@ -1178,34 +1183,82 @@ class SessionScreen(Screen):
     def _preset_dispatch_run(self, preset: Any) -> None:
         """Route a resolved preset to the right runner: a deterministic PIPELINE
         goes to the pipeline turn worker (no LLM), a GOAL goes to the agentic
-        loop. A not-yet-runnable preset (unknown kind, empty, or a pipeline with
-        an invalid condition) is kept and its reason shown, never errored out."""
+        loop. An AI-GENERATED pipeline (A2 §5.6) first gets a danger-confirm
+        ('generated ≠ trusted-to-run', Stage 5). A not-yet-runnable preset
+        (unknown kind, empty, or an invalid pipeline) is kept and its reason
+        shown, never errored out."""
         from kratos.agent import presets as _P
 
-        if preset.is_runnable:
-            # Piece H: stamp last-run at launch (best-effort; the sidecar write
-            # never blocks or sinks the run).
-            _P.record_preset_run(self._data_dir, preset.name)
         if preset.is_runnable_pipeline:
-            from kratos.agent.pipeline import steps_from_specs
-
-            steps = steps_from_specs(preset.steps)
-            self._emit(R.note_line(
-                f"Running pipeline preset {preset.name!r} — {len(steps)} deterministic step(s), no LLM."))
-            self._run_pipeline_turn(
-                steps,
-                turn_label=f"/preset run {preset.name} (pipeline)",
-                intro=f"Pipeline preset {preset.name!r}: {len(steps)} step(s), same sequence every run.",
-                remember_label=f"/preset {preset.name}",
-                remember_kind="pipeline preset",
-                pin_target=preset.target or None,
-            )
+            if preset.generated:
+                # Stage 5: an extra, explicit confirm for AI-drafted steps, on top
+                # of the normal per-run approvals (which still apply).
+                self._danger_confirm_and_run(preset)
+            else:
+                self._start_pipeline_preset(preset)
         elif preset.is_runnable_tier1:
+            _P.record_preset_run(self._data_dir, preset.name)
             self._emit(R.note_line(f"Running preset {preset.name!r}: {preset.goal}"))
             self._preset_run_worker(preset.goal, preset.target)
         else:
             # Forward-compat: kept and shown, just not runnable in this build.
             self._emit(R.note_line(preset.unsupported_reason))
+
+    def _start_pipeline_preset(self, preset: Any) -> None:
+        """Run a runnable pipeline preset (records last-run, then the shared
+        deterministic turn worker). Assumes any generated-preset danger-confirm
+        has already passed."""
+        from kratos.agent import presets as _P
+        from kratos.agent.pipeline import steps_from_specs
+
+        _P.record_preset_run(self._data_dir, preset.name)
+        steps = steps_from_specs(preset.steps)
+        self._emit(R.note_line(
+            f"Running pipeline preset {preset.name!r} — {len(steps)} deterministic step(s), no LLM."))
+        self._run_pipeline_turn(
+            steps,
+            turn_label=f"/preset run {preset.name} (pipeline)",
+            intro=f"Pipeline preset {preset.name!r}: {len(steps)} step(s), same sequence every run.",
+            remember_label=f"/preset {preset.name}",
+            remember_kind="pipeline preset",
+            pin_target=preset.target or None,
+        )
+
+    @work
+    async def _danger_confirm_and_run(self, preset: Any) -> None:
+        """A2 §5.6 Stage 5: an AI-drafted pipeline is `generated=True` = "not yet
+        human-acknowledged to run". Before its FIRST run, name exactly what it
+        will run (which tool, on which host) and require an explicit confirm; that
+        confirm IS the acknowledgment, so accepting GRADUATES it (persist
+        `generated=False`) — it's a normal trusted pipeline thereafter, no more
+        per-run nag. Declining runs nothing and leaves it un-graduated."""
+        from kratos.agent import presets as _P
+        from kratos.agent.pipeline import is_local_host_tool
+
+        lines = []
+        for i, s in enumerate(preset.steps, 1):
+            host = "the Kratos host" if is_local_host_tool(s["tool"]) else (preset.target or "the target")
+            lines.append(f"{i}. {s['tool']} — on {host}")
+        body = ("This pipeline was DRAFTED BY AI from a description and hasn't been run yet. "
+                "Review what it will run:\n\n" + "\n".join(lines)
+                + "\n\nRun it now? (Confirming marks it acknowledged, so you won't be asked "
+                "again. Each step still follows Kratos's normal per-tool approvals.)")
+        ok = await self.app.push_screen_wait(ConfirmModal("Run this AI-generated pipeline?", body))
+        if not ok:
+            self._emit(R.note_line(
+                "Didn't run it. View it with /preset show, or edit it with /preset-edit."))
+            return
+        # Graduate: record the human's acknowledgment so it persists (confirm once,
+        # not every run). If the re-save fails, still run this once.
+        try:
+            _P.save_preset(self._data_dir, name=preset.name, kind="pipeline",
+                           steps=preset.steps, target=preset.target,
+                           created_at=preset.created_at, generated=False)
+            self._emit(R.note_line(
+                f"Acknowledged — {preset.name!r} is now a trusted pipeline (no confirm needed next time)."))
+        except _P.PresetError:
+            pass
+        self._start_pipeline_preset(preset)
 
     @work(thread=True, exclusive=True, group="turn")
     def _preset_run_worker(self, goal: str, target: str | None) -> None:
@@ -1267,6 +1320,124 @@ class SessionScreen(Screen):
             return
         self._emit(R.success_line(
             f"Saved preset {preset.name!r}. Run it with /preset run \"{preset.name}\"."))
+
+    # --- A2 §5.6 Stage 1: conversational pipeline authoring -------------
+    def _suggest_describe(self, goal: str | None) -> None:
+        """Conversational nudge (Decided #1): the message sounds like a multi-step
+        pipeline. SUGGEST /preset-describe — never auto-draft or auto-run."""
+        g = (goal or "").strip()
+        hint = f' /preset-describe "{g}"' if g else " /preset-describe"
+        self._emit(R.note_line(
+            "That sounds like a multi-step pipeline you could save and re-run. Want me to draft "
+            f"one for review? Try{hint}  (I'll show it before anything is saved)."))
+
+    @work
+    async def _preset_describe_flow(self, goal: str) -> None:
+        """A2 §5.6 Stage 1: draft a deterministic pipeline from a plain-language
+        description, show it IN FULL for review, and save it (never auto-run) as
+        a `kind="pipeline"` preset. The draft is an LLM step; the human reviews
+        the concrete steps, so the run itself stays deterministic/LLM-free."""
+        import asyncio
+
+        from kratos.agent import presets as _P
+        from kratos.agent.pipeline_draft import draft_pipeline
+        from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
+
+        goal = (goal or "").strip()
+        if not goal:
+            goal = await self.app.push_screen_wait(PromptModal(
+                "Describe a pipeline",
+                "e.g. scan the target, then look up the top source IP from the findings"))
+            if goal is None or not goal.strip():
+                return
+            goal = goal.strip()
+
+        self._emit(R.note_line(
+            "Drafting a pipeline from your description (LLM, a moment) — I'll show it for review "
+            "before anything is saved, and it runs deterministically once saved (no AI in the run)."))
+        draft = await asyncio.to_thread(draft_pipeline, goal, registry=TOOL_REGISTRY)
+        if draft.error:
+            self._emit(R.error_line(draft.error))
+            return
+
+        parsed = _P.parse_pipeline(draft.steps, registry=TOOL_REGISTRY)
+        # Stage 3 (A7-blocked): a drafted step naming a tool that doesn't exist is
+        # a real gap (the model had the full tool list). Stop honestly — don't
+        # save a pipeline that will fail at run, and don't try to CREATE the tool
+        # (that hand-off is blocked on A7's guided wrapper).
+        missing_tools = sorted({s["tool"] for s in parsed.steps if s["tool"] not in TOOL_REGISTRY})
+        if missing_tools:
+            self._emit(R.error_line(
+                f"That would need a tool that doesn't exist yet: {', '.join(missing_tools)}."))
+            self._emit(R.note_line(
+                "Kratos can't auto-create tools yet (that guided flow is coming). Try /evolve to "
+                "build one first, or rephrase the pipeline to use existing tools (/tools lists them)."))
+            return
+        if parsed.errors:
+            # A drafted reference/field/shape that isn't valid — stop honestly.
+            self._emit(R.error_line("I drafted a pipeline, but it isn't valid to save:"))
+            for e in parsed.errors[:6]:
+                self._emit(R.note_line(f"  • {e}"))
+            self._emit(R.note_line(
+                "This usually means it needs an output that isn't threadable yet. Build it "
+                "step-by-step with /preset-new, or rephrase and try /preset-describe again."))
+            return
+
+        self._emit(R.note_line("Drafted pipeline — review it before saving:"))
+        self._emit(self._pipeline_steps_note(parsed.steps))
+        for w in parsed.warnings:
+            self._emit(R.note_line(f"⚠ {w}"))
+        gated = sorted({s["tool"] for s in parsed.steps
+                        if tool_reaches_approval(TOOL_REGISTRY.get(s["tool"]))})
+        if gated:  # Stage 2 — reuse the standard approval-required wording.
+            self._emit(R.note_line(
+                f"Note: {', '.join(gated)} may pause for approval when run (and are skipped in an "
+                "unattended/scheduled run — set to 'auto' in Settings → Tools to include them)."))
+
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Save this drafted pipeline?",
+            "I drafted this from your description. Save it as a preset? You'll run it separately, "
+            "so you can read the steps first."))
+        if not ok:
+            self._emit(R.note_line(
+                "Didn't save the draft. Rephrase and try /preset-describe again, or build one with /preset-new."))
+            return
+
+        # Resolve a name (the draft suggests one; fall back to a prompt).
+        canonical = None
+        if draft.name:
+            name_ok, canonical, _err = _P.validate_preset_name(draft.name)
+            if not name_ok:
+                canonical = None
+        if canonical is None:
+            typed = await self.app.push_screen_wait(PromptModal(
+                "Name this preset", "Short name (e.g. weekly-audit)"))
+            if typed is None:
+                return
+            name_ok, canonical, err = _P.validate_preset_name(typed)
+            if not name_ok:
+                self._emit(R.error_line(err or "Invalid preset name."))
+                return
+        if _P.preset_exists(self._data_dir, canonical):
+            overwrite = await self.app.push_screen_wait(ConfirmModal(
+                "Overwrite preset?", f"A preset named {canonical!r} already exists. Replace it?"))
+            if not overwrite:
+                self._emit(R.note_line("Kept the existing preset — nothing changed."))
+                return
+
+        try:
+            preset, warnings = _P.save_preset_with_warnings(
+                self._data_dir, name=canonical, kind="pipeline", steps=parsed.steps, generated=True)
+        except _P.PresetError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        for w in warnings:
+            self._emit(R.note_line(f"⚠ {w}"))
+        # Decided #3: save-then-separately-run; name the run command so it's one keystroke.
+        self._emit(R.success_line(
+            f"Saved AI-drafted pipeline {preset.name!r}. Review it any time with /preset show "
+            f"\"{preset.name}\"; run it with /{preset.name} when ready (you'll get a confirm first, "
+            "since it's AI-generated)."))
 
     # --- A2 Tier 2: guided pipeline authoring ---------------------------
     @work
@@ -1393,9 +1564,16 @@ class SessionScreen(Screen):
                     self._emit(R.note_line("A pipeline needs at least one step — add one before saving."))
                     continue
                 try:
+                    # Preserve the generated/acknowledged state across an edit —
+                    # editing is one human act, not the graduation event (only an
+                    # accepted run-confirm graduates). Editing an un-acknowledged
+                    # AI draft keeps it un-acknowledged (confirm again on run —
+                    # the steps just changed); editing a trusted one keeps it
+                    # trusted. Trust never changes silently as a side effect.
                     _saved, warnings = _P.save_preset_with_warnings(
                         self._data_dir, name=preset.name, kind="pipeline", steps=steps,
-                        target=preset.target, created_at=preset.created_at)
+                        target=preset.target, created_at=preset.created_at,
+                        generated=preset.generated)
                 except _P.PresetError as e:
                     self._emit(R.error_line(str(e)))
                     continue
@@ -3323,6 +3501,15 @@ class SessionScreen(Screen):
             # "run my X preset" — resolve + run on the event loop (which may kick
             # its own investigation worker).
             self.app.call_from_thread(self._preset_run_conversational, route.preset_name)
+            self._set_busy(False)
+            return
+
+        if route.kind == "pipeline_suggest":
+            # A2 §5.6 nudge: the message sounds like a multi-step pipeline. Only
+            # SUGGEST /preset-describe — never auto-draft or auto-run (drafting is
+            # code generation; entry into it must be explicit). Same
+            # suggest-don't-auto-act shape as the tool_proposal auto-suggest.
+            self.app.call_from_thread(self._suggest_describe, route.preset_goal)
             self._set_busy(False)
             return
 

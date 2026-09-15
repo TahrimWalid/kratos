@@ -738,3 +738,196 @@ def test_preset_builder_threads_output_no_syntax(tmp_path, monkeypatch):
     assert p is not None and p.is_runnable_pipeline
     # The second step's ip arg is a structured reference (no syntax was typed).
     assert p.steps[1]["args"]["ip"] == {"from": "correlate_findings", "field": "top_source_ip"}
+
+
+def test_preset_describe_drafts_reviews_and_saves_generated(tmp_path, monkeypatch):
+    """A2 §5.6 Stage 1: /preset-describe drafts a pipeline, shows it, and on
+    confirm SAVES it as a generated pipeline preset (never auto-runs)."""
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
+        name="described", steps=[
+            {"tool": "run_nmap_scan", "label": "scan", "required": True},
+            {"tool": "correlate_findings", "label": "correlate", "required": True}]))
+    ran = {"n": 0}
+    monkeypatch.setattr(screen, "_run_pipeline_turn", lambda *a, **k: ran.__setitem__("n", ran["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "push_screen_wait", lambda modal: _yes(modal))
+
+            async def _yes(_m):  # the "Save this drafted pipeline?" confirm
+                return True
+
+            screen._dispatch_slash("/preset-describe hunt the attacker and check the IP")
+            for _ in range(150):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "described"):
+                    break
+
+    asyncio.run(_run())
+    p = P.load_preset(tmp_path, "described")
+    assert p is not None and p.kind == "pipeline" and p.generated is True
+    assert [s["tool"] for s in p.steps] == ["run_nmap_scan", "correlate_findings"]
+    assert ran["n"] == 0  # saved, NOT auto-run (Decided #3)
+
+
+def test_preset_describe_declined_saves_nothing(tmp_path, monkeypatch):
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
+        name="nope", steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}]))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _no(_m):
+                return False
+
+            monkeypatch.setattr(app, "push_screen_wait", _no)
+            screen._dispatch_slash("/preset-describe do a thing")
+            for _ in range(60):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert not P.preset_exists(tmp_path, "nope")
+
+
+def test_preset_describe_unknown_tool_honest_stop(tmp_path, monkeypatch):
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
+        name="gap", steps=[{"tool": "block_the_ip"}, {"tool": "correlate_findings"}]))
+    saved_confirm = {"asked": False}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _track(_m):
+                saved_confirm["asked"] = True
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _track)
+            screen._dispatch_slash("/preset-describe block the attacker")
+            for _ in range(60):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    # A missing tool stops before any save-confirm — nothing saved, no confirm shown.
+    assert not P.preset_exists(tmp_path, "gap")
+    assert saved_confirm["asked"] is False
+
+
+def test_generated_pipeline_run_danger_confirm_declined(tmp_path, monkeypatch):
+    """Stage 5: declining the danger-confirm for an AI-generated pipeline runs nothing."""
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="gen", kind="pipeline", generated=True,
+                  steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+    started = {"n": 0}
+    monkeypatch.setattr(screen, "_start_pipeline_preset",
+                        lambda preset: started.__setitem__("n", started["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _no(_m):
+                return False
+
+            monkeypatch.setattr(app, "push_screen_wait", _no)
+            screen._dispatch_slash("/preset run gen")
+            for _ in range(60):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert started["n"] == 0  # declined -> not run
+
+
+def test_generated_pipeline_run_danger_confirm_accepted(tmp_path, monkeypatch):
+    """Stage 5: confirming the danger-confirm runs the AI-generated pipeline."""
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="gen", kind="pipeline", generated=True,
+                  steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+    started = {"n": 0}
+    monkeypatch.setattr(screen, "_start_pipeline_preset",
+                        lambda preset: started.__setitem__("n", started["n"] + 1))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _yes(_m):
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
+            screen._dispatch_slash("/preset run gen")
+            for _ in range(60):
+                await pilot.pause()
+                if started["n"] > 0:
+                    break
+
+    asyncio.run(_run())
+    assert started["n"] == 1  # confirmed -> ran
+    # Graduation: accepting the confirm persists generated=False, so it's a
+    # trusted pipeline thereafter (no more per-run danger-confirm).
+    assert P.load_preset(tmp_path, "gen").generated is False
+
+
+def test_generated_flag_survives_edit(tmp_path, monkeypatch):
+    """Editing a pipeline preserves its generated/acknowledged state — only an
+    accepted run-confirm graduates it, never a silent side effect of editing."""
+    from kratos.tui_mk2.modals import ListPickerModal
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="gen", kind="pipeline", generated=True,
+                  steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Toggle the first step's fail-fast, then save — an edit, not a graduation.
+            picks = iter(["edit:0", "__save__"])
+
+            async def _answer(modal):
+                title = getattr(modal, "_title", "") or ""
+                if isinstance(modal, ListPickerModal):
+                    if title.startswith("Edit pipeline"):
+                        return next(picks)
+                    if title.startswith("Step 1"):
+                        return "required"   # toggle fail-fast
+                return None
+
+            monkeypatch.setattr(app, "push_screen_wait", _answer)
+            screen._dispatch_slash("/preset edit gen")
+            for _ in range(120):
+                await pilot.pause()
+                p = P.load_preset(tmp_path, "gen")
+                if p and not p.steps[0].get("required", True):
+                    break
+
+    asyncio.run(_run())
+    p = P.load_preset(tmp_path, "gen")
+    assert p.steps[0]["required"] is False   # the edit landed
+    assert p.generated is True                # …and the flag was preserved
+
+
+def test_suggest_describe_only_nudges(tmp_path, monkeypatch):
+    """The conversational nudge SUGGESTS /preset-describe, never auto-drafts."""
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    emitted = []
+    monkeypatch.setattr(screen, "_emit", lambda r: emitted.append(r))
+    screen._suggest_describe("scan then look up the ip")
+    text = " ".join(getattr(r, "plain", str(r)) for r in emitted)
+    assert "/preset-describe" in text

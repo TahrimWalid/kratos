@@ -180,6 +180,16 @@ def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[
         return "error", [], f"preset '{preset_name}' is missing (was it deleted?)"
 
     if preset.is_runnable_pipeline:
+        # A2 §5.6 Stage 5, headless arm: an AI-drafted pipeline is `generated=True`
+        # = "not yet human-acknowledged to run". It CANNOT run unattended until a
+        # human has acknowledged it live at least once (the interactive
+        # danger-confirm graduates it to generated=False). This closes the
+        # schedule-an-AI-draft bypass; after graduation it schedules normally.
+        if getattr(preset, "generated", False):
+            return "error", [], (
+                f"AI-drafted pipeline '{preset_name}' hasn't been confirmed yet — run it once "
+                "interactively (you'll get a confirm) before it can run unattended.")
+
         from kratos.agent.pipeline import run_pipeline, steps_from_specs
 
         outcome = run_pipeline(steps_from_specs(preset.steps), data_dir)

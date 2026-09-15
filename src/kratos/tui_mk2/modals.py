@@ -297,6 +297,7 @@ class HelpModal(ModalScreen[None]):
                 ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
                 ("/plan [preset|goal]", "Preview a run's steps before it runs (/plan gate on|off toggles auto-preview)"),
                 ("/preset-new", "Save a reusable investigation — a plain-language goal, or a tool pipeline"),
+                ("/preset-describe", "Describe a pipeline in words → Kratos drafts it for your review"),
                 ("/preset-run / -list", "Run (goal or pipeline) or list your saved presets — or just /<name>"),
                 ("/preset-edit / -delete", "Edit (goal or pipeline steps) or delete a preset (pick from a list)"),
                 ("/preset-scaffold", "Write an editable pipeline-preset template file (power users)"),

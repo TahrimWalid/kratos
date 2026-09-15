@@ -54,6 +54,7 @@ _CLARIFY_HOST_SENTINEL = "CLARIFY_HOST"
 _COMMAND_PREFIX = "COMMAND:"
 _PRESET_NEW_PREFIX = "PRESET_NEW:"
 _PRESET_RUN_PREFIX = "PRESET_RUN:"
+_PIPELINE_DESCRIBE_PREFIX = "PIPELINE_DESCRIBE:"
 _MAX_TOKENS = 220
 
 
@@ -68,6 +69,8 @@ _MAX_TOKENS = 220
 CAPABILITIES: list[tuple[str, str]] = [
     ("/preset-new, /preset-run, /preset-list",
      "SAVE a named investigation (a 'preset' / reusable macro) once and re-run it anytime"),
+    ("/preset-describe",
+     "DESCRIBE a multi-step pipeline in plain words and Kratos drafts it for you to review + save"),
     ("/run", "run a fixed, deterministic 'standard audit' of the target (same checks every run)"),
     ("/evolve", "write a brand-new tool when an existing one doesn't cover a gap"),
     ("/doctor", "self-diagnostic of Kratos's own setup (LLM, target, tools)"),
@@ -112,8 +115,17 @@ def _system_prompt() -> str:
         f"   {_PRESET_RUN_PREFIX} <name>\n"
         f"   Examples: 'run my weekly-audit preset' -> '{_PRESET_RUN_PREFIX} weekly-audit'  ·  "
         f"'execute the preset called nightly' -> '{_PRESET_RUN_PREFIX} nightly'\n"
-        "6. Anything else (greetings, thanks, questions about what you are or can do, small "
+        f"6. A request to BUILD A MULTI-STEP / CHAINED PIPELINE — the user describes several tool "
+        f"steps in sequence, or feeding one step's OUTPUT into the next (e.g. 'make a pipeline that "
+        f"scans, then looks up the top source IP from the findings', 'run A then B then use its "
+        f"result in C') -> respond with EXACTLY one line:\n"
+        f"   {_PIPELINE_DESCRIBE_PREFIX} <the workflow described in plain words>\n"
+        f"   This is a SUGGESTION only (Kratos will offer to draft it); use it just for clearly "
+        f"multi-step/chained requests, NOT a single 'investigate the target'.\n"
+        "7. Anything else (greetings, thanks, questions about what you are or can do, small "
         "talk) -> reply normally and conversationally as Kratos: helpful, brief, no markdown.\n\n"
+        "For 4 vs 5 vs 6: PRESET_NEW = save ONE natural-language goal; PIPELINE_DESCRIBE = an "
+        "explicitly MULTI-STEP/chained workflow; PRESET_RUN = run an EXISTING preset by name. "
         "For 4 vs 5: use PRESET_NEW only when the user clearly wants to SAVE/CREATE a preset "
         "(save/remember/create a preset/macro), and PRESET_RUN only when they clearly want to RUN "
         "an EXISTING one by name. A plain 'investigate the target' with no mention of a preset is "
@@ -126,7 +138,7 @@ def _system_prompt() -> str:
         "UNAMBIGUOUSLY means the Kratos machine itself -- e.g. 'check your own host', 'how's "
         "this machine you run on', 'is the Kratos host itself okay', 'scan yourself'. A bare "
         "'is everything okay' or 'check for intrusions' means the target, not you.\n"
-        f"7. If -- and only if -- the user clearly wants an investigation but you genuinely cannot "
+        f"8. If -- and only if -- the user clearly wants an investigation but you genuinely cannot "
         f"tell whether they mean the monitored target or the Kratos host itself, and getting it "
         f"wrong would investigate the wrong machine -> respond with EXACTLY: {_CLARIFY_HOST_SENTINEL}. "
         "Use this rarely; when the default-to-target rule resolves it, just use it."
@@ -135,7 +147,7 @@ def _system_prompt() -> str:
 
 @dataclass
 class RouteResult:
-    kind: str                      # "command"|"investigate"|"investigate_host"|"clarify_host"|"preset_new"|"preset_run"|"chat"|"failed"
+    kind: str                      # "command"|"investigate"|"investigate_host"|"clarify_host"|"preset_new"|"preset_run"|"pipeline_suggest"|"chat"|"failed"
     command: str | None = None     # for kind == "command"
     args: str = ""                 # for kind == "command"
     reply: str | None = None       # for kind == "chat"
@@ -169,6 +181,11 @@ def _parse(response: str) -> RouteResult:
         if name:
             return RouteResult(kind="preset_run", preset_name=name)
         return RouteResult(kind="chat", reply=text)
+    if text.upper().startswith(_PIPELINE_DESCRIBE_PREFIX):
+        # A2 §5.6 nudge: SUGGEST /preset-describe (never auto-draft/run). A missing
+        # goal still surfaces the nudge (the flow will prompt for a description).
+        goal = text[len(_PIPELINE_DESCRIBE_PREFIX):].strip()
+        return RouteResult(kind="pipeline_suggest", preset_goal=goal or None)
     if text.upper().startswith(_COMMAND_PREFIX):
         body = text[len(_COMMAND_PREFIX):].strip()
         if "|" in body:

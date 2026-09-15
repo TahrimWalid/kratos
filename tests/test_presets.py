@@ -579,3 +579,18 @@ def test_reference_pipeline_lists_when_broken(tmp_path):
     assert loaded.is_runnable_pipeline is False and loaded.pipeline_errors
     presets, errors = P.list_presets(tmp_path)
     assert "bad" in [p.name for p in presets] and errors == []
+
+
+def test_save_generated_pipeline_round_trips(tmp_path):
+    saved = P.save_preset(tmp_path, name="drafted", kind="pipeline", generated=True, steps=[
+        {"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+    assert saved.generated is True
+    reloaded = P.load_preset(tmp_path, "drafted")
+    assert reloaded.generated is True and reloaded.is_runnable_pipeline
+    data = tomllib.loads(saved.path.read_text(encoding="utf-8"))
+    assert data.get("generated") is True
+    # A hand-saved (non-generated) preset defaults to generated=False.
+    plain = P.save_preset(tmp_path, name="hand", kind="pipeline",
+                          steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+    assert plain.generated is False
+    assert "generated" not in tomllib.loads(plain.path.read_text(encoding="utf-8"))

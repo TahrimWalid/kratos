@@ -250,6 +250,9 @@ class Preset:
     steps: list[dict[str, Any]] = field(default_factory=list)
     pipeline_errors: list[str] = field(default_factory=list)
     has_conditions: bool = False
+    # True for an AI-DRAFTED preset (A2 §5.6 /preset-describe). Informational +
+    # used to gate running with a danger-confirm ("generated ≠ trusted-to-run").
+    generated: bool = False
 
     @property
     def is_pipeline(self) -> bool:
@@ -388,12 +391,15 @@ def _toml_inline_table(d: dict[str, Any]) -> str:
 def _dump_preset_toml(
     *, name: str, kind: str, target: Optional[str], goal: Optional[str],
     created_at: Optional[str], steps: Optional[list[dict[str, Any]]] = None,
+    generated: bool = False,
 ) -> str:
     lines = [
         "# Kratos preset — editable by hand or via /preset. `kind` selects how it runs.",
         f"name = {_toml_basic_string(name)}",
         f"kind = {_toml_basic_string(kind)}",
     ]
+    if generated:
+        lines.append("generated = true")
     if target:
         lines.append(f"target = {_toml_basic_string(target)}")
     if created_at:
@@ -461,7 +467,7 @@ def _preset_from_dict(data: dict[str, Any], path: Path, stem: str) -> Preset:
     return Preset(name=name, kind=kind, goal=goal, target=target,
                   created_at=created_at, path=path, raw=dict(data),
                   steps=steps, pipeline_errors=pipeline_errors,
-                  has_conditions=has_conditions)
+                  has_conditions=has_conditions, generated=bool(data.get("generated", False)))
 
 
 def preset_exists(data_dir: Path, name: str) -> bool:
@@ -519,6 +525,7 @@ def save_preset(
     kind: str = "goal",
     created_at: Optional[str] = None,
     steps: Optional[list[dict[str, Any]]] = None,
+    generated: bool = False,
 ) -> Preset:
     """Validate and atomically write a preset, returning the reloaded Preset.
     Raises PresetError on an invalid name, an empty goal for a goal preset, or a
@@ -530,7 +537,7 @@ def save_preset(
     this thin wrapper keeps the common (warning-free) call site simple."""
     preset, _warnings = save_preset_with_warnings(
         data_dir, name=name, goal=goal, target=target, kind=kind,
-        created_at=created_at, steps=steps)
+        created_at=created_at, steps=steps, generated=generated)
     return preset
 
 
@@ -543,6 +550,7 @@ def save_preset_with_warnings(
     kind: str = "goal",
     created_at: Optional[str] = None,
     steps: Optional[list[dict[str, Any]]] = None,
+    generated: bool = False,
 ) -> tuple[Preset, list[str]]:
     """Like `save_preset`, but also returns advisory warnings (unknown tool /
     unknown arg-name / stripped data_dir|target) so a UI can surface them. The
@@ -585,6 +593,7 @@ def save_preset_with_warnings(
         goal=(goal_clean if kind == "goal" else None),
         created_at=(created_at or utc_now_iso()),
         steps=(norm_steps if kind == "pipeline" else None),
+        generated=generated,
     )
     _atomic_write(path, text)
     reloaded = load_preset(data_dir, canonical)

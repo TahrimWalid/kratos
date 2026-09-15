@@ -323,3 +323,33 @@ def test_pipeline_preset_in_group_runs(tmp_path, monkeypatch):
     assert len(rec["jobs"]) == 2
     preset_job = [j for j in rec["jobs"] if j["kind"] == "preset"][0]
     assert preset_job["status"] == "completed"
+
+
+def test_headless_refuses_ungraduated_generated_pipeline_then_runs(tmp_path, monkeypatch):
+    from kratos.agent import presets as P
+
+    # An AI-drafted (generated=True) pipeline must NOT run unattended until a
+    # human has acknowledged it live (graduating it to generated=False).
+    P.save_preset(tmp_path, name="ai", kind="pipeline", generated=True, steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True}])
+    sch = S.save_schedule(tmp_path, name="aisched", kind="preset", preset="ai",
+                          cadence="daily", deliver=["ntfy"])
+
+    dispatch, calls = _pipeline_dispatch([{"id": "X", "severity": "low"}])
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
+    spy = _Spy()
+
+    rec = W.run_scheduled(sch, tmp_path, notifier=spy)
+    assert rec["status"] == "error"
+    assert rec["error"] and "hasn't been confirmed" in rec["error"]
+    assert calls == []                      # nothing dispatched
+    assert rec["notified"] is True          # a refused run still notifies
+
+    # Graduate it (as an accepted interactive confirm would), then it schedules.
+    P.save_preset(tmp_path, name="ai", kind="pipeline", generated=False, steps=[
+        {"tool": "run_nmap_scan", "required": True},
+        {"tool": "correlate_findings", "required": True}])
+    rec2 = W.run_scheduled(sch, tmp_path, notifier=_Spy())
+    assert rec2["status"] == "completed"
+    assert calls == ["run_nmap_scan", "correlate_findings"]
