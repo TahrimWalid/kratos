@@ -1098,6 +1098,9 @@ class SessionScreen(Screen):
             return
         head = (f"kind: {preset.kind}\n"
                 f"target: {preset.target or '— (uses the active target)'}\n")
+        if getattr(preset, "generated", False):
+            head += ("status: AI-drafted, not yet confirmed — running it asks you to confirm once "
+                     "(and it can't be scheduled until then)\n")
         if preset.is_pipeline:
             from kratos.agent.pipeline import is_local_host_tool
 

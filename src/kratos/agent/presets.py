@@ -188,6 +188,15 @@ def parse_pipeline(raw_steps: Any, *, registry: Optional[dict[str, Any]] = None)
         # so a reference can never name a later/same step.
         from kratos.agent import pipeline_refs as _refs
         for arg_name, arg_val in list(args.items()):
+            # A dict arg carrying only one of from/field is an INCOMPLETE reference
+            # (a hand-edit typo) — reject it rather than silently saving it as a
+            # literal dict that fails cryptically at run.
+            if (isinstance(arg_val, dict) and not _refs.is_reference(arg_val)
+                    and ("from" in arg_val or "field" in arg_val)):
+                parse.errors.append(
+                    f"step {i} ({tool}): {arg_name} looks like an incomplete step-output "
+                    "reference — it needs both `from` and `field`")
+                continue
             if not _refs.is_reference(arg_val):
                 continue
             try:
@@ -753,10 +762,16 @@ def import_preset_file(
             f"A preset named '{canonical}' already exists — delete it first, or import with overwrite.")
 
     kind = str(parsed.get("kind") or "goal").strip().lower() or "goal"
+    # Preserve the AI-drafted/acknowledged state (A2 §5.6): an imported
+    # `generated=True` pipeline has NOT been acknowledged on THIS machine, so it
+    # must stay un-graduated (require a live confirm before it can run / schedule).
+    # Importing is not itself the run-acknowledgment.
+    imported_generated = bool(parsed.get("generated", False))
     if kind == "pipeline":
         return save_preset_with_warnings(
             data_dir, name=canonical, kind="pipeline", steps=parsed.get("steps"),
-            target=parsed.get("target"), created_at=parsed.get("created_at"))
+            target=parsed.get("target"), created_at=parsed.get("created_at"),
+            generated=imported_generated)
     if kind == "goal":
         preset = save_preset(
             data_dir, name=canonical, goal=parsed.get("goal"),

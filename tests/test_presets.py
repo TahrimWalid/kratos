@@ -594,3 +594,47 @@ def test_save_generated_pipeline_round_trips(tmp_path):
                           steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
     assert plain.generated is False
     assert "generated" not in tomllib.loads(plain.path.read_text(encoding="utf-8"))
+
+
+def test_import_preserves_generated_flag(tmp_path):
+    # An imported AI-drafted pipeline stays un-graduated (not acknowledged HERE).
+    src = tmp_path / "ai.toml"
+    src.write_text('name = "ai"\nkind = "pipeline"\ngenerated = true\n'
+                   '[[steps]]\ntool = "run_nmap_scan"\n'
+                   '[[steps]]\ntool = "correlate_findings"\n', encoding="utf-8")
+    preset, _w = P.import_preset_file(tmp_path, src)
+    assert preset.generated is True
+    assert P.load_preset(tmp_path, "ai").generated is True
+    # A non-generated import stays trusted.
+    src2 = tmp_path / "hand.toml"
+    src2.write_text('name = "hand"\nkind = "pipeline"\n'
+                    '[[steps]]\ntool = "run_nmap_scan"\n'
+                    '[[steps]]\ntool = "correlate_findings"\n', encoding="utf-8")
+    p2, _ = P.import_preset_file(tmp_path, src2)
+    assert p2.generated is False
+
+
+def test_incomplete_reference_rejected_at_save_and_listed_on_load(tmp_path):
+    # A dict arg with only `from` (or only `field`) is an incomplete reference,
+    # not a literal — reject at save.
+    with pytest.raises(PresetError):
+        P.save_preset(tmp_path, name="partial", kind="pipeline", steps=[
+            {"tool": "correlate_findings", "label": "c"},
+            {"tool": "check_ip_reputation", "args": {"ip": {"from": "c"}}}])  # missing field
+    with pytest.raises(PresetError):
+        P.save_preset(tmp_path, name="partial2", kind="pipeline", steps=[
+            {"tool": "correlate_findings", "label": "c"},
+            {"tool": "check_ip_reputation", "args": {"ip": {"field": "top_source_ip"}}}])  # missing from
+    # A hand-edited file with a partial ref lists (tolerant) but isn't runnable.
+    d = P.presets_dir(tmp_path)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "he.toml").write_text(
+        'name = "he"\nkind = "pipeline"\n'
+        '[[steps]]\ntool = "correlate_findings"\nlabel = "c"\n'
+        '[[steps]]\ntool = "check_ip_reputation"\nargs = { ip = { from = "c" } }\n',
+        encoding="utf-8")
+    loaded = P.load_preset(tmp_path, "he")
+    assert loaded.is_runnable_pipeline is False
+    assert any("incomplete" in e for e in loaded.pipeline_errors)
+    presets, errors = P.list_presets(tmp_path)
+    assert "he" in [p.name for p in presets] and errors == []
