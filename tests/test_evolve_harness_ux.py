@@ -34,6 +34,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from kratos.cli import repl
+from kratos.agent import guided_evolve
 
 
 LONG_IDEA = "Add a tool that lists which users have sudo access on the monitored target via SSH"
@@ -162,13 +163,13 @@ def test_returns_sudo_members_list(registered_handler):
 
 
 def test_draft_returns_none_when_llm_unavailable():
-    with patch.object(repl, "agent_chat", return_value=None):
+    with patch.object(guided_evolve, "agent_chat", return_value=None):
         result = repl._draft_evolve_harness(MagicMock(), "list_sudo_members", LONG_IDEA)
     assert result is None
 
 
 def test_draft_returns_code_on_valid_response():
-    with patch.object(repl, "agent_chat", return_value=_VALID_DRAFT):
+    with patch.object(guided_evolve, "agent_chat", return_value=_VALID_DRAFT):
         result = repl._draft_evolve_harness(MagicMock(), "list_sudo_members", LONG_IDEA)
     assert result is not None
     assert 'TOOL_NAME = "list_sudo_members"' in result
@@ -177,7 +178,7 @@ def test_draft_returns_code_on_valid_response():
 
 def test_draft_strips_markdown_fences():
     fenced = f"```python\n{_VALID_DRAFT}\n```"
-    with patch.object(repl, "agent_chat", return_value=fenced):
+    with patch.object(guided_evolve, "agent_chat", return_value=fenced):
         result = repl._draft_evolve_harness(MagicMock(), "list_sudo_members", LONG_IDEA)
     assert result is not None
     assert "```" not in result
@@ -185,7 +186,7 @@ def test_draft_strips_markdown_fences():
 
 
 def test_draft_rejects_invalid_python():
-    with patch.object(repl, "agent_chat", return_value="this is not python code {{{"):
+    with patch.object(guided_evolve, "agent_chat", return_value="this is not python code {{{"):
         result = repl._draft_evolve_harness(MagicMock(), "list_sudo_members", LONG_IDEA)
     assert result is None
 
@@ -197,7 +198,7 @@ def test_draft_rejects_wrong_tool_name():
     wrong_name_draft = _VALID_DRAFT.replace(
         'TOOL_NAME = "list_sudo_members"', 'TOOL_NAME = "some_other_tool"'
     )
-    with patch.object(repl, "agent_chat", return_value=wrong_name_draft):
+    with patch.object(guided_evolve, "agent_chat", return_value=wrong_name_draft):
         result = repl._draft_evolve_harness(MagicMock(), "list_sudo_members", LONG_IDEA)
     assert result is None
 
@@ -349,7 +350,7 @@ def test_failed_draft_falls_back_to_static_template(tmp_path, monkeypatch):
 # _suggest_evolve_tool_name / _resolve_evolve_tool_name -- LLM-based naming
 # ---------------------------------------------------------------------------
 def test_suggest_tool_name_returns_none_when_llm_unavailable():
-    with patch.object(repl, "agent_chat", return_value=None):
+    with patch.object(guided_evolve, "agent_chat", return_value=None):
         result = repl._suggest_evolve_tool_name(LONG_IDEA)
     assert result is None
 
@@ -358,7 +359,7 @@ def test_suggest_tool_name_sanitizes_the_response():
     # Reuses _slugify_name_hint on whatever the LLM returns -- a clean
     # snake_case reply survives unchanged, but this must also cope with an
     # LLM adding stray formatting rather than trusting the prompt alone.
-    with patch.object(repl, "agent_chat", return_value="  `list_sudo_members`  "):
+    with patch.object(guided_evolve, "agent_chat", return_value="  `list_sudo_members`  "):
         result = repl._suggest_evolve_tool_name(LONG_IDEA)
     assert result == "list_sudo_members"
 

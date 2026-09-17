@@ -64,7 +64,11 @@ from typing import Any
 from kratos.agent import console as _console
 from kratos.agent.tools import request_approval
 from kratos.agent.self_test import SandboxTestResult
-from kratos.agent.self_review_flags import scan_review_flags, format_review_flags_for_display
+from kratos.agent.self_review_flags import (
+    scan_review_flags,
+    format_review_flags_plain,
+)
+from kratos.agent.self_smoke import smoke_test_available, run_live_smoke_test, SmokeResult
 
 # Phase 3b.7: shown verbatim on EVERY approval prompt, not just as a design-
 # doc note -- directly encodes the two real, confirmed lessons from Phase
@@ -189,21 +193,98 @@ def _ask_requires_approval(tool_name: str) -> bool:
     to request_approval itself.
     """
     allow_unattended = request_approval(
-        f"UNATTENDED EXECUTION: {tool_name}",
+        f"Let '{tool_name}' run on its own?",
         {
             "question": (
-                "Allow this tool to execute WITHOUT a human approval prompt on every future "
-                "invocation?"
+                f"From now on, should '{tool_name}' be allowed to run automatically, WITHOUT "
+                "asking you first each time?"
+            ),
+            "recommended": (
+                "Recommended: NO for now. Keep it asking you first until you've seen it work a few "
+                "times and trust it -- you can switch it to automatic later in Settings -> Tools."
             ),
             "note": (
-                "Answer 'y' ONLY if you want this tool to run unattended from now on. Anything "
-                "else -- including no answer, an interrupted prompt, or any input other than "
-                "exactly 'y' -- leaves it requiring approval on every future call. This is the "
-                "fail-safe default: when in doubt, this tool keeps requiring approval."
+                "Answer 'y' ONLY if you want it to run unattended. Anything else -- no answer, a "
+                "cancelled prompt, or any key other than 'y' -- keeps it asking you first (the "
+                "safe default)."
             ),
         },
     )
+    # Inverted on purpose: request_approval returns True only on an explicit
+    # 'y', and its fail-safe (any non-'y'/interrupt -> False) then maps to the
+    # SAFE default requires_approval=True for free. The wording above is
+    # friendlier than the old "UNATTENDED EXECUTION" framing but the mechanism
+    # is unchanged (A7 keep-prompt reframe).
     return not allow_unattended
+
+
+def _format_smoke_result(smoke: SmokeResult, target: str) -> str:
+    if not smoke.ran:
+        return (
+            f"The live check did NOT run ({smoke.duration_seconds:.1f}s): {smoke.error}\n"
+            "(This says nothing about whether the tool is correct -- decide on the code + test below.)"
+        )
+    if smoke.ok:
+        return (
+            f"Ran against the REAL target {target} in {smoke.duration_seconds:.1f}s and returned:\n"
+            f"{smoke.output}\n\n"
+            "Compare this to what the real target SHOULD return. If it looks empty, wrong, or "
+            "unlike reality, the tool has a gap its mocked test hid -- discard and fix it."
+        )
+    return (
+        f"Ran against the REAL target {target} in {smoke.duration_seconds:.1f}s but FAILED:\n"
+        f"{smoke.error}\n\n"
+        "The tool errors against the real target even though it passed its MOCKED test -- a real "
+        "mock-vs-live gap. Discarding and fixing it is strongly advised."
+    )
+
+
+def _offer_and_run_smoke(
+    candidate_path: Path, tool_name: str, source_code: str, review_flags,
+) -> str | None:
+    """A7 optional live-target smoke test. Offered (opt-in, default skip) ONLY
+    for a target-facing candidate with a real target configured. The offer shows
+    the full source + review flags FIRST (informed consent: the reviewer sees
+    the code before choosing to run it), and warns plainly that this executes
+    the candidate for real, unsandboxed, against the live target. Read-only by
+    intent -- the human's consent after reading the code is the boundary, there
+    is no sandbox here. Returns a human-facing summary of what the live run did,
+    or None if unavailable/declined. Never keeps anything; only informs the keep
+    decision that follows."""
+    from kratos.kratos_config import get_active_target
+
+    target = get_active_target()
+    if not smoke_test_available(source_code, target):
+        return None
+
+    offer_details: dict[str, Any] = {
+        "what this is": (
+            f"'{tool_name}' passed a test that fed it FAKE (mocked) target data. You can optionally "
+            f"run it ONCE against the REAL target ({target}) right now, read-only, to see what it "
+            "actually returns -- this is how you catch a tool that looks right but breaks live "
+            "(wrong command, permission denied, empty output)."
+        ),
+        "IMPORTANT -- this RUNS the tool for real": (
+            "Choosing yes executes the code below on THIS machine, unsandboxed, reaching the live "
+            "target -- whatever command the tool contains WILL run. Read the code first. The tool "
+            "is NOT kept by this; you still decide that afterward."
+        ),
+        "things to check first": _cap_for_display(format_review_flags_plain(review_flags)),
+        "the exact code that will run": _cap_for_display(source_code),
+        "action": (
+            "Run this live check now? 'y' = run it once against the real target, anything else = "
+            "skip it and go straight to the keep decision."
+        ),
+    }
+    if not request_approval(f"LIVE CHECK (read-only): {tool_name}", offer_details):
+        return None
+
+    _console.render_note(
+        _console.get_stderr_console(),
+        f"Running '{tool_name}' once against {target} (live, read-only)…",
+    )
+    smoke = run_live_smoke_test(candidate_path, tool_name)
+    return _format_smoke_result(smoke, target)
 
 
 def _prompt_for_keep_decision(
@@ -231,22 +312,30 @@ def _prompt_for_keep_decision(
     # accompanying textual guidance shown on every prompt.
     review_flags = scan_review_flags(source_code)
 
+    # A7 optional live-target smoke test: offered (opt-in) BEFORE the keep
+    # decision, for a target-facing candidate with a real target. Its result is
+    # folded into the keep details below so the human decides WITH the live
+    # evidence in hand. Skipped/declined -> None -> the keep prompt is unchanged.
+    smoke_summary = _offer_and_run_smoke(candidate_path, tool_name, source_code, review_flags)
+
     details: dict[str, Any] = {
-        "candidate_file": str(candidate_path),
-        "tool_name": label,
-        "review_flags (READ THIS FIRST)": _cap_for_display(format_review_flags_for_display(review_flags)),
-        "reviewer_guidance": REVIEWER_GUIDANCE,
-        "source_code (new file -- diff against nothing)": _cap_for_display(source_code),
-        "sub_test_results": _cap_for_display(_subtest_summary(test_result.stdout)),
+        "what just happened": (
+            f"A new tool, '{label}', was written and PASSED its test -- so it does what the test "
+            "says. Keeping it lets Kratos use it from now on. It does NOT run right now."
+        ),
+        **({"live target check (read-only)": _cap_for_display(smoke_summary)} if smoke_summary else {}),
+        "things to check first": _cap_for_display(format_review_flags_plain(review_flags)),
+        "how to review": REVIEWER_GUIDANCE,
+        "the tool's code (read it -- this runs on your machine once kept)": _cap_for_display(source_code),
+        "test results": _cap_for_display(_subtest_summary(test_result.stdout)),
         "exit_code": test_result.exit_code,
         "duration_seconds": round(test_result.duration_seconds, 2),
         "attempt_history": _cap_for_display(_format_attempt_history(attempt_history)),
+        "candidate_file": str(candidate_path),
         "action": (
-            "Approve KEEPING this candidate as a registered Kratos tool? This does NOT run it "
-            "now and does NOT grant unattended execution by itself -- it only persists the file "
-            "and marks it for registration (Part D) plus one follow-up question about future "
-            "approval requirements. 'y' = keep, anything else (including no answer or an "
-            "interrupted prompt) = permanently discard."
+            f"Keep '{label}' so Kratos can use it? 'y' = keep it, anything else (including no "
+            "answer or a cancelled prompt) = discard it permanently. Keeping it does NOT run it "
+            "now -- you'll get one more question about whether it may run without asking."
         ),
     }
 

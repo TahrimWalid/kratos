@@ -2726,138 +2726,46 @@ class SessionScreen(Screen):
         return R.profile_blurb(values)
 
     # --- /evolve ---------------------------------------------------------
-    @work
-    async def _evolve_flow(self, rest: str) -> None:
+    @work(thread=True)
+    def _evolve_flow(self, rest: str) -> None:
+        """Guided /evolve. Drives the UI-agnostic guided build
+        (agent.guided_evolve.run_guided_build) through a Textual prompter, so
+        the whole write -> test -> approve -> keep experience -- plain-English
+        review of what the test checks, recovery guidance, the friendly keep
+        prompt -- is shared with A2 Stage 3's hand-off rather than
+        reimplemented here. A thread worker because the build ends in the
+        blocking loop; each prompt bridges back to the event loop."""
+        from kratos.agent.guided_evolve import run_guided_build
+        from kratos.tui_mk2.guided import TextualGuidedPrompter
+
         stripped = rest.strip()
         if stripped.lower() in ("list", "ls"):
-            self._render_evolve_list()
+            self.app.call_from_thread(self._render_evolve_list)
             return
+
         idea = stripped.strip('"').strip("'").strip()
-        pending_name = None
+        suggested_name = None
         if not idea:
             pending = self.session_state.get("pending_evolve_suggestion")
             if pending:
                 idea = f"{pending.get('name', '')}: {pending.get('description', '')}".strip(": ")
-                pending_name = pending.get("name") or None
-            else:
-                # Bare /evolve with no pending suggestion: ASK for the idea in a
-                # box (this used to just print a note and return, so /evolve
-                # looked unwired unless you passed the idea inline as
-                # /evolve "<idea>"). Now typing /evolve opens the flow.
-                answer = await self.app.push_screen_wait(
-                    PromptModal(
-                        "New tool — what should it do?",
-                        'One sentence, e.g. "list which users have sudo on the target"',
-                    )
-                )
-                if answer is None:
-                    return
-                idea = answer.strip().strip('"').strip("'").strip()
-                if not idea:
-                    self._emit(R.note_line("No idea given — nothing to build."))
-                    return
+                suggested_name = pending.get("name") or None
+            # else: leave idea empty -- run_guided_build asks for it itself.
 
-        default_name = pending_name or self._slug(idea)
-        name = await self.app.push_screen_wait(PromptModal("Name this tool", "snake_case", initial=default_name))
-        if name is None:
-            return
-        tool_name = self._slug(name) or default_name
-
-        default_path = f"tests/self_write_harnesses/test_{tool_name}.py"
-        harness = await self.app.push_screen_wait(
-            PromptModal("Test harness file", "Path to a human-authored pytest harness", initial=default_path)
-        )
-        if harness is None:
-            return
-        harness_path = Path(harness.strip() or default_path)
-        if harness_path.suffix != ".py":
-            self._emit(R.error_line(f"{harness_path} isn't a .py file — evo-loop needs a pytest harness."))
-            return
-        if not harness_path.exists():
-            await self._draft_harness_flow(idea, tool_name, harness_path)
-            return
-        self._run_evolve(idea, harness_path, tool_name)
-
-    async def _draft_harness_flow(self, idea: str, tool_name: str, harness_path: Path) -> None:
-        """Turn: /evolve against a missing harness. Offers an LLM-drafted
-        starter (reusing cli/repl.py's own _draft_evolve_harness), shown for
-        REVIEW and never trusted unedited -- saving is an explicit choice, and
-        even 'save & build now' only proceeds after the full draft was shown.
-        Same human-authored-test principle as the classic REPL, just a lower
-        cold-start cost."""
-        want = await self.app.push_screen_wait(
-            ConfirmModal(
-                "Draft a starter harness with the LLM?",
-                f"No test file at {harness_path}. Evo-loop needs a human-authored pytest harness that "
-                "defines 'correct' for this tool. I can draft one for you to review and edit — it is "
-                "never trusted unedited. Draft one now?",
-            )
-        )
-        code, drafted = None, False
-        if want:
-            self._emit(R.note_line("Drafting a starter harness (LLM, a moment)…"))
-            code = await asyncio.to_thread(self._draft_harness_blocking, tool_name, idea)
-            drafted = bool(code)
-        if not code:
-            code = self._static_harness(tool_name, idea)
-        self._emit(self._harness_panel(code, drafted))
-
-        choice = await self.app.push_screen_wait(
-            ListPickerModal(
-                "Harness draft — what next?",
-                [
-                    ("s", "[s] save and start building now"),
-                    ("e", "[e] save so I can edit it first"),
-                    ("d", "[d] discard"),
-                ],
-                subtitle="Review the assertions — they're the model's best guess at the interface.",
-            )
-        )
-        if choice == "s":
-            harness_path.parent.mkdir(parents=True, exist_ok=True)
-            harness_path.write_text(code, encoding="utf-8")
-            self._emit(R.success_line(f"Saved to {harness_path} — starting evo-loop now."))
-            self._run_evolve(idea, harness_path, tool_name)
-        elif choice == "e":
-            harness_path.parent.mkdir(parents=True, exist_ok=True)
-            harness_path.write_text(code, encoding="utf-8")
-            self._emit(R.success_line(f"Saved to {harness_path}."))
-            self._emit(R.note_line("Review it (especially the assertions), then run /evolve again to build."))
-        else:
-            self._emit(R.note_line(f"Discarded — write your own harness at {harness_path}, then /evolve again."))
-
-    def _draft_harness_blocking(self, tool_name: str, idea: str) -> str | None:
-        from kratos.agent import console as _c
-        from kratos.cli.repl import _draft_evolve_harness
-
-        return _draft_evolve_harness(_c.get_console(), tool_name, idea)
-
-    def _static_harness(self, tool_name: str, idea: str) -> str:
-        from kratos.cli.repl import _build_evolve_harness_template
-
-        return _build_evolve_harness_template(tool_name, idea)
-
-    def _harness_panel(self, code: str, drafted: bool) -> Any:
-        from rich.panel import Panel
-        from rich.syntax import Syntax
-
-        title = (
-            "LLM-DRAFTED harness — READ before saving (assertions are guesses)"
-            if drafted
-            else "Starter harness — edit the TODOs before running /evolve"
-        )
-        return Panel(
-            Syntax(code, "python", word_wrap=True, background_color="default"),
-            title=title,
-            title_align="left",
-            border_style=T.ATTENTION,
-        )
-
-    def _slug(self, text: str) -> str:
-        import re
-
-        words = re.findall(r"[a-z0-9]+", text.lower())[:4]
-        return "_".join(words)
+        prompter = TextualGuidedPrompter(self.app, self)
+        self._set_busy(True)
+        result = None
+        try:
+            result = run_guided_build(idea, prompter, suggested_name=suggested_name)
+        except Exception as e:  # noqa: BLE001 -- never crash the screen
+            self._emit_from_worker(R.error_line(f"Evo-loop errored: {e}"))
+        finally:
+            self._set_busy(False)
+        # Clear a pending auto-suggestion only once we actually acted on it (a
+        # build ran, to any outcome). A plain cancel / back-out or a "saved to
+        # edit" keeps it, so the user can retry with bare /evolve.
+        if result is not None and result.status not in ("cancelled", "no_harness"):
+            self.session_state["pending_evolve_suggestion"] = None
 
     def _render_evolve_list(self) -> None:
         from kratos.agent.tools import TOOL_REGISTRY
@@ -3060,51 +2968,6 @@ class SessionScreen(Screen):
             row.append(Text(R.tool_description(tool, entry), style=T.TEXT_MUTED))
             table.add_row(*row)
         return table
-
-    @work(thread=True)
-    def _run_evolve(self, idea: str, harness_path: Path, tool_name: str) -> None:
-        from kratos.agent.self_write import WriteRequest
-        from kratos.agent.self_write_loop import run_self_write_loop
-
-        self._set_busy(True)
-        self._emit_from_worker(R.note_line(f"Starting evo-loop (minutes per attempt) — goal: {idea!r}"))
-        try:
-            outcome = run_self_write_loop(WriteRequest(goal=idea, test_file=harness_path))
-        except Exception as e:  # noqa: BLE001
-            self._emit_from_worker(R.error_line(f"Evo-loop errored: {e}"))
-            self._set_busy(False)
-            return
-        self.session_state["pending_evolve_suggestion"] = None
-        n = len(outcome.attempt_history)
-        if outcome.status == "approved":
-            kd = outcome.keep_decision
-            self._emit_from_worker(R.success_line(f"Kept: {kd.tool_name} (requires_approval={kd.requires_approval}) — available now."))
-        elif outcome.status == "denied":
-            self._emit_from_worker(R.note_line("Evo-loop finished — a candidate passed testing but was not kept (denied)."))
-        elif outcome.status == "write_failed":
-            # 15d "never got there": no testable candidate was ever produced.
-            self._emit_from_worker(R.error_line(
-                f"Evo-loop never produced a testable candidate — the write step failed before any "
-                f"sandbox test could run ({n} attempt(s)). Try a clearer idea or a simpler harness."
-            ))
-        elif outcome.status == "stalled_no_variation":
-            self._emit_from_worker(R.error_line(
-                f"Evo-loop stalled — the model stopped varying its output (converged, then repeated "
-                f"the same candidate) after {n} attempt(s). No new candidate to try."
-            ))
-        elif outcome.status == "exhausted_retries":
-            self._emit_from_worker(R.error_line(
-                f"Evo-loop ran out of attempts ({n}) while still trying different fixes — none passed "
-                f"the harness. Consider loosening/clarifying the harness assertions."
-            ))
-        elif outcome.status == "infra_error":
-            self._emit_from_worker(R.error_line(
-                "Evo-loop hit a sandbox infrastructure error (not a problem with the candidate code) "
-                "— check the Incus sandbox is available."
-            ))
-        else:
-            self._emit_from_worker(R.error_line(f"Evo-loop did not produce an approvable candidate (status: {outcome.status})."))
-        self._set_busy(False)
 
     # --- deterministic subcommand shortcuts (/scan, /run, ...) -----------
     @work(thread=True)

@@ -442,3 +442,54 @@ def format_review_flags_for_display(flags: list[ReviewFlag]) -> str:
             "guarantee; still read the source below)"
         )
     return "\n".join(f"- {f.format()}" for f in flags)
+
+
+# Plain-English gloss per flag category (A7 -- brief item 4, "review-flags
+# readability for non-experts"). The technical message (ReviewFlag.format())
+# stays available; this adds a "what this means / what to check" line a
+# non-technical reviewer can act on. Additive: format_review_flags_for_display
+# above is unchanged, so any caller relying on the terse form is unaffected.
+_PLAIN_GLOSS: dict[str, str] = {
+    "hardcoded-ip-in-conditional": (
+        "A specific IP address is written into the tool's logic. Check it isn't quietly treating "
+        "one machine differently from the rest."
+    ),
+    "credential-like-literal": (
+        "Something shaped like a password, key, or token is written into the code. Make sure it "
+        "isn't a hidden credential baked into the tool."
+    ),
+    "inclusion-affecting-branch": (
+        "A decision inside a loop changes what ends up in the results. Check that nothing you'd "
+        "want to see is being left out."
+    ),
+    "silent-item-drop-on-subfetch-failure": (
+        "If one lookup fails, an item may vanish from the results entirely. A security tool should "
+        "still LIST it (marked unknown), not hide it. Check this branch."
+    ),
+    "invented-filter-criterion": (
+        "The tool filters or excludes things using a specific value it chose on its own. Check that "
+        "filter really matches what the tool's description promises."
+    ),
+    "description-coverage": (
+        "The tool's description may not mention everything its code actually does. Check the "
+        "description is honest about all of its behavior."
+    ),
+}
+
+
+def format_review_flags_plain(flags: list[ReviewFlag]) -> str:
+    """Non-expert-friendly rendering: a plain 'what to check' per flag, with the
+    precise technical detail kept underneath. Used by the approval display so a
+    reviewer who doesn't read Python fluently still knows what to look at."""
+    if not flags:
+        return (
+            "No automatic warnings were raised. (This is a quick scan, not a guarantee -- still "
+            "look over what the tool does below.)"
+        )
+    lines = ["Kratos noticed a few things worth checking before you keep this tool:"]
+    for f in flags:
+        gloss = _PLAIN_GLOSS.get(f.category, "Worth a look.")
+        loc = f" (line {f.line})" if f.line is not None else ""
+        lines.append(f"\n• {gloss}{loc}")
+        lines.append(f"    ↳ technical detail: {f.message}")
+    return "\n".join(lines)

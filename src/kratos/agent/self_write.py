@@ -204,11 +204,47 @@ string), so the caller can see it was present but not fully resolved. Only omit 
 when it genuinely isn't in the source data at all -- never because one piece of enrichment about
 it failed.
 
+PRIVILEGE & ERROR VISIBILITY (target-facing tools -- the #1 real cause of a tool that PASSES its
+sandbox test but then FAILS silently on the live target):
+The sandbox that tests your code MOCKS the SSH layer with fake output, so a command that would be
+DENIED on the real target (permission denied, exit 1) still "works" in the test. Two rules keep a
+candidate from passing the test yet breaking live:
+
+1. Many system files and logs are readable ONLY by root, and the SSH user Kratos connects as is a
+   NORMAL, UNPRIVILEGED user (not root). Reading them with a plain command silently fails on the
+   real target. Concrete real failures this has caused: `cat /etc/sudoers` (mode 0440, root-only --
+   exit 1 for a normal user), `cat /etc/shadow` (root-only), and privileged journald entries
+   (hidden from a normal user with no error). Do NOT reach for the privileged path. Prefer a
+   NON-PRIVILEGED alternative that returns the SAME information for an ordinary user:
+     - to find who has sudo:            `getent group sudo`   (NOT `cat /etc/sudoers`)
+     - for recent logins / who is on:   `last`, `who`, `lastlog`   (NOT privileged auth logs)
+     - for listening sockets/processes: `ss -tlnp`, `ps aux`   (owner fields may be blank without
+       privilege -- that's expected; include the item anyway per PARTIAL FAILURES above)
+   ONLY if the data genuinely has no unprivileged source, use `sudo -n <command>` EXPLICITLY (the
+   `-n` means "never prompt for a password" -- it either works via passwordless sudo or fails fast
+   and cleanly, instead of hanging waiting for a password that will never come). Never assume the
+   SSH user is root; never assume interactive sudo is available.
+
+2. NEVER suppress stderr in a way that hides the real error. Do NOT append a blanket `2>/dev/null`
+   to a command whose failure you then report -- when that command fails on the live target, the
+   ONLY diagnostic (the permission-denied / not-found message) is exactly what you just threw away,
+   so the tool reports an EMPTY error ("command failed:" with nothing after it), which is strictly
+   worse than surfacing the raw stderr. Always check `result.ok` and include
+   `result.stderr` (falling back to `result.stdout`) in your error return, e.g.:
+     if not result.ok:
+         return {"status": "error", "observation": f"command failed: {(result.stderr or result.stdout).strip()}"}
+
 RULES:
 - Output ONLY the Python source code for this one tool -- no markdown fences, no commentary \
 before or after, no explanation. If you do use fences, put ONLY code inside them.
 - When iterating over multiple items, never let a failed/missing per-item sub-step remove that \
 item from the result entirely -- see PARTIAL FAILURES INSIDE A LOOP above.
+- Do NOT read a root-only file/log with a plain (non-sudo) command -- the SSH user is unprivileged. \
+Prefer an unprivileged equivalent (`getent group sudo`, `last`, `who`, `ss`, `ps`); use `sudo -n` \
+explicitly only when root is genuinely unavoidable. See PRIVILEGE & ERROR VISIBILITY above.
+- Do NOT append a blanket `2>/dev/null` (or otherwise discard stderr) on a command whose failure \
+you then report -- surface the real `result.stderr`/`result.stdout` in your error return. An empty \
+error message is worse than the raw stderr. See PRIVILEGE & ERROR VISIBILITY above.
 - Do NOT write a test. A human-authored test file is given to you below so you know the exact \
 interface (tool name, handler argument names, return shape) you must implement -- match it \
 exactly, since that test is what your code will be judged against later.

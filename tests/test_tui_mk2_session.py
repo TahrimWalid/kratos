@@ -749,6 +749,10 @@ def test_doctor_runs_and_renders(tmp_path, monkeypatch):
 def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):
     # Bare /evolve (no inline idea, no pending suggestion) must OPEN the idea
     # prompt, not just print a note — the reported "evolve isn't wired" bug.
+    # The guided flow (A7) runs on a thread worker and drives modals through
+    # app.push_screen (+ a callback), NOT push_screen_wait, so the test
+    # intercepts push_screen and dismisses the modal (callback(None)) to let the
+    # worker unblock and the flow end cleanly.
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
     prompted = {"titles": []}
 
@@ -757,19 +761,19 @@ def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def _capture(modal):
-                # record that a prompt opened, then cancel so the flow stops
+            def _capture(modal, callback=None, *a, **k):
                 prompted["titles"].append(getattr(modal, "_title", ""))
-                return None
+                if callback is not None:
+                    callback(None)   # cancel so the guided flow stops
 
-            monkeypatch.setattr(app, "push_screen_wait", _capture)
+            monkeypatch.setattr(app, "push_screen", _capture)
             screen._dispatch_slash("/evolve")   # bare, no idea
-            await pilot.pause()
-            await pilot.pause()
+            for _ in range(12):                 # let the thread worker reach the prompt
+                await pilot.pause()
             return prompted["titles"]
 
     titles = asyncio.run(_run())
-    assert titles and "what should it do" in titles[0].lower()  # the idea box opened
+    assert titles and any("what should it do" in t.lower() for t in titles)  # idea box opened
 
 
 def test_tool_command_runs_named_tool_deterministically(tmp_path, monkeypatch):
