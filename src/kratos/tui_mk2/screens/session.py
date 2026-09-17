@@ -1364,18 +1364,17 @@ class SessionScreen(Screen):
             return
 
         parsed = _P.parse_pipeline(draft.steps, registry=TOOL_REGISTRY)
-        # Stage 3 (A7-blocked): a drafted step naming a tool that doesn't exist is
-        # a real gap (the model had the full tool list). Stop honestly — don't
-        # save a pipeline that will fail at run, and don't try to CREATE the tool
-        # (that hand-off is blocked on A7's guided wrapper).
+        # A2 §5.6 Stage 3 (unblocked by A7): a drafted step naming a tool that
+        # doesn't exist is a real gap. Offer to BUILD it via A7's guided evo-loop
+        # wrapper; on success the tool is registered and we re-parse + continue.
+        # Declining / cancelling / a non-kept build stops honestly (never save a
+        # will-fail pipeline). Stage 4 (auto-create a missing whitelist FieldSpec)
+        # is NOT in scope here — an invalid reference still stops via parsed.errors.
         missing_tools = sorted({s["tool"] for s in parsed.steps if s["tool"] not in TOOL_REGISTRY})
         if missing_tools:
-            self._emit(R.error_line(
-                f"That would need a tool that doesn't exist yet: {', '.join(missing_tools)}."))
-            self._emit(R.note_line(
-                "Kratos can't auto-create tools yet (that guided flow is coming). Try /evolve to "
-                "build one first, or rephrase the pipeline to use existing tools (/tools lists them)."))
-            return
+            parsed = await self._offer_build_missing_tools(missing_tools, draft.steps)
+            if parsed is None:
+                return  # declined / cancelled / still missing — reason already emitted
         if parsed.errors:
             # A drafted reference/field/shape that isn't valid — stop honestly.
             self._emit(R.error_line("I drafted a pipeline, but it isn't valid to save:"))
@@ -1441,6 +1440,81 @@ class SessionScreen(Screen):
             f"Saved AI-drafted pipeline {preset.name!r}. Review it any time with /preset show "
             f"\"{preset.name}\"; run it with /{preset.name} when ready (you'll get a confirm first, "
             "since it's AI-generated)."))
+
+    async def _offer_build_missing_tools(self, missing_tools: list[str], draft_steps: list[dict]):
+        """A2 §5.6 Stage 3: a drafted pipeline names tool(s) Kratos doesn't have.
+        Offer to build each via A7's guided evo-loop wrapper (run_guided_build) —
+        the SAME write → test → review → keep flow /evolve uses, so NOTHING here
+        relaxes the human-authored-test principle or the no-force-accept keep
+        gate (run_guided_build wraps run_self_write_loop unmodified). On success
+        the tool is registered; we re-parse and return the fresh PipelineParse to
+        continue with. If the user renamed a tool mid-build, the drafted step is
+        repointed to the actually-kept name. Declining / cancelling / a non-kept
+        build stops honestly (returns None after a clear reason) — a pipeline is
+        never saved while it still references a missing tool.
+
+        Runs the blocking guided build on a worker thread (asyncio.to_thread);
+        its TextualGuidedPrompter bridges each question/approval back to the
+        event loop, exactly as the /evolve thread worker does."""
+        import asyncio
+
+        from kratos.agent import presets as _P
+        from kratos.agent.guided_evolve import run_guided_build
+        from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.tui_mk2.guided import TextualGuidedPrompter
+
+        names = ", ".join(repr(t) for t in missing_tools)
+        plural = len(missing_tools) > 1
+        proceed = await self.app.push_screen_wait(ConfirmModal(
+            "This pipeline needs a tool that doesn't exist yet",
+            f"The draft uses {names}, which Kratos doesn't have. Build "
+            f"{'them' if plural else 'it'} now with the guided tool builder? You'll describe what "
+            f"{'each one' if plural else 'it'} does, review the code, and approve keeping it — the "
+            "same safe write → test → keep flow as /evolve."))
+        if not proceed:
+            self._emit(R.note_line(
+                f"Didn't build {names}. Rephrase the pipeline to use existing tools (/tools lists "
+                "them), or build one yourself with /evolve, then try /preset-describe again."))
+            return None
+
+        prompter = TextualGuidedPrompter(self.app, self)
+        renames: dict[str, str] = {}
+        for name in missing_tools:
+            self._emit(R.note_line(
+                f"Building the missing tool {name!r} — describe what it should do."))
+            self._set_busy(True)
+            try:
+                # goal="" makes the guided flow ask what THIS tool should do (the
+                # drafter supplies a name, not a per-tool spec); the drafted name
+                # is pre-filled. run_guided_build wraps run_self_write_loop
+                # unmodified, so every keep/approval invariant still holds.
+                result = await asyncio.to_thread(run_guided_build, "", prompter, suggested_name=name)
+            except Exception as e:  # noqa: BLE001 — never crash the describe flow
+                self._emit(R.error_line(f"Tool build errored: {e}"))
+                return None
+            finally:
+                self._set_busy(False)
+            if result is None or result.status != "kept":
+                reason = result.message if result is not None else "cancelled"
+                self._emit(R.note_line(
+                    f"{name!r} wasn't built ({reason}). The pipeline can't be saved without it — "
+                    "rephrase to use existing tools, or try /preset-describe again once it exists."))
+                return None
+            if result.tool_name and result.tool_name != name:
+                renames[name] = result.tool_name  # user renamed it mid-build
+            self._emit(R.success_line(f"Built and kept {result.tool_name!r}."))
+
+        steps = draft_steps
+        if renames:
+            steps = [{**s, "tool": renames.get(s["tool"], s["tool"])} for s in draft_steps]
+        parsed = _P.parse_pipeline(steps, registry=TOOL_REGISTRY)
+        still_missing = sorted({s["tool"] for s in parsed.steps if s["tool"] not in TOOL_REGISTRY})
+        if still_missing:
+            self._emit(R.error_line(
+                f"Still missing after building: {', '.join(still_missing)}. Can't save the pipeline."))
+            return None
+        self._emit(R.success_line("Built the missing tool(s) — continuing with the pipeline."))
+        return parsed
 
     # --- A2 Tier 2: guided pipeline authoring ---------------------------
     @work

@@ -799,32 +799,111 @@ def test_preset_describe_declined_saves_nothing(tmp_path, monkeypatch):
     assert not P.preset_exists(tmp_path, "nope")
 
 
-def test_preset_describe_unknown_tool_honest_stop(tmp_path, monkeypatch):
+def test_preset_describe_missing_tool_offer_declined(tmp_path, monkeypatch):
+    """A2 §5.6 Stage 3: a drafted pipeline needing a missing tool now OFFERS to
+    build it; declining the offer stops honestly and saves nothing."""
     from kratos.agent import pipeline_draft as PD
 
     _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
     monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
-        name="gap", steps=[{"tool": "block_the_ip"}, {"tool": "correlate_findings"}]))
-    saved_confirm = {"asked": False}
+        name="gap", steps=[{"tool": "collect_sudo_users"}, {"tool": "correlate_findings"}]))
+    offered = {"n": 0}
 
     async def _run():
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def _track(_m):
-                saved_confirm["asked"] = True
-                return True
+            async def _decline(_m):
+                offered["n"] += 1
+                return False
 
-            monkeypatch.setattr(app, "push_screen_wait", _track)
-            screen._dispatch_slash("/preset-describe block the attacker")
+            monkeypatch.setattr(app, "push_screen_wait", _decline)
+            screen._dispatch_slash("/preset-describe collect sudo users then correlate")
             for _ in range(60):
                 await pilot.pause()
 
     asyncio.run(_run())
-    # A missing tool stops before any save-confirm — nothing saved, no confirm shown.
-    assert not P.preset_exists(tmp_path, "gap")
-    assert saved_confirm["asked"] is False
+    assert offered["n"] >= 1                      # the build offer WAS shown
+    assert not P.preset_exists(tmp_path, "gap")   # declined -> nothing saved
+
+
+def test_preset_describe_missing_tool_built_then_saves(tmp_path, monkeypatch):
+    """A2 §5.6 Stage 3: offer accepted -> guided build keeps the missing tool ->
+    the pipeline re-parses, continues, and saves as a generated preset."""
+    from kratos.agent import pipeline_draft as PD
+    from kratos.agent import guided_evolve as GE
+    from kratos.agent.tools import TOOL_REGISTRY, register_tool
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
+        name="built", steps=[
+            {"tool": "collect_sudo_users", "label": "sudo", "required": True},
+            {"tool": "correlate_findings", "label": "correlate", "required": True}]))
+    pre_keys = set(TOOL_REGISTRY)
+
+    def _fake_build(goal, prompter, suggested_name=None):
+        @register_tool(name=suggested_name, description="built by test",
+                       parameters={"data_dir": {"type": "str", "default": None}})
+        def _handler(data_dir=None):
+            return {"status": "ok"}
+        return GE.GuidedBuildResult(status="kept", tool_name=suggested_name, requires_approval=False)
+
+    monkeypatch.setattr(GE, "run_guided_build", _fake_build)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _yes(_m):  # build offer, then save confirm — both yes
+                return True
+
+            monkeypatch.setattr(app, "push_screen_wait", _yes)
+            screen._dispatch_slash("/preset-describe collect sudo users then correlate")
+            for _ in range(200):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "built"):
+                    break
+
+    try:
+        asyncio.run(_run())
+        p = P.load_preset(tmp_path, "built")
+        assert p is not None and p.kind == "pipeline" and p.generated is True
+        assert [s["tool"] for s in p.steps] == ["collect_sudo_users", "correlate_findings"]
+    finally:
+        for k in list(TOOL_REGISTRY):
+            if k not in pre_keys:
+                del TOOL_REGISTRY[k]
+
+
+def test_preset_describe_missing_tool_build_not_kept_stops(tmp_path, monkeypatch):
+    """A2 §5.6 Stage 3: offer accepted but the guided build isn't kept
+    (declined/failed) -> honest stop, nothing saved."""
+    from kratos.agent import pipeline_draft as PD
+    from kratos.agent import guided_evolve as GE
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline", lambda goal, registry, chat=None: PD.DraftResult(
+        name="gap2", steps=[{"tool": "collect_sudo_users"}, {"tool": "correlate_findings"}]))
+    monkeypatch.setattr(GE, "run_guided_build", lambda goal, prompter, suggested_name=None:
+                        GE.GuidedBuildResult(status="declined", message="you chose not to keep it"))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "push_screen_wait", lambda _m: _accept())
+
+            async def _accept():  # accept the build offer; the build then isn't kept
+                return True
+
+            screen._dispatch_slash("/preset-describe collect sudo users then correlate")
+            for _ in range(120):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert not P.preset_exists(tmp_path, "gap2")   # build not kept -> nothing saved
 
 
 def test_generated_pipeline_run_danger_confirm_declined(tmp_path, monkeypatch):
