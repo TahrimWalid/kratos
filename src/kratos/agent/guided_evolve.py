@@ -32,7 +32,11 @@ shown verbatim, never invented.
 from __future__ import annotations
 
 import ast
+import os
 import re
+import subprocess
+import sys
+import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -463,6 +467,114 @@ def describe_harness_claims(source: str) -> HarnessClaims:
 
 
 # ---------------------------------------------------------------------------
+# Harness round-trip: regenerate a harness from corrected plain-English claims,
+# gated on a mutation guard so a regenerated test can never silently rubber-stamp
+# the trust anchor.
+# ---------------------------------------------------------------------------
+
+_REGEN_HARNESS_SYSTEM_PROMPT = '''You write ONE pytest harness for a Kratos tool from a list of plain-English CLAIMS a human has confirmed about what the tool must do. Each claim becomes a concrete assertion that actually checks it -- a test that would pass ANY implementation is useless and unacceptable.
+
+Match this project's harness convention EXACTLY:
+- Read the candidate path from the CANDIDATE_MODULE_PATH env var and import it (that triggers @register_tool).
+- A `registered_handler` pytest fixture that imports the candidate and returns TOOL_REGISTRY[TOOL_NAME].handler.
+- Set TOOL_NAME = "<the given tool name>" exactly.
+- One or more `test_...` functions with real assertions on the handler's RETURN VALUE -- one per claim where possible.
+- If the tool reaches the monitored device, mock kratos.adapters.ssh_remote.run_remote_command (module-qualified) with realistic canned output inside each test -- the sandbox has no network.
+
+Output ONLY the Python source code -- no markdown fences, no commentary before or after.'''
+
+
+def regenerate_harness_from_claims(tool_name: str, goal: str, corrected_claims: str) -> str | None:
+    """Regenerate a pytest harness from a human's CORRECTED plain-English
+    description of what the tool should do -- the round-trip that turns "spot a
+    wrong test" into "author a correct one". Same structural guards as
+    _draft_evolve_harness (valid Python + the exact TOOL_NAME); returns None
+    (never raises) on any failure so the caller can fall back. The result is
+    NEVER trusted on its own: the caller MUST run harness_discriminates() on it
+    before it may become the correctness bar."""
+    from kratos.agent.self_write import _extract_code
+
+    corrected = (corrected_claims or "").strip()
+    if not corrected:
+        return None
+    user_prompt = (
+        f"Tool name: {tool_name}\n"
+        f"What the tool is for: {goal}\n\n"
+        f"CLAIMS the human confirmed the tool must satisfy (turn each into a real assertion on the "
+        f"handler's return value):\n{corrected}\n\n"
+        "Write the pytest harness now."
+    )
+    raw = agent_chat(system_prompt=_REGEN_HARNESS_SYSTEM_PROMPT, user_prompt=user_prompt, max_tokens=MAX_TOKENS)
+    if raw is None:
+        return None
+    code = _extract_code(raw)
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return None
+    if f'TOOL_NAME = "{tool_name}"' not in code and f"TOOL_NAME = '{tool_name}'" not in code:
+        return None
+    return code
+
+
+def harness_discriminates(harness_source: str, tool_name: str, *, timeout: int = 60) -> tuple[bool, str]:
+    """Mutation / discrimination guard -- the precondition for accepting any
+    regenerated harness. A harness is the trust anchor: once it approves a tool,
+    that tool runs unsandboxed forever. So a regenerated harness must PROVE it
+    tests something real by REJECTING a deliberately-wrong implementation --
+    otherwise "edit the claims -> regenerate" is just a rubber stamp.
+
+    Runs the harness under pytest against a mutant stub that registers `tool_name`
+    with a handler returning obviously-wrong output. The mutant is our OWN safe
+    code (no network, no LLM), run in a throwaway subprocess -- no sandbox needed,
+    and it cannot touch the live TOOL_REGISTRY.
+
+    Returns (ok, reason). ok is True ONLY if the harness RAN and FAILED the mutant
+    (pytest exit 1). A pass (exit 0) means the test is a rubber stamp -> rejected;
+    a non-runnable result (no tests collected / usage / internal error) -> rejected.
+    Never raises.
+
+    The guarantee is specifically "NOT a rubber stamp" -- a harness that fails the
+    mutant for its OWN reason (a bug in the test itself) also passes here, but that
+    is not a safety hole: it then fails every real candidate too, so the evo-loop
+    build surfaces it visibly rather than silently accepting a wrong tool."""
+    mutant = (
+        "from kratos.agent.tools import register_tool\n\n"
+        f'@register_tool(name="{tool_name}", description="deliberately-wrong mutant", '
+        'parameters={"data_dir": {"type": "str", "default": None}})\n'
+        "def _kratos_mutant(**kwargs):\n"
+        '    return {"__kratos_mutant__": "deliberately wrong output"}\n'
+    )
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            dp = Path(d)
+            harness_path = dp / f"test_{tool_name}_discrimination.py"
+            mutant_path = dp / f"{tool_name}_mutant.py"
+            harness_path.write_text(harness_source, encoding="utf-8")
+            mutant_path.write_text(mutant, encoding="utf-8")
+            env = {**os.environ, "CANDIDATE_MODULE_PATH": str(mutant_path)}
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", str(harness_path), "-q",
+                 "-p", "no:cacheprovider", "-o", "addopts="],
+                capture_output=True, text=True, env=env, cwd=str(dp), timeout=timeout,
+            )
+    except subprocess.TimeoutExpired:
+        return False, "the discrimination check timed out running the harness"
+    except Exception as e:  # noqa: BLE001 -- a guard must never crash the caller
+        return False, f"couldn't run the discrimination check ({e})"
+
+    rc = proc.returncode
+    if rc == 1:
+        return True, "the test correctly rejects a deliberately-wrong implementation"
+    if rc == 0:
+        return False, ("this test PASSES even a deliberately-wrong implementation -- it isn't "
+                       "actually checking the tool's behaviour, so it can't be trusted as the bar. "
+                       "Make the claims more specific and try again.")
+    return False, (f"the harness didn't run cleanly (pytest exit {rc}) -- it may be broken or have "
+                   "no real tests. Try rephrasing the claims.")
+
+
+# ---------------------------------------------------------------------------
 # Name-collision info (UI-agnostic -- reports, does not prompt).
 # ---------------------------------------------------------------------------
 
@@ -685,6 +797,43 @@ def run_guided_build(
     return _run_loop_and_report(goal, harness_path, prompter)
 
 
+def _claims_roundtrip(
+    goal: str, tool_name: str, current_code: str, current_claims: HarnessClaims,
+    prompter: GuidedPrompter,
+) -> str | None:
+    """P1 harness round-trip: let the human correct what the test SHOULD check in
+    plain English, regenerate the pytest from that, and accept the new version
+    ONLY if it passes the mutation guard (it must FAIL a deliberately-wrong
+    implementation). This is what lets a non-expert AUTHOR a correct test, not
+    just spot a wrong one, WITHOUT the regeneration silently becoming a rubber
+    stamp of the trust anchor. Returns the new harness source, or None to keep
+    the current one."""
+    default = "\n".join(current_claims.claims) if current_claims.claims else ""
+    corrected = prompter.ask_text(
+        "What should the test actually check?",
+        "Describe in plain words what the tool must return or do (one point per line). "
+        "I'll turn each point into a real check.",
+        default=default,
+    )
+    if not corrected or not corrected.strip():
+        return None
+    prompter.say("Rewriting the test from your description (asks the model, a moment)…")
+    new_code = regenerate_harness_from_claims(tool_name, goal, corrected)
+    if not new_code:
+        prompter.say(
+            "Couldn't turn that into a valid test — keeping the current one. Rephrase and try "
+            "again, or edit the file yourself.", kind="error")
+        return None
+    prompter.say("Checking the new test actually tests something (running it against a "
+                 "deliberately-wrong tool)…")
+    ok, reason = harness_discriminates(new_code, tool_name)
+    if not ok:
+        prompter.say(f"Not using that version — {reason}", kind="error")
+        return None
+    prompter.say("Good — the new test correctly rejects a wrong implementation.", kind="success")
+    return new_code
+
+
 def _draft_or_template_harness(
     goal: str, tool_name: str, harness_path: Path, prompter: GuidedPrompter,
 ) -> GuidedBuildResult | None:
@@ -708,18 +857,26 @@ def _draft_or_template_harness(
     if not code:
         code = _build_evolve_harness_template(tool_name, goal)
 
-    claims = describe_harness_claims(code)
-    _render_claims(prompter, claims, drafted=drafted)
+    while True:
+        claims = describe_harness_claims(code)
+        _render_claims(prompter, claims, drafted=drafted)
+        choice = prompter.ask_choice(
+            "This test — what next?",
+            [
+                ("build", "Looks right — save it and build the tool now"),
+                ("rewrite", "The checks are wrong — let me correct them in plain English"),
+                ("edit", "Save it so I can edit the file myself first"),
+                ("discard", "Discard — I'll write my own"),
+            ],
+            subtitle="The checks above are what decides 'correct'. Fix them if they're wrong.",
+        )
+        if choice != "rewrite":
+            break
+        new_code = _claims_roundtrip(goal, tool_name, code, claims, prompter)
+        if new_code is not None:
+            code, drafted = new_code, True
+        # loop: re-show the (possibly regenerated) test and ask again
 
-    choice = prompter.ask_choice(
-        "This test — what next?",
-        [
-            ("build", "Looks right — save it and build the tool now"),
-            ("edit", "Save it so I can edit it first"),
-            ("discard", "Discard — I'll write my own"),
-        ],
-        subtitle="The checks above are the model's best guess at what 'correct' means.",
-    )
     if choice == "build":
         harness_path.parent.mkdir(parents=True, exist_ok=True)
         harness_path.write_text(code, encoding="utf-8")

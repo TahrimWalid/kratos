@@ -265,3 +265,99 @@ def test_empty_idea_asks_and_cancels_when_blank(tmp_path, monkeypatch):
     prompter = FakePrompter(texts=[""])  # asked for idea, submitted blank
     res = run_guided_build("", prompter)
     assert res.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# P1 (2026-09-21): harness round-trip -- regenerate from corrected plain-English
+# claims, gated on a mutation guard so a regenerated test can never silently
+# rubber-stamp the trust anchor.
+# ---------------------------------------------------------------------------
+_RT_CONV = '''
+import importlib.util, os
+from pathlib import Path
+import pytest
+CANDIDATE_MODULE_PATH = os.environ.get("CANDIDATE_MODULE_PATH")
+TOOL_NAME = "rt_demo"
+def _load():
+    spec = importlib.util.spec_from_file_location("cand", Path(CANDIDATE_MODULE_PATH))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+@pytest.fixture
+def registered_handler():
+    from kratos.agent.tools import TOOL_REGISTRY
+    _load()
+    return TOOL_REGISTRY[TOOL_NAME].handler
+'''
+_DISC_HARNESS = _RT_CONV + '''
+def test_returns_sudo_users(registered_handler):
+    r = registered_handler(data_dir=None)
+    assert isinstance(r, dict) and "sudo_users" in r and isinstance(r["sudo_users"], list)
+'''
+_RUBBER_HARNESS = _RT_CONV + '''
+def test_registered(registered_handler):
+    assert registered_handler is not None
+'''
+_NO_TESTS_HARNESS = 'TOOL_NAME = "rt_demo"\nX = 1\n'
+
+
+def test_mutation_guard_accepts_discriminating_harness():
+    ok, reason = G.harness_discriminates(_DISC_HARNESS, "rt_demo")
+    assert ok, reason
+
+
+def test_mutation_guard_rejects_rubber_stamp():
+    ok, reason = G.harness_discriminates(_RUBBER_HARNESS, "rt_demo")
+    assert not ok
+    assert "PASSES even a deliberately-wrong" in reason
+
+
+def test_mutation_guard_rejects_no_tests():
+    ok, reason = G.harness_discriminates(_NO_TESTS_HARNESS, "rt_demo")
+    assert not ok
+
+
+def test_regenerate_success(monkeypatch):
+    monkeypatch.setattr(G, "agent_chat", lambda **k: _DISC_HARNESS)
+    code = G.regenerate_harness_from_claims("rt_demo", "list sudo users", "returns a list of sudo users")
+    assert code is not None and 'TOOL_NAME = "rt_demo"' in code
+
+
+def test_regenerate_rejects_wrong_tool_name(monkeypatch):
+    wrong = _DISC_HARNESS.replace('TOOL_NAME = "rt_demo"', 'TOOL_NAME = "something_else"')
+    monkeypatch.setattr(G, "agent_chat", lambda **k: wrong)
+    assert G.regenerate_harness_from_claims("rt_demo", "g", "claims") is None
+
+
+def test_regenerate_rejects_invalid_python(monkeypatch):
+    monkeypatch.setattr(G, "agent_chat", lambda **k: "def broken(:\n  pass")
+    assert G.regenerate_harness_from_claims("rt_demo", "g", "claims") is None
+
+
+def test_regenerate_none_on_empty_or_no_llm(monkeypatch):
+    assert G.regenerate_harness_from_claims("rt_demo", "g", "   ") is None
+    monkeypatch.setattr(G, "agent_chat", lambda **k: None)
+    assert G.regenerate_harness_from_claims("rt_demo", "g", "claims") is None
+
+
+def test_claims_roundtrip_accepts_discriminating(monkeypatch):
+    monkeypatch.setattr(G, "agent_chat", lambda **k: _DISC_HARNESS)
+    p = FakePrompter(texts=["returns a list of sudo users"])
+    claims = G.describe_harness_claims(_RUBBER_HARNESS)   # weak current claims
+    new = G._claims_roundtrip("list sudo users", "rt_demo", _RUBBER_HARNESS, claims, p)
+    assert new is not None and "sudo_users" in new
+    assert any("correctly rejects" in m for _, m in p.said)
+
+
+def test_claims_roundtrip_rejects_regenerated_rubber_stamp(monkeypatch):
+    # The regenerated harness is a rubber stamp -> mutation guard rejects it ->
+    # keep the current one (return None), never silently accept.
+    monkeypatch.setattr(G, "agent_chat", lambda **k: _RUBBER_HARNESS)
+    p = FakePrompter(texts=["returns something"])
+    claims = G.describe_harness_claims(_DISC_HARNESS)
+    assert G._claims_roundtrip("g", "rt_demo", _DISC_HARNESS, claims, p) is None
+    assert any("Not using that version" in m for _, m in p.said)
+
+
+def test_claims_roundtrip_none_on_empty_input():
+    p = FakePrompter(texts=[""])
+    claims = G.describe_harness_claims(_DISC_HARNESS)
+    assert G._claims_roundtrip("g", "rt_demo", _DISC_HARNESS, claims, p) is None
