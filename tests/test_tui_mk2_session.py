@@ -114,6 +114,59 @@ def test_conversational_target_change_applies_on_approve(tmp_path, monkeypatch):
     assert asyncio.run(_run()) == ["10.9.9.9"]
 
 
+def test_help_documents_every_primary_command():
+    # P2.6 drift guard: the hand-maintained /help must document every primary
+    # user-facing command. /preset-show was dispatched but undocumented (found +
+    # fixed here); this fails if any of these silently falls out of help again.
+    from rich.console import Console
+    import io
+    from textual.app import App
+    from textual.widgets import Static
+    from kratos.tui_mk2.modals import HelpModal
+
+    primary = [
+        "/help", "/run", "/plan", "/report",
+        "/preset-new", "/preset-describe", "/preset-run", "/preset-list",
+        "/preset-show", "/preset-edit", "/preset-delete", "/preset-scaffold",
+        "/preset-export", "/preset-import",
+        "/schedule", "/trigger", "/doctor", "/usage", "/context",
+        "/investigate-host", "/evolve", "/tools", "/use",
+        "/target", "/model", "/timezone", "/settings",
+        "/compact", "/clear", "/reset", "/delete", "/sessions", "/rename",
+        "/exit", "/preview",
+    ]
+
+    class _H(App):
+        def on_mount(self):
+            self.push_screen(HelpModal())
+
+    async def _run():
+        app = _H()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            buf = io.StringIO()
+            con = Console(file=buf, width=140)
+            for st in app.screen.query(Static):
+                # Static stores the original renderable under the name-mangled
+                # __content; render it directly (its .render() wraps it in a Visual).
+                r = getattr(st, "_Static__content", None)
+                if r is not None:
+                    con.print(r)
+            return buf.getvalue()
+
+    text = asyncio.run(_run())
+    # Help uses shorthand for adjacent commands ("/preset-export / -import"), so
+    # match the distinctive stem rather than the exact literal for the -suffix ones.
+    def _present(cmd: str) -> bool:
+        if cmd in text:
+            return True
+        # e.g. "/preset-import" documented as "-import" on the -export line
+        suffix = cmd.split("/preset")[-1]  # "-import"
+        return cmd.startswith("/preset") and suffix in text
+    missing = [c for c in primary if not _present(c)]
+    assert not missing, f"/help is missing: {missing}"
+
+
 def test_crashing_worker_does_not_kill_the_session(tmp_path, monkeypatch):
     # P2.1 safety net: a background worker that raises must NOT take the whole TUI
     # down (Textual's default re-raises it as fatal WorkerFailed). The mixin forces

@@ -65,6 +65,7 @@ _PALETTE_COMMANDS = [
     ("/preset-run", "run a saved investigation or pipeline (pick from a list)"),
     ("/preset-scaffold", "write an editable pipeline-preset template file"),
     ("/preset-list", "list saved investigations"),
+    ("/preset-show", "show a preset's full definition (steps, target, missing tools)"),
     ("/preset-edit", "edit a saved goal, or a pipeline's steps (pick from a list)"),
     ("/preset-delete", "delete a saved investigation (pick from a list)"),
     ("/preset-export", "show a preset's file to share/back up (pick from a list)"),

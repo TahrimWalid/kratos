@@ -299,6 +299,7 @@ class HelpModal(ModalScreen[None]):
                 ("/preset-new", "Save a reusable investigation — a plain-language goal, or a tool pipeline"),
                 ("/preset-describe", "Describe a pipeline in words → Kratos drafts it for your review"),
                 ("/preset-run / -list", "Run (goal or pipeline) or list your saved presets — or just /<name>"),
+                ("/preset-show", "Show a preset's full definition (steps, target, any missing tools)"),
                 ("/preset-edit / -delete", "Edit (goal or pipeline steps) or delete a preset (pick from a list)"),
                 ("/preset-scaffold", "Write an editable pipeline-preset template file (power users)"),
                 ("/preset-export / -import", "Share a preset's file, or import one from a .toml"),
