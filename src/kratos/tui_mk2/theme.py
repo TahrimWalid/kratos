@@ -53,11 +53,20 @@ TEXT_PLACEHOLDER = "#3f3e3b"  # true placeholder / "type a goal…"
 # can't blur "red = danger". The default pack's ACCENT is a warm brick that
 # reads red-family but is clearly distinct (muted, orange-leaning) from the
 # bright pure-red CRITICAL below.
+# The green and cyan packs are FULLY themed: unlike red/blue (which keep the
+# oxblood wordmark), they re-tint the KRATOS wordmark + "Kratos:" voice to match
+# their accent, for the cohesive single-hue terminal look. Their accents are kept
+# clearly brighter/more saturated than the muted SAFE green (#7f9e79) so
+# "safe/passed" never blurs with "accent". Red stays the default + brand identity.
 PACKS: dict[str, dict[str, str]] = {
     "kratos-red": {"label": "Kratos Red (default)", "ACCENT": "#cf7259",
                    "KRATOS_RED": "#8b1a1a", "ADMIN": "#b3968a"},
     "kratos-blue": {"label": "Slate Blue", "ACCENT": "#7fa8bf",
                     "KRATOS_RED": "#8b1a1a", "ADMIN": "#8f9bb0"},
+    "kratos-green": {"label": "Matrix Green", "ACCENT": "#3fb950",
+                     "KRATOS_RED": "#56d364", "ADMIN": "#7f9b78"},
+    "kratos-cyan": {"label": "Cyan", "ACCENT": "#4bc4d4",
+                    "KRATOS_RED": "#5dd0de", "ADMIN": "#84a7ae"},
 }
 DEFAULT_PACK = "kratos-red"
 
@@ -145,6 +154,15 @@ APP_CSS = f"""
 Screen {{
     background: {BG};
     color: {TEXT};
+    /* Themed scrollbars -- the default grey looked disconnected from the palette.
+       scrollbar-* are inherited, so descendant scrollables pick these up. */
+    scrollbar-background: {BG};
+    scrollbar-background-hover: {BG};
+    scrollbar-background-active: {BG};
+    scrollbar-color: {BORDER};
+    scrollbar-color-hover: {ACCENT};
+    scrollbar-color-active: {ACCENT};
+    scrollbar-corner-color: {BG};
 }}
 
 /* Kratos's oxblood wordmark, used on the idle/launch screens */

@@ -492,30 +492,23 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _render_idle(self) -> None:
         st = self.session_state
         from kratos.agent.tools import TOOL_REGISTRY
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
 
-        self._emit(Text("KRATOS", style=f"bold {T.KRATOS_RED}"))
-        grid = Text()
-        grid.append("target      ", style=T.TEXT_FAINTER)
-        grid.append(f"{st['targets'][0] if st['targets'] else '(none)'}\n", style=T.TEXT)
-        grid.append("mode        ", style=T.TEXT_FAINTER)
-        grid.append("read-only", style=T.SAFE)
-        grid.append(" — no state changes without explicit approval\n", style=T.TEXT_DIM)
-        grid.append("tools       ", style=T.TEXT_FAINTER)
-        grid.append(f"{len(TOOL_REGISTRY)} loaded\n", style=T.TEXT)
-        self._emit(grid)
-        if st["resume_context"]:
-            self._emit(Text("— resumed prior context loaded —", style=T.TEXT_FAINTER))
-        self._emit(
-            Text(
-                "Describe what to investigate. Kratos reasons through it step by step "
-                "and asks before anything critical.",
-                style=T.TEXT_FAINT,
-            )
-        )
-        # First-run tips: shown once per session start, harmless to repeat.
-        self._emit(Text("Tips:  ? help · Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
-        self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
-        self._emit(Text("Investigations target the monitored host by default; ask about “your own host” (or /investigate-host) to check the Kratos machine itself.", style=T.TEXT_GHOST))
+        # Split the registry into built-in vs kept for the TOOLS card.
+        try:
+            kept = set(_read_metadata(KEPT_TOOLS_DIR).keys())
+        except Exception:  # noqa: BLE001 -- the banner must never fail to render
+            kept = set()
+        n_kept = sum(1 for name in TOOL_REGISTRY if name in kept)
+        n_builtin = len(TOOL_REGISTRY) - n_kept
+
+        target = st["targets"][0] if st["targets"] else ""
+        self._emit(R.home_banner(target, n_builtin, n_kept, resumed=bool(st["resume_context"])))
+        # Secondary hints (kept dim, below the banner) for the less-obvious moves.
+        self._emit(Text(
+            "Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · "
+            "esc/Ctrl+C stops a response · ask “investigate your own host” to check Kratos itself",
+            style=T.TEXT_GHOST))
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay ([f]) ---------------

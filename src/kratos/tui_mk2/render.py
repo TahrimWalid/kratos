@@ -15,6 +15,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich import box
+from rich.align import Align
+from rich.columns import Columns
 from rich.console import Group
 from rich.panel import Panel
 from rich.rule import Rule
@@ -42,6 +45,54 @@ __all__ = [
     "plan_preview_panel",
     "response_plan_panel",
 ]
+
+
+def _home_card(label: str, value: Text) -> Panel:
+    """One card for the idle home banner (TARGET / MODE / TOOLS). The label sits
+    in the rounded top border; the value fills the body."""
+    return Panel(value, title=Text(f" {label} ", style=T.TEXT_FAINTER),
+                 title_align="left", box=box.ROUNDED, border_style=T.BORDER,
+                 padding=(0, 2))
+
+
+def home_banner(target: str, n_builtin: int, n_kept: int, *, resumed: bool = False) -> Group:
+    """The idle / home screen: a centered KRATOS wordmark, a one-line identity,
+    three at-a-glance cards (target · safety mode · tools), and starter tips.
+    Shown when a session has no messages yet. The wordmark + 'Kratos:' voice use
+    the active theme's brand color (red by default), so this restyles with the
+    theme; the safety 'observe-only' stays green in every theme (a role color)."""
+    wordmark = Align.center(Text("   ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
+    subtitle = Align.center(Text("security assistant · mk2", style=T.TEXT_FAINT))
+
+    tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)
+    mode = Text("observe-only", style=f"bold {T.SAFE}")
+    tools = Text()
+    tools.append(f"{n_builtin} built-in", style=f"bold {T.TEXT_BRIGHT}")
+    tools.append(f" · {n_kept} kept", style=T.TEXT_MUTED)
+    cards = Align.center(Columns(
+        [_home_card("TARGET", tgt), _home_card("MODE", mode), _home_card("TOOLS LOADED", tools)],
+        padding=(0, 1), expand=False))
+
+    tips = Text()
+    tips.append("tips  ", style=f"bold {T.TEXT_FAINTER}")
+    tips.append("describe a goal in plain language and Kratos picks its own read-only tools\n", style=T.TEXT_DIM)
+    tips.append("  ·  try  ", style=T.TEXT_FAINTER)
+    tips.append("“check this host for signs of an SSH brute-force”\n", style=T.TEXT_MUTED)
+    tips.append("  ·  ", style=T.TEXT_FAINTER)
+    tips.append("/doctor", style=T.ACCENT)
+    tips.append(" self-check    ", style=T.TEXT_DIM)
+    tips.append("/evolve", style=T.ACCENT)
+    tips.append(" write a new tool    ", style=T.TEXT_DIM)
+    tips.append("?", style=T.ACCENT)
+    tips.append(" help", style=T.TEXT_DIM)
+
+    parts: list[Any] = [Text(""), wordmark, subtitle, Text(""), cards, Text("")]
+    if resumed:
+        parts.append(Align.center(Text("— resumed prior context loaded —", style=T.TEXT_FAINTER)))
+        parts.append(Text(""))
+    parts.append(tips)
+    parts.append(Text(""))
+    return Group(*parts)
 
 
 def timestamped(left: Text, time_str: str) -> Table:
