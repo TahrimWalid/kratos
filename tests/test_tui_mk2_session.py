@@ -914,3 +914,18 @@ def test_question_mark_on_empty_prompt_opens_help(tmp_path, monkeypatch):
     opened_help, input_after = asyncio.run(_run())
     assert opened_help is True   # help opened
     assert input_after == ""     # the "?" was consumed, not left in the box
+
+
+def test_dispatch_guard_survives_a_crashing_command(tmp_path, monkeypatch):
+    """P2.1 robustness: a bug in ANY command handler must not crash the session.
+    The guarded _dispatch_slash catches it, shows a friendly line, and lives."""
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    emitted = []
+    monkeypatch.setattr(screen, "_emit", lambda r: emitted.append(r))
+    monkeypatch.setattr(screen, "_set_busy", lambda *_a: None)
+    monkeypatch.setattr(screen, "_dispatch_slash_impl",
+                        lambda _t: (_ for _ in ()).throw(RuntimeError("kaboom")))
+    screen._dispatch_slash("/anything")   # must NOT raise
+    assert emitted, "a friendly error line should have been shown"
+    text = " ".join(str(getattr(r, "plain", r)) for r in emitted)
+    assert "unexpected error" in text and "session is fine" in text

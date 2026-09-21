@@ -649,6 +649,22 @@ class SessionScreen(Screen):
 
     # --- slash dispatch --------------------------------------------------
     def _dispatch_slash(self, text: str) -> None:
+        """Guarded entry point for every command (typed or from the palette): a bug
+        in ANY handler surfaces as a friendly line and the session survives.
+        Without this, an unhandled exception here crashes the whole TUI -- Textual
+        re-raises exceptions thrown inside an event handler."""
+        try:
+            self._dispatch_slash_impl(text)
+        except Exception as e:  # noqa: BLE001 -- a command must never crash the session
+            self._emit(R.error_line(
+                f"That command hit an unexpected error and stopped — the session is fine ({e}). "
+                "If it keeps happening, /doctor can help diagnose it."))
+            try:
+                self._set_busy(False)   # a handler may have set busy before raising
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _dispatch_slash_impl(self, text: str) -> None:
         parts = text.split(maxsplit=1)
         cmd = parts[0].lower()
         rest = parts[1] if len(parts) > 1 else ""
