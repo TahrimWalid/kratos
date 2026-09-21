@@ -31,6 +31,20 @@ def test_preset_schedule_requires_preset_name(tmp_path):
     assert sch.kind == "preset" and sch.preset == "deep-scan" and sch.is_runnable
 
 
+def test_schedules_referencing_preset_finds_direct_and_group(tmp_path):
+    # P2.4: deleting a preset should warn about schedules that run it -- directly
+    # or as a job inside a group.
+    S.save_schedule(tmp_path, name="direct", kind="preset", preset="deep-scan", cadence="daily")
+    S.save_schedule(tmp_path, name="audit-only", kind="audit", cadence="weekly")
+    S.save_schedule(tmp_path, name="grp", kind="group", cadence="daily",
+                    jobs=[{"kind": "audit", "label": "a"},
+                          {"kind": "preset", "preset": "deep-scan", "label": "b"}])
+    refs = set(S.schedules_referencing_preset(tmp_path, "deep-scan"))
+    assert refs == {"direct", "grp"}                       # audit-only is not a dependent
+    assert S.schedules_referencing_preset(tmp_path, "nonexistent") == []
+    assert S.schedules_referencing_preset(tmp_path, "") == []
+
+
 def test_round_trip_is_valid_toml(tmp_path):
     S.save_schedule(tmp_path, name="rt", kind="preset", preset="p", target="10.0.0.5",
                     cadence="hourly", deliver=["ntfy"], min_severity="medium")

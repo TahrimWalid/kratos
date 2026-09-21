@@ -465,11 +465,15 @@ def command_block_panel(title: str, commands: list[str], note: str | None = None
 
 
 def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
-                   last_status: dict[str, str] | None = None) -> Group:
+                   last_status: dict[str, str] | None = None,
+                   missing_preset: set[str] | None = None) -> Group:
     """A6.3 -- list saved schedules with their cadence, unit of work, and last
     run status. Corrupt files (from list_schedules' error list) are surfaced,
-    never hidden."""
+    never hidden. `missing_preset` names schedules whose referenced preset has
+    been deleted -- flagged so it's visible before the next run, not only when it
+    fails unattended."""
     last_status = last_status or {}
+    missing_preset = missing_preset or set()
     if not schedules and not errors:
         return Group(Text("No schedules yet. Create one with /schedule new.", style=T.TEXT_MUTED))
     table = Table(show_header=True, header_style="bold", expand=False)
@@ -482,10 +486,15 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
             unit = f"preset:{s.preset}"
         else:
             unit = s.kind
-        runnable = "" if s.is_runnable else "  (not runnable)"
+        dangling = s.name in missing_preset
+        if dangling:
+            unit += "  ⚠ preset deleted"
+        elif not s.is_runnable:
+            unit += "  (not runnable)"
+        healthy = s.is_runnable and not dangling
         table.add_row(
             Text(s.name, style=T.ACCENT),
-            Text(unit + runnable, style=T.TEXT if s.is_runnable else T.ATTENTION),
+            Text(unit, style=T.TEXT if healthy else T.ATTENTION),
             s.cadence,
             s.target or "active",
             ", ".join(s.deliver),

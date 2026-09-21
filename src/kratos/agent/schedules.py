@@ -327,6 +327,27 @@ def list_schedules(data_dir: Path) -> tuple[list[Schedule], list[tuple[str, str]
     return schedules, errors
 
 
+def schedule_references_preset(schedule: Schedule, preset_name: str) -> bool:
+    """True if this schedule runs the named preset -- directly (kind='preset') or
+    as a job inside a group (kind='group'). Used to warn before a preset is
+    deleted and to flag a schedule whose preset has gone missing."""
+    if not preset_name:
+        return False
+    if schedule.kind == "preset" and schedule.preset == preset_name:
+        return True
+    if schedule.kind == "group":
+        return any((j or {}).get("preset") == preset_name for j in (schedule.jobs or []))
+    return False
+
+
+def schedules_referencing_preset(data_dir: Path, preset_name: str) -> list[str]:
+    """Names of schedules that run the given preset (see
+    `schedule_references_preset`). Tolerant: a corrupt schedule file is skipped,
+    never raises."""
+    found, _errs = list_schedules(data_dir)
+    return [s.name for s in found if schedule_references_preset(s, preset_name)]
+
+
 def save_schedule(
     data_dir: Path,
     *,

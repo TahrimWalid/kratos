@@ -2049,9 +2049,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
         preset = self._preset_resolve(args, "delete")
         if preset is None:
             return
-        ok = await self.app.push_screen_wait(ConfirmModal(
-            "Delete preset?",
-            f"Delete preset {preset.name!r}? This removes {preset.path.name}."))
+        from kratos.agent import schedules as _S
+
+        body = f"Delete preset {preset.name!r}? This removes {preset.path.name}."
+        dependents = _S.schedules_referencing_preset(self._data_dir, preset.name)
+        if dependents:  # a schedule points at this preset -- warn before breaking it
+            body += (f"\n\n⚠ {len(dependents)} schedule(s) run this preset "
+                     f"({', '.join(dependents)}). They'll fail until you repoint or delete them.")
+        ok = await self.app.push_screen_wait(ConfirmModal("Delete preset?", body))
         if not ok:
             self._emit(R.note_line("Kept the preset — nothing deleted."))
             return
@@ -2097,6 +2102,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit(R.note_line(self._SCHEDULE_USAGE))
 
     def _schedule_render_list(self) -> None:
+        from kratos.agent import presets as _P
         from kratos.agent import schedules as _S
 
         schedules, errors = _S.list_schedules(self._data_dir)
@@ -2105,7 +2111,24 @@ class SessionScreen(ResilientWorkerHost, Screen):
             rec = _S.last_run_record(self._data_dir, s.name)
             if rec:
                 last[s.name] = f"{rec.get('finished_at', '?')[:16]} · {rec.get('status')}"
-        self._emit(R.schedule_table(schedules, errors, last))
+        # Flag any schedule whose referenced preset was deleted -- visible before
+        # the next unattended run fails, mirroring /preset list's missing-tool flag.
+        existing = {p.name for p in _P.list_presets(self._data_dir)[0]}
+        missing = {
+            s.name for s in schedules
+            if not self._schedule_referenced_presets(s).issubset(existing)
+        }
+        self._emit(R.schedule_table(schedules, errors, last, missing_preset=missing))
+
+    @staticmethod
+    def _schedule_referenced_presets(schedule: Any) -> set[str]:
+        """The preset name(s) a schedule runs (direct or via group jobs)."""
+        names: set[str] = set()
+        if getattr(schedule, "kind", None) == "preset" and schedule.preset:
+            names.add(schedule.preset)
+        elif getattr(schedule, "kind", None) == "group":
+            names.update(j.get("preset") for j in (schedule.jobs or []) if (j or {}).get("preset"))
+        return names
 
     async def _schedule_resolve(self, args: list[str], action: str):
         """Resolve a schedule from an inline name or a picker."""

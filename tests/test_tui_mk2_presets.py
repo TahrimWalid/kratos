@@ -552,6 +552,50 @@ def test_preset_list_marks_missing_tool(tmp_path, monkeypatch):
     assert "fine" in out                  # the healthy preset still lists
 
 
+def test_preset_delete_warns_about_dependent_schedule(tmp_path, monkeypatch):
+    # P2.4: deleting a preset a schedule points at must warn in the confirm dialog,
+    # not silently break the schedule.
+    from kratos.agent import schedules as _S
+    from kratos.tui_mk2.modals import ConfirmModal
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    P.save_preset(tmp_path, name="nightly-scan", goal="deep scan")
+    _S.save_schedule(tmp_path, name="cron", kind="preset", preset="nightly-scan", cadence="daily")
+    seen = {}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _capture(modal):
+                if isinstance(modal, ConfirmModal):
+                    seen["body"] = modal._body
+                return False  # decline: don't actually delete
+
+            monkeypatch.setattr(app, "push_screen_wait", _capture)
+            await screen._preset_delete(["nightly-scan"])
+            await pilot.pause()
+
+    asyncio.run(_run())
+    assert "schedule" in seen.get("body", "").lower() and "cron" in seen["body"]
+    assert P.load_preset(tmp_path, "nightly-scan") is not None   # declined => still there
+
+
+def test_schedule_list_flags_deleted_preset(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+    from kratos.tui_mk2 import render as R
+    schedules = [
+        NS(name="live", kind="preset", preset="exists", jobs=[], cadence="daily",
+           target=None, deliver=["ntfy"], is_runnable=True),
+        NS(name="broken", kind="preset", preset="gone", jobs=[], cadence="daily",
+           target=None, deliver=["ntfy"], is_runnable=True),
+    ]
+    out = _render_all([R.schedule_table(schedules, [], {}, missing_preset={"broken"})])
+    assert "preset deleted" in out            # the dangling schedule is flagged
+    assert "live" in out and "broken" in out
+
+
 def test_preset_new_guided_pipeline_with_condition(tmp_path, monkeypatch):
     """The guided builder can attach a bounded `when` condition to a step (slice
     4): nmap always, then a vuln scan only-if a HIGH finding exists."""
