@@ -980,13 +980,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _preset_render_list(self) -> None:
         from kratos.agent import presets as _P
+        from kratos.agent.tools import TOOL_REGISTRY
 
         presets, errors = _P.list_presets(self._data_dir)
         run_meta = _P.preset_run_meta(self._data_dir)
         # Render each preset's last-run time in the display timezone (stored UTC).
         last_run = {name: self._fmt_stored_time(meta.get("last_run_at"))
                     for name, meta in run_meta.items() if meta.get("last_run_at")}
-        self._emit(R.preset_table(presets, errors, last_run=last_run))
+        # Pipelines that name a tool this build doesn't have: structurally runnable,
+        # but a required step fails at run time -- mark them so it's visible before
+        # a run, not only in /preset show. (Registry check stays here; render stays pure.)
+        unavailable = {
+            p.name for p in presets
+            if getattr(p, "is_pipeline", False) and p.steps
+            and any(s.get("tool") not in TOOL_REGISTRY for s in p.steps)
+        }
+        self._emit(R.preset_table(presets, errors, last_run=last_run, unavailable=unavailable))
 
     @work
     async def _preset_guided(self, action: str) -> None:
@@ -1121,8 +1130,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
                      "(and it can't be scheduled until then)\n")
         if preset.is_pipeline:
             from kratos.agent.pipeline import is_local_host_tool
+            from kratos.agent.tools import TOOL_REGISTRY
 
             lines = [head]
+            unknown: list[str] = []
             if preset.steps:
                 lines.append("steps (run top-to-bottom):")
                 for i, s in enumerate(preset.steps, 1):
@@ -1130,12 +1141,24 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     flags = "required" if s.get("required", True) else "optional"
                     argstr = f"  args: {self._format_step_args(s['args'])}" if s.get("args") else ""
                     whenstr = f"  when={s['when']!r}" if s.get("when") else ""
-                    lines.append(f"  {i}. {s['tool']}  [{host}, {flags}]{argstr}{whenstr}")
+                    miss = "  ✗ not available in this build" if s["tool"] not in TOOL_REGISTRY else ""
+                    if miss:
+                        unknown.append(s["tool"])
+                    lines.append(f"  {i}. {s['tool']}  [{host}, {flags}]{argstr}{whenstr}{miss}")
             else:
                 lines.append("(no valid steps)")
             if not preset.is_runnable and preset.unsupported_reason:
                 lines.append("")
                 lines.append(f"⚠ {preset.unsupported_reason}")
+            elif unknown:
+                # Structurally runnable, but a tool it names isn't loaded here --
+                # a required step would fail-fast at run time. Warn now, don't block
+                # (a kept tool may load later; existence is a run-time concern by design).
+                lines.append("")
+                lines.append(
+                    f"⚠ references {'a tool' if len(unknown) == 1 else 'tools'} not available in this "
+                    f"build: {', '.join(dict.fromkeys(unknown))}. A required step would stop the run — "
+                    "build the tool with /evolve, or edit the pipeline with /preset edit.")
             body = "\n".join(lines)
         else:
             body = head + "\n" + (preset.goal or "(no goal)")

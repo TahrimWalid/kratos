@@ -681,7 +681,8 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
 
 
 def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None,
-                 last_run: dict[str, str] | None = None) -> Group:
+                 last_run: dict[str, str] | None = None,
+                 unavailable: set[str] | None = None) -> Group:
     """Render saved presets (A2) as a table: name, kind, target, a one-line
     goal/pipeline preview, and (when known) the last-run time. A goal AND a valid
     pipeline preset are both runnable (shown in accent); a non-runnable one (an
@@ -689,6 +690,7 @@ def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None
     runnable here', never hidden. Unreadable files are surfaced as a trailing note
     rather than silently dropped."""
     last_run = last_run or {}
+    unavailable = unavailable or set()
     table = Table(show_header=True, box=None, title="Saved presets",
                   title_justify="left", title_style=f"bold {T.ACCENT}",
                   header_style=f"bold {T.TEXT_DIM}")
@@ -713,12 +715,16 @@ def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None
             goal_preview = "(not runnable in this build)"
         name_style = T.ACCENT if runnable else T.TEXT_FAINT
         kind_style = T.SAFE if runnable else T.TEXT_FAINT
+        pname = getattr(p, "name", "?")
+        if pname in unavailable:  # runnable shape, but names a tool this build lacks
+            goal_preview = (goal_preview + "  " if goal_preview else "") + "⚠ missing tool"
+            kind_style = T.ATTENTION
         table.add_row(
-            Text(getattr(p, "name", "?"), style=name_style),
+            Text(pname, style=name_style),
             Text(kind, style=kind_style),
             Text(getattr(p, "target", None) or "—"),
             Text(goal_preview),
-            Text(last_run.get(getattr(p, "name", ""), "—")),
+            Text(last_run.get(pname, "—")),
         )
     parts: list[Any] = [table]
     if not presets:

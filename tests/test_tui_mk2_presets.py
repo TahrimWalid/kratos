@@ -492,6 +492,66 @@ def test_preset_list_renders_without_crashing(tmp_path, monkeypatch):
     asyncio.run(_run())  # no exception == pass
 
 
+def _write_ghost_pipeline(tmp_path):
+    """A structurally-valid pipeline preset naming a tool that isn't in the
+    registry -- runnable=True by design (unknown tool = run-time concern), so the
+    P2.3 polish surfaces it as an advisory before a run."""
+    pdir = tmp_path / "presets"
+    pdir.mkdir(exist_ok=True)
+    (pdir / "ghost.toml").write_text(
+        'name = "ghost"\nkind = "pipeline"\ncreated_at = "2026-01-01T00:00:00"\n'
+        '[[steps]]\ntool = "this_tool_was_removed"\nrequired = true\n',
+        encoding="utf-8")
+
+
+def _render_all(emitted):
+    from rich.console import Console
+    import io
+    buf = io.StringIO()
+    con = Console(file=buf, width=100)
+    for r in emitted:
+        con.print(r)
+    return buf.getvalue()
+
+
+def test_preset_show_flags_missing_tool(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    _write_ghost_pipeline(tmp_path)
+    emitted = []
+    monkeypatch.setattr(screen, "_emit", lambda r: emitted.append(r))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._preset_show(["ghost"])
+            await pilot.pause()
+
+    asyncio.run(_run())
+    out = _render_all(emitted)
+    assert "not available in this build" in out and "this_tool_was_removed" in out
+
+
+def test_preset_list_marks_missing_tool(tmp_path, monkeypatch):
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    _write_ghost_pipeline(tmp_path)
+    P.save_preset(tmp_path, name="fine", goal="a normal goal")
+    emitted = []
+    monkeypatch.setattr(screen, "_emit", lambda r: emitted.append(r))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._preset_render_list()
+            await pilot.pause()
+
+    asyncio.run(_run())
+    out = _render_all(emitted)
+    assert "missing tool" in out          # the ghost pipeline is flagged
+    assert "fine" in out                  # the healthy preset still lists
+
+
 def test_preset_new_guided_pipeline_with_condition(tmp_path, monkeypatch):
     """The guided builder can attach a bounded `when` condition to a step (slice
     4): nmap always, then a vuln scan only-if a HIGH finding exists."""
