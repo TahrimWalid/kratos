@@ -37,6 +37,7 @@ from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.workers import ResilientWorkerHost
 from kratos.tui_mk2.modals import (
     CommandPaletteModal,
     ConfirmModal,
@@ -124,7 +125,7 @@ class _CancelInvestigation(Exception):
     so 'interrupted — N of ~M steps' is honest about where it stopped)."""
 
 
-class SessionScreen(Screen):
+class SessionScreen(ResilientWorkerHost, Screen):
     BINDINGS = [
         Binding("escape", "interrupt", "interrupt", show=True),
         # ctrl+c also stops the current response, a conventional stop-the-

@@ -25,6 +25,7 @@ from textual.widgets import DataTable, Input, Select, Static, TabbedContent, Tab
 
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.workers import ResilientWorkerHost
 
 # Provider presets: label -> (base_url, backend). "" base_url = fill it yourself.
 # Only OpenAI-compatible endpoints (what Kratos speaks); non-OpenAI-native
@@ -248,7 +249,7 @@ class EditWindowModal(ModalScreen):
         self.dismiss(value)
 
 
-class SettingsScreen(Screen):
+class SettingsScreen(ResilientWorkerHost, Screen):
     """General settings hub. `session` is the SessionScreen underneath, reused
     for its cost/privacy blurb and footer refresh."""
 

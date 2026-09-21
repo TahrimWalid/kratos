@@ -114,6 +114,35 @@ def test_conversational_target_change_applies_on_approve(tmp_path, monkeypatch):
     assert asyncio.run(_run()) == ["10.9.9.9"]
 
 
+def test_crashing_worker_does_not_kill_the_session(tmp_path, monkeypatch):
+    # P2.1 safety net: a background worker that raises must NOT take the whole TUI
+    # down (Textual's default re-raises it as fatal WorkerFailed). The mixin forces
+    # every worker non-fatal and surfaces a friendly line instead. Reaching the
+    # assertions at all proves the app survived -- a crash would break run_test().
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    emitted = []
+    monkeypatch.setattr(screen, "_emit", lambda r: emitted.append(r))
+
+    def _boom():
+        raise RuntimeError("kaboom from a normally-fatal worker")
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen.run_worker(_boom, thread=True, name="test-boom")
+            for _ in range(6):  # let the thread finish + the ERROR event propagate
+                await pilot.pause()
+            return app.is_running
+
+    still_running = asyncio.run(_run())
+    assert still_running is True                        # never crashed
+    assert emitted, "a failed worker should surface a friendly transcript line"
+    text = "".join(str(r) for r in emitted)
+    assert "Something went wrong" in text and "session is fine" in text
+    assert "kaboom" not in text                          # raw error is logged, not shown
+
+
 def test_conversational_target_change_cancelled_on_deny(tmp_path, monkeypatch):
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
     monkeypatch.setattr(screen, "_setup_target_worker", lambda host: None)

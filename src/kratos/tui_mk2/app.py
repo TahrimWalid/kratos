@@ -38,6 +38,7 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.approvals import make_textual_approval_provider, make_textual_clarify_provider
 from kratos.tui_mk2.modals import ConfirmModal, PromptModal
 from kratos.tui_mk2.screens.launch import LaunchScreen
+from kratos.tui_mk2.workers import ResilientWorkerHost
 
 # --- Mouse: clicks + scroll, but NOT motion --------------------------------
 # Textual's LinuxDriver enables ?1003h (SET_ANY_EVENT_MOUSE), which makes the
@@ -92,7 +93,7 @@ class TooSmallScreen(Screen):
         yield Static(Align.center(Text(self._message)))
 
 
-class KratosTUI(App):
+class KratosTUI(ResilientWorkerHost, App):
     CSS = T.APP_CSS
     TITLE = "kratos"
     # Disable Textual's built-in ctrl+p palette so our own command palette

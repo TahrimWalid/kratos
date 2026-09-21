@@ -29,11 +29,12 @@ from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import PromptModal, ResumeTierModal
+from kratos.tui_mk2.workers import ResilientWorkerHost
 
 CHOOSER_SESSION_LIMIT = 20
 
 
-class LaunchScreen(Screen):
+class LaunchScreen(ResilientWorkerHost, Screen):
     """Recent-sessions chooser. Pushes a SessionScreen once a session is
     picked/created; refreshes itself whenever it regains focus (e.g. after a
     /delete pops the session screen back to here)."""
