@@ -107,23 +107,23 @@ FINAL_ITERATION_NUDGE = (
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
-# execute_tool_call's target-arg guard (2026-07-18, real incident): no real
-# IP address or hostname contains an uppercase letter or an underscore --
-# both are exactly what a hallucinated placeholder like "THE_TARGET_IP"
-# looks like. Deliberately narrow (catches the confirmed pattern, not a
-# full IP/hostname syntax validator), matching this file's other guards.
+# execute_tool_call's target-arg guard: no real IP address or hostname
+# contains an uppercase letter or an underscore -- both are exactly what a
+# hallucinated placeholder like "THE_TARGET_IP" looks like. Deliberately
+# narrow (catches this specific pattern, not a full IP/hostname syntax
+# validator), matching this file's other guards.
 _IMPLAUSIBLE_TARGET_RE = re.compile(r"[A-Z_]")
 
-# execute_tool_call's target-MISMATCH guard (2026-07-19, real incident): the
-# guard above only catches an OBVIOUSLY fake placeholder -- it does nothing
-# for a plausible-looking but WRONG real IP. Confirmed live via MCP: a
-# kratos_investigate call with target=10.136.28.168 (the real, configured
-# active target) resulted in the model calling run_nmap_scan with a
-# hallucinated target=192.168.1.50 instead -- a real, valid-shaped IP that
-# simply isn't the host the investigation was ever about. The tool ran
-# without error and the final answer described the wrong host. Pre-existing
-# in the CLI/REPL path too (nothing here is MCP-specific), fixed at this one
-# shared dispatch point so every entry point benefits.
+# execute_tool_call's target-MISMATCH guard: the guard above only catches
+# an OBVIOUSLY fake placeholder -- it does nothing for a plausible-looking
+# but WRONG real IP. Observed live via MCP: a kratos_investigate call with
+# an explicit, correctly-configured active target still resulted in the
+# model calling run_nmap_scan with a different, hallucinated but
+# valid-shaped IP that simply wasn't the host the investigation was ever
+# about. The tool ran without error and the final answer described the
+# wrong host. Pre-existing in the CLI/REPL path too (nothing here is
+# MCP-specific), fixed at this one shared dispatch point so every entry
+# point benefits.
 #
 # The ONE legitimate exception, not invented here -- run_nmap_scan's own
 # description already documents it ("pass target explicitly only to check a
@@ -157,8 +157,29 @@ _STATE_CHANGE_RE = re.compile(
     r"|crontab\s+-[er]|pkill|killall|mkfs\S*"
     r")\b"
     r"|\brm\s+\S|\bchmod\s|\bchown\s"
+    r"|\b(?:cp|mv|ln|install|truncate|shred)\s|\bsed\s+-i|\bsysctl\s+-w\b"
     r"|>\s*/(?:etc|usr|boot|bin|sbin|lib|var|root)/"
     r"|\btee\s+(?:-a\s+)?/(?:etc|usr|boot|var)/",
+    re.IGNORECASE,
+)
+
+# Remote-reach / remote-execution tools. During an investigation run_linux_command
+# is for READ-ONLY LOCAL diagnostics only, so it must never invoke a tool that
+# reaches another host -- above all the monitored target. This closes the
+# "ssh-wrap a command to the target" path far more robustly than matching the
+# target's literal address, which a hostname, an obfuscated IP (leading zeros), or
+# a shell variable / command substitution all dodge.
+#
+# Matched only at COMMAND POSITION (string start, or right after a shell separator
+# ; | & ( ` $(, optionally behind a sudo/env/... wrapper) -- deliberately NOT after
+# a plain space, so `grep ssh /var/log`, `journalctl -u ssh`, `ps aux | grep nc`
+# (the tool name as DATA/an argument) are not flagged. Known limit: a tool name
+# buried inside a nested quoted `bash -c "ssh ..."` isn't matched here -- the
+# mandatory human approval on run_linux_command is the backstop for that.
+_REMOTE_REACH_RE = re.compile(
+    r"(?:^|[\n;`(]|\|\|?|&&?|\$\()\s*"
+    r"(?:(?:sudo|doas|env|nohup|time|timeout)\s+(?:-\S+\s+)*)?"
+    r"(?:ssh|scp|sftp|rsync|telnet|nc|ncat|socat)\b",
     re.IGNORECASE,
 )
 
@@ -264,27 +285,23 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
 
     call_args = dict(args or {})
     if "data_dir" in tool.parameters:
-        # ALWAYS the real value, even if the model already supplied its own
-        # -- real incident, 2026-07-17: the system prompt already says "you
-        # do not need to supply data_dir", but a prompt instruction alone
-        # doesn't stop a hallucinated override from silently winning. The
-        # model passed data_dir="/data" (a real filesystem-root path Kratos
-        # has no permission to write to), producing a real PermissionError
-        # that had nothing to do with the target at all -- confirmed via a
-        # real transcript, not hypothetical. There is no legitimate reason
-        # for the model to ever need to set this itself (unlike `target`
-        # below, which has a real override use case), so this is a
-        # structural override, not just a fill-in-if-missing default.
+        # ALWAYS the real value, even if the model already supplied its
+        # own. The system prompt already says "you do not need to supply
+        # data_dir", but a prompt instruction alone doesn't stop a
+        # hallucinated override from silently winning -- an invented path
+        # like "/data" (a filesystem-root path Kratos has no permission to
+        # write to) produces a PermissionError that has nothing to do with
+        # the target at all. There is no legitimate reason for the model to
+        # ever need to set this itself (unlike `target` below, which has a
+        # real override use case), so this is a structural override, not
+        # just a fill-in-if-missing default.
         call_args["data_dir"] = data_dir
 
     if "target" in tool.parameters and call_args.get("target") is not None:
-        # Real incident, same turn as the data_dir bug above: the model
-        # also invented a placeholder target ("THE_TARGET_IP") that isn't a
-        # real IP/hostname -- the call raised no exception, silently
-        # scanning nothing and returning a wrong, empty result (0 open
-        # ports, vs. a real 1 open port minutes earlier in the same
-        # session) that would have gone unnoticed had the data_dir error
-        # above not also forced the model to explain itself. Unlike
+        # The model can also invent a placeholder target (e.g.
+        # "THE_TARGET_IP") that isn't a real IP/hostname -- the call would
+        # raise no exception, silently scanning nothing and returning a
+        # wrong, empty result that could easily go unnoticed. Unlike
         # data_dir, `target` has a real legitimate override (scanning a
         # specific different host on purpose), so it can't be force-
         # overridden the same way -- reject an OBVIOUSLY fake value before
@@ -346,6 +363,17 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                     "not do that -- recommend the action in your final_answer instead of running it."
                 ),
             }
+        if _REMOTE_REACH_RE.search(cmd):
+            return {
+                "status": "error",
+                "observation": (
+                    "run_linux_command runs READ-ONLY LOCAL diagnostics on Kratos's own host during "
+                    "an investigation and must NOT reach another host (ssh/scp/rsync/nc/telnet/...). "
+                    "To learn about the monitored target, use the target-facing tools "
+                    "(read_journalctl, run_config_audit, list_processes, check_file_integrity, ...); "
+                    "Kratos never runs commands on the target -- recommend them in your final_answer."
+                ),
+            }
         if _STATE_CHANGE_RE.search(cmd):
             return {
                 "status": "error",
@@ -363,9 +391,8 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
     # correct. Mark the approval log's length before running the handler,
     # then after it returns, verify request_approval was actually invoked for
     # this tool during the call. If a future requires_approval tool forgets
-    # to call it (a real regression, not a hypothetical), its result is
-    # refused here rather than silently trusted just because the flag says
-    # it should have been gated.
+    # to call it, its result is refused here rather than silently trusted
+    # just because the flag says it should have been gated.
     approval_mark = approval_log_length() if tool.requires_approval else None
 
     # A requires_approval=True tool whose handler does NOT itself call
@@ -501,15 +528,14 @@ def _synthesize_fallback_answer(transcript: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-# --- Context compaction (feature 14b) -- mind the C7 regression ---------------
+# --- Context compaction ---------------------------------------------------
 # The ReAct loop feeds the model a growing prompt: the goal, then one
 # "Assistant: <json> / Observation: <text>" block per turn. On the small local
 # window (LLAMA_N_CTX, default 6144) a long investigation eventually runs that
-# prompt into the ceiling. Naive truncation is exactly Sprint 1's root-cause
-# bug and what eval C7 guards against -- silently dropping an earlier tool
-# observation the model still needs (a file path it must cite in a later
-# correlate_findings call, a diff it must not contradict) makes it lose the
-# thread or its JSON format near the end.
+# prompt into the ceiling. Naive truncation is dangerous here: silently
+# dropping an earlier tool observation the model still needs (a file path it
+# must cite in a later correlate_findings call, a diff it must not
+# contradict) makes it lose the thread or its JSON format near the end.
 #
 # So compaction here is non-lossy in the ways that matter:
 #   * It rewrites ONLY the string handed to the model -- never the returned
@@ -731,9 +757,8 @@ def run_agent(
     #
     # Guard 1's actual pass condition is SUCCESS (last_correlate_findings is
     # not None -- set below only when a call returns a real findings list),
-    # not mere attempt. This was a real, live-confirmed gap (2026-07-15 Sprint
-    # 2 closing regression): a call that failed on hallucinated file paths
-    # was never retried, yet still satisfied the old attempt-only check,
+    # not mere attempt. An attempt-only check would let a call that failed
+    # on hallucinated file paths go unretried yet still satisfy the guard,
     # letting the model conclude on raw observations a real correlation pass
     # never actually validated. correlate_findings_called still tracks
     # whether it's been invoked at least once -- kept as a separate flag
@@ -810,13 +835,13 @@ def run_agent(
         re.IGNORECASE,
     )
 
-    # Structural guard against a fourth, distinct hallucination pattern found
-    # in real usage (2026-07-17): a final_answer confidently stating a
-    # specific claimed timeframe ("last 24 hours") while correlate_findings'
-    # own staleness_warning (adapters/findings_engine.py::_staleness_warning)
-    # says the auto-discovered inputs it just correlated span FAR more than
-    # that -- a real transcript showed the model see this exact warning and
-    # answer "in the last 24 hours" anyway, no caveat. Same narrow,
+    # Structural guard against a fourth, distinct hallucination pattern: a
+    # final_answer confidently stating a specific claimed timeframe ("last
+    # 24 hours") while correlate_findings' own staleness_warning
+    # (adapters/findings_engine.py::_staleness_warning) says the
+    # auto-discovered inputs it just correlated span FAR more than that --
+    # the model can see this exact warning and answer "in the last 24
+    # hours" anyway, with no caveat, if nothing catches it. Same narrow,
     # phrase-matched philosophy as guards 2/3, not a general time-window
     # verifier: correlate_findings has no per-event time-window filtering at
     # all (find_latest_inputs just grabs whichever file is newest on disk),
@@ -973,8 +998,7 @@ def run_agent(
             # --- Guard 4: staleness-vs-claimed-timeframe contradiction ---
             # Deliberately narrow (fixed timeframe-phrase regex, only fires
             # when correlate_findings' OWN staleness_warning is non-null) --
-            # see the tracking-var comment above for the real incident and
-            # scope limits.
+            # see the tracking-var comment above for the scope limits.
             guard4_violated = bool(last_staleness_warning) and bool(
                 _TIMEFRAME_CLAIM_RE.search(final_answer_text)
             )
@@ -1134,15 +1158,14 @@ def run_agent(
             })
 
         if "tool_proposal" in parsed:
-            # Evo-loop auto-suggest (2026-07-18): a structured, reliably
+            # Evo-loop auto-suggest: a structured, reliably
             # parseable signal distinct from ordinary prose -- same
             # reliability principle as the [NOTE:...] guards above (a
             # known, code-recognized shape, not a fragile string match on
             # final_answer text), but implemented as its own top-level
             # JSON key rather than a text-embedded tag, since [NOTE:...]
-            # itself is a one-way DISPLAY string (confirmed via a real
-            # audit: nothing anywhere re-parses the literal "[NOTE:" text)
-            # and a proposal needs to be a real, structured object a
+            # itself is a one-way DISPLAY string that nothing anywhere
+            # re-parses, and a proposal needs to be a real, structured object a
             # caller (cli/repl.py) can act on, not just show. Never ends
             # the investigation and never invokes anything on its own --
             # auto-suggest only, per this project's standing no-auto-
