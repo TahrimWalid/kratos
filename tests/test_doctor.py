@@ -100,3 +100,30 @@ def test_failing_rows_carry_an_actionable_fix(tmp_path, monkeypatch):
 def test_row_omits_fix_when_none():
     r = doctor._row("x", "pass", "all good")
     assert "fix" not in r                                       # clean pass rows stay uncluttered
+
+
+def _render_doctor(checks):
+    from rich.console import Console
+    import io
+    from kratos.tui_mk2 import render as R
+    buf = io.StringIO()
+    Console(file=buf, width=92).print(R.doctor_table(checks))
+    return buf.getvalue()
+
+
+def test_doctor_verdict_leads_the_output():
+    # The "is my setup OK?" verdict is a headline ABOVE the detail rows, and it
+    # reads in plain language (with correct singular/plural verb agreement).
+    fail = _render_doctor([
+        {"check": "a", "status": "pass", "detail": "the endpoint responded normally"},
+        {"check": "b", "status": "fail", "detail": "the target could not be reached over ssh"},
+    ])
+    first_line = next(ln for ln in fail.splitlines() if ln.strip())
+    assert "1 check needs attention" in first_line          # verdict is the very first line
+    assert first_line.index("needs attention") < fail.index("self-diagnostic")  # before the table
+
+    warn = _render_doctor([{"check": "a", "status": "warn", "detail": "x"}])
+    assert "1 warning to review" in warn
+
+    healthy = _render_doctor([{"check": "a", "status": "pass", "detail": ""}])
+    assert "Everything looks healthy" in healthy

@@ -665,15 +665,31 @@ def profile_blurb(values: dict[str, Any]) -> str:
     return "cloud API · sends prompts to a third party · usage-billed"
 
 
-def doctor_table(checks: list[dict[str, str]]) -> Table:
-    """Render /doctor's diagnostic rows as a color-coded status table:
-    ✓ pass (safe) · ✗ fail (critical) · ! warn (attention) · · info (dim)."""
+def doctor_table(checks: list[dict[str, str]]) -> Group:
+    """Render /doctor's diagnostic as a plain-language verdict headline followed
+    by a color-coded status table (✓ pass · ✗ fail · ! warn · · info). The
+    headline answers "is my setup OK?" at a glance before the detail rows -- a
+    non-technical user reads the verdict, not the table, first."""
     icons = {
         "pass": ("✓", T.SAFE),
         "fail": ("✗", T.CRITICAL),
         "warn": ("!", T.ATTENTION),
         "info": ("·", T.TEXT_DIM),
     }
+    # Verdict from the row statuses (info rows are neutral, not counted).
+    p = sum(1 for c in checks if c.get("status") == "pass")
+    w = sum(1 for c in checks if c.get("status") == "warn")
+    f = sum(1 for c in checks if c.get("status") == "fail")
+    if f:
+        verdict = Text(f"✗  {f} check{'s' if f != 1 else ''} "
+                       f"{'need' if f != 1 else 'needs'} attention", style=f"bold {T.CRITICAL}")
+    elif w:
+        verdict = Text(f"!  {w} warning{'s' if w != 1 else ''} to review", style=f"bold {T.ATTENTION}")
+    else:
+        verdict = Text("✓  Everything looks healthy", style=f"bold {T.SAFE}")
+    tally = Text(f"   {p} ok · {w} warning{'s' if w != 1 else ''} · {f} problem{'s' if f != 1 else ''}",
+                 style=T.TEXT_DIM)
+
     table = Table(show_header=False, box=None, title="Kratos — self-diagnostic",
                   title_justify="left", title_style=f"bold {T.ACCENT}")
     table.add_column(width=1, no_wrap=True)
@@ -686,7 +702,7 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
         fix = str(c.get("fix", "") or "")
         if fix:  # actionable next step, indented under the row it fixes
             table.add_row(Text(""), Text(""), Text(f"→ {fix}", style=T.ACCENT))
-    return table
+    return Group(verdict, tally, Text(""), table)
 
 
 def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None,

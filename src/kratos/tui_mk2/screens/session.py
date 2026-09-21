@@ -862,14 +862,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.error_line(f"Diagnostic run failed: {e}"))
             self._set_busy(False)
             return
+        # The verdict headline now leads the table (render.doctor_table), so no
+        # trailing summary line is needed -- the "is my setup OK?" answer is read
+        # first, not last.
         self._emit_bubble_from_worker(R.doctor_table(checks), self._stamp_now()[1])
-        p, w, f = doctor.summarize(checks)
-        if f:
-            self._emit_from_worker(R.error_line(f"{f} problem(s) found — see the failing rows above."))
-        elif w:
-            self._emit_from_worker(R.note_line(f"{p} ok, {w} warning(s) — review the amber rows."))
-        else:
-            self._emit_from_worker(R.success_line(f"All good — {p} checks passed."))
         self._set_busy(False)
 
     # --- /report -----------------------------------------------------
