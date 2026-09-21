@@ -674,6 +674,9 @@ def doctor_table(checks: list[dict[str, str]]) -> Table:
         icon, color = icons.get(c.get("status", "info"), ("·", T.TEXT_DIM))
         table.add_row(Text(icon, style=color), Text(str(c.get("check", "")), style=color),
                       Text(str(c.get("detail", "")), style=T.TEXT_DIM))
+        fix = str(c.get("fix", "") or "")
+        if fix:  # actionable next step, indented under the row it fixes
+            table.add_row(Text(""), Text(""), Text(f"→ {fix}", style=T.ACCENT))
     return table
 
 

@@ -77,3 +77,26 @@ def test_kept_tools_none_is_info(tmp_path, monkeypatch):
     out: list = []
     doctor._check_kept_tools(out)
     assert out[0]["status"] == "info" and "none kept" in out[0]["detail"]
+
+
+def test_failing_rows_carry_an_actionable_fix(tmp_path, monkeypatch):
+    # P2.2: every FAIL/WARN a user can act on names the next step inline. Info/pass
+    # rows never need one.
+    _seed_kept(tmp_path, monkeypatch,
+               {"foo": {"source_file": "foo.py"}, "gone": {"source_file": "gone.py"}},
+               ["foo.py"])
+    out: list = []
+    doctor._check_kept_tools(out)
+    assert out[0]["status"] == "fail" and out[0].get("fix")   # missing-file → how to fix
+
+    # .env with no active profile is a warn the user can resolve.
+    from kratos.adapters import llm_profiles
+    monkeypatch.setattr(llm_profiles, "list_candidate_profiles", lambda _p: ([], None))
+    out = []
+    doctor._check_env_profile(out)
+    assert out[0]["status"] == "warn" and "/model" in out[0].get("fix", "")
+
+
+def test_row_omits_fix_when_none():
+    r = doctor._row("x", "pass", "all good")
+    assert "fix" not in r                                       # clean pass rows stay uncluttered

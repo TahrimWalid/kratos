@@ -21,8 +21,11 @@ from typing import Any
 Check = dict[str, str]
 
 
-def _row(check: str, status: str, detail: str) -> Check:
-    return {"check": check, "status": status, "detail": detail}
+def _row(check: str, status: str, detail: str, fix: str = "") -> Check:
+    row: Check = {"check": check, "status": status, "detail": detail}
+    if fix:
+        row["fix"] = fix  # an actionable next step, shown under a warn/fail row
+    return row
 
 
 def _is_local_url(url: str) -> bool:
@@ -39,8 +42,14 @@ def _check_llm_endpoint(out: list[Check]) -> None:
     reachable, detail = check_endpoint_reachable(base, get_active_llm_api_key())
     if reachable:
         out.append(_row("LLM endpoint", "pass", f"{model} reachable at {base}"))
+    elif _is_local_url(base):
+        out.append(_row("LLM endpoint", "fail", f"{model} @ {base} — {detail or 'unreachable'}",
+                        fix="start your local model server (e.g. `kratos llm-serve`, or `ollama serve`), "
+                            "or switch to a reachable backend with /model."))
     else:
-        out.append(_row("LLM endpoint", "fail", f"{model} @ {base} — {detail or 'unreachable'}"))
+        out.append(_row("LLM endpoint", "fail", f"{model} @ {base} — {detail or 'unreachable'}",
+                        fix="check LLM_BASE_URL / LLM_API_KEY in .env (or /model to switch profiles); "
+                            "a 401/403 usually means a bad or missing key."))
 
 
 def _check_env_profile(out: list[Check]) -> None:
@@ -49,11 +58,13 @@ def _check_env_profile(out: list[Check]) -> None:
 
     _cands, current = list_candidate_profiles(ENV_FILE_PATH)
     if current is None:
-        out.append(_row(".env profile", "warn", "no active LLM profile detected in .env"))
+        out.append(_row(".env profile", "warn", "no active LLM profile detected in .env",
+                        fix="set LLM_BASE_URL / LLM_API_KEY / LLM_MODEL in .env, or run /model to pick one."))
         return
     problems = validate_profile(current)
     if problems:
-        out.append(_row(".env profile", "fail", "; ".join(problems)))
+        out.append(_row(".env profile", "fail", "; ".join(problems),
+                        fix="fill in the placeholder/empty value(s) in .env, or switch profiles with /model."))
     else:
         out.append(_row(".env profile", "pass", f"{current.model} — no placeholder/empty values"))
 
@@ -76,7 +87,8 @@ def _check_target(out: list[Check]) -> None:
     probe = run_target_probe_checks()
     if isinstance(probe, list):
         if not probe:
-            out.append(_row("target setup", "warn", "probe returned no checks"))
+            out.append(_row("target setup", "warn", "probe returned no checks",
+                            fix="re-run /target verify; if it stays empty, the target may be unreachable."))
             return
         for c in probe:
             raw = str(c.get("status", "")).upper()
@@ -85,7 +97,9 @@ def _check_target(out: list[Check]) -> None:
     else:
         # SSHResult -> couldn't even connect (port 22 blocked, wrong host, key).
         detail = (getattr(probe, "stderr", "") or getattr(probe, "stdout", "") or "connection failed").strip()
-        out.append(_row("target reachable", "fail", f"{target}: {detail[:140] or 'unreachable'}"))
+        out.append(_row("target reachable", "fail", f"{target}: {detail[:140] or 'unreachable'}",
+                        fix="confirm the host/IP with /target, that port 22 is open, and that the SSH key "
+                            "(SSH_TARGET_KEY_PATH) is authorized on the target."))
 
 
 def _check_kept_tools(out: list[Check]) -> None:
@@ -100,7 +114,9 @@ def _check_kept_tools(out: list[Check]) -> None:
         if not (KEPT_TOOLS_DIR / ((m or {}).get("source_file") or f"{name}.py")).exists()
     ]
     if missing:
-        out.append(_row("kept tools", "fail", f"metadata references missing file(s): {', '.join(missing)}"))
+        out.append(_row("kept tools", "fail", f"metadata references missing file(s): {', '.join(missing)}",
+                        fix="restore the missing file(s) in kept_tools/, or remove their stale entries from "
+                            "kept_tools/metadata.json so startup doesn't fail."))
     else:
         out.append(_row("kept tools", "pass", f"{len(meta)} kept, all source files present"))
 
