@@ -152,16 +152,14 @@ def _severity_rank(sev: str) -> int:
     return {"info": 0, "low": 1, "medium": 2, "high": 3}.get(sev, 0)
 
 
-# Sprint 3 Phase 2 (CLI overhaul, presentation-only): plain-language, one-line
-# summary per rule ID, keyed to every id="..." literal used by
-# generate_findings() below. Template-based rather than LLM-generated per the
-# design doc's own decision (docs/sprint3_phase1_cli_overhaul_design.md §9) --
-# these rule IDs are deterministic and finite, so a static map avoids a
-# non-deterministic extra LLM call for something formulaic. Kept here, next
-# to the rule definitions, so a new id="..." added below is a visible,
-# one-line diff away from also getting a template; GENERIC_FINDING_SUMMARY is
-# the deliberate fallback for anything missed, so a forgotten template is a
-# blander sentence, never a crash or a blank summary.
+# Plain-language, one-line summary per rule ID, keyed to every id="..."
+# literal used by generate_findings() below. Template-based rather than
+# LLM-generated -- see docs/DESIGN.md's "Findings and severity" section for
+# why. Kept here, next to the rule definitions, so a new id="..." added
+# below is a visible, one-line diff away from also getting a template;
+# GENERIC_FINDING_SUMMARY is the deliberate fallback for anything missed,
+# so a forgotten template is a blander sentence, never a crash or a blank
+# summary.
 FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "NET-001": "No open network ports were found in the latest scan.",
     "NET-002": "Open network ports were found — this is the system's attack surface.",
@@ -381,9 +379,9 @@ def generate_findings(
         # time-window concept). Either way, state it plainly in the
         # evidence rather than letting a reader (human or the model itself)
         # silently assume these counts are scoped to whatever the
-        # investigation goal asked about. This is the concrete fix for the
-        # real incident where a final_answer confidently said "in the last
-        # 24 hours" about a count that was actually an unscoped snapshot.
+        # investigation goal asked about -- without this, a final answer
+        # can confidently claim "in the last 24 hours" about a count that
+        # was actually an unscoped snapshot.
         since_value = auth_stats.get("since")
         time_window_note = (
             f"Time window: since {since_value!r}" if since_value
@@ -793,15 +791,14 @@ def generate_findings(
 # BETWEEN several auto-discovered inputs' timestamps, not one file's age
 # against now).
 #
-# Confirmed via real reproduction (the correlate_findings path-hallucination
-# investigation) that find_latest_inputs() picks the latest file per
-# category independently, with no check on how far apart those files
-# actually are -- a real run silently correlated a 2-4-day-old nmap scan and
-# system-context snapshot against same-day auth data, status "done", no
-# warning at all. Not cosmetic: correlate_findings's own value proposition
-# is corroborating a finding ACROSS data types (e.g. CORR-SSH-001 combines
-# "SSH is exposed" with "a failed-login burst happened"), which only means
-# what it claims if those inputs are roughly contemporaneous -- a stale
+# find_latest_inputs() picks the latest file per category independently,
+# with no check on how far apart those files actually are -- left
+# unguarded, a stale nmap scan or system-context snapshot from days earlier
+# can silently correlate against same-day auth data with no warning at all.
+# Not cosmetic: correlate_findings's own value proposition is corroborating
+# a finding ACROSS data types (e.g. CORR-SSH-001 combines "SSH is exposed"
+# with "a failed-login burst happened"), which only means what it claims if
+# those inputs are roughly contemporaneous -- a stale
 # nmap/context input mixed with fresh auth data can make a finding look
 # corroborated when it's really "exposed at some point in the past, burst
 # happening now," a materially weaker claim.

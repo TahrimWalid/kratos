@@ -1,7 +1,7 @@
-"""Deterministic, rule-based investigation engine (PreA2).
+"""Deterministic, rule-based investigation engine.
 
 This is the modern replacement for the legacy ``cli/app.py::cmd_run`` pipeline
-(see ``docs/a2_custom_presets_and_pipelines.md`` §0/§6). It runs an ordered,
+(see ``docs/DESIGN.md``'s "Presets and pipelines" section). It runs an ordered,
 declarative list of steps over the live ``TOOL_REGISTRY`` by dispatching each
 one through ``agent/loop.py::execute_tool_call`` -- so it inherits, for free and
 without re-implementation:
@@ -17,22 +17,24 @@ that are the whole reason a deterministic engine exists:
 * **Guaranteed repeatability** -- the same steps, in the same order, every run,
   with ZERO LLM variance. (The *target* still varies day to day; determinism
   here means "same steps, same logic", never "byte-identical output" -- callers
-  should say so in any UI, per the design doc's §5 second tension.)
+  should say so in any UI.)
 * **Target-correctness by construction** -- the default "standard audit" uses
   only target-facing tools for target claims and never folds a Kratos-host tool
   (``parse_auth_log`` / ``collect_system_context``) into "the target's findings".
-  That silent local/target mixing was the core ``cmd_run`` bug (§6.2); it cannot
+  That silent local/target mixing was the core ``cmd_run`` bug; it cannot
   recur here because the local-only tools simply aren't in the default sequence.
 
-Design intent (A2 Tier 2 foundation): a *built-in* step below has the exact same
-shape a *user-defined* step has, so comprehensive A2 Tier 2 is "let the user
-supply the step list", not a from-scratch workflow engine. The conditional
+Design intent: a *built-in* step below has the exact same shape a
+*user-defined* step has, so a user-authored pipeline is just supplying its
+own step list against this same engine, not a from-scratch workflow
+engine of its own. The conditional
 ``when`` hook is a bounded, WHITELISTED predicate (``agent/pipeline_when.py`` --
 never ``eval()``); a step whose predicate is falsey is SKIPPED, and one whose
 predicate raises is fail-safe-SKIPPED with a recorded reason. The default audit
-sets no ``when`` -- it is strictly linear (design doc §5: "a branching DSL is
-where this feature goes to die"), and the conditional stays a single bounded
-predicate, deliberately not a general expression language.
+sets no ``when`` -- it is strictly linear (a branching DSL here would trade
+predictability for flexibility nobody's asked for), and the conditional
+stays a single bounded predicate, deliberately not a general expression
+language.
 
 The engine itself is UI-agnostic: it returns a structured ``PipelineOutcome`` and
 emits per-step progress via an optional ``on_step`` callback (mirroring
@@ -57,8 +59,8 @@ from kratos.agent.pipeline_refs import resolve_step_args as _resolve_step_args
 Dispatch = Callable[[str, dict[str, Any], Path], dict[str, Any]]
 
 # Tools that analyze/act on KRATOS'S OWN HOST, not the monitored target. The
-# single source of truth for the target-correctness check (design doc §6.2 /
-# Piece D): a user pipeline may legitimately include one, but the runner/builder
+# single source of truth for the target-correctness check: a user pipeline
+# may legitimately include one, but the runner/builder
 # must LABEL it as "Kratos host", never fold its output into "the target's
 # findings" (the exact cmd_run bug). Everything else in the registry is
 # target-facing (a network scan or an SSH-to-target probe) or host-agnostic
@@ -227,9 +229,9 @@ def run_pipeline(
     outcome = PipelineOutcome(status="completed")
 
     for step in steps:
-        # Tier-2 conditional seam (slice 4). A predicate that RAISES is fail-safe:
+        # A predicate that RAISES is fail-safe:
         # treat the condition as unknown and SKIP the step with a recorded reason,
-        # never crash the whole run (design doc Piece B). A well-formed predicate
+        # never crash the whole run. A well-formed predicate
         # over not-yet-produced data just returns False (e.g. has_finding() on an
         # empty context) and skips cleanly.
         if step.when is not None:
@@ -247,7 +249,7 @@ def run_pipeline(
                     on_step(sr)
                 continue
 
-        # A2 Piece C: resolve any step-output references in this step's args from
+        # Resolve any step-output references in this step's args from
         # PRIOR results. If a referenced value wasn't produced (its producer step
         # was skipped/failed/excluded, or the field is empty), fail-safe SKIP this
         # step -- never dispatch it with a missing/garbage value.
@@ -294,7 +296,8 @@ def standard_audit_steps() -> list[PipelineStep]:
     """The built-in "standard audit": a fixed, deterministic security sweep of
     the configured target. Target-correct by construction -- every step below is
     target-facing (network scan or SSH-to-target), so nothing about Kratos's own
-    host is ever mixed into the target's findings (the ``cmd_run`` §6.2 bug).
+    host is ever mixed into the target's findings (the ``cmd_run`` bug this
+    replaces).
 
     Order and rationale:
       1. run_nmap_scan     — map the target's network attack surface. REQUIRED:

@@ -1,22 +1,21 @@
 """
-Sprint 2 self-writing loop -- Part C REVIEW-FLAG pre-scan (Phase 3b.7).
+Self-writing tool loop -- Part C review-flag pre-scan.
 
-Phase 3b.2 and 3b.3 both confirmed Part C's approval display is genuinely
-unredacted (full source shown, nothing hidden) but does nothing to direct a
-reviewer's attention -- a hardcoded IP inside a silent event-reclassification
-branch (3b.2) and an invented, overfit substring heuristic in an honestly-
-described-but-overstated filter tool (3b.3 case 3) both sailed through a
-real approval prompt un-flagged, caught only because a careful line-by-line
-read happened to catch them.
+Part C's approval display is genuinely unredacted (full source shown,
+nothing hidden), but an unredacted wall of text still does nothing to
+direct a reviewer's attention. Adversarial review testing found exactly
+this gap: a hardcoded IP inside a silent event-reclassification branch,
+and an invented, overfit substring heuristic in an honestly-described-but-
+overstated filter tool, both sailed through an approval prompt unflagged,
+caught only because a careful line-by-line read happened to catch them.
 
 This module produces FLAGS, never verdicts, and never blocks anything --
-see docs/sprint2_self_writing_loop_design.md Sec 5 (no force-accept) and
+see docs/DESIGN.md's "Self-writing tool loop" section (no force-accept) and
 this module's caller (self_approve.py) for why. Every flag is a generic
 pattern-match ("this branch affects included/excluded data", "hardcoded
 literal used in a filter role") deliberately NOT an attempt to distinguish
-malicious from honest-but-narrow -- both 3b.2 and 3b.3 proved that
-distinction needs a human judgment call, not a heuristic. The goal is
-directing attention, not replacing it.
+malicious from honest-but-narrow -- that distinction needs a human judgment
+call, not a heuristic. The goal is directing attention, not replacing it.
 
 AST-based, consistent with this project's existing AST-based validation
 (agent/self_write.py::_validate_candidate) -- one ast.parse() call, no
@@ -24,8 +23,8 @@ second/regex-based parsing mechanism for structure (regex is only ever used
 here for STRING VALUE shape matching -- "does this literal look like an IP"
 -- never for finding code structure itself). Deliberately coarse, per this
 project's established "structural, not perfect" guard philosophy: false
-positives are expected and acceptable; false NEGATIVES on the two confirmed
-real patterns (3b.2, 3b.3) are not.
+positives are expected and acceptable; false negatives on the patterns this
+module exists to catch are not.
 """
 from __future__ import annotations
 
@@ -83,8 +82,8 @@ def _flatten_string_constants(node: ast.AST):
 def _build_name_literal_map(tree: ast.AST) -> dict[str, list[tuple[str, int]]]:
     """
     Maps variable name -> [(literal value, lineno), ...] for simple
-    `NAME = "literal"` or `NAME = ["literal", ...]` assignments. Confirmed
-    necessary, not speculative: Phase 3b.3's real candidate stored its
+    `NAME = "literal"` or `NAME = ["literal", ...]` assignments. This
+    indirection matters in practice: one observed candidate stored its
     invented filter literal as `HEALTH_CHECK_SUBSTRINGS = ["/status"]`, then
     used it indirectly via `sub in message for sub in HEALTH_CHECK_SUBSTRINGS`
     -- the literal never appears directly as a Compare operand, only through
@@ -131,14 +130,14 @@ def _collect_comparison_literals(tree: ast.AST, name_map: dict[str, list[tuple[s
     !=, in, not in) and .startswith()/.endswith() call arguments. Covers
     `if`/`elif` tests, ternaries, and comprehension/generator conditions
     alike -- including resolving a comprehension's OWN loop variable against
-    its OWN iterable, not just the outer name_map. Confirmed necessary, not
-    speculative: Phase 3b.3's real candidate's actual shape,
+    its OWN iterable, not just the outer name_map. This isn't speculative:
+    an observed candidate's actual shape,
     `any(sub in message for sub in HEALTH_CHECK_SUBSTRINGS)`, compares `sub`
     (the loop variable) against `message` -- neither operand is
     `HEALTH_CHECK_SUBSTRINGS` itself, so without this comprehension-aware
     resolution the literal "/status" is unreachable from the Compare node
-    at all, and this check would silently miss the exact real pattern it
-    exists to catch.
+    at all, and this check would silently miss the exact pattern it exists
+    to catch.
     """
     handled: set[int] = set()  # id() of Compare/Call nodes already yielded, so the generic pass below doesn't double-count them
 
@@ -270,15 +269,14 @@ def _if_test_root_name(test: ast.AST) -> str | None:
 
 
 def _check_e_silent_drop_on_subfetch_failure(tree: ast.AST) -> list[ReviewFlag]:
-    """New check (2026-07-28), added after two independent real self-written
-    tools (the kept list_net_services tool, and a drafted-but-never-kept
-    enumerate_system_cron_jobs candidate) both silently dropped an item from
-    their result ENTIRELY when a per-item sub-fetch failed, instead of
-    including it with a null/error marker -- see CLAUDE.md's "Write-step
-    prompt hardening" entry. Distinct from check b (inclusion-affecting-
-    branch, which flags ANY loop-nested conditional touching the output,
-    with no attempt to characterize why) -- this one narrows specifically to
-    the shape that broke twice for real: `x = some_call(...)` immediately
+    """Added after two independent self-written tools both silently dropped
+    an item from their result entirely when a per-item sub-fetch failed,
+    instead of including it with a null/error marker -- see
+    docs/DESIGN.md's "Self-writing tool loop" section. Distinct from check
+    b (inclusion-affecting-branch, which flags ANY loop-nested conditional
+    touching the output, with no attempt to characterize why) -- this one
+    narrows specifically to the shape that broke twice: `x = some_call(...)`
+    immediately
     followed by `if x: <append something for this item>` with NO
     corresponding else, so a falsy/failed `x` silently means the loop
     iteration contributes nothing at all for that item. A genuine,
@@ -345,10 +343,9 @@ def _find_register_tool_description(tree: ast.AST) -> tuple[str | None, str | No
 
 
 def _check_c_invented_filter_criteria(tree: ast.AST, name_map, description, docstring) -> list[ReviewFlag]:
-    """Task item 1c: hardcoded literal used in a filter/match role, inside a
-    function whose own description/docstring uses filtering language --
-    directly targets the Phase 3b.3 case-3 pattern (an honestly-disclosed
-    but narrow, invented heuristic)."""
+    """Hardcoded literal used in a filter/match role, inside a function
+    whose own description/docstring uses filtering language -- targets an
+    honestly-disclosed but narrow, invented filter heuristic."""
     combined_text = " ".join(t for t in (description, docstring) if t)
     if not combined_text or not _FILTER_WORD_RE.search(combined_text):
         return []

@@ -1,20 +1,19 @@
 """
 Phase 2 design-preview gallery -- UI SHELLS ONLY.
 
-These screens are pictures of the target UI for the sub-agent / Tailscale /
-direct-execution architecture (docs/subagent_architecture.md v2). NONE of it is
-wired: as of this file there is no Tailscale integration, no sub-agent, no
-telemetry, and no execution channel anywhere in the codebase. Each shell is a
-static render with a persistent "NOT WIRED" banner and a to-wire note tied to
-the backend layer it depends on.
+These screens are pictures of the target UI for the planned sub-agent /
+Tailscale / direct-execution architecture (see docs/DESIGN.md's "Execution
+boundary" section). NONE of it is wired: as of this file there is no
+Tailscale integration, no sub-agent, no telemetry, and no execution channel
+anywhere in the codebase. Each shell is a static render with a persistent
+"NOT WIRED" banner and a to-wire note tied to the backend layer it depends on.
 
 Deliberately reachable ONLY via `/preview` (a dedicated gallery), never woven
 into the normal launch/session flow -- so a finished-looking screen can never be
 mistaken for a wired capability. Execution screens (Layer 5) additionally carry
-a "gated on Layer 4 (whitelist)" label: per the architecture doc, direct
-execution cannot ship until the narrow action whitelist is designed and
-independently reviewed, and the whitelist -- not command signing -- is the
-security boundary.
+a "gated on Layer 4 (whitelist)" label: direct execution cannot ship until the
+narrow action whitelist is designed and independently reviewed, and the
+whitelist -- not command signing -- is the security boundary.
 
 Build order mirrors the safe-first sequence: Layer 1 (Tailscale) -> Layer 2
 (sub-agent pairing) -> Layer 3 (telemetry/status) are the zero-execution half;
@@ -611,7 +610,7 @@ class Phase2PreviewScreen(Screen):
             yield Static("⚠  PHASE 2 DESIGN PREVIEW — none of these are wired; no sub-agent/Tailscale/execution code exists", id="pv-banner")
             yield Static(
                 Text(
-                    "Pictures of the target UI (docs/subagent_architecture.md v2). Safe half shown "
+                    "Pictures of the target UI for planned future work. Safe half shown "
                     "first (Tailscale/pairing/telemetry — zero execution). Execution shells arrive as "
                     "a separate batch, gated on Layer 4's whitelist.",
                 ),

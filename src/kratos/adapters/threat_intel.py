@@ -1,8 +1,8 @@
 """
 Two-tier threat-intel enrichment: AlienVault OTX pulses (default, cached,
 offline-during-investigations) + AbuseIPDB (opt-in, live, approval-gated).
-This module IS the implementation of CLAUDE.md's "Decision: threat-intel
-enrichment scope" -- the cached/live split is that decision, not a
+This module is the implementation of the "Threat-intel enrichment" scope
+decision in docs/DESIGN.md -- the cached/live split is that decision, not a
 separate choice layered on top of it.
 
 VirusTotal was explicitly ruled out as the primary choice: its 2026 Google

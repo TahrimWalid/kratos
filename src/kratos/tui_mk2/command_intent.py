@@ -3,9 +3,10 @@ Conversational command routing for kratos-mk2.
 
 Lets a user drive Kratos's own safe controls by talking to it naturally ("switch
 your model to qwen2.5:7b", "show me the report", "change the target to 10.0.0.5")
-instead of only via slash commands -- the way Claude Code takes plain-language
-requests. State-changing controls (model / target) are then gated on an explicit
-human approval in the session screen; read-only ones just run.
+instead of only via slash commands -- a plain-language input model, type
+intent directly rather than only through commands. State-changing controls
+(model / target) are then gated on an explicit human approval in the
+session screen; read-only ones just run.
 
 SECURITY BOUNDARY (why this is safe on a tool that reads untrusted target data):
 this classifier runs on the USER'S typed message only (plus the running session

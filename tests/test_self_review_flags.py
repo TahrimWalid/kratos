@@ -1,10 +1,9 @@
 """
-Scripted tests for agent/self_review_flags.py's newest check (2026-07-28):
-silent-item-drop-on-subfetch-failure. No existing test file covered this
-module before -- prior verification was real-candidate-only, per CLAUDE.md.
-These tests target specifically the new check, using the two real bug
-shapes it was built to catch (list_net_services' `if match:`, and a
-cron-jobs draft's `if cron_res.ok:`) plus negative cases it must NOT flag.
+Scripted tests for agent/self_review_flags.py's silent-item-drop-on-
+subfetch-failure check. These tests target specifically that check, using
+the two real bug shapes it was built to catch (list_net_services'
+`if match:`, and a cron-jobs draft's `if cron_res.ok:`) plus negative
+cases it must NOT flag.
 """
 from __future__ import annotations
 

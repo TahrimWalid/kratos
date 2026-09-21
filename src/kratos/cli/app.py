@@ -189,19 +189,18 @@ def cmd_llm_serve(args: argparse.Namespace) -> int:
         LLAMA_N_CTX, LLAMA_N_THREADS, LLAMA_SEED, STARTUP_TIMEOUT_SECONDS,
     )
 
-    # 2026-07-15 regression fix: the old native Ollama /api/chat call sent
-    # "num_ctx" per-request; the OpenAI-compatible /v1/chat/completions
-    # endpoint (the ONLY query path now, see "LLM backend refactor" in
-    # CLAUDE.md) does not honor a per-request context-length override at
-    # all -- confirmed real via /api/ps showing context_length=4096 (the
-    # bare Ollama default) even after a request explicitly passed
-    # options.num_ctx=6144. Context length is a model-load-time concept for
-    # Ollama, not a per-completion-request one in the OpenAI API shape, so
-    # the only real fix is Ollama's own server-level OLLAMA_CONTEXT_LENGTH
-    # env var, set here when KRATOS ITSELF starts the process (only place
-    # Kratos controls Ollama's environment -- an already-running Ollama
-    # instance Kratos didn't start, like this sandbox's systemd service,
-    # needs a manual restart with this var set to pick it up).
+    # The OpenAI-compatible /v1/chat/completions endpoint (the only query
+    # path now -- see docs/DESIGN.md's "LLM backend" section) does not
+    # honor a per-request context-length override at all: a request can
+    # pass options.num_ctx and Ollama's own /api/ps will still report the
+    # bare default context_length, unaffected. Context length is a
+    # model-load-time concept for Ollama, not a per-completion-request one
+    # in the OpenAI API shape, so the only real fix is Ollama's own
+    # server-level OLLAMA_CONTEXT_LENGTH env var, set here when KRATOS
+    # ITSELF starts the process (only place Kratos controls Ollama's
+    # environment -- an already-running Ollama instance Kratos didn't
+    # start, e.g. one managed by systemd, needs a manual restart with this
+    # var set to pick it up).
     _ollama_env_ctx = _os.environ.get("OLLAMA_CONTEXT_LENGTH", str(LLAMA_N_CTX))
 
     backend = (LLM_BACKEND or "auto").strip().lower()
@@ -537,15 +536,14 @@ def cmd_findings_generate(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     """Standard audit — a fixed, deterministic security sweep of the target.
 
-    Re-pointed (2026-09-08, PreA2) at the new deterministic engine
-    (``agent/pipeline.py``), replacing the legacy hardcoded pipeline. The old
-    version was frozen at Sprint 1, bypassed the tool registry (so no approval-
-    gating / target resolution), and — the real bug — silently mixed KRATOS-HOST
-    auth-log/context analysis into "the target's findings"
-    (``docs/a2_custom_presets_and_pipelines.md`` §6.2). The new engine is
-    target-correct by construction and runs over ``TOOL_REGISTRY`` via
-    ``execute_tool_call``, inheriting every guard. Same recipe shape (scan →
-    config → auth → correlate), done right.
+    Runs on the deterministic engine (``agent/pipeline.py``, see
+    docs/DESIGN.md's "Presets and pipelines" section), not a standalone
+    hardcoded pipeline — an earlier version bypassed the tool registry
+    entirely (no approval-gating, no target resolution) and could mix
+    Kratos-host-local auth-log/context analysis into what was reported as
+    the target's findings. The engine is target-correct by construction and
+    runs over ``TOOL_REGISTRY`` via ``execute_tool_call``, inheriting every
+    guard. Same recipe shape (scan → config → auth → correlate).
     """
     from kratos.agent.pipeline import run_pipeline, standard_audit_steps
     from kratos.kratos_config import get_active_target, set_active_target
@@ -753,11 +751,10 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     scan -> logs -> context -> findings pipeline that `kratos run` uses.
     Reuses the exact same adapters as the other subcommands, unmodified.
 
-    Sprint 3 Phase 2 (CLI overhaul): output rendering only, via
-    agent/console.py -- run_agent()'s own decisions, transcript shape, and
-    on_step() callback timing are unchanged (see console.py's module
-    docstring for why no live per-tool spinner is possible without touching
-    agent/loop.py, which is explicitly out of scope for this phase).
+    Output rendering only, via agent/console.py -- run_agent()'s own
+    decisions, transcript shape, and on_step() callback timing are
+    unchanged (see console.py's module docstring for why no live per-tool
+    spinner is possible without touching agent/loop.py's dispatch timing).
     """
     goal = args.goal
     max_iters = args.max_iters if args.max_iters is not None else DEFAULT_MAX_ITERS
@@ -1101,24 +1098,23 @@ def _subcommand_help_text(parser: argparse.ArgumentParser) -> dict[str, str]:
     return out
 
 
-# Sprint 3 (CLI --help sizing fix, 2026-07-16): the design doc's own exit
-# criterion #4 requires `kratos --help` to fit an 80x24 terminal without
-# scrolling. Listing all ~23 real subcommands in one table can't fit that
-# regardless of styling (confirmed: full-list render measured at 41 lines).
-# Resolution -- shrink the DEFAULT view to the commands a new, non-technical
-# user would actually reach for first, per the design doc's own "approachable
-# first-run experience" framing (not a complete reference crammed onto one
-# screen); the full list stays one flag away. Deliberately NOT the CLI-wide
-# Rich migration for the other subcommands' own runtime output -- that's a
-# separate, much larger, explicitly-deferred item (see CLAUDE.md backlog).
+# `kratos --help` needs to fit an 80x24 terminal without scrolling. Listing
+# all ~23 real subcommands in one table can't fit that regardless of
+# styling (the full-list render measures at 41 lines). Resolution -- shrink
+# the DEFAULT view to the commands a new, non-technical user would actually
+# reach for first (not a complete reference crammed onto one screen); the
+# full list stays one flag away. Deliberately NOT the CLI-wide Rich
+# migration for the other subcommands' own runtime output -- see
+# docs/DESIGN.md's "Known limitations" section for why that's a separate,
+# much larger, deliberately deferred item.
 PRIMARY_COMMANDS = ["investigate", "run", "chat", "findings-show", "scan"]
 
 
 def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = False) -> None:
-    """Sprint 3 Phase 2: Rich-formatted top-level --help only (design doc §6/
-    §7) -- every other subcommand's own `--help` output is untouched
-    argparse default formatting, per the Phase 2 scoping decision to limit
-    this overhaul to `investigate` + the shared approval gate."""
+    """Rich-formatted top-level --help only -- every other subcommand's own
+    `--help` output is untouched argparse default formatting; the styled
+    layer is scoped to `investigate` + the shared approval gate (see
+    docs/DESIGN.md's "Known limitations" section)."""
     console = _console.get_console()
     console.print(
         Panel(
@@ -1185,41 +1181,40 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = build_parser()
 
-    # Sprint 3 (interactive session mode): `kratos` with NO SUBCOMMAND
-    # (regardless of whether --data-dir/--no-color are also given) launches
-    # the REPL instead of falling through to argparse's own required=True
-    # error on the `command` subparser. Confirmed via a real Step 1 audit:
-    # `kratos --data-dir /foo` (no subcommand, but WITH a global flag) hits
-    # the exact same "the following arguments are required: command" error
-    # today as truly-bare `kratos` -- so the trigger has to be "no known
-    # subcommand token present", not "argv is literally empty", or
+    # `kratos` with NO SUBCOMMAND (regardless of whether --data-dir/
+    # --no-color are also given) launches the REPL instead of falling
+    # through to argparse's own required=True error on the `command`
+    # subparser. `kratos --data-dir /foo` (no subcommand, but WITH a global
+    # flag) hits the exact same "the following arguments are required:
+    # command" error as truly-bare `kratos` -- so the trigger has to be "no
+    # known subcommand token present", not "argv is literally empty", or
     # `--data-dir`/`--no-color` alongside a bare invocation would still
-    # incorrectly error instead of launching the session. Also confirmed:
+    # incorrectly error instead of launching the session. Also note:
     # help_requested (any(a in ("-h","--help") for a in argv)) is always
-    # False when argv is empty, so the OLD "len(argv) == 0" check nested
-    # inside the help_requested branch below was already dead code, never
-    # reachable for a genuinely bare invocation.
+    # False when argv is empty, so a "len(argv) == 0" check nested inside
+    # the help_requested branch below would be dead code, never reachable
+    # for a genuinely bare invocation.
     subcommand_names = set(_subcommand_help_text(parser).keys())
     has_subcommand = any(a in subcommand_names for a in argv)
     if not has_subcommand and not any(a in ("-h", "--help") for a in argv):
         global_only_parser = argparse.ArgumentParser(add_help=False)
         global_only_parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
         global_only_parser.add_argument("--no-color", action="store_true")
-        # Real fix (2026-07-18, real user report): `kratos --resume <id>`
-        # used to be a guessed, never-implemented flag -- parse_known_args
-        # above silently discarded it as an unrecognized extra, so it
-        # landed on the normal bare chooser with zero indication the flag
-        # itself did nothing. Now a real flag: threaded into run_session()
-        # (cli/repl.py) as a one-time "resolve this session by ID and skip
-        # straight to its [l]/[f] resume-tier prompt" instruction, reusing
-        # the exact same resolution path the chooser's own "type a session
-        # ID directly" support (also added 2026-07-18) uses.
+        # `kratos --resume <id>`: threaded into run_session() (cli/repl.py)
+        # as a one-time "resolve this session by ID and skip straight to
+        # its [l]/[f] resume-tier prompt" instruction, reusing the exact
+        # same resolution path the chooser's own "type a session ID
+        # directly" support uses. An unrecognized flag here would silently
+        # fall through to parse_known_args's unrecognized-extras discard
+        # and land on the normal bare chooser with no indication the flag
+        # did nothing, so this needs to stay a genuinely registered
+        # argument, not something callers can typo past silently.
         global_only_parser.add_argument("--resume", dest="resume_session_id", default=None)
-        # --continue/-c (2026-07-18): jump straight to the most recently
-        # active session's [l]/[f] resume-tier prompt, no chooser table --
-        # same "skip the table, still ask the tier" behavior as --resume,
-        # for the common case where you don't need to name a specific
-        # session at all. See cli/repl.py::_resolve_continue_most_recent.
+        # --continue/-c: jump straight to the most recently active
+        # session's [l]/[f] resume-tier prompt, no chooser table -- same
+        # "skip the table, still ask the tier" behavior as --resume, for
+        # the common case where you don't need to name a specific session
+        # at all. See cli/repl.py::_resolve_continue_most_recent.
         global_only_parser.add_argument(
             "--continue", "-c", dest="continue_most_recent", action="store_true"
         )
@@ -1228,10 +1223,10 @@ def main(argv: list[str] | None = None) -> int:
         from kratos.cli.repl import run_session
         return run_session(global_args)
 
-    # Sprint 3 Phase 2: intercept the two --help forms this phase covers
-    # (bare top-level, and `investigate --help`) before argparse's own
-    # -h/--help handling would print+exit -- every other subcommand's
-    # --help falls through to parser.parse_args() below unchanged.
+    # Intercept the two --help forms the styled renderer covers (bare
+    # top-level, and `investigate --help`) before argparse's own -h/--help
+    # handling would print+exit -- every other subcommand's --help falls
+    # through to parser.parse_args() below unchanged.
     help_requested = any(a in ("-h", "--help") for a in argv)
     if help_requested and (len(argv) == 0 or argv[0] in ("-h", "--help")):
         _render_top_level_help(parser, show_all="--all" in argv)

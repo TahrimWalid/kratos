@@ -1,9 +1,8 @@
 """
-DEPRECATED (2026-09-06): superseded by the durable Sprint 4 eval harness
-(~/kratos_eval_artifacts/) -- it measures the same tool-selection/detection
-behavior on the same backend + target far more thoroughly, and is the current
-source of truth. Kept opt-in (still excluded from bare `pytest`) as a small
-standalone smoke check; not re-baselined against gemini-3.1-flash-lite.
+DEPRECATED: superseded by a more thorough eval harness kept outside the
+repo, which measures the same tool-selection/detection behavior against
+the same backend and target. Kept opt-in (still excluded from bare
+`pytest`) as a small standalone smoke check.
 
 Repeatable test-scenario suite for the Kratos ReAct agent loop
 (agent/loop.py + agent/tools.py) -- so tool-selection behavior can be
@@ -12,21 +11,19 @@ every time a prompt or tool changes.
 
 These are integration tests: they invoke the REAL agent loop against a REAL
 LLM backend and the REAL configured target (nothing mocked), so each one can
-take anywhere from ~1-2 minutes (Gemini, via the openai_compatible backend --
-KRATOS_LLM_BACKEND was renamed from openai_fallback on 2026-07-15, see
-CLAUDE.md's "LLM backend refactor") to ~10-20 minutes (local qwen2.5:7b via
-Ollama), and results can vary run to run since the model's exact tool
-choices aren't deterministic. Assertions below are deliberately loose where
-the underlying behavior is legitimately allowed to vary (e.g. "at least N
-distinct tools" rather than an exact set), and any known-flaky check is
-called out in that scenario's `notes`.
+take anywhere from ~1-2 minutes (a hosted backend, via the openai_compatible
+path) to ~10-20 minutes (a local model via Ollama), and results can vary run
+to run since the model's exact tool choices aren't deterministic. Assertions
+below are deliberately loose where the underlying behavior is legitimately
+allowed to vary (e.g. "at least N distinct tools" rather than an exact set),
+and any known-flaky check is called out in that scenario's `notes`.
 
 Run (excluded from a bare `pytest` run -- opt in explicitly):
 
     # Fast pass -- validates the test harness/assertions themselves, not the
     # local model. Requires .env with LLM_BASE_URL/LLM_API_KEY/LLM_MODEL set
-    # to real Gemini values for this invocation only, not left in .env (see
-    # docs/llm_configuration.md).
+    # to real hosted-backend values for this invocation only, not left in
+    # .env (see docs/DESIGN.md's "LLM backend" section).
     KRATOS_LLM_BACKEND=openai_compatible pytest tests/agent_scenarios.py -m agent_llm -v -s
 
     # Slow pass -- the real target combo. Local runs are expensive: pick a

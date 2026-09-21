@@ -1,7 +1,8 @@
 """
-Session screen -- the main workspace (design turns 5a idle, live investigation,
-7a palette, 7b interrupt, 7c context meter, 9a header clock, plus /help 8a,
-/report 4a, /model 16c, /rename 8b, and the recommend-only remediation of 19b).
+Session screen -- the main workspace: idle state, live investigation, the
+command palette, interrupt/re-run, the context meter, the header clock,
+plus /help, /report, /model, /rename, and recommend-only remediation
+commands.
 
 Every mechanism used here already exists in Kratos:
   - agent/loop.py::run_agent + its on_step hook drive the live investigation,
@@ -10,8 +11,7 @@ Every mechanism used here already exists in Kratos:
   - approvals reach a Textual modal via agent/tools.py's provider hook.
 
 Investigation and evo-loop run on THREAD workers (run_agent is blocking); the UI
-is only ever touched from the event loop via call_from_thread. See
-docs/kratos_mk2_tui.md for the per-screen "mechanism exists?" audit.
+is only ever touched from the event loop via call_from_thread.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from kratos.tui_mk2.modals import (
 )
 
 REPL_MAX_ITERS = 7  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
-# Raised 5 -> 7 (2026-09-08): a vuln sweep legitimately needs nmap + vuln + config
+# A vuln sweep legitimately needs nmap + vuln + config
 # + correlate_findings + conclude = 5 steps with ZERO slack, so any single
 # rejected-early-conclusion (guard 1) pushed correlate_findings out of budget and
 # the run concluded without the correlation engine ever running. 7 leaves room.
@@ -127,22 +127,23 @@ class _CancelInvestigation(Exception):
 class SessionScreen(Screen):
     BINDINGS = [
         Binding("escape", "interrupt", "interrupt", show=True),
-        # ctrl+c also stops the current response (parity with Claude Code).
-        # priority so it overrides Textual's default ctrl+c quit; a no-op when
+        # ctrl+c also stops the current response, a conventional stop-the-
+        # current-response affordance. priority so it overrides Textual's
+        # default ctrl+c quit; a no-op when
         # idle (nothing running) rather than quitting — leave the session with
         # /exit or q at the chooser.
         Binding("ctrl+c", "interrupt", "stop", show=False, priority=True),
         Binding("ctrl+p", "palette", "commands", show=True),
         Binding("ctrl+y", "copy_last", "copy answer", show=True),
-        # Design 10a "edit a previous turn": ↑/↓ recall prior turns into the
+        # Edit a previous turn: ↑/↓ recall prior turns into the
         # prompt for editing; resending a recalled turn discards it and
-        # everything after (see on_input_submitted). Adapted from the mockup's
-        # double-esc to arrow-key history recall -- more idiomatic and doesn't
+        # everything after (see on_input_submitted). Arrow-key history recall
+        # is used instead of a double-esc gesture -- more idiomatic and doesn't
         # collide with esc=interrupt, same spirit as the cursor-vs-number-keys
         # chooser adaptation.
         Binding("up", "history_prev", "prev turn", show=False),
         Binding("down", "history_next", "next turn", show=False),
-        # Design 7b -- re-run the last goal (e.g. after interrupting one). A
+        # Re-run the last goal (e.g. after interrupting one). A
         # true mid-loop "resume" isn't possible (run_agent has no checkpoint),
         # so this honestly re-runs the same goal fresh.
         Binding("ctrl+r", "rerun", "re-run last", show=True),
@@ -193,13 +194,13 @@ class SessionScreen(Screen):
         self._activity_active = False
         self._ctx_chars = len(resume_context)
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
-        self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy (14d)
-        self._last_commands: list[str] = []  # recommended commands from the last turn (19b), for ctrl+y
+        self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy
+        self._last_commands: list[str] = []  # recommended commands from the last turn, for ctrl+y
         # ↑/↓ non-destructive message-history recall state (shell-style):
         self._hist_turns: list[dict[str, Any]] | None = None  # loaded lazily on first ↑
         self._hist_index = 0               # position within _hist_turns; == len means "composing new"
         self._pre_recall_draft = ""        # the in-progress input saved when recall started
-        self._last_goal = ""               # most recent goal, for ctrl+r re-run (7b)
+        self._last_goal = ""               # most recent goal, for ctrl+r re-run
         # Resolved once in on_mount (override > system-local > UTC) and passed
         # to every timeutil format call, so live times, resumed/stored times,
         # and the header clock all render in the SAME display zone. Storage
@@ -228,15 +229,15 @@ class SessionScreen(Screen):
             _kconfig.set_active_target(self.session_state["targets"][0])
         self._refresh_header()
         self._refresh_footer()
-        self.set_interval(1.0, self._refresh_header)  # live clock (turn 9a)
+        self.set_interval(1.0, self._refresh_header)  # live clock
         self.set_interval(0.12, self._tick_activity)  # "working…" spinner while busy
         self._render_idle()
         if self._full_replay:
             self._render_full_replay()
         self.query_one("#goal", Input).focus()
-        self._maybe_timezone_fallback()  # turn 9b (only fires if auto-detect failed)
+        self._maybe_timezone_fallback()  # only fires if auto-detect failed
 
-    # --- turn 9b: one-time manual timezone entry when auto-detect fails ---
+    # --- one-time manual timezone entry when auto-detect fails ---
     @work
     async def _maybe_timezone_fallback(self) -> None:
         source, _tz = timeutil.display_tz_status(self._data_dir)
@@ -260,11 +261,10 @@ class SessionScreen(Screen):
             self._emit(R.note_line("Using UTC for display. Change anytime with /timezone <zone>."))
 
     def action_copy_last(self) -> None:
-        # Turn 14d: copy Kratos's most recent answer/reply to the clipboard
+        # Copy Kratos's most recent answer/reply to the clipboard
         # (via the terminal's OSC-52, Textual's copy_to_clipboard) with a
-        # transient confirmation -- the concrete "copy" affordance the design
-        # asks for. A structured per-command 19b copy panel needs the
-        # remediation-command structure that doesn't exist yet (see the doc).
+        # transient confirmation. If the last turn produced recommended
+        # commands, those are copied instead (joined one per line).
         if self._last_commands:
             self.app.copy_to_clipboard("\n".join(self._last_commands))
             self.notify(f"Copied {len(self._last_commands)} recommended command(s) to the clipboard.", timeout=3)
@@ -375,17 +375,18 @@ class SessionScreen(Screen):
         self.query_one("#appheader", Static).update(header)
 
     def _context_pct(self) -> tuple[int, int, int, bool]:
-        # REAL token accounting (feature 7c): the last LLM call's prompt_tokens
+        # Real token accounting: the last LLM call's prompt_tokens
         # vs the active model's context window. Returns (pct, used, window,
         # estimated). The window is MODEL-AWARE (get_context_window_tokens
         # tracks the live /model profile), so a /model switch rescales this live.
         #
         # Before the first real LLM call of the process (a fresh OR just-resumed
         # session), there is no measured usage. Rather than show 0 and then jump
-        # to the real value on the first message (the confusing "[f] resume rolls
-        # to 0, then a short 'ok' shows 47%" report), approximate the loaded
-        # working-context size (~4 chars/token) so the meter reflects a resume's
-        # context immediately. Marked `estimated` so the footer can show a ~.
+        # to the real value on the first message -- confusing on a resumed
+        # session, since it would look like the meter reset to 0 and then
+        # suddenly jumped -- approximate the loaded working-context size
+        # (~4 chars/token) so the meter reflects a resume's context
+        # immediately. Marked `estimated` so the footer can show a ~.
         from kratos import llm_interface
 
         window = llm_interface.get_context_window_tokens() or 1
@@ -509,13 +510,13 @@ class SessionScreen(Screen):
                 style=T.TEXT_FAINT,
             )
         )
-        # First-run tips (turn 10b): shown once per session start, harmless to repeat.
+        # First-run tips: shown once per session start, harmless to repeat.
         self._emit(Text("Tips:  ? help · Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · /compact free context · esc or Ctrl+C stops a response", style=T.TEXT_GHOST))
         self._emit(Text("Or just ask: “switch to <model>”, “change the target to <host>”, “show the report” — Kratos confirms before changing its model or target.", style=T.TEXT_GHOST))
         self._emit(Text("Investigations target the monitored host by default; ask about “your own host” (or /investigate-host) to check the Kratos machine itself.", style=T.TEXT_GHOST))
         self._emit(Text(""))
 
-    # --- full-tier resume: on-screen replay (turn 6b, [f]) ---------------
+    # --- full-tier resume: on-screen replay ([f]) ---------------
     def _render_full_replay(self) -> None:
         """Re-render the session's prior turns on screen when resumed at full
         tier, so a resumed session shows its history (not just feeds it to the
@@ -599,7 +600,7 @@ class SessionScreen(Screen):
 
     # --- input -----------------------------------------------------------
     def on_input_changed(self, event: Input.Changed) -> None:
-        # Turn 7a: a lone "/" typed into the empty prompt opens the command
+        # A lone "/" typed into the empty prompt opens the command
         # palette (which filters as you type and can still take inline args).
         # Only a deliberate single "/" triggers it -- a pasted/typed "/cmd args"
         # arrives as a longer string and is left for normal inline submission.
@@ -627,10 +628,10 @@ class SessionScreen(Screen):
         t, d = self._stamp_now()
         self._emit_stamped(self._you_header(text), t, d)
         self._store.touch_session(self.session_state["session_id"])
-        # ↑/↓ recall is now non-destructive: sending is always a fresh turn, never
-        # discards history (the old "edit a previous turn truncates from here"
-        # design 10a caused a confusing "discarded N turns" line whenever ↑ had
-        # been pressed; ctrl+c-stop-then-retype covers editing instead).
+        # ↑/↓ recall is non-destructive: sending is always a fresh turn, never
+        # discards history. An earlier "edit a previous turn truncates from
+        # here" design produced a confusing "discarded N turns" line whenever ↑
+        # had been pressed; ctrl+c-stop-then-retype covers editing instead.
         if text.startswith("/"):
             self._dispatch_slash(text)
         elif text.split(maxsplit=1)[0].lower() in _BARE_COMMAND_WORDS:
@@ -733,19 +734,19 @@ class SessionScreen(Screen):
         elif cmd in ("/investigate-host", "/investigate-self", "/host"):
             self._investigate_host_flow(rest)
         elif cmd == "/run":
-            # PreA2: the deterministic standard audit (agent/pipeline.py), NOT
-            # the retired legacy cmd_run. Target-correct, mk2-rendered, no LLM.
-            # A6.1: gated by a pre-run preview+confirm (default on) for heavy runs.
+            # The deterministic standard audit (agent/pipeline.py), NOT
+            # a hand-coded pipeline. Target-correct, mk2-rendered, no LLM.
+            # Gated by a pre-run preview+confirm (default on) for heavy runs.
             self._run_standard_audit_gated()
         elif cmd == "/plan":
-            # A6.1: preview a run's plan WITHOUT running it. No arg = the standard
+            # Preview a run's plan WITHOUT running it. No arg = the standard
             # audit (exact); a preset name = that preset; free text = a predicted
             # agentic plan. Also toggles the auto-gate: /plan gate on|off.
             self._plan_flow(rest)
         elif cmd in ("/scan", "/logs-parse", "/findings-generate"):
             self._run_shortcut(cmd.lstrip("/"), rest)
         elif self._run_named_preset(cmd.lstrip("/")):
-            # A2 Piece H: /<name> runs a saved preset as a first-class command.
+            # /<name> runs a saved preset as a first-class command.
             # Reached ONLY after every built-in above, so a preset can never
             # shadow a built-in command (built-in always wins). Handled inside
             # _run_named_preset, which returns True iff it matched a preset.
@@ -755,7 +756,7 @@ class SessionScreen(Screen):
             self._run_goal(text)
 
     def _run_named_preset(self, bare: str) -> bool:
-        """A2 Piece H: if `bare` (a /-stripped command word) names a saved preset,
+        """If `bare` (a /-stripped command word) names a saved preset,
         run it and return True; else return False so dispatch falls through to a
         goal. Checked live, so presets added/deleted mid-session resolve correctly
         with no caching."""
@@ -766,7 +767,7 @@ class SessionScreen(Screen):
             return True
         return False
 
-    # --- /usage (token + cost transparency, feature A3) -----------------
+    # --- /usage (token + cost transparency) -----------------
     # Rough per-1M-token rates (USD input, output) — APPROXIMATE, provider
     # pricing changes; edit here. Only used to show an estimate, never billed.
     _MODEL_RATES: dict[str, tuple[float, float]] = {
@@ -806,7 +807,7 @@ class SessionScreen(Screen):
         else:
             self._emit(R.note_line("Counts are for this process (reset on restart). Local models are always free."))
 
-    # --- /context (what's in the window, feature A4) --------------------
+    # --- /context (what's in the window) --------------------
     def _render_context(self) -> None:
         from kratos.llm_config import get_active_llm_model
 
@@ -827,7 +828,7 @@ class SessionScreen(Screen):
         else:
             self._emit(R.note_line("/compact frees space by summarizing older turns; recent turns are kept verbatim."))
 
-    # --- /doctor (self-diagnostic, feature A1) --------------------------
+    # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")
     def _doctor_flow(self) -> None:
         """Run Kratos's self-diagnostic (LLM endpoint, .env, backend, target
@@ -853,7 +854,7 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.success_line(f"All good — {p} checks passed."))
         self._set_busy(False)
 
-    # --- /report (turn 4a) ----------------------------------------------
+    # --- /report -----------------------------------------------------
     def _render_report(self) -> None:
         findings = self._collect_session_findings()  # list of (finding, when)
         self._emit(Text(""))
@@ -873,7 +874,7 @@ class SessionScreen(Screen):
             # zone -- not when /report was run.
             when_str = self._fmt_stored_time(when_value)
             self._emit(R.finding_panel(f, time_str=when_str))
-            # A6.2: auto-attach a recommend-only response plan for HIGH/CRITICAL
+            # Auto-attach a recommend-only response plan for HIGH/CRITICAL
             # findings (build_response_plan returns None below that, so no
             # manufactured urgency on info/low). Recommend-only, curated
             # templates -- Kratos runs nothing.
@@ -907,7 +908,7 @@ class SessionScreen(Screen):
                     out.extend((f, when_value) for f in result["findings"])
         return out
 
-    # --- /preset (A2 Tier 1: saved natural-language investigation goals) ---
+    # --- /preset (saved natural-language investigation goals) ---
     _PRESET_USAGE = (
         "Usage: /preset list  ·  /preset new  (guided: goal or pipeline)  ·  "
         "/preset describe \"<goal>\"  ·  /preset run \"<name>\"  ·  /preset show \"<name>\"  ·  "
@@ -1186,15 +1187,15 @@ class SessionScreen(Screen):
     def _preset_dispatch_run(self, preset: Any) -> None:
         """Route a resolved preset to the right runner: a deterministic PIPELINE
         goes to the pipeline turn worker (no LLM), a GOAL goes to the agentic
-        loop. An AI-GENERATED pipeline (A2 §5.6) first gets a danger-confirm
-        ('generated ≠ trusted-to-run', Stage 5). A not-yet-runnable preset
+        loop. An AI-GENERATED pipeline first gets a danger-confirm
+        ('generated ≠ trusted-to-run'). A not-yet-runnable preset
         (unknown kind, empty, or an invalid pipeline) is kept and its reason
         shown, never errored out."""
         from kratos.agent import presets as _P
 
         if preset.is_runnable_pipeline:
             if preset.generated:
-                # Stage 5: an extra, explicit confirm for AI-drafted steps, on top
+                # An extra, explicit confirm for AI-drafted steps, on top
                 # of the normal per-run approvals (which still apply).
                 self._danger_confirm_and_run(preset)
             else:
@@ -1229,7 +1230,7 @@ class SessionScreen(Screen):
 
     @work
     async def _danger_confirm_and_run(self, preset: Any) -> None:
-        """A2 §5.6 Stage 5: an AI-drafted pipeline is `generated=True` = "not yet
+        """An AI-drafted pipeline is `generated=True` = "not yet
         human-acknowledged to run". Before its FIRST run, name exactly what it
         will run (which tool, on which host) and require an explicit confirm; that
         confirm IS the acknowledgment, so accepting GRADUATES it (persist
@@ -1324,9 +1325,9 @@ class SessionScreen(Screen):
         self._emit(R.success_line(
             f"Saved preset {preset.name!r}. Run it with /preset run \"{preset.name}\"."))
 
-    # --- A2 §5.6 Stage 1: conversational pipeline authoring -------------
+    # --- Conversational pipeline authoring -------------
     def _suggest_describe(self, goal: str | None) -> None:
-        """Conversational nudge (Decided #1): the message sounds like a multi-step
+        """Conversational nudge: the message sounds like a multi-step
         pipeline. SUGGEST /preset-describe — never auto-draft or auto-run."""
         g = (goal or "").strip()
         hint = f' /preset-describe "{g}"' if g else " /preset-describe"
@@ -1336,7 +1337,7 @@ class SessionScreen(Screen):
 
     @work
     async def _preset_describe_flow(self, goal: str) -> None:
-        """A2 §5.6 Stage 1: draft a deterministic pipeline from a plain-language
+        """Draft a deterministic pipeline from a plain-language
         description, show it IN FULL for review, and save it (never auto-run) as
         a `kind="pipeline"` preset. The draft is an LLM step; the human reviews
         the concrete steps, so the run itself stays deterministic/LLM-free."""
@@ -1364,12 +1365,13 @@ class SessionScreen(Screen):
             return
 
         parsed = _P.parse_pipeline(draft.steps, registry=TOOL_REGISTRY)
-        # A2 §5.6 Stage 3 (unblocked by A7): a drafted step naming a tool that
-        # doesn't exist is a real gap. Offer to BUILD it via A7's guided evo-loop
+        # A drafted step naming a tool that
+        # doesn't exist is a real gap. Offer to BUILD it via the guided evo-loop
         # wrapper; on success the tool is registered and we re-parse + continue.
         # Declining / cancelling / a non-kept build stops honestly (never save a
-        # will-fail pipeline). Stage 4 (auto-create a missing whitelist FieldSpec)
-        # is NOT in scope here — an invalid reference still stops via parsed.errors.
+        # will-fail pipeline). Auto-creating a missing whitelist entry for the
+        # tool is NOT in scope here — an invalid reference still stops via
+        # parsed.errors.
         missing_tools = sorted({s["tool"] for s in parsed.steps if s["tool"] not in TOOL_REGISTRY})
         if missing_tools:
             parsed = await self._offer_build_missing_tools(missing_tools, draft.steps)
@@ -1391,7 +1393,7 @@ class SessionScreen(Screen):
             self._emit(R.note_line(f"⚠ {w}"))
         gated = sorted({s["tool"] for s in parsed.steps
                         if tool_reaches_approval(TOOL_REGISTRY.get(s["tool"]))})
-        if gated:  # Stage 2 — reuse the standard approval-required wording.
+        if gated:  # Reuse the standard approval-required wording.
             self._emit(R.note_line(
                 f"Note: {', '.join(gated)} may pause for approval when run (and are skipped in an "
                 "unattended/scheduled run — set to 'auto' in Settings → Tools to include them)."))
@@ -1435,15 +1437,15 @@ class SessionScreen(Screen):
             return
         for w in warnings:
             self._emit(R.note_line(f"⚠ {w}"))
-        # Decided #3: save-then-separately-run; name the run command so it's one keystroke.
+        # Save-then-separately-run; name the run command so it's one keystroke.
         self._emit(R.success_line(
             f"Saved AI-drafted pipeline {preset.name!r}. Review it any time with /preset show "
             f"\"{preset.name}\"; run it with /{preset.name} when ready (you'll get a confirm first, "
             "since it's AI-generated)."))
 
     async def _offer_build_missing_tools(self, missing_tools: list[str], draft_steps: list[dict]):
-        """A2 §5.6 Stage 3: a drafted pipeline names tool(s) Kratos doesn't have.
-        Offer to build each via A7's guided evo-loop wrapper (run_guided_build) —
+        """A drafted pipeline names tool(s) Kratos doesn't have.
+        Offer to build each via the guided evo-loop wrapper (run_guided_build) —
         the SAME write → test → review → keep flow /evolve uses, so NOTHING here
         relaxes the human-authored-test principle or the no-force-accept keep
         gate (run_guided_build wraps run_self_write_loop unmodified). On success
@@ -1516,7 +1518,7 @@ class SessionScreen(Screen):
         self._emit(R.success_line("Built the missing tool(s) — continuing with the pipeline."))
         return parsed
 
-    # --- A2 Tier 2: guided pipeline authoring ---------------------------
+    # --- Guided pipeline authoring ---------------------------
     @work
     async def _preset_new_guided(self) -> None:
         """/preset-new entry: choose GOAL (natural-language, agentic) vs PIPELINE
@@ -1535,7 +1537,7 @@ class SessionScreen(Screen):
             await self._preset_new_pipeline()
 
     async def _preset_new_pipeline(self, name_raw: str | None = None) -> None:
-        """Build a kind='pipeline' preset via the guided step builder (Piece F)."""
+        """Build a kind='pipeline' preset via the guided step builder."""
         from kratos.agent import presets as _P
 
         if not name_raw:
@@ -1581,7 +1583,7 @@ class SessionScreen(Screen):
             "Run it with /preset-run, or schedule it with /schedule."))
 
     def _format_step_args(self, args: dict[str, Any]) -> str:
-        """Human-readable step args, rendering a Piece C reference in plain
+        """Human-readable step args, rendering a step-output reference in plain
         language ('ip = the top source IP from the "correlate" step') rather than
         raw {from=…} syntax."""
         from kratos.agent import pipeline_refs as _refs
@@ -1617,7 +1619,7 @@ class SessionScreen(Screen):
         return body
 
     async def _preset_edit_pipeline(self, preset: Any) -> None:
-        """In-place pipeline step editor (Piece F's deferred slice): add / remove /
+        """In-place pipeline step editor: add / remove /
         reorder / retarget a step's condition & fail-fast, on a working copy;
         nothing is written until 'save'. Cancel discards. Re-validated on save."""
         from kratos.agent import presets as _P
@@ -1724,8 +1726,8 @@ class SessionScreen(Screen):
         return out
 
     async def _build_pipeline_steps(self) -> list[dict[str, Any]] | None:
-        """Guided step builder (Piece F): pick-a-tool → add → remove → done,
-        mirroring the A6.5 group-job builder. Returns the ordered step dicts, or
+        """Guided step builder: pick-a-tool → add → remove → done,
+        mirroring the group-job builder. Returns the ordered step dicts, or
         None if cancelled before adding any."""
         steps: list[dict[str, Any]] = []
         while True:
@@ -1760,9 +1762,9 @@ class SessionScreen(Screen):
     async def _build_pipeline_step(self, name: str, *, is_first: bool = False,
                                    prior_steps: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         """Collect one step: for each REQUIRED arg, either type a value OR thread
-        it from an earlier step's output (Piece C — menu-driven, no syntax);
-        then the fail-fast vs resilient choice (default fail-fast, per the A2
-        decision) and an optional `when` condition (slice 4). Returns the step
+        it from an earlier step's output (menu-driven, no syntax);
+        then the fail-fast vs resilient choice (default fail-fast) and an
+        optional `when` condition. Returns the step
         dict, or None if cancelled."""
         from kratos.agent.tools import TOOL_REGISTRY
 
@@ -1772,7 +1774,7 @@ class SessionScreen(Screen):
         args: dict[str, Any] = {}
         for pname in self._missing_required_args(tool, {}):
             spec = params.get(pname) or {}
-            # Piece C: offer threading this arg from an earlier compatible step.
+            # Offer threading this arg from an earlier compatible step.
             ref = await self._maybe_thread_arg(name, pname, spec, prior_steps)
             if ref is _CANCELLED:
                 return None
@@ -1798,7 +1800,7 @@ class SessionScreen(Screen):
         if when is _CANCELLED:
             return None
         # Auto-assign a stable, unique label so a later step can reference this
-        # one BY NAME (Piece C) — a label survives reordering in the editor,
+        # one BY NAME — a label survives reordering in the editor,
         # unlike a positional index. (A forward reference created by reordering is
         # caught at save-time re-validation.)
         step: dict[str, Any] = {
@@ -1812,7 +1814,7 @@ class SessionScreen(Screen):
     @staticmethod
     def _unique_step_label(name: str, prior_steps: list[dict[str, Any]]) -> str:
         """A label unique within the pipeline (the tool name, deduped) so
-        step-output references (Piece C) resolve by a stable name."""
+        step-output references resolve by a stable name."""
         existing = {s.get("label") for s in prior_steps if s.get("label")}
         label, n = name, 2
         while label in existing:
@@ -1821,7 +1823,7 @@ class SessionScreen(Screen):
 
     async def _maybe_thread_arg(self, consumer_tool: str, arg_name: str,
                                 spec: dict[str, Any], prior_steps: list[dict[str, Any]]) -> Any:
-        """Piece C usability: if an earlier step exposes a type-compatible
+        """If an earlier step exposes a type-compatible
         whitelisted output, offer to thread it into this arg — a producer picker
         then a field picker, no reference syntax typed. Returns a reference dict
         (thread it), None (type a value instead), or _CANCELLED (abort the step)."""
@@ -1938,7 +1940,7 @@ class SessionScreen(Screen):
 
     @work
     async def _preset_scaffold(self, name_raw: str) -> None:
-        """Files-first bridge (Piece F): write a commented, valid pipeline
+        """Files-first bridge: write a commented, valid pipeline
         template into the presets dir for hand-editing, then point at /preset-run.
         The guided builder (/preset-new → pipeline) is the primary path; this is
         for power users who prefer their own editor."""
@@ -2018,7 +2020,7 @@ class SessionScreen(Screen):
         else:
             self._emit(R.error_line(f"Couldn't delete {preset.name!r}."))
 
-    # --- /schedule (A6.3: run a preset/audit on a cadence, deliver report) ---
+    # --- /schedule (run a preset/audit on a cadence, deliver report) ---
     _SCHEDULE_USAGE = (
         "Usage: /schedule list  ·  /schedule new  ·  /schedule show \"<name>\"  ·  "
         "/schedule run-now \"<name>\"  ·  /schedule install \"<name>\"  ·  "
@@ -2111,7 +2113,7 @@ class SessionScreen(Screen):
             "What should this schedule run?",
             [("audit", "audit   Standard audit — deterministic, no LLM, free"),
              ("preset", "preset  A saved goal preset — runs the AI agent"),
-             ("group", "group   Several jobs in order, on one cadence (A6.5)")],
+             ("group", "group   Several jobs in order, on one cadence")],
             subtitle="↑↓ pick · esc cancel"))
         if kind is None:
             return
@@ -2336,7 +2338,7 @@ class SessionScreen(Screen):
             self._set_busy(False)
             self.app.call_from_thread(self._refresh_footer)
 
-    # --- /trigger (A6.4: if condition detected, notify/playbook/investigate) ---
+    # --- /trigger (if condition detected, notify/playbook/investigate) ---
     _TRIGGER_USAGE = (
         "Usage: /trigger list  ·  /trigger new  ·  /trigger show \"<name>\"  ·  "
         "/trigger test \"<name>\"  ·  /trigger delete \"<name>\""
@@ -2574,7 +2576,7 @@ class SessionScreen(Screen):
 
         if archive:
             self._store.archive_goal_history(self.session_state["session_id"])
-        llm_interface.reset_session_token_usage()   # drops the 7c context meter to 0
+        llm_interface.reset_session_token_usage()   # drops the context meter to 0
         self.session_state["resume_context"] = ""
         self._ctx_chars = 0
         self._reset_recall()
@@ -2631,7 +2633,7 @@ class SessionScreen(Screen):
         self._store.archive_session(self.session_state["session_id"])
         self.app.pop_screen()  # back to the launch chooser (it refreshes on resume)
 
-    # --- /rename (turn 8b) ----------------------------------------------
+    # --- /rename -----------------------------------------------------
     @work
     async def _rename_flow(self, rest: str) -> None:
         name = rest.strip()
@@ -2794,7 +2796,7 @@ class SessionScreen(Screen):
     # --- model cost/privacy blurb (used by the Settings Models tab) ------
     @staticmethod
     def _profile_blurb(values: dict[str, str]) -> str:
-        """Turn 16c -- honest cost/privacy disclosure per backend option. Now a
+        """Honest cost/privacy disclosure per backend option. A
         thin delegate to render.profile_blurb so the Settings screen can render
         the same line with no live session (single source of truth)."""
         return R.profile_blurb(values)
@@ -2806,8 +2808,9 @@ class SessionScreen(Screen):
         (agent.guided_evolve.run_guided_build) through a Textual prompter, so
         the whole write -> test -> approve -> keep experience -- plain-English
         review of what the test checks, recovery guidance, the friendly keep
-        prompt -- is shared with A2 Stage 3's hand-off rather than
-        reimplemented here. A thread worker because the build ends in the
+        prompt -- is shared with the conversational pipeline-drafting flow's
+        own missing-tool hand-off rather than reimplemented here. A thread
+        worker because the build ends in the
         blocking loop; each prompt bridges back to the event loop."""
         from kratos.agent.guided_evolve import run_guided_build
         from kratos.tui_mk2.guided import TextualGuidedPrompter
@@ -3079,8 +3082,8 @@ class SessionScreen(Screen):
         finally:
             self._set_busy(False)
 
-    # --- /run: the PreA2 deterministic standard audit --------------------
-    # --- A6.1 preview-plan: pre-run confirm gate + /plan on demand -------
+    # --- /run: the deterministic standard audit --------------------
+    # --- preview-plan: pre-run confirm gate + /plan on demand -------
     def _plan_gate_enabled(self) -> bool:
         """Whether heavy deterministic runs (the standard audit / future
         pipelines) show a preview+confirm before running. Default ON (novice-
@@ -3094,7 +3097,7 @@ class SessionScreen(Screen):
 
     @work
     async def _run_standard_audit_gated(self) -> None:
-        """A6.1 gate: build the EXACT preview (cheap, no LLM, no target contact),
+        """Build the EXACT preview (cheap, no LLM, no target contact),
         show it for confirm/cancel if the gate is on, then run the existing
         deterministic audit worker. Cancel runs nothing and leaves clean state."""
         from kratos.agent.plan_preview import preview_pipeline
@@ -3178,7 +3181,7 @@ class SessionScreen(Screen):
         self._emit_from_worker(R.plan_preview_panel(preview_agentic(rest, target)))
 
     def _run_standard_audit(self) -> None:
-        """PreA2 built-in standard audit -- a thin call into the shared pipeline
+        """Built-in standard audit -- a thin call into the shared pipeline
         turn worker with the fixed, target-correct step sequence. No LLM in the
         decision path; nothing about Kratos's own host is folded into the
         target's findings (standard_audit_steps is target-facing by design)."""
@@ -3195,7 +3198,7 @@ class SessionScreen(Screen):
         )
 
     def _pipeline_host_note(self, steps: list[Any], target_label: str) -> Text | None:
-        """Piece D (target-correctness): a labeled note when a pipeline includes
+        """Target-correctness: a labeled note when a pipeline includes
         Kratos-HOST tools, so their output is never silently read as the target's.
         Returns None for a purely target-facing pipeline (the common case)."""
         from kratos.agent.pipeline import is_local_host_tool
@@ -3244,7 +3247,7 @@ class SessionScreen(Screen):
         target_label = pin_target or (
             self.session_state["targets"][0] if self.session_state["targets"] else "the target")
 
-        # Concurrency (A6 §6): one run per target at a time. Bail cleanly if a
+        # Concurrency: one run per target at a time. Bail cleanly if a
         # background scheduled run (or another investigation) holds the target.
         audit_lock = _target_lock.try_acquire_target(self._data_dir, run_target)
         if audit_lock is None:
@@ -3327,7 +3330,7 @@ class SessionScreen(Screen):
         )
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
-        # A6.4: evaluate triggers against this run's findings. run_investigations
+        # Evaluate triggers against this run's findings. run_investigations
         # =False keeps an interactive run snappy — an investigate-action trigger
         # notifies that the deeper look runs on the scheduled cadence rather than
         # blocking here on an LLM call (the target lock is already released too).
@@ -3393,7 +3396,7 @@ class SessionScreen(Screen):
             self._activity_active = False
 
     def action_rerun(self) -> None:
-        """Design 7b -- re-run the last goal (honest re-run, not a mid-loop
+        """Re-run the last goal (honest re-run, not a mid-loop
         resume). Handy right after an interrupt, or to repeat a goal."""
         if self._busy:
             self.notify("A turn is already running.", timeout=3)
@@ -3468,7 +3471,7 @@ class SessionScreen(Screen):
             return
 
         if route.kind == "pipeline_suggest":
-            # A2 §5.6 nudge: the message sounds like a multi-step pipeline. Only
+            # The message sounds like a multi-step pipeline. Only
             # SUGGEST /preset-describe — never auto-draft or auto-run (drafting is
             # code generation; entry into it must be explicit). Same
             # suggest-don't-auto-act shape as the tool_proposal auto-suggest.
@@ -3685,7 +3688,7 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.note_line(
                 f"Investigating THIS Kratos host ({target_override}) — its own logs, ports, and "
                 "posture, not the configured target."))
-        # Concurrency (A6 §6): take the per-target run lock so this and a
+        # Concurrency: take the per-target run lock so this and a
         # background scheduled run never hit the same host at once. Non-blocking:
         # if busy, say so and bail cleanly rather than colliding. Keyed by the
         # effective target, so a self-host run doesn't block a target run.
@@ -3715,15 +3718,16 @@ class SessionScreen(Screen):
             if worker.is_cancelled:
                 raise _CancelInvestigation()
             self._render_step(step)
-            # Live context meter (7c): each step follows an LLM call, so the
+            # Live context meter: each step follows an LLM call, so the
             # last-call prompt_tokens has advanced -- refresh the footer.
             self.app.call_from_thread(self._refresh_footer)
 
         try:
-            # #2: hand the ongoing conversation to the investigation so it can
+            # Hand the ongoing conversation to the investigation so it can
             # resolve references to earlier turns (goes in run_agent's
-            # never-compacted preamble — C7-safe, and it's the user's own
-            # conversation, not untrusted target data).
+            # never-compacted preamble — safe from the same context-loss
+            # risk the compaction guard protects against, since it's the
+            # user's own conversation, not untrusted target data).
             result = run_agent(
                 goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step,
                 prior_context=self.session_state.get("resume_context") or None,
@@ -3758,7 +3762,7 @@ class SessionScreen(Screen):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
             status = "max_iters_reached"
         elif result["status"] == "llm_unavailable":
-            # Design 14a: Kratos's own model failed mid-investigation -> banner,
+            # Kratos's own model failed mid-investigation -> banner,
             # not an inline tool-style error.
             self._emit_from_worker(R.llm_failure_banner("the language model became unavailable during the investigation"))
             status = "llm_unavailable"
@@ -3766,7 +3770,7 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
             status = str(result["status"])
 
-        # Structured recommend-only remediation (19b): render each command the
+        # Structured recommend-only remediation: render each command the
         # agent produced as its own panel, and remember them for ctrl+y copy.
         commands = result.get("recommended_commands") or []
         self._last_commands = [str(c.get("command") or "") for c in commands if c.get("command")]
@@ -3816,10 +3820,10 @@ class SessionScreen(Screen):
             )
             self._emit_from_worker(R.result_panel("Evo-loop suggestion", body, T.ATTENTION))
         elif step.get("status") == "context_compacted":
-            # Feature 14b: agent/loop.py folded the oldest turns to stay within
+            # agent/loop.py folded the oldest turns to stay within
             # the model's context window. Informational only -- the record is
-            # untouched -- so it renders as a faint line, and the 7c footer meter
-            # will drop on the next step as the prompt shrinks.
+            # untouched -- so it renders as a faint line, and the footer context
+            # meter will drop on the next step as the prompt shrinks.
             self._emit_from_worker(
                 R.compaction_line(step.get("context_tokens", 0), step.get("context_window", 0))
             )
@@ -3828,11 +3832,11 @@ class SessionScreen(Screen):
     def _compact_flow(self) -> None:
         """Manual /compact — summarize the working conversation context into a
         compact summary, freeing token budget while KEEPING the memory (unlike
-        /clear, which discards it). The Claude-Code-style companion to the
-        automatic 14b compaction inside run_agent: this one operates on the
+        /clear, which discards it). The manual companion to the
+        automatic compaction inside run_agent: this one operates on the
         session's chat/resume context (`resume_context`), which run_agent's loop
-        never sees, so it's C7-orthogonal (touches no investigation transcript
-        or guard state)."""
+        never sees, so it's fully independent of the investigation compactor
+        (touches no investigation transcript or guard state)."""
         self._set_busy(True)
         try:
             self._do_compact(manual=True)
@@ -3849,8 +3853,8 @@ class SessionScreen(Screen):
         (~60%), so auto-compaction actually pulls the meter back under the limit
         even when the recent turns are large (e.g. a [f] full-resume blob or long
         investigation answers) — it keeps the summary plus only as many newest
-        turns as fit, and hard-caps as a last resort. C7-orthogonal (chat context
-        only; never touches run_agent's transcript/guards)."""
+        turns as fit, and hard-caps as a last resort. Operates only on chat
+        context; never touches run_agent's own transcript or guard state."""
         from kratos.llm_interface import agent_chat, get_context_window_tokens, reset_session_token_usage
 
         ctx = self.session_state.get("resume_context", "").strip()
@@ -3861,7 +3865,7 @@ class SessionScreen(Screen):
         window = get_context_window_tokens() or 1
         target_chars = max(2000, int(window * 0.6) * 4)  # result should fit ~60% of the window (~4 chars/tok)
         # Keep the most recent turns VERBATIM and summarize only the older ones
-        # (matches the investigation compactor + Claude Code). Turns are separated
+        # (matches the investigation compactor's own approach). Turns are separated
         # by blank lines (_remember_turn joins with "\n\n").
         chunks = [c for c in ctx.split("\n\n") if c.strip()]
         if len(chunks) > 1:
@@ -3873,7 +3877,7 @@ class SessionScreen(Screen):
             self._emit_from_worker(R.note_line("Compacting the conversation (summarizing older turns, a moment)…"))
         else:
             # Auto-compaction near the window limit — the receding ⤵ notice, same
-            # visual language as the investigation loop's 14b compaction event.
+            # visual language as the investigation loop's own compaction event.
             self._emit_from_worker(R.compaction_line())
         # Bound what we send the summarizer so an enormous context can't itself
         # overflow a small window — keep the newest tail of the older section.
@@ -3917,7 +3921,7 @@ class SessionScreen(Screen):
 
     def _maybe_auto_compact(self) -> None:
         """Automatically compact the conversation context once it crosses the
-        same 85% fill the investigation loop (14b) and the footer's "will compact
+        same 85% fill the investigation loop and the footer's "will compact
         soon" warning use — so a long chat stays within the model window without
         the user having to run /compact. Called after each turn appends to the
         working context; a no-op below the threshold. Runs on the calling thread
@@ -3936,7 +3940,7 @@ class SessionScreen(Screen):
         The previous _append_outcome stored only "Goal -> status" — the user's
         message with no reply — which is why follow-ups (and light resumes) had
         no memory of the conversation's content: the model literally never saw
-        its own prior answers. Both sides are kept now; auto-compaction (14b) /
+        its own prior answers. Both sides are kept now; auto-compaction /
         /compact keep it bounded."""
         block = f"You: {user_text}\nKratos: {kratos_text}".strip()
         ctx = self.session_state.get("resume_context", "")
@@ -3965,7 +3969,7 @@ class SessionScreen(Screen):
 
     def _palette_commands(self) -> list[tuple[str, str]]:
         """The static command list PLUS a live `/<name>` entry per saved runnable
-        preset (A2 Piece H), so the palette reflects presets added/deleted this
+        preset, so the palette reflects presets added/deleted this
         session with no caching."""
         from kratos.agent import presets as _P
 

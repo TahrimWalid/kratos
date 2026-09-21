@@ -33,7 +33,7 @@ SSH_TARGET_KEY_PATH = Path(
 SSH_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_CONNECT_TIMEOUT", "10"))
 SSH_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_COMMAND_TIMEOUT", "30"))
 
-# SSH host-key verification (Sprint 1 backlog #12). The original behavior was
+# SSH host-key verification. The original behavior was
 # bare TOFU: `StrictHostKeyChecking=accept-new` against the user's GLOBAL
 # ~/.ssh/known_hosts, so a first-contact key was accepted blindly and pins
 # weren't isolated/auditable. These two knobs let an operator move to a pinned,
@@ -56,21 +56,21 @@ SSH_STRICT_HOST_KEY_CHECKING = os.environ.get("KRATOS_SSH_STRICT_HOST_KEY_CHECKI
 # run_yara_scan's own timeout, deliberately separate from
 # SSH_COMMAND_TIMEOUT_SECONDS above -- that 30s default is right for the
 # quick, bounded SSH commands it's shared by (list_open_files,
-# check_file_integrity, etc.), but wrong for YARA: a real, unmocked timing
-# run against kratos-target confirmed a recursive `yara -r -s` scan of `/`
-# is a many-minutes (not tens-of-seconds) operation -- still running past 17
-# real minutes, actively CPU-bound, not hung. No timeout that's still
-# "practical" (i.e. doesn't let one tool call dominate an entire ~10-20 min
-# investigation run) can wait out a genuine full-root scan; 180s is sized
-# instead for the realistic "broad but bounded" case an investigating agent
-# would actually pick (e.g. /etc, /var/log, /home, /opt) -- 6x the old
-# shared 30s default. A true `scan_path='/'` still won't finish in time;
-# that's expected, not a bug -- it now fails with a clear, scan-specific
-# message instead of the previous generic/misleading SSH_COMMAND_TIMEOUT
-# error, per CLAUDE.md's Sprint 2 closing regression findings (2026-07-14).
+# check_file_integrity, etc.), but wrong for YARA: a recursive `yara -r -s`
+# scan of `/` is a many-minutes (not tens-of-seconds) operation, genuinely
+# CPU-bound rather than hung. No timeout that's still "practical" (i.e.
+# doesn't let one tool call dominate an entire investigation run) can wait
+# out a genuine full-root scan; 180s is sized instead for the realistic
+# "broad but bounded" case an investigating agent would actually pick (e.g.
+# /etc, /var/log, /home, /opt) -- 6x the shared 30s default. A true
+# `scan_path='/'` still won't finish in time; that's expected, not a bug --
+# it fails with a clear, scan-specific message instead of the generic,
+# misleading SSH_COMMAND_TIMEOUT error a shared timeout would produce (see
+# docs/DESIGN.md's "Target-facing tools and operational requirements"
+# section).
 YARA_SCAN_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_YARA_SCAN_TIMEOUT", "180"))
 
-# journalctl access mode (2026-07-18) -- see adapters/target_setup.py for the
+# journalctl access mode -- see adapters/target_setup.py for the
 # full target-onboarding checklist this feeds into. Default True preserves
 # the original, always-worked `sudo -n journalctl` path unconditionally --
 # zero regression risk for any target set up before this flag existed. Set
@@ -87,19 +87,20 @@ JOURNALCTL_USE_SUDO = os.environ.get("KRATOS_JOURNALCTL_USE_SUDO", "1") == "1"
 
 # ---------------------------------------------------------------------------
 # Active target override -- session-lifetime, in-process only, never
-# persisted by itself. Fixes a real bug (2026-07-16): the REPL's `/target`
-# command used to only store/display a value in session_state and the
-# session DB, while every SSH-based tool (via adapters/ssh_remote.py) and
-# run_nmap_scan/run_vuln_scan kept reading the frozen SSH_TARGET_HOST above
-# regardless. get_active_target() is now the single chokepoint every
+# persisted by itself. Without this chokepoint, a REPL command that only
+# stores/displays a value in session_state and the session DB would leave
+# every SSH-based tool (via adapters/ssh_remote.py) and run_nmap_scan/
+# run_vuln_scan still reading the frozen SSH_TARGET_HOST above regardless
+# -- the exact live-switchable-settings bug class described in
+# docs/DESIGN.md. get_active_target() is now the single chokepoint every
 # target-facing tool resolves its host through -- SSH_TARGET_HOST remains
 # the unconditional fallback (and the unchanged, only value non-REPL entry
 # points like `kratos investigate`/`kratos scan` ever see, no regression for
 # the common case).
 #
 # Why a mutable module global, not an explicit parameter threaded through
-# run_agent()/execute_tool_call(): audited every target-facing tool
-# (2026-07-16) -- run_nmap_scan/run_vuln_scan already accept their own
+# run_agent()/execute_tool_call(): auditing every target-facing tool shows
+# run_nmap_scan/run_vuln_scan already accept their own
 # `target` argument, but read_journalctl/list_open_files/list_processes/
 # check_file_integrity/run_config_audit/run_yara_scan have NO target
 # parameter at all today; they all reach the target exclusively through
@@ -129,7 +130,7 @@ def set_active_target(host: str | None) -> None:
 
 # ---------------------------------------------------------------------------
 # Directory-scoped local config -- first-run trust record + persisted
-# default target (Sprint 3, 2026-07-16). One JSON file under the resolved
+# default target. One JSON file under the resolved
 # data_dir (already the existing per-installation persistent storage
 # location -- the session DB lives next to it), not a second, disconnected
 # persistence scheme. The persisted "default_target" is what seeds
@@ -168,8 +169,8 @@ NTFY_TOPIC = os.environ.get("KRATOS_NTFY_TOPIC", "kratos-alerts-n4qk9zxp2v7m")
 NTFY_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_NTFY_TIMEOUT", "10"))
 
 # ---------------------------------------------------------------------------
-# Threat intel (optional, opt-in) -- see CLAUDE.md's "Decision: threat-intel
-# enrichment scope" for the full moat-tension reasoning this implements. Two
+# Threat intel (optional, opt-in) -- see docs/DESIGN.md's "Threat-intel
+# enrichment" section for the full reasoning this implements. Two
 # tiers, deliberately different trust levels:
 #   - cached (default, always available): AlienVault OTX pulses synced
 #     locally on a schedule via update_threat_intel_cache() -- lookups
@@ -185,7 +186,7 @@ THREAT_INTEL_ENABLED = os.environ.get("KRATOS_THREAT_INTEL_ENABLED", "0") == "1"
 
 # When a run_vuln_scan finds the local vulscan CVE database stale, whether to
 # INTERRUPT the scan with a live "download a fresh copy now?" approval prompt.
-# Default OFF (2026-09-08): a plain investigation shouldn't be interrupted by a
+# Default OFF: a plain investigation shouldn't be interrupted by a
 # download modal it can only decline -- especially since the scan proceeds with
 # the current database either way, and the upstream mirror is Cloudflare-blocked
 # so the update usually fails anyway. When OFF, staleness is still ALWAYS

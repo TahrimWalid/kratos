@@ -43,14 +43,11 @@ def registered_handler():
 
 def _fake_ssh_response(command, *args, **kwargs):
     """Realistic canned output for the commands a sudo-listing tool would plausibly
-    issue over SSH. The sandbox this harness runs in has NO real network access (by
-    design), so a candidate's real SSH calls must be mocked here, not made for real --
+    issue over SSH. The sandbox this harness runs in has NO network access (by
+    design), so a candidate's SSH calls must be mocked here, not made for real --
     an unmocked call would just fail/time out regardless of whether the candidate's
-    own logic is correct (this is exactly what broke here before this fix: the write
-    step now correctly writes real ssh_remote calls, but this harness never mocked
-    them, so every attempt failed on a network error that had nothing to do with the
-    candidate's actual code). "sudo:x:27:sysadmin,komil" is the real target's own
-    /etc/group sudo line (see CLAUDE.md's Operational facts) -- using real data here
+    own logic is correct. "sudo:x:27:sysadmin,komil" is the real target's own
+    /etc/group sudo line -- using real data here
     so a correct implementation's result is independently checkable against reality."""
     cmd = command if isinstance(command, str) else " ".join(command)
     if "sudo" in cmd and "getent" in cmd:

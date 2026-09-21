@@ -1,16 +1,15 @@
 """
-Guided evo-loop -- the "highschool-kid easy" surface over the write -> test ->
-approve -> keep pipeline (A7, docs/evoloop_polish_brief.md).
+Guided evo-loop -- an approachable surface over the write -> test -> approve
+-> keep pipeline (see docs/DESIGN.md's "Self-writing tool loop" section).
 
 This module is UI-AGNOSTIC by design: it drives the guided build through a
 GuidedPrompter abstraction (ask a question / show something), so the SAME core
-logic backs the mk2 Textual TUI today and A2 s5.6 Stage 3's programmatic
-"build the missing tool" hand-off tomorrow (that hand-off is HARD-BLOCKED on
-this module existing -- see the brief). A2 threads run_guided_build()'s
-GuidedBuildResult (kept tool name + requires_approval, or a clean decline) back
-into its pipeline draft.
+logic backs the mk2 Textual TUI today and a programmatic "build the missing
+tool" hand-off from the presets flow. That hand-off threads
+run_guided_build()'s GuidedBuildResult (kept tool name + requires_approval,
+or a clean decline) back into its own pipeline draft.
 
-What it does NOT do -- the invariants the brief says never move:
+What it does NOT do -- the invariants that never move:
   - It does not weaken the human-authored-test principle: the pytest harness
     still defines "correct"; an LLM-drafted harness is only ever SHOWN for
     review and never trusted unedited (saving is an explicit step).
@@ -23,11 +22,12 @@ What it does NOT do -- the invariants the brief says never move:
 
 The plain-English harness "claims" (describe_harness_claims) are extracted from
 the harness's own AST -- deliberately NOT an LLM summary. A summary could drift
-from what the test actually asserts, which is exactly the rubber-stamp failure
-the brief warns against; a non-expert reviewing meaning must be shown the REAL
-meaning. When an assertion is a human-authored message string, that message IS
-the claim (the human's own words); when it's a recognized structural shape it's
-glossed from the AST; anything unrecognized is shown verbatim, never invented.
+from what the test actually asserts, silently reopening the exact rubber-stamp
+risk the review-flags mechanism exists to close; a non-expert reviewing meaning
+must be shown the REAL meaning. When an assertion is a human-authored message
+string, that message IS the claim (the human's own words); when it's a
+recognized structural shape it's glossed from the AST; anything unrecognized is
+shown verbatim, never invented.
 """
 from __future__ import annotations
 
@@ -628,9 +628,10 @@ def run_guided_build(
     a clean decline, talking through `prompter`. The heavy pipeline
     (run_self_write_loop) is called UNMODIFIED; this only wraps the surface.
 
-    A2 s5.6 Stage 3 calls this programmatically with a goal already in hand; the
-    interactive mk2 flow calls it with the user's idea. Either way the return
-    carries the kept tool name + requires_approval (or a decline)."""
+    The conversational pipeline-drafting flow calls this programmatically with
+    a goal already in hand when it hits a missing tool; the interactive mk2
+    flow calls it with the user's idea. Either way the return carries the
+    kept tool name + requires_approval (or a decline)."""
     goal = (goal or "").strip()
     if not goal:
         answer = prompter.ask_text(

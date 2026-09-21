@@ -381,9 +381,9 @@ class ListPickerModal(ModalScreen[Any]):
 class ClarifyModal(ModalScreen[str | None]):
     """A clarifying question with labeled choices (optionally one 'recommended',
     each with a short explanation) plus a free-text 'something else' box —
-    Kratos's version of Claude Code's ask-with-choices. Used whenever a request
-    is genuinely ambiguous, rather than guessing (same 'ask, don't assume' grain
-    as the approval gate, but multiple-choice and non-authorizing).
+    an ask-with-choices prompt for genuinely ambiguous requests, rather than
+    guessing (same 'ask, don't assume' grain as the approval gate, but
+    multiple-choice and non-authorizing).
 
     Returns the chosen option's `value` (falling back to its `label`), the typed
     free-text, or None if dismissed. Each option is a dict:

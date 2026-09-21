@@ -53,11 +53,13 @@ llm/not
 llm/notes
 llm/work/
 
-# Shell scripts, markdown, and text files (except README)
+# Shell scripts, markdown, and text files (except README and the published
+# design doc -- everything else under docs/ is working notes, not shipped)
 *.sh
 *.md
 *.txt
 !README.md
+!docs/DESIGN.md
 
 # Local data-directory backups (e.g. data.bak.20260705_pretest/) -- not code
 data.bak*/

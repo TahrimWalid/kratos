@@ -1,17 +1,18 @@
 """
 Mocked tests for llm_interface.py::_query_openai_compatible's retry/backoff
-logic (2026-07-16, added after a real interleaved A/B test found large
-system prompts hitting real Gemini 503s far more often than small ones, and
-that a single 503 killed the whole call with zero retry -- see CLAUDE.md).
+logic -- see docs/DESIGN.md's "LLM backend" section for why this exists:
+large system prompts hit transient 503s from a hosted backend far more
+often than small ones, and a single 503 used to kill the whole call with
+zero retry.
 
 requests.post is mocked throughout (via side_effect lists mixing fake
 Response objects and raised exceptions) so these are fast, deterministic,
 and don't depend on a real backend's live state. time.sleep is also mocked
-so tests don't actually wait out the real 1s/2s backoff. The real backoff
-timing and retry-note rendering were separately verified against the real,
-live Gemini endpoint (see conversation/CLAUDE.md) -- these tests exist for
-durable regression coverage of the retryable/non-retryable classification
-and attempt-budget bookkeeping, not to re-prove the live finding.
+so tests don't actually wait out the real 1s/2s backoff. Backoff timing and
+retry-note rendering were separately verified against a live hosted
+endpoint -- these tests exist for durable regression coverage of the
+retryable/non-retryable classification and attempt-budget bookkeeping, not
+to re-prove that live finding.
 """
 from __future__ import annotations
 

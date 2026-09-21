@@ -1,14 +1,12 @@
 """
-Sprint 3 Phase 2 -- Rich-based rendering for Kratos's CLI. Presentation only,
-per docs/sprint3_phase1_cli_overhaul_design.md (Phase 1, approved) and the
-Phase 2 scoping decisions recorded in that conversation:
+Rich-based rendering for Kratos's CLI. Presentation only:
 
 - Scope is `kratos investigate` (cli/app.py::cmd_investigate) plus the ONE
   shared human-approval gate (agent/tools.py::request_approval) -- not the
   ~16 fixed-pipeline subcommands (`scan`, `chat`, `run`, etc.), which keep
-  their existing plain-text output. See CLAUDE.md Sprint 3 backlog for the
-  "CLI-wide Rich migration for non-investigate subcommands" item this
-  deliberately does not attempt.
+  their existing plain-text output. See docs/DESIGN.md's "Known
+  limitations" section for why the wider CLI-wide migration is deliberately
+  not attempted here.
 - request_approval renders ONE generic situation panel built from whatever
   keys are present in its `details` dict, regardless of which tool/gate
   called it (self-write keep, run_linux_command, capture_traffic, live
@@ -20,13 +18,12 @@ Phase 2 scoping decisions recorded in that conversation:
   yara, vulscan, sandbox test) -- agent/loop.py's on_step callback only
   fires AFTER a tool call has already completed (see run_agent's docstring:
   "the moment it's produced"), and changing that timing would mean changing
-  agent/loop.py's tool-dispatch logic, explicitly out of scope per the
-  design doc. The one genuinely long, observable gap from the CLI's
-  perspective is the LLM-call-plus-tool-round-trip BETWEEN consecutive
-  on_step calls (the design doc's own operational-facts section: ~76-90s+
-  per call locally) -- thinking_spinner() below covers exactly that gap,
-  bracketed entirely from cli/app.py's on_step wrapper, without touching
-  agent/loop.py at all.
+  agent/loop.py's tool-dispatch logic, out of scope for a rendering-only
+  module. The one genuinely long, observable gap from the CLI's perspective
+  is the LLM-call-plus-tool-round-trip BETWEEN consecutive on_step calls
+  (tens of seconds or more on a local backend) -- thinking_spinner() below
+  covers exactly that gap, bracketed entirely from cli/app.py's on_step
+  wrapper, without touching agent/loop.py at all.
 """
 from __future__ import annotations
 
@@ -49,13 +46,13 @@ _no_color_default = False
 _console: Console | None = None
 _stderr_console: Console | None = None
 
-# Sprint 3 formalized visual identity palette (2026-07-16) -- six named color
-# roles, single source of truth for every render helper below. Rich accepts
-# hex directly in both markup (f"[{SAFE}]text[/]") and style parameters
-# (border_style=SAFE) with no wrapping needed either way. `--no-color`
-# behavior is unaffected: Console(no_color=True) strips ANSI color codes at
-# the Console level regardless of whether the source was a hex value or a
-# named keyword like "green" -- same mechanism as before this pass.
+# Visual identity palette -- six named color roles, single source of truth
+# for every render helper below. Rich accepts hex directly in both markup
+# (f"[{SAFE}]text[/]") and style parameters (border_style=SAFE) with no
+# wrapping needed either way. `--no-color` behavior is unaffected:
+# Console(no_color=True) strips ANSI color codes at the Console level
+# regardless of whether the source was a hex value or a named keyword like
+# "green".
 ACCENT = "#5dc9d6"
 SAFE = "#5cc270"
 ATTENTION = "#e6b45a"
@@ -116,28 +113,22 @@ def configure(no_color: bool) -> None:
 
 
 def _environ_without_stale_size_vars() -> dict[str, str]:
-    """Real fix (2026-07-17, real user report): Rich's own Console.size
-    property (rich/console.py) checks the REAL terminal via
-    os.get_terminal_size() first, but then OVERRIDES that live value with
-    the COLUMNS/LINES environment variables if they happen to be set and
-    numeric -- confirmed by reading Rich's actual source, not assumed. Env
-    vars are captured once at process start and never update on their own
-    when a real terminal is resized (only a live ioctl query does), so on
-    any shell/terminal setup that happens to export COLUMNS/LINES (common
-    -- tmux, some shell configs, some terminal emulators), Rich silently
-    renders every panel/table/word-wrap at the STALE launch-time size
-    forever, regardless of how the real window is resized afterward.
+    """Rich's own Console.size property (rich/console.py) checks the real
+    terminal via os.get_terminal_size() first, but then OVERRIDES that live
+    value with the COLUMNS/LINES environment variables if they happen to be
+    set and numeric. Env vars are captured once at process start and never
+    update on their own when a real terminal is resized (only a live ioctl
+    query does), so on any shell/terminal setup that happens to export
+    COLUMNS/LINES (common -- tmux, some shell configs, some terminal
+    emulators), Rich silently renders every panel/table/word-wrap at the
+    STALE launch-time size forever, regardless of how the real window is
+    resized afterward -- word-wrap splits words mid-word, continuation
+    lines lose their indentation.
 
-    Confirmed via a real PTY test with a real ioctl-driven resize (the
-    actual mechanism a real terminal uses, not env vars): with no stale
-    COLUMNS/LINES set, Rich's word-wrap correctly re-flows at the new
-    width; with them set, output visibly corrupts (words split mid-word,
-    continuation lines losing their indentation) -- a direct, reproduced
-    match for the reported symptom. prompt_toolkit's own size detection
-    (prompt_toolkit/output/vt100.py::_get_size) has no such env-var
-    override -- it always queries the live terminal -- which is why the
-    input prompt/toolbar/completion menu were NOT affected, only
-    everything rendered through this module's Console.
+    prompt_toolkit's own size detection (prompt_toolkit/output/vt100.py::
+    _get_size) has no such env-var override -- it always queries the live
+    terminal -- which is why the input prompt/toolbar/completion menu are
+    unaffected, only everything rendered through this module's Console.
 
     Only COLUMNS/LINES are stripped -- Rich's Console also reads _environ
     for NO_COLOR/COLORTERM/TERM/TTY_INTERACTIVE/JUPYTER_*, all of which
@@ -146,13 +137,12 @@ def _environ_without_stale_size_vars() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k not in ("COLUMNS", "LINES")}
 
 
-# Real fix, second pass (2026-07-17, same real user report -- the first
-# fix above was real and confirmed, but insufficient): a resize AFTER
-# content has already been printed can still corrupt that ALREADY-PRINTED
-# scrollback, which no code running inside Kratos can retroactively touch
-# -- by the time the terminal is resized, those characters are just fixed
-# text sitting in the terminal's own history. This is the terminal
-# emulator's job (reflowing scrollback to the new width), not Kratos's.
+# Second pass: the previous fix alone is insufficient, because a resize
+# AFTER content has already been printed can still corrupt that already-
+# printed scrollback, which no code running inside Kratos can retroactively
+# touch -- by the time the terminal is resized, those characters are just
+# fixed text sitting in the terminal's own history. Reflowing scrollback to
+# the new width is the terminal emulator's job, not Kratos's.
 #
 # The specific, verifiable reason it goes wrong for Kratos's output and
 # not plain text: Rich's Panel/Table renderables are built to `expand` to
@@ -273,10 +263,10 @@ def _truncate_note(text: str, limit: int = _METADATA_NOTE_CHAR_CAP) -> str:
 def render_tool_metadata_notes(console: Console, result: dict[str, Any]) -> None:
     """
     Compact, inline supporting-detail lines shown directly under a tool-call
-    line -- NOT a panel. Sprint 3 follow-up: correlate_findings's
-    missing_inputs/input_errors/staleness_warning fields previously reached
-    the raw JSON/Markdown report and the model's own Observation text, but
-    never the styled terminal output at all.
+    line -- NOT a panel. correlate_findings's missing_inputs/input_errors/
+    staleness_warning fields reach the raw JSON/Markdown report and the
+    model's own Observation text, but need their own rendering here to
+    also reach the styled terminal output.
 
     Deliberately minimal, per design principle 3 (one clear focal point):
     only a populated field gets a line -- a clean result adds nothing, no
@@ -336,8 +326,8 @@ def render_result_panel(console: Console, title: str, body: str, border_style: s
 
 
 def render_evolve_suggestion(console: Console, name: str, description: str) -> None:
-    """Evo-loop auto-suggest (2026-07-18) -- agent/loop.py's structured
-    tool_proposal signal, rendered here. ATTENTION (amber), matching this
+    """Evo-loop auto-suggest -- renders agent/loop.py's structured
+    tool_proposal signal. ATTENTION (amber), matching this
     palette's existing "nothing failed, a decision is available" use of
     that color elsewhere (render_note's own default style) -- distinct
     from SAFE (nothing to decide) and FAILURE (something's actually
@@ -357,9 +347,8 @@ def render_evolve_harness_template(
     console: Console, template_text: str, suggested_path: Path, drafted: bool = False
 ) -> None:
     """cli/repl.py::_resolve_evolve_test_file's starter-scaffold display,
-    shown when the suggested/given pytest harness path doesn't exist --
-    2026-07-28 UX fix, real complaint: the old "create it first" message
-    left a user with nothing concrete to start from. word_wrap=True
+    shown when the suggested/given pytest harness path doesn't exist, so a
+    user isn't left with nothing concrete to start from. word_wrap=True
     (unlike render_target_setup_checklist's own word_wrap=False): this is
     Python source meant to be READ and copied into an editor via normal
     text selection, not typed character-by-character into a shell, so the
@@ -368,8 +357,8 @@ def render_evolve_harness_template(
     "default") shape render_approval_situation already uses for source
     display. Never implies this should be saved as-is -- title and (for the
     plain template) the template's own TODO comments both say so.
-    `drafted=True` (added the same day, LLM-drafted harness review flow):
-    same rendering, a louder title making clear this is unreviewed AI
+    `drafted=True` (LLM-drafted harness review flow): same rendering, a
+    louder title making clear this is unreviewed AI
     output specifically, not this project's usual generic "starter
     template" framing -- the reviewer's attention should go to whether the
     model's assumed interface/assertions are actually right, not just
@@ -390,8 +379,8 @@ def render_evolve_harness_template(
 def render_target_setup_checklist(console: Console, checklist_text: str) -> None:
     """adapters/target_setup.py::generate_target_setup_checklist's output --
     copy-pasteable shell commands for a HUMAN to run ON the target. Kratos
-    never runs these itself (see CLAUDE.md's permanent boundary on target
-    execution) -- this function only ever prints text, same as every other
+    never runs these itself (see docs/DESIGN.md's "Execution boundary"
+    section) -- this function only ever prints text, same as every other
     render_* helper in this module. Syntax-highlighted like the evo-loop
     approval panel's source-code display (render_approval_situation), but
     word_wrap=False, deliberately different from that panel's own
@@ -428,7 +417,7 @@ def render_target_probe_results(console: Console, checks: list[dict[str, str]]) 
 
 
 def render_evolve_tool_list(console: Console, rows: list[dict[str, Any]]) -> None:
-    """/evolve list (2026-07-28) -- lets a user browse everything already
+    """/evolve list -- lets a user browse everything already
     reachable by the agent (built-in + kept) BEFORE picking a name for a
     new tool, instead of only discovering a naming collision after the
     fact via _check_evolve_name_collision's warning. Read-only, same plain
@@ -461,11 +450,10 @@ def render_session_summary(console: Console, events: list[str]) -> None:
 
 
 # Reference to the currently-running "thinking" spinner, if any. A Rich Live
-# animating at 8fps ON TOP OF a blocking input() clobbers the typed line -- the
-# confirmed cause of the approval prompt "I can only press Enter, can't type y"
-# bug (same class as the /evolve spinner corruption noted in CLAUDE.md). Every
-# approval gate funnels through render_approval_situation, which stops this
-# before the prompt so input() gets a clean, static terminal.
+# animating at 8fps ON TOP OF a blocking input() clobbers the typed line --
+# see docs/DESIGN.md's "REPL implementation notes" section. Every approval
+# gate funnels through render_approval_situation, which stops this before
+# the prompt so input() gets a clean, static terminal.
 _ACTIVE_SPINNER: "Live | None" = None
 
 

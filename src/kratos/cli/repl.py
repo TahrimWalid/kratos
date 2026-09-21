@@ -1,6 +1,5 @@
 """
-Sprint 3 -- interactive session mode (REPL).
-Reference: docs/sprint3_interactive_session_mode_design.md (approved).
+Interactive session mode (REPL).
 
 Entry point called from cli/app.py::main() on bare `kratos` (no args) only --
 `kratos investigate "<goal>"` and every other shell subcommand are completely
@@ -12,13 +11,13 @@ control flow, or agent/tools.py::request_approval's rendering logic (it's
 called exactly as cmd_investigate already calls it, via the same
 run_agent()/execute_tool_call() path).
 
-Slash-equivalents for deterministic subcommands (§3) are thin wrappers: they
+Slash-equivalents for deterministic subcommands are thin wrappers: they
 build a synthetic argv list and parse it through the REAL build_parser(),
 then call the REAL args.func(args) -- the same parsing path a shell
 invocation uses, not a hand-built Namespace that could drift from the real
 subparser definitions over time. This is what makes "byte-identical output
-to the shell subcommand" (design doc §9 verification item 3) structurally
-guaranteed rather than something that has to be separately kept in sync.
+to the shell subcommand" structurally guaranteed rather than something that
+has to be separately kept in sync.
 """
 from __future__ import annotations
 
@@ -194,17 +193,17 @@ _SHORTCUT_TO_SUBCOMMAND = {
 
 TRANSCRIPTS_DIRNAME = "sessions"
 
-# Real fix (2026-07-17): was hardcoded to 9 everywhere the chooser/archived-
-# view fetched sessions, tied to the old single-digit-only "[1-9] pick a
-# session" affordance. Digit-based selection (`choice.isdigit() and 1 <=
-# int(choice) <= len(sessions)`) already generalizes to multi-digit numbers
-# fine -- raising this and making the footer text reflect the real count
-# (see _render_chooser/_render_archived_chooser) needed no other selection-
-# logic changes. "Reasonable", not exhaustively paginated -- see the real
-# incident this responds to (CLAUDE.md, chooser-junk-input fix): a session
-# shouldn't become unreachable through normal use just because a handful of
-# newer rows exist, but full pagination is more machinery than today's
-# actual scale (single-digit session counts) justifies.
+# Was hardcoded to 9 everywhere the chooser/archived-view fetched sessions,
+# tied to an old single-digit-only "[1-9] pick a session" affordance.
+# Digit-based selection (`choice.isdigit() and 1 <= int(choice) <=
+# len(sessions)`) already generalizes to multi-digit numbers fine -- raising
+# this and making the footer text reflect the real count (see
+# _render_chooser/_render_archived_chooser) needed no other selection-logic
+# changes. "Reasonable", not exhaustively paginated -- see docs/DESIGN.md's
+# "REPL implementation notes" section for why: a session shouldn't become
+# unreachable through normal use just because a handful of newer rows
+# exist, but full pagination is more machinery than today's actual scale
+# (single-digit session counts) justifies.
 CHOOSER_SESSION_LIMIT = 20
 
 # REPL polish (kratos_repl_polish mockup, 2026-07-17) -- completion-menu
@@ -292,26 +291,25 @@ def _timestamp_line(console, label: str, when: datetime | None = None) -> None:
     replayed chat reply must show when it actually happened, not the
     current resume time.
 
-    ACCENT-colored (2026-07-17, real user report): every call site here
-    passes literally "kratos:" -- this is Kratos's own response line, and
-    before this fix it rendered in plain bold with no color at all, making
-    it visually indistinguishable from the "kratos> "-prefixed input line a
-    user had just typed on the line above (same word, same weight, no
-    color difference -- no way to tell who said what at a glance, unlike
-    Claude Code's own clearly-differentiated turns). The input prompt was
-    renamed away from "kratos> " to "you> " in the same pass (see
-    run_session's main loop) so the "kratos" word/color is now reserved
-    for Kratos's own voice exclusively."""
+    ACCENT-colored: every call site here passes literally "kratos:" --
+    this is Kratos's own response line. Rendering it in plain bold with no
+    color made it visually indistinguishable from the "kratos> "-prefixed
+    input line a user had just typed on the line above (same word, same
+    weight, no color difference -- no clearly-differentiated turn
+    boundaries, no way to tell who said what at a glance). The input
+    prompt was renamed away from "kratos> " to "you> " in the same pass
+    (see run_session's main loop) so the "kratos" word/color is now
+    reserved for Kratos's own voice exclusively."""
     _print_trailing_timestamp(console, f"[bold {_console.ACCENT}]{label}[/bold {_console.ACCENT}]", when=when)
 
 
 _TOOLBAR_BG = "#1a1d23"
 
-# 2026-07-17, real user report: the input prompt used to read "kratos> ",
-# the exact same word Kratos's own response lines use ("kratos:", see
-# _timestamp_line) -- no visual distinction at all between "what you typed"
-# and "what Kratos said", unlike Claude Code's own clearly-differentiated
-# turns. Renamed to "you> ", styled distinctly (TEXT_SECONDARY, muted) so
+# The input prompt used to read "kratos> ", the exact same word Kratos's
+# own response lines use ("kratos:", see _timestamp_line) -- no visual
+# distinction at all between "what you typed" and "what Kratos said", no
+# clearly-differentiated turn boundaries. Renamed to "you> ", styled
+# distinctly (TEXT_SECONDARY, muted) so
 # "kratos" as a word/color is now reserved exclusively for Kratos's own
 # voice. Used everywhere a user's own input is echoed or replayed --
 # the live prompt, the pending-input echo, and full-tier resume replay.
@@ -350,19 +348,18 @@ def _toolbar_fragments(session_state: dict[str, Any]) -> FormattedText:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 / 5 -- chooser + tiered resume
+# Session chooser + tiered resume
 # ---------------------------------------------------------------------------
 
 def _build_sessions_table(sessions: list[dict[str, Any]]):
-    """Real fix (2026-07-17): added the ID column. Real incident this
-    responds to -- a user couldn't tell which chooser row was which real
-    session (no way to cross-check a row against the "Resume <id>:" prompt
-    that appears one step later), which was part of what made a mistyped
-    menu selection ("f", meant for the resume-tier prompt) confusing rather
-    than immediately diagnosable. Shows the FULL session_id (12 hex chars,
-    see SessionStore.create_session) rather than a truncated prefix -- a
-    truncated ID that LOOKS like a real match but isn't defeats the entire
-    point of this column. Name column added 2026-07-18 (/rename) -- shows
+    """Includes an ID column so a user can tell which chooser row is which
+    real session -- without it, there's no way to cross-check a row against
+    the "Resume <id>:" prompt that appears one step later, which makes a
+    mistyped menu selection ("f", meant for the resume-tier prompt)
+    confusing rather than immediately diagnosable. Shows the FULL session_id
+    (12 hex chars, see SessionStore.create_session) rather than a truncated
+    prefix -- a truncated ID that LOOKS like a real match but isn't defeats
+    the entire point of this column. Name column (/rename) -- shows
     `s["name"]` if set, a dim placeholder if not; `s["name"]` is always a
     real dict key here since every SessionStore query builds these dicts
     via `SELECT *`, so a NULL name just becomes None, never a missing key."""
@@ -638,20 +635,19 @@ def _choose_session(console, store: SessionStore, data_dir: Path) -> tuple[str, 
 def _resolve_resume_tier(
     console, store: SessionStore, session: dict[str, Any], data_dir: Path
 ) -> tuple[str, str | None]:
-    # Real bug found and fixed during verification: LLAMA_N_CTX is a STATIC
-    # default (6144) that exists regardless of which backend is actually
-    # active -- it only means anything on the direct llama_cpp in-process
-    # load path. OR-ing it in here made this warning fire unconditionally,
-    # confirmed via a real test with Gemini active (LLM_OPENAI_MODEL ==
-    # "gemini-2.5-pro") where the "local small-context backend" warning
-    # still incorrectly appeared. Design doc §7 specifically calls out "the
-    # local qwen2.5:7b / 6144-context backend" as the one to warn about --
-    # keying off the actually-resolved model name alone is the correct,
-    # non-guessed check. get_active_llm_model() (2026-07-18, /model) --
-    # not the frozen LLM_OPENAI_MODEL import -- since /delete's chooser-
-    # restart loop can reach this resume-tier prompt again, in the SAME
-    # process, after a mid-session /model switch; the frozen import would
-    # silently keep reporting the process's STARTUP model forever.
+    # LLAMA_N_CTX is a STATIC default (6144) that exists regardless of
+    # which backend is actually active -- it only means anything on the
+    # direct llama_cpp in-process load path, so OR-ing it into this check
+    # would make the "local small-context backend" warning fire
+    # unconditionally, including with a hosted backend active. This
+    # specifically warns about the local qwen2.5:7b / 6144-context backend
+    # -- keying off the actually-resolved model name alone is the correct,
+    # non-guessed check. Reads via get_active_llm_model() -- not a frozen
+    # LLM_OPENAI_MODEL import -- since /delete's chooser-restart loop can
+    # reach this resume-tier prompt again, in the SAME process, after a
+    # mid-session /model switch; a frozen import would silently keep
+    # reporting the process's STARTUP model forever (see docs/DESIGN.md's
+    # "Live-switchable settings" section).
     is_local_small_context = get_active_llm_model() == "qwen2.5:7b"
 
     from rich.markup import escape
@@ -934,15 +930,13 @@ def _cmd_help(console, **_: Any) -> None:
 
 
 def _cmd_clear(console, session_state: dict[str, Any], **_: Any) -> None:
-    """Narrow, non-destructive by design and by audit (2026-07-17): resets
-    ONLY session_state['resume_context'], the in-memory running-summary
-    string _run_investigate_turn/_log_chat_turn/_handle_goal thread into
-    each new turn for continuity. Confirmed via real code audit + a real
-    PTY session (a few real turns, /clear, then checking the terminal and
-    the DB) that this has NEVER touched anything else: it takes no `store`
-    argument, so it cannot reach goal_history, and nothing in this module
-    ever issues a screen-clear escape sequence, so prior visible output
-    stays on screen untouched. Frees up context-window budget for new work
+    """Narrow and non-destructive by design: resets ONLY
+    session_state['resume_context'], the in-memory running-summary string
+    _run_investigate_turn/_log_chat_turn/_handle_goal thread into each new
+    turn for continuity. It takes no `store` argument, so it cannot reach
+    goal_history, and nothing in this module ever issues a screen-clear
+    escape sequence, so prior visible output stays on screen untouched.
+    Frees up context-window budget for new work
     -- that's the whole job. For a full session-DATA reset (archives the
     stored history too, session presents as blank going forward), see
     /reset (_cmd_reset) below; for archiving the session itself, see
@@ -991,7 +985,8 @@ def _cmd_delete(console, session_state: dict[str, Any], store: SessionStore, **_
     """Soft-deletes ONLY the currently running session -- never another
     session in the DB (deleting arbitrary other sessions from the chooser
     is a reasonable future idea but explicitly out of scope here, see
-    CLAUDE.md backlog). Requires confirmation, no force-accept (same
+    docs/DESIGN.md's "REPL implementation notes" section). Requires
+    confirmation, no force-accept (same
     request_approval reuse as _cmd_reset). On confirm: marks
     sessions.status='archived' (row and all its history retained, never
     removed), sets session_state['restart_chooser'] = True so the caller
@@ -1042,14 +1037,13 @@ def _run_target_probe(console) -> None:
 
 def _show_target_setup(console, target_host: str) -> None:
     """Shown whenever a NEW target is set (/target <ip>, or the first-run
-    wizard's target step) -- 2026-07-18, real gap found and fixed: neither
-    of those paths validated or explained anything before this existed
-    (confirmed via a real audit: not even IP/hostname format checking).
+    wizard's target step). Neither of those paths validated or explained
+    anything before this existed -- not even IP/hostname format checking.
     Prints the copy-pasteable setup checklist, then immediately probes what
     already works -- so a freshly-added target that hasn't been set up yet
     shows exactly what's still missing, and a target set up correctly ahead
-    of time (e.g. today's dev/test Incus container) shows all-PASS with no
-    extra ceremony."""
+    of time (e.g. a local dev/test container) shows all-PASS with no extra
+    ceremony."""
     from kratos.adapters import target_setup as _target_setup
 
     checklist = _target_setup.generate_target_setup_checklist(target_host)
@@ -1141,51 +1135,43 @@ def _cmd_rename(console, session_state: dict[str, Any], store: SessionStore, arg
 
 
 # ---------------------------------------------------------------------------
-# Evo-loop (/evolve) -- Sprint 3, 2026-07-18
+# Evo-loop (/evolve)
 #
 # "Evo-loop" is the user-facing name for agent/self_write_loop.py::
-# run_self_write_loop() (Sprint 2's write -> sandbox test -> human-approve
-# -> keep pipeline). Internal module/function names (self_write.py,
+# run_self_write_loop() (see docs/DESIGN.md's "Self-writing tool loop"
+# section for the write -> sandbox test -> human-approve -> keep pipeline
+# this wires into the REPL). Internal module/function names (self_write.py,
 # self_test.py, self_approve.py, self_write_loop.py, run_self_write_loop)
-# are UNCHANGED per this task's own scope -- terminology-only rename,
-# user-facing strings only.
+# stay unchanged -- this is a terminology-only rename, user-facing strings
+# only.
 #
-# Step 1 audit finding (2026-07-18, confirmed before writing any of this):
-# run_self_write_loop() had exactly ONE caller in the whole repo --
-# scripts/dev/run_self_write_count_failed_ssh_attempts.py, a standalone
-# throwaway dev script, not wired into `kratos investigate` or the REPL.
-# CLAUDE.md's repeated "no caller anywhere in the codebase" note was still
-# accurate at the moment this was written. This section is the first real
-# wiring of that pipeline into a live entry point.
+# WriteRequest.test_file (agent/self_write.py) is a REQUIRED, human-authored
+# pytest harness, not something any code path can synthesize from a
+# plain-language idea -- every real kept tool this project has ever
+# produced needed one hand-written first. /evolve deliberately does NOT
+# auto-generate one: doing so would weaken the one part of this pipeline
+# that actually defines "correct", undermining the adversarial hardening
+# built specifically around trusting real, human-authored tests. See
+# _resolve_evolve_test_file.
 #
-# Second Step 1 finding, not anticipated by the original task spec:
-# WriteRequest.test_file (agent/self_write.py) is a REQUIRED,
-# human-authored pytest harness, not something any existing code path can
-# synthesize from a plain-language idea -- every real kept tool this
-# project has ever produced (count_failed_sudo_attempts,
-# count_failed_ssh_attempts) needed one hand-written first. /evolve
-# deliberately does NOT auto-generate one: doing so would weaken the one
-# part of this pipeline that actually defines "correct", undermining the
-# adversarial hardening Phase 3b specifically built around trusting real,
-# human-authored tests. See _resolve_evolve_test_file.
-#
-# Third Step 1 finding: agent/console.py::render_approval_situation
-# already auto-detects test-summary-shaped and code-like text generically
-# from whatever `details` dict a caller passes it -- self_approve.py's own
+# agent/console.py::render_approval_situation already auto-detects
+# test-summary-shaped and code-like text generically from whatever
+# `details` dict a caller passes it -- self_approve.py's own
 # _prompt_for_keep_decision already builds a details dict with the full
-# source (syntax-highlighted) and sub-test results (rendered as a table).
-# No new rendering was needed for the write/sandbox-test/approval stages
-# themselves -- confirmed by reading that code, not assumed. This section
-# only adds the auto-suggest panel (agent/console.py::render_evolve_suggestion,
-# for agent/loop.py's tool_proposal signal) and a closing outcome summary.
+# source (syntax-highlighted) and sub-test results (rendered as a table),
+# so no new rendering is needed for the write/sandbox-test/approval stages
+# themselves. This section only adds the auto-suggest panel
+# (agent/console.py::render_evolve_suggestion, for agent/loop.py's
+# tool_proposal signal) and a closing outcome summary.
 # ---------------------------------------------------------------------------
 
 # Evo-loop's pure, UI-agnostic helpers (name slugging/suggestion, harness
-# drafting + static template) now live in the agent layer so the guided-build
-# core (agent/guided_evolve.py) and A2 s5.6 Stage 3 can share them without a
-# cli dependency. Re-exported here so this module's own interactive helpers
-# (_resolve_evolve_tool_name / _resolve_evolve_test_file) and the existing
-# tests that patch `kratos.cli.repl.<name>` keep resolving unchanged.
+# drafting + static template) live in the agent layer so the guided-build
+# core (agent/guided_evolve.py) and the conversational pipeline-drafting
+# flow can share them without a cli dependency. Re-exported here so this
+# module's own interactive helpers (_resolve_evolve_tool_name /
+# _resolve_evolve_test_file) and the existing tests that patch
+# `kratos.cli.repl.<name>` keep resolving unchanged.
 from kratos.agent.guided_evolve import (  # noqa: E402
     _EVOLVE_SLUG_MAX_WORDS,
     _slugify_name_hint,
@@ -1501,21 +1487,17 @@ def _cmd_evolve(console, session_state: dict[str, Any], arg_text: str, **_: Any)
     )
     request = WriteRequest(goal=goal, test_file=test_file)
 
-    # Real bug found and fixed during verification (2026-07-18): a Rich
-    # Live spinner wrapping the WHOLE run_self_write_loop() call visibly
-    # corrupted the approval prompt -- run_self_write_loop() has no
-    # progress callback (confirmed via a real Step 1 audit; adding one
-    # would mean changing its signature, out of scope), so there's no way
-    # to know from outside when the silent write/sandbox-test phase ends
-    # and the INTERACTIVE approval phase (a blocking input() inside
-    # request_keep_approval) begins. A Live display actively re-rendering
-    # at 8fps while that blocking input() is also reading the same
-    # terminal is a real, confirmed conflict, not a hypothetical one --
-    # caught by a real end-to-end run showing the approval prompt's own
-    # text getting overwritten by the spinner. No spinner at all is the
-    # correct fix here, not a smarter one: plain, static status text
-    # before the call, then the call blocks normally with nothing else
-    # competing for the terminal.
+    # A Rich Live spinner wrapping the WHOLE run_self_write_loop() call
+    # would visibly corrupt the approval prompt -- run_self_write_loop()
+    # has no progress callback (adding one would mean changing its
+    # signature), so there's no way to know from outside when the silent
+    # write/sandbox-test phase ends and the INTERACTIVE approval phase (a
+    # blocking input() inside request_keep_approval) begins. A Live display
+    # actively re-rendering at 8fps while that blocking input() is also
+    # reading the same terminal overwrites the approval prompt's own text.
+    # No spinner at all is the correct fix here, not a smarter one: plain,
+    # static status text before the call, then the call blocks normally
+    # with nothing else competing for the terminal.
     outcome = run_self_write_loop(request)
 
     session_state["pending_evolve_suggestion"] = None
@@ -1942,20 +1924,21 @@ def _process_input(
 
 
 def _run_first_run_wizard(console, data_dir: Path) -> bool:
-    """First-run trust + default-target setup (Sprint 3, 2026-07-16).
+    """First-run trust + default-target setup.
 
     "trusted" in the directory-scoped local config file is the SOLE gate for
-    the whole wizard (both steps) -- matches Claude Code's own pattern: once
-    trust is granted, never re-ask, even if the target step was left blank
-    that first time. There is deliberately no separate mechanism to re-run
-    just the target step later; /target (session-scoped) or hand-editing
-    kratos_local_config.json cover that.
+    the whole wizard (both steps) -- a trust-once-then-don't-re-ask pattern:
+    once trust is granted, never re-ask, even if the target step was left
+    blank that first time. There is deliberately no separate mechanism to
+    re-run just the target step later; /target (session-scoped) or
+    hand-editing kratos_local_config.json cover that.
 
     Trust is persisted IMMEDIATELY on "yes", write-through, before the
-    target step even starts -- Claude Code itself has had real, reported
-    bugs where a trust decision failed to persist across launches; don't
-    assume a single end-of-wizard write is safe, test the two-launch case
-    for real (see the verification test).
+    target step even starts -- a trust decision that only gets written at
+    the end of the wizard risks not persisting if the process exits or
+    crashes mid-wizard; don't assume a single end-of-wizard write is safe,
+    the two-launch case needs its own test coverage (see the verification
+    test).
 
     Returns False if the user declined trust (caller must exit without
     proceeding to the chooser); True otherwise (wizard completed, was
@@ -2216,8 +2199,9 @@ def _run_one_session(
             # actual LLM/tool calls) is the useful behavior; ending the
             # session on purpose is /exit's job, not an accidental
             # double-tap of the same key. Matches standard REPL convention
-            # (bash, Python's own REPL, Claude Code): Ctrl+C at an empty
-            # prompt cancels the current line and reprompts, it doesn't exit.
+            # (bash, Python's own REPL, and most interactive CLI tools):
+            # Ctrl+C at an empty prompt cancels the current line and
+            # reprompts, it doesn't exit.
             console.print()
             continue
 

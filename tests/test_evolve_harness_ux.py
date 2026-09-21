@@ -1,10 +1,10 @@
 """
-Scripted tests for the /evolve harness-file UX fixes (2026-07-28), prompted
+Scripted tests for the /evolve harness-file UX fixes, prompted
 by real user complaints: a long free-text /evolve idea produced an
 absurdly long suggested filename (the whole sentence slugified), hitting
 "file not found" left the user with no concrete starting point, and even
 the static starter template still meant hand-writing every real assertion
-from a blank slate ("it should be as easy as asking Claude Code to create
+from a blank slate ("it should be as easy as asking an assistant to create
 a function").
 
 Four fixes, all covered here:

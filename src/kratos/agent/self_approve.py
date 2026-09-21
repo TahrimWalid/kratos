@@ -1,38 +1,36 @@
 """
-Sprint 2 self-writing loop -- APPROVAL-TO-KEEP step only (Part C of
-write -> test -> human-approve -> keep, per docs/sprint2_self_writing_loop_design.md
-and our follow-up decisions on this gate specifically).
+Self-writing tool loop -- APPROVAL-TO-KEEP step only (Part C of
+write -> test -> human-approve -> keep; see docs/DESIGN.md's "Self-writing
+tool loop" section for the full pipeline).
 
 Takes a Part A staged candidate + its Part B SandboxTestResult, and asks the
 human ONE question at a time via agent/tools.py::request_approval (reused
 unmodified, not replaced) -- first whether to keep the candidate at all,
 then (only if kept) whether it should require per-call approval on future
-invocations. Returns a structured KeepDecision. Does NOT write to
-TOOL_REGISTRY, does not move the candidate out of staging, does not persist
-anything beyond the returned decision record -- that's Part D's job
-(registry persistence), which doesn't exist yet.
+invocations. Returns a structured KeepDecision. Does not write to
+TOOL_REGISTRY, does not move the candidate out of staging, and does not
+persist anything beyond the returned decision record -- that's Part D's
+job (agent/self_write_loop.py).
 
 Two decisions this module makes, and why:
 
-1. No force-accept, ever, on the keep decision. Unlike the 3 structural
-   final_answer guards in agent/loop.py (which force-accept after ~2
-   retries with a [NOTE:...] tag once a bounded budget is exhausted -- an
-   acceptable tradeoff for a one-off report conclusion), a keep decision
-   persists a NEW CAPABILITY into the tool registry. An unanswered, denied,
-   or interrupted approval-to-keep prompt always resolves to permanent
-   reject -- no retry budget, no eventual auto-accept path. See
-   docs/sprint2_self_writing_loop_design.md Sec 5 for the full reasoning;
-   this module just implements it.
+1. No force-accept, ever, on the keep decision. Unlike the structural
+   final_answer guards in agent/loop.py (which force-accept after a
+   bounded retry budget with an explicit inline note -- an acceptable
+   tradeoff for a one-off report conclusion), a keep decision persists a
+   new capability into the tool registry. An unanswered, denied, or
+   interrupted approval-to-keep prompt always resolves to permanent
+   reject -- no retry budget, no eventual auto-accept path.
 
-2. Per-tool requires_approval, decided HERE at keep-time (like Claude
-   Code's per-tool permission model), not a global setting and not
-   hardcoded. Framed as an INVERTED question ("allow this to run WITHOUT
-   approval?") specifically so request_approval's existing fail-safe
-   behavior (anything other than an exact 'y' -- including no input,
-   EOFError, or KeyboardInterrupt -- resolves to False) does the right
-   thing for free: a non-'y' answer to "allow unattended?" means
-   requires_approval=True, the correct fail-safe default, with ZERO changes
-   to request_approval's own code. See _ask_requires_approval.
+2. Per-tool requires_approval is decided here, at keep time, as an
+   explicit question -- not a global setting and not hardcoded. Framed as
+   an inverted question ("allow this to run without approval?")
+   specifically so request_approval's existing fail-safe behavior
+   (anything other than an exact 'y' -- including no input, EOFError, or
+   KeyboardInterrupt -- resolves to False) does the right thing for free:
+   a non-'y' answer to "allow unattended?" means requires_approval=True,
+   the correct fail-safe default, with zero changes to request_approval's
+   own code. See _ask_requires_approval.
 
 The refusal gate (Sec 2 of the task this module implements) is structural,
 not conventional: request_keep_approval computes the refusal reason FIRST,
@@ -70,13 +68,13 @@ from kratos.agent.self_review_flags import (
 )
 from kratos.agent.self_smoke import smoke_test_available, run_live_smoke_test, SmokeResult
 
-# Phase 3b.7: shown verbatim on EVERY approval prompt, not just as a design-
-# doc note -- directly encodes the two real, confirmed lessons from Phase
-# 3b.2 (hardcoded IP silently reclassifying events, undisclosed in the
-# description) and 3b.3 case 3 (an ordinary, non-adversarial goal produced
-# an invented, overfit filter heuristic that was honestly disclosed but
-# whose description overstated its reliability). Deliberately guidance, not
-# a gate -- see this module's no-force-accept design; nothing here blocks.
+# Shown verbatim on EVERY approval prompt. Encodes two lessons learned from
+# adversarial review testing: a hardcoded IP can silently reclassify events
+# with the behavior undisclosed in the tool's own description, and an
+# ordinary, non-adversarial goal can still produce an invented, overfit
+# filter heuristic that's honestly disclosed but whose description
+# overstates its reliability. Deliberately guidance, not a gate -- see this
+# module's no-force-accept design; nothing here blocks.
 REVIEWER_GUIDANCE = (
     "Any invented filter/suppression heuristic should be distrusted regardless of how "
     "well-commented it is -- verify it matches what the tool's description claims, not just what "
@@ -86,9 +84,8 @@ REVIEWER_GUIDANCE = (
 
 _SUBTEST_LINE_RE = re.compile(r'^.*::\S+\s+(PASSED|FAILED|ERROR|SKIPPED)\b.*$', re.MULTILINE)
 
-# Display-only cap (this module's own choice for Phase 2 -- the design doc
-# deferred the exact value). Larger than agent/loop.py's OBSERVATION_CHAR_CAP
-# (1500) since a code review needs more room than a tool observation does.
+# Display-only cap. Larger than agent/loop.py's OBSERVATION_CHAR_CAP (1500)
+# since a code review needs more room than a tool observation does.
 DISPLAY_CHAR_CAP = 4000
 
 
@@ -304,15 +301,15 @@ def _prompt_for_keep_decision(
     source_code = candidate_path.read_text(encoding="utf-8")
     label = tool_name
 
-    # Phase 3b.7: a coarse, non-blocking static pre-scan surfaced BEFORE the
-    # raw source -- directs attention, never replaces reading the full
-    # source below (which stays complete and unredacted, unchanged from
-    # before this phase). See agent/self_review_flags.py for what each
-    # check looks for and why; see REVIEWER_GUIDANCE above for the
-    # accompanying textual guidance shown on every prompt.
+    # A coarse, non-blocking static pre-scan surfaced BEFORE the raw
+    # source -- directs attention, never replaces reading the full source
+    # below (which stays complete and unredacted). See
+    # agent/self_review_flags.py for what each check looks for and why;
+    # see REVIEWER_GUIDANCE above for the accompanying textual guidance
+    # shown on every prompt.
     review_flags = scan_review_flags(source_code)
 
-    # A7 optional live-target smoke test: offered (opt-in) BEFORE the keep
+    # Optional live-target smoke test: offered (opt-in) BEFORE the keep
     # decision, for a target-facing candidate with a real target. Its result is
     # folded into the keep details below so the human decides WITH the live
     # evidence in hand. Skipped/declined -> None -> the keep prompt is unchanged.
@@ -395,9 +392,8 @@ def request_keep_approval(
             test_result=test_result, attempt_history=attempt_history,
         )
 
-    # Phase 3b.6 (Case 3 fix): request_approval's OWN try/except (agent/
-    # tools.py) only wraps its input() call -- confirmed via a real SIGINT
-    # (Phase 3b.5) that an interrupt landing EARLIER, e.g. during
+    # request_approval's OWN try/except (agent/tools.py) only wraps its
+    # input() call -- an interrupt landing EARLIER, e.g. during
     # _prompt_for_keep_decision's print() calls before input() is ever
     # reached, propagates as an uncaught KeyboardInterrupt instead of
     # resolving to a denial. Deliberately fixed HERE, one level up, rather

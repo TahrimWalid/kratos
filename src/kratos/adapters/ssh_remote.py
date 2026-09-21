@@ -8,18 +8,17 @@ are fixed and parameterized (never an arbitrary caller-supplied shell
 string) -- the same trust class as adapters/nmap_scan.py, not the generic
 command-runner tool.
 
-run_remote_command/run_remote_script below are deliberately NEVER wrapped as
-their own agent-callable @register_tool, and that is permanent, not a "just
-needs wrapping" TODO -- see CLAUDE.md's "Permanent boundary: Kratos never
-executes or changes state on the monitored target" for the full rationale.
-Kratos must never have the capability to autonomously execute commands or
-change state on the target, in any form, generic or narrowly-scoped, even
-behind human approval-gating. These two functions exist ONLY to be called
-internally by other tools' fixed, read-only actions (journalctl, file
-hashes, config audit, etc.) -- every one of which only ever reads state,
-never changes it. Do not add a general-purpose "run this command on the
-target" tool on top of these; that would violate the boundary regardless of
-how the tool is scoped or gated.
+run_remote_command/run_remote_script below are deliberately never wrapped as
+their own agent-callable @register_tool, and that's a permanent boundary,
+not a "just needs wrapping" TODO -- see docs/DESIGN.md's "Execution
+boundary" section for the full rationale. Kratos must never have the
+capability to autonomously execute commands or change state on the target,
+in any form, generic or narrowly-scoped, even behind human approval-gating.
+These two functions exist only to be called internally by other tools'
+fixed, read-only actions (journalctl, file hashes, config audit, etc.) --
+every one of which only ever reads state, never changes it. Don't add a
+general-purpose "run this command on the target" tool on top of these; that
+would violate the boundary regardless of how the tool is scoped or gated.
 """
 from __future__ import annotations
 
@@ -50,8 +49,7 @@ def _journalctl_prefix() -> list[str]:
     via the module itself, not a `from...import`-frozen copy -- a plain
     `from kratos.kratos_config import JOURNALCTL_USE_SUDO` binds the value at
     import time and would never see a later `monkeypatch.setattr(kratos_config,
-    ...)` (a real bug class this project already hit and fixed twice for
-    live-switchable settings -- see /model and /target in CLAUDE.md). No live
+    ...)` (see docs/DESIGN.md's "Live-switchable settings" section). No live
     REPL command flips this flag today, but there's no reason to reintroduce
     the same footgun for a value tests need to toggle mid-process."""
     return ["sudo", "-n"] if _kconfig.JOURNALCTL_USE_SUDO else []
@@ -272,25 +270,22 @@ def fetch_journalctl_auth_entries(
     Fetches sshd + sudo journal entries from the target over SSH, mirroring
     adapters/auth_log_parse.py::collect_journald_lines's local equivalent
     (two separate _COMM-filtered queries) instead of a generic recent-N-
-    entries scan -- a generic scan can be crowded out entirely by unrelated
-    service noise on a busy target (confirmed in Kratos's own live
-    attack-detection testing: a 200-entry general query returned mostly
-    systemd startup noise, zero sshd lines).
+    entries scan -- a generic scan on a busy target gets crowded out by
+    unrelated service noise (systemd startup chatter, etc.) before it ever
+    reaches an sshd or sudo line.
 
-    `since` (real fix, 2026-07-17): a journalctl `--since` value (e.g. "24
-    hours ago"), applied to BOTH per-identifier queries alongside the
-    existing `-n` line cap -- journalctl combines the two as "the most
-    recent N entries since <since>", the same semantic
-    fetch_journalctl_entries already uses for the model's own primary
-    query. None (the default) preserves the exact prior behavior --
-    unscoped, most-recent-N-lines-only -- so a goal with no stated time
-    window is unaffected. Real incident this closes: a user asked "how many
-    sudo activities in the last 24 hours" and read_journalctl's PRIMARY
-    query correctly honored `since="24 hours ago"`, but this auth-
-    correlation fetch (triggered as this same tool call's background
-    side-effect, feeding correlate_findings) always ignored `since`
-    entirely, silently correlating a ~500-line snapshot of unknown real
-    age against a question specifically about the last 24 hours.
+    `since`: a journalctl `--since` value (e.g. "24 hours ago"), applied to
+    both per-identifier queries alongside the existing `-n` line cap --
+    journalctl combines the two as "the most recent N entries since
+    <since>", the same semantic fetch_journalctl_entries already uses for
+    the primary query. None (the default) preserves unscoped,
+    most-recent-N-lines-only behavior, so a goal with no stated time window
+    is unaffected. This exists because this fetch runs as a background
+    side-effect of every read_journalctl call (feeding correlate_findings)
+    independently of the tool's own primary query -- without threading
+    `since` through here too, a caller-scoped primary query (e.g. "last 24
+    hours") would still silently correlate against an unscoped, unknown-age
+    snapshot underneath it.
 
     Returns (entries, errors):
     - entries: (timestamp, identifier, message) tuples, ready for
@@ -646,12 +641,10 @@ _YARA_STRING_MATCH_RE = re.compile(r"^0x[0-9a-fA-F]+:")
 
 def _parse_yara_output(stdout: str) -> list[dict[str, Any]]:
     """
-    Parses `yara -s` output. Confirmed by real inspection (not assumed from
-    docs): string-match lines ("0xOFFSET:$id: matched content") have NO
-    leading whitespace in this yara version's output -- an earlier version
-    of this parser assumed indentation distinguished a rule-match line
-    ("RuleName /matched/path") from a string-match line, which real output
-    disproved immediately (both start at column 0). The reliable
+    Parses `yara -s` output. String-match lines ("0xOFFSET:$id: matched
+    content") carry no leading whitespace in this yara version's output, so
+    indentation can't be used to distinguish them from a rule-match line
+    ("RuleName /matched/path") -- both start at column 0. The reliable
     distinguisher instead: a YARA rule identifier can never start with
     "0x" (identifiers must start with a letter or underscore), so a line
     matching ^0x[hex]: is always a string-match continuation of the most
@@ -681,9 +674,9 @@ def _parse_yara_output(stdout: str) -> list[dict[str, Any]]:
 
 def fetch_yara_scan(scan_path: str, rules_content: str) -> SSHResult | list[dict[str, Any]]:
     """
-    Runs `yara` ON THE TARGET (must be installed there -- see CLAUDE.md
-    operational facts) against scan_path, a path that already exists on the
-    target. rules_content (the full text of one or more concatenated .yar
+    Runs `yara` ON THE TARGET (must be installed there -- see docs/DESIGN.md's
+    "Target-facing tools" section) against scan_path, a path that already
+    exists on the target. rules_content (the full text of one or more concatenated .yar
     rule files, resolved on the KRATOS HOST side by the caller -- see
     agent/tools.py::tool_run_yara_scan) is pushed to a target-side temp
     file over THIS SAME SSH session via a heredoc (a random per-call
@@ -734,10 +727,9 @@ def fetch_yara_scan(scan_path: str, rules_content: str) -> SSHResult | list[dict
                 stderr=(
                     f"YARA scan did not complete within {YARA_SCAN_TIMEOUT_SECONDS}s. "
                     f"scan_path={scan_path!r} is likely too broad for a single scan "
-                    "(a real, unmocked test found a full recursive scan of '/' on this "
-                    "target still running after 17+ real minutes). Retry with a "
-                    "narrower scan_path (e.g. a specific directory like /home or /var/log, "
-                    "or a single file) rather than the filesystem root."
+                    "(a full recursive scan of '/' can run well past this budget). "
+                    "Retry with a narrower scan_path (e.g. a specific directory like "
+                    "/home or /var/log, or a single file) rather than the filesystem root."
                 ),
             )
         return result

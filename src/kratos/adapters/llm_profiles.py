@@ -1,22 +1,18 @@
 """
-.env LLM-profile discovery/validation/editing for /model (2026-07-18).
+.env LLM-profile discovery/validation/editing, backing /model.
 
-Reference: .env's own documented structure (its header comment, confirmed
-by reading the real file before writing this module, not assumed) --
-LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND form ONE profile
-"group", always adjacent in that exact order, each line either fully
+.env groups LLM_BASE_URL/LLM_API_KEY/LLM_MODEL/KRATOS_LLM_BACKEND together
+as one profile, always adjacent in that order, each line either fully
 commented (`# KEY=value`) or fully uncommented. Swapping a model means
-swapping the WHOLE group, never just LLM_MODEL alone -- a partial swap
-would leave LLM_BASE_URL pointed at the wrong backend, reproducing this
-project's own documented 2026-07-15/16 LLM-backend consistency bug via a
-different mechanism (see CLAUDE.md's "LLM backend refactor" section).
+swapping the whole group, never just LLM_MODEL alone -- a partial swap
+would leave LLM_BASE_URL pointed at the wrong backend (see docs/DESIGN.md's
+"LLM backend" section for the class of bug this avoids).
 
 dotenv resolves a key repeated across multiple uncommented blocks by
-LAST-ASSIGNMENT-WINS (confirmed against this repo's installed
-python-dotenv, per .env's own header comment) -- "currently active" here
-is resolved the same way (the last/lowest matching uncommented block),
-not just "any" uncommented one, so this module's notion of "active" always
-matches what the running process actually loaded.
+last-assignment-wins, so "currently active" here is resolved the same way
+(the last/lowest matching uncommented block, not just any uncommented one)
+-- this module's notion of "active" always matches what the running
+process actually loaded.
 """
 from __future__ import annotations
 

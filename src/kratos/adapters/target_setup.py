@@ -2,18 +2,18 @@
 Target onboarding: setup checklist generation for a real, independent
 production target.
 
-Today's dev/test target (an Incus container on the same host as Kratos) has
-SSH access, sudo, and target binaries already provisioned as part of the lab
-image build -- none of that happens automatically for a real, independent
-target, and until this module existed nothing in Kratos told an operator
-what to set up or verified any of it worked (confirmed via a real audit,
-2026-07-18: neither /target nor the first-run wizard validated anything
-beyond "is the input non-empty").
+A local dev/test target (a container on the same host as Kratos) tends to
+have SSH access, sudo, and the target binaries Kratos needs already
+provisioned as part of building the lab image -- none of that happens
+automatically for a real, independent target, and nothing else in Kratos
+tells an operator what to set up or verifies any of it worked; `/target`
+and the first-run wizard only ever validated that the input was non-empty.
 
 generate_target_setup_checklist() produces copy-pasteable shell commands for
 a HUMAN to run ON the target -- Kratos never runs them itself, per the
-project's permanent boundary (see CLAUDE.md) on never executing or changing
-state on a monitored target. The read-only counterpart that confirms what
+project's permanent boundary (see docs/DESIGN.md's "Execution boundary"
+section) on never executing or changing state on a monitored target. The
+read-only counterpart that confirms what
 those commands actually accomplished, run_target_probe_checks(), lives in
 adapters/ssh_remote.py alongside its sibling run_config_audit_checks (same
 trust class: status-only commands over an existing SSH connection, not

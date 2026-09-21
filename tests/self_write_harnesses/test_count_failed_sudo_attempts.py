@@ -1,17 +1,17 @@
 """
 Human-authored test harness for the "count failed sudo attempts" candidate
-tool -- Sprint 2 self-writing loop, write-step (Part A) verification case #1.
+tool -- self-writing loop, write-step (Part A) verification case #1.
 
-This is the shape of test harness Part B's (not-yet-built) sandbox execution
-step will eventually run against a STAGED candidate tool file -- never
-model-generated, per docs/sprint2_self_writing_loop_design.md Sec 3. It is
-not wired into any pipeline yet. It exists now for two reasons:
+This is the shape of test harness Part B's sandbox execution step runs
+against a STAGED candidate tool file -- always human-authored, never
+model-generated (see docs/DESIGN.md's "Self-writing tool loop" section).
+It exists for two reasons:
   1. The write step's prompt shows the model this file's full contents, so
      the model learns the exact interface it must implement instead of
      guessing (see agent/self_write.py's module docstring for why).
   2. This file can be run standalone against a hand-written reference
      implementation to confirm the harness itself is correct, independent
-     of Part A/B existing.
+     of the rest of the pipeline.
 
 INTERFACE CONTRACT a candidate MUST satisfy:
   - Registers a tool named "count_failed_sudo_attempts" via

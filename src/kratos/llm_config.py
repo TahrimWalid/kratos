@@ -67,7 +67,7 @@ MODEL_PATH = (
 
 LLM_BACKEND = _os.environ.get("KRATOS_LLM_BACKEND", "auto").strip().lower()
 
-# 2026-07-15 refactor: querying now always goes through ONE mechanism
+# Querying now always goes through ONE mechanism
 # (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL below, OpenAI-chat-completions-
 # compatible) regardless of whether that endpoint happens to be a local
 # Ollama server or a cloud provider -- there is no more Ollama-specific
@@ -102,12 +102,12 @@ LLAMA_SERVER_URL = f"http://{LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}"
 # LLAMA_TEMP = 0.1  (low) → near-deterministic output, reproducible for thesis
 # LLAMA_SEED = 42   → fixed seed ensures same input → same output every run
 #
-# LLAMA_N_CTX default: measured real usage (agent/loop.py's ReAct investigation
-# loop) hit ~4095 tokens by iteration 8 of 10 with the old 2048/4096 defaults --
+# LLAMA_N_CTX default: measured usage (agent/loop.py's ReAct investigation
+# loop) hit ~4095 tokens by iteration 8 of 10 with a 2048/4096 default --
 # essentially no headroom, which correlated with the small model losing track
 # of its own response format and hallucinating tool names near the end of a
-# run. 6144 was verified (2026-07-11) to comfortably cover a full investigation
-# with real headroom to spare -- see agent/loop.py's wrap-up nudge comments.
+# run. 6144 comfortably covers a full investigation with headroom to spare --
+# see agent/loop.py's wrap-up nudge comments.
 # ---------------------------------------------------------------------------
 LLAMA_N_CTX = int(os.environ.get("KRATOS_LLM_N_CTX", "6144"))
 LLAMA_N_GPU_LAYERS = 0       # 0 = CPU-only (no GPU required)
@@ -119,25 +119,21 @@ LLAMA_TOP_K = 40
 
 # Timeouts and Limits
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_LLM_REQUEST_TIMEOUT_SECONDS", "900"))
-# 8192, not 1024: confirmed via Phase 3b.3/3b.4 real testing that 1024 makes
-# every openai_fallback call (the name at the time -- see the openai_compatible
-# backend section above; same code path today) against Gemini 2.5 Pro --
-# including fully benign ones,
-# not just long/complex prompts -- fail outright. Gemini's hidden reasoning
-# tokens are drawn from this SAME budget before any visible output exists;
-# a real write-step prompt (full system prompt + harness file, ~1500+ tokens
-# of input alone) reliably exhausted 1024 with finish_reason="length" and
-# ZERO completion tokens. This is the caller-supplied default only -- it's a
-# ceiling, not a target, so it has no effect on local Ollama (which doesn't
-# consume hidden reasoning tokens the same way) or on calls that already
-# complete well under the old limit (e.g. agent/loop.py's tool-selection
-# calls, which use MAX_TOKENS_QUESTION below, not this constant, and were
-# never affected by this bug). See llm_interface.py::agent_chat's own
-# max(max_tokens, 4096) floor, applied whenever the openai_compatible
-# backend is in use (any reasoning-capable model behind it, not just
-# Gemini specifically, since 2026-07-15's backend-wiring refactor unified
-# what used to be a Gemini-only "openai_fallback" path), for the other half
-# of this mitigation, and _query_openai_compatible's finish_reason="length"
+# 8192, not 1024: a 1024 cap makes every openai_compatible call against a
+# reasoning-capable model (Gemini and similar) -- including fully benign
+# ones, not just long/complex prompts -- fail outright. A reasoning
+# model's hidden reasoning tokens are drawn from this SAME budget before
+# any visible output exists; a write-step prompt (full system prompt +
+# harness file, ~1500+ tokens of input alone) can reliably exhaust 1024
+# with finish_reason="length" and ZERO completion tokens. This is the
+# caller-supplied default only -- it's a ceiling, not a target, so it has
+# no effect on local Ollama (which doesn't consume hidden reasoning tokens
+# the same way) or on calls that already complete well under the old limit
+# (e.g. agent/loop.py's tool-selection calls, which use
+# MAX_TOKENS_QUESTION below, not this constant). See
+# llm_interface.py::agent_chat's own max(max_tokens, 4096) floor, applied
+# whenever the openai_compatible backend is in use, for the other half of
+# this mitigation, and _query_openai_compatible's finish_reason="length"
 # check for making a future recurrence self-diagnosing instead of a bare
 # KeyError.
 MAX_TOKENS = int(os.environ.get("KRATOS_LLM_MAX_TOKENS", "8192"))
@@ -149,7 +145,7 @@ STARTUP_TIMEOUT_SECONDS = 30
 FALLBACK_TO_DIRECT_LOAD = os.environ.get("KRATOS_LLM_FALLBACK_TO_DIRECT_LOAD", "1") == "1"
 
 # ---------------------------------------------------------------------------
-# OpenAI-compatible backend -- the one real query mechanism (2026-07-15)
+# OpenAI-compatible backend -- the one query mechanism
 #
 # Points at any OpenAI-chat-completions-compatible endpoint: local Ollama
 # (the default, see below), a local llama.cpp/vLLM server, or a cloud
@@ -172,7 +168,7 @@ LLM_OPENAI_API_KEY = os.environ.get("LLM_API_KEY", "ollama")
 LLM_OPENAI_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:7b")
 
 # ---------------------------------------------------------------------------
-# Live LLM-profile override (/model, 2026-07-18) -- same pattern as
+# Live LLM-profile override (/model) -- same pattern as
 # get_active_target()/set_active_target() in kratos_config.py (/target's
 # live-switch mechanism), applied to the LLM backend instead of the SSH
 # target. The LLM_OPENAI_*/LLM_BACKEND constants above stay frozen at their
@@ -181,16 +177,15 @@ LLM_OPENAI_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:7b")
 # functions below instead, so a mid-session /model switch takes effect on
 # the very next LLM call, not just at the next process launch.
 #
-# Real bug this deliberately avoids reproducing (the exact failure class
-# this task's own prompt named): llm_interface.py's from-import bindings
+# This deliberately avoids reproducing a known failure class:
+# llm_interface.py's from-import bindings
 # (`from kratos.llm_config import LLM_OPENAI_MODEL`) are independent names
 # in llm_interface's OWN module namespace -- reassigning llm_config's
 # module-level constant would NOT be seen by llm_interface's already-bound
 # copy. Function-based getters (called fresh on every use, not imported as
-# frozen values) are the only correct fix -- confirmed by how /target's own
-# earlier real bug ("investigations silently kept hitting the global
-# default" -- see CLAUDE.md) was actually fixed, not a new pattern invented
-# here.
+# frozen values) are the only correct fix -- the same pattern /target's own
+# active-target override uses (see docs/DESIGN.md's "Live-switchable
+# settings" section).
 _active_llm_override: dict[str, str] | None = None
 
 

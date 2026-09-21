@@ -1,11 +1,11 @@
 """
-Sprint 2 self-writing loop -- OPTIONAL LIVE-TARGET SMOKE TEST (A7).
+Self-writing tool loop -- OPTIONAL LIVE-TARGET SMOKE TEST.
 
 The sandbox (Part B) mocks the SSH layer -- by design, since the sandbox has no
 network -- so a candidate can PASS its sandbox test and still FAIL live (read a
 root-only file without sudo, run the wrong command, get empty output). Two real
-tools shipped broken exactly this way (docs/evoloop_polish_brief.md, 2026-09-07).
-The write-step prompt hardening (self_write.py) reduces the FREQUENCY; this is
+tools have shipped broken exactly this way. The write-step prompt hardening
+(self_write.py) reduces the FREQUENCY; this is
 the actual FIX for the trust gap: run the sandbox-passed candidate ONCE against
 the REAL target, read-only, at keep time, so a mock-vs-live gap surfaces BEFORE
 the tool is persisted and used on every future investigation.

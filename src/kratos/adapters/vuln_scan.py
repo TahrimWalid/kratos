@@ -10,16 +10,15 @@ docstring for the full target-vs-host reasoning.
 vulners.nse (nmap's OTHER built-in CVE-correlation script) is deliberately
 NOT used here -- it queries a live external API per scan, reopening the
 same cloud-dependency tension already resolved for threat-intel (see
-CLAUDE.md's "Decision: threat-intel enrichment scope"). vulscan's cve.csv
+docs/DESIGN.md's "Threat-intel enrichment" section). vulscan's cve.csv
 is a locally-cached, offline database instead -- see check_vulscan_db_staleness
 below for why that tradeoff needs its own visibility mechanism.
 
-Known, accepted, explicitly-logged limitation: neither tool meaningfully
-covers OT/ICS protocols (Modbus, DNP3, etc.) -- Nuclei's template set is
-overwhelmingly HTTP/web-focused, and vulscan only correlates whatever
-product/version nmap's own -sV probes can fingerprint (nmap's OT/ICS probe
-coverage is itself limited). This is a real gap, not silently implied as
-covered -- see CLAUDE.md.
+Known limitation: neither tool meaningfully covers OT/ICS protocols
+(Modbus, DNP3, etc.) -- Nuclei's template set is overwhelmingly HTTP/web-
+focused, and vulscan only correlates whatever product/version nmap's own
+-sV probes can fingerprint (nmap's OT/ICS probe coverage is itself
+limited). See docs/DESIGN.md's "Known limitations" section.
 """
 from __future__ import annotations
 
@@ -35,10 +34,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # ---------------------------------------------------------------------------
 # vulscan layout -- see vulscan/README.md for why this exact nested
-# scripts/vulscan/ structure is required (confirmed by real testing: a flat
-# directory makes nmap load the SCRIPT fine but silently fail to find the
-# DATABASE, since vulscan.nse resolves it via nmap.fetchfile("scripts/vulscan/"
-# .. db), a path relative to an nmap data-directory root, not to --script).
+# scripts/vulscan/ structure is required. A flat directory lets nmap load
+# the SCRIPT fine but silently fail to find the DATABASE, since vulscan.nse
+# resolves it via nmap.fetchfile("scripts/vulscan/" .. db), a path relative
+# to an nmap data-directory root, not to --script.
 # ---------------------------------------------------------------------------
 VULSCAN_DIR = _REPO_ROOT / "vulscan"
 VULSCAN_NSE_PATH = VULSCAN_DIR / "scripts" / "vulscan" / "vulscan.nse"
@@ -55,30 +54,29 @@ VULSCAN_UPDATE_URL = "https://www.computec.ch/projekte/vulscan/download/cve.csv"
 # than dressed up as more rigorous than it is.
 STALENESS_THRESHOLD_DAYS = 30
 
-# Real tag names, confirmed by inspecting actual nuclei-templates metadata
-# (NOT the plural/guessed forms "cves"/"exposures"/"misconfiguration" --
-# those match near-zero real templates). ~6000 templates combined as of
-# nuclei-templates v10.4.5 -- a deliberate default subset, not the full
-# 13,000+ template set, per the "modest hardware" constraint; override via
-# the tags parameter for a broader or narrower scan.
+# The actual tag names nuclei-templates metadata uses, not the plural/
+# guessed forms ("cves"/"exposures"/"misconfiguration") that match almost
+# no templates. ~6000 templates combined as of nuclei-templates v10.4.5 --
+# a deliberate default subset, not the full 13,000+ template set, given
+# the project's modest-hardware target; override via the tags parameter
+# for a broader or narrower scan.
 DEFAULT_NUCLEI_TAGS = "cve,exposure,misconfig"
 
-# Real measured: ~6000 templates (clustered) against one simple single-port
-# host completed in low tens of seconds. Generous headroom for a target with
-# more open ports/protocols, which multiplies actual requests after
-# clustering -- not tuned tightly, deliberately erring toward "let it finish"
-# over "cut it off early" on modest hardware.
+# ~6000 templates (clustered) against a single-port host runs in the low
+# tens of seconds; this leaves generous headroom for a target with more
+# open ports/protocols, which multiplies actual requests after clustering.
+# Deliberately erring toward "let it finish" over "cut it off early" on
+# modest hardware.
 NUCLEI_TIMEOUT_SECONDS = 600
 NMAP_VULSCAN_TIMEOUT_SECONDS = 120
 
 
 def check_vulscan_db_staleness(db_path: Path = VULSCAN_DB_PATH) -> dict[str, Any]:
     """
-    Returns {"exists", "last_updated", "age_days", "stale"}. mtime-based --
-    confirmed by inspecting cve.csv directly that it carries no embedded
-    freshness field of its own, so the file's own mtime is the only real
-    signal available (matches how vulscan's own update.sh works: it just
-    overwrites the file, no versioning).
+    Returns {"exists", "last_updated", "age_days", "stale"}. mtime-based,
+    since cve.csv carries no embedded freshness field of its own -- the
+    file's mtime is the only signal available, which matches how vulscan's
+    own update.sh works (it just overwrites the file, no versioning).
     """
     if not db_path.exists():
         return {"exists": False, "last_updated": None, "age_days": None, "stale": True}
@@ -98,15 +96,14 @@ def update_vulscan_db(db_path: Path = VULSCAN_DB_PATH) -> tuple[bool, str]:
     file on a verified-nonempty success -- a failed/partial download must
     never silently truncate or corrupt the existing database.
 
-    Confirmed by a real failure, not a hypothetical one: a "successful"
-    (HTTP 200, nonzero-byte) download from computec.ch can still be a
-    Cloudflare bot-challenge HTML page, not the real CSV -- curl's own exit
-    code and a nonzero byte count both looked like success while the
-    content was garbage. A byte-count-only check would have silently
-    replaced a real, working 16MB database with a 5KB challenge page.
-    _looks_like_valid_cve_csv below is the real fix: reject anything that
-    doesn't look like actual CVE CSV content BEFORE it ever replaces the
-    live file, regardless of what curl's own exit code claimed.
+    A "successful" (HTTP 200, nonzero-byte) download from computec.ch can
+    still be a Cloudflare bot-challenge HTML page rather than the real CSV
+    -- curl's exit code and a nonzero byte count both look like success
+    while the content is garbage. A byte-count-only check would silently
+    replace a working 16MB database with a 5KB challenge page, so
+    _looks_like_valid_cve_csv below rejects anything that doesn't look
+    like actual CVE CSV content before it ever replaces the live file,
+    regardless of what curl's exit code claimed.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = db_path.with_suffix(".csv.new")
@@ -122,15 +119,13 @@ def update_vulscan_db(db_path: Path = VULSCAN_DB_PATH) -> tuple[bool, str]:
             if _looks_like_cloudflare_challenge(tmp_path):
                 return False, (
                     "Update failed: the upstream vulscan mirror (computec.ch) returned a "
-                    "Cloudflare bot-challenge page instead of the real database -- CONFIRMED, not "
-                    "a one-off flake, as of this project's real testing (July 2026). This is a "
+                    "Cloudflare bot-challenge page instead of the real database. This is a "
                     "known limitation of the upstream mirror, not a bug in Kratos's update logic "
                     "-- automated curl-based updates will likely keep failing here. The existing "
                     f"database ({db_path.stat().st_size} bytes) was left untouched, exactly as "
                     "intended. If a fresh database is genuinely needed, download cve.csv manually "
-                    "(e.g. via a real browser session that can pass the challenge) and place it at "
-                    f"{db_path}. Engineering around the bot challenge is explicitly out of scope "
-                    "for this tool."
+                    "(e.g. via a browser session that can pass the challenge) and place it at "
+                    f"{db_path}. Working around the bot challenge is out of scope for this tool."
                 )
             return False, (
                 f"Download completed but content failed validation ({reason}) -- existing "
@@ -168,12 +163,11 @@ def _looks_like_valid_cve_csv(path: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-# Confirmed via a real failed update (July 2026), not a guess at Cloudflare's
-# markup: the challenge page's <title> is literally "Just a moment...". Kept
-# narrow/specific deliberately -- this exists to give a PRECISE, actionable
-# message for the one known, confirmed cause, not to generically guess at
-# every possible reason content might fail validation (see the fallback
-# message in update_vulscan_db for anything that doesn't match this).
+# The challenge page's <title> is literally "Just a moment...". Kept
+# narrow/specific deliberately -- this exists to give a precise, actionable
+# message for the one known cause, not to generically guess at every
+# possible reason content might fail validation (see the fallback message
+# in update_vulscan_db for anything that doesn't match this).
 _CLOUDFLARE_CHALLENGE_MARKERS = ("just a moment", "cf-chl", "cloudflare")
 
 
@@ -194,8 +188,8 @@ def run_nmap_vulscan(target: str, data_dir: Path) -> Path:
     SECOND, fully independent network scan of the target.
 
     NMAPDIR is set so vulscan.nse's own nmap.fetchfile("scripts/vulscan/"
-    .. db) call can find cve.csv -- confirmed by real testing to be
-    required; see vulscan/README.md.
+    .. db) call can find cve.csv -- required for the lookup to work at
+    all; see vulscan/README.md.
     """
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
@@ -233,16 +227,14 @@ _CVE_ID_RE = re.compile(r"CVE-\d{4}-\d+")
 
 def parse_vulscan_xml(xml_path: Path) -> list[dict[str, Any]]:
     """
-    Extracts vulscan's own script output per open port. Confirmed by real
-    testing (not assumed): a port can carry MULTIPLE <script> elements
-    (e.g. http-server-header alongside vulscan) -- this filters by
-    id=="vulscan" specifically rather than taking the first <script> child,
-    which would have silently picked up the wrong script's output. An
-    empty/missing output attribute means vulscan found nothing for that
-    port -- nmap's own generic "Bug in vulscan: no string output" stderr
-    message (seen on real, non-matching real scans) is what an empty
-    script-output string looks like at that layer; benign, not an error,
-    and not surfaced as one here.
+    Extracts vulscan's own script output per open port. A port can carry
+    multiple <script> elements (e.g. http-server-header alongside vulscan),
+    so this filters by id=="vulscan" specifically rather than taking the
+    first <script> child, which would silently pick up the wrong script's
+    output. An empty/missing output attribute means vulscan found nothing
+    for that port -- nmap's own generic "Bug in vulscan: no string output"
+    stderr message is what an empty script-output string looks like at
+    that layer; benign, not an error, and not surfaced as one here.
     """
     try:
         tree = ET.parse(xml_path)
@@ -289,20 +281,17 @@ def run_nuclei_scan(target: str, data_dir: Path, tags: str = DEFAULT_NUCLEI_TAGS
     TLS-only) with the given tag filter, writing line-delimited JSON (one
     finding per line, nuclei's own -jsonl format).
 
-    Defaults to http:// ONLY, not both schemes. Two real findings drove this:
-    (1) a BARE "host:port" (no scheme at all) makes nuclei probe HTTPS FIRST
-    and silently skip the target entirely as "unresponsive" if only plain
-    HTTP is listening -- confirmed by real testing, not assumed from docs --
-    so a bare target is never used here. (2) Explicitly probing BOTH
-    http:// and https:// against a target that only speaks plain HTTP was
-    ALSO tested for real and rejected: the TCP connection to the open port
-    succeeds, but the TLS handshake against a non-TLS listener doesn't fail
-    fast the way a closed port does -- real measured cost was a 2+ minute
-    stall against ~6000 templates on this project's own modest-hardware
-    profile, not the graceful few-second fast-fail expected going in.
-    Given the project's standing "modest hardware" constraint, defaulting
-    to a single, verified-fast scheme beats defaulting to thoroughness that
-    real testing showed has a real, large, non-obvious cost.
+    Defaults to http:// only, not both schemes, for two reasons: (1) a bare
+    "host:port" (no scheme at all) makes nuclei probe HTTPS first and
+    silently skip the target entirely as "unresponsive" if only plain HTTP
+    is listening, so a bare target is never used here. (2) Explicitly
+    probing both http:// and https:// against a target that only speaks
+    plain HTTP doesn't fail fast either: the TCP connection to the open
+    port succeeds, but the TLS handshake against a non-TLS listener stalls
+    rather than failing quickly the way a closed port would -- measured at
+    a 2+ minute stall against ~6000 templates on modest hardware. Given the
+    project's modest-hardware target, a single verified-fast scheme beats
+    defaulting to thoroughness that carries this large a hidden cost.
     """
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
@@ -332,9 +321,8 @@ def run_nuclei_scan(target: str, data_dir: Path, tags: str = DEFAULT_NUCLEI_TAGS
 
 
 def parse_nuclei_jsonl(jsonl_path: Path) -> list[dict[str, Any]]:
-    """Parses nuclei's -jsonl output (one JSON object per finding, confirmed
-    real schema via a real scan -- template-id, info.name/severity/
-    classification.cve-id, host, matched-at)."""
+    """Parses nuclei's -jsonl output (one JSON object per finding: template-id,
+    info.name/severity/classification.cve-id, host, matched-at)."""
     import json
 
     if not jsonl_path.exists():

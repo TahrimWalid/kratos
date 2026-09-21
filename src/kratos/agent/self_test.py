@@ -1,39 +1,38 @@
 """
-Sprint 2 self-writing loop -- SANDBOX TEST step only (Part B of
-write -> test -> human-approve -> keep, per docs/sprint2_self_writing_loop_design.md).
+Self-writing tool loop -- SANDBOX TEST step only (Part B of
+write -> test -> human-approve -> keep; see docs/DESIGN.md's "Self-writing
+tool loop" section for the full pipeline).
 
 Runs a Part A staged candidate tool against a human-authored test harness
 inside an ephemeral, network-isolated Incus container, and reports a
-structured pass/fail result. Does not retry on failure (that's Part D, and
-it needs this step's result plus Part A's write step to build a feedback
-loop -- neither exists yet), does not seek approval (Part C), does not touch
-TOOL_REGISTRY or persist anything (Part D). This module only ever READS the
-staged candidate path Part A produced; it never imports or executes it on
-the host -- execution only ever happens inside the sandbox container.
+structured pass/fail result. Does not retry on failure (that's Part D's job
+-- see agent/self_write_loop.py, which builds the feedback loop from this
+step's result plus Part A's write step), does not seek approval (Part C),
+does not touch TOOL_REGISTRY or persist anything (Part D). This module only
+ever READS the staged candidate path Part A produced; it never imports or
+executes it on the host -- execution only ever happens inside the sandbox
+container.
 
-Sandbox mechanism: reuses the exact Incus launch/exec/teardown idiom already
-used for kratos-target/attacker-box (scripts/attacks/README.md:
-`incus launch images:ubuntu/jammy <name>`, `incus exec <name> -- ...`),
+Sandbox mechanism: reuses the same Incus launch/exec/teardown idiom used
+elsewhere in the project for other throwaway containers
+(`incus launch images:ubuntu/jammy <name>`, `incus exec <name> -- ...`),
 extended with two one-time, idempotent preparation steps so PER-TEST-RUN
 launches are fast and need no network of their own:
 
   1. `kratos-sandbox` Incus profile: a root disk device and CPU/memory
      limits, and DELIBERATELY NO NETWORK DEVICE AT ALL -- absence of the
-     device, not a disabled/firewalled one, is the isolation mechanism (see
-     docs/sprint2_self_writing_loop_design.md Sec 1/3). `--no-profiles`
-     alone drops the disk device too (the default profile provides both),
-     so this profile exists specifically to keep the disk while dropping
-     only the network device.
+     device, not a disabled/firewalled one, is the isolation mechanism.
+     `--no-profiles` alone drops the disk device too (the default profile
+     provides both), so this profile exists specifically to keep the disk
+     while dropping only the network device.
   2. `kratos-sandbox-base` Incus image: built once (network required only
      for THIS one-time step, never for an actual candidate's test run) by
-     launching the same images:ubuntu/jammy base kratos-target/attacker-box
+     launching the same images:ubuntu/jammy base other throwaway containers
      use, installing pytest + requests (the ONLY two dependencies actually
      needed -- see below), baking in a copy of this project's src/kratos/
      tree at /opt/kratos/src, then publishing the result as a new local
      image. Every actual test run afterward launches instantly from this
-     cached image, exactly the same "prepare once, launch fast+isolated
-     repeatedly from a cached image" pattern the design doc's own benchmark
-     already relies on for images:ubuntu/jammy.
+     cached image -- prepare once, launch fast and isolated repeatedly.
 
 Why pytest + requests are enough: a candidate/harness pair needs to import
 kratos.agent.tools (for @register_tool/TOOL_REGISTRY) and pytest (every
@@ -45,14 +44,13 @@ pyproject.toml's dependency list are for the project's (currently unused
 here) API surface, not this path, so they're deliberately not installed
 into the sandbox image to keep it minimal.
 
-Measured on this project's own infra (see this module's verification run):
-one-time base-image build ~3-4 min (apt/pip install + publish, dominated by
-apt-get update/install); PER-TEST-RUN round trip after that is ~1-1.5s
-infra overhead (launch ~0.3s, exec ~0.05s, delete ~0.75s) plus actual test
-duration -- notably FASTER than the design doc's original ~3.5s no-op
-estimate, because that benchmark measured a NETWORK-ATTACHED ephemeral
-container; skipping network device setup at launch turns out to be most of
-that original cost, not image unpacking.
+Measured timing: one-time base-image build ~3-4 min (apt/pip install +
+publish, dominated by apt-get update/install); PER-TEST-RUN round trip
+after that is ~1-1.5s infra overhead (launch ~0.3s, exec ~0.05s, delete
+~0.75s) plus actual test duration -- network-attached ephemeral containers
+run notably slower than this (~3.5s+ just for launch teardown), since
+skipping network device setup turns out to be most of that cost, not image
+unpacking.
 """
 from __future__ import annotations
 

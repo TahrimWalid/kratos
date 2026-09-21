@@ -1,10 +1,10 @@
 """
-Real concurrent-write test for storage/session_store.py, required by
-docs/sprint3_interactive_session_mode_design.md §6 -- "do not skip this test
-or assume SQLite handles it automatically without checking." Same class of
-risk as the Sprint 2 kept_tools/metadata.json corruption bug (Phase 3b.6):
-concurrent writes to a shared local file under ordinary concurrent use
-(two terminal tabs), not malice.
+Real concurrent-write test for storage/session_store.py -- don't skip this
+test or assume SQLite handles concurrent access automatically without
+checking. Same class of risk as the self-writing loop's kept_tools/
+metadata.json corruption bug (see docs/DESIGN.md's "Self-writing tool loop"
+section): concurrent writes to a shared local file under ordinary
+concurrent use (two terminal tabs), not malice.
 
 Uses real, separate OS processes (multiprocessing, not threads) writing to
 the SAME db file at the same time -- threads share the GIL and wouldn't

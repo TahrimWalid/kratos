@@ -736,7 +736,7 @@ def _load_yara_rules_content(rules_path: Path | None) -> tuple[str, list[str]] |
     description=(
         "Scans a file or directory on the SSH TARGET DEVICE (not the local Kratos host) for "
         "malware/webshell signatures using YARA pattern matching. Runs the `yara` binary ON THE "
-        "TARGET over SSH -- it must already be installed there (see CLAUDE.md operational facts); "
+        "TARGET over SSH -- it must already be installed there; "
         "this tool does not install it. No scanned file's CONTENT is ever pulled back to the "
         "Kratos host, only match results (rule name, matched file path, offset, matched string) "
         "cross the wire -- same posture as check_file_integrity's hashing. Relevant as a targeted "

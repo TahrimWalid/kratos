@@ -52,7 +52,8 @@ exclusion here: it isn't in TOOL_REGISTRY at all and has exactly one caller
 in the whole repo, cli/repl.py::_cmd_evolve -- nothing in agent/loop.py's
 dispatch (execute_tool_call only ever calls a TOOL_REGISTRY handler) can
 reach it. The model's tool_proposal auto-suggest response shape is
-non-terminal and render-only by design (see CLAUDE.md) -- this module
+non-terminal and render-only by design (see docs/DESIGN.md's "Self-writing
+tool loop" section) -- this module
 doesn't pass an on_step callback at all, so a proposal surfaces in the
 returned transcript exactly like any other step and is never acted on.
 
@@ -332,9 +333,9 @@ _FINDING_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info
 def _derive_notify_severity(findings: list[dict[str, Any]]) -> str:
     """Maps the HIGHEST severity actually present among real findings onto ntfy's 3-tier
     scale (agent/notify.py::_SEVERITY_MAP) -- never caller-asserted, always derived from
-    stored data. critical/high -> critical (ntfy urgent): CLAUDE.md's own CORR-SSH-001
-    example is a HIGH finding for a live attack, which warrants an urgent push, not merely
-    "warning". medium -> warning. low/info -> info."""
+    stored data. critical/high -> critical (ntfy urgent): a brute-force burst that clears
+    CORR-SSH-001 is a HIGH finding for a live attack, which warrants an urgent push, not
+    merely "warning". medium -> warning. low/info -> info."""
     rank = max((_FINDING_SEVERITY_RANK.get(str(f.get("severity", "")).lower(), 0) for f in findings), default=0)
     if rank >= 3:
         return "critical"

@@ -1,5 +1,5 @@
 """
-Regression guard for the WRITE step's SYSTEM_PROMPT hardening (A7 chunk 1).
+Regression guard for the WRITE step's SYSTEM_PROMPT hardening.
 
 Scripted-only: asserts the privilege / error-visibility guidance is present in
 agent/self_write.py's SYSTEM_PROMPT (and its RULES tail), so a future edit
@@ -8,10 +8,9 @@ this guidance -- uses `getent group sudo` instead of `cat /etc/sudoers`, and
 does not blanket-suppress stderr) is a real LLM run, not something a unit test
 can assert; this file just keeps the guidance from vanishing unnoticed.
 
-Root cause this hardening addresses (docs/evoloop_polish_brief.md, 2026-09-07
-incident): two evo-loop tools passed sandbox tests then failed live because
-they read root-only files without sudo and suppressed stderr, so the live
-failure surfaced as an empty error.
+Root cause this hardening addresses: two evo-loop tools passed sandbox tests
+then failed live because they read root-only files without sudo and
+suppressed stderr, so the live failure surfaced as an empty error.
 """
 from __future__ import annotations
 

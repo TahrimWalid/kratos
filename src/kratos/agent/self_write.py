@@ -1,17 +1,17 @@
 """
-Sprint 2 self-writing loop -- WRITE step only (Part A of
-write -> test -> human-approve -> keep, per docs/sprint2_self_writing_loop_design.md).
+Self-writing tool loop -- WRITE step only (Part A of
+write -> test -> human-approve -> keep; see docs/DESIGN.md's "Self-writing
+tool loop" section for the full pipeline).
 
 This module generates a CANDIDATE tool implementation against a human-authored
 test file and stages it to disk. It does not execute, sandbox-test, seek
 approval, or register the candidate anywhere TOOL_REGISTRY or
 agent/loop.py's tool dispatch can reach it -- Parts B (sandbox test), C
-(approval), D (registry persistence) are separate, later work that consume
+(approval), D (registry persistence) are separate steps that consume
 this step's output (a staged file PATH), not part of this module. Nothing
 this module produces is imported, exec'd, or otherwise executed by it.
 
-Design choice, stated explicitly per the Phase 1 doc's requirement to
-document real design choices rather than default silently: the model IS
+Design choice, stated explicitly rather than left implicit: the model IS
 shown the full contents of the human-authored test file, not just the
 natural-language goal. The test file is the only place the exact interface
 contract lives -- the tool name TOOL_REGISTRY must carry, the handler's
@@ -50,13 +50,12 @@ DEFAULT_STAGING_DIR = Path(__file__).resolve().parents[3] / "sandbox_staging"
 # scope here; see write_candidate_tool's docstring.
 MAX_WRITE_ATTEMPTS = 3
 
-# Retry-response structural guard (Phase 3c): a retry response that parses
-# and is correctly shaped can STILL be a from-scratch rewrite rather than a
-# targeted fix on the previous attempt -- confirmed happening for real
-# against local qwen2.5:7b (Phase 3a/3b: two independent real, unmocked
-# end-to-end runs, both exhausted all 3 retries because each retry
-# regenerated large parts of the file, letting already-correct imports and
-# return-shape regress rather than making a minimal, localized fix).
+# Retry-response structural guard: a retry response that parses and is
+# correctly shaped can STILL be a from-scratch rewrite rather than a
+# targeted fix on the previous attempt -- observed end-to-end against a
+# local model, where each retry regenerated large parts of the file,
+# letting already-correct imports and return-shape regress rather than
+# making a minimal, localized fix.
 # MIN_RETRY_SIMILARITY_RATIO is a difflib line-similarity floor (0=nothing
 # in common, 1=identical) a retry response must clear against the
 # immediately-preceding attempt to be accepted -- below it, the response is
@@ -78,13 +77,13 @@ class WriteRequest:
     goal: str                      # natural-language spec of what the tool should do
     test_file: Path                # human-authored test file this candidate must satisfy
     extra_context: str | None = None  # optional: extra background the model may need
-    # Retry-specific (Phase 3c): the immediately-preceding attempt's full
-    # source and the real reason it failed, threaded through by the caller
+    # Retry-specific: the immediately-preceding attempt's full source and
+    # the real reason it failed, threaded through by the caller
     # (agent/self_write_loop.py's orchestrator, for a sandbox-test-failure
-    # retry) so THIS attempt is shown a targeted-fix prompt, not just a
+    # retry) so this attempt is shown a targeted-fix prompt, not just a
     # description of what went wrong. Both None on a genuinely first
-    # attempt -- nothing to preserve yet, so that prompt is byte-for-byte
-    # unchanged from before this fix. See write_candidate_tool's docstring.
+    # attempt -- nothing to preserve yet, so that prompt is unchanged from
+    # a plain first-attempt call. See write_candidate_tool's docstring.
     previous_code: str | None = None
     previous_error: str | None = None
 
@@ -184,7 +183,7 @@ command, so always check `.ok` before trusting `.stdout`. The command/script str
 be fixed at write time (a literal you write, optionally with fixed flags) -- never build it from
 a caller-supplied argument; that would turn this into a generic remote-command executor, which
 Kratos never allows regardless of how the tool is framed (see agent/tools.py's run_linux_command
-and CLAUDE.md's permanent boundary on this if you need the full reasoning).
+and docs/DESIGN.md's "Execution boundary" section for the full reasoning).
 IMPORTANT -- import the MODULE (`from kratos.adapters import ssh_remote`), never individual names
 (`from kratos.adapters.ssh_remote import run_remote_command`): the human-authored test harness
 that will judge this code needs to mock the SSH layer (the sandbox that tests it has no network
@@ -439,16 +438,16 @@ def write_candidate_tool(
     on success.
 
     Retries up to max_attempts on EITHER a sanity-check failure (bad syntax
-    or wrong registration shape) OR, new in Phase 3c, a retry response that
-    diverges too far from the immediately-preceding attempt to count as a
-    targeted fix (see MIN_RETRY_SIMILARITY_RATIO) -- there is still no
-    test-EXECUTION feedback loop here (that's Part B/D); this only concerns
-    the SHAPE of what comes back, not whether its logic is correct. A
-    vague/ambiguous goal still gets staged as long as what comes back
-    parses and is shaped like a tool -- judging whether the result is
-    actually CORRECT is explicitly not this function's job.
+    or wrong registration shape) OR a retry response that diverges too far
+    from the immediately-preceding attempt to count as a targeted fix (see
+    MIN_RETRY_SIMILARITY_RATIO) -- there is still no test-EXECUTION feedback
+    loop here (that's Part B/D); this only concerns the SHAPE of what comes
+    back, not whether its logic is correct. A vague/ambiguous goal still
+    gets staged as long as what comes back parses and is shaped like a
+    tool -- judging whether the result is actually CORRECT is explicitly
+    not this function's job.
 
-    Retry framing (Phase 3c): if request.previous_code/previous_error are
+    Retry framing: if request.previous_code/previous_error are
     set (the orchestrator is retrying after a real sandbox test failure),
     the similarity guard below is ANCHORED to that exact code for this
     call's entire duration -- it is never reassigned, even across this
@@ -472,17 +471,16 @@ def write_candidate_tool(
     so Part B can pick the candidate up by path without this function's
     caller needing to shuttle source text around.
 
-    outer_attempt_label (2026-07-28, display only, no effect on control
-    flow): an optional pre-formatted string like "outer attempt 2/3" from
-    the caller (run_self_write_loop), folded into this function's own
-    progress messages below. Real, confirmed UX confusion this closes:
-    this function's OWN attempt/max_attempts always restarts from 1 on
-    every fresh call -- it's Part A's own internal write-retry budget,
-    distinct from Part D's outer sandbox-test retry budget -- so without
-    this label, two genuinely different OUTER attempts both print
-    "(attempt 1/3)" and look identical even though a real retry happened
-    between them. None (the default) preserves the exact prior message
-    shape for any caller that doesn't pass one (e.g.
+    outer_attempt_label (display only, no effect on control flow): an
+    optional pre-formatted string like "outer attempt 2/3" from the caller
+    (run_self_write_loop), folded into this function's own progress
+    messages below. This function's OWN attempt/max_attempts always
+    restarts from 1 on every fresh call -- it's Part A's own internal
+    write-retry budget, distinct from Part D's outer sandbox-test retry
+    budget -- so without this label, two genuinely different outer
+    attempts both print "(attempt 1/3)" and look identical even though a
+    retry happened between them. None (the default) preserves the plain
+    message shape for any caller that doesn't pass one (e.g.
     scripts/dev/run_self_write_count_failed_ssh_attempts.py).
     """
     if not request.test_file.exists():
@@ -523,11 +521,10 @@ def write_candidate_tool(
         was_similarity_rejection = False
 
         # Exact-repeat guard: the OPPOSITE extreme from the similarity guard
-        # below (zero difference, not too much difference) -- confirmed
-        # happening for real against qwen2.5:7b (Phase 3f: a 5-attempt real
-        # diagnostic run where attempts 2-5 were SHA-256-identical, verbatim,
-        # despite each being shown fresh, real, correct failing-test
-        # context). This is a distinct failure mode from a rewrite: the
+        # below (zero difference, not too much difference) -- a 5-attempt
+        # diagnostic run once produced attempts 2-5 that were byte-for-byte
+        # identical, despite each being shown fresh, correct failing-test
+        # context. This is a distinct failure mode from a rewrite: the
         # model isn't varying its output AT ALL, so re-staging and
         # re-sandbox-testing an identical candidate would just reproduce a
         # result Part B already produced, burning a real sandbox run (and,
@@ -594,10 +591,9 @@ def write_candidate_tool(
             # branch overwrote anchor_error with JUST the similarity
             # complaint, so the next sub-attempt was told "you changed too
             # much" without being re-shown WHAT bug it still needed to fix
-            # -- confirmed, against real qwen2.5:7b output, to produce
-            # cosmetic edits (a ternary collapse, a typing-annotation
-            # tweak) that cleared the similarity bar without ever touching
-            # the actual reported error.
+            # -- which produced cosmetic edits (a ternary collapse, a
+            # typing-annotation tweak) that cleared the similarity bar
+            # without ever touching the actual reported error.
             display_code = anchor_code
             display_error = (
                 f"{anchor_error}\n\n"

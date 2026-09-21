@@ -1,6 +1,6 @@
 """
-Interactive session (REPL) persistence -- Sprint 3, per
-docs/sprint3_interactive_session_mode_design.md §6/§9.
+Interactive session (REPL) persistence. See docs/DESIGN.md's "Session
+persistence" section for the design rationale.
 
 SQLite, single local file (data_dir/kratos.db -- the same file
 adapters/anomaly_store.py already uses under this data_dir, new tables
@@ -10,7 +10,7 @@ not only on exit) so a crash or Ctrl+C never loses session state -- every
 write here is its own committed transaction, nothing is buffered in
 memory waiting for a clean shutdown that might not come.
 
-Concurrency (§6, required verification, not assumed): WAL mode is enabled
+Concurrency: WAL mode is enabled
 on every connection, and every write goes through a single connection
 opened with `isolation_level=None` (autocommit off, explicit BEGIN
 IMMEDIATE/COMMIT per write) plus a real busy_timeout, so a second writer
@@ -82,8 +82,8 @@ class SessionStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_history_session ON goal_history(session_id, seq)"
             )
-            # Migration for a real pre-existing kratos.db created before
-            # /reset and /delete existed (2026-07-17) -- CREATE TABLE IF NOT
+            # Migration for a pre-existing kratos.db created before
+            # /reset and /delete existed -- CREATE TABLE IF NOT
             # EXISTS above doesn't add columns to an already-existing table.
             # Guarded on PRAGMA table_info so this is safe to run on every
             # SessionStore() construction, not just the first one against a
@@ -92,7 +92,7 @@ class SessionStore:
             if "status" not in existing_session_cols:
                 conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
             if "name" not in existing_session_cols:
-                # /rename (2026-07-18) -- nullable, no default: NULL means
+                # /rename -- nullable, no default: NULL means
                 # "no custom name set", the common case, distinct from an
                 # empty string (which /rename's own validation rejects
                 # outright, see cli/repl.py).
@@ -171,7 +171,7 @@ class SessionStore:
         return d
 
     def get_session_by_name(self, name: str) -> dict[str, Any] | None:
-        """/rename (2026-07-18) -- exact, case-sensitive match, same
+        """/rename -- exact, case-sensitive match, same
         precision as get_session's exact-ID match. Searches ALL sessions
         (active AND archived), same scope as get_session -- a name is
         just an alternative identifier, not a status filter; the caller
@@ -226,11 +226,12 @@ class SessionStore:
         not an error. Archived sessions (/delete) are excluded here by
         design -- see list_archived_sessions for the recovery-path view.
 
-        `offset` (real fix, 2026-07-17): lets the REPL chooser's "[m] more
+        `offset` lets the REPL chooser's "[m] more
         sessions" view page past the first CHOOSER_SESSION_LIMIT rows
         instead of a real session becoming permanently unreachable once
-        enough newer sessions exist -- see cli/repl.py's real incident
-        note. 0 (default) is the exact prior behavior, unaffected."""
+        enough newer sessions exist (see docs/DESIGN.md's "REPL
+        implementation notes" section). 0 (default) is the prior
+        behavior, unaffected."""
         conn = _connect(self.db_path)
         try:
             rows = conn.execute(
@@ -413,7 +414,7 @@ class SessionStore:
 
     def get_turn_duration_seconds(self, turn_id: int) -> float | None:
         """Queryable after the fact, not display-only computation thrown
-        away after rendering -- §9's explicit requirement."""
+        away after rendering."""
         conn = _connect(self.db_path)
         try:
             row = conn.execute(

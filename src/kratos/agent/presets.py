@@ -1,11 +1,11 @@
-"""Saved investigation presets (A2 Tier 1) + the forward-compatible schema.
+"""Saved investigation presets (Tier 1) + the forward-compatible schema.
 
 A preset is a named, reusable, user-authored investigation. Tier 1 (this module)
 stores **named natural-language goals** run through the agentic `run_agent()`
-loop; the schema and every reader are built so comprehensive A2 Tier 2
-(deterministic user pipelines run through `agent/pipeline.py`) slots in by adding
-one branch, reusing all of the storage / validation / CRUD here. See
-`docs/a2_custom_presets_and_pipelines.md` §4.1 for the locked schema contract.
+loop; the schema and every reader are built so Tier 2
+(deterministic user pipelines run through `agent/pipeline.py`, see
+docs/DESIGN.md's "Presets and pipelines" section) slots in by adding
+one branch, reusing all of the storage / validation / CRUD here.
 
 Storage: one TOML file per preset at `<data_dir>/presets/<name>.toml`, read via
 stdlib `tomllib` and written by a small round-trip-verified serializer (no new
