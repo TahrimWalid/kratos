@@ -125,7 +125,7 @@ def test_help_documents_every_primary_command():
     from kratos.tui_mk2.modals import HelpModal
 
     primary = [
-        "/help", "/run", "/plan", "/report",
+        "/help", "/guide", "/run", "/plan", "/report",
         "/preset-new", "/preset-describe", "/preset-run", "/preset-list",
         "/preset-show", "/preset-edit", "/preset-delete", "/preset-scaffold",
         "/preset-export", "/preset-import",

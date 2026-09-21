@@ -62,7 +62,7 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *, resumed: bool = Fal
     the active theme's brand color (red by default), so this restyles with the
     theme; the safety 'observe-only' stays green in every theme (a role color)."""
     wordmark = Align.center(Text("   ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
-    subtitle = Align.center(Text("security assistant · mk2", style=T.TEXT_FAINT))
+    subtitle = Align.center(Text("security assistant", style=T.TEXT_FAINT))
 
     tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)
     mode = Text("observe-only", style=f"bold {T.SAFE}")
@@ -73,18 +73,23 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *, resumed: bool = Fal
         [_home_card("TARGET", tgt), _home_card("MODE", mode), _home_card("TOOLS LOADED", tools)],
         padding=(0, 1), expand=False))
 
+    # Static, ordered by what a first-time user actually does: connect a machine,
+    # ask a question, learn more. (No "connect a sub-agent" tip -- that path isn't
+    # built yet; /target is how you point Kratos at a host today.)
     tips = Text()
-    tips.append("tips  ", style=f"bold {T.TEXT_FAINTER}")
-    tips.append("describe a goal in plain language and Kratos picks its own read-only tools\n", style=T.TEXT_DIM)
+    tips.append("new here?  ", style=f"bold {T.TEXT_FAINTER}")
+    tips.append("start with  ", style=T.TEXT_DIM)
+    tips.append("/target <host>", style=T.ACCENT)
+    tips.append("  to connect a machine, then ask in plain language\n", style=T.TEXT_DIM)
     tips.append("  ·  try  ", style=T.TEXT_FAINTER)
     tips.append("“check this host for signs of an SSH brute-force”\n", style=T.TEXT_MUTED)
     tips.append("  ·  ", style=T.TEXT_FAINTER)
+    tips.append("/guide", style=T.ACCENT)
+    tips.append(" getting started    ", style=T.TEXT_DIM)
     tips.append("/doctor", style=T.ACCENT)
-    tips.append(" self-check    ", style=T.TEXT_DIM)
-    tips.append("/evolve", style=T.ACCENT)
-    tips.append(" write a new tool    ", style=T.TEXT_DIM)
+    tips.append(" check your setup    ", style=T.TEXT_DIM)
     tips.append("?", style=T.ACCENT)
-    tips.append(" help", style=T.TEXT_DIM)
+    tips.append(" all commands", style=T.TEXT_DIM)
 
     parts: list[Any] = [Text(""), wordmark, subtitle, Text(""), cards, Text("")]
     if resumed:

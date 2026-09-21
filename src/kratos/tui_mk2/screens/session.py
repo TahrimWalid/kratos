@@ -80,6 +80,7 @@ _PALETTE_COMMANDS = [
     ("/evolve", "write a new tool for the current gap"),
     ("/tools", "list the tools Kratos can use, by kind"),
     ("/use", "run ONE specific tool directly (deterministic, no model)"),
+    ("/guide", "getting started — the first steps, in plain language"),
     ("/help", "list all commands"),
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
@@ -704,6 +705,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._preset_flow("import " + rest if rest else "import")
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
+        elif cmd in ("/guide", "/start", "/getting-started"):
+            self._render_guide()
         elif cmd == "/usage":
             self._render_usage()
         elif cmd == "/context":
@@ -838,6 +841,28 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit(R.note_line("Getting full — /compact summarizes older turns (keeping the recent ones) to free space."))
         else:
             self._emit(R.note_line("/compact frees space by summarizing older turns; recent turns are kept verbatim."))
+
+    # --- /guide (getting started) ---------------------------
+    def _render_guide(self) -> None:
+        """A short, plain-language orientation for a first-time user, pointing at
+        the full guide. Deliberately concise -- the deep detail lives in the
+        shipped docs/GUIDE.md, not on screen."""
+        body = (
+            "Getting started\n\n"
+            "  1.  /target <host>   point Kratos at a machine to watch. It checks the\n"
+            "                       SSH connection and shows what the target still needs.\n"
+            "  2.  ask in plain words, e.g. “check this host for signs of an SSH\n"
+            "                       brute-force”. Kratos picks its own read-only tools\n"
+            "                       and explains what it finds.\n"
+            "  3.  /doctor          confirm your setup (model, target, tools) is healthy.\n"
+            "  4.  /report          see this session's findings, most severe first.\n\n"
+            "Good to know\n"
+            "  ·  Kratos only observes. It recommends changes; it never makes them on the target.\n"
+            "  ·  /evolve builds a new tool when Kratos is missing one — you review the code first.\n"
+            "  ·  /preset saves an investigation to re-run or schedule.\n\n"
+            "Full guide:  docs/GUIDE.md        All commands:  ?  or  /help"
+        )
+        self._emit(R.result_panel("Kratos — quick guide", body, T.ACCENT))
 
     # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")

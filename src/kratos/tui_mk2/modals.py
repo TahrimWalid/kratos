@@ -294,6 +294,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(Text("Kratos — commands", style=f"bold {T.ACCENT}"), classes="modal-title")
             yield Static(self._table("Session / navigation", [
                 ("/help", "List available commands"),
+                ("/guide", "Getting started — the first steps, in plain language"),
                 ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
                 ("/plan [preset|goal]", "Preview a run's steps before it runs (/plan gate on|off toggles auto-preview)"),
                 ("/preset-new", "Save a reusable investigation — a plain-language goal, or a tool pipeline"),
