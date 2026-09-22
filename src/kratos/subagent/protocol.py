@@ -22,14 +22,29 @@ claim to be, so a corrupt or hostile peer can't exhaust memory by sending a
 huge length prefix.
 
 Message shapes (every message has a "type" field):
-  hello           {type, version, agent_id, auth: {token} | {pairing_code},
-                   hostname, agent_version}
-  hello_ack       {type, target_id, token}
-  hello_reject    {type, reason}
-  telemetry       {type, seq, collected_at, payload}
-  telemetry_ack   {type, seq}
-  ping            {type, ts}
-  pong            {type, ts}          -- echoes the ping's ts
+  hello              {type, version, agent_id, auth: {token} | {pairing_code},
+                      hostname, agent_version}
+  hello_ack          {type, target_id, token}
+  hello_reject       {type, reason}
+  telemetry          {type, seq, collected_at, payload}
+  telemetry_ack      {type, seq}
+  ping               {type, ts}
+  pong               {type, ts}          -- echoes the ping's ts
+
+Capability 2 (direct execution) messages -- see kratos.subagent.signing for
+the HMAC envelope these carry, kratos.subagent.whitelist for the ActionSpec
+shape serialized in `actions`, and core_server.py/agent.py's own module
+docstrings for the fail-closed/dead-man's-switch/anti-rollback behavior
+built around them (design doc §9 #4/#5). Building this channel does NOT
+enable execution against any real target -- see agent.py's own
+`execution_enabled` flag, which defaults OFF and is the one thing that must
+be explicitly, locally set on the target for a dispatch to ever actually run.
+  whitelist_push      {type, version, actions: [ActionSpec-as-dict, ...], sig}
+  whitelist_push_ack  {type, version}
+  exec_dispatch       {type, dispatch_id, action_id, slot_values,
+                       whitelist_version, sig}
+  exec_result         {type, dispatch_id, status: "ok"|"refused"|"error",
+                       reason, exit_code, stdout_tail, stderr_tail, ts}
 """
 from __future__ import annotations
 
@@ -49,6 +64,11 @@ MSG_TELEMETRY = "telemetry"
 MSG_TELEMETRY_ACK = "telemetry_ack"
 MSG_PING = "ping"
 MSG_PONG = "pong"
+
+MSG_WHITELIST_PUSH = "whitelist_push"
+MSG_WHITELIST_PUSH_ACK = "whitelist_push_ack"
+MSG_EXEC_DISPATCH = "exec_dispatch"
+MSG_EXEC_RESULT = "exec_result"
 
 
 class ProtocolError(ValueError):
@@ -139,3 +159,46 @@ def build_ping(ts: float) -> dict[str, Any]:
 
 def build_pong(ts: float) -> dict[str, Any]:
     return {"type": MSG_PONG, "ts": ts}
+
+
+def build_whitelist_push(version: int, actions: list[dict[str, Any]], sig: str) -> dict[str, Any]:
+    return {"type": MSG_WHITELIST_PUSH, "version": version, "actions": actions, "sig": sig}
+
+
+def build_whitelist_push_ack(version: int) -> dict[str, Any]:
+    return {"type": MSG_WHITELIST_PUSH_ACK, "version": version}
+
+
+def build_exec_dispatch(
+    dispatch_id: str, action_id: str, slot_values: dict[str, Any], whitelist_version: int, sig: str
+) -> dict[str, Any]:
+    return {
+        "type": MSG_EXEC_DISPATCH,
+        "dispatch_id": dispatch_id,
+        "action_id": action_id,
+        "slot_values": slot_values,
+        "whitelist_version": whitelist_version,
+        "sig": sig,
+    }
+
+
+def build_exec_result(
+    dispatch_id: str,
+    status: str,
+    *,
+    reason: str | None = None,
+    exit_code: int | None = None,
+    stdout_tail: str = "",
+    stderr_tail: str = "",
+    ts: float | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": MSG_EXEC_RESULT,
+        "dispatch_id": dispatch_id,
+        "status": status,
+        "reason": reason,
+        "exit_code": exit_code,
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
+        "ts": ts,
+    }

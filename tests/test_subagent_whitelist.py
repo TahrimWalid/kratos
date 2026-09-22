@@ -20,8 +20,7 @@ from kratos.subagent import whitelist as W
 def test_builtin_specs_are_all_structurally_valid():
     specs = W.list_builtin_action_specs()
     assert len(specs) >= 4
-    for spec in specs:
-        W.validate_spec(spec)  # must not raise
+    W.validate_action_set(specs)  # must not raise -- includes inverse-pair + recommendation checks
 
 
 def test_builtin_specs_are_not_registered_anywhere():
@@ -36,8 +35,11 @@ def test_builtin_specs_are_not_registered_anywhere():
 
 def test_fail2ban_ban_ip_renders_a_safe_argv_list():
     spec = next(s for s in W.list_builtin_action_specs() if s.id == "fail2ban.ban_ip")
-    argv = W.render_argv(spec, {"jail": "sshd", "ip": "203.0.113.7"})
-    assert argv == ["fail2ban-client", "set", "sshd", "banip", "203.0.113.7"]
+    # A genuinely global address -- the builtin now sets ip_deny_private=True,
+    # and RFC 5737 documentation ranges (203.0.113.0/24 etc.) are classified
+    # is_private=True by Python's ipaddress.
+    argv = W.render_argv(spec, {"jail": "sshd", "ip": "8.8.8.8"})
+    assert argv == ["fail2ban-client", "set", "sshd", "banip", "8.8.8.8"]
     assert isinstance(argv, list) and all(isinstance(t, str) for t in argv)
 
 
@@ -182,7 +184,7 @@ def test_ufw_allow_from_is_rejected_open_decision_6_unresolved():
         effect="Allows inbound traffic from one IP.",
         reversibility="Reversible -- ufw delete allow from <ip>.",
         blast_radius="Firewall rule change on the target.",
-        sensitivity="high",
+        reachability_adjacent=True,
     )
     with pytest.raises(W.HardExclusionError):
         W.validate_spec(spec)
@@ -236,15 +238,79 @@ def test_disclosure_fields_must_be_non_empty(field):
         W.validate_spec(spec)
 
 
-def test_invalid_sensitivity_is_rejected():
+def test_requires_typed_execute_cannot_be_disabled():
+    # Control 7: typed EXECUTE is required in both modes, always -- an
+    # ActionSpec cannot opt out of it per-action.
     spec = W.ActionSpec(
-        id="bad.sensitivity", layer="maintainer",
+        id="bad.noexecute", layer="maintainer",
         argv_template=("systemctl", "restart", "fail2ban"),
         slots={}, effect="x", reversibility="x", blast_radius="x",
-        sensitivity="extreme",  # type: ignore[arg-type]
+        requires_typed_execute=False,
     )
     with pytest.raises(W.ActionSpecError):
         W.validate_spec(spec)
+
+
+@pytest.mark.parametrize("verb", ["stop", "mask", "kill"])
+def test_service_stop_shaped_actions_are_hard_rejected(verb):
+    # design doc §9 #1: no service.stop, full stop -- regardless of unit.
+    spec = W.ActionSpec(
+        id="bad.stopservice", layer="maintainer",
+        argv_template=("systemctl", verb, "{unit}"),
+        slots={"unit": W.Slot(kind="enum", values=("fail2ban",))},
+        effect="x", reversibility="x", blast_radius="x",
+    )
+    with pytest.raises(W.HardExclusionError):
+        W.validate_spec(spec)
+
+
+@pytest.mark.parametrize("verb", ["restart", "disable"])
+@pytest.mark.parametrize("sshd_name", ["ssh", "sshd", "SSHD"])
+def test_sshd_never_reachable_via_disruptive_systemctl_verb(verb, sshd_name):
+    # design doc §9 #1: sshd is NOT in the restart/disable allowlist -- never
+    # sever your own access. Case-insensitive.
+    spec = W.ActionSpec(
+        id="bad.sshddisrupt", layer="maintainer",
+        argv_template=("systemctl", verb, "{unit}"),
+        slots={"unit": W.Slot(kind="enum", values=("fail2ban", sshd_name))},
+        effect="x", reversibility="x", blast_radius="x",
+    )
+    with pytest.raises(W.HardExclusionError):
+        W.validate_spec(spec)
+
+
+def test_sshd_enable_is_not_banned_only_disruptive_verbs_are():
+    # 'enable' isn't in the disruptive-verb set -- sshd in that enum is fine.
+    spec = W.ActionSpec(
+        id="ok.sshdenable", layer="maintainer",
+        argv_template=("systemctl", "enable", "--now", "{unit}"),
+        slots={"unit": W.Slot(kind="enum", values=("sshd",))},
+        effect="x", reversibility="x", blast_radius="x",
+    )
+    W.validate_spec(spec)  # must not raise
+
+
+def test_firewall_related_enum_value_requires_reachability_adjacent_declared():
+    spec = W.ActionSpec(
+        id="bad.underdeclared", layer="maintainer",
+        argv_template=("systemctl", "enable", "--now", "{unit}"),
+        slots={"unit": W.Slot(kind="enum", values=("fail2ban", "ufw"))},
+        effect="x", reversibility="x", blast_radius="x",
+        reachability_adjacent=False,  # touches "ufw" but doesn't admit it
+    )
+    with pytest.raises(W.ActionSpecError):
+        W.validate_spec(spec)
+
+
+def test_over_declaring_reachability_adjacent_is_always_allowed():
+    spec = W.ActionSpec(
+        id="ok.overdeclared", layer="maintainer",
+        argv_template=("systemctl", "enable", "--now", "{unit}"),
+        slots={"unit": W.Slot(kind="enum", values=("fail2ban",))},
+        effect="x", reversibility="x", blast_radius="x",
+        reachability_adjacent=True,  # doesn't touch a firewall unit, declared True anyway
+    )
+    W.validate_spec(spec)  # must not raise -- conservative over-declaration is fine
 
 
 def test_invalid_layer_is_rejected():
@@ -374,7 +440,7 @@ def test_render_argv_rejects_missing_or_extra_slot_values():
 
 
 def test_render_argv_never_produces_a_shell_string():
-    spec = next(s for s in W.list_builtin_action_specs() if s.id == "service.restart")
+    spec = next(s for s in W.list_builtin_action_specs() if s.id == "service.disable_now")
     argv = W.render_argv(spec, {"unit": "fail2ban"})
     assert isinstance(argv, list)
     assert all(";" not in t and "|" not in t and "&" not in t for t in argv)
@@ -390,5 +456,116 @@ def test_validation_is_pure_and_deterministic_across_independent_calls():
     agent_side = copy.deepcopy(spec)
     W.validate_spec(core_side)
     W.validate_spec(agent_side)
-    values = {"jail": "sshd", "ip": "198.51.100.4"}
+    values = {"jail": "sshd", "ip": "1.1.1.1"}
     assert W.render_argv(core_side, values) == W.render_argv(agent_side, values)
+
+
+# ---------------------------------------------------------------------------
+# §9 #1/#2 -- reversibility pairing, source_recommendation coverage, and
+# computed sensitivity tiers.
+# ---------------------------------------------------------------------------
+def test_validate_action_set_catches_an_asymmetric_inverse_pair():
+    a = W.ActionSpec(
+        id="pair.a", layer="maintainer", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reversible=True, inverse_id="pair.b", source_recommendation=("TEST-1",),
+    )
+    b = W.ActionSpec(
+        id="pair.b", layer="maintainer", argv_template=("logger", "b"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reversible=True, inverse_id=None,  # doesn't point back -- asymmetric
+    )
+    with pytest.raises(W.ActionSpecError):
+        W.validate_action_set([a, b])
+
+
+def test_validate_action_set_catches_a_dangling_inverse_id():
+    a = W.ActionSpec(
+        id="pair.dangling", layer="maintainer", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reversible=True, inverse_id="pair.nonexistent", source_recommendation=("TEST-1",),
+    )
+    with pytest.raises(W.ActionSpecError):
+        W.validate_action_set([a])
+
+
+def test_validate_action_set_requires_a_maintainer_default_be_recommended():
+    orphan = W.ActionSpec(
+        id="orphan.action", layer="maintainer", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        # no source_recommendation, no inverse -- not tied to any real recommendation
+    )
+    with pytest.raises(W.ActionSpecError):
+        W.validate_action_set([orphan])
+
+
+def test_validate_action_set_allows_an_inverse_to_inherit_coverage():
+    recommended = W.ActionSpec(
+        id="pair.recommended", layer="maintainer", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reversible=True, inverse_id="pair.helper", source_recommendation=("TEST-1",),
+    )
+    helper = W.ActionSpec(
+        id="pair.helper", layer="maintainer", argv_template=("logger", "b"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reversible=True, inverse_id="pair.recommended",  # no source_recommendation of its own
+    )
+    W.validate_action_set([recommended, helper])  # must not raise
+
+
+def test_validate_action_set_catches_duplicate_ids():
+    a = W.ActionSpec(id="dup.id", layer="maintainer", argv_template=("logger", "a"), slots={},
+                      effect="x", reversibility="x", blast_radius="x", source_recommendation=("T",))
+    b = W.ActionSpec(id="dup.id", layer="maintainer", argv_template=("logger", "b"), slots={},
+                      effect="x", reversibility="x", blast_radius="x", source_recommendation=("T",))
+    with pytest.raises(W.ActionSpecError):
+        W.validate_action_set([a, b])
+
+
+def test_user_layer_specs_never_need_a_source_recommendation():
+    user_spec = W.ActionSpec(
+        id="user.custom", layer="user", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+    )
+    W.validate_action_set([user_spec])  # must not raise -- only maintainer defaults are checked
+
+
+@pytest.mark.parametrize("reachability,disrupts,reversible,expected", [
+    (True, False, True, "high"),     # reachability_adjacent alone is enough
+    (True, True, False, "high"),
+    (False, True, False, "high"),    # both other flags trip -> high
+    (False, True, True, "medium"),   # disrupts only
+    (False, False, False, "medium"), # not reversible only
+    (False, False, True, "low"),     # neither flag, reversible -> low
+])
+def test_compute_sensitivity_tier_matrix(reachability, disrupts, reversible, expected):
+    spec = W.ActionSpec(
+        id="tier.test", layer="maintainer", argv_template=("logger", "a"), slots={},
+        effect="x", reversibility="x", blast_radius="x",
+        reachability_adjacent=reachability, disrupts_running_service=disrupts, reversible=reversible,
+        source_recommendation=("T",),
+    )
+    assert W.compute_sensitivity_tier(spec) == expected
+
+
+def test_default_enabled_for_tier():
+    assert W.default_enabled_for_tier("low") is True
+    assert W.default_enabled_for_tier("medium") is True
+    assert W.default_enabled_for_tier("high") is False
+
+
+def test_builtin_tiers_match_their_declared_properties():
+    tiers = {s.id: W.compute_sensitivity_tier(s) for s in W.list_builtin_action_specs()}
+    assert tiers["fail2ban.ban_ip"] == "low"
+    assert tiers["fail2ban.unban_ip"] == "low"
+    # Both touch the "ufw" unit in their enum -> reachability_adjacent -> high,
+    # so both are disabled-by-default per default_enabled_for_tier.
+    assert tiers["service.enable_now"] == "high"
+    assert tiers["service.disable_now"] == "high"
+    assert W.default_enabled_for_tier(tiers["service.enable_now"]) is False
+
+
+def test_touches_firewall_related_unit_helper():
+    assert W.touches_firewall_related_unit({"unit": W.Slot(kind="enum", values=("fail2ban", "ufw"))})
+    assert not W.touches_firewall_related_unit({"unit": W.Slot(kind="enum", values=("fail2ban",))})
+    assert not W.touches_firewall_related_unit({"ip": W.Slot(kind="ip")})

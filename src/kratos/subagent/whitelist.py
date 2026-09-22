@@ -1,37 +1,29 @@
 """
-Sub-agent action whitelist -- MECHANISM ONLY, INERT (control 3/3a;
-docs/subagent_architecture.md, docs/subagent_whitelist_design.md).
+Sub-agent action whitelist -- the ActionSpec schema, slot validators, and §5
+hard exclusions (control 3/3a; docs/subagent_architecture.md,
+docs/subagent_whitelist_design.md). This is the actual security boundary for
+capability 2 (direct execution) -- "the whitelist -- not command signing --
+is the security boundary" (architecture doc, corrected threat model).
 
-**What this module is**: the ActionSpec schema, the closed set of slot
-validators, and the hard-exclusion checks (design doc §5) that together are
-the actual security boundary for capability 2 (direct execution) -- "the
-whitelist -- not command signing -- is the security boundary" (architecture
-doc, corrected threat model). Every function here is pure (no I/O, no global
-state); ActionSpec/Slot are frozen dataclasses.
+**Status (2026-09-22): the design doc's §9 open decisions were RATIFIED by
+the owner** (adopting the Appendix A recommendations), which unblocks
+BUILDING capability 2 against a decided spec. The one thing not waived is the
+independent security review -- it is RE-PLACED to gate ENABLING execution
+against a real target (reviewing the actual built code before it's ever
+turned on against a live machine), not building it. Nothing in this
+repository enables execution against a real target; that switch does not
+exist. See `docs/subagent_whitelist_design.md` §9/Appendix A for the full
+rationale behind every decision encoded below.
 
-**What this module deliberately is NOT**: `docs/subagent_whitelist_design.md`
-is explicitly a DRAFT ("Status: DRAFT -- review-first proposal, NOT a
-shippable spec... Do not build capability 2 against this until it's reviewed
-and the open decisions are made"). Its §9 lists 7 open decisions (the real
-maintainer default set, sensitivity tiers, whether `ufw.allow_from`/any
-firewall action is allowed at all, revocation, integrity-protection of
-shipped defaults, whether user entries need extra friction, and the
-independent security review itself) that belong to "the human owner + an
-independent security reviewer" -- not to whoever happens to be writing code.
-Accordingly, this module:
-  - has no storage/persistence, no user-CRUD, no TUI wiring, no `/whitelist`
-    command anywhere;
-  - has no signing, no dispatch, no sub-agent-side execution -- capability 2
-    remains entirely unbuilt;
-  - exposes `list_builtin_action_specs()` returning the design doc §8
-    ILLUSTRATIVE starter set for tests/illustration only -- not a shipped
-    default set, not registered anywhere the agent or a human could invoke;
-  - resolves none of the §9 open decisions (in particular, `ufw.allow_from`
-    and any other firewall/reachability action is hard-REJECTED by
-    `validate_spec`, matching §9 item 6 being unresolved -- default-deny, not
-    a judgment call made here).
+This module itself has no storage/persistence, no signing, no dispatch, and
+no TUI -- those live in `kratos.storage.whitelist_store` (CRUD + per-target
+scoping), the (forthcoming) signed dispatch protocol, and
+`kratos.tui_mk2.screens.whitelist` respectively. What lives here is pure: the
+schema, the four closed slot-validator types, the hard exclusions, computed
+sensitivity tiering, and argv assembly. `ActionSpec`/`Slot` are frozen
+dataclasses; every function is side-effect-free.
 
-The one principle this whole module enforces (design doc §2): an action is a
+The one principle everything here enforces (design doc §2): an action is a
 fixed command template with typed, validated parameter *slots* -- never a
 command string, never free text, never a shell. `render_argv` assembles an
 argv LIST (never a shell string) from a spec's fixed template plus validated
@@ -41,6 +33,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -51,7 +44,6 @@ Layer = Literal["maintainer", "user"]
 _VALID_LAYERS = ("maintainer", "user")
 
 Sensitivity = Literal["low", "medium", "high"]
-_VALID_SENSITIVITIES = ("low", "medium", "high")
 
 
 class ActionSpecError(ValueError):
@@ -63,8 +55,8 @@ class ActionSpecError(ValueError):
 class HardExclusionError(ActionSpecError):
     """The spec touches one of design doc §5's hard-excluded categories
     (shell/interpreter, credential/secret path, package install, account
-    change, or -- pending open decision #9.6 -- a reachability-affecting
-    action). Always a hard reject, never a warning."""
+    change, service.stop/sshd-disruption, or -- per §9 #6 -- a
+    firewall/reachability binary). Always a hard reject, never a warning."""
 
 
 class SlotValueError(ValueError):
@@ -131,8 +123,28 @@ class ActionSpec:
     """One whitelisted action (design doc §3). `effect`/`reversibility`/
     `blast_radius` are part of the definition, authored by a human, and are
     control 7's source of truth for an approval screen -- never LLM-generated
-    text. Nothing in this module ever writes to these fields; they exist so a
-    future approval UI can read them from a trusted place."""
+    text.
+
+    `reversible`/`disrupts_running_service`/`reachability_adjacent` are
+    declared structural properties (design doc §9 #2/Appendix A #3) that
+    `compute_sensitivity_tier()` derives the tier from -- sensitivity is
+    deliberately NOT a field a spec author can just assert; see that function.
+    `reachability_adjacent` is partially machine-checked: `validate_spec`
+    rejects a spec that touches a firewall-related enum value while declaring
+    `reachability_adjacent=False` (it may still be over-declared True for an
+    action that doesn't strictly need it -- that direction is always safe).
+
+    `inverse_id`, if set, must name another action in the same set whose own
+    `inverse_id` points back (a symmetric reversibility pair, design doc §9
+    #1) -- checked by `validate_action_set`, not per-spec (a lone spec can't
+    see its sibling).
+
+    `source_recommendation` names the findings-engine check(s)/finding
+    id(s)/rule(s) this action is the executable image of (design doc §9 #1) --
+    required for every `layer="maintainer"` spec UNLESS it is the declared
+    inverse of one that has it (an inverse exists to make its sibling safely
+    reversible, not because it is itself independently recommended).
+    """
 
     id: str
     layer: Layer
@@ -141,7 +153,11 @@ class ActionSpec:
     effect: str = ""
     reversibility: str = ""
     blast_radius: str = ""
-    sensitivity: Sensitivity = "medium"
+    reversible: bool = False
+    disrupts_running_service: bool = False
+    reachability_adjacent: bool = False
+    inverse_id: str | None = None
+    source_recommendation: tuple[str, ...] = ()
     requires_typed_execute: bool = True
 
 
@@ -172,13 +188,31 @@ _BANNED_ACCOUNT_BINARIES = frozenset({
     "gpasswd", "visudo", "su", "sudo",
 })
 
-# Reachability-affecting binaries -- §9 open decision 6 ("whether
-# ufw.allow_from / any firewall action is allowed at all") is UNRESOLVED, so
-# this module default-denies rather than guessing. Revisit only once that
-# decision is actually made by the doc's named owner/reviewer.
+# Reachability-affecting binaries invoked DIRECTLY -- design doc §9 #6:
+# default-deny, `ufw.allow_from` rejected, no firewall action ships in the
+# initial set. Distinct from *toggling* a firewall unit through systemctl
+# (service.enable_now/disable_now with unit="ufw") -- that's a coarser,
+# already-vetted on/off action decision #1's illustrative set allows; THIS
+# ban is about invoking a firewall CLI's own rule-editing surface
+# (allow/deny/insert/delete-shaped commands) directly, which stays banned
+# even after the decisions were ratified (no firewall-rule action was
+# approved -- only the possibility of a future one, itself gated, per §9 #6).
 _BANNED_REACHABILITY_BINARIES = frozenset({
     "ufw", "iptables", "ip6tables", "nft", "firewalld", "firewall-cmd",
 })
+
+# systemd units that, if reachable through a DISRUPTIVE systemctl verb
+# (restart/disable/stop/mask/kill), are firewall-adjacent -- toggling one of
+# these off (even transiently, e.g. mid-restart) can affect reachability.
+# Used by validate_spec to require `reachability_adjacent=True` be truthfully
+# declared on any spec whose enum touches one of these (§9 #2/#6).
+_FIREWALL_RELATED_ENUM_VALUES = frozenset({"ufw", "iptables", "ip6tables", "nft", "nftables", "firewalld"})
+
+# design doc §9 #1's hard carve-outs: no `service.stop`-shaped action at all,
+# and sshd/ssh must never be reachable through a verb that could disrupt it
+# (never sever your own access).
+_BANNED_SYSTEMCTL_VERBS = frozenset({"stop", "mask", "kill"})
+_SSHD_EXCLUDED_SYSTEMCTL_VERBS = frozenset({"restart", "disable", "stop", "mask", "kill"})
 
 # Credential/secret-adjacent material -- unreachable, full stop (§5), checked
 # against every LITERAL argv token and every enum slot VALUE, case-
@@ -206,6 +240,19 @@ _SENSITIVE_PATH_MARKERS: tuple[str, ...] = (
 
 def _basename(token: str) -> str:
     return token.rsplit("/", 1)[-1]
+
+
+def touches_firewall_related_unit(slots: dict[str, Slot]) -> bool:
+    """True if any enum slot in `slots` allows a firewall-related unit name
+    (design doc §9 #2/#6). Exposed (not private) so the templating/CRUD layer
+    can recompute `reachability_adjacent` for a user-scoped EFFECTIVE spec
+    built from a narrowed subset of a template's enum values, rather than
+    blindly inheriting the template's own (necessarily conservative, since a
+    template's enum spans everything it COULD allow) declaration."""
+    return any(
+        slot.kind == "enum" and any(v.lower() in _FIREWALL_RELATED_ENUM_VALUES for v in (slot.values or ()))
+        for slot in slots.values()
+    )
 
 
 def _validate_slot_definition(name: str, slot: Slot) -> None:
@@ -288,9 +335,24 @@ def _check_hard_exclusions(spec: ActionSpec, literal_tokens: list[str]) -> None:
             )
         if base in _BANNED_REACHABILITY_BINARIES:
             raise HardExclusionError(
-                f"{spec.id}: {tok!r} can affect network/firewall reachability -- excluded pending open "
-                "decision #6 (docs/subagent_whitelist_design.md §9), not resolved by this module"
+                f"{spec.id}: {tok!r} can affect network/firewall reachability directly -- excluded per "
+                "design doc §9 #6 (default-deny; no firewall-rule action shipped)"
             )
+
+    if literal_tokens and len(literal_tokens) > 1 and _basename(literal_tokens[0]).lower() == "systemctl":
+        verb = literal_tokens[1].lower()
+        if verb in _BANNED_SYSTEMCTL_VERBS:
+            raise HardExclusionError(
+                f"{spec.id}: 'systemctl {verb}' is excluded -- no action may stop/mask/kill a service "
+                "outright (design doc §9 #1: no service.stop)"
+            )
+        if verb in _SSHD_EXCLUDED_SYSTEMCTL_VERBS:
+            for slot in spec.slots.values():
+                if slot.kind == "enum" and any(v.lower() in ("ssh", "sshd") for v in (slot.values or ())):
+                    raise HardExclusionError(
+                        f"{spec.id}: sshd/ssh must never be reachable via a disruptive systemctl verb "
+                        f"({verb!r}) -- never sever your own access (design doc §9 #1)"
+                    )
 
     haystack_parts = [t.lower() for t in literal_tokens]
     for slot in spec.slots.values():
@@ -305,6 +367,16 @@ def _check_hard_exclusions(spec: ActionSpec, literal_tokens: list[str]) -> None:
             )
 
 
+def _check_reachability_declaration(spec: ActionSpec) -> None:
+    if touches_firewall_related_unit(spec.slots) and not spec.reachability_adjacent:
+        raise ActionSpecError(
+            f"{spec.id}: an enum slot allows a firewall-related unit but reachability_adjacent=False -- "
+            "must be truthfully declared True so the computed sensitivity tier reflects the real risk "
+            "(design doc §9 #2/#6); over-declaring True when it doesn't strictly apply is fine, "
+            "under-declaring is not"
+        )
+
+
 def validate_spec(spec: ActionSpec) -> None:
     """Structural validation of an ActionSpec definition -- the definition-
     time half of the whitelist boundary. Raises ActionSpecError (or its
@@ -312,14 +384,22 @@ def validate_spec(spec: ActionSpec) -> None:
     None on success. Deliberately re-run by `render_argv` before every
     dispatch attempt (design doc §4's "validation runs twice, independently"
     -- here that means "never trust a spec object just because it was valid
-    once," the same defense-in-depth spirit, even though core/agent-side
-    duplication itself isn't built yet)."""
+    once," the same defense-in-depth spirit; the actual core+agent
+    independent re-validation is the execution channel's job, not this
+    function's).
+
+    Does NOT check `source_recommendation` coverage or `inverse_id`
+    symmetry -- those are properties of a whole SET of specs (a lone spec
+    can't see its siblings); see `validate_action_set`."""
     if not spec.id or not re.fullmatch(r"[a-z][a-z0-9_.]*", spec.id):
         raise ActionSpecError(f"invalid action id {spec.id!r} -- must be a lowercase dotted identifier")
     if spec.layer not in _VALID_LAYERS:
         raise ActionSpecError(f"{spec.id}: layer must be one of {_VALID_LAYERS}, got {spec.layer!r}")
-    if spec.sensitivity not in _VALID_SENSITIVITIES:
-        raise ActionSpecError(f"{spec.id}: sensitivity must be one of {_VALID_SENSITIVITIES}, got {spec.sensitivity!r}")
+    if not spec.requires_typed_execute:
+        raise ActionSpecError(
+            f"{spec.id}: requires_typed_execute must always be True -- the typed-EXECUTE gate (control 7) "
+            "is required in both recommend-only and direct-execution modes and is never shortened per-action"
+        )
     if not spec.argv_template or not isinstance(spec.argv_template, tuple):
         raise ActionSpecError(f"{spec.id}: argv_template must be a non-empty tuple of strings, never a string")
     if any(not isinstance(t, str) or not t for t in spec.argv_template):
@@ -360,6 +440,76 @@ def validate_spec(spec: ActionSpec) -> None:
         )
 
     _check_hard_exclusions(spec, literal_tokens)
+    _check_reachability_declaration(spec)
+
+
+def validate_action_set(specs: Sequence[ActionSpec]) -> None:
+    """Validation that only makes sense across a WHOLE set of specs together
+    (design doc §9 #1/#7's "re-review triggered on any change" -- this is the
+    machine-checkable structural half of that): every spec individually
+    valid, ids unique, every `inverse_id` resolves and is symmetric (design
+    doc §9 #1's reversibility-pair rule), and every `layer="maintainer"` spec
+    is tied to a real recommendation, directly or via being the declared
+    inverse of one that is."""
+    for spec in specs:
+        validate_spec(spec)
+
+    by_id: dict[str, ActionSpec] = {}
+    for spec in specs:
+        if spec.id in by_id:
+            raise ActionSpecError(f"duplicate action id {spec.id!r}")
+        by_id[spec.id] = spec
+
+    for spec in specs:
+        if spec.inverse_id is None:
+            continue
+        inverse = by_id.get(spec.inverse_id)
+        if inverse is None:
+            raise ActionSpecError(f"{spec.id}: inverse_id {spec.inverse_id!r} is not a known action in this set")
+        if inverse.inverse_id != spec.id:
+            raise ActionSpecError(
+                f"{spec.id} <-> {spec.inverse_id}: a reversibility pair must be symmetric (design doc §9 #1)"
+            )
+
+    for spec in specs:
+        if spec.layer != "maintainer":
+            continue
+        covered = bool(spec.source_recommendation) or (
+            spec.inverse_id is not None and bool(by_id[spec.inverse_id].source_recommendation)
+        )
+        if not covered:
+            raise ActionSpecError(
+                f"{spec.id}: a maintainer default must be tied to a real findings-engine recommendation "
+                "(source_recommendation), or be the declared inverse of one that is (design doc §9 #1)"
+            )
+
+
+def compute_sensitivity_tier(spec: ActionSpec) -> Sensitivity:
+    """Design doc §9 #2/Appendix A #3: the tier is DERIVED from declared spec
+    properties, never hand-assigned. `reachability_adjacent` alone is enough
+    for `high` (could affect Kratos's own access -- the single worst outcome
+    this mechanism defends against); otherwise `disrupts_running_service` and
+    `not reversible` each contribute one point, and two-or-more points is
+    `high`, exactly one is `medium`, none is `low`. Friction escalates by
+    tier (low: typed EXECUTE; medium: + a reversibility warning; high: + a
+    second confirm + a louder system warning + disabled-by-default, see
+    `default_enabled_for_tier`)."""
+    if spec.reachability_adjacent:
+        return "high"
+    score = int(spec.disrupts_running_service) + int(not spec.reversible)
+    if score >= 2:
+        return "high"
+    if score == 1:
+        return "medium"
+    return "low"
+
+
+def default_enabled_for_tier(tier: Sensitivity) -> bool:
+    """Design doc §9 #2: low/medium maintainer defaults are enabled for a
+    target once that target has opted into execution at all (opt-out model);
+    `high`-tier actions stay disabled even then, requiring an explicit
+    additional per-action opt-in on top of the per-target execution toggle."""
+    return tier != "high"
 
 
 def render_argv(spec: ActionSpec, slot_values: dict[str, object]) -> list[str]:
@@ -368,9 +518,8 @@ def render_argv(spec: ActionSpec, slot_values: dict[str, object]) -> list[str]:
     Re-validates the spec itself first, then every supplied value against its
     slot's validator; any failure is a hard reject (SlotValueError or
     ActionSpecError), never a clamp-and-continue. This function has no
-    knowledge of signing, transport, or execution -- it only ever returns a
-    list of strings for a caller (not built anywhere yet) to decide what to
-    do with."""
+    knowledge of signing or transport -- it only ever returns a list of
+    strings; the execution channel decides what to do with it."""
     validate_spec(spec)
     provided = set(slot_values)
     declared = set(spec.slots)
@@ -387,28 +536,57 @@ def render_argv(spec: ActionSpec, slot_values: dict[str, object]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Illustrative starter set (design doc §8) -- DRAFT, NOT shipped defaults.
+# Illustrative starter set (design doc §8, refined per §9 #1) -- still
+# illustrative (a real, final set needs the full findings-engine sweep + the
+# independent review before it ever ships/enables), but each entry here is
+# now genuinely tied to a real, existing recommendation rather than invented:
+#   - fail2ban.ban_ip/unban_ip: the executable image of CORR-SSH-001/CORR-001
+#     ("SSH exposure correlated with failed-login burst... consider
+#     rate-limiting / lockout controls (e.g., fail2ban)",
+#     adapters/findings_engine.py) plus AUTH-004's IP-attributed bursts.
+#   - service.enable_now/disable_now: the executable image of
+#     run_config_audit's real `fail2ban_status`/`firewall` FAIL checks
+#     ("fail2ban is installed but the service is not active" /
+#     "ufw installed but not active", adapters/ssh_remote.py's config-audit
+#     script) -- i.e. exactly the fail2ban-inactive scenario that originally
+#     surfaced the observe-and-recommend boundary this whole mechanism sits
+#     under (docs/DESIGN.md, "Execution boundary").
+# `service.restart` from the original §8 draft is DROPPED here: no real
+# recommendation currently says "restart fail2ban/ufw" specifically, and
+# decision #1 is explicit that a default action must be tied to one.
+# `ufw.allow_from` remains absent per §9 #6 (see the fuzz/unit tests proving
+# it's rejected, not merely omitted).
 # ---------------------------------------------------------------------------
 _DRAFT_BUILTIN_SPECS: tuple[ActionSpec, ...] = (
     ActionSpec(
         id="fail2ban.ban_ip",
         layer="maintainer",
         argv_template=("fail2ban-client", "set", "{jail}", "banip", "{ip}"),
-        slots={"jail": Slot(kind="enum", values=("sshd",)), "ip": Slot(kind="ip")},
+        slots={"jail": Slot(kind="enum", values=("sshd",)), "ip": Slot(kind="ip", ip_deny_private=True)},
         effect="Bans one IP address in one fail2ban jail.",
         reversibility="Reversible -- unban with fail2ban.unban_ip.",
         blast_radius="Single IP; no service restart; no data change.",
-        sensitivity="low",
+        reversible=True,
+        disrupts_running_service=False,
+        reachability_adjacent=False,
+        inverse_id="fail2ban.unban_ip",
+        source_recommendation=("CORR-SSH-001", "CORR-001", "AUTH-004"),
     ),
     ActionSpec(
         id="fail2ban.unban_ip",
         layer="maintainer",
         argv_template=("fail2ban-client", "set", "{jail}", "unbanip", "{ip}"),
-        slots={"jail": Slot(kind="enum", values=("sshd",)), "ip": Slot(kind="ip")},
+        slots={"jail": Slot(kind="enum", values=("sshd",)), "ip": Slot(kind="ip", ip_deny_private=True)},
         effect="Unbans one IP address in one fail2ban jail.",
         reversibility="Reversible -- re-ban with fail2ban.ban_ip.",
         blast_radius="Single IP; no service restart; no data change.",
-        sensitivity="low",
+        reversible=True,
+        disrupts_running_service=False,
+        reachability_adjacent=False,
+        inverse_id="fail2ban.ban_ip",
+        # No independent recommendation of its own -- exists to make
+        # fail2ban.ban_ip's mistakes reversible (design doc §9 #1); covered
+        # via that inverse relationship, not an empty claim to be recommended.
     ),
     ActionSpec(
         id="service.enable_now",
@@ -418,7 +596,11 @@ _DRAFT_BUILTIN_SPECS: tuple[ActionSpec, ...] = (
         effect="Enables and starts one unit from a fixed allowlist.",
         reversibility="Reversible -- service.disable_now on the same unit.",
         blast_radius="One service on the target host.",
-        sensitivity="medium",
+        reversible=True,
+        disrupts_running_service=False,
+        reachability_adjacent=True,  # unit enum includes "ufw" -- see touches_firewall_related_unit
+        inverse_id="service.disable_now",
+        source_recommendation=("run_config_audit:fail2ban_status:FAIL", "run_config_audit:firewall:FAIL"),
     ),
     ActionSpec(
         id="service.disable_now",
@@ -428,26 +610,93 @@ _DRAFT_BUILTIN_SPECS: tuple[ActionSpec, ...] = (
         effect="Stops and disables one unit from a fixed allowlist.",
         reversibility="Reversible -- service.enable_now on the same unit.",
         blast_radius="One service on the target host.",
-        sensitivity="medium",
-    ),
-    ActionSpec(
-        id="service.restart",
-        layer="maintainer",
-        argv_template=("systemctl", "restart", "{unit}"),
-        slots={"unit": Slot(kind="enum", values=("fail2ban", "ufw"))},
-        effect="Restarts one unit from a fixed allowlist.",
-        reversibility="Not independently reversible (a restart is a restart), but idempotent/low-risk.",
-        blast_radius="One service on the target host; brief service interruption.",
-        sensitivity="medium",
+        reversible=True,
+        disrupts_running_service=True,  # stops a currently-running unit
+        reachability_adjacent=True,  # unit enum includes "ufw"
+        inverse_id="service.enable_now",
+        # Covered via the inverse relationship to service.enable_now, same
+        # reasoning as fail2ban.unban_ip above.
     ),
 )
 
 
+def spec_to_wire(spec: ActionSpec) -> dict:
+    """Serialize an ActionSpec to a plain JSON-able dict, for the (signed)
+    whitelist-push message the execution channel sends core -> agent.
+    Round-trips exactly through `spec_from_wire`. Does not validate --
+    callers validate before signing/sending and again after receiving/
+    deserializing (design doc §4's "twice, independently")."""
+    return {
+        "id": spec.id,
+        "layer": spec.layer,
+        "argv_template": list(spec.argv_template),
+        "slots": {
+            name: {
+                "kind": slot.kind,
+                "values": list(slot.values) if slot.values is not None else None,
+                "ip_deny_private": slot.ip_deny_private,
+                "min_value": slot.min_value,
+                "max_value": slot.max_value,
+                "pattern": slot.pattern,
+                "max_length": slot.max_length,
+            }
+            for name, slot in spec.slots.items()
+        },
+        "effect": spec.effect,
+        "reversibility": spec.reversibility,
+        "blast_radius": spec.blast_radius,
+        "reversible": spec.reversible,
+        "disrupts_running_service": spec.disrupts_running_service,
+        "reachability_adjacent": spec.reachability_adjacent,
+        "inverse_id": spec.inverse_id,
+        "source_recommendation": list(spec.source_recommendation),
+        "requires_typed_execute": spec.requires_typed_execute,
+    }
+
+
+def spec_from_wire(data: dict) -> ActionSpec:
+    """Inverse of `spec_to_wire`. Raises ActionSpecError on a structurally
+    malformed dict (missing/wrong-typed field) rather than a raw KeyError/
+    TypeError -- a receiver (the agent, re-validating a pushed whitelist from
+    core) should get the same exception family `validate_spec` itself
+    raises, not an unrelated crash, from a malformed wire message."""
+    try:
+        slots = {
+            name: Slot(
+                kind=s["kind"],
+                values=tuple(s["values"]) if s.get("values") is not None else None,
+                ip_deny_private=bool(s.get("ip_deny_private", False)),
+                min_value=s.get("min_value"),
+                max_value=s.get("max_value"),
+                pattern=s.get("pattern", _DEFAULT_TOKEN_PATTERN),
+                max_length=s.get("max_length", _DEFAULT_TOKEN_MAX_LENGTH),
+            )
+            for name, s in data["slots"].items()
+        }
+        return ActionSpec(
+            id=data["id"],
+            layer=data["layer"],
+            argv_template=tuple(data["argv_template"]),
+            slots=slots,
+            effect=data.get("effect", ""),
+            reversibility=data.get("reversibility", ""),
+            blast_radius=data.get("blast_radius", ""),
+            reversible=bool(data.get("reversible", False)),
+            disrupts_running_service=bool(data.get("disrupts_running_service", False)),
+            reachability_adjacent=bool(data.get("reachability_adjacent", False)),
+            inverse_id=data.get("inverse_id"),
+            source_recommendation=tuple(data.get("source_recommendation", ())),
+            requires_typed_execute=bool(data.get("requires_typed_execute", True)),
+        )
+    except (KeyError, TypeError) as e:
+        raise ActionSpecError(f"malformed ActionSpec wire payload: {e}") from e
+
+
 def list_builtin_action_specs() -> tuple[ActionSpec, ...]:
-    """The design doc §8 ILLUSTRATIVE starter set, for tests/illustration
-    ONLY. NOT a shipped default set (§9 open decision 1 is unresolved), NOT
-    registered in any tool/action registry, and NOT reachable from the agent,
-    the TUI, or any dispatch path -- none of that exists yet. A real shipped
-    maintainer default set requires the human owner + the independent
-    security review the design doc calls for."""
+    """The illustrative maintainer starter set (design doc §8, refined per
+    §9 #1 -- see the block comment above). Passes `validate_action_set`. Not
+    yet reachable from the agent or any dispatch path in this repository --
+    the storage/CRUD layer (`kratos.storage.whitelist_store`) is what
+    actually loads a real per-target action set, of which this is the
+    current maintainer half."""
     return _DRAFT_BUILTIN_SPECS

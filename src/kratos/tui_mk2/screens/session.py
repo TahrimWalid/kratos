@@ -92,6 +92,7 @@ _PALETTE_COMMANDS = [
     ("/delete", "archive (soft-delete) this session"),
     ("/sessions", "back to the session picker (keeps this session)"),
     ("/settings", "settings — models, tool approvals, timezone"),
+    ("/whitelist", "a paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]
@@ -776,6 +777,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
 
             self.app.push_screen(Phase2PreviewScreen())
+        elif cmd == "/whitelist":
+            from kratos.tui_mk2.screens.whitelist import WhitelistScreen
+
+            self.app.push_screen(WhitelistScreen(self._data_dir))
         elif cmd in ("/investigate-host", "/investigate-self", "/host"):
             self._investigate_host_flow(rest)
         elif cmd == "/run":
