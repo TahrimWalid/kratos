@@ -32,9 +32,11 @@ plain words. It goes and looks (at the logs, the open network ports, the running
 programs, files that changed), works out what's going on, and tells you in a way
 you can actually read. If it finds a problem, it tells you how to fix it.
 
-The one thing to hold onto: **Kratos looks, it doesn't touch.** It will never
-change the machine it's watching. It reads and it advises. Whether you act on the
-advice is always up to you.
+The one thing to hold onto: **by default, Kratos observes and recommends — it
+doesn't change the machine itself.** It reads and it advises; whether you act on
+the advice is up to you. (A future opt-in will let Kratos carry out a small set of
+approved actions on a target you choose; that path isn't built yet, so today it
+only observes.)
 
 You don't need to know the names of any security tools. You describe what you
 care about ("has anyone been trying to break in?") and Kratos figures out which
@@ -178,9 +180,9 @@ target still needs. Typically that's:
   <img src="images/target_setup.svg" width="840" alt="The target setup checklist (commands to run on the target) and the setup-check results table">
 </p>
 
-Kratos won't change the target to fix these — that would break its "look, don't
-touch" rule. Instead it gives you the exact commands to run **on the target**
-yourself, so you stay in control. Run them, then check again with:
+Kratos doesn't run these fixes for you — it only observes. Instead it gives you
+the exact commands to run **on the target** yourself, so you stay in control. Run
+them, then check again with:
 
 ```
 /target verify
@@ -230,8 +232,8 @@ the evidence behind it and, usually, a recommended action. Each finding has a
 - **green** — informational, or an all-clear.
 
 Type `/report` at any time to see all of a session's findings again, most severe
-first. A finding is Kratos's *conclusion*, not an action — it never acts on a
-finding by itself.
+first. A finding is Kratos's *conclusion*, not an action — it doesn't act on a
+finding on its own.
 
 <p align="center">
   <img src="images/report.svg" width="840" alt="A report showing a high-severity SSH brute-force finding and an informational all-clear">
@@ -482,7 +484,8 @@ permission prompt, pressing Enter is always the safe "no."
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.
 - **Pipeline** — a fixed sequence of tools run in order, with no model steering.
-- **Observe-only** — Kratos reads and advises; it never changes the target.
+- **Observe-only** — by default, Kratos reads and advises; it doesn't change the
+  target itself. (Acting on a target is a planned opt-in, not built yet.)
 - **Sandbox** — the locked-down space where a newly written tool is tested safely.
 - **Approval / "requires approval"** — a yes/no gate before something with real
   consequences happens. A non-answer always means no.

@@ -363,8 +363,8 @@ class GuideModal(ModalScreen[None]):
             yield Static(Text(
                 "Kratos looks over a machine and tells you, in plain English, what's going on "
                 "with it — failed logins, exposed ports, changed files. It explains what it "
-                "found and what it would do about it. It never changes the target itself; acting "
-                "on its advice is your call.", style=T.TEXT))
+                "found and what it would do about it. By default it doesn't change the target "
+                "itself; acting on its advice is your call.", style=T.TEXT))
             yield Static(Text("\nFirst steps", style=f"bold {T.TEXT_BRIGHT}"))
             yield Static(self._steps([
                 ("1.  /target <host>", "point Kratos at a machine to watch. It checks the SSH "
@@ -376,7 +376,8 @@ class GuideModal(ModalScreen[None]):
             ]))
             yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
             yield Static(self._steps([
-                ("observe-only", "Kratos reads and advises; it never makes changes on the target."),
+                ("observe-only", "by default Kratos reads and advises; it doesn't change the "
+                 "target itself. Acting on a target is a planned opt-in, not built yet."),
                 ("/evolve", "builds a new tool when Kratos is missing one — you review the code first."),
                 ("/preset", "saves an investigation to re-run or schedule."),
                 ("y / n", "at a permission prompt, y means yes; anything else means no."),

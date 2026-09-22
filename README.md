@@ -6,7 +6,7 @@
   <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
 </p>
 
-Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, and so on. It explains what it found and what it would do about it. It won't change anything on the target itself — acting on its advice is your call.
+Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, and so on. It explains what it found and what it would do about it. By default it doesn't change the target itself — acting on its advice is your call (see [Safe by default](#safe-by-default)).
 
 By default it talks to a hosted model, so you can start in a few minutes without running your own. If you'd rather keep everything on your own hardware, point it at a model you host yourself and no data leaves the box.
 
@@ -42,7 +42,7 @@ And it can check its own setup — model, target, tools — and tell you the fix
 
 Kratos observes and recommends. In every current build it does not, and cannot, change the machine it's watching. Every tool it can point at a target is read-only — it inspects logs, ports, processes, and files, but there is no path for it to alter anything there. It reads, it reasons, it reports. What to do with that is up to a person.
 
-That's the default, not a permanent limit. A narrow, opt-in path for Kratos to *act* on a target — dispatching only a small set of pre-approved, whitelisted actions to a lightweight agent running there — is designed and on the roadmap. It stays off for every target unless you turn it on, and the whitelist of allowed actions (not a password prompt, not a signature) is what keeps it safe. **This part is not built yet.** Until it is, "Kratos never touches the target" is simply true.
+That's the default, not a permanent limit. A narrow, opt-in path for Kratos to *act* on a target — dispatching only a small set of pre-approved, whitelisted actions to a lightweight agent running there — is designed and on the roadmap. It stays off for every target unless you turn it on, and the whitelist of allowed actions (not a password prompt, not a signature) is what keeps it safe. **This part is not built yet.** Until it is, Kratos only observes a target — that's the whole of what it can do to one today.
 
 Everywhere a decision has real consequences — running a local command, keeping a self-written tool — Kratos asks, and a non-answer means no. There is no "force yes."
 

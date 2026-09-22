@@ -690,7 +690,7 @@ def trigger_detail_panel(trigger: Any, records: list[dict]) -> Panel:
     }.get(trigger.action, trigger.action)
     body.append(f"\naction: {trigger.action} — {action_help}", style=T.TEXT_MUTED)
     body.append(f"\ntarget: {trigger.target or 'any'}   ·   cooldown: {trigger.cooldown_minutes} min", style=T.TEXT_MUTED)
-    body.append("\n\nRecommend/notify/read-only only — Kratos never acts on the target.", style=T.TEXT_FAINT)
+    body.append("\n\nRecommend / notify / read-only — a trigger doesn't act on the target itself.", style=T.TEXT_FAINT)
     if records:
         body.append("\n\nRecent fires:", style=T.TEXT_DIM)
         for r in records[-5:]:
