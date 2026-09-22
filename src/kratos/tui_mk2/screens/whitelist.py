@@ -91,8 +91,8 @@ class WhitelistScreen(Screen):
         targets = self._sa_store.list_targets()
         if not targets:
             self._log(Text(
-                "No paired sub-agent targets yet. Pairing has no TUI flow built yet -- "
-                "run `kratos subagent-pair` from a terminal, then reopen /whitelist.",
+                "No paired sub-agent targets yet. Use /subagent to add a server "
+                "(it walks you through pairing), then reopen /whitelist.",
                 style=T.ATTENTION))
             return
         if len(targets) == 1:

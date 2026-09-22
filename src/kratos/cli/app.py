@@ -207,12 +207,51 @@ def cmd_subagent_pair(args: argparse.Namespace) -> int:
     store = SubAgentStore(args.data_dir / "kratos.db")
     result = store.create_pairing_code(name=args.name)
     print(f"[KRATOS] Pairing code: {result['code']}  (expires in {result['ttl_seconds'] // 60} min)")
-    print(f"[KRATOS] On the target, with subagent/{{agent,protocol,collector}}.py copied alongside each other:")
+    print(f"[KRATOS] On the target, with subagent/{{agent,protocol,collector,signing,whitelist}}.py copied alongside each other:")
     print(
         f"[KRATOS]   python3 -m subagent.agent --core-host {args.core_host} --core-port {args.core_port} "
         f"--pair {result['code']}"
     )
     print(f"[KRATOS] The pairing code is single-use; the agent saves a persistent token after its first successful connect.")
+    print(f"[KRATOS] Easier: `kratos subagent-install --core-host {args.core_host}` emits a one-command installer instead.")
+    return 0
+
+
+def cmd_subagent_install(args: argparse.Namespace) -> int:
+    """
+    Emit a self-contained, one-command installer for a new sub-agent
+    (capability 1 -- read-only telemetry). Creates a single-use pairing code
+    (unless --code is supplied) and prints a POSIX-sh script that, run once on
+    the target, writes the stdlib-only agent bundle, installs a systemd
+    service (Restart=always), and connects. No PyPI, no hosting endpoint, no
+    inbound port on the target. Direct execution (capability 2) is never
+    enabled by this installer.
+    """
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent import installer as _installer
+
+    code = args.code
+    ttl_note = ""
+    if not code:
+        store = SubAgentStore(args.data_dir / "kratos.db")
+        result = store.create_pairing_code(name=args.name)
+        code = result["code"]
+        ttl_note = f"  (pairing code expires in {result['ttl_seconds'] // 60} min)"
+
+    try:
+        script = _installer.generate_installer(args.core_host, code, core_port=args.core_port)
+    except _installer.InstallerError as exc:
+        print(f"[KRATOS] Could not generate installer: {exc}", file=sys.stderr)
+        return 1
+
+    if args.output:
+        out = Path(args.output)
+        out.write_text(script, encoding="utf-8")
+        print(f"[KRATOS] Installer written to {out}{ttl_note}")
+        print(f"[KRATOS] 1. Make sure this core is listening:  kratos subagent-serve --host {args.core_host}")
+        print(f"[KRATOS] 2. Copy {out.name} to the target and run:  sh {out.name}")
+    else:
+        print(script)
     return 0
 
 
@@ -1172,6 +1211,17 @@ def build_parser() -> argparse.ArgumentParser:
     subagent_serve.add_argument("--host", default="0.0.0.0", help="Interface to listen on (default: all)")
     subagent_serve.add_argument("--port", type=int, default=8765)
     subagent_serve.set_defaults(func=cmd_subagent_serve)
+
+    subagent_install = sub.add_parser(
+        "subagent-install",
+        help="Emit a one-command installer script to onboard a target (capability 1)",
+    )
+    subagent_install.add_argument("--core-host", required=True, help="This core's address, as the target will reach it")
+    subagent_install.add_argument("--core-port", type=int, default=8765)
+    subagent_install.add_argument("--name", default=None, help="Optional human-readable label for this target")
+    subagent_install.add_argument("--code", default=None, help="Reuse an existing pairing code instead of creating one")
+    subagent_install.add_argument("-o", "--output", default=None, help="Write the script to a file instead of stdout")
+    subagent_install.set_defaults(func=cmd_subagent_install)
 
     subagent_status = sub.add_parser(
         "subagent-status",

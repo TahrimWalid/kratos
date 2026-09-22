@@ -1,0 +1,308 @@
+"""
+The "Add / manage sub-agents" screen (capability 1 -- read-only telemetry).
+Reachable via `/subagent` (aliases `/agents`, `/connect`).
+
+This is the real onboarding UX for the design canvas's pairing wizard
+(phase2_preview.py::_pairing_wizard) and status chip (_subagent_status),
+wired to live data:
+
+- lists paired targets with a real liveness status (subagent.status.derive_status
+  over each target's persisted last_seen) + latest telemetry availability;
+- "add a server" generates a single-use pairing code + a self-contained
+  installer script (subagent.installer.generate_installer) the operator runs
+  once on the target, then polls until that target checks in.
+
+It NEVER connects to a target and NEVER takes SSH credentials -- getting the
+generated installer onto the target and running it once is the operator's one
+bootstrap step (the same unavoidable step every agent-based tool has). Direct
+execution (capability 2) is a separate screen (`/whitelist`); nothing here
+enables or touches it.
+"""
+from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+from typing import Any
+
+from rich.table import Table
+from rich.text import Text
+from textual import work
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import DataTable, Static
+
+from kratos.storage.subagent_store import SubAgentStore
+from kratos.subagent import hub_address, installer
+from kratos.subagent.status import (
+    STATUS_CONNECTED,
+    STATUS_NEVER,
+    STATUS_STALE,
+    STATUS_UNREACHABLE,
+    derive_status,
+)
+from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+_DEFAULT_CORE_PORT = 8765
+_CHECKIN_POLL_SECONDS = 1.0
+_CHECKIN_TIMEOUT_SECONDS = 900  # a pairing code lives 15 min; stop waiting when it can no longer be used.
+
+_STATUS_STYLE = {
+    STATUS_CONNECTED: ("●", T.SAFE, "connected"),
+    STATUS_STALE: ("◐", T.ATTENTION, "stale"),
+    STATUS_UNREACHABLE: ("●", T.CRITICAL, "unreachable"),
+    STATUS_NEVER: ("○", T.TEXT_DIM, "never connected"),
+}
+
+
+class SubAgentScreen(Screen):
+    BINDINGS = [
+        Binding("escape,q", "back", "back", show=True),
+        Binding("a", "add_server", "add a server", show=True),
+        Binding("t", "telemetry", "latest telemetry", show=True),
+        Binding("r", "refresh", "refresh", show=False),
+    ]
+
+    CSS = """
+    SubAgentScreen { padding: 1 2; }
+    SubAgentScreen #sa-banner { height: auto; padding: 0 0 1 0; }
+    SubAgentScreen DataTable { height: auto; max-height: 14; }
+    SubAgentScreen #sa-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
+    SubAgentScreen #sa-hints { height: auto; padding-top: 1; }
+    """
+
+    def __init__(self, data_dir: Path, core_port: int = _DEFAULT_CORE_PORT) -> None:
+        super().__init__()
+        self._data_dir = Path(data_dir)
+        self._core_port = core_port
+        self._sa_store = SubAgentStore(self._data_dir / "kratos.db")
+        self._targets: list[dict[str, Any]] = []
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(
+                Text("Sub-agents — paired targets streaming read-only telemetry", style=f"bold {T.ACCENT}"),
+                id="sa-banner",
+            )
+            yield DataTable(id="sa-table", cursor_type="row")
+            yield VerticalScroll(id="sa-log")
+            yield Static(
+                Text("a add a server · t latest telemetry · r refresh · esc back", style=T.TEXT_DIM),
+                id="sa-hints",
+            )
+
+    def on_mount(self) -> None:
+        table = self.query_one("#sa-table", DataTable)
+        table.add_columns("status", "name", "host", "agent", "last seen")
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    def _log(self, renderable: Any) -> None:
+        log = self.query_one("#sa-log", VerticalScroll)
+        log.mount(Static(renderable))
+        log.scroll_end(animate=False)
+
+    def action_refresh(self) -> None:
+        self._refresh()
+
+    def _refresh(self) -> None:
+        table = self.query_one("#sa-table", DataTable)
+        table.clear()
+        self._targets = self._sa_store.list_targets()
+        if not self._targets:
+            table.add_row(Text("— no paired targets yet —", style=T.TEXT_DIM), "", "", "", "")
+            return
+        for t in self._targets:
+            status = derive_status(t.get("last_seen"))
+            glyph, color, label = _STATUS_STYLE.get(status, ("○", T.TEXT_DIM, status))
+            table.add_row(
+                Text(f"{glyph} {label}", style=color),
+                Text(t.get("name") or "—"),
+                Text(t.get("hostname") or "—"),
+                Text(t.get("agent_version") or "—"),
+                Text(_short_ts(t.get("last_seen")), style=T.TEXT_DIM),
+            )
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    # ------------------------------------------------------------------
+    def _selected_target(self) -> dict[str, Any] | None:
+        if not self._targets:
+            return None
+        table = self.query_one("#sa-table", DataTable)
+        row = table.cursor_row
+        if row is None or row < 0 or row >= len(self._targets):
+            return None
+        return self._targets[row]
+
+    def action_telemetry(self) -> None:
+        target = self._selected_target()
+        if target is None:
+            self._log(Text("Select a paired target first.", style=T.TEXT_DIM))
+            return
+        latest = self._sa_store.get_latest_telemetry(target["target_id"])
+        if latest is None:
+            self._log(Text(f"No telemetry received from {target.get('name') or target['target_id']} yet.", style=T.TEXT_DIM))
+            return
+        self._log(Text(f"Latest telemetry from {target.get('name') or target['hostname'] or target['target_id']}:", style=f"bold {T.ACCENT}"))
+        self._log(_telemetry_table(latest))
+
+    # ------------------------------------------------------------------
+    @work
+    async def action_add_server(self) -> None:
+        """Full add-a-server flow: name → hub address → code → installer → wait."""
+        name = await self.app.push_screen_wait(
+            PromptModal("Add a server", hint="A short label for this target (e.g. web-01). Enter to skip.")
+        )
+        if name is None:
+            return  # cancelled
+        name = (name or "").strip() or None
+
+        host = await self._pick_hub_address()
+        if host is None:
+            return
+
+        # A NEW target row appearing after this snapshot = a successful check-in.
+        pre_ids = {t["target_id"] for t in self._sa_store.list_targets()}
+
+        result = self._sa_store.create_pairing_code(name=name)
+        code = result["code"]
+        ttl_min = result["ttl_seconds"] // 60
+
+        try:
+            script = installer.generate_installer(host, code, core_port=self._core_port)
+        except installer.InstallerError as exc:
+            self._log(Text(f"Could not generate installer: {exc}", style=T.CRITICAL))
+            return
+
+        slug = _slug(name) or code.replace("-", "").lower()
+        out_path = self._data_dir / f"kratos-subagent-install-{slug}.sh"
+        try:
+            out_path.write_text(script, encoding="utf-8")
+        except OSError as exc:
+            self._log(Text(f"Could not write installer to {out_path}: {exc}", style=T.CRITICAL))
+            return
+
+        self._render_pairing_instructions(name, host, code, ttl_min, out_path)
+
+        serve_up = await self._serve_running(self._core_port)
+        if not serve_up:
+            self._log(Text(
+                f"⚠ This core isn't listening yet. Start it (in a terminal) so the target can check in:\n"
+                f"    kratos subagent-serve --host {host}",
+                style=T.ATTENTION,
+            ))
+
+        self._log(Text(f"Waiting for {name or 'the target'} to check in… (you can leave this screen; it keeps pairing)", style=T.ATTENTION))
+        await self._await_checkin(pre_ids, name)
+
+    async def _pick_hub_address(self) -> str | None:
+        """Ask which address the target should DIAL to reach this core."""
+        candidates = hub_address.candidate_hub_addresses()
+        entries: list[tuple[str, str]] = []
+        for c in candidates:
+            if c.kind == "manual":
+                entries.append(("__manual__", "Enter a different address…"))
+            else:
+                entries.append((c.address, f"{c.address}   ({c.kind}) — {c.note}"))
+        picked = await self.app.push_screen_wait(
+            ListPickerModal("Which address will the target reach this core at?", entries)
+        )
+        if picked is None:
+            return None
+        if picked == "__manual__":
+            typed = await self.app.push_screen_wait(
+                PromptModal("Core address", hint="Public IP or hostname the target can reach (e.g. vpn.example.com).")
+            )
+            typed = (typed or "").strip()
+            return typed or None
+        return picked
+
+    def _render_pairing_instructions(self, name: str | None, host: str, code: str, ttl_min: int, out_path: Path) -> None:
+        label = name or "this target"
+        self._log(Text(f"✓ Pairing code for {label}: {code}  (expires in {ttl_min} min)", style=f"bold {T.SAFE}"))
+        self._log(Text(
+            f"Saved a one-command installer to:\n"
+            f"    {out_path}\n\n"
+            f"Get it onto the target and run it once (it opens NO inbound port, and does not enable execution):\n"
+            f"    scp {out_path.name} {label.replace(' ', '-')}:~/     # or copy it over however you like\n"
+            f"    ssh <target> 'sh {out_path.name}'\n\n"
+            f"The target will dial back to this core at {host}:{self._core_port}.",
+            style=T.TEXT_MUTED,
+        ))
+
+    async def _serve_running(self, port: int) -> bool:
+        """Best-effort: is a `subagent-serve` listener up on this core?"""
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", port), timeout=1.0
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    async def _await_checkin(self, pre_ids: set[str], name: str | None) -> None:
+        waited = 0.0
+        while waited < _CHECKIN_TIMEOUT_SECONDS:
+            await asyncio.sleep(_CHECKIN_POLL_SECONDS)
+            waited += _CHECKIN_POLL_SECONDS
+            targets = self._sa_store.list_targets()
+            new = [t for t in targets if t["target_id"] not in pre_ids]
+            if new:
+                t = new[0]
+                who = t.get("hostname") or name or t["target_id"]
+                self._log(Text(
+                    f"✓ {who} paired — {t.get('agent_version') or 'sub-agent'} · telemetry live.\n"
+                    f"  It is recommend-only by default; turn on direct execution any time from /whitelist.",
+                    style=f"bold {T.SAFE}",
+                ))
+                self._refresh()
+                return
+        self._log(Text(
+            f"⧗ No check-in within {_CHECKIN_TIMEOUT_SECONDS // 60} min — the code likely expired unused.\n"
+            f"  The installer was never run, or this core wasn't listening. Add the server again for a fresh code.",
+            style=T.ATTENTION,
+        ))
+
+
+def _short_ts(iso: str | None) -> str:
+    if not iso:
+        return "never"
+    # Keep it compact; display-zone conversion is handled elsewhere for live views.
+    return iso.replace("T", " ").split(".")[0].replace("+00:00", "Z")
+
+
+def _slug(name: str | None) -> str:
+    if not name:
+        return ""
+    return "".join(c if c.isalnum() else "-" for c in name.lower()).strip("-")
+
+
+def _telemetry_table(latest: dict[str, Any]) -> Table:
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style=T.TEXT_DIM)
+    table.add_column()
+    payload = latest.get("payload") if isinstance(latest, dict) else None
+    if not isinstance(payload, dict):
+        payload = latest if isinstance(latest, dict) else {}
+    for key in sorted(payload):
+        val = payload[key]
+        if isinstance(val, (dict, list)):
+            val = _compact(val)
+        table.add_row(str(key), str(val))
+    if latest.get("collected_at"):
+        table.add_row("collected_at", str(latest["collected_at"]))
+    return table
+
+
+def _compact(val: Any, limit: int = 80) -> str:
+    s = str(val)
+    return s if len(s) <= limit else s[: limit - 1] + "…"
