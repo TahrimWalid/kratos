@@ -142,8 +142,13 @@ things to do. You can type a question at any time, or a command starting with `/
 Useful to know from the start:
 
 - Type `?` to see every command.
-- Type `/guide` for a short in-app version of this walkthrough.
+- Type `/guide` for a short in-app version of this walkthrough — you can also open
+  it with `?` right from the session picker, before you're even in a session.
 - Press `Ctrl+P` to search commands instead of remembering them.
+
+<p align="center">
+  <img src="images/guide.svg" width="820" alt="The in-app getting-started guide, reachable with ? or /guide">
+</p>
 
 ---
 
@@ -168,6 +173,10 @@ target still needs. Typically that's:
   narrow sudo rule),
 - two small helper programs installed on the target (`yara` and `lsof`),
 - the SSH port reachable from the Kratos machine.
+
+<p align="center">
+  <img src="images/target_setup.svg" width="840" alt="The target setup checklist (commands to run on the target) and the setup-check results table">
+</p>
 
 Kratos won't change the target to fix these — that would break its "look, don't
 touch" rule. Instead it gives you the exact commands to run **on the target**
@@ -224,6 +233,10 @@ Type `/report` at any time to see all of a session's findings again, most severe
 first. A finding is Kratos's *conclusion*, not an action — it never acts on a
 finding by itself.
 
+<p align="center">
+  <img src="images/report.svg" width="840" alt="A report showing a high-severity SSH brute-force finding and an informational all-clear">
+</p>
+
 ---
 
 ## When Kratos asks you a question
@@ -253,6 +266,10 @@ Enter, Escape, closing the prompt — means no.** If you're unsure, just press
 Enter; the safe answer is the default. Kratos will never take a silence or a
 mistyped key as a yes.
 
+<p align="center">
+  <img src="images/approval.svg" width="820" alt="A permission prompt asking before running a command on the Kratos host">
+</p>
+
 Note the difference from the previous section: a *question* (clarify) helps Kratos
 decide how to proceed and grants nothing. A *permission* prompt is the gate before
 something with consequences actually happens.
@@ -277,6 +294,10 @@ Same read-only tools underneath; the difference is whether the model is steering
 
 You never *have* to memorize these — `?` lists them and `Ctrl+P` searches them —
 but here's the map. Everything starts with `/`.
+
+<p align="center">
+  <img src="images/palette.svg" width="820" alt="The command palette — type to search every command">
+</p>
 
 **Getting around**
 
@@ -343,6 +364,10 @@ Here's the whole flow:
    results, and a set of "things worth looking at" flags. Nothing is kept until
    you say yes. If you say no, nothing is saved.
 
+<p align="center">
+  <img src="images/evolve.svg" width="820" alt="The /evolve review: the tool's source, its passing tests, review flags, and the keep decision">
+</p>
+
 A kept tool becomes part of Kratos and runs on the real machine from then on —
 which is exactly why the review step exists and why there's no way to skip it.
 By default a new tool asks you before each run until you trust it; you can change
@@ -357,12 +382,22 @@ If you find yourself running the same investigation often, save it.
 - **Presets** save an investigation so you can run it again with one command.
   `/preset new` walks you through it; `/preset list` shows what you've saved; a
   saved preset also gets its own `/<name>` command.
+
+  <p align="center">
+    <img src="images/preset_list.svg" width="840" alt="A list of saved presets — a goal preset and a pipeline preset">
+  </p>
+
 - **Pipelines** are a fixed sequence of read-only tools you build once and re-run
   for a deterministic sweep — no model, same steps every time.
 - **Schedules** run an audit or a preset automatically on a timer (say, every
   night) and can deliver the report. Kratos writes out the timer for you to
   install; it never installs system services on your behalf. If a scheduled run
   will use a cloud model, Kratos warns you first, because it costs money each time.
+
+  <p align="center">
+    <img src="images/schedule_list.svg" width="840" alt="A list of scheduled runs with their cadence and last-run status">
+  </p>
+
 - **Triggers** watch for a kind of finding and react — for example, send a
   notification when anything high-severity turns up.
 
@@ -380,9 +415,19 @@ If you find yourself running the same investigation often, save it.
 
 - **`/usage`** shows how many tokens this session has used and a rough cost. With
   a local model it's free and says so.
+
+  <p align="center">
+    <img src="images/usage.svg" width="840" alt="The /usage view — token counts and an estimated cost for the session">
+  </p>
+
 - **`/context`** shows how full the model's short-term memory is. When it gets
   full, `/compact` summarizes the older parts to make room while keeping the
   important points.
+
+  <p align="center">
+    <img src="images/context.svg" width="840" alt="The /context view — how full the model's memory is right now">
+  </p>
+
 
 ---
 
@@ -392,6 +437,11 @@ Press `Ctrl+T` (or open `/settings`) to change the color theme. Kratos comes in
 Kratos Red by default, plus Slate Blue, Matrix Green, and Cyan. The colors that
 carry meaning — danger red, safe green — stay the same in every theme, so switching
 is purely cosmetic.
+
+<p align="center">
+  <img src="images/theme-green.svg" width="410" alt="Matrix Green theme">
+  <img src="images/theme-cyan.svg" width="410" alt="Cyan theme">
+</p>
 
 `/settings` also lets you manage models, decide which self-written tools need to
 ask before running, and set your timezone.
