@@ -335,7 +335,7 @@ def _restore_terminal_mouse() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    parser = argparse.ArgumentParser(prog="kratos-mk2", description="Kratos — security assistant (Textual TUI).")
+    parser = argparse.ArgumentParser(prog="kratos", description="Kratos — security assistant (Textual TUI).")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--no-color", action="store_true")
     args = parser.parse_args(argv)

@@ -26,12 +26,12 @@ dependencies = [
 test = ["pytest"]
 
 [project.scripts]
+# Bare `kratos` launches the full-screen Textual TUI (the primary interface);
+# `kratos <subcommand>` (investigate / run / chat / scan / mcp-serve / llm-serve
+# / findings-* / ...) dispatches through cli/app.py as before. The classic
+# prompt_toolkit REPL is retired as the default face -- its code stays in the
+# tree, but there is no longer a bare-command or script entry that launches it.
 kratos = "kratos.cli.app:main"
-# kratos-mk2: the Textual full-screen TUI (docs/kratos_mk2_tui.md). Ships
-# side-by-side with the classic `kratos` REPL while it reaches parity. To
-# promote it once trusted, point `kratos` at kratos.tui_mk2.app:main and drop
-# this line -- deliberately a one-line swap, nothing else depends on the name.
-kratos-mk2 = "kratos.tui_mk2.app:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1219,9 +1219,18 @@ def main(argv: list[str] | None = None) -> int:
             "--continue", "-c", dest="continue_most_recent", action="store_true"
         )
         global_args, _unused = global_only_parser.parse_known_args(argv)
-        load_kept_tools()
-        from kratos.cli.repl import run_session
-        return run_session(global_args)
+        # Bare `kratos` launches the full-screen TUI -- the primary interface.
+        # The classic prompt_toolkit REPL (cli/repl.py) is retired as the default
+        # face (kept in the tree, just no longer the bare-command entry); every
+        # subcommand (investigate / run / mcp-serve / llm-serve / ...) is
+        # unaffected and still dispatches below. The TUI loads kept tools itself,
+        # so there is no load_kept_tools() here. --resume/--continue are handled
+        # by the TUI's own session picker rather than by these flags.
+        from kratos.tui_mk2.app import main as tui_main
+        tui_argv = ["--data-dir", str(global_args.data_dir)]
+        if getattr(global_args, "no_color", False):
+            tui_argv.append("--no-color")
+        return tui_main(tui_argv)
 
     # Intercept the two --help forms the styled renderer covers (bare
     # top-level, and `investigate --help`) before argparse's own -h/--help
