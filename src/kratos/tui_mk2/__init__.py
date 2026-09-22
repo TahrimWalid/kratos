@@ -1,9 +1,12 @@
 """
-kratos-mk2 -- the Textual full-screen TUI for Kratos.
+The Textual full-screen TUI for Kratos -- the primary interface.
 
-Ships side-by-side with the classic `kratos` prompt_toolkit REPL
-(src/kratos/cli/repl.py), which is completely untouched. Entry point:
-`kratos-mk2` (see pyproject.toml [project.scripts]) -> tui_mk2/app.py::main.
+Bare `kratos` launches this (cli/app.py's no-subcommand path -> tui_mk2/app.py::
+main); `kratos <subcommand>` still dispatches through cli/app.py. The classic
+prompt_toolkit REPL (cli/repl.py) is retired as the default face -- its code
+remains in the tree, but no command or console script launches it. The package
+directory is still named `tui_mk2` internally (a rename would touch every
+import); the user-facing `kratos-mk2` command has been retired.
 
 Build principle: implement screens whose backing mechanism ALREADY exists
 first; for screens whose mechanism does not exist yet, ship the UI as a

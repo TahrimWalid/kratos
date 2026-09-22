@@ -698,7 +698,7 @@ def cmd_scheduled_run(args: argparse.Namespace) -> int:
         print(f"[KRATOS] {e}")
         return 1
     if schedule is None:
-        print(f"[KRATOS] No schedule named '{args.name}'. See: kratos-mk2 → /schedule list")
+        print(f"[KRATOS] No schedule named '{args.name}'. See: kratos → /schedule list")
         return 1
 
     print(f"[KRATOS] Scheduled run '{schedule.name}' ({schedule.kind}) → target "

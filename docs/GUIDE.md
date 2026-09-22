@@ -125,10 +125,6 @@ kratos
 
 > The first time, Kratos asks whether you trust it to run on this machine, and
 > offers to remember a default target. It only asks once.
->
-> This guide shows the full-screen version of Kratos. If `kratos` opens a plain
-> line-by-line text prompt instead, run **`kratos-mk2`** — that's the full-screen
-> assistant shown in these screenshots.
 
 Once you're in, you'll see the home screen:
 
