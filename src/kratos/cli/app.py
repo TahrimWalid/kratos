@@ -193,6 +193,80 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_subagent_pair(args: argparse.Namespace) -> int:
+    """
+    Generate a one-time pairing code for a new sub-agent (capability 1 --
+    read-only telemetry only; docs/subagent_architecture.md). Print the
+    exact command to run ON the target -- the target-side agent is the file
+    at src/kratos/subagent/{agent,protocol,collector}.py, stdlib-only and
+    deployable by copying just those three files (see agent.py's module
+    docstring for the deployment shape).
+    """
+    from kratos.storage.subagent_store import SubAgentStore
+
+    store = SubAgentStore(args.data_dir / "kratos.db")
+    result = store.create_pairing_code(name=args.name)
+    print(f"[KRATOS] Pairing code: {result['code']}  (expires in {result['ttl_seconds'] // 60} min)")
+    print(f"[KRATOS] On the target, with subagent/{{agent,protocol,collector}}.py copied alongside each other:")
+    print(
+        f"[KRATOS]   python3 -m subagent.agent --core-host {args.core_host} --core-port {args.core_port} "
+        f"--pair {result['code']}"
+    )
+    print(f"[KRATOS] The pairing code is single-use; the agent saves a persistent token after its first successful connect.")
+    return 0
+
+
+def cmd_subagent_serve(args: argparse.Namespace) -> int:
+    """
+    Run the Kratos-core-side sub-agent telemetry listener (capability 1).
+    Blocking -- accepts OUTBOUND connections from paired sub-agents and
+    never dials out to one itself (see core_server.py's module docstring).
+    Read-only: this process cannot send a command to any agent.
+    """
+    import asyncio
+
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent.core_server import CoreServer, DEFAULT_PORT
+
+    store = SubAgentStore(args.data_dir / "kratos.db")
+    server = CoreServer(store, host=args.host, port=args.port)
+    print(f"[KRATOS] Sub-agent telemetry server listening on {args.host}:{args.port} (Ctrl+C to stop)")
+    try:
+        asyncio.run(server.serve_forever())
+    except KeyboardInterrupt:
+        print("\n[KRATOS] Sub-agent telemetry server stopped.")
+    return 0
+
+
+def cmd_subagent_status(args: argparse.Namespace) -> int:
+    """List paired sub-agent targets and their derived liveness status, plus
+    a one-line summary of the latest telemetry received from each (capability
+    1). Status here is derived purely from persisted last_seen recency (see
+    subagent/status.py) since this is a separate process from any running
+    `subagent-serve` -- it has no live-socket visibility of its own."""
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent.status import derive_status
+
+    store = SubAgentStore(args.data_dir / "kratos.db")
+    targets = store.list_targets()
+    if not targets:
+        print("[KRATOS] No sub-agents paired yet. Run: kratos subagent-pair")
+        return 0
+    for t in targets:
+        status = derive_status(t["last_seen"])
+        revoked = " (REVOKED)" if t["revoked_at"] else ""
+        print(f"[KRATOS] {t['target_id']}{revoked}  {t['hostname'] or '?'}  status={status}  last_seen={t['last_seen']}")
+        latest = store.get_latest_telemetry(t["target_id"])
+        if latest:
+            host = (latest["payload"].get("host") or {})
+            disk = (latest["payload"].get("disk") or {})
+            print(
+                f"[KRATOS]   latest telemetry (seq={latest['seq']}, collected_at={latest['collected_at']}): "
+                f"uptime={host.get('uptime_seconds')}s  disk_used_pct={disk.get('used_pct')}"
+            )
+    return 0
+
+
 def cmd_llm_serve(args: argparse.Namespace) -> int:
     """
     Start the Qwen2.5-Coder LLM server (model loaded once, stays in memory).
@@ -1080,6 +1154,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Start the Kratos MCP server (stdio) -- exposes investigate/get_findings/list_sessions to an MCP client",
     )
     mcp_serve.set_defaults(func=cmd_mcp_serve)
+
+    # ====== Sub-agent telemetry (capability 1 only -- docs/subagent_architecture.md) ======
+    subagent_pair = sub.add_parser(
+        "subagent-pair",
+        help="Generate a one-time pairing code for a new sub-agent (read-only telemetry)",
+    )
+    subagent_pair.add_argument("--name", default=None, help="Optional human-readable label for this target")
+    subagent_pair.add_argument("--core-host", required=True, help="This core's address, as the target will reach it")
+    subagent_pair.add_argument("--core-port", type=int, default=8765)
+    subagent_pair.set_defaults(func=cmd_subagent_pair)
+
+    subagent_serve = sub.add_parser(
+        "subagent-serve",
+        help="Run the core-side sub-agent telemetry listener (accepts paired agents' read-only telemetry)",
+    )
+    subagent_serve.add_argument("--host", default="0.0.0.0", help="Interface to listen on (default: all)")
+    subagent_serve.add_argument("--port", type=int, default=8765)
+    subagent_serve.set_defaults(func=cmd_subagent_serve)
+
+    subagent_status = sub.add_parser(
+        "subagent-status",
+        help="List paired sub-agent targets, their liveness status, and latest telemetry",
+    )
+    subagent_status.set_defaults(func=cmd_subagent_status)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(
