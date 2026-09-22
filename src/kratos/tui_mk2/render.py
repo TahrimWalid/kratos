@@ -355,8 +355,9 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
     """Design 19b -- a recommend-only remediation command the agent produced
     (structured `recommended_commands` from run_agent, feature 19b backend).
     Green, calm, and explicit that Kratos does NOT run it: it's for the human
-    to run in their own session (matching the project's permanent
-    observe-and-recommend boundary). Copyable via ctrl+y."""
+    to run in their own session (matching the observe-and-recommend default; a
+    kept tool / a whitelisted opt-in path is a separate, gated capability).
+    Copyable via ctrl+y."""
     run_on = str(cmd.get("run_on") or "target")
     where = target_label if run_on == "target" else "Kratos's own host"
     parts: list[Any] = []
@@ -436,7 +437,7 @@ def response_plan_panel(plan: Any, time_str: str | None = None) -> Panel:
     HIGH/CRITICAL finding: ordered steps, each command host-attributed and (if it
     changes state) flagged, plus what to verify and when to escalate. The border
     is the finding's severity colour; a footer states plainly that Kratos runs
-    none of it (the permanent observe-and-recommend boundary)."""
+    none of it (the observe-and-recommend default)."""
     color = T.SEVERITY_COLOR.get(str(plan.severity).lower(), T.CRITICAL)
     body: list[Any] = []
 
