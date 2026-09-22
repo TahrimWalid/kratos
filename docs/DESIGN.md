@@ -17,20 +17,26 @@ particular way. It isn't a changelog; for that, use `git log`.
 
 ## Execution boundary
 
-Kratos never executes commands or changes state on the monitored target.
-This is a permanent design boundary, not a temporary limitation waiting for
-more tooling: every target-facing tool in the registry is read/observe-only
-— `run_nmap_scan`, `read_journalctl`, `list_open_files`, `list_processes`,
-`check_file_integrity`, `run_yara_scan`, `run_vuln_scan`, `run_config_audit`,
-`correlate_findings` (which only synthesizes what's already been observed).
-When an investigation surfaces something that warrants action on the target
-— e.g. a disabled fail2ban jail — Kratos's job ends at recommending that
-action to a human, via a finding or the agent's final answer. It never
-performs it, and approval-gating a target-side action wouldn't change that:
-approval mitigates a different risk (an operator making a mistake with a
-local-host command, or a newly self-written tool doing something
-unexpected), not the risk of Kratos itself holding execution capability
-against a remote system.
+By default — and in every build that exists today — Kratos does not change
+the state of the machine it monitors. Every target-facing tool in the
+registry is read/observe-only: `run_nmap_scan`, `read_journalctl`,
+`list_open_files`, `list_processes`, `check_file_integrity`, `run_yara_scan`,
+`run_vuln_scan`, `run_config_audit`, `correlate_findings` (which only
+synthesizes what's already been observed). These do run read-only commands on
+the target to inspect it, but none of them can alter it. When an
+investigation surfaces something that warrants action on the target — e.g. a
+disabled fail2ban jail — Kratos's job ends at recommending that action to a
+human, via a finding or the agent's final answer. It never performs it.
+
+This is the current enforced behavior, not just a feature that hasn't been
+added: there is no code path from the agent to a state-changing command on
+the target. It is also the *default*, not a permanent law — a narrow,
+per-target opt-in execution path is designed (see below). Approval-gating
+wouldn't be the right control for target-side execution anyway: approval
+mitigates a different risk (an operator making a mistake with a local-host
+command, or a newly self-written tool doing something unexpected), which is
+why the planned execution path is bounded by a fixed action whitelist rather
+than by an approval prompt.
 
 Concretely, this shapes a few things that otherwise look like build-order
 accidents:
@@ -152,8 +158,11 @@ same pattern from the start.
 ## Threat-intel enrichment
 
 IP/hash/domain reputation lookups inherently send data about the protected
-network to a third party — a real, narrow exception to Kratos's otherwise
-local-first design, kept deliberately small:
+network to a third party. Since Kratos moved to a hosted model by default,
+that is no longer the *only* thing that leaves — the core analysis already
+sends logs and findings to the hosted LLM. Threat-intel is still kept
+deliberately small and off by default, so that self-hosting the model leaves
+nothing reaching out unless you opt in:
 
 - **Cached (default)**: AlienVault OTX pulses, synced to a local file ahead
   of time on a schedule. A lookup during an investigation reads only this
