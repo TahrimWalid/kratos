@@ -504,7 +504,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         n_builtin = len(TOOL_REGISTRY) - n_kept
 
         target = st["targets"][0] if st["targets"] else ""
-        self._emit(R.home_banner(target, n_builtin, n_kept, resumed=bool(st["resume_context"])))
+        from kratos.llm_config import get_active_llm_base_url, get_active_llm_model
+        model = get_active_llm_model()
+        base = (get_active_llm_base_url() or "").lower()
+        is_local = any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+        self._emit(R.home_banner(target, n_builtin, n_kept, model=model,
+                                 model_is_local=is_local, resumed=bool(st["resume_context"])))
         # Secondary hints (kept dim, below the banner) for the less-obvious moves.
         self._emit(Text(
             "Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · "
@@ -844,25 +849,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     # --- /guide (getting started) ---------------------------
     def _render_guide(self) -> None:
-        """A short, plain-language orientation for a first-time user, pointing at
-        the full guide. Deliberately concise -- the deep detail lives in the
-        shipped docs/GUIDE.md, not on screen."""
-        body = (
-            "Getting started\n\n"
-            "  1.  /target <host>   point Kratos at a machine to watch. It checks the\n"
-            "                       SSH connection and shows what the target still needs.\n"
-            "  2.  ask in plain words, e.g. “check this host for signs of an SSH\n"
-            "                       brute-force”. Kratos picks its own read-only tools\n"
-            "                       and explains what it finds.\n"
-            "  3.  /doctor          confirm your setup (model, target, tools) is healthy.\n"
-            "  4.  /report          see this session's findings, most severe first.\n\n"
-            "Good to know\n"
-            "  ·  Kratos only observes. It recommends changes; it never makes them on the target.\n"
-            "  ·  /evolve builds a new tool when Kratos is missing one — you review the code first.\n"
-            "  ·  /preset saves an investigation to re-run or schedule.\n\n"
-            "Full guide:  docs/GUIDE.md        All commands:  ?  or  /help"
-        )
-        self._emit(R.result_panel("Kratos — quick guide", body, T.ACCENT))
+        """Open the getting-started guide -- the same modal the launcher's ?/g
+        shows, so the guide reads identically from either place. The full detail
+        lives in the shipped docs/GUIDE.md."""
+        from kratos.tui_mk2.modals import GuideModal
+
+        self.app.push_screen(GuideModal())
 
     # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")

@@ -55,22 +55,31 @@ def _home_card(label: str, value: Text) -> Panel:
                  padding=(0, 2))
 
 
-def home_banner(target: str, n_builtin: int, n_kept: int, *, resumed: bool = False) -> Group:
+def home_banner(target: str, n_builtin: int, n_kept: int, *,
+                model: str = "", model_is_local: bool = False,
+                resumed: bool = False) -> Group:
     """The idle / home screen: a centered KRATOS wordmark, a one-line identity,
-    three at-a-glance cards (target · safety mode · tools), and starter tips.
-    Shown when a session has no messages yet. The wordmark + 'Kratos:' voice use
-    the active theme's brand color (red by default), so this restyles with the
-    theme; the safety 'observe-only' stays green in every theme (a role color)."""
+    three at-a-glance cards (target · model · tools), and starter tips. Shown
+    when a session has no messages yet. The wordmark + 'Kratos:' voice use the
+    active theme's brand color (red by default), so this restyles with the theme.
+
+    The MODEL card shows the active model and whether it's local (free, private)
+    or cloud (billed, sees your data) -- a value that actually varies (via
+    /model) and carries the pivot's cost/privacy signal, unlike a fixed 'mode'."""
     wordmark = Align.center(Text("   ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
     subtitle = Align.center(Text("security assistant", style=T.TEXT_FAINT))
 
     tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)
-    mode = Text("observe-only", style=f"bold {T.SAFE}")
+    mdl = Text()
+    mdl.append(model or "(unset)", style=f"bold {T.TEXT_BRIGHT}" if model else T.TEXT_DIM)
+    if model:
+        mdl.append("  ·  local · free" if model_is_local else "  ·  cloud · billed",
+                   style=T.SAFE if model_is_local else T.ATTENTION)
     tools = Text()
     tools.append(f"{n_builtin} built-in", style=f"bold {T.TEXT_BRIGHT}")
     tools.append(f" · {n_kept} kept", style=T.TEXT_MUTED)
     cards = Align.center(Columns(
-        [_home_card("TARGET", tgt), _home_card("MODE", mode), _home_card("TOOLS LOADED", tools)],
+        [_home_card("TARGET", tgt), _home_card("MODEL", mdl), _home_card("TOOLS LOADED", tools)],
         padding=(0, 1), expand=False))
 
     # Static, ordered by what a first-time user actually does: connect a machine,

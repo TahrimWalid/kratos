@@ -46,6 +46,8 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         Binding("n", "new_session", "new", show=True),
         Binding("a", "archived", "archived", show=True),
         Binding("s", "settings", "settings", show=True),
+        Binding("question_mark", "guide", "guide", show=True),
+        Binding("g", "guide", "guide", show=False),
         Binding("b", "back", "back", show=False),
         Binding("m", "more", "more", show=False),
         Binding("q", "quit_app", "quit", show=True),
@@ -198,7 +200,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
     def _render_hints(self, shown: int | None = None) -> None:
         hints = self.query_one("#hints", Static)
         if not self._rows and not self._archived_mode:
-            hints.update(Text("No sessions yet — press n to start one, or q to quit.", style=T.TEXT_DIM))
+            hints.update(Text("No sessions yet — press n to start one, ? for the guide, or q to quit.", style=T.TEXT_DIM))
             return
         count_txt = ""
         if self._filter.strip():
@@ -215,7 +217,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             more = "  ·  m back to page 1"
         else:
             more = ""
-        hints.update(Text(f"{count_txt}Enter resume · / search · n new · a archived · s settings{more}{page_txt} · q quit",
+        hints.update(Text(f"{count_txt}Enter resume · / search · n new · a archived · s settings · ? guide{more}{page_txt} · q quit",
                           style=T.TEXT_DIM))
 
     # --- filter (search) -------------------------------------------------
@@ -259,6 +261,13 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         self._archived_mode = True
         self._offset = 0
         self._reload()
+
+    def action_guide(self) -> None:
+        """? or g at the picker: open the getting-started guide, so a first-time
+        user can learn what Kratos is before starting a session."""
+        from kratos.tui_mk2.modals import GuideModal
+
+        self.app.push_screen(GuideModal())
 
     def action_settings(self) -> None:
         # Global settings (models / tools / general) reachable from the home

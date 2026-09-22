@@ -348,6 +348,56 @@ class HelpModal(ModalScreen[None]):
         self.dismiss(None)
 
 
+class GuideModal(ModalScreen[None]):
+    """A short, plain-language 'getting started' orientation, reachable from the
+    home/session screen (/guide) AND from the launcher/session picker (? or g) so
+    a brand-new user can learn how Kratos works before doing anything. The full
+    detail lives in docs/GUIDE.md; this is the on-screen quick version."""
+
+    BINDINGS = [Binding("escape,q", "close", "close", show=True)]
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="modal-card"):
+            yield Static(Text("Kratos — getting started", style=f"bold {T.ACCENT}"),
+                         classes="modal-title")
+            yield Static(Text(
+                "Kratos looks over a machine and tells you, in plain English, what's going on "
+                "with it — failed logins, exposed ports, changed files. It explains what it "
+                "found and what it would do about it. It never changes the target itself; acting "
+                "on its advice is your call.", style=T.TEXT))
+            yield Static(Text("\nFirst steps", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(self._steps([
+                ("1.  /target <host>", "point Kratos at a machine to watch. It checks the SSH "
+                 "connection and shows what the target still needs."),
+                ("2.  ask in plain words", "e.g. “check this host for signs of an SSH "
+                 "brute-force”. Kratos picks its own read-only tools and explains what it finds."),
+                ("3.  /doctor", "confirm your setup (model, target, tools) is healthy."),
+                ("4.  /report", "see this session's findings, most severe first."),
+            ]))
+            yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(self._steps([
+                ("observe-only", "Kratos reads and advises; it never makes changes on the target."),
+                ("/evolve", "builds a new tool when Kratos is missing one — you review the code first."),
+                ("/preset", "saves an investigation to re-run or schedule."),
+                ("y / n", "at a permission prompt, y means yes; anything else means no."),
+            ]))
+            yield Static(Text(
+                "\nFull guide:  docs/GUIDE.md        All commands:  ?  or  /help",
+                style=T.TEXT_DIM))
+            yield Static(Text("esc close", style=T.TEXT_DIM))
+
+    def _steps(self, rows: list[tuple[str, str]]) -> Table:
+        table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
+        table.add_column(style=T.ACCENT, no_wrap=True, justify="left")
+        table.add_column(style=T.TEXT_MUTED)
+        for left, right in rows:
+            table.add_row(left, right)
+        return table
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ListPickerModal(ModalScreen[Any]):
     """Generic keyboard list picker (used by /model). Each entry is
     (value, label). ↑↓ to move, Enter to pick, esc to cancel (dismiss None)."""

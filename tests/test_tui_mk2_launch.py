@@ -32,6 +32,24 @@ def _make_launch(tmp_path):
     return store, sid, LaunchScreen(store, tmp_path)
 
 
+def test_guide_opens_from_launcher(tmp_path):
+    # A first-time user must be able to learn about Kratos from the very first
+    # screen (the session picker), via ? or g.
+    from kratos.tui_mk2.modals import GuideModal
+
+    store, sid, screen = _make_launch(tmp_path)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(100, 32)) as pilot:
+            await pilot.pause()
+            await pilot.press("question_mark")
+            await pilot.pause()
+            return type(app.screen).__name__
+
+    assert asyncio.run(_run()) == GuideModal.__name__
+
+
 def test_action_back_exits_archived_view(tmp_path):
     store, sid, screen = _make_launch(tmp_path)
 
