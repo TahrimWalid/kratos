@@ -3,7 +3,7 @@
 **Self-hostable, self-growing security analysis, with a terminal UI built for all.**
 
 <p align="center">
-  <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/mode/tools cards, and starter tips">
+  <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
 </p>
 
 Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, and so on. It explains what it found and what it would do about it. It won't change anything on the target itself — acting on its advice is your call.

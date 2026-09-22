@@ -135,9 +135,9 @@ Once you're in, you'll see the home screen:
 </p>
 
 The three cards tell you, at a glance, which machine is being watched (**target**),
-that Kratos is in **observe-only** mode, and how many **tools** it has. The tips at
-the bottom point at the first things to do. You can type a question at any time, or
-a command starting with `/`.
+which **model** Kratos is using and whether it's local (free, private) or cloud
+(billed), and how many **tools** it has. The tips at the bottom point at the first
+things to do. You can type a question at any time, or a command starting with `/`.
 
 Useful to know from the start:
 
