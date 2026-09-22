@@ -1,3 +1,10 @@
+"""The `baseline` subcommands: create a snapshot, and compare against it.
+
+Thin CLI wrappers over `adapters/baseline.py` — `cmd_baseline_create` captures the
+current known-good state, `cmd_baseline_compare` diffs the current state against
+the saved one and prints what drifted. The comparison logic lives in the adapter;
+this is just argument-plumbing and output.
+"""
 from __future__ import annotations
 
 import json

@@ -1,3 +1,10 @@
+"""The `prepare-bundle` subcommand: pack findings into a size-bounded text blob.
+
+Assembles the current findings into a compact, severity-ordered text bundle that
+fits within a word budget — the shape you hand to a model for a summary, or paste
+somewhere with a length limit. The truncation is word-based and severity-first, so
+what gets cut when it's too long is the least-important tail, not a random middle.
+"""
 from __future__ import annotations
 
 import json

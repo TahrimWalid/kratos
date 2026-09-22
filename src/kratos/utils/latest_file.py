@@ -1,3 +1,10 @@
+"""Small helpers for finding files by glob and recency.
+
+`latest_file()` returns the most recently modified file matching a pattern in a
+directory (or None). It's the workhorse behind the pipeline's "auto-discover the
+newest inputs" behaviour — nearly every stage that reads "the latest scan" or
+"the latest findings" goes through here rather than tracking paths by hand.
+"""
 from pathlib import Path
 from datetime import datetime
 

@@ -1,3 +1,10 @@
+"""Turns nmap's XML output into a normalized dict.
+
+nmap writes XML; the rest of Kratos wants a plain {hosts, ports, services} shape.
+This finds the most recent scan XML under `data_dir/scans/`, parses it, and
+writes the normalized JSON that the finding rules and the baseline read. Isolating
+the XML handling here means nothing downstream has to know nmap's schema.
+"""
 from __future__ import annotations
 
 import json

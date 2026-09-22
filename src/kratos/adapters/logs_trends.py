@@ -1,3 +1,11 @@
+"""Run-to-run trend analysis over successive `auth_stats` files.
+
+A single run tells you the state now; this compares several recent `auth_stats`
+snapshots to say which way things are moving — are failed logins climbing, flat,
+or falling? It's deliberately coarse (first-vs-last direction, not a fitted
+curve): enough to notice "this has been getting worse over the last few runs"
+without pretending to statistical rigour the data doesn't support.
+"""
 from __future__ import annotations
 
 import json

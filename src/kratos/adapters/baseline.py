@@ -1,3 +1,13 @@
+"""Builds and diffs a "known-good" snapshot of a host.
+
+A baseline captures the things that shouldn't drift quietly — which services are
+active, who's in the sudo group, which ports are open — from the system-context
+and nmap data already collected. Diffing a later snapshot against it surfaces the
+changes that matter for security (a new open port, a new sudo user, a service
+that appeared) instead of making a human eyeball two full states. It's a
+comparison tool, not an alerting one: it reports what changed and leaves the
+judgement to the finding rules and the human.
+"""
 from __future__ import annotations
 
 import json

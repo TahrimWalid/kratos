@@ -1,3 +1,12 @@
+"""Finds patterns across parsed auth events — chiefly brute-force bursts.
+
+`analyze_auth_patterns()` takes the structured events (from `auth_log_parse`) and
+looks for a burst: at least `threshold` failed logins from one source inside a
+sliding `window_minutes` window (default 3-in-5). That burst signal is what the
+findings engine turns into a `CORR-SSH-001`. Kept separate from parsing so the
+"what happened" (parse) and the "is it suspicious" (this) stay independently
+testable.
+"""
 from __future__ import annotations
 
 import json

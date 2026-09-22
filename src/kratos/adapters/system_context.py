@@ -1,3 +1,12 @@
+"""Collects a read-only snapshot of the LOCAL host's context.
+
+Runs a handful of read-only shell commands on the machine Kratos is running on —
+services, users, sudo membership, and the like — and writes the result under
+`data_dir/context/`. Note the "local" scope: this describes Kratos's own host, not
+the monitored target (the target's context comes over SSH through the
+target-facing tools). The finding rules use this to tell an expected service from
+a suspicious one.
+"""
 from __future__ import annotations
 
 import json

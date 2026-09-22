@@ -1,3 +1,11 @@
+"""Pulls a time-windowed excerpt out of a normalized events file.
+
+When a report needs to show "here are the actual log lines around the incident,"
+this slices the events file down to a bounded window rather than dumping
+everything. The fiddly part it exists to contain is timestamp parsing — the
+pipeline emits ISO timestamps with a timezone offset, and comparisons have to be
+timezone-aware to not silently mis-window entries around a DST boundary.
+"""
 from __future__ import annotations
 
 import json

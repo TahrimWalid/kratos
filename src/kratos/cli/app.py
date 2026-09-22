@@ -1,3 +1,20 @@
+"""The `kratos` command-line entry point and all of its subcommands.
+
+`main()` builds the argparse parser and dispatches. Two shapes to keep straight:
+
+- **Bare `kratos`** (no subcommand) launches the full-screen Textual TUI — the
+  primary interface. The classic prompt_toolkit REPL is retired as the default
+  face and no longer has an entry here.
+- **`kratos <subcommand>`** runs one of the fixed-pipeline / service commands
+  defined below: `investigate`, `run`, `scan` (+ `scan-summary`/`scan-parse`),
+  `logs-*`, `findings-*`, `context`, `baseline`, `chat`, `prepare-bundle`,
+  `scheduled-run`, `llm-serve`, `mcp-serve`, and so on. Each `cmd_*` handler is a
+  thin wrapper over an adapter or the agent; this module is the wiring, not the
+  logic.
+
+`load_kept_tools()` is called once here before dispatch so self-written tools are
+registered for whichever path runs.
+"""
 import argparse
 import os
 import sys

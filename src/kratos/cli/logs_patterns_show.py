@@ -1,3 +1,9 @@
+"""The `logs-patterns-show` subcommand: print the latest auth-pattern analysis.
+
+Display-only view of the most recent `auth_patterns_*.json` (produced by
+`adapters/auth_log_patterns.py`) — the detected bursts and counts — so you can see
+what the pattern pass found without re-running it.
+"""
 import json
 from pathlib import Path
 from kratos.utils.latest_file import latest_file

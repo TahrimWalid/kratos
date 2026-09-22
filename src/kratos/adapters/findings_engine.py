@@ -1,3 +1,25 @@
+"""The rule engine behind `correlate_findings` — no LLM anywhere in it.
+
+This is where raw observations become findings. `find_latest_inputs()`
+auto-discovers the newest file in each category under `data_dir` (scans, logs,
+context, reports, baseline), and a set of deterministic rules turns them into
+findings with stable IDs by area: `NET-*` (network/ports), `AUTH-*` (auth-log
+patterns), `CORR-*` (cross-source correlations like an SSH brute-force burst),
+`INTEG-*` (file-integrity drift). Each finding carries a severity and its
+evidence.
+
+Two things are deliberate and worth knowing:
+
+- **Findings are rule-derived, not model-derived.** The same inputs always
+  produce the same findings; there's no prompt in the loop. That's what makes a
+  finding something you can trust and reproduce.
+- **Offline threat-intel enrichment runs here, unconditionally.** Rather than
+  hoping the agent chooses to look up a suspicious IP (LLM tool selection isn't
+  reliable enough to gate a real corroboration signal on), the engine checks the
+  source IPs behind suspicious findings against the local OTX cache itself — a
+  file read, no network, no approval — and raises severity on a known-malicious
+  hit. The live/opt-in tier is elsewhere; this is the always-on offline one.
+"""
 from __future__ import annotations
 
 import json

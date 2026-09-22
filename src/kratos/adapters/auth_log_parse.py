@@ -1,3 +1,12 @@
+"""Turns raw auth logs into structured, classified events.
+
+One `classify_auth_message()` regex classifier does the actual work of deciding
+what a log line is — an SSH failed login, an accepted login, a sudo command, and
+so on — and it's shared by both paths that need it: parsing a raw `auth.log` line
+by line locally, and handling the already-structured entries fetched from a
+target's journald over SSH. Keeping the classification in one place is why the two
+paths never drift apart on what counts as, say, a `ssh_failed_login`.
+"""
 from __future__ import annotations
 
 import json

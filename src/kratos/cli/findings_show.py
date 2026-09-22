@@ -1,3 +1,9 @@
+"""The `findings-show` subcommand: print the latest findings.
+
+Reads the most recent findings file and prints it in a readable, grouped form,
+optionally filtered to a single finding ID. Display only — it never re-runs the
+rules, so it's the cheap way to look again at what a previous run concluded.
+"""
 from __future__ import annotations
 
 import json

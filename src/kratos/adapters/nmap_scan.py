@@ -1,3 +1,9 @@
+"""Runs an nmap scan and saves the raw XML.
+
+The thin wrapper around invoking nmap itself: scan a target, drop the XML under
+`data_dir/scans/`, hand back the path. Parsing that XML into something usable is
+`nmap_parse`'s job, kept separate so a re-parse never needs a re-scan.
+"""
 from __future__ import annotations
 
 import subprocess

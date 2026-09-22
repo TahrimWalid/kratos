@@ -1,3 +1,10 @@
+"""Parses `systemctl` unit listings into structured records.
+
+Takes the raw lines `systemctl list-units` prints and turns them into
+{unit, load, active, sub, description} dicts, then flags the ones that look like
+production services (a web server, a database, and so on) — the context a finding
+rule uses to decide whether an exposed port is expected or a surprise.
+"""
 def parse_systemctl_units(raw_lines: list[str]) -> list[dict[str, str]]:
     units = []
     for line in raw_lines:
