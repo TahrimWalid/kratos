@@ -76,6 +76,15 @@ def make_textual_clarify_provider(app: App) -> Callable[[str, list[dict[str, Any
                 box["answer"] = result
                 done.set()
 
+            # Same legibility note as the approval provider above, and for the
+            # same reason: a clarify can now fire more often (broadened intake/
+            # scope triggers, docs/clarify_expansion.md lever 1) and a modal
+            # appearing mid-investigation with no lead-in reads as a stall, not
+            # a deliberate pause.
+            emit = getattr(app.screen, "_emit", None)
+            if callable(emit):
+                from kratos.tui_mk2 import render as _R
+                emit(_R.note_line("paused — Kratos has a clarifying question (answer the prompt)"))
             app.push_screen(ClarifyModal(question, options), _on_dismiss)
 
         try:

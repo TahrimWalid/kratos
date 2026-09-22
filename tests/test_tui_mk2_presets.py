@@ -1114,3 +1114,122 @@ def test_suggest_describe_only_nudges(tmp_path, monkeypatch):
     screen._suggest_describe("scan then look up the ip")
     text = " ".join(getattr(r, "plain", str(r)) for r in emitted)
     assert "/preset-describe" in text
+
+
+# --- lever 3 (docs/clarify_expansion.md): /preset-describe may clarify once -
+
+def test_preset_describe_clarifies_then_drafts_with_answer(tmp_path, monkeypatch):
+    """A thin description gets ONE clarifying question; the answer is folded
+    into the goal and re-drafted, then saved normally."""
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def _fake_draft(goal, registry, chat=None):
+        calls.append(goal)
+        if len(calls) == 1:
+            return PD.DraftResult(clarify={
+                "question": "Which system?",
+                "options": [{"label": "The monitored target", "explanation": "", "recommended": True}],
+            })
+        return PD.DraftResult(name="clarified", steps=[
+            {"tool": "run_nmap_scan", "label": "scan", "required": True},
+            {"tool": "correlate_findings", "label": "correlate", "required": True}])
+
+    monkeypatch.setattr(PD, "draft_pipeline", _fake_draft)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            modals_seen = []
+
+            async def _answer(modal):
+                modals_seen.append(modal)
+                if hasattr(modal, "_question"):  # ClarifyModal
+                    return "The monitored target"
+                return True  # the later "Save this drafted pipeline?" confirm
+
+            monkeypatch.setattr(app, "push_screen_wait", _answer)
+            screen._dispatch_slash("/preset-describe do a thing")
+            for _ in range(150):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "clarified"):
+                    break
+            return modals_seen
+
+    modals_seen = asyncio.run(_run())
+    assert len(calls) == 2
+    assert "Which system?" in calls[1] and "The monitored target" in calls[1]
+    assert any(hasattr(m, "_question") for m in modals_seen)  # a ClarifyModal was actually shown
+    p = P.load_preset(tmp_path, "clarified")
+    assert p is not None and p.kind == "pipeline"
+
+
+def test_preset_describe_clarify_declined_still_proceeds(tmp_path, monkeypatch):
+    """A dismissed clarify (no answer) doesn't stall the flow -- it re-drafts
+    with a 'do your best' note instead of giving up."""
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    calls: list[str] = []
+
+    def _fake_draft(goal, registry, chat=None):
+        calls.append(goal)
+        if len(calls) == 1:
+            return PD.DraftResult(clarify={"question": "Which system?", "options": []})
+        return PD.DraftResult(name="bestguess", steps=[{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}])
+
+    monkeypatch.setattr(PD, "draft_pipeline", _fake_draft)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _dismiss_then_confirm(modal):
+                return None if hasattr(modal, "_question") else True
+
+            monkeypatch.setattr(app, "push_screen_wait", _dismiss_then_confirm)
+            screen._dispatch_slash("/preset-describe do a thing")
+            for _ in range(150):
+                await pilot.pause()
+                if P.preset_exists(tmp_path, "bestguess"):
+                    break
+
+    asyncio.run(_run())
+    assert len(calls) == 2
+    assert "No clarification given" in calls[1]
+    assert P.preset_exists(tmp_path, "bestguess")
+
+
+def test_preset_describe_clarify_twice_reports_error_not_infinite_loop(tmp_path, monkeypatch):
+    """If the model asks a SECOND clarify despite being told to proceed either
+    way, the flow reports a clean error instead of looping forever."""
+    from kratos.agent import pipeline_draft as PD
+
+    _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(PD, "draft_pipeline",
+                        lambda goal, registry, chat=None: PD.DraftResult(
+                            clarify={"question": "Which system?", "options": []}))
+    errors = []
+    monkeypatch.setattr(screen, "_emit", lambda r: errors.append(getattr(r, "plain", str(r))))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "push_screen_wait", lambda modal: _none())
+
+            async def _none():
+                return None
+
+            screen._dispatch_slash("/preset-describe do a thing")
+            for _ in range(150):
+                await pilot.pause()
+
+    asyncio.run(_run())
+    assert any("more detail" in e or "more specifics" in e for e in errors)
+    assert not P.preset_exists(tmp_path, "described")

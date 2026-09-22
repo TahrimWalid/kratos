@@ -62,6 +62,16 @@ DEFAULT_MAX_ITERS = 10
 # user's answer string, or None if the user declined / no answer is available.
 _clarify_provider: Callable[[str, list[dict[str, Any]]], "str | None"] | None = None
 
+# Per-run cap on how many clarifying questions a single investigation may ask
+# (docs/clarify_expansion.md lever 2 -- "a short clarification round, not just
+# one question", bounded so a genuinely big/vague task can ask more than one
+# question without the model being able to turn this into an indefinite
+# stall-by-asking loop). Once reached, a further clarify action is corrected
+# (like a malformed one) instead of reaching the provider -- see its use site
+# in run_agent for why this must be checked BEFORE the provider is called,
+# not after.
+MAX_CLARIFY_QUESTIONS = 3
+
 
 def set_clarify_provider(provider: "Callable[[str, list[dict[str, Any]]], str | None] | None") -> None:
     """Install (or clear, with None) the human-clarification provider. Backward
@@ -184,8 +194,47 @@ _REMOTE_REACH_RE = re.compile(
 )
 
 
+def _clarify_guidance() -> str:
+    """The clarify section of the system prompt, provider-aware (edge case
+    found in review of docs/clarify_expansion.md's lever 1: CLI/MCP/scheduled
+    runs never install a clarify provider -- set_clarify_provider is mk2-only
+    -- so a model that doesn't know that can still spend a real iteration
+    asking a question nobody will ever answer, only to be told afterward to
+    proceed anyway. Checked at prompt-build time (once per run_agent call,
+    same as the rest of this prompt), so a headless run's prompt never even
+    offers the clarify action, and an interactive mk2 run's prompt is
+    unchanged."""
+    if _clarify_provider is None:
+        return (
+            "No interactive user is available to answer questions during this run (a headless/"
+            "API/scheduled investigation, not an interactive session). Do NOT emit a "
+            '{"clarify": ...} action -- there is nobody to answer it, and attempting one only '
+            "wastes a step. If the goal is ambiguous, state your best interpretation and any "
+            "assumptions explicitly in your final_answer instead."
+        )
+    return f"""You may ask the user a clarifying question, using the action below, in any of these situations -- not only a plainly ambiguous goal:
+- More than one reasonable interpretation of the goal exists, and which one you pick would materially change what you investigate or conclude.
+- The goal's SCOPE is genuinely unstated in a way that matters -- e.g. it could reasonably mean a quick spot-check or a large multi-step audit, and you are about to commit to significant work on a guess. This is the natural thing to ask BEFORE your first tool call, not mid-investigation.
+- A real, material fork appears mid-investigation -- e.g. evidence points toward two substantially different follow-up directions, each a genuine investment of remaining iterations, and nothing gathered so far favors one.
+{{"reasoning": "<one sentence: why you're unsure>", "clarify": {{"question": "<your question, plainly worded>", "options": [{{"label": "<a concrete choice>", "explanation": "<what picking this means>", "recommended": true}}, {{"label": "<another choice>", "explanation": "<...>"}}]}}}}
+Mark at most one option "recommended": true (your best guess, with the reason in its explanation).
+
+USE SPARINGLY. Over-asking is a worse failure than occasionally guessing wrong -- a chatty agent that asks about things it should just decide is a UX regression, not a safer one. Decide, don't ask, when:
+- A sensible default clearly exists -- e.g. "check for suspicious activity", "is my server okay", "run a full security check" are NOT ambiguous: they mean the broad check described under INVESTIGATION SCOPE below. Do not ask which categories to check.
+- The choice is routine, low-stakes, or something you could just find out yourself with one more tool call instead of asking a human to determine it for you.
+- Wording alone differs but the underlying request is the same (see INVESTIGATION SCOPE) -- do not treat a paraphrase as an open scope question.
+Ask, don't decide, when:
+- Two materially different investigations would result and picking wrong wastes the run or gives the human an answer to a question they didn't ask (e.g. the goal could plausibly mean either of two named systems, or an explicit constraint is stated but left incomplete in a way that changes what "done" means).
+- You are about to spend most of your remaining iterations on an interpretation that a one-line question could confirm or correct up front.
+
+You may ask more than one question across a single investigation if genuinely warranted (for example: a scope question up front, then a real fork later) -- capped at {MAX_CLARIFY_QUESTIONS} per investigation; once you reach the cap you must proceed on your best judgment instead of asking again, and you will be told so if you try. Each question still costs a turn, so do not spend the budget on anything a sensible default already resolves.
+
+It does NOT end the investigation: after the user answers (fed back as an Observation), continue normally."""
+
+
 def build_system_prompt() -> str:
     tools_desc = render_tools_for_prompt()
+    clarify_guidance = _clarify_guidance()
     return f"""You are Kratos, an offline security investigation agent that monitors a separate target device over SSH.
 
 You investigate step by step by calling ONE tool at a time and reading its result before deciding the next step.
@@ -213,9 +262,7 @@ To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine
 {{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
 This does NOT end the investigation -- after proposing, continue with a tool call or a final_answer as normal. The proposal is surfaced to a human; you never build it yourself and never need to mention it again.
 
-When the goal is genuinely AMBIGUOUS -- more than one reasonable interpretation, and which one you pick would materially change what you investigate or conclude -- you MAY ask the user ONE clarifying question instead of guessing:
-{{"reasoning": "<one sentence: why you're unsure>", "clarify": {{"question": "<your question, plainly worded>", "options": [{{"label": "<a concrete choice>", "explanation": "<what picking this means>", "recommended": true}}, {{"label": "<another choice>", "explanation": "<...>"}}]}}}}
-Mark at most one option "recommended": true (your best guess, with the reason in its explanation). Use this SPARINGLY -- only for real forks a reasonable analyst couldn't resolve alone, never for routine choices you should just make. It does NOT end the investigation: after the user answers (fed back as an Observation), continue normally. If no interactive user is available you'll be told to proceed with your best judgment -- so never depend on an answer.
+{clarify_guidance}
 
 INVESTIGATION SCOPE:
 Treat any investigation goal as a request for a reasonably thorough security check, not a literal keyword match. "Check for suspicious activity", "has anyone tried to break in", "run a full security check", and "is my server okay" are substantively the same underlying request phrased differently -- a human analyst would not skip network exposure just because the user said "break in" instead of "scan", or skip login activity just because the user said "okay" instead of "auth". Before concluding, briefly consider whether each of these categories is relevant to the goal, even if the wording doesn't mention it directly:
@@ -860,6 +907,26 @@ def run_agent(
         re.IGNORECASE,
     )
 
+    # Lever 2 (docs/clarify_expansion.md): a short clarification ROUND, not
+    # just one question -- counts every clarify question actually PUT to the
+    # provider (or reported as "no interactive user" when none is installed)
+    # this run. Capped at MAX_CLARIFY_QUESTIONS so a genuinely big/vague task
+    # can ask more than one question without a stubborn/small model being
+    # able to turn "ask a clarifying question" into an indefinite stall.
+    clarify_count = 0
+
+    # Review finding #2: being CORRECTED past the budget doesn't by itself
+    # stop a stubborn model from asking AGAIN next turn -- each attempt still
+    # burns a real iteration even though it's rejected, not executed, so
+    # nothing previously stopped this from running all the way to
+    # max_iters_reached with zero real investigation progress. Bounded the
+    # same ~2x-tolerance-then-force way the final_answer guards below already
+    # are: one repeat past the budget is corrected like any other; a SECOND
+    # forces an early conclusion from whatever was actually gathered, rather
+    # than continuing to spend the rest of the run on repeated, ignored asks.
+    clarify_after_budget_attempts = 0
+    MAX_CLARIFY_AFTER_BUDGET_ATTEMPTS = 1
+
     def _record(entry: dict[str, Any]) -> None:
         transcript.append(entry)
         if on_step is not None:
@@ -1258,6 +1325,53 @@ def run_agent(
                 ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
                 continue
 
+            if clarify_count >= MAX_CLARIFY_QUESTIONS:
+                # Lever 2: the per-run clarify round is bounded. Checked BEFORE
+                # the provider is invoked (not after) so a stubborn model can't
+                # keep spending real human-facing prompts once the budget is
+                # spent -- this is a correction like the malformed-question case
+                # above, not a clarify that actually reached anyone.
+                clarify_after_budget_attempts += 1
+                if clarify_after_budget_attempts > MAX_CLARIFY_AFTER_BUDGET_ATTEMPTS:
+                    # Review finding #2: the model asked past the budget AGAIN
+                    # despite already being told not to -- stop tolerating it and
+                    # conclude now from whatever was actually gathered, instead of
+                    # letting the rest of max_iters get spent the same way.
+                    fallback = _synthesize_fallback_answer(transcript)
+                    fallback = (
+                        "[NOTE: this investigation concluded early because the model kept asking "
+                        f"clarifying questions after the {MAX_CLARIFY_QUESTIONS}-question limit was "
+                        "already reached and explained -- concluding from whatever evidence was "
+                        "gathered so far instead of spending the remaining steps on repeated, "
+                        "ignored requests. Treat this as a lower-confidence, possibly incomplete "
+                        "answer.]\n\n" + fallback
+                    )
+                    _record({
+                        "iteration": i,
+                        "reasoning": parsed.get("reasoning", ""),
+                        "status": "clarify_budget_exhausted_forced_conclusion",
+                        "attempted_clarify": clarify,
+                        "final_answer": fallback,
+                    })
+                    return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
+
+                correction = (
+                    f"You have already asked {clarify_count} clarifying question(s) in this "
+                    f"investigation, which is the limit ({MAX_CLARIFY_QUESTIONS} per run). Do not "
+                    "ask another one -- proceed now with your best judgment and state your "
+                    "assumptions explicitly in your final_answer. Asking again will end this "
+                    "investigation early with whatever has been gathered so far."
+                )
+                _record({
+                    "iteration": i,
+                    "reasoning": parsed.get("reasoning", ""),
+                    "status": "clarify_budget_exhausted",
+                    "attempted_clarify": clarify,
+                })
+                ctx.add(f"\nAssistant: {json.dumps(parsed)}\nObservation: {correction}\n")
+                continue
+
+            clarify_count += 1
             answer: str | None = None
             if _clarify_provider is None:
                 observation = (

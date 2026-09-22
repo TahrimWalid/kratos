@@ -79,6 +79,137 @@ def test_render_step_ignores_other_tool_less_status_entries():
     assert emitted == []
 
 
+# --- lever 3 (docs/clarify_expansion.md): a resolved clarify gets a durable
+# panel in the scrollback, not just the modal that already closed -------------
+
+def test_render_step_routes_clarify_to_a_panel_with_question_and_answer():
+    emitted: list = []
+    fake = SimpleNamespace(_emit_from_worker=emitted.append)
+
+    SessionScreen._render_step(fake, {
+        "status": "clarify",
+        "clarify_question": "Which target?",
+        "clarify_answer": "The monitored target",
+    })
+
+    assert len(emitted) == 1
+    panel = emitted[0]
+    assert panel.title == "Clarifying question"
+    rendered = panel.renderable.plain if hasattr(panel.renderable, "plain") else str(panel.renderable)
+    assert "Which target?" in rendered and "The monitored target" in rendered
+
+
+def test_render_step_clarify_with_no_answer_says_so():
+    emitted: list = []
+    fake = SimpleNamespace(_emit_from_worker=emitted.append)
+
+    SessionScreen._render_step(fake, {
+        "status": "clarify",
+        "clarify_question": "Which target?",
+        "clarify_answer": None,
+    })
+
+    rendered = emitted[0].renderable.plain if hasattr(emitted[0].renderable, "plain") else str(emitted[0].renderable)
+    assert "no answer given" in rendered.lower()
+
+
+def test_render_step_ignores_clarify_malformed_and_budget_exhausted():
+    # Internal self-correction statuses (like parse_error) never reach the
+    # scrollback -- only a genuinely completed "clarify" does.
+    emitted: list = []
+    fake = SimpleNamespace(_emit_from_worker=emitted.append)
+
+    SessionScreen._render_step(fake, {"status": "clarify_malformed", "raw_response": "{"})
+    SessionScreen._render_step(fake, {"status": "clarify_budget_exhausted", "attempted_clarify": {}})
+
+    assert emitted == []
+
+
+# --- review finding #5: full-tier resume must replay tool_proposal/clarify
+# steps too -- these were previously silently dropped (`_render_step_replay`
+# returned immediately for any tool-less step) ------------------------------
+
+def _fake_replay_self(**extra):
+    emitted: list = []
+    base = dict(
+        _emit=emitted.append,
+        _emit_bubble=lambda r, d: emitted.append(("bubble", r, d)),
+        _fmt_stored_time=lambda v: "12:00",
+        _fmt_stored_date=lambda v: "2026-01-01",
+    )
+    base.update(extra)
+    return SimpleNamespace(**base), emitted
+
+
+def test_render_step_replay_shows_tool_proposal():
+    fake, emitted = _fake_replay_self()
+
+    SessionScreen._render_step_replay(fake, {
+        "tool_proposal": {"name": "list_thing", "description": "lists a thing"},
+    }, when_value=None)
+
+    assert len(emitted) == 1
+    panel = emitted[0]
+    assert panel.title == "Evo-loop suggestion"
+    rendered = panel.renderable.plain if hasattr(panel.renderable, "plain") else str(panel.renderable)
+    assert "list_thing" in rendered and "lists a thing" in rendered
+
+
+def test_render_step_replay_does_not_arm_pending_evolve_suggestion():
+    # Deliberate deviation from the live _render_step: replay must NOT
+    # resurrect a past proposal into session_state, or a later bare /evolve
+    # in THIS session could silently act on stale history.
+    fake, _ = _fake_replay_self(session_state={})
+
+    SessionScreen._render_step_replay(fake, {
+        "tool_proposal": {"name": "list_thing", "description": "lists a thing"},
+    }, when_value=None)
+
+    assert "pending_evolve_suggestion" not in fake.session_state
+
+
+def test_render_step_replay_shows_clarify_question_and_answer():
+    fake, emitted = _fake_replay_self()
+
+    SessionScreen._render_step_replay(fake, {
+        "status": "clarify",
+        "clarify_question": "Which target?",
+        "clarify_answer": "The monitored target",
+    }, when_value=None)
+
+    assert len(emitted) == 1
+    panel = emitted[0]
+    assert panel.title == "Clarifying question"
+    rendered = panel.renderable.plain if hasattr(panel.renderable, "plain") else str(panel.renderable)
+    assert "Which target?" in rendered and "The monitored target" in rendered
+
+
+def test_render_step_replay_clarify_with_no_answer_says_so():
+    fake, emitted = _fake_replay_self()
+
+    SessionScreen._render_step_replay(fake, {
+        "status": "clarify",
+        "clarify_question": "Which target?",
+        "clarify_answer": None,
+    }, when_value=None)
+
+    rendered = emitted[0].renderable.plain if hasattr(emitted[0].renderable, "plain") else str(emitted[0].renderable)
+    assert "no answer given" in rendered.lower()
+
+
+def test_render_step_replay_still_ignores_other_toolless_statuses():
+    # context_compacted and internal self-corrections stay out of replay too
+    # (same as live) -- confirms the new branches are specific, not a
+    # blanket "render anything toolless" change.
+    fake, emitted = _fake_replay_self()
+
+    SessionScreen._render_step_replay(fake, {"status": "context_compacted", "context_tokens": 100}, when_value=None)
+    SessionScreen._render_step_replay(fake, {"status": "clarify_malformed"}, when_value=None)
+    SessionScreen._render_step_replay(fake, {"status": "final_answer_rejected"}, when_value=None)
+
+    assert emitted == []
+
+
 def test_error_detail_reads_common_keys_and_falls_back():
     from kratos.tui_mk2.render import error_detail
     # a tool's own error uses 'message' (the sudo_command_check case), not 'observation'

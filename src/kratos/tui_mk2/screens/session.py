@@ -581,23 +581,49 @@ class SessionScreen(ResilientWorkerHost, Screen):
         on_step defers it) that's cleaner as two small functions than one
         special-cased one."""
         tool_name = step.get("tool")
-        if not tool_name:
-            return
-        result, effective_status = R.unwrap_tool_result(step.get("observation"))
-        if effective_status == "error":
-            err = R.error_detail(result)
-            self._emit(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
-        elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
-            findings = result["findings"]
-            line = Text()
-            line.append("✓ ", style=T.SAFE)
-            line.append(tool_name, style=f"bold {T.ACCENT}")
-            line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
-            self._emit(line)
-            for f in findings:
-                self._emit_bubble(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)), self._fmt_stored_date(when_value))
-        else:
-            self._emit(R.tool_call_line(tool_name, effective_status))
+        if tool_name:
+            result, effective_status = R.unwrap_tool_result(step.get("observation"))
+            if effective_status == "error":
+                err = R.error_detail(result)
+                self._emit(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
+            elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
+                findings = result["findings"]
+                line = Text()
+                line.append("✓ ", style=T.SAFE)
+                line.append(tool_name, style=f"bold {T.ACCENT}")
+                line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
+                self._emit(line)
+                for f in findings:
+                    self._emit_bubble(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)), self._fmt_stored_date(when_value))
+            else:
+                self._emit(R.tool_call_line(tool_name, effective_status))
+        elif step.get("tool_proposal"):
+            # Review finding #5: previously silently dropped on replay (this
+            # branch didn't exist at all -- the leading `if not tool_name:
+            # return` skipped every tool-less step). Deliberately does NOT
+            # touch session_state["pending_evolve_suggestion"] the way the
+            # LIVE version (_render_step) does -- resurrecting a stale past
+            # suggestion as if it just happened now could make a later bare
+            # /evolve act on a proposal from a past, possibly since-resolved
+            # turn. This is purely the historical record; only a live
+            # suggestion arms /evolve's no-arg shortcut.
+            proposal = step["tool_proposal"]
+            body = (
+                f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n"
+                'Run /evolve to have Kratos build this (needs a test harness).'
+            )
+            self._emit(R.result_panel("Evo-loop suggestion", body, T.ATTENTION))
+        elif step.get("status") == "clarify":
+            # Review finding #5: same gap as tool_proposal above -- without
+            # this, a mid-investigation clarify Q&A vanishes from a full-tier
+            # resume even though it genuinely happened and shaped the rest of
+            # that investigation. No bubble/timestamp, matching how the LIVE
+            # version (_render_step) renders this too (plain, not a bubble).
+            question = step.get("clarify_question", "")
+            answer = step.get("clarify_answer")
+            body = (f"Q: {question}\nA: {answer}" if answer
+                   else f"Q: {question}\n(no answer given — Kratos proceeded with its best judgment)")
+            self._emit(R.result_panel("Clarifying question", body, T.ACCENT))
 
     # --- input -----------------------------------------------------------
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -1391,7 +1417,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         import asyncio
 
         from kratos.agent import presets as _P
-        from kratos.agent.pipeline_draft import draft_pipeline
+        from kratos.agent.pipeline_draft import DraftResult, draft_pipeline
         from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
 
         goal = (goal or "").strip()
@@ -1407,6 +1433,37 @@ class SessionScreen(ResilientWorkerHost, Screen):
             "Drafting a pipeline from your description (LLM, a moment) — I'll show it for review "
             "before anything is saved, and it runs deterministically once saved (no AI in the run)."))
         draft = await asyncio.to_thread(draft_pipeline, goal, registry=TOOL_REGISTRY)
+
+        # Lever 3 (docs/clarify_expansion.md): the drafter may ask ONE
+        # clarifying question instead of guessing when the description is too
+        # thin/forked. Capped at a single round here (not the loop's own
+        # MAX_CLARIFY_QUESTIONS — this is a one-shot draft, not a ReAct run):
+        # ask once, re-draft with whatever was learned (an answer, or an
+        # explicit "no answer, do your best"), and accept whatever comes back
+        # next rather than clarifying indefinitely.
+        if draft.clarify is not None:
+            from kratos.tui_mk2.modals import ClarifyModal
+
+            answer = await self.app.push_screen_wait(ClarifyModal(
+                draft.clarify["question"], draft.clarify["options"],
+                subtitle=f"Your description: {goal}"))
+            if answer and answer.strip():
+                goal = f"{goal}\n\n(Clarification -- {draft.clarify['question']}: {answer.strip()})"
+            else:
+                goal = (
+                    f"{goal}\n\n(No clarification given for -- {draft.clarify['question']} -- "
+                    "pick your best reasonable interpretation and proceed.)"
+                )
+            self._emit(R.note_line("Drafting again with that in mind…"))
+            draft = await asyncio.to_thread(draft_pipeline, goal, registry=TOOL_REGISTRY)
+            if draft.clarify is not None:
+                # Asked twice despite being told to proceed either way -- don't
+                # loop forever; report it as a draft failure instead.
+                draft = DraftResult(
+                    error="Couldn't draft a pipeline for this without more detail — try "
+                          "/preset-describe again with more specifics, or build one "
+                          "step-by-step with /preset-new.")
+
         if draft.error:
             self._emit(R.error_line(draft.error))
             return
@@ -3897,6 +3954,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(
                 R.compaction_line(step.get("context_tokens", 0), step.get("context_window", 0))
             )
+        elif step.get("status") == "clarify":
+            # A resolved mid-investigation clarify (docs/clarify_expansion.md).
+            # The modal itself already gathered the answer (via the provider in
+            # tui_mk2/approvals.py, which also drops the "paused" lead-in line);
+            # this is the DURABLE record in the scrollback -- without it, once
+            # the modal closes there'd be no trace the question was ever asked,
+            # unlike an approval (whose next tool-call line implicitly shows the
+            # outcome). Only a genuinely completed clarify renders here --
+            # clarify_malformed/clarify_budget_exhausted are internal
+            # self-corrections, same as parse_error, and stay out of the
+            # scrollback like every other silent-retry status.
+            question = step.get("clarify_question", "")
+            answer = step.get("clarify_answer")
+            body = (f"Q: {question}\nA: {answer}" if answer
+                   else f"Q: {question}\n(no answer given — Kratos proceeded with its best judgment)")
+            self._emit_from_worker(R.result_panel("Clarifying question", body, T.ACCENT))
 
     @work(thread=True)
     def _compact_flow(self) -> None:

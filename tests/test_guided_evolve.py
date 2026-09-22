@@ -24,6 +24,19 @@ from kratos.agent.guided_evolve import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_clarify_by_default(monkeypatch):
+    """These tests exercise the write/test/keep surface, not the lever-3
+    idea-clarity check (docs/clarify_expansion.md) -- default the underlying
+    LLM check to "clear, proceed" so the existing suite never makes a real
+    LLM call for it (mirrors how every test here already supplies
+    `suggested_name` to skip _suggest_evolve_tool_name's own LLM call).
+    _maybe_clarify_idea itself is left real/testable; tests for the clarify
+    behavior override assess_intake_clarity explicitly."""
+    monkeypatch.setattr("kratos.agent.clarify_intake.assess_intake_clarity", lambda *a, **k: None)
+    yield
+
+
 class FakePrompter(GuidedPrompter):
     """Scripted answers; records what was said/shown. ask_* pop from a queue;
     an empty text queue returns the default (simulates pressing Enter)."""
@@ -265,6 +278,110 @@ def test_empty_idea_asks_and_cancels_when_blank(tmp_path, monkeypatch):
     prompter = FakePrompter(texts=[""])  # asked for idea, submitted blank
     res = run_guided_build("", prompter)
     assert res.status == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# lever 3 (docs/clarify_expansion.md): the guided evo-loop idea intake -------
+# ---------------------------------------------------------------------------
+
+class _ClarifyQ:
+    def __init__(self, question, options=None):
+        self.question = question
+        self.options = options or []
+
+
+def test_maybe_clarify_idea_proceeds_when_check_says_clear(monkeypatch):
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", return_value=None):
+        prompter = FakePrompter()
+        assert G._maybe_clarify_idea("list sudo users on the target", prompter) == "list sudo users on the target"
+    assert prompter.choices == [] and not prompter.shown  # never asked anything
+
+
+def test_maybe_clarify_idea_asks_and_folds_in_the_answer(monkeypatch):
+    q = _ClarifyQ("Which target?", [{"label": "The monitored target", "recommended": True}])
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", return_value=q):
+        prompter = FakePrompter(choices=["The monitored target"])
+        goal = G._maybe_clarify_idea("do a thing", prompter)
+    assert "The monitored target" in goal and "Which target?" in goal
+    assert goal.startswith("do a thing")
+
+
+def test_maybe_clarify_idea_other_option_uses_free_text(monkeypatch):
+    q = _ClarifyQ("Which target?", [{"label": "The monitored target"}])
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", return_value=q):
+        prompter = FakePrompter(choices=[G._CLARIFY_OTHER], texts=["a third system entirely"])
+        goal = G._maybe_clarify_idea("do a thing", prompter)
+    assert "a third system entirely" in goal
+
+
+def test_maybe_clarify_idea_declined_proceeds_unchanged(monkeypatch):
+    q = _ClarifyQ("Which target?", [{"label": "The monitored target"}])
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", return_value=q):
+        prompter = FakePrompter(choices=[None])  # dismissed
+        goal = G._maybe_clarify_idea("do a thing", prompter)
+    assert goal == "do a thing"  # unchanged, never blocked
+
+
+def test_maybe_clarify_idea_check_failure_proceeds_unchanged():
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", side_effect=RuntimeError("boom")):
+        prompter = FakePrompter()
+        goal = G._maybe_clarify_idea("do a thing", prompter)
+    assert goal == "do a thing"
+
+
+# --- review finding #3: skip the extra LLM call entirely for an already-long,
+# detailed idea -- it's very unlikely to be judged "too thin" and shouldn't
+# cost a guaranteed classifier call every time -------------------------------
+
+def test_maybe_clarify_idea_skips_the_llm_call_for_a_long_idea():
+    long_idea = " ".join(["word"] * G._CLARIFY_INTAKE_SKIP_WORD_COUNT)
+    calls = {"n": 0}
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return _ClarifyQ("irrelevant")  # even if it WOULD ask, the call must never happen
+
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", side_effect=_spy):
+        prompter = FakePrompter()
+        goal = G._maybe_clarify_idea(long_idea, prompter)
+    assert calls["n"] == 0
+    assert goal == long_idea
+    assert prompter.choices == [] and not prompter.shown
+
+
+def test_maybe_clarify_idea_still_checks_a_short_idea_below_the_threshold():
+    short_idea = " ".join(["word"] * (G._CLARIFY_INTAKE_SKIP_WORD_COUNT - 1))
+    calls = {"n": 0}
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+        return None
+
+    with patch("kratos.agent.clarify_intake.assess_intake_clarity", side_effect=_spy):
+        prompter = FakePrompter()
+        G._maybe_clarify_idea(short_idea, prompter)
+    assert calls["n"] == 1  # right below the threshold -> still checked
+
+
+def test_run_guided_build_threads_clarified_goal_into_the_build(tmp_path, monkeypatch, no_collision):
+    """Integration: the augmented goal from _maybe_clarify_idea is what
+    actually reaches run_self_write_loop, not the original short idea."""
+    monkeypatch.setattr(G, "_HARNESS_DIR", tmp_path)
+    monkeypatch.setattr(G, "_maybe_clarify_idea",
+                        lambda goal, prompter: f"{goal}\n\n(Clarification: the monitored target)")
+    hpath = tmp_path / "test_list_sudo.py"
+    hpath.write_text(_TARGET_HARNESS, encoding="utf-8")
+    prompter = FakePrompter(confirms=[True])
+    seen_goal = {}
+
+    def _fake_loop(write_request, *args, **kwargs):
+        seen_goal["goal"] = write_request.goal
+        return _fake_outcome("approved", "list_sudo", True, tmp_path / "k.py")
+
+    with patch("kratos.agent.self_write_loop.run_self_write_loop", side_effect=_fake_loop):
+        res = run_guided_build("list sudo", prompter, suggested_name="list_sudo")
+    assert res.status == "kept"
+    assert "Clarification: the monitored target" in seen_goal["goal"]
 
 
 # ---------------------------------------------------------------------------

@@ -62,3 +62,42 @@ def test_draft_drops_stepless_and_toolless_entries():
     d = D.draft_pipeline("x", registry=TOOL_REGISTRY,
                          chat=lambda s, u: '{"name":"n","steps":[{"tool":"run_nmap_scan"},{"label":"no tool"}]}')
     assert [s["tool"] for s in d.steps] == ["run_nmap_scan"]
+
+
+# --- lever 3 (docs/clarify_expansion.md): the drafter may ask a clarifying
+# question instead of guessing when the description is too thin/forked -----
+
+_CLARIFY = ('{"clarify":{"question":"Which system?","options":['
+            '{"label":"The monitored target","recommended":true},'
+            '{"label":"Something else"}]}}')
+
+
+def test_draft_returns_clarify_instead_of_steps():
+    d = D.draft_pipeline("do a thing", registry=TOOL_REGISTRY, chat=lambda s, u: _CLARIFY)
+    assert d.error is None
+    assert not d.steps
+    assert d.clarify == {
+        "question": "Which system?",
+        "options": [
+            {"label": "The monitored target", "explanation": "", "recommended": True},
+            {"label": "Something else", "explanation": "", "recommended": False},
+        ],
+    }
+
+
+def test_draft_clarify_with_no_question_falls_back_to_error():
+    d = D.draft_pipeline("x", registry=TOOL_REGISTRY, chat=lambda s, u: '{"clarify":{"question":"  "}}')
+    assert d.clarify is None
+    assert d.error and not d.steps
+
+
+def test_prompt_mentions_the_clarify_escape_hatch():
+    seen = {}
+
+    def chat(system, user):
+        seen["system"] = system
+        return _GOOD
+
+    D.draft_pipeline("x", registry=TOOL_REGISTRY, chat=chat)
+    assert '"clarify"' in seen["system"]
+    assert "use this rarely" in seen["system"].lower()

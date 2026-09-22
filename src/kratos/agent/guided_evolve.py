@@ -277,6 +277,61 @@ def _suggest_evolve_tool_name(goal: str) -> str | None:
     return _slugify_name_hint(raw) or None
 
 
+_CLARIFY_OTHER = "__other__"
+
+# Cost guard (review finding #3): assess_intake_clarity is a real, guaranteed
+# extra LLM call on top of everything else a guided build already makes
+# (naming, harness drafting, the write loop itself) -- worth paying for a
+# genuinely short/thin idea, not worth paying for one that's already long and
+# descriptive, since those are very unlikely to be judged "too thin" anyway.
+# Word count, not character count, so punctuation/formatting doesn't skew it.
+# Deliberately simple (no NLP) -- same "editable default, not a clever guess"
+# philosophy as _slugify_name_hint's own word cap.
+_CLARIFY_INTAKE_SKIP_WORD_COUNT = 25
+
+
+def _maybe_clarify_idea(goal: str, prompter: "GuidedPrompter") -> str:
+    """docs/clarify_expansion.md lever 3 -- "evolve idea" is named there as a
+    thin-input entry point. One quick LLM check (agent/clarify_intake.py) on
+    whether the idea is genuinely too thin/forked to build well; if so, ask
+    ONE clarifying question through the SAME GuidedPrompter abstraction every
+    other guided-build question already uses (works headlessly and in mk2
+    alike). NEVER blocks and NEVER cancels the build: a declined/unanswered/
+    failed check just returns `goal` unchanged, exactly like a no-provider
+    clarify degrades to 'proceed' in agent/loop.py."""
+    if len(goal.split()) >= _CLARIFY_INTAKE_SKIP_WORD_COUNT:
+        return goal
+
+    from kratos.agent.clarify_intake import assess_intake_clarity
+
+    try:
+        clarify = assess_intake_clarity(goal, purpose="a new Kratos tool to build")
+    except Exception:  # noqa: BLE001 -- must never block the build
+        clarify = None
+    if clarify is None:
+        return goal
+
+    options: list[tuple[str, str]] = []
+    for o in clarify.options:
+        label = str(o.get("label", ""))
+        if o.get("explanation"):
+            label += f" — {o['explanation']}"
+        if o.get("recommended"):
+            label += "  (recommended)"
+        options.append((str(o.get("label", "")), label))
+    options.append((_CLARIFY_OTHER, "Something else… (type my own answer)"))
+
+    choice = prompter.ask_choice(clarify.question, options, subtitle=f"Your idea: {goal}")
+    if choice is None:
+        return goal  # declined -- proceed with the original idea, unchanged
+    if choice == _CLARIFY_OTHER:
+        typed = prompter.ask_text("Your answer", clarify.question)
+        if not typed or not typed.strip():
+            return goal
+        choice = typed.strip()
+    return f"{goal}\n\n(Clarification -- {clarify.question}: {choice})"
+
+
 # ---------------------------------------------------------------------------
 # Plain-English harness claims -- AST-grounded, never an LLM summary.
 # ---------------------------------------------------------------------------
@@ -755,6 +810,8 @@ def run_guided_build(
         goal = answer.strip().strip('"').strip("'").strip()
         if not goal:
             return GuidedBuildResult(status="cancelled", message="No idea given.")
+
+    goal = _maybe_clarify_idea(goal, prompter)
 
     # --- Name -------------------------------------------------------------
     if suggested_name:
