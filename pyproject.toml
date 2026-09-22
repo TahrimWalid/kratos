@@ -3,11 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kratos-offline-security-assistant"
+name = "kratos-security-assistant"
 version = "0.1.0"
-description = "Kratos — Offline AI Security Assistant (thesis prototype)"
+description = "Kratos — a self-hostable, self-growing security assistant"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { file = "LICENSE" }
 dependencies = [
     "requests",
     "uvicorn",
