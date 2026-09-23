@@ -73,12 +73,23 @@ class SubAgentScreen(Screen):
     SubAgentScreen #sa-hints { height: auto; padding-top: 1; }
     """
 
-    def __init__(self, data_dir: Path, core_port: int = _DEFAULT_CORE_PORT) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        core_port: int = _DEFAULT_CORE_PORT,
+        *,
+        auto_add: bool = False,
+        default_name: str | None = None,
+    ) -> None:
         super().__init__()
         self._data_dir = Path(data_dir)
         self._core_port = core_port
         self._sa_store = SubAgentStore(self._data_dir / "kratos.db")
         self._targets: list[dict[str, Any]] = []
+        # When opened from onboarding: jump straight into the add-a-server flow
+        # with the target's name pre-filled.
+        self._auto_add = auto_add
+        self._default_name = default_name
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -97,6 +108,8 @@ class SubAgentScreen(Screen):
         table = self.query_one("#sa-table", DataTable)
         table.add_columns("status", "name", "host", "agent", "last seen")
         self._refresh()
+        if self._auto_add:
+            self.action_add_server()
 
     # ------------------------------------------------------------------
     def _log(self, renderable: Any) -> None:
@@ -155,7 +168,11 @@ class SubAgentScreen(Screen):
     async def action_add_server(self) -> None:
         """Full add-a-server flow: name → hub address → code → installer → wait."""
         name = await self.app.push_screen_wait(
-            PromptModal("Add a server", hint="A short label for this target (e.g. web-01). Enter to skip.")
+            PromptModal(
+                "Add a server",
+                hint="A short label for this target (e.g. web-01). Enter to skip.",
+                initial=self._default_name or "",
+            )
         )
         if name is None:
             return  # cancelled

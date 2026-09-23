@@ -301,6 +301,13 @@ class KratosTUI(ResilientWorkerHost, App):
                     continue
                 _kconfig.save_local_config(self.data_dir, default_target=cleaned[0])
                 _kconfig.set_active_target(cleaned[0])
+                # Walk a first-time user through actually connecting a remote
+                # default target (SSH setup + probe, or a sub-agent), not just
+                # storing the string.
+                from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
+
+                if needs_onboarding(cleaned[0]):
+                    await self.push_screen_wait(OnboardTargetScreen(self.data_dir, cleaned[0]))
                 break
         else:
             persisted = config.get("default_target")

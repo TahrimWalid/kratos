@@ -355,6 +355,13 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                 self.app.notify(err, severity="error", timeout=6)
                 continue
             break
+        # Onboard a remote target BEFORE opening the session, so a first-time
+        # user is walked through actually connecting it (SSH setup + probe, or a
+        # sub-agent) instead of landing in a session where every tool just fails.
+        from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
+
+        if needs_onboarding(targets[0]):
+            await self.app.push_screen_wait(OnboardTargetScreen(self._data_dir, targets[0]))
         name = await self.app.push_screen_wait(
             PromptModal("New session", "Name (optional — Enter to leave unnamed)", initial="")
         )
