@@ -71,7 +71,13 @@ def _authorize_key_command() -> str | None:
         return None
     if not key:
         return None
-    return f"echo '{key}' >> ~/.ssh/authorized_keys"
+    # Robust + idempotent: create ~/.ssh with correct perms first, so it also
+    # works on a brand-new box where ~/.ssh doesn't exist yet, and fix the
+    # authorized_keys mode (sshd ignores it if it's group/other-writable).
+    return (
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+        f"echo '{key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    )
 
 
 def _deploy_failure_message(ssh_addr: str, detail: str) -> str:

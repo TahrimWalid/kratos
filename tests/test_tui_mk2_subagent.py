@@ -177,7 +177,11 @@ def test_authorize_key_command(tmp_path, monkeypatch):
     (tmp_path / "id_ed25519.pub").write_text(key + "\n")
     monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", keyfile)
     cmd = sa_mod._authorize_key_command()
-    assert cmd == f"echo '{key}' >> ~/.ssh/authorized_keys"
+    # Robust/idempotent form: makes ~/.ssh, appends the key, fixes perms.
+    assert f"echo '{key}' >> ~/.ssh/authorized_keys" in cmd
+    assert "mkdir -p ~/.ssh" in cmd
+    assert "chmod 700 ~/.ssh" in cmd
+    assert "chmod 600 ~/.ssh/authorized_keys" in cmd
 
 
 def test_authorize_key_command_missing_pub(tmp_path, monkeypatch):
