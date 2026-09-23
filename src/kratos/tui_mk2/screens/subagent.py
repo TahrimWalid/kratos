@@ -51,6 +51,47 @@ def _cl_default_bind() -> str:
 
     return _cl.DEFAULT_BIND_HOST
 
+
+def _is_publickey_denied(detail: str) -> bool:
+    d = (detail or "").lower()
+    return "permission denied" in d and "publickey" in d
+
+
+def _authorize_key_command() -> str | None:
+    """`echo '<this host's target pubkey>' >> ~/.ssh/authorized_keys`, for the
+    user to paste ON the target so this host can SSH in. None if the pubkey
+    can't be read. Mirrors what generate_target_setup_checklist already shows for
+    the direct-SSH path -- same key, so authorizing it once covers both."""
+    from kratos import kratos_config as _kc
+
+    pub = _kc.SSH_TARGET_KEY_PATH.with_name(_kc.SSH_TARGET_KEY_PATH.name + ".pub")
+    try:
+        key = pub.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not key:
+        return None
+    return f"echo '{key}' >> ~/.ssh/authorized_keys"
+
+
+def _deploy_failure_message(ssh_addr: str, detail: str) -> str:
+    """The log message shown when an SSH deploy fails. On a public-key rejection
+    (this host's key isn't authorized on the target yet), hand the user the exact
+    command to paste ON the target to grant it -- not just 'do it yourself'."""
+    lines = [f"Couldn't deploy to {ssh_addr}: {detail}"]
+    authorize = _authorize_key_command() if _is_publickey_denied(detail) else None
+    if authorize:
+        login = ssh_addr.split("@", 1)[0] if "@" in ssh_addr else "the login user"
+        lines += [
+            "",
+            f"{ssh_addr} doesn't accept this host's SSH key yet. Grant it by running this ON the",
+            f"target (as {login}, the user you connect as), then press 'a' to retry the deploy:",
+            f"    {authorize}",
+        ]
+    else:
+        lines.append("Run the scp/ssh commands above yourself (needs key-based SSH access to the target).")
+    return "\n".join(lines)
+
 _DEFAULT_CORE_PORT = 8765
 _CHECKIN_POLL_SECONDS = 1.0
 _CHECKIN_TIMEOUT_SECONDS = 900  # a pairing code lives 15 min; stop waiting when it can no longer be used.
@@ -272,8 +313,14 @@ class SubAgentScreen(Screen):
     def _ssh_deploy_worker(self, script_path: str, ssh_addr: str) -> None:
         import subprocess
 
+        from kratos import kratos_config as _kc
+
         basename = Path(script_path).name
         ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
+        # Present Kratos's configured target key, so the key we deploy with is the
+        # same one whose public half we tell the user to authorize on a failure.
+        if _kc.SSH_TARGET_KEY_PATH.exists():
+            ssh_opts += ["-i", str(_kc.SSH_TARGET_KEY_PATH)]
         try:
             scp = subprocess.run(
                 ["scp", *ssh_opts, script_path, f"{ssh_addr}:{basename}"],
@@ -296,11 +343,7 @@ class SubAgentScreen(Screen):
             self._deploy_failed(ssh_addr, str(exc))
 
     def _deploy_failed(self, ssh_addr: str, detail: str) -> None:
-        self.app.call_from_thread(self._log, Text(
-            f"Couldn't deploy to {ssh_addr}: {detail}\n"
-            f"Run the scp/ssh commands above yourself (needs key-based SSH access to the target).",
-            style=T.CRITICAL,
-        ))
+        self.app.call_from_thread(self._log, Text(_deploy_failure_message(ssh_addr, detail), style=T.CRITICAL))
 
     # ------------------------------------------------------------------
     @work

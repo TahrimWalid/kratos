@@ -137,6 +137,45 @@ def test_await_checkin_detects_new_target(tmp_path, monkeypatch):
     assert any("paired" in t and "telemetry live" in t for t in captured["texts"])
 
 
+def test_is_publickey_denied():
+    assert sa_mod._is_publickey_denied("ubuntu@h: Permission denied (publickey).") is True
+    assert sa_mod._is_publickey_denied("Permission denied (password).") is False
+    assert sa_mod._is_publickey_denied("Connection timed out") is False
+    assert sa_mod._is_publickey_denied("") is False
+
+
+def test_authorize_key_command(tmp_path, monkeypatch):
+    key = "ssh-ed25519 AAAATESTKEY sysadmin@homelab-node1"
+    keyfile = tmp_path / "id_ed25519"
+    (tmp_path / "id_ed25519.pub").write_text(key + "\n")
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", keyfile)
+    cmd = sa_mod._authorize_key_command()
+    assert cmd == f"echo '{key}' >> ~/.ssh/authorized_keys"
+
+
+def test_authorize_key_command_missing_pub(tmp_path, monkeypatch):
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", tmp_path / "nope")
+    assert sa_mod._authorize_key_command() is None
+
+
+def test_deploy_failure_message_publickey_shows_authorize(tmp_path, monkeypatch):
+    key = "ssh-ed25519 AAAAKEY sysadmin@homelab-node1"
+    keyfile = tmp_path / "id_ed25519"
+    (tmp_path / "id_ed25519.pub").write_text(key + "\n")
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", keyfile)
+    msg = sa_mod._deploy_failure_message("ubuntu@100.91.235.62", "ubuntu@100.91.235.62: Permission denied (publickey).")
+    assert "doesn't accept this host's SSH key yet" in msg
+    assert f"echo '{key}' >> ~/.ssh/authorized_keys" in msg
+    assert "as ubuntu" in msg  # login user extracted from ssh_addr
+
+
+def test_deploy_failure_message_other_error_is_generic(tmp_path, monkeypatch):
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", tmp_path / "id_ed25519")
+    msg = sa_mod._deploy_failure_message("ubuntu@h", "Connection timed out")
+    assert "authorized_keys" not in msg
+    assert "Run the scp/ssh commands above yourself" in msg
+
+
 def test_manual_hub_address_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr(sa_mod, "_CHECKIN_TIMEOUT_SECONDS", 0.02)
     monkeypatch.setattr(sa_mod, "_CHECKIN_POLL_SECONDS", 0.01)
