@@ -137,6 +137,33 @@ def test_await_checkin_detects_new_target(tmp_path, monkeypatch):
     assert any("paired" in t and "telemetry live" in t for t in captured["texts"])
 
 
+def test_command_modal_copies_and_closes(monkeypatch):
+    from kratos.tui_mk2.modals import CommandModal
+
+    cmd = "echo 'ssh-ed25519 AAAA x@y' >> ~/.ssh/authorized_keys"
+    copied: list[str] = []
+
+    class _App(App):
+        def on_mount(self):
+            pass
+
+    async def run():
+        app = _App()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "copy_to_clipboard", lambda t: copied.append(t))
+            app.push_screen(CommandModal(cmd, title="Authorize", note="run on target"))
+            await pilot.pause()
+            await pilot.press("c")  # copy
+            await pilot.pause()
+            assert copied == [cmd]
+            await pilot.press("escape")  # close
+            await pilot.pause()
+            assert not any(isinstance(s, CommandModal) for s in app.screen_stack)
+
+    asyncio.run(run())
+
+
 def test_is_publickey_denied():
     assert sa_mod._is_publickey_denied("ubuntu@h: Permission denied (publickey).") is True
     assert sa_mod._is_publickey_denied("Permission denied (password).") is False

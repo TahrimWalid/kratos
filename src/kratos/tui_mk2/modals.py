@@ -28,13 +28,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, ListItem, ListView, Static
 
@@ -787,4 +788,63 @@ class CommandPaletteModal(ModalScreen[str | None]):
         self.query_one("#palette-list", ListView).action_cursor_up()
 
     def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class CommandModal(ModalScreen[None]):
+    """A read-only shell command shown in a bordered box with a one-click Copy
+    button, so the user can paste it EXACTLY into another terminal -- no manual
+    retyping, no OCR mistakes, no line-wrap corruption (the command that broke a
+    real paste). `c` or the Copy button copies via the terminal's clipboard
+    (OSC-52); esc/enter closes. `command` may be multi-line."""
+
+    BINDINGS = [
+        Binding("c", "copy", "copy", show=True),
+        Binding("escape,enter,q", "close", "close", show=True),
+    ]
+
+    CSS = """
+    CommandModal #cmd-box { height: auto; }
+    CommandModal Horizontal { height: auto; align: left middle; }
+    CommandModal Button { margin: 1 1 0 0; }
+    """
+
+    def __init__(self, command: str, title: str = "Run this", note: str = "") -> None:
+        super().__init__()
+        self._command = command
+        self._title = title
+        self._note = note
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            if self._note:
+                yield Static(Text(self._note, style=T.TEXT_DIM))
+            # Wrap so the whole command is visible even when it's wider than the
+            # box; the copy is always the exact byte-correct string regardless.
+            yield Static(
+                Panel(Text(self._command, style=T.TEXT_BRIGHT), border_style=T.ACCENT, padding=(0, 1)),
+                id="cmd-box",
+            )
+            with Horizontal():
+                yield Button("Copy", id="cmd-copy", variant="primary")
+                yield Button("Close", id="cmd-close")
+            yield Static(Text("Click Copy (don't select the text) · c copy · esc close", style=T.TEXT_DIM))
+
+    def on_mount(self) -> None:
+        self.query_one("#cmd-copy", Button).focus()
+
+    @on(Button.Pressed, "#cmd-copy")
+    def _copy_btn(self, event: Button.Pressed) -> None:
+        self.action_copy()
+
+    @on(Button.Pressed, "#cmd-close")
+    def _close_btn(self, event: Button.Pressed) -> None:
+        self.action_close()
+
+    def action_copy(self) -> None:
+        self.app.copy_to_clipboard(self._command)
+        self.app.notify("Copied to clipboard.", timeout=3)
+
+    def action_close(self) -> None:
         self.dismiss(None)

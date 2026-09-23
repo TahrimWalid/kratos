@@ -43,7 +43,7 @@ from kratos.subagent.status import (
     derive_status,
 )
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal, PromptModal
+from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
 
 
 def _cl_default_bind() -> str:
@@ -344,6 +344,17 @@ class SubAgentScreen(Screen):
 
     def _deploy_failed(self, ssh_addr: str, detail: str) -> None:
         self.app.call_from_thread(self._log, Text(_deploy_failure_message(ssh_addr, detail), style=T.CRITICAL))
+        # On a public-key rejection, also pop a click-to-copy box with the exact
+        # authorize command, so the user pastes it verbatim (no OCR/line-wrap
+        # corruption -- the failure mode that broke a real manual paste).
+        authorize = _authorize_key_command() if _is_publickey_denied(detail) else None
+        if authorize:
+            login = ssh_addr.split("@", 1)[0] if "@" in ssh_addr else "the login user"
+            note = f"Run this ON the target (as {login}), then press 'a' to retry the deploy."
+            self.app.call_from_thread(
+                self.app.push_screen,
+                CommandModal(authorize, title="Authorize Kratos on the target", note=note),
+            )
 
     # ------------------------------------------------------------------
     @work
