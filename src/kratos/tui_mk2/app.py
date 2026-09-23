@@ -129,6 +129,8 @@ class KratosTUI(ResilientWorkerHost, App):
         self._too_small_active = False
         self._booted = False  # gate the resize guard until boot pushed a real screen
         self._mouse_enabled = True  # F2 copy-mode toggle state
+        self._core_server = None  # in-process sub-agent telemetry listener, if we started one
+        self._core_listener_inproc = False
 
     def on_resize(self, event: Resize) -> None:
         # Ignore resizes until boot has pushed the first real screen -- otherwise
@@ -265,6 +267,11 @@ class KratosTUI(ResilientWorkerHost, App):
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
         set_clarify_provider(None)
+        # The in-process listener (if any) is torn down by cancelling its worker
+        # on shutdown; _serve_core_listener absorbs the CancelledError and its
+        # `async with self._server` closes the socket. No manual close here (a
+        # sync close from on_unmount races that cancellation).
+        self._core_server = None
 
     def _boot(self) -> None:
         # Textual runs this as a worker so push_screen_wait can be awaited.
@@ -320,6 +327,49 @@ class KratosTUI(ResilientWorkerHost, App):
         # terminal, which the pre-boot on_resize deliberately skipped).
         self._booted = True
         self._apply_size_guard(self.size.width, self.size.height)
+
+    # --- sub-agent telemetry listener (in-process) ----------------------
+    def ensure_core_listener(self) -> str:
+        """Make sure a telemetry listener is accepting connections, so onboarding
+        works without a second terminal. Returns one of: "external" (something
+        was already listening -- e.g. an always-on service, which we defer to),
+        "in_process" (we started one for this session), or "unavailable" (couldn't
+        bind). Idempotent."""
+        from kratos.subagent import core_listener as _cl
+
+        if _cl.listener_running(_cl.DEFAULT_PORT):
+            return "external" if not self._core_listener_inproc else "in_process"
+        try:
+            from kratos.storage.subagent_store import SubAgentStore
+            from kratos.subagent.core_server import CoreServer
+
+            self._core_server = CoreServer(
+                SubAgentStore(self.data_dir / "kratos.db"),
+                host=_cl.DEFAULT_BIND_HOST,
+                port=_cl.DEFAULT_PORT,
+            )
+            self.run_worker(
+                self._serve_core_listener(self._core_server),
+                name="core-listener",
+                group="core-listener",
+                exclusive=False,
+            )
+            self._core_listener_inproc = True
+            return "in_process"
+        except Exception:  # noqa: BLE001 -- a listener bind failure must never break the TUI
+            self._core_server = None
+            self._core_listener_inproc = False
+            return "unavailable"
+
+    async def _serve_core_listener(self, server) -> None:
+        """Run the listener until the worker is cancelled at shutdown, absorbing
+        the CancelledError (and any teardown error) so the worker exits cleanly
+        rather than being counted as a crashed worker."""
+        import asyncio
+        import contextlib
+
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await server.serve_forever()
 
 
 def _restore_terminal_mouse() -> None:

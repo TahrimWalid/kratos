@@ -86,17 +86,13 @@ def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            answers = iter(["web-01", "100.97.223.65"])  # name, then hub address pick
+            # name, hub address pick, deploy-over-SSH? (decline)
+            answers = iter(["web-01", "100.97.223.65", False])
 
             async def canned(_modal):
                 return next(answers)
 
             monkeypatch.setattr(app, "push_screen_wait", canned)
-
-            async def not_listening(_port):
-                return False
-
-            monkeypatch.setattr(screen, "_serve_running", not_listening)
 
             screen.action_add_server()
             await app.workers.wait_for_complete()
@@ -116,7 +112,8 @@ def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch
     texts = captured["texts"]
     assert any("Pairing code for web-01" in t for t in texts)
     assert any("Saved a one-command installer" in t for t in texts)
-    assert any("isn't listening yet" in t for t in texts)  # serve-not-running hint fired
+    # _Host has no ensure_core_listener, so the flow falls to the manual-listener hint.
+    assert any("No listener is running" in t for t in texts)
 
 
 def test_await_checkin_detects_new_target(tmp_path, monkeypatch):
@@ -149,18 +146,13 @@ def test_manual_hub_address_prompt(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # name -> pick "__manual__" -> typed address
-            answers = iter(["srv", "__manual__", "vpn.example.com"])
+            # name -> pick "__manual__" -> typed address -> decline SSH deploy
+            answers = iter(["srv", "__manual__", "vpn.example.com", False])
 
             async def canned(_modal):
                 return next(answers)
 
             monkeypatch.setattr(app, "push_screen_wait", canned)
-
-            async def listening(_port):
-                return True
-
-            monkeypatch.setattr(screen, "_serve_running", listening)
             screen.action_add_server()
             await app.workers.wait_for_complete()
             await pilot.pause()

@@ -43,7 +43,13 @@ from kratos.subagent.status import (
     derive_status,
 )
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal, PromptModal
+
+
+def _cl_default_bind() -> str:
+    from kratos.subagent import core_listener as _cl
+
+    return _cl.DEFAULT_BIND_HOST
 
 _DEFAULT_CORE_PORT = 8765
 _CHECKIN_POLL_SECONDS = 1.0
@@ -62,6 +68,7 @@ class SubAgentScreen(Screen):
         Binding("escape,q", "back", "back", show=True),
         Binding("a", "add_server", "add a server", show=True),
         Binding("t", "telemetry", "latest telemetry", show=True),
+        Binding("l", "install_service", "always-on listener", show=True),
         Binding("r", "refresh", "refresh", show=False),
     ]
 
@@ -100,7 +107,7 @@ class SubAgentScreen(Screen):
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
-                Text("a add a server · t latest telemetry · r refresh · esc back", style=T.TEXT_DIM),
+                Text("a add a server · t latest telemetry · l always-on listener · r refresh · esc back", style=T.TEXT_DIM),
                 id="sa-hints",
             )
 
@@ -108,6 +115,12 @@ class SubAgentScreen(Screen):
         table = self.query_one("#sa-table", DataTable)
         table.add_columns("status", "name", "host", "agent", "last seen")
         self._refresh()
+        # Make sure a listener is up while this screen is open, so paired targets
+        # stream telemetry without a second terminal. Defensive getattr: a bare
+        # test host App without this method is simply skipped.
+        ensure = getattr(self.app, "ensure_core_listener", None)
+        if ensure is not None and self._targets:
+            ensure()
         if self._auto_add:
             self.action_add_server()
 
@@ -203,18 +216,148 @@ class SubAgentScreen(Screen):
             self._log(Text(f"Could not write installer to {out_path}: {exc}", style=T.CRITICAL))
             return
 
+        # Make sure a listener is accepting connections, so the target can
+        # actually check in -- no second terminal needed.
+        self._announce_listener()
+
         self._render_pairing_instructions(name, host, code, ttl_min, out_path)
 
-        serve_up = await self._serve_running(self._core_port)
-        if not serve_up:
-            self._log(Text(
-                f"⚠ This core isn't listening yet. Start it (in a terminal) so the target can check in:\n"
-                f"    kratos subagent-serve --host {host}",
-                style=T.ATTENTION,
-            ))
+        # Offer to copy+run the installer on the target over SSH (one keypress
+        # instead of manual scp/ssh). Falls back cleanly to the manual steps.
+        await self._offer_ssh_deploy(out_path, name)
 
         self._log(Text(f"Waiting for {name or 'the target'} to check in… (you can leave this screen; it keeps pairing)", style=T.ATTENTION))
         await self._await_checkin(pre_ids, name)
+
+    def _announce_listener(self) -> None:
+        ensure = getattr(self.app, "ensure_core_listener", None)
+        status = ensure() if ensure else None
+        if status == "in_process":
+            self._log(Text(
+                "Listener is running inside Kratos for now (this session). For always-on monitoring "
+                "after you close Kratos, press 'L' to install it as a service.",
+                style=T.TEXT_MUTED,
+            ))
+        elif status == "external":
+            self._log(Text("Listener is already running (service) — good.", style=T.TEXT_DIM))
+        elif status == "unavailable" or status is None:
+            # Couldn't auto-start (or unknown app) -- show the manual command.
+            self._log(Text(
+                "⚠ No listener is running. Start one (in a terminal) so the target can check in:\n"
+                f"    kratos subagent-serve --host {_cl_default_bind()}",
+                style=T.ATTENTION,
+            ))
+
+    async def _offer_ssh_deploy(self, out_path: Path, name: str | None) -> None:
+        deploy = await self.app.push_screen_wait(ConfirmModal(
+            "Deploy over SSH now?",
+            "Copy the installer to the target and run it over SSH for you? "
+            "You'll confirm the target's SSH address next. (Or do it yourself with the commands above.)",
+        ))
+        if not deploy:
+            return
+        default_ssh = f"root@{self._default_name}" if self._default_name else ""
+        ssh_addr = await self.app.push_screen_wait(PromptModal(
+            "Target SSH address",
+            hint="user@host to deploy to (e.g. ubuntu@203.0.113.5). Needs key-based SSH access.",
+            initial=default_ssh,
+        ))
+        ssh_addr = (ssh_addr or "").strip()
+        if not ssh_addr:
+            return
+        self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
+        self._ssh_deploy_worker(str(out_path), ssh_addr)
+
+    @work(thread=True)
+    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str) -> None:
+        import subprocess
+
+        basename = Path(script_path).name
+        ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
+        try:
+            scp = subprocess.run(
+                ["scp", *ssh_opts, script_path, f"{ssh_addr}:{basename}"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if scp.returncode != 0:
+                self._deploy_failed(ssh_addr, (scp.stderr or scp.stdout).strip())
+                return
+            run = subprocess.run(
+                ["ssh", *ssh_opts, ssh_addr, f"sh {basename}"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if run.returncode != 0:
+                self._deploy_failed(ssh_addr, (run.stderr or run.stdout).strip())
+                return
+            self.app.call_from_thread(self._log, Text(
+                f"✓ Installer ran on {ssh_addr}. Waiting for it to check in…", style=f"bold {T.SAFE}"
+            ))
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._deploy_failed(ssh_addr, str(exc))
+
+    def _deploy_failed(self, ssh_addr: str, detail: str) -> None:
+        self.app.call_from_thread(self._log, Text(
+            f"Couldn't deploy to {ssh_addr}: {detail}\n"
+            f"Run the scp/ssh commands above yourself (needs key-based SSH access to the target).",
+            style=T.CRITICAL,
+        ))
+
+    # ------------------------------------------------------------------
+    @work
+    async def action_install_service(self) -> None:
+        """Install `subagent-serve` as an always-on service so telemetry keeps
+        arriving after Kratos is closed (and survives a reboot). System service
+        when passwordless sudo is available, else a user service (no root)."""
+        from kratos.subagent import core_listener as _cl
+
+        user_mode = not _cl.passwordless_sudo_available()
+        cmds = _cl.core_service_install_commands(
+            self._data_dir, port=self._core_port, user_mode=user_mode
+        )
+        kind = "user" if user_mode else "system"
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Install always-on listener?",
+            f"Install the telemetry listener as a {kind} service so it keeps receiving "
+            f"after you close Kratos and across reboots? You can undo it later with systemctl.",
+        ))
+        if not ok:
+            self._log(Text("To install it later, run these once:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
+            return
+        self._log(Text(f"Installing the always-on listener ({kind} service)…", style=T.ATTENTION))
+        self._install_service_worker(cmds)
+
+    @work(thread=True)
+    def _install_service_worker(self, cmds: list[str]) -> None:
+        import subprocess
+
+        from kratos.subagent import core_listener as _cl
+
+        for cmd in cmds:
+            try:
+                proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as exc:
+                self._service_install_failed(cmds, str(exc))
+                return
+            if proc.returncode != 0:
+                self._service_install_failed(cmds, (proc.stderr or proc.stdout).strip())
+                return
+        if _cl.listener_running(self._core_port):
+            self.app.call_from_thread(self._log, Text(
+                "✓ Always-on listener installed and running — telemetry will keep arriving "
+                "even when Kratos is closed.", style=f"bold {T.SAFE}",
+            ))
+        else:
+            self.app.call_from_thread(self._log, Text(
+                "Service commands ran, but nothing is listening yet — check "
+                "`systemctl status kratos-core-listener` (or `--user`).", style=T.ATTENTION,
+            ))
+
+    def _service_install_failed(self, cmds: list[str], detail: str) -> None:
+        self.app.call_from_thread(self._log, Text(
+            f"Couldn't install the service automatically: {detail}\n"
+            "Run these once yourself:\n" + "\n".join(cmds),
+            style=T.CRITICAL,
+        ))
 
     async def _pick_hub_address(self) -> str | None:
         """Ask which address the target should DIAL to reach this core."""
@@ -250,21 +393,6 @@ class SubAgentScreen(Screen):
             f"The target will dial back to this core at {host}:{self._core_port}.",
             style=T.TEXT_MUTED,
         ))
-
-    async def _serve_running(self, port: int) -> bool:
-        """Best-effort: is a `subagent-serve` listener up on this core?"""
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection("127.0.0.1", port), timeout=1.0
-            )
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-            return True
-        except Exception:
-            return False
 
     async def _await_checkin(self, pre_ids: set[str], name: str | None) -> None:
         waited = 0.0
