@@ -519,6 +519,14 @@ class ListPickerModal(ModalScreen[Any]):
 
     BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
 
+    # Constrain each row to the card width and wrap, so a long label wraps to
+    # the next line instead of overflowing off the right edge of the modal.
+    CSS = """
+    ListPickerModal ListView { width: 1fr; height: auto; max-height: 20; }
+    ListPickerModal ListView > ListItem { width: 1fr; height: auto; }
+    ListPickerModal ListView > ListItem > Label { width: 1fr; height: auto; }
+    """
+
     def __init__(self, title: str, entries: list[tuple[Any, str]], subtitle: str = "") -> None:
         super().__init__()
         self._title = title

@@ -87,7 +87,7 @@ def candidate_hub_addresses() -> list[HubAddressCandidate]:
             HubAddressCandidate(
                 kind="tailscale",
                 address=ts,
-                note="Tailscale IP -- use this if the target is on your tailnet (remote / behind NAT).",
+                note="on your tailnet (remote / VPS — recommended)",
             )
         )
         seen.add(ts)
@@ -98,7 +98,7 @@ def candidate_hub_addresses() -> list[HubAddressCandidate]:
             HubAddressCandidate(
                 kind="lan",
                 address=lan,
-                note="LAN IP -- use this if the target is on the same local network as this core.",
+                note="on the same local network as this core",
             )
         )
         seen.add(lan)
@@ -107,7 +107,7 @@ def candidate_hub_addresses() -> list[HubAddressCandidate]:
         HubAddressCandidate(
             kind="manual",
             address="",
-            note="Enter a different address -- e.g. a public IP/hostname the target can reach.",
+            note="a public IP/hostname the target can reach",
         )
     )
     return candidates

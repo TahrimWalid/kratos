@@ -95,9 +95,9 @@ class OnboardTargetScreen(Screen[str | None]):
     @work
     async def _choose_method(self) -> None:
         entries = [
-            ("ssh", "Direct SSH — Kratos connects in to read logs & config (what investigations use today)"),
-            ("subagent", "Sub-agent — install a small always-on telemetry agent that dials back to Kratos"),
-            ("skip", "Skip for now — set it up later from /target or /subagent"),
+            ("ssh", "Direct SSH — Kratos reads logs & config (investigations use this today)"),
+            ("subagent", "Sub-agent — always-on telemetry agent that dials back to Kratos"),
+            ("skip", "Skip for now — set up later (/target or /subagent)"),
         ]
         picked = await self.app.push_screen_wait(
             ListPickerModal(
