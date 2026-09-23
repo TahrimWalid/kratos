@@ -164,6 +164,42 @@ def test_command_modal_copies_and_closes(monkeypatch):
     asyncio.run(run())
 
 
+def test_copy_commands_action(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import CommandModal
+
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    _pair(sa, "web-01")
+    screen = SubAgentScreen(tmp_path)
+    notes: list[str] = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "notify", lambda *a, **k: notes.append(a[0] if a else ""))
+            # Nothing added yet in this session -> notify, no modal.
+            screen.action_copy_commands()
+            await pilot.pause()
+            assert notes and "add a server first" in notes[0]
+            assert not any(isinstance(s, CommandModal) for s in app.screen_stack)
+            # Once commands exist, 'c' pops a copy box with them.
+            screen._last_deploy_commands = screen._deploy_commands(tmp_path / "install-web-01.sh", "ubuntu@1.2.3.4")
+            screen.action_copy_commands()
+            await pilot.pause()
+            modal = next((s for s in app.screen_stack if isinstance(s, CommandModal)), None)
+            assert modal is not None
+            assert "scp" in modal._command and "ubuntu@1.2.3.4" in modal._command
+
+    asyncio.run(run())
+
+
+def test_deploy_commands_shape(tmp_path):
+    screen = SubAgentScreen(tmp_path)
+    cmds = screen._deploy_commands(tmp_path / "kratos-subagent-install-web-01.sh", "ubuntu@host")
+    assert "scp" in cmds and "ubuntu@host:~/" in cmds
+    assert "ssh ubuntu@host 'sh kratos-subagent-install-web-01.sh'" in cmds
+
+
 def test_is_publickey_denied():
     assert sa_mod._is_publickey_denied("ubuntu@h: Permission denied (publickey).") is True
     assert sa_mod._is_publickey_denied("Permission denied (password).") is False

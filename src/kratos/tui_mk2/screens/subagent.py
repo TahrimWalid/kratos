@@ -115,6 +115,7 @@ class SubAgentScreen(Screen):
         Binding("escape,q", "back", "back", show=True),
         Binding("a", "add_server", "add a server", show=True),
         Binding("t", "telemetry", "latest telemetry", show=True),
+        Binding("c", "copy_commands", "copy deploy cmds", show=True),
         Binding("l", "install_service", "always-on listener", show=True),
         Binding("r", "refresh", "refresh", show=False),
     ]
@@ -144,6 +145,9 @@ class SubAgentScreen(Screen):
         # with the target's name pre-filled.
         self._auto_add = auto_add
         self._default_name = default_name
+        # The manual scp+ssh deploy commands for the most-recently-added server,
+        # so `c` can pop a click-to-copy box for them (same as the authorize cmd).
+        self._last_deploy_commands: str | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical():
@@ -154,7 +158,7 @@ class SubAgentScreen(Screen):
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
-                Text("a add a server · t latest telemetry · l always-on listener · r refresh · esc back", style=T.TEXT_DIM),
+                Text("a add a server · t latest telemetry · c copy deploy cmds · l always-on listener · r refresh · esc back", style=T.TEXT_DIM),
                 id="sa-hints",
             )
 
@@ -168,6 +172,10 @@ class SubAgentScreen(Screen):
         ensure = getattr(self.app, "ensure_core_listener", None)
         if ensure is not None and self._targets:
             ensure()
+        # Live status: re-derive connected/stale/unreachable and surface a target
+        # that checks in ANY way (this add flow, a reconnect, an out-of-band
+        # deploy) without needing a manual refresh.
+        self.set_interval(3.0, self._refresh)
         if self._auto_add:
             self.action_add_server()
 
@@ -182,6 +190,7 @@ class SubAgentScreen(Screen):
 
     def _refresh(self) -> None:
         table = self.query_one("#sa-table", DataTable)
+        prev = table.cursor_row  # preserve selection across the rebuild (auto-refresh)
         table.clear()
         self._targets = self._sa_store.list_targets()
         if not self._targets:
@@ -197,6 +206,11 @@ class SubAgentScreen(Screen):
                 Text(t.get("agent_version") or "—"),
                 Text(_short_ts(t.get("last_seen")), style=T.TEXT_DIM),
             )
+        if prev is not None and 0 <= prev < len(self._targets):
+            try:
+                table.move_cursor(row=prev)
+            except Exception:  # noqa: BLE001 -- cursor restore is best-effort
+                pass
 
     def action_back(self) -> None:
         self.app.pop_screen()
@@ -312,6 +326,9 @@ class SubAgentScreen(Screen):
         ssh_addr = (ssh_addr or "").strip()
         if not ssh_addr:
             return
+        # Now that we know the real target address, make `c` copy the concrete
+        # commands (with the address filled in) instead of the placeholder.
+        self._last_deploy_commands = self._deploy_commands(out_path, ssh_addr)
         self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
         self._ssh_deploy_worker(str(out_path), ssh_addr)
 
@@ -443,15 +460,31 @@ class SubAgentScreen(Screen):
 
     def _render_pairing_instructions(self, name: str | None, host: str, code: str, ttl_min: int, out_path: Path) -> None:
         label = name or "this target"
+        # The exact scp+ssh commands, stashed so `c` can pop a click-to-copy box
+        # (paste-safe, no OCR/line-wrap corruption). <user@target> is a fill-in.
+        self._last_deploy_commands = self._deploy_commands(out_path)
         self._log(Text(f"✓ Pairing code for {label}: {code}  (expires in {ttl_min} min)", style=f"bold {T.SAFE}"))
         self._log(Text(
             f"Saved a one-command installer to:\n"
             f"    {out_path}\n\n"
             f"Get it onto the target and run it once (it opens NO inbound port, and does not enable execution):\n"
-            f"    scp {out_path.name} {label.replace(' ', '-')}:~/     # or copy it over however you like\n"
-            f"    ssh <target> 'sh {out_path.name}'\n\n"
-            f"The target will dial back to this core at {host}:{self._core_port}.",
+            f"    scp {out_path} <user@target>:~/     # or copy it over however you like\n"
+            f"    ssh <user@target> 'sh {out_path.name}'\n\n"
+            f"The target will dial back to this core at {host}:{self._core_port}.  Press 'c' to copy these commands.",
             style=T.TEXT_MUTED,
+        ))
+
+    def _deploy_commands(self, out_path: Path, ssh_addr: str = "<user@target>") -> str:
+        return f"scp {out_path} {ssh_addr}:~/\nssh {ssh_addr} 'sh {out_path.name}'"
+
+    def action_copy_commands(self) -> None:
+        if not self._last_deploy_commands:
+            self.app.notify("No deploy commands yet — add a server first ('a').", timeout=3)
+            return
+        self.app.push_screen(CommandModal(
+            self._last_deploy_commands,
+            title="Deploy commands (run on this machine)",
+            note="Copies the installer to the target and runs it. Replace <user@target> with the target's SSH address.",
         ))
 
     async def _await_checkin(self, pre_ids: set[str], name: str | None) -> None:
