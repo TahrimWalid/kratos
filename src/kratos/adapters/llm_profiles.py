@@ -31,6 +31,15 @@ _LINE_RE = re.compile(
 # simply has no such line, and its absence changes nothing.
 _CONTEXT_LINE_RE = re.compile(r"^(?P<comment>#\s?)?LLM_CONTEXT_WINDOW=(?P<value>.*)$")
 
+# Optional line right after LLM_CONTEXT_WINDOW recording WHERE that number came
+# from, so re-detection never overwrites a number the user chose:
+#   provider -- the endpoint itself reported it (detected)
+#   catalog  -- a public catalog's published figure for the model (detected, less certain)
+# ABSENT means the user set it (or it predates source tracking) -- the safe
+# reading, since an unknown-origin number must never be silently replaced.
+_SOURCE_LINE_RE = re.compile(r"^(?P<comment>#\s?)?LLM_CONTEXT_SOURCE=(?P<value>.*)$")
+CONTEXT_SOURCES = ("provider", "catalog")
+
 # Literal placeholder strings this repo's own .env/.env.example templates
 # use -- a profile whose value matches one of these has never actually
 # been filled in by a human, regardless of whether all 4 keys are
@@ -101,6 +110,14 @@ def _parse_profiles(lines: list[str]) -> list[EnvProfile]:
                         block_values["LLM_CONTEXT_WINDOW"] = cm.group("value")
                         block_indices["LLM_CONTEXT_WINDOW"] = i + consumed
                         consumed += 1
+                        # ...and its optional provenance line (only meaningful
+                        # attached to a window line).
+                        if i + consumed < n:
+                            sm = _SOURCE_LINE_RE.match(lines[i + consumed])
+                            if sm:
+                                block_values["LLM_CONTEXT_SOURCE"] = sm.group("value")
+                                block_indices["LLM_CONTEXT_SOURCE"] = i + consumed
+                                consumed += 1
                 profiles.append(
                     EnvProfile(values=block_values, line_indices=block_indices, active=all(active_flags))
                 )
@@ -181,6 +198,9 @@ def add_profile(env_path: Path, values: dict[str, str], make_active: bool = True
     window = str(values.get("LLM_CONTEXT_WINDOW", "")).strip()
     if window:
         block.append(f"{prefix}LLM_CONTEXT_WINDOW={window}")
+        source = str(values.get("LLM_CONTEXT_SOURCE", "")).strip()
+        if source in CONTEXT_SOURCES:
+            block.append(f"{prefix}LLM_CONTEXT_SOURCE={source}")
 
     # Separate the appended block from prior content with exactly one blank line.
     while lines and lines[-1].strip() == "":
@@ -191,28 +211,41 @@ def add_profile(env_path: Path, values: dict[str, str], make_active: bool = True
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def set_profile_context_window(env_path: Path, model: str, window: int | None) -> bool:
+def set_profile_context_window(env_path: Path, model: str, window: int | None,
+                               source: str | None = None) -> bool:
     """Set (or clear, when `window` is None) the LLM_CONTEXT_WINDOW for the
-    profile whose LLM_MODEL == `model`, editing ONLY that block's lines. Updates
-    the line in place if present; inserts it right after the block's
-    KRATOS_LLM_BACKEND (matching that block's comment state) if absent; removes
-    it when clearing. Returns True iff a matching profile was found. Does not
+    profile whose LLM_MODEL == `model`, editing ONLY that block's lines.
+
+    `source` records where the number came from: "provider" / "catalog" for a
+    detected value, None for a number the user chose -- written as an
+    LLM_CONTEXT_SOURCE line after the window line, or removed when None (absence
+    means user-set). Clearing the window removes both lines. Lines are updated in
+    place, or inserted after the block's KRATOS_LLM_BACKEND matching the block's
+    comment state. Returns True iff a matching profile was found. Does not
     activate anything in-process -- the caller re-syncs set_active_llm_profile if
     it edited the active profile."""
+    if source is not None and source not in CONTEXT_SOURCES:
+        raise ValueError(f"unknown context source {source!r}")
     lines = env_path.read_text(encoding="utf-8").split("\n")
     target = next((p for p in _parse_profiles(lines) if p.model == model), None)
     if target is None:
         return False
     prefix = "" if target.active else "# "
-    if "LLM_CONTEXT_WINDOW" in target.line_indices:
-        idx = target.line_indices["LLM_CONTEXT_WINDOW"]
-        if window is None:
+    idx_win = target.line_indices.get("LLM_CONTEXT_WINDOW")
+    idx_src = target.line_indices.get("LLM_CONTEXT_SOURCE")
+    if window is None:
+        for idx in sorted((i for i in (idx_win, idx_src) if i is not None), reverse=True):
             del lines[idx]
+    else:
+        new_lines = [f"{prefix}LLM_CONTEXT_WINDOW={window}"]
+        if source is not None:
+            new_lines.append(f"{prefix}LLM_CONTEXT_SOURCE={source}")
+        if idx_win is not None:
+            end = (idx_src if idx_src is not None else idx_win) + 1
+            lines[idx_win:end] = new_lines
         else:
-            lines[idx] = f"{prefix}LLM_CONTEXT_WINDOW={window}"
-    elif window is not None:
-        after = target.line_indices["KRATOS_LLM_BACKEND"]
-        lines.insert(after + 1, f"{prefix}LLM_CONTEXT_WINDOW={window}")
+            after = target.line_indices["KRATOS_LLM_BACKEND"]
+            lines[after + 1:after + 1] = new_lines
     text = "\n".join(lines)
     env_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
     return True
@@ -220,8 +253,8 @@ def set_profile_context_window(env_path: Path, model: str, window: int | None) -
 
 def delete_profile(env_path: Path, model: str) -> bool:
     """Remove the profile whose LLM_MODEL == `model` from `.env` entirely --
-    deletes exactly that block's lines (the 4 PROFILE_KEYS plus an optional
-    LLM_CONTEXT_WINDOW), leaving every other line intact. Returns True iff a
+    deletes exactly that block's lines (the 4 PROFILE_KEYS plus the optional
+    LLM_CONTEXT_WINDOW / LLM_CONTEXT_SOURCE), leaving every other line intact. Returns True iff a
     matching profile was found. Callers MUST NOT delete the currently-active
     profile (that would leave the running process pointed at a model no longer
     in the file); the UI guards that -- this function just does the edit.

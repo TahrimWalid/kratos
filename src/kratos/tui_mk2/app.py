@@ -221,7 +221,34 @@ class KratosTUI(ResilientWorkerHost, App):
         # {"clarify": ...} action) via a Textual modal. Authorizes nothing; only
         # gathers intent. Cleared on unmount so nothing dangles post-exit.
         set_clarify_provider(make_textual_clarify_provider(self))
+        # Detect-once-and-save the ACTIVE model's context window if it has none
+        # saved (e.g. a profile set up before detection existed). Background
+        # thread: it's a network call and must never delay startup.
+        self.run_worker(self._autofill_active_context, thread=True, group="context-autofill")
         self._boot()
+
+    def _autofill_active_context(self) -> None:
+        from kratos.adapters import llm_profiles
+        from kratos.adapters.llm_context_autofill import autofill_context_window, describe, needs_autofill
+        from kratos.llm_config import ENV_FILE_PATH, get_active_llm_model, set_active_llm_profile
+
+        try:
+            _, current = llm_profiles.list_candidate_profiles(ENV_FILE_PATH)
+        except OSError:
+            return
+        if current is None or not needs_autofill(current.values):
+            return
+        values = dict(current.values)
+        note = describe(autofill_context_window(ENV_FILE_PATH, values), current.model)
+        # The detect above is a multi-second network call. If the user switched
+        # models in the meantime, the live override now points at that model --
+        # re-syncing here would silently revert the process to the profile we
+        # started detecting for. Only re-sync when THIS is still the active model
+        # (the window was saved to .env either way, so a later launch picks it up).
+        if values.get("LLM_CONTEXT_WINDOW") and get_active_llm_model() == current.model:
+            set_active_llm_profile(values)   # live process picks up the saved window now
+        if note:
+            self.call_from_thread(self.notify, note, severity="information", timeout=8)
 
     def _install_theme(self) -> None:
         # Register ONE Textual theme per pack (named by the pack) so switching

@@ -1686,13 +1686,21 @@ def _cmd_model(console, session_state: dict[str, Any], **_: Any) -> None:
         )
         return
 
-    set_active_llm_profile(target.values)
+    values = dict(target.values)
+    set_active_llm_profile(values)
     _llm_profiles.switch_profile(ENV_FILE_PATH, target, current)
+    # Detect-once-and-save the context window if this profile has none.
+    from kratos.adapters.llm_context_autofill import autofill_context_window, describe
+    ctx_note = describe(autofill_context_window(ENV_FILE_PATH, values), target.model)
+    if ctx_note:
+        set_active_llm_profile(values)   # re-sync with the newly saved window
     session_state["backend"] = target.model
     _console.render_success(
         console,
         f"Switched to {target.model} -- active now, and set as the default in .env for future launches.",
     )
+    if ctx_note:
+        _console.render_note(console, ctx_note)
 
 
 def _cmd_shortcut(console, subcommand: str, rest: str, data_dir: Path) -> None:

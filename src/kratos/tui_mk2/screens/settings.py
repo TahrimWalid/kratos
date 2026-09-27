@@ -60,6 +60,18 @@ def _validate_window(raw: str, detected_max: int | None, detected_loaded: int | 
     return value, None, None
 
 
+def _window_label(values: dict[str, str]) -> str:
+    """Context-window cell for the Models table: the number plus where it came
+    from, or what Kratos will do when nothing is saved."""
+    win = str(values.get("LLM_CONTEXT_WINDOW", "")).strip()
+    if win.isdigit():
+        src = str(values.get("LLM_CONTEXT_SOURCE", "")).strip()
+        tag = {"provider": "detected", "catalog": "catalog"}.get(src, "set")
+        return f"{int(win):,} ({tag})"
+    from kratos.adapters.llm_context_autofill import needs_autofill
+    return "auto (detect on switch)" if needs_autofill(values) else "local default"
+
+
 class _ContextField:
     """Shared detect+hint behavior for the add/edit forms (composition, not
     inheritance, to keep each modal's compose() explicit)."""
@@ -68,18 +80,36 @@ class _ContextField:
         self.owner = owner
         self.detected_max: int | None = None
         self.detected_loaded: int | None = None
+        self.detected_value: int | None = None       # what detection prefilled
+        self.detected_authority: str | None = None   # "provider" | "catalog"
 
-    @work(thread=True)
+    def source_for(self, value: int | None) -> str | None:
+        """The provenance to save with `value`: the detection's source if the
+        user kept the detected number, else None (= user-set)."""
+        if value is not None and value == self.detected_value:
+            return self.detected_authority
+        return None
+
     def detect(self, base_url: str, api_key: str, model: str) -> None:
+        # Textual's @work only works on DOMNodes (it asserts), and this helper is
+        # a plain object -- so the thread worker is started on the owning modal.
+        self.owner.run_worker(lambda: self._detect_blocking(base_url, api_key, model),
+                              thread=True, exclusive=True, group="context-detect")
+
+    def _detect_blocking(self, base_url: str, api_key: str, model: str) -> None:
         from kratos.adapters.llm_context_detect import detect_context_window
         self.owner.app.call_from_thread(self.owner._set_hint, "Detecting context window…", T.TEXT_DIM)
         d = detect_context_window(base_url, api_key, model)
         self.detected_max = d.max_context
         self.detected_loaded = d.loaded_context
+        self.detected_value = d.value
+        self.detected_authority = d.authority
         if d.detectable:
-            prefill = d.loaded_context or d.max_context
-            self.owner.app.call_from_thread(self.owner._set_window_value, str(prefill))
-            self.owner.app.call_from_thread(self.owner._set_hint, d.detail, T.SAFE)
+            self.owner.app.call_from_thread(self.owner._set_window_value, str(d.value))
+            # A catalog figure is the model's published max, not this provider's
+            # limit -- shown as a heads-up, not a confirmed number.
+            style = T.SAFE if d.authority == "provider" else T.ATTENTION
+            self.owner.app.call_from_thread(self.owner._set_hint, d.detail, style)
         else:
             self.owner.app.call_from_thread(
                 self.owner._set_hint, d.detail + " (your responsibility to set it correctly)", T.ATTENTION)
@@ -92,7 +122,7 @@ class AddModelModal(ModalScreen):
 
     BINDINGS = [
         Binding("escape", "cancel", "cancel", show=True),
-        Binding("ctrl+d", "detect", "detect", show=True),
+        Binding("ctrl+d", "detect", "detect", show=True, priority=True),
         Binding("ctrl+s", "save", "save", show=True),
     ]
 
@@ -178,16 +208,20 @@ class AddModelModal(ModalScreen):
         }
         if value is not None:
             values["LLM_CONTEXT_WINDOW"] = str(value)
+            source = self._ctx.source_for(value)
+            if source:
+                values["LLM_CONTEXT_SOURCE"] = source
         self.dismiss(values)
 
 
 class EditWindowModal(ModalScreen):
-    """Edit one profile's context window. Dismisses with an int (set), the
+    """Edit one profile's context window. Dismisses with {"window": int,
+    "source": "provider"|"catalog"|None} (set; source None = user-typed), the
     string 'clear' (back to auto), or None (cancel)."""
 
     BINDINGS = [
         Binding("escape", "cancel", "cancel", show=True),
-        Binding("ctrl+d", "detect", "detect", show=True),
+        Binding("ctrl+d", "detect", "detect", show=True, priority=True),
         Binding("ctrl+s", "save", "save", show=True),
     ]
 
@@ -212,7 +246,8 @@ class EditWindowModal(ModalScreen):
         with Vertical(classes="modal-card"):
             yield Static(Text(f"Context window — {self._values.get('LLM_MODEL', '')}",
                               style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(Text("Empty = auto (Kratos picks a safe default for this model).", style=T.TEXT_DIM))
+            yield Static(Text("Empty = auto (detected when you switch to this model; safe default if it "
+                              "can't be detected).", style=T.TEXT_DIM))
             yield Input(value=current, placeholder="tokens — Ctrl+D to detect, or empty for auto", id="edit-window")
             yield Static("", id="edit-hint")
             yield Static(Text("Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="edit-keys")
@@ -246,7 +281,7 @@ class EditWindowModal(ModalScreen):
             self._set_hint(soft + "  —  press Enter again to confirm.", T.ATTENTION)
             self._soft_ok = True
             return
-        self.dismiss(value)
+        self.dismiss({"window": value, "source": self._ctx.source_for(value)})
 
 
 class SettingsScreen(ResilientWorkerHost, Screen):
@@ -398,8 +433,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_status("No models configured yet — press 'a' to add one.", T.ATTENTION)
         for c in self._candidates:
             active = self._current is not None and c.model == self._current.model
-            win = c.values.get("LLM_CONTEXT_WINDOW")
-            win_txt = f"{int(win):,}" if (win and str(win).strip().isdigit()) else "auto"
+            win_txt = _window_label(c.values)
             table.add_row(
                 Text("●", style=T.SAFE) if active else Text(" "),
                 Text(c.model, style=T.TEXT_BRIGHT if active else T.TEXT_MUTED),
@@ -864,6 +898,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self.app.call_from_thread(self._set_status, f"Checking {values['LLM_MODEL']} is reachable…")
         reachable, detail = check_endpoint_reachable(values["LLM_BASE_URL"], values["LLM_API_KEY"])
         _p.add_profile(ENV_FILE_PATH, values, make_active=reachable)
+        ctx_note = self._autofill_context(values) if reachable else None
         if reachable:
             set_active_llm_profile(values)
             if self._session is not None:  # no live session when opened from home
@@ -871,7 +906,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                 self.app.call_from_thread(self._session._refresh_footer)
             self.app.call_from_thread(self._reload)
             self.app.call_from_thread(
-                self._set_status, f"Added {values['LLM_MODEL']} and switched to it — saved to .env.", T.SAFE)
+                self._set_status,
+                f"Added {values['LLM_MODEL']} and switched to it — saved to .env."
+                + (f" {ctx_note}" if ctx_note else ""), T.SAFE)
         else:
             self.app.call_from_thread(self._reload)
             self.app.call_from_thread(
@@ -888,18 +925,22 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         result = await self.app.push_screen_wait(EditWindowModal(dict(profile.values)))
         if result is None:
             return
-        window = None if result == "clear" else int(result)
+        window = None if result == "clear" else int(result["window"])
+        source = None if result == "clear" else result.get("source")
         from kratos.adapters import llm_profiles as _p
         from kratos.llm_config import ENV_FILE_PATH, set_active_llm_profile
-        _p.set_profile_context_window(ENV_FILE_PATH, profile.model, window)
+        _p.set_profile_context_window(ENV_FILE_PATH, profile.model, window, source=source)
         # If we edited the ACTIVE profile, re-sync the live override so the meter
         # and compaction pick the new window up immediately.
         if self._current is not None and self._current.model == profile.model:
             vals = dict(profile.values)
+            vals.pop("LLM_CONTEXT_SOURCE", None)
             if window is None:
                 vals.pop("LLM_CONTEXT_WINDOW", None)
             else:
                 vals["LLM_CONTEXT_WINDOW"] = str(window)
+                if source:
+                    vals["LLM_CONTEXT_SOURCE"] = source
             set_active_llm_profile(vals)
             if self._session is not None:
                 self._session._refresh_footer()
@@ -956,13 +997,30 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         if not reachable:
             self.app.call_from_thread(self._set_status, f"Not reachable — {detail}", T.CRITICAL)
             return
-        set_active_llm_profile(target.values)
+        values = dict(target.values)
+        set_active_llm_profile(values)
         _p.switch_profile(ENV_FILE_PATH, target, self._current)
+        ctx_note = self._autofill_context(values)
+        if ctx_note:
+            set_active_llm_profile(values)   # re-sync with the newly saved window
         if self._session is not None:  # no live session when opened from home
             self._session.session_state["backend"] = target.model
             self.app.call_from_thread(self._session._refresh_footer)
         self.app.call_from_thread(self._reload)
-        self.app.call_from_thread(self._set_status, f"Switched to {target.model} — active now, saved to .env.", T.SAFE)
+        self.app.call_from_thread(
+            self._set_status,
+            f"Switched to {target.model} — active now, saved to .env." + (f" {ctx_note}" if ctx_note else ""),
+            T.SAFE)
+
+    @staticmethod
+    def _autofill_context(values: dict[str, str]) -> str | None:
+        """Detect-once-and-save for a just-added/switched profile (no-op if it
+        already has a window or is local). Updates `values` in place. Runs on a
+        worker thread (network). Returns a status suffix, or None."""
+        from kratos.adapters.llm_context_autofill import autofill_context_window, describe
+        from kratos.llm_config import ENV_FILE_PATH
+
+        return describe(autofill_context_window(ENV_FILE_PATH, values), values.get("LLM_MODEL", ""))
 
 
 # Backwards-compatible alias: /settings imported ModelSettingsScreen before the

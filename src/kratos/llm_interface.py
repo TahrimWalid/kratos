@@ -139,11 +139,9 @@ def get_context_window_tokens() -> int:
     (delegates to llm_config.get_active_llm_context_window()): it reads the
     live-active profile, so a /model switch changes it automatically -- a
     bigger-window model raises the budget (less/no compaction), a smaller one
-    lowers it (compaction adapts to fit on the next loop iteration). Local stays
-    at the deliberate LLAMA_N_CTX budget; an unknown cloud model underclaims to
-    that same budget rather than risk overflow. See that resolver for the full
-    order (explicit per-profile/env value > local budget > known cloud window >
-    safe default)."""
+    lowers it (compaction adapts to fit on the next loop iteration). It only
+    reads a SAVED number (detected-and-saved or user-set); with none, it uses
+    the safe LLAMA_N_CTX budget rather than guess. See that resolver."""
     return get_active_llm_context_window()
 
 

@@ -143,7 +143,9 @@ def test_models_tab_lists_profiles_with_marker_and_windows(tmp_path, monkeypatch
     by_model = {r[1]: r for r in rows}
     assert set(by_model) == {"gemini-3.1-pro", "qwen2.5:7b"}
     assert "●" in by_model["gemini-3.1-pro"][0] and "●" not in by_model["qwen2.5:7b"][0]
-    assert by_model["qwen2.5:7b"][3] == "131,072" and by_model["gemini-3.1-pro"][3] == "auto"
+    # window cell now names provenance / what auto will do (settings._window_label)
+    assert by_model["qwen2.5:7b"][3] == "131,072 (set)"
+    assert by_model["gemini-3.1-pro"][3] == "auto (detect on switch)"
 
 
 def test_switch_button_on_active_model_reports_already_active(tmp_path, monkeypatch):
@@ -263,7 +265,70 @@ def test_edit_modal_empty_clears_and_number_sets():
             return captured.get("r")
 
     assert asyncio.run(_run("131072", "")) == "clear"     # empty -> clear to auto
-    assert asyncio.run(_run("", "48000")) == 48000        # number -> int
+    # a typed number dismisses with {window, source}; source is None (user-set)
+    assert asyncio.run(_run("", "48000")) == {"window": 48000, "source": None}
+
+
+# ---------------------------------------------------------------------------
+# Ctrl+D must reach detect even while an Input has focus. Textual's Input binds
+# ctrl+d to delete_right, which used to swallow the key -- the modal bindings
+# are priority=True so the modal wins. Pressed via the real key, not the action.
+# ---------------------------------------------------------------------------
+def _fake_detect(calls):
+    from kratos.adapters.llm_context_detect import DetectedContext
+
+    def _detect(base_url, api_key="", model="", timeout=4):
+        calls.append((base_url, model))
+        return DetectedContext(max_context=65536, loaded_context=None, source="vllm", detail="vllm: 65,536")
+    return _detect
+
+
+def test_ctrl_d_detects_from_focused_edit_window_input(monkeypatch):
+    calls = []
+    monkeypatch.setattr("kratos.adapters.llm_context_detect.detect_context_window", _fake_detect(calls))
+
+    async def _run():
+        app = _ScreenHost(EditWindowModal({"LLM_MODEL": "m", "LLM_BASE_URL": "http://x/v1", "LLM_API_KEY": "k"}))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            modal = app.screen
+            box = modal.query_one("#edit-window", Input)
+            assert box.has_focus            # the case that used to swallow ctrl+d
+            await pilot.press("ctrl+d")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return box.value
+
+    value = asyncio.run(_run())
+    assert calls == [("http://x/v1", "m")]
+    assert value == "65536"                 # prefilled from the detected ceiling
+
+
+def test_ctrl_d_detects_from_focused_add_modal_input(monkeypatch):
+    calls = []
+    monkeypatch.setattr("kratos.adapters.llm_context_detect.detect_context_window", _fake_detect(calls))
+
+    async def _run():
+        app = _ScreenHost(AddModelModal())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            modal = app.screen
+            modal.query_one("#add-url", Input).value = "http://x/v1"
+            modal.query_one("#add-key", Input).value = "k"
+            model_box = modal.query_one("#add-model", Input)
+            model_box.value = "m"
+            model_box.focus()
+            model_box.cursor_position = 0   # ctrl+d as delete_right would eat the "m"
+            await pilot.pause()
+            await pilot.press("ctrl+d")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return model_box.value, modal.query_one("#add-window", Input).value
+
+    model_value, window = asyncio.run(_run())
+    assert calls == [("http://x/v1", "m")]
+    assert model_value == "m"               # not deleted by the Input's own ctrl+d
+    assert window == "65536"
 
 
 # ---------------------------------------------------------------------------

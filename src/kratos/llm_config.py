@@ -222,32 +222,13 @@ def set_active_llm_profile(values: dict[str, str]) -> None:
 # smaller model -> compaction adapts to fit on the next iteration (agent/loop
 # re-reads this every step).
 #
-# Best-effort context windows for common cloud model families -- DEFAULTS only,
-# deliberately CONSERVATIVE. The asymmetry matters: overclaiming a window risks
-# a real overflow (the backend rejects/truncates an over-long prompt), while
-# underclaiming only compacts a little early, which is harmless -- so on any
-# uncertainty this map underclaims, and an unknown cloud model falls back to the
-# small local budget rather than an optimistic guess. Substring-matched against
-# the active model id; not exhaustive and WILL age, so an explicit value always
-# wins (per-profile LLM_CONTEXT_WINDOW, e.g. from the model-setup UI, or a global
-# KRATOS_LLM_CONTEXT_WINDOW env var).
-_KNOWN_CLOUD_MODEL_WINDOWS: tuple[tuple[str, int], ...] = (
-    ("gemini", 1_000_000),
-    ("claude", 200_000),
-    ("gpt-4.1", 1_000_000),
-    ("gpt-4o", 128_000),
-    ("gpt-4", 128_000),
-    ("o1", 128_000),
-    ("o3", 128_000),
-    ("llama-3", 131_072),
-    ("deepseek", 65_536),
-    ("qwen3", 32_768),
-    ("qwen2.5", 32_768),
-    ("qwq", 32_768),
-    ("mixtral", 32_768),
-    ("mistral", 32_768),
-)
-
+# This is read every step, so it must be instant and offline: it only reads a
+# SAVED number. The number gets saved by detect-once-and-save
+# (adapters/llm_context_autofill.py) when a model is added or switched to, or by
+# the user in Settings. There is deliberately NO built-in table of model names
+# -> sizes: such a table goes stale and is wrong in both directions (too small
+# over-compacts; too large gets requests rejected). With nothing saved, the safe
+# LLAMA_N_CTX budget is used and the UI says so (get_active_llm_context_source).
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
@@ -263,34 +244,52 @@ def _active_backend_is_local() -> bool:
     return host in _LOCAL_HOSTS or host.startswith("127.")
 
 
-def get_active_llm_context_window() -> int:
-    """The active model's context window in tokens. Resolution order:
-      1. an explicit value -- per-profile `LLM_CONTEXT_WINDOW` or the global
-         `KRATOS_LLM_CONTEXT_WINDOW` env var -- the user / setup-UI always wins;
-      2. local backend -> LLAMA_N_CTX, the deliberate local budget;
-      3. cloud + a known model family -> its (conservative) real window;
-      4. cloud + unknown -> LLAMA_N_CTX (safe: underclaiming only compacts early,
-         overclaiming would risk a real overflow)."""
+def _active_context_setting() -> tuple[int | None, str]:
+    """(explicit window or None, where it came from). Sources: the profile's own
+    LLM_CONTEXT_SOURCE ("provider" / "catalog"), "user" for a profile window with
+    no source line, or "env" for the global KRATOS_LLM_CONTEXT_WINDOW override."""
     if _active_llm_override is not None:
         # A live /model switch happened -> the switched profile's own value is
         # authoritative. Its ABSENCE must NOT fall back to os.environ's
         # LLM_CONTEXT_WINDOW, which was loaded from a DIFFERENT profile at
         # startup and is now stale.
-        explicit = _active_llm_override.get("LLM_CONTEXT_WINDOW")
+        profile_win = _active_llm_override.get("LLM_CONTEXT_WINDOW")
+        profile_src = _active_llm_override.get("LLM_CONTEXT_SOURCE")
     else:
-        # Fresh process, no switch yet -> the active profile's LLM_CONTEXT_WINDOW
-        # as load_dotenv loaded it from .env.
-        explicit = os.environ.get("LLM_CONTEXT_WINDOW")
-    explicit = explicit or os.environ.get("KRATOS_LLM_CONTEXT_WINDOW")  # global manual override (fallback)
-    if explicit and str(explicit).strip().isdigit():
-        return int(str(explicit).strip())
-    if _active_backend_is_local():
-        return LLAMA_N_CTX
-    model = get_active_llm_model().lower()
-    for needle, window in _KNOWN_CLOUD_MODEL_WINDOWS:
-        if needle in model:
-            return window
-    return LLAMA_N_CTX
+        # Fresh process, no switch yet -> the active profile's lines as
+        # load_dotenv loaded them from .env.
+        profile_win = os.environ.get("LLM_CONTEXT_WINDOW")
+        profile_src = os.environ.get("LLM_CONTEXT_SOURCE")
+    if profile_win and str(profile_win).strip().isdigit():
+        src = (profile_src or "").strip()
+        return int(str(profile_win).strip()), src if src in ("provider", "catalog") else "user"
+    env_win = os.environ.get("KRATOS_LLM_CONTEXT_WINDOW")  # global manual override (fallback)
+    if env_win and str(env_win).strip().isdigit():
+        return int(str(env_win).strip()), "env"
+    return None, ""
+
+
+def get_active_llm_context_window() -> int:
+    """The active model's context window in tokens. Resolution order:
+      1. a saved value -- the profile's LLM_CONTEXT_WINDOW (user-typed or
+         detected-and-saved), else the global KRATOS_LLM_CONTEXT_WINDOW;
+      2. otherwise LLAMA_N_CTX -- the deliberate local budget, and the safe
+         default for a cloud model whose window was never detected or set
+         (underclaiming only compacts early; overclaiming risks a rejected
+         request). No guessing from the model's name."""
+    explicit, _ = _active_context_setting()
+    return explicit if explicit is not None else LLAMA_N_CTX
+
+
+def get_active_llm_context_source() -> str:
+    """Where the active window came from, for the UI: "provider" / "catalog"
+    (detected and saved), "user" (typed in), "env" (global override), "local"
+    (the deliberate local budget), or "default" (a cloud model with nothing
+    saved -- the safe fallback, which the UI should flag)."""
+    explicit, src = _active_context_setting()
+    if explicit is not None:
+        return src
+    return "local" if _active_backend_is_local() else "default"
 
 
 # ---------------------------------------------------------------------------

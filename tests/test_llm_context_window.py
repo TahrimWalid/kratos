@@ -8,9 +8,10 @@ agent/loop.py's compaction, so getting it right per active model is what makes
 one -> compaction adapts to fit" actually happen. Key invariants asserted:
   * local (loopback / llama_cpp) stays at the deliberate LLAMA_N_CTX budget --
     the project runs its local model at 6144, not its theoretical max;
-  * a known cloud model gets its (conservative) real window;
-  * an UNKNOWN cloud model underclaims to LLAMA_N_CTX -- never optimistically
-    guesses large, because overclaiming risks a real overflow;
+  * a cloud model with a SAVED window (per-profile LLM_CONTEXT_WINDOW, detected-
+    and-saved or user-typed) uses it -- there is deliberately NO name->size table;
+  * a cloud model with NOTHING saved underclaims to LLAMA_N_CTX -- never
+    optimistically guesses large, because overclaiming risks a real overflow;
   * an explicit value (per-profile LLM_CONTEXT_WINDOW / global env) always wins;
   * switching profiles changes the window (the whole point).
 """
@@ -52,21 +53,16 @@ def test_llama_cpp_backend_uses_local_budget():
     assert C.get_active_llm_context_window() == LLAMA_N_CTX
 
 
-# --- known cloud families get their real (conservative) windows ------------
-@pytest.mark.parametrize("model,expected", [
-    ("gemini-3.1-pro", 1_000_000),
-    ("google/gemini-2.5-flash-lite", 1_000_000),
-    ("claude-opus-5", 200_000),
-    ("gpt-4o", 128_000),
-    ("gpt-4.1", 1_000_000),
-    ("deepseek-chat", 65_536),
-    ("qwen/qwen3.6-27b", 32_768),
-    ("qwen2.5-72b-instruct", 32_768),   # cloud-hosted qwen2.5 (non-loopback) -> 32k, not the local 6144
-    ("meta-llama/llama-3.3-70b", 131_072),
+# --- a cloud model with NO saved window underclaims (no name->size table) ---
+@pytest.mark.parametrize("model", [
+    "gemini-3.1-pro", "claude-opus-5", "gpt-4o", "deepseek-chat",
+    "qwen/qwen3.6-27b", "meta-llama/llama-3.3-70b", "some-brand-new-model-x",
 ])
-def test_known_cloud_model_window(model, expected):
+def test_cloud_model_without_saved_window_underclaims(model):
+    # No saved LLM_CONTEXT_WINDOW -> the safe local budget, NOT a guess from the
+    # model name (the old name->size table was removed on purpose).
     _use(model)
-    assert C.get_active_llm_context_window() == expected
+    assert C.get_active_llm_context_window() == LLAMA_N_CTX
 
 
 # --- unknown cloud underclaims (safety) ------------------------------------
@@ -78,7 +74,7 @@ def test_unknown_cloud_model_underclaims_to_local_budget():
 
 # --- explicit values always win --------------------------------------------
 def test_per_profile_explicit_window_wins_over_map():
-    _use("gemini-3.1-pro", LLM_CONTEXT_WINDOW="8000")   # would map to 1M, but explicit wins
+    _use("gemini-3.1-pro", LLM_CONTEXT_WINDOW="8000")   # a saved window is used verbatim
     assert C.get_active_llm_context_window() == 8000
 
 
@@ -89,19 +85,19 @@ def test_global_env_override_wins(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_non_numeric_explicit_is_ignored():
-    _use("gemini-3.1-pro", LLM_CONTEXT_WINDOW="lots")   # garbage -> fall through to the map
-    assert C.get_active_llm_context_window() == 1_000_000
+    _use("gemini-3.1-pro", LLM_CONTEXT_WINDOW="lots")   # garbage window -> safe default
+    assert C.get_active_llm_context_window() == LLAMA_N_CTX
 
 
 # --- the core property: switching model changes the window -----------------
 def test_switching_model_changes_window_live():
     _use("qwen2.5:7b", base_url="http://127.0.0.1:11434/v1")
     assert C.get_active_llm_context_window() == LLAMA_N_CTX          # local budget
-    _use("gemini-3.1-pro")                                          # switch to a big cloud model
+    _use("gemini-3.1-pro", LLM_CONTEXT_WINDOW="1000000")           # switch to a model with a saved window
     assert C.get_active_llm_context_window() == 1_000_000           # budget grew, no other wiring
 
 
 # --- get_context_window_tokens delegates -----------------------------------
 def test_interface_delegates_to_resolver():
-    _use("deepseek-chat")
+    _use("deepseek-chat", LLM_CONTEXT_WINDOW="65536")
     assert llm_interface.get_context_window_tokens() == C.get_active_llm_context_window() == 65_536

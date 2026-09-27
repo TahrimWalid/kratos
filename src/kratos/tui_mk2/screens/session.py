@@ -864,15 +864,25 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     # --- /context (what's in the window) --------------------
     def _render_context(self) -> None:
-        from kratos.llm_config import get_active_llm_model
+        from kratos.llm_config import get_active_llm_context_source, get_active_llm_model
 
         pct, used, window, estimated = self._context_pct()
+        source = get_active_llm_context_source()
+        source_txt, source_style = {
+            "provider": ("reported by the provider", T.TEXT),
+            "catalog": ("public catalog — the model's published max; the provider may allow less", T.ATTENTION),
+            "user": ("set by you", T.TEXT),
+            "env": ("KRATOS_LLM_CONTEXT_WINDOW override", T.TEXT),
+            "local": ("local model budget", T.TEXT),
+            "default": ("not detected — using the safe default; set it in /settings → Models", T.ATTENTION),
+        }.get(source, (source, T.TEXT))
         resume = self.session_state.get("resume_context", "") or ""
         turns = len(self._store.get_goal_history(self.session_state["session_id"]))
         meter = "estimated from loaded context" if estimated else "measured (last LLM call)"
         rows = [
             ("model", get_active_llm_model()),
             ("context window", f"{window:,} tokens"),
+            ("window source", source_txt, source_style),
             ("in use", f"{used:,} tokens  ({pct}%)  — {meter}", T.ATTENTION if pct >= 75 else T.TEXT),
             ("working memory", f"{len(resume):,} chars  (~{len(resume)//4:,} tokens of conversation kept)"),
             ("turns in this session", str(turns)),
@@ -3780,11 +3790,19 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if not reachable:
             self._emit_from_worker(R.error_line(f"Can't switch to {target.model} — not reachable ({detail})."))
             return
-        set_active_llm_profile(target.values)
+        values = dict(target.values)
+        set_active_llm_profile(values)
         _p.switch_profile(ENV_FILE_PATH, target, current)
+        # Detect-once-and-save the context window if this profile has none.
+        from kratos.adapters.llm_context_autofill import autofill_context_window, describe
+        ctx_note = describe(autofill_context_window(ENV_FILE_PATH, values), target.model)
+        if ctx_note:
+            set_active_llm_profile(values)   # re-sync with the newly saved window
         self.session_state["backend"] = target.model
         self.app.call_from_thread(self._refresh_footer)
         self._emit_from_worker(R.success_line(f"Switched to {target.model} — active now, saved to .env."))
+        if ctx_note:
+            self._emit_from_worker(R.note_line(ctx_note))
 
     @work
     async def _conversational_target(self, args: str) -> None:

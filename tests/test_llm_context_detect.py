@@ -69,7 +69,7 @@ def test_vllm_max_model_len(monkeypatch):
         "/models": _Resp(200, {"data": [{"id": "my-served-model", "max_model_len": 32768}]}),
     })
     d = D.detect_context_window("http://127.0.0.1:8000/v1", "", "my-served-model")
-    assert d.source == "vllm"
+    assert d.source == "provider"
     assert d.max_context == 32768 and d.loaded_context == 32768   # served endpoint: max == operative
 
 
@@ -78,7 +78,7 @@ def test_openrouter_context_length(monkeypatch):
         "/models": _Resp(200, {"data": [{"id": "qwen/qwen3.6-27b", "context_length": 262144}]}),
     })
     d = D.detect_context_window("https://openrouter.ai/api/v1", "sk-x", "qwen/qwen3.6-27b")
-    assert d.source == "openrouter" and d.max_context == 262144
+    assert d.source == "provider" and d.max_context == 262144
 
 
 def test_models_endpoint_matches_provider_prefixed_id(monkeypatch):
@@ -98,7 +98,7 @@ def test_tgi_info(monkeypatch):
         "/info": _Resp(200, {"max_total_tokens": 32768, "max_input_tokens": 32000}),
     })
     d = D.detect_context_window("http://127.0.0.1:8080/v1", "", "tgi-model")
-    assert d.source == "tgi" and d.max_context == 32768
+    assert d.source == "provider" and d.max_context == 32768
 
 
 # --- undetectable degrades cleanly ------------------------------------------

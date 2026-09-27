@@ -35,6 +35,7 @@ kept_tools/
 
 # Local configs
 .env
+.env.bak*
 
 # LLM model files (large binaries — download separately)
 llm/models/

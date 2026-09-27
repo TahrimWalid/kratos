@@ -191,7 +191,10 @@ def test_after_switch_absent_window_does_not_use_stale_env(monkeypatch):
     C.set_active_llm_profile({"LLM_BASE_URL": "https://api.example.com/v1", "LLM_API_KEY": "k",
                               "LLM_MODEL": "gpt-4o", "KRATOS_LLM_BACKEND": "openai_compatible"})
     try:
-        # gpt-4o (cloud, known) -> 128k from the map, NOT the stale 196000
-        assert C.get_active_llm_context_window() == 128_000
+        # cloud model, no saved window -> the safe default, NEVER the stale 196000
+        # (the point of the test; there is no name->size table to hit either).
+        from kratos.llm_config import LLAMA_N_CTX
+        win = C.get_active_llm_context_window()
+        assert win == LLAMA_N_CTX and win != 196_000
     finally:
         C._active_llm_override = None
