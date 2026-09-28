@@ -62,6 +62,9 @@ llm/work/
 !README.md
 !docs/DESIGN.md
 !docs/GUIDE.md
+# Test fixtures are shipped data, not scratch -- keep them tracked despite the
+# blanket *.sh/*.md/*.txt ignores above.
+!tests/fixtures/**
 
 # Local data-directory backups (e.g. data.bak.20260705_pretest/) -- not code
 data.bak*/

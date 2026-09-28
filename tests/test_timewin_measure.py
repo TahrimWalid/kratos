@@ -68,6 +68,7 @@ def _bin_dir(tmp_path: Path, awk: str, with_timeout=True, with_mktemp=True) -> P
     for tool, real in (("awk", shutil.which(awk)), ("sort", shutil.which("sort")), ("cut", shutil.which("cut")),
                        ("head", shutil.which("head")), ("tail", shutil.which("tail")), ("date", shutil.which("date")),
                        ("rm", shutil.which("rm")), ("cat", shutil.which("cat")), ("grep", shutil.which("grep")),
+                       ("sed", shutil.which("sed")), ("readlink", shutil.which("readlink")),
                        ("timeout", shutil.which("timeout") if with_timeout else None),
                        ("mktemp", shutil.which("mktemp") if with_mktemp else None)):
         if real:

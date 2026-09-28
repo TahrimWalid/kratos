@@ -1,0 +1,26 @@
+1790000001.000001 web1 sshd[101]: Failed password for root from 203.0.113.9 port 50122 ssh2
+1790000002.000001 web1 sshd[102]: Failed password for invalid user admin from 203.0.113.9 port 50123 ssh2
+1790000003.000001 web1 sshd[103]: Failed publickey for git from 198.51.100.4 port 40000 ssh2: RSA SHA256:abc
+1790000004.000001 web1 sshd[104]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=203.0.113.10  user=root
+1790000005.000001 web1 sshd[105]: pam_unix(sshd:auth): authentication failure; user=bob logname= uid=0 rhost=203.0.113.11
+1790000006.000001 web1 sshd[106]: Accepted publickey for deploy from 192.0.2.50 port 51000 ssh2: ED25519 SHA256:xyz
+1790000007.000001 web1 sshd[107]: Accepted password for alice from 192.0.2.51 port 51001 ssh2
+1790000008.000001 web1 sshd[108]: Invalid user oracle from 203.0.113.12 port 3311
+1790000009.000001 web1 sshd[109]: Disconnected from 203.0.113.12 port 3311 [preauth]
+1790000010.000001 web1 sshd[110]: Disconnected from user deploy 192.0.2.50 port 51000
+1790000011.000001 web1 sshd[111]: Disconnected from invalid user oracle 203.0.113.12 port 3311 [preauth]
+1790000012.000001 web1 sshd[112]: Connection closed by authenticating user root 203.0.113.9 port 50124 [preauth]
+1790000013.000001 web1 sshd-session[113]: Invalid user test from 203.0.113.13 port 4444
+1790000014.000001 web1 sshd-session[114]: Failed password for invalid user test from 203.0.113.13 port 4444 ssh2
+1790000015.000001 web1 sudo[115]:    alice : 3 incorrect password attempts ; TTY=pts/1 ; PWD=/home/alice ; USER=root ; COMMAND=/usr/bin/id
+1790000016.000001 web1 sudo[116]: pam_unix(sudo:auth): authentication failure; logname=alice uid=1001 euid=0 tty=/dev/pts/1 ruser=alice rhost=  user=alice
+1790000017.000001 web1 sudo[117]: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1001)
+1790000018.000001 web1 sudo[118]: pam_unix(sudo:session): session opened for user root(uid=0) by alice(uid=1001)
+1790000019.000001 web1 sudo[119]: pam_unix(sudo:session): session closed for user root
+1790000020.000001 web1 sudo[120]:   ubuntu : TTY=pts/0 ; PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl -n 5
+1790000021.000001 web1 sudo[121]: ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/true
+1790000022.000001 web1 sshd[122]: Failed password for root from 203.0.113.9:22 port 1 ssh2
+1790000023.000001 web1 sshd[123]: Failed password for  from 203.0.113.9 port 1 ssh2
+1790000024.000001 web1 sshd[124]: Received disconnect from 203.0.113.9 port 50124:11: Bye Bye [preauth]
+1790000025.000001 web1 sshd[125]: Failed password for root from 2001:db8::1 port 50122 ssh2
+1790000026.000001 web1 sudo[126]: some unrelated sudo message
