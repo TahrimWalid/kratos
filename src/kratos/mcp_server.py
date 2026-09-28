@@ -199,7 +199,8 @@ def _extract_findings(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return findings
 
 
-def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: Path) -> dict[str, Any]:
+def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: Path,
+                              timezone: str | None = None) -> dict[str, Any]:
     with _investigation_lock:
         _kconfig.set_active_target(target)
 
@@ -211,7 +212,7 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
             session_id = store.create_session([target], get_active_llm_model())
             turn_id = store.start_turn(session_id, goal)
 
-            result = run_agent(goal, data_dir, max_iters=max_iters)
+            result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone, session_id=session_id)
 
             status = result["status"]
             transcript = result.get("transcript", [])
@@ -232,13 +233,18 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
                 # token_usage is real per-run accounting for a client-side meter.
                 "recommended_commands": result.get("recommended_commands", []),
                 "token_usage": result.get("token_usage"),
+                # Every time window this investigation resolved and queried, in UTC and
+                # in `timezone_used` (docs/time_window_design.md §15) -- a client should
+                # show these rather than re-deriving periods from the answer text.
+                "time": result.get("time"),
             }
         finally:
             TOOL_REGISTRY.update(excluded)
 
 
 @mcp.tool()
-def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITERS) -> dict[str, Any]:
+def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITERS,
+                       timezone: str | None = None) -> dict[str, Any]:
     """Runs a real Kratos investigation against `target` for `goal`, using Kratos's own
     agent loop and its own configured local LLM to decide which internal tools to run and
     in what order -- this does not hand tool selection to the caller. Read/investigate only:
@@ -252,12 +258,23 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
     duration (commonly 10-40+ minutes on the local backend) -- no other tool call on the same
     connection, including kratos_list_sessions/kratos_get_findings, will get a response until
     this one returns. Do not expect to poll session state on the same connection while an
-    investigation is in flight; use a separate connection for that if needed."""
+    investigation is in flight; use a separate connection for that if needed.
+
+    `timezone` (optional, IANA name such as "Asia/Dhaka"): the user's timezone, used to
+    interpret time periods in `goal` ("yesterday", "this morning", "since 9am"). Defaults
+    to Kratos's configured display timezone; the result's `time.timezone` always states
+    which one was used. An unknown name is an error, never silently replaced."""
+    if timezone is not None:
+        from kratos.utils.timeutil import zone_from_name
+
+        if not timezone.strip() or zone_from_name(timezone.strip()) is None:
+            raise ValueError(f"unknown timezone {timezone!r} (use an IANA name like 'Asia/Dhaka')")
+        timezone = timezone.strip()
     if not target or not target.strip():
         raise ValueError("target is required (no implicit session state exists over MCP)")
     if not goal or not goal.strip():
         raise ValueError("goal is required")
-    return _run_locked_investigation(goal.strip(), target.strip(), max_iters, _data_dir)
+    return _run_locked_investigation(goal.strip(), target.strip(), max_iters, _data_dir, timezone=timezone)
 
 
 def _load_session_turns(store: SessionStore, session_id: str) -> list[dict[str, Any]]:

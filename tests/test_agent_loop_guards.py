@@ -468,10 +468,15 @@ def test_guard1_and_guard2_self_correcting_model_converges_cleanly(
     Confirms this pair also combines into one rejection observation and
     converges within budget once the model self-corrects.
     """
+    # Self-correcting now means ACTUALLY running correlate_findings after the
+    # rejection: check_file_integrity already returned real data, so the old
+    # "explain why you skipped correlation" exemption no longer applies (E26,
+    # docs/time_window_design.md -- that exemption was the loophole).
     chat = ScriptedChat([
         _tool_json("check_file_integrity"),
         _final_json(NO_CORRELATION_AND_FILE_CLEAN_ANSWER),  # attempt 1: rejected (guard1 + guard2)
-        _final_json(CORRECTED_NO_CORRELATION_ANSWER),        # attempt 2: clean, accepted
+        _tool_json("correlate_findings"),                   # the real fix: run the engine
+        _final_json(CORRECTED_ANSWER),                      # attempt 2: clean, accepted
     ])
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
 
@@ -479,7 +484,7 @@ def test_guard1_and_guard2_self_correcting_model_converges_cleanly(
     _print_transcript(result["transcript"])
 
     assert result["status"] == "final_answer"
-    assert len(chat.calls) == 3, f"Expected exactly 3 LLM calls to resolution, got {len(chat.calls)}"
+    assert len(chat.calls) == 4, f"Expected exactly 4 LLM calls to resolution, got {len(chat.calls)}"
 
     rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert len(rejected_steps) == 1
@@ -585,3 +590,90 @@ def test_guard4_no_friction_when_no_staleness_warning(
 
     final_answer = result["final_answer"]
     assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+
+
+
+# ---------------------------------------------------------------------------
+# E26: Guard 1's explain-and-skip loophole + Guard 5 (claims a tool never run)
+# ---------------------------------------------------------------------------
+LOOPHOLE_ANSWER = (
+    "There were no failed SSH login attempts on the target within the last 5 minutes. Note the "
+    "target's clock is 7 minutes behind, which may affect correlation with other logs."
+)
+
+
+def test_guard1_loophole_mentioning_correlation_no_longer_skips_the_engine(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live incident: this exact phrasing used to satisfy the exemption, so the
+    counting engine never ran and a real burst was reported as 'none'."""
+    chat = ScriptedChat([
+        _tool_json("check_file_integrity"),
+        _final_json(LOOPHOLE_ANSWER),         # must be REJECTED now (data existed)
+        _tool_json("correlate_findings"),
+        _final_json(CORRECTED_ANSWER),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert rejected and "missing_correlation" in rejected[0]["violations"]
+    assert "[NOTE:" not in result["final_answer"]
+
+
+def test_guard1_exemption_still_applies_when_no_tool_returned_data(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The legitimate case the exemption exists for: nothing could be gathered."""
+    def _ssh_down(**_kwargs):
+        return {"status": "error", "observation": "journalctl over SSH failed: connection refused"}
+
+    monkeypatch.setattr(TOOL_REGISTRY["read_journalctl"], "handler", _ssh_down)
+    chat = ScriptedChat([
+        _tool_json("read_journalctl"),
+        _final_json("I could not reach the target (SSH refused), so there was no data to correlate."),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    assert [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"] == []
+    assert "[NOTE:" not in result["final_answer"]
+
+
+def test_guard5_rejects_answer_claiming_an_uncalled_tool_then_notes_if_stubborn(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Benchmark incident: 'Key Findings (synthesized via correlate_findings)' with
+    correlate_findings never called."""
+    fake = "Key findings (synthesized via correlate_findings): no suspicious activity detected."
+    chat = ScriptedChat([_tool_json("check_file_integrity")] + [_final_json(fake)] * 6)
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert rejected and "claims_uncalled_tool" in rejected[0]["violations"]
+    assert "correlate_findings, which was never run" in result["final_answer"]
+
+
+def test_guard5_other_tool_claim_rejected_even_when_correlation_succeeded(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(CORRECTED_ANSWER + " run_yara_scan found no malware on the host."),
+        _final_json(CORRECTED_ANSWER),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected) == 1 and rejected[0]["violations"] == ["claims_uncalled_tool"]
+    assert "[NOTE:" not in result["final_answer"]
+
+
+def test_guard5_allows_negated_mentions_of_uncalled_tools(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([
+        _tool_json("correlate_findings"),
+        _final_json(CORRECTED_ANSWER + " I did not run run_vuln_scan; consider it as a follow-up."),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    assert [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"] == []

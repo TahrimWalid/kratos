@@ -156,7 +156,68 @@ def _run_audit(data_dir: Path, gated: set[str]) -> tuple[str, list[dict[str, Any
     return status, outcome.findings, omitted, error
 
 
-def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[str, Any]], Optional[str]]:
+# --- "since last run" watermark (docs/time_window_design.md §5) --------------------
+WATERMARK_FLUSH_MARGIN_SECONDS = 60      # events not yet flushed to the journal
+WATERMARK_MAX_CATCHUP_SECONDS = 7 * 86400
+WATERMARK_FIRST_RUN_SECONDS = 86400
+SINCE_LAST_RUN = "since_last_run"
+
+
+def compute_watermark_window(data_dir: Path, schedule_name: str, now: float) -> dict[str, Any]:
+    """[start, end) for "since the last successful run": starts where the previous
+    successful run's window ENDED (no gaps, no overlaps, whatever the timer drift or
+    missed runs), ends one flush-margin before now. Catch-up after downtime is capped and
+    the cap is disclosed; the first run looks back one day."""
+    from kratos.utils.timeutil import parse_stored_instant
+
+    end = now - WATERMARK_FLUSH_MARGIN_SECONDS
+    last_end = None
+    for rec in reversed(_sched.read_run_records(data_dir, schedule_name)):
+        if rec.get("status") in _JOB_OK and (rec.get("window") or {}).get("end_utc"):
+            dt = parse_stored_instant(rec["window"]["end_utc"])
+            last_end = dt.timestamp() if dt else None
+            break
+    note = ""
+    if last_end is None:
+        start = end - WATERMARK_FIRST_RUN_SECONDS
+        note = "first run of this schedule: looked back 24 hours"
+    elif end - last_end > WATERMARK_MAX_CATCHUP_SECONDS:
+        start = end - WATERMARK_MAX_CATCHUP_SECONDS
+        note = (f"the previous successful run ended {(end - last_end) / 86400:.1f} days ago; catch-up capped at 7 days, "
+                "so the period before that was NOT covered by this run")
+    else:
+        start = last_end
+    if start >= end:
+        # the previous run's window ends at/after "now": this host's clock went backwards
+        start = end
+        note = ("this host's clock is earlier than the end of the previous run's window (clock moved back?) -- "
+                "nothing new can be covered until it catches up")
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    return {"start": start, "end": end, "start_utc": epoch_to_utc_iso(start), "end_utc": epoch_to_utc_iso(end),
+            "note": note}
+
+
+def _apply_watermark_to_steps(specs: list[dict[str, Any]], window: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """A pipeline step arg written as "since_last_run" (in `since` or `window`) becomes the
+    exact epoch window. Specs are copied, never mutated."""
+    if not window:
+        return specs
+    out = []
+    for spec in specs:
+        spec = dict(spec)
+        args = dict(spec.get("args") or {})
+        if args.get("since") == SINCE_LAST_RUN or args.get("window") == SINCE_LAST_RUN:
+            args.pop("since", None)
+            args.pop("until", None)
+            args["window"] = {"kind": "epoch", "start": window["start"], "end": window["end"]}
+        spec["args"] = args
+        out.append(spec)
+    return out
+
+
+def _run_preset_named(preset_name: str, data_dir: Path,
+                      window: Optional[dict[str, Any]] = None) -> tuple[str, list[dict[str, Any]], Optional[str]]:
     """Run a named preset headlessly, with gated tools already removed from the
     registry by the caller (belt: the deny-provider; suspenders: the stripped
     registry). Returns (status, findings, error).
@@ -192,7 +253,7 @@ def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[
 
         from kratos.agent.pipeline import run_pipeline, steps_from_specs
 
-        outcome = run_pipeline(steps_from_specs(preset.steps), data_dir)
+        outcome = run_pipeline(steps_from_specs(_apply_watermark_to_steps(list(preset.steps), window)), data_dir)
         status = "completed" if outcome.status == "completed" else "aborted"
         error = None if outcome.status == "completed" else (
             f"pipeline aborted at required step '{outcome.aborted_on}' "
@@ -205,7 +266,11 @@ def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[
 
     from kratos.agent.loop import run_agent
 
-    result = run_agent(preset.goal, data_dir)
+    named = None
+    if window:
+        named = {"since last run": (window["start"], window["end"],
+                                    window.get("note") or "from the end of this schedule's previous successful run")}
+    result = run_agent(preset.goal, data_dir, named_windows=named) if named else run_agent(preset.goal, data_dir)
     status = str(result.get("status") or "error")
     findings = _extract_findings(result.get("transcript", []))
     error = None
@@ -214,14 +279,16 @@ def _run_preset_named(preset_name: str, data_dir: Path) -> tuple[str, list[dict[
     return status, findings, error
 
 
-def _run_preset(schedule: "_sched.Schedule", data_dir: Path) -> tuple[str, list[dict[str, Any]], Optional[str]]:
-    return _run_preset_named(schedule.preset or "", data_dir)
+def _run_preset(schedule: "_sched.Schedule", data_dir: Path,
+                window: Optional[dict[str, Any]] = None) -> tuple[str, list[dict[str, Any]], Optional[str]]:
+    return _run_preset_named(schedule.preset or "", data_dir, window)
 
 
 _JOB_OK = {"completed", "final_answer", "max_iters_reached"}
 
 
-def _run_group(schedule: "_sched.Schedule", data_dir: Path, gated: set[str]) -> tuple[
+def _run_group(schedule: "_sched.Schedule", data_dir: Path, gated: set[str],
+               window: Optional[dict[str, Any]] = None) -> tuple[
         str, list[dict[str, Any]], list[str], Optional[str], list[dict[str, Any]]]:
     """A6.5 -- run a group's ordered jobs as ONE unit (design doc §8). The caller
     holds the single target lock + the deny-provider belt for the whole group.
@@ -247,7 +314,7 @@ def _run_group(schedule: "_sched.Schedule", data_dir: Path, gated: set[str]) -> 
             if job["kind"] == "audit":
                 j_status, j_findings, j_omitted, j_error = _run_audit(data_dir, gated)
             else:  # preset (registry already stripped)
-                j_status, j_findings, j_error = _run_preset_named(job.get("preset") or "", data_dir)
+                j_status, j_findings, j_error = _run_preset_named(job.get("preset") or "", data_dir, window)
                 j_omitted = sorted(excluded.keys())
             omitted_all.update(j_omitted)
             union.extend(j_findings)
@@ -384,6 +451,10 @@ def run_scheduled(
     error: Optional[str] = None
     excluded: dict[str, Any] = {}
     job_records: list[dict[str, Any]] = []
+    # the exact period this run is responsible for (next run starts where this ends)
+    import time as _time
+
+    run_window = compute_watermark_window(data_dir, schedule.name, _time.time())
 
     try:
         if not schedule.is_runnable:
@@ -398,12 +469,12 @@ def run_scheduled(
             for name in excluded:
                 del _tools.TOOL_REGISTRY[name]
             try:
-                status, findings, error = _run_preset(schedule, data_dir)
+                status, findings, error = _run_preset(schedule, data_dir, run_window)
             finally:
                 _tools.TOOL_REGISTRY.update(excluded)
         elif schedule.kind == "group":
             # A6.5: ordered multi-job run under this one lock + deny-provider.
-            status, findings, omitted, error, job_records = _run_group(schedule, data_dir, gated)
+            status, findings, omitted, error, job_records = _run_group(schedule, data_dir, gated, run_window)
         else:
             status, error = "error", schedule.unsupported_reason
     except Exception as e:  # noqa: BLE001 -- a run failure must be recorded, not crash the timer
@@ -457,6 +528,9 @@ def run_scheduled(
         "finished_at": utc_now_iso(),
         "status": status,
         "target": target,
+        # watermark: a successful run's window.end is where the next run starts
+        "window": {"start_utc": run_window["start_utc"], "end_utc": run_window["end_utc"],
+                   "note": run_window["note"] or None},
         "kind": schedule.kind,
         "findings_count": len(findings),
         "severity_tally": _severity_tally(findings),

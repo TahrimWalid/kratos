@@ -157,6 +157,31 @@ def tool_call_line(name: str, status: str) -> Text:
     return t
 
 
+def window_chip(window: dict[str, Any]) -> Text | None:
+    """The time-window chip under a time-scoped tool call (docs/time_window_design.md
+    §3/§4): which exact period was queried, whether it was fully covered, and any clock
+    warning -- so a misread window is visible at a glance, never buried."""
+    if not isinstance(window, dict) or not (window.get("chip") or window.get("since_utc")):
+        return None
+    t = Text("    ⏱ ", style=T.TEXT_FAINTER)
+    t.append(str(window.get("chip") or f"{window.get('since_utc')} → {window.get('until_utc')}"), style=T.TEXT_MUTED)
+    pct = window.get("coverage_percent")
+    if isinstance(pct, (int, float)):
+        if pct >= 100:
+            t.append("  · counted in full", style=T.TEXT_FAINTER)
+        else:
+            t.append(f"  · PARTIAL: {pct:g}% of the window covered", style=T.ATTENTION)
+    elif window.get("truncated"):
+        t.append(f"  · PARTIAL: nothing seen before {window.get('oldest_returned')}", style=T.ATTENTION)
+    else:
+        t.append("  · complete", style=T.TEXT_FAINTER)
+    if window.get("clock"):
+        off = window.get("target_clock_offset_s")
+        t.append(f"  · target clock {off:+.0f}s" if isinstance(off, (int, float)) else "  · clock unknown",
+                 style=T.ATTENTION)
+    return t
+
+
 def _time_subtitle(time_str: str | None) -> Text | None:
     """The in-bubble timestamp: a fine-print, display-zone time tucked into a
     panel's bottom-right border, like a chat app's per-message time. `time_str`

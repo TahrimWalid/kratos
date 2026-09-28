@@ -799,10 +799,11 @@ def test_doctor_runs_and_renders(tmp_path, monkeypatch):
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
     from kratos.agent import doctor
 
-    called = {"n": 0}
+    called = {"n": 0, "data_dir": None}
 
-    def _fake_diag():
+    def _fake_diag(data_dir=None):
         called["n"] += 1
+        called["data_dir"] = data_dir  # /doctor passes its data dir (history horizon section)
         return [
             {"check": "LLM endpoint", "status": "pass", "detail": "reachable"},
             {"check": "target setup", "status": "fail", "detail": "sshd unreachable"},
@@ -826,6 +827,7 @@ def test_doctor_runs_and_renders(tmp_path, monkeypatch):
     ran, wrote = asyncio.run(_run())
     assert ran == 1        # diagnostics ran once
     assert wrote > 0       # the table + summary were rendered
+    assert called["data_dir"] == screen._data_dir  # so the history horizon can be reported
 
 
 def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):

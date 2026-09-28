@@ -277,6 +277,36 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_snapshots(args: argparse.Namespace) -> int:
+    """Kratos's own saved observations, indexed by capture time (docs/time_window_design.md
+    §17). `prune` only PREVIEWS unless --apply is given -- never deletes by surprise."""
+    from kratos.timewin import snapshots as S
+
+    data_dir = Path(args.data_dir)
+    if args.action == "index":
+        for cat, n in sorted(S.reindex(data_dir).items()):
+            print(f"[KRATOS] {cat:20s} {n}")
+        return 0
+    if args.action == "list":
+        for cat, h in sorted(S.horizon(data_dir).items()):
+            print(f"[KRATOS] {cat:20s} {h['count']:5d}  {h['oldest']}  ->  {h['newest']}")
+        return 0
+    plan = S.plan_retention(data_dir)
+    print(f"[KRATOS] retention policy: keep all <{plan['policy']['keep_all_days']}d, daily <{plan['policy']['daily_until_days']}d, "
+          f"weekly <{plan['policy']['weekly_until_days']}d, monthly after; {plan['pinned']} pinned")
+    for item in plan["delete"][:50]:
+        print(f"[KRATOS]   would remove {item['file']}  ({item['category']}, captured {item['captured_at']})")
+    if len(plan["delete"]) > 50:
+        print(f"[KRATOS]   ... and {len(plan['delete']) - 50} more")
+    print(f"[KRATOS] {len(plan['delete'])} files, {plan['delete_bytes'] / 1e6:.1f} MB")
+    if not args.apply:
+        print("[KRATOS] preview only -- nothing deleted. Re-run with --apply to remove these files.")
+        return 0
+    removed = S.apply_retention(data_dir, plan)
+    print(f"[KRATOS] removed {removed} files")
+    return 0
+
+
 def cmd_subagent_status(args: argparse.Namespace) -> int:
     """List paired sub-agent targets and their derived liveness status, plus
     a one-line summary of the latest telemetry received from each (capability
@@ -968,6 +998,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         else:
             _console.render_tool_call(console, tool_name, effective_status)
             session_events.append(f"Step {iteration}: used {tool_name}")
+        _console.render_window_note(console, tool_result)
 
     started_at = time.monotonic()
     try:
@@ -1228,6 +1259,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="List paired sub-agent targets, their liveness status, and latest telemetry",
     )
     subagent_status.set_defaults(func=cmd_subagent_status)
+
+    snapshots_p = sub.add_parser(
+        "snapshots",
+        help="Saved scans/snapshots by capture time: index, list the history horizon, or prune (preview unless --apply)",
+    )
+    snapshots_p.add_argument("action", choices=("index", "list", "prune"))
+    snapshots_p.add_argument("--apply", action="store_true", help="prune: actually delete (default is a preview)")
+    snapshots_p.set_defaults(func=cmd_snapshots)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(

@@ -16,6 +16,8 @@ try/except: one failing check reports itself and never aborts the rest.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from typing import Any
 
 Check = dict[str, str]
@@ -130,11 +132,33 @@ _SECTIONS = (
 )
 
 
-def run_diagnostics() -> list[Check]:
+def _check_history(out: list[Check], data_dir: Path) -> None:
+    """How far back 'state as of' questions can reach (docs/time_window_design.md §17):
+    the oldest saved observation per category, and what a retention prune would remove."""
+    from kratos.timewin.snapshots import horizon, plan_retention
+
+    hz = horizon(data_dir)
+    if not hz:
+        out.append(_row("history", "info", "no saved scans/snapshots yet -- past-state questions can't be answered"))
+        return
+    for cat, h in sorted(hz.items()):
+        out.append(_row(f"history: {cat}", "info", f"back to {h['oldest'][:10]} ({h['count']} snapshots, newest {h['newest'][:10]})"))
+    plan = plan_retention(data_dir)
+    if plan["delete"]:
+        out.append(_row("history: retention", "info",
+                        f"{len(plan['delete'])} old snapshots ({plan['delete_bytes'] / 1e6:.1f} MB) are past the retention "
+                        "policy; nothing is deleted automatically", "kratos snapshots prune   (preview)  /  --apply"))
+
+
+def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
-    rest. Returns the flat list of {check, status, detail} rows."""
+    rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
+    reports the saved-history horizon."""
     out: list[Check] = []
-    for name, fn in _SECTIONS:
+    sections = list(_SECTIONS)
+    if data_dir is not None:
+        sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
+    for name, fn in sections:
         try:
             fn(out)
         except Exception as e:  # noqa: BLE001 -- a broken check reports itself, never aborts

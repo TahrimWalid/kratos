@@ -85,7 +85,7 @@ def _audit_dispatch(findings=None, fail=False):
 
 
 def _fake_agent(findings):
-    def run_agent(goal, data_dir):
+    def run_agent(goal, data_dir, **_time_kwargs):  # scheduler passes the "since last run" window
         return {"status": "final_answer", "final_answer": "done", "transcript": [
             {"tool": "correlate_findings",
              "observation": {"status": "ok", "result": {"findings": findings}}}]}
@@ -131,7 +131,7 @@ def test_group_on_failure_abort_skips_rest(tmp_path, monkeypatch):
     monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _audit_dispatch(fail=True))
     ran = {"agent": 0}
 
-    def _agent(goal, data_dir):
+    def _agent(goal, data_dir, **_time_kwargs):
         ran["agent"] += 1
         return {"status": "final_answer", "transcript": []}
 
@@ -168,7 +168,7 @@ def test_group_excludes_gated_tools(tmp_path, monkeypatch):
                     jobs=[{"kind": "preset", "preset": "deep"}])
     seen = {}
 
-    def _agent(goal, data_dir):
+    def _agent(goal, data_dir, **_time_kwargs):
         seen["registry"] = set(TOOLS.TOOL_REGISTRY.keys())
         return {"status": "final_answer", "transcript": []}
 

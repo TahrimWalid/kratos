@@ -288,6 +288,23 @@ def render_tool_metadata_notes(console: Console, result: dict[str, Any]) -> None
         console.print(f"    [dim {ATTENTION}]• staleness_warning: {_truncate_note(staleness_warning)}[/]")
 
 
+def render_window_note(console: Console, result: Any) -> None:
+    """One dim line naming the exact time window a tool queried (and whether it was
+    fully covered) -- the CLI counterpart of tui_mk2.render.window_chip."""
+    window = result.get("window") if isinstance(result, dict) else None
+    if not isinstance(window, dict) or not (window.get("chip") or window.get("since_utc")):
+        return
+    text = window.get("chip") or f"{window.get('since_utc')} -> {window.get('until_utc')}"
+    pct = window.get("coverage_percent")
+    if isinstance(pct, (int, float)):
+        cov = "counted in full" if pct >= 100 else f"PARTIAL ({pct:g}% of the window covered)"
+    else:
+        cov = f"PARTIAL (nothing before {window.get('oldest_returned')})" if window.get("truncated") else "complete"
+    clock = f"; {window['clock']}" if window.get("clock") else ""
+    style = ATTENTION if (window.get("truncated") or window.get("clock")) else TEXT_SECONDARY
+    console.print(f"    [dim {style}]⏱ {_truncate_note(text)} · {cov}{_truncate_note(clock)}[/]")
+
+
 def render_finding(console: Console, finding: dict[str, Any]) -> None:
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()

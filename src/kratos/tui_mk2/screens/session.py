@@ -913,7 +913,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._set_busy(True)
         self._emit_from_worker(R.note_line("Running diagnostics — checking LLM, target, and tools…"))
         try:
-            checks = doctor.run_diagnostics()
+            checks = doctor.run_diagnostics(self._data_dir)
         except Exception as e:  # noqa: BLE001 -- should not happen (each check is guarded), but never crash the screen
             self._emit_from_worker(R.error_line(f"Diagnostic run failed: {e}"))
             self._set_busy(False)
@@ -3886,6 +3886,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             result = run_agent(
                 goal, self._data_dir, max_iters=REPL_MAX_ITERS, on_step=_on_step,
                 prior_context=self.session_state.get("resume_context") or None,
+                # named time windows ("the incident window") persist per session
+                session_id=self.session_state.get("session_id"),
             )
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
@@ -3966,6 +3968,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
             else:
                 self._emit_from_worker(R.tool_call_line(tool_name, effective_status))
+            chip = R.window_chip(result.get("window")) if isinstance(result, dict) else None
+            if chip is not None:
+                self._emit_from_worker(chip)
         elif step.get("tool_proposal"):
             proposal = step["tool_proposal"]
             self.session_state["pending_evolve_suggestion"] = proposal

@@ -196,6 +196,7 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "AUTH-TREND-001": "Login failures have been trending upward across recent runs.",
     "INTEG-001": "One or more tracked files have changed since the last known-good baseline.",
     "ENV-001": "This looks like a development environment (WSL2), not a production system.",
+    "COV-001": "Only part of the requested time window's login activity could be analyzed — the rest is unknown, not clean.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -299,6 +300,42 @@ def _enrich_findings_with_offline_reputation(
             )
         if _severity_rank(f.severity) < _severity_rank("high"):
             f.severity = "high"
+
+
+_AUTH_DERIVED_PREFIXES = ("AUTH-", "CORR-", "OBS-")
+
+
+def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[str, Any] | None) -> None:
+    """If the target auth fetch was truncated (the requested window held more
+    entries than were fetched -- docs/time_window_design.md step 1), say so on
+    every auth-derived finding AND emit COV-001, so that an absence of auth
+    findings can never read as "the whole window was clean" when only its newest
+    part was actually analyzed."""
+    coverage = (auth_stats or {}).get("coverage") or {}
+    partial = {ident: cov for ident, cov in coverage.items() if isinstance(cov, dict) and cov.get("truncated")}
+    if not partial:
+        return
+    detail = "; ".join(
+        f"{ident}: only the newest {cov.get('returned')} events analyzed, nothing before {cov.get('oldest_returned')}"
+        for ident, cov in sorted(partial.items())
+    )
+    note = f"Coverage: PARTIAL -- {detail}"
+    for f in findings:
+        if f.id.startswith(_AUTH_DERIVED_PREFIXES) and note not in f.evidence:
+            f.evidence.append(note)
+    requested = auth_stats.get("since_utc") or auth_stats.get("since") or "the start of the journal"
+    findings.append(
+        Finding(
+            id="COV-001",
+            title="Authentication data covers only part of the requested time window",
+            severity="info",
+            evidence=[f"Requested window start: {requested}", note],
+            recommendation=[
+                "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
+                "Re-run with a narrower time window to analyze the uncovered part.",
+            ],
+        )
+    )
 
 
 def generate_findings(
@@ -409,6 +446,22 @@ def generate_findings(
             f"Time window: since {since_value!r}" if since_value
             else "Time window: unscoped (no time window was requested/applied to this data)"
         )
+        if auth_stats.get("since_utc"):
+            time_window_note += f" (from {auth_stats['since_utc']}"
+            time_window_note += f" to {auth_stats['until_utc']})" if auth_stats.get("until_utc") else " to now)"
+        # Coverage (docs/time_window_design.md step 1): a truncated identifier means
+        # only its newest events were analyzed -- say exactly which part was not seen,
+        # so neither a reader nor the model can present a partial window as complete.
+        truncated = {
+            ident: cov for ident, cov in (auth_stats.get("coverage") or {}).items()
+            if isinstance(cov, dict) and cov.get("truncated")
+        }
+        if truncated:
+            time_window_note += "; PARTIAL coverage -- " + "; ".join(
+                f"{ident}: only the newest {cov.get('returned')} events analyzed, "
+                f"nothing before {cov.get('oldest_returned')}"
+                for ident, cov in sorted(truncated.items())
+            )
 
         if (sudo_fail_count + sudo_pam_fail_count) > 0:
             findings.append(
@@ -798,6 +851,7 @@ def generate_findings(
     # the agent chose to call check_ip_reputation.
     _surface_source_ips_in_evidence(findings, auth_patterns)
     _enrich_findings_with_offline_reputation(findings, auth_patterns)
+    _disclose_partial_auth_coverage(findings, auth_stats)
 
     # Sort by severity (high -> info)
     findings.sort(key=lambda f: _severity_rank(f.severity), reverse=True)

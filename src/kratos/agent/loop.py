@@ -42,6 +42,18 @@ def _handler_self_gates(tool: Any) -> bool:
     except (OSError, TypeError):
         return False
 from kratos.kratos_config import get_active_target
+from kratos.timewin.agentwin import (
+    prepare_time_context as _prepare_time_context,
+    render_time_block as _render_time_block,
+    result_metadata as _time_result_metadata,
+    unqueried_goal_windows as _unqueried_goal_windows,
+)
+from kratos.timewin.claims import is_time_scoped as _is_time_scoped, verify_claims as _verify_claims
+from kratos.timewin.windows import (
+    TimeIntentError as _TimeIntentError,
+    reset_current_context as _reset_time_context,
+    set_current_context as _set_time_context,
+)
 from kratos.llm_interface import (
     agent_chat,
     get_context_window_tokens,
@@ -682,7 +694,7 @@ class _Conversation:
     close to the context window, always keeping the goal and the most recent
     turns verbatim."""
 
-    def __init__(self, goal: str, prior_context: str | None = None) -> None:
+    def __init__(self, goal: str, prior_context: str | None = None, time_block: str | None = None) -> None:
         # Optional prior CONVERSATION context (the chat/session the user has been
         # having with Kratos) goes in the preamble, ahead of the goal. The
         # preamble is never folded by maybe_compact (only _turns are), so this is
@@ -701,6 +713,10 @@ class _Conversation:
                 f"{prior_context.strip()}\n\n"
             )
         preamble += f"Investigation goal: {goal}\n"
+        if time_block:
+            # Kratos-resolved windows for this goal (docs/time_window_design.md §2C) --
+            # in the never-compacted preamble so the ids stay valid all run long.
+            preamble += f"\n{time_block}\n"
         self._preamble = preamble
         self._turns: list[tuple[str, str]] = []   # (verbatim text, one-line digest)
         self.compaction_count = 0
@@ -753,6 +769,47 @@ def run_agent(
     max_iters: int = DEFAULT_MAX_ITERS,
     on_step: Callable[[dict[str, Any]], None] | None = None,
     prior_context: str | None = None,
+    *,
+    timezone: str | None = None,
+    session_id: str | None = None,
+    now: float | None = None,
+    named_windows: dict[str, tuple[float, float, str]] | None = None,
+) -> dict[str, Any]:
+    """Runs one investigation. Time handling (docs/time_window_design.md) wraps the loop:
+    the goal's time expressions are resolved by code BEFORE the model starts, exposed as
+    window ids in a TIME CONTEXT block, and every time-aware tool resolves through the same
+    per-run context. `timezone` (IANA name) overrides the configured display zone;
+    `session_id` persists named windows across turns; `named_windows` injects windows such
+    as the scheduler's "since last run" watermark; `now` (epoch) is for tests.
+    The result gains a `time` block (windows, queried ids, anything left unresolved)."""
+    try:
+        time_ctx, clarify_log = _prepare_time_context(
+            goal, Path(data_dir), timezone_name=timezone, session_id=session_id, now=now,
+            clarify=_clarify_provider, named_windows=named_windows,
+        )
+    except _TimeIntentError as e:
+        return {"status": "invalid_input", "final_answer": f"Could not start: {e}", "transcript": []}
+    token = _set_time_context(time_ctx)
+    try:
+        result = _run_agent_loop(
+            goal, data_dir, max_iters, on_step, prior_context,
+            time_ctx=time_ctx, time_block=_render_time_block(time_ctx),
+        )
+    finally:
+        _reset_time_context(token)
+    result["time"] = {**_time_result_metadata(time_ctx), "clarifications": clarify_log}
+    return result
+
+
+def _run_agent_loop(
+    goal: str,
+    data_dir: Path,
+    max_iters: int = DEFAULT_MAX_ITERS,
+    on_step: Callable[[dict[str, Any]], None] | None = None,
+    prior_context: str | None = None,
+    *,
+    time_ctx: Any = None,
+    time_block: str | None = None,
 ) -> dict[str, Any]:
     """
     Runs the ReAct loop for `goal`, returns a dict with the outcome and the
@@ -774,7 +831,8 @@ def run_agent(
     # Bound prior_context to a window-aware budget (see the constants above) so a
     # large conversation handed to a small-window backend can't overflow into a
     # silent local truncation.
-    ctx = _Conversation(goal, prior_context=_bound_prior_context(prior_context, get_context_window_tokens()))
+    ctx = _Conversation(goal, prior_context=_bound_prior_context(prior_context, get_context_window_tokens()),
+                        time_block=time_block)
     transcript: list[dict[str, Any]] = []
 
     # Real per-run token accounting (feature 7c). run_usage sums every LLM
@@ -833,6 +891,31 @@ def run_agent(
     correlate_findings_reject_count = 0
     MAX_CORRELATE_REJECTIONS = 2
     _CORRELATION_EXPLAINED_RE = re.compile(r"correlat|rule engine", re.IGNORECASE)
+    # The explain-and-skip exemption above used to apply whenever the answer merely
+    # CONTAINED "correlat" -- live incident (docs/time_window_design.md E26): an answer
+    # saying "...may affect correlation with other logs" skipped the counting engine
+    # and reported "no failed logins" seconds after a real burst; 16/318 benchmark
+    # runs concluded without correlate_findings this way, some FALSELY claiming they
+    # had used it. It now applies only when NO data-gathering tool returned real data
+    # in this run (then there is genuinely nothing to correlate).
+    tools_called: set[str] = set()
+    any_data_tool_ok = False
+    # Guard 6 (time scope, design §12 item 10): a goal that names a period must get that
+    # period queried by a time-aware tool -- otherwise the answer isn't about that period.
+    time_scope_reject_count = 0
+    MAX_TIME_SCOPE_REJECTIONS = 2
+    # Guard 7 (structured claims, design §14): a time-scoped answer's counts, "none"s and
+    # periods must match what this run actually measured.
+    claims_reject_count = 0
+    MAX_CLAIMS_REJECTIONS = 2
+    verified_claims: list[dict[str, Any]] = []
+    # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
+    tool_claim_reject_count = 0
+    MAX_TOOL_CLAIM_REJECTIONS = 2
+    _TOOL_NEGATION_RE = re.compile(
+        r"(without|not|never|didn't|did not|no|couldn't|could not|unable to|skipped|instead of)\W+(?:\w+\W+){0,3}$",
+        re.IGNORECASE,
+    )
 
     # Structural guard against a specific, confirmed hallucination pattern
     # (not a general fact-checker -- deliberately narrow, see comment at its
@@ -1012,7 +1095,11 @@ def run_agent(
             # case (genuinely nothing to correlate from). A failed attempt has
             # a real, fixable error available -- that must be retried with a
             # corrected call, not talked past with an explanation sentence.
-            explains_skip = correlate_never_attempted and bool(_CORRELATION_EXPLAINED_RE.search(final_answer_text))
+            explains_skip = (
+                correlate_never_attempted
+                and not any_data_tool_ok
+                and bool(_CORRELATION_EXPLAINED_RE.search(final_answer_text))
+            )
             guard1_violated = correlate_missing and not explains_skip
             guard1_can_reject = (
                 guard1_violated
@@ -1073,6 +1160,42 @@ def run_agent(
                 guard4_violated
                 and not is_final_iteration
                 and staleness_timeframe_reject_count < MAX_STALENESS_TIMEFRAME_REJECTIONS
+            )
+
+            # --- Guard 5: the answer must not claim a tool that never ran ---
+            claimed_uncalled = sorted(
+                name for name in TOOL_REGISTRY
+                if name not in tools_called
+                and any(
+                    not _TOOL_NEGATION_RE.search(final_answer_text[: m.start()])
+                    for m in re.finditer(rf"\b{re.escape(name)}\b", final_answer_text)
+                )
+            )
+            guard5_violated = bool(claimed_uncalled)
+            guard5_can_reject = (
+                guard5_violated
+                and not is_final_iteration
+                and tool_claim_reject_count < MAX_TOOL_CLAIM_REJECTIONS
+            )
+
+            # --- Guard 6: the goal's time periods must actually have been queried ---
+            unqueried = _unqueried_goal_windows(time_ctx)
+            guard6_violated = bool(unqueried)
+            guard6_can_reject = (
+                guard6_violated
+                and not is_final_iteration
+                and time_scope_reject_count < MAX_TIME_SCOPE_REJECTIONS
+            )
+
+            # --- Guard 7: structured claims verified against this run's measurements ---
+            claim_problems: list[str] = []
+            if _is_time_scoped(time_ctx):
+                claim_problems, verified_claims = _verify_claims(time_ctx, final_answer_text, parsed.get("claims"))
+            guard7_violated = bool(claim_problems)
+            guard7_can_reject = (
+                guard7_violated
+                and not is_final_iteration
+                and claims_reject_count < MAX_CLAIMS_REJECTIONS
             )
 
             corrections: list[str] = []
@@ -1145,6 +1268,38 @@ def run_agent(
                     "what was asked."
                 )
 
+            if guard5_can_reject:
+                tool_claim_reject_count += 1
+                violations.append("claims_uncalled_tool")
+                corrections.append(
+                    "REJECTED (claims a tool that was never run): this final_answer names "
+                    f"{', '.join(claimed_uncalled)}, but that tool was NOT called in this investigation. "
+                    "Either call it now and use its real result, or remove the claim. If you are "
+                    "recommending it as a follow-up, say so explicitly (e.g. 'I did not run X')."
+                )
+
+            if guard6_can_reject:
+                time_scope_reject_count += 1
+                violations.append("time_scope_not_queried")
+                corrections.append(
+                    "REJECTED (time period not queried): the goal asks about "
+                    + "; ".join(f"\"{w.phrase}\" = {w.summary()}" for w in unqueried)
+                    + ", but no tool has queried that window yet. Call a time-aware tool (e.g. "
+                    "read_journalctl) with \"window\": {\"id\": \"<id above>\"} before concluding. If no "
+                    "available tool can cover that period, say so explicitly in the answer."
+                )
+
+            if guard7_can_reject:
+                claims_reject_count += 1
+                violations.append("claims_not_verified")
+                corrections.append(
+                    "REJECTED (claims do not match what was measured):\n- " + "\n- ".join(claim_problems)
+                    + "\nFix the answer and its \"claims\" list: every count must equal the measured value, "
+                    "'none' needs 100% coverage of that window (otherwise say which part is unknown), and every "
+                    "period you mention must be a window you queried. If a period was not measured, run "
+                    "measure_auth_activity for it first."
+                )
+
             if corrections:
                 # Rejecting-and-retrying needs a next iteration to retry into,
                 # so each guard above only contributes here when one exists
@@ -1211,6 +1366,27 @@ def run_agent(
                     "Treat the claimed timeframe as unreliable.]\n\n" + final_answer_text
                 )
 
+            if guard7_violated:
+                final_answer_text = (
+                    "[NOTE: parts of this answer could not be verified against Kratos's own measurements: "
+                    + "; ".join(claim_problems[:4]) + (" (and more)" if len(claim_problems) > 4 else "")
+                    + " -- treat those statements as unverified.]\n\n" + final_answer_text
+                )
+
+            if guard6_violated:
+                final_answer_text = (
+                    "[NOTE: the goal asked about "
+                    + "; ".join(f"\"{w.phrase}\" ({w.id})" for w in unqueried)
+                    + ", but no data for that period was queried -- this answer is not scoped to it.]\n\n"
+                    + final_answer_text
+                )
+
+            if guard5_violated:
+                final_answer_text = (
+                    f"[NOTE: this answer refers to {', '.join(claimed_uncalled)}, which was never run in "
+                    "this investigation -- anything attributed to it above is unverified.]\n\n" + final_answer_text
+                )
+
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
@@ -1221,6 +1397,7 @@ def run_agent(
                 "status": "final_answer",
                 "final_answer": final_answer_text,
                 "recommended_commands": recommended_commands,
+                "claims": verified_claims,
                 "transcript": transcript,
             })
 
@@ -1424,6 +1601,14 @@ def run_agent(
             return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
 
         exec_result = execute_tool_call(tool_name, args, data_dir)
+        tools_called.add(tool_name)
+        _inner = exec_result.get("result") if isinstance(exec_result, dict) else None
+        if (
+            isinstance(exec_result, dict)
+            and exec_result.get("status") == "ok"
+            and not (isinstance(_inner, dict) and _inner.get("status") == "error")
+        ):
+            any_data_tool_ok = True
 
         if tool_name == "correlate_findings":
             # correlate_findings_called just tracks "was it attempted at

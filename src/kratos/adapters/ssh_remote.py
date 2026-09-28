@@ -141,11 +141,13 @@ def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
 
 
-def run_remote_script(script: str, timeout: int | None = None) -> SSHResult:
-    """Run a multi-line script on the target via `bash -s`, fed over stdin (avoids shell-quoting a large one-liner)."""
+def run_remote_script(script: str, timeout: int | None = None, shell: str = "bash") -> SSHResult:
+    """Run a multi-line script on the target via `<shell> -s`, fed over stdin (avoids
+    shell-quoting a large one-liner). `shell="sh"` for POSIX scripts that must also run on
+    hosts without bash (e.g. Alpine) -- timewin.measure's counter is one."""
     try:
         result = subprocess.run(
-            _base_ssh_argv() + ["bash", "-s"],
+            _base_ssh_argv() + [shell, "-s"],
             input=script,
             capture_output=True,
             text=True,
@@ -184,7 +186,102 @@ def _parse_journal_entry(raw: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def fetch_journalctl_entries(unit: str | None, since: str | None, lines: int) -> SSHResult | list[dict[str, Any]]:
+@dataclass
+class JournalWindow:
+    """What a journal fetch actually covered -- see _window_args. `truncated` means
+    the window held MORE than the requested number of entries, so only the newest
+    ones were returned and everything before `oldest_returned` (back to
+    `since_epoch`) was NOT seen."""
+    since_epoch: float | None
+    until_epoch: float | None
+    requested: int
+    returned: int
+    truncated: bool
+    oldest_returned: str | None
+    newest_returned: str | None
+
+
+# ---------------------------------------------------------------------------
+# Target clock offset (docs/time_window_design.md §2D)
+# ---------------------------------------------------------------------------
+# journald stamps entries with the TARGET's clock. If that clock is wrong, a window
+# computed on Kratos's clock is misaligned: live test, target 7 min behind -> a
+# "last 5 minutes" query returned 0 of 8 attack lines sent seconds earlier, and the
+# investigation answered "no failed SSH login attempts". Measured once per target and
+# cached briefly; callers shift window bounds by it and report it.
+CLOCK_OFFSET_TTL_SECONDS = 300.0
+CLOCK_OFFSET_WARN_SECONDS = 60.0
+_clock_offset_cache: dict[str, tuple[float, float | None]] = {}
+
+
+def measure_target_clock_offset(force: bool = False) -> float | None:
+    """Seconds the target's clock is AHEAD of Kratos's (negative = behind), from
+    `date +%s.%N` over SSH against the round-trip midpoint. None if it can't be
+    measured (the caller then applies no correction and says so)."""
+    import time as _time
+
+    host = get_active_target()
+    cached = _clock_offset_cache.get(host)
+    if cached and not force and _time.time() - cached[0] < CLOCK_OFFSET_TTL_SECONDS:
+        return cached[1]
+    t0 = _time.time()
+    result = run_remote_command("date +%s.%N")
+    t1 = _time.time()
+    offset: float | None = None
+    if result.ok:
+        try:
+            offset = float(result.stdout.strip()) - (t0 + t1) / 2
+        except ValueError:
+            offset = None
+    _clock_offset_cache[host] = (t1, offset)
+    return offset
+
+
+def _window_args(since_epoch: float | None, until_epoch: float | None, lines: int) -> list[str]:
+    """journalctl args for "the NEWEST `lines` entries in [since, until]".
+
+    Always absolute epochs (`@<epoch>`), never a relative string the target would
+    interpret on its own clock/timezone. Always `--reverse -n <lines+1>`: plain
+    `--since X -n N` returns the OLDEST N entries after X on systemd 249 (Ubuntu
+    22.04) but the newest N on systemd 255 -- confirmed live on both -- so relying
+    on `-n` alone silently dropped the most recent activity (including an in-
+    progress brute force) whenever the window held more than N lines. `--reverse`
+    makes it newest-first on every version; the one extra entry is how truncation
+    is detected (the caller drops it and flags the window as not fully covered)."""
+    args: list[str] = []
+    if since_epoch is not None:
+        args += ["--since", f"@{int(since_epoch)}"]
+    if until_epoch is not None:
+        args += ["--until", f"@{int(until_epoch)}"]
+    return args + ["--reverse", "-n", str(int(lines) + 1)]
+
+
+def _take_newest(raw_newest_first: list[dict[str, Any]], lines: int) -> tuple[list[dict[str, Any]], bool]:
+    truncated = len(raw_newest_first) > lines
+    kept = raw_newest_first[:lines]
+    kept.reverse()  # back to chronological order for every consumer
+    return kept, truncated
+
+
+def _parse_json_lines(stdout: str) -> list[dict[str, Any]]:
+    out = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def fetch_journalctl_entries(
+    unit: str | None,
+    since_epoch: float | None,
+    lines: int,
+    until_epoch: float | None = None,
+) -> SSHResult | tuple[list[dict[str, Any]], JournalWindow]:
     # sudo -n (default) or nothing at all if the target's SSH user is in the
     # systemd-journal group instead (see _journalctl_prefix, kratos_config.py
     # ::JOURNALCTL_USE_SUDO, adapters/target_setup.py). Either way, PLAIN
@@ -217,25 +314,24 @@ def fetch_journalctl_entries(unit: str | None, since: str | None, lines: int) ->
         # IS how they're actually logged.
         base = unit[: -len(".service")] if unit.endswith(".service") else unit
         parts += [f"_SYSTEMD_UNIT={shlex.quote(unit)}", "+", f"_COMM={shlex.quote(base)}"]
-    if since:
-        parts += ["--since", shlex.quote(since)]
-    parts += ["-n", str(int(lines))]
+    parts += _window_args(since_epoch, until_epoch, lines)
 
     result = run_remote_command(" ".join(parts))
     if not result.ok:
         return result
 
-    entries = []
-    for line in result.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        entries.append(_parse_journal_entry(raw))
-    return entries
+    newest_first = [_parse_journal_entry(raw) for raw in _parse_json_lines(result.stdout)]
+    entries, truncated = _take_newest(newest_first, int(lines))
+    window = JournalWindow(
+        since_epoch=since_epoch,
+        until_epoch=until_epoch,
+        requested=int(lines),
+        returned=len(entries),
+        truncated=truncated,
+        oldest_returned=entries[0].get("timestamp") if entries else None,
+        newest_returned=entries[-1].get("timestamp") if entries else None,
+    )
+    return entries, window
 
 
 def _parse_journal_entry_for_auth(raw: dict[str, Any]) -> tuple[str, str | None, str]:
@@ -264,8 +360,10 @@ def _parse_journal_entry_for_auth(raw: dict[str, Any]) -> tuple[str, str | None,
 
 
 def fetch_journalctl_auth_entries(
-    max_lines_per_identifier: int = 500, since: str | None = None
-) -> tuple[list[tuple[str, str | None, str]], list[str]]:
+    max_lines_per_identifier: int = 500,
+    since_epoch: float | None = None,
+    until_epoch: float | None = None,
+) -> tuple[list[tuple[str, str | None, str]], list[str], dict[str, JournalWindow]]:
     """
     Fetches sshd + sudo journal entries from the target over SSH, mirroring
     adapters/auth_log_parse.py::collect_journald_lines's local equivalent
@@ -274,22 +372,25 @@ def fetch_journalctl_auth_entries(
     unrelated service noise (systemd startup chatter, etc.) before it ever
     reaches an sshd or sudo line.
 
-    `since`: a journalctl `--since` value (e.g. "24 hours ago"), applied to
-    both per-identifier queries alongside the existing `-n` line cap --
-    journalctl combines the two as "the most recent N entries since
-    <since>", the same semantic fetch_journalctl_entries already uses for
-    the primary query. None (the default) preserves unscoped,
-    most-recent-N-lines-only behavior, so a goal with no stated time window
-    is unaffected. This exists because this fetch runs as a background
+    `since_epoch`/`until_epoch`: absolute UTC bounds (resolved Kratos-side by
+    kratos.utils.time_window), applied to both per-identifier queries via
+    _window_args -- i.e. the NEWEST `max_lines_per_identifier` entries in the
+    window, on every systemd version. (An earlier version of this docstring
+    claimed plain `--since X -n N` already meant "most recent N since X"; that is
+    false on systemd 249, where it returns the OLDEST N -- see _window_args.)
+    None/None preserves unscoped most-recent-N behavior. This exists because this fetch runs as a background
     side-effect of every read_journalctl call (feeding correlate_findings)
     independently of the tool's own primary query -- without threading
     `since` through here too, a caller-scoped primary query (e.g. "last 24
     hours") would still silently correlate against an unscoped, unknown-age
     snapshot underneath it.
 
-    Returns (entries, errors):
+    Returns (entries, errors, windows):
     - entries: (timestamp, identifier, message) tuples, ready for
       adapters/auth_log_parse.py::classify_auth_message.
+    - windows: per-identifier JournalWindow -- `truncated=True` means that
+      identifier's events before `oldest_returned` were not seen, which the
+      caller must surface (a silently partial window looks complete).
     - errors: one string per _COMM query that failed (e.g. the connection
       was refused/banned mid-investigation -- see the fail2ban-collateral-
       ban finding from live testing). A partial fetch still returns
@@ -299,31 +400,43 @@ def fetch_journalctl_auth_entries(
     """
     entries: list[tuple[str, str | None, str]] = []
     errors: list[str] = []
-    for identifier in ("sshd", "sudo"):
+    windows: dict[str, JournalWindow] = {}
+    # OpenSSH >= 9.8 logs per-connection auth events (incl. "Invalid user"/"Failed
+    # password") from a separate `sshd-session` process, not `sshd` -- confirmed live on
+    # Rocky 9 (OpenSSH 9.9: 0 invalid-user lines under _COMM=sshd, 4 under sshd-session)
+    # and Alpine 3.22. Filtering on `sshd` alone left the correlation engine blind to
+    # SSH brute force on every current distro. Repeating a field ORs it in journalctl
+    # (verified on systemd 249 and 252); hosts with older OpenSSH are unaffected.
+    comm_filters = {"sshd": ("sshd", "sshd-session"), "sudo": ("sudo",)}
+    for identifier, comms in comm_filters.items():
         # _journalctl_prefix(): see fetch_journalctl_entries above -- without
         # sudo OR systemd-journal group membership, journald's per-user ACL
         # silently hides privileged entries (confirmed live: a real attack's
         # "Failed password" lines were completely invisible to an
         # unprivileged query despite being well within the fetched window).
         prefix = " ".join(_journalctl_prefix())
-        cmd = f"{prefix} journalctl --no-pager -o json _COMM={identifier}".strip()
-        if since:
-            cmd += f" --since {shlex.quote(since)}"
-        cmd += f" -n {int(max_lines_per_identifier)}"
+        matches = " ".join(f"_COMM={c}" for c in comms)
+        cmd = f"{prefix} journalctl --no-pager -o json {matches}".strip()
+        cmd += " " + " ".join(_window_args(since_epoch, until_epoch, max_lines_per_identifier))
         result = run_remote_command(cmd)
         if not result.ok:
             errors.append(f"{identifier}: {(result.stderr or result.stdout).strip()}")
             continue
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            entries.append(_parse_journal_entry_for_auth(raw))
-    return entries, errors
+        parsed = [_parse_journal_entry_for_auth(raw) for raw in _parse_json_lines(result.stdout)]
+        truncated = len(parsed) > int(max_lines_per_identifier)
+        kept = parsed[: int(max_lines_per_identifier)]
+        kept.reverse()  # chronological
+        entries.extend(kept)
+        windows[identifier] = JournalWindow(
+            since_epoch=since_epoch,
+            until_epoch=until_epoch,
+            requested=int(max_lines_per_identifier),
+            returned=len(kept),
+            truncated=truncated,
+            oldest_returned=kept[0][0] if kept else None,
+            newest_returned=kept[-1][0] if kept else None,
+        )
+    return entries, errors, windows
 
 
 # ---------------------------------------------------------------------------

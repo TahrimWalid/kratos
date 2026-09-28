@@ -111,7 +111,7 @@ def test_extract_findings_handles_domain_level_error_shape():
 def test_investigation_excludes_approval_reaching_tools_during_the_call(tmp_path, monkeypatch):
     seen_registry_keys_during_call = {}
 
-    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None):
+    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, **_time_kwargs):
         seen_registry_keys_during_call["keys"] = set(TOOL_REGISTRY.keys())
         return {"status": "final_answer", "final_answer": "ok", "transcript": []}
 
@@ -130,7 +130,7 @@ def test_investigation_excludes_approval_reaching_tools_during_the_call(tmp_path
 
 
 def test_investigation_restores_registry_even_if_run_agent_raises(tmp_path, monkeypatch):
-    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None):
+    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, **_time_kwargs):
         raise RuntimeError("simulated crash mid-investigation")
 
     monkeypatch.setattr(mcp_server, "run_agent", _fake_run_agent)
@@ -142,7 +142,7 @@ def test_investigation_restores_registry_even_if_run_agent_raises(tmp_path, monk
 
 
 def test_investigation_writes_transcript_and_session_records(tmp_path, monkeypatch):
-    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None):
+    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, **_time_kwargs):
         return {
             "status": "final_answer",
             "final_answer": "no issues found",

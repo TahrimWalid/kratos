@@ -20,7 +20,7 @@ from kratos.adapters.log_window import write_event_excerpt_from_events_file
 
 def find_latest_auth_events_json(data_dir: Path) -> Path | None:
     logs_dir = data_dir / "logs"
-    files = sorted(logs_dir.glob("auth_events_*.json"), reverse=True)
+    files = sorted(logs_dir.glob("auth_events_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
 

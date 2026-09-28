@@ -21,6 +21,9 @@ dependencies = [
     "prompt_toolkit",
     "textual>=0.60",
     "mcp",
+    # IANA tz database for zoneinfo on hosts without /usr/share/zoneinfo (containers,
+    # Windows) -- time-window resolution must never silently fall back to UTC.
+    "tzdata",
 ]
 
 [project.optional-dependencies]

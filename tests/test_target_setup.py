@@ -148,7 +148,7 @@ def test_fetch_journalctl_entries_omits_sudo_when_disabled(monkeypatch):
         return SSHResult(ok=True, returncode=0, stdout="", stderr="")
 
     with patch.object(ssh_remote, "run_remote_command", side_effect=_fake_run_remote_command):
-        ssh_remote.fetch_journalctl_entries(unit=None, since=None, lines=10)
+        ssh_remote.fetch_journalctl_entries(unit=None, since_epoch=None, lines=10)
 
     assert not captured["command"].startswith("sudo")
     assert captured["command"].startswith("journalctl")
@@ -163,7 +163,7 @@ def test_fetch_journalctl_entries_keeps_sudo_by_default(monkeypatch):
         return SSHResult(ok=True, returncode=0, stdout="", stderr="")
 
     with patch.object(ssh_remote, "run_remote_command", side_effect=_fake_run_remote_command):
-        ssh_remote.fetch_journalctl_entries(unit=None, since=None, lines=10)
+        ssh_remote.fetch_journalctl_entries(unit=None, since_epoch=None, lines=10)
 
     assert captured["command"].startswith("sudo -n journalctl")
 

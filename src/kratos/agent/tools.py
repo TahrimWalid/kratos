@@ -8,10 +8,12 @@ or later by an LLM-driven agent loop.
 """
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import shlex
 import subprocess
+import time
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -31,20 +33,46 @@ from kratos.adapters.auth_log_parse import (
 from kratos.adapters.auth_log_patterns import analyze_auth_patterns as _analyze_auth_patterns
 from kratos.adapters.findings_engine import write_findings_report as _write_findings_report
 from kratos.kratos_config import (
+    SSH_TARGET_USER,
     THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED,
     VULSCAN_UPDATE_PROMPT as _VULSCAN_UPDATE_PROMPT,
     get_active_target,
 )
 from kratos.agent import console as _console
+from kratos.utils.time_window import (
+    TimeBoundError as _TimeBoundError,
+    epoch_to_iso_utc as _epoch_to_iso_utc,
+)
+from kratos.timewin.toolwin import resolve_tool_window as _resolve_tool_window
+from kratos.timewin.measure import (
+    DEFAULT_TIME_BUDGET_SECONDS as _MEASURE_BUDGET,
+    build_script as _build_measure_script,
+    parse_output as _parse_measure_output,
+)
+from kratos.timewin.windows import TimeIntentError as _TimeIntentError, current_context as _current_time_context
+from kratos.timewin.claims import METRICS as _CLAIM_METRICS, measurement_summary as _measurement_summary
+from kratos.timewin.compare import compare_measurements as _compare_measurements
+from kratos.timewin.snapshots import (
+    DESCRIPTIONS as _SNAPSHOT_DESCRIPTIONS,
+    as_of as _snapshot_as_of,
+    horizon as _snapshot_horizon,
+    summarize as _snapshot_summary,
+    within as _snapshots_within,
+)
+from kratos.utils.time_window import resolve_time_bound as _resolve_time_bound
 from kratos.adapters.ssh_remote import (
     target_label as _ssh_target_label,
     fetch_journalctl_entries as _fetch_journalctl_entries,
     fetch_journalctl_auth_entries as _fetch_journalctl_auth_entries,
+    measure_target_clock_offset as _measure_target_clock_offset,
+    CLOCK_OFFSET_WARN_SECONDS as _CLOCK_OFFSET_WARN_SECONDS,
     fetch_open_files as _fetch_open_files,
     fetch_processes as _fetch_processes,
     fetch_file_hashes as _fetch_file_hashes,
     run_config_audit_checks as _run_config_audit_checks,
     fetch_yara_scan as _fetch_yara_scan,
+    run_remote_script as _run_remote_script,
+    _journalctl_prefix,
     SSHResult as _SSHResult,
 )
 from kratos.adapters.baseline import (
@@ -483,7 +511,13 @@ def tool_correlate_findings(
     }
 
 
-def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = None) -> dict[str, Any]:
+def _persist_target_auth_correlation_data(
+    data_dir: Path,
+    since: str | None = None,
+    since_epoch: float | None = None,
+    until_epoch: float | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
     """
     Fetches the target's sshd/sudo journal entries over SSH and persists
     them in the exact same events/stats/patterns file shape
@@ -508,7 +542,9 @@ def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = No
     text) can state plainly whether a given finding was actually time-
     scoped or not, instead of silently implying it always is.
     """
-    entries, fetch_errors = _fetch_journalctl_auth_entries(since=since)
+    entries, fetch_errors, windows = _fetch_journalctl_auth_entries(
+        since_epoch=since_epoch, until_epoch=until_epoch
+    )
     target = _ssh_target_label()
     events = [
         _classify_auth_message(ts, target, identifier, msg, msg)
@@ -518,6 +554,12 @@ def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = No
     stats = _compute_basic_stats(events)
     stats["source"] = f"ssh_target_journald:{target}"
     stats["since"] = since
+    stats["until"] = until
+    stats["since_utc"] = _epoch_to_iso_utc(since_epoch) if since_epoch is not None else None
+    stats["until_utc"] = _epoch_to_iso_utc(until_epoch) if until_epoch is not None else None
+    # Per-identifier coverage: a truncated identifier means events older than its
+    # oldest_returned were NOT analyzed -- findings_engine states this in evidence.
+    stats["coverage"] = {ident: asdict(w) for ident, w in windows.items()}
     if fetch_errors:
         stats["_fetch_errors"] = fetch_errors
 
@@ -538,6 +580,7 @@ def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = No
         "auth_events_captured": len(events),
         "fetch_errors": fetch_errors,
         "since": since,
+        "coverage": stats["coverage"],
     }
 
 
@@ -552,7 +595,9 @@ def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = No
         "it -- default to this, not parse_auth_log (which only sees Kratos's own local host and "
         "will not show anything happening on the target). Also useful more broadly for "
         "unexpected service behavior, crashes, or activity tied to a specific unit. Returns "
-        "structured entries: timestamp, unit, message, priority. Every call also fetches and "
+        "structured entries (timestamp, unit, message, priority) -- the NEWEST `lines` entries only, "
+        "so it is for READING lines, not counting: for how many / when / from where / comparisons "
+        "over a period use measure_auth_activity, which counts every event. Every call also fetches and "
         "persists the target's sshd/sudo auth activity in the background (using the same `since` "
         "value as this call, if given -- independent only of `unit`/`lines`) so correlate_findings "
         "can pick it up automatically, already scoped to the same time window -- no separate tool "
@@ -561,29 +606,365 @@ def _persist_target_auth_correlation_data(data_dir: Path, since: str | None = No
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
         "unit": {"type": "str|null", "description": "Filter to a specific systemd unit (e.g. 'sshd.service')", "default": None},
-        "since": {"type": "str|null", "description": "journalctl --since value, e.g. '1 hour ago' or '2026-07-05 00:00:00'", "default": None},
-        "lines": {"type": "int", "description": "Max number of most-recent entries to return", "default": 200},
+        "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
+        "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time like '2026-07-05 00:00'. Prefer `window`.", "default": None},
+        "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
+        "lines": {"type": "int", "description": "Max number of entries to return -- always the NEWEST ones in the window. If the window holds more, the result says it was truncated and which part was not seen.", "default": 200},
     },
 )
-def tool_read_journalctl(data_dir: Path, unit: str | None = None, since: str | None = None, lines: int = 200) -> dict[str, Any]:
+def tool_read_journalctl(
+    data_dir: Path,
+    unit: str | None = None,
+    since: str | None = None,
+    lines: int = 200,
+    until: str | None = None,
+    window: Any = None,
+) -> dict[str, Any]:
     data_dir = Path(data_dir)
-    auth_correlation = _persist_target_auth_correlation_data(data_dir, since=since)
+    # Resolve the window Kratos-side, BEFORE any SSH: the target is only ever sent
+    # absolute epochs (never a relative string interpreted on its own clock/tz), and
+    # an ambiguous/unsupported/future value is rejected here with a message the model
+    # can act on, rather than being guessed at (docs/time_window_design.md §16).
+    try:
+        tw = _resolve_tool_window(window=window, since=since, until=until, tool="read_journalctl")
+    except (_TimeBoundError, _TimeIntentError) as e:
+        return {"status": "error", "observation": f"invalid time window: {e}"}
+    since_epoch = tw.window.start_utc if tw else None
+    until_epoch = None if (tw is None or tw.open_ended) else tw.window.end_utc
 
-    result = _fetch_journalctl_entries(unit, since, lines)
+    # Shift the Kratos-clock window into the TARGET's clock (journald timestamps are
+    # the target's) -- docs/time_window_design.md §2D.
+    clock_offset = _measure_target_clock_offset() if (since_epoch is not None or until_epoch is not None) else None
+    shift = clock_offset or 0.0
+    t_since = since_epoch + shift if since_epoch is not None else None
+    t_until = until_epoch + shift if until_epoch is not None else None
+
+    auth_correlation = _persist_target_auth_correlation_data(
+        data_dir, since=since, since_epoch=t_since, until_epoch=t_until, until=until
+    )
+
+    result = _fetch_journalctl_entries(unit, t_since, lines, until_epoch=t_until)
     if isinstance(result, _SSHResult):
         return {
             "status": "error",
             "observation": f"journalctl over SSH failed: {(result.stderr or result.stdout).strip()}",
             "auth_correlation_data": auth_correlation,
         }
+    entries, fetch_window = result
+    summary = _window_summary(fetch_window, since, until)
+    summary.update(_clock_note(clock_offset, since_epoch, until_epoch))
+    if tw is not None:
+        summary.update({"id": tw.window.id, "label": tw.window.label, "tz": tw.window.tz,
+                        "notes": tw.window.notes, "chip": tw.window.summary()})
     return {
         "status": "ok",
         "target": _ssh_target_label(),
         "unit": unit,
-        "count": len(result),
-        "entries": result,
+        "count": len(entries),
+        "window": summary,
+        "entries": entries,
         "auth_correlation_data": auth_correlation,
     }
+
+
+def _clock_note(offset: float | None, since_epoch: float | None, until_epoch: float | None) -> dict[str, Any]:
+    if since_epoch is None and until_epoch is None:
+        return {}
+    if offset is None:
+        return {"target_clock_offset_s": None,
+                "clock": "target clock offset could not be measured -- window NOT corrected for clock skew"}
+    note = {"target_clock_offset_s": round(offset, 1)}
+    if abs(offset) >= _CLOCK_OFFSET_WARN_SECONDS:
+        direction = "behind" if offset < 0 else "ahead of"
+        note["clock"] = (
+            f"WARNING: the target's clock is {abs(offset) / 60:.1f} min {direction} Kratos's. The window was "
+            "shifted to compensate, but entry timestamps shown are the TARGET's own clock -- "
+            "state real times accordingly, and consider recommending the target fix its time sync (NTP)."
+        )
+    # the returned window bounds are in Kratos time (what the user asked about)
+    note["since_utc"] = _epoch_to_iso_utc(since_epoch) if since_epoch is not None else None
+    note["until_utc"] = _epoch_to_iso_utc(until_epoch) if until_epoch is not None else "now"
+    return note
+
+
+def _window_summary(window: Any, since: str | None, until: str | None) -> dict[str, Any]:
+    """What this read actually covered, stated for the model in plain words -- a
+    truncated window must never read as a complete one."""
+    start = _epoch_to_iso_utc(window.since_epoch) if window.since_epoch is not None else None
+    end = _epoch_to_iso_utc(window.until_epoch) if window.until_epoch is not None else "now"
+    if window.truncated:
+        note = (
+            f"TRUNCATED: the window held more than {window.requested} entries, so only the newest "
+            f"{window.returned} were returned (oldest returned: {window.oldest_returned}). Entries "
+            f"between {start or 'the start of the journal'} and {window.oldest_returned} were NOT seen -- "
+            "do not describe that part of the window as clean. Narrow the window, filter by unit, "
+            "or rely on correlate_findings' counts."
+        )
+    else:
+        note = "complete: every matching entry in the window was returned."
+    return {
+        "since": since, "until": until, "since_utc": start, "until_utc": end,
+        "returned": window.returned, "truncated": window.truncated,
+        "oldest_returned": window.oldest_returned, "newest_returned": window.newest_returned,
+        "coverage": note,
+    }
+
+
+def _measurement_window_block(tw: Any, m: Any, clock_offset: float | None) -> dict[str, Any]:
+    cov = m.coverage()
+    block = {
+        "id": tw.window.id, "label": tw.window.label, "tz": tw.window.tz, "notes": tw.window.notes,
+        "chip": tw.window.summary(), "since_utc": _epoch_to_iso_utc(tw.window.start_utc),
+        "until_utc": _epoch_to_iso_utc(tw.window.end_utc), "coverage_percent": cov["percent"],
+        "covered_from": cov["covered_start"], "covered_to": cov["covered_end"], "problems": cov["problems"],
+        "truncated": cov["percent"] < 100.0, "oldest_returned": cov["covered_start"],
+        "coverage": ("complete: every matching event in the window was counted." if cov["percent"] >= 100.0 else
+                     f"PARTIAL ({cov['percent']}%): " + "; ".join(cov["problems"]) +
+                     " -- do NOT describe the uncovered part as clean; say it is unknown."),
+    }
+    block.update(_clock_note(clock_offset, tw.window.start_utc, tw.window.end_utc))
+    return block
+
+
+@register_tool(
+    name="measure_auth_activity",
+    description=(
+        "EXHAUSTIVE COUNTS of authentication activity on the MONITORED TARGET over a time window: "
+        "failed/successful SSH logins, invalid users, sudo failures/sessions/commands -- totals, per "
+        "source IP (with first/last seen), per hour, brute-force bursts, and the exact coverage of the "
+        "window (retention, reboots, clock problems). Counted ON the target, so it covers every event "
+        "in the window with no line cap (a month of heavy attacks costs a few KB). Use this for any "
+        "'how many', 'when', 'from where', 'did X happen in <period>', or comparison question; use "
+        "read_journalctl only when you need to read actual log lines. Also feeds correlate_findings "
+        "with the exhaustive numbers. Kratos's own SSH sessions are excluded from success counts and "
+        "reported separately (failures are never excluded)."
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "window": {"type": "object|str", "description": "REQUIRED: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object. Kratos computes the exact instants."},
+        "since": {"type": "str|null", "description": "Legacy alternative to `window` ('24 hours ago', '2026-07-05'). Prefer `window`.", "default": None},
+        "until": {"type": "str|null", "description": "Legacy end bound for `since`.", "default": None},
+    },
+)
+def tool_measure_auth_activity(
+    data_dir: Path, window: Any = None, since: str | None = None, until: str | None = None
+) -> dict[str, Any]:
+    data_dir = Path(data_dir)
+    try:
+        tw = _resolve_tool_window(window=window, since=since, until=until, tool="measure_auth_activity")
+    except (_TimeBoundError, _TimeIntentError) as e:
+        return {"status": "error", "observation": f"invalid time window: {e}"}
+    if tw is None:
+        return {"status": "error", "observation": "measure_auth_activity needs a window: pass \"window\": "
+                "{\"id\": \"w1\"} from the TIME CONTEXT, or a time intent like {\"kind\": \"rolling\", "
+                "\"amount\": 24, \"unit\": \"hour\"}."}
+    return _measure_window(data_dir, tw)[2]
+
+
+def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any, dict[str, Any] | None, dict[str, Any]]:
+    """Run the target-side measurement for one resolved window, persist it for
+    correlate_findings, record it for Guard 7, and build the tool payload. Shared by
+    measure_auth_activity and compare_periods. Returns (Measurement|None, window block,
+    payload); Measurement is None on an SSH failure (payload is then the error)."""
+    clock_offset = _measure_target_clock_offset()
+    shift = clock_offset or 0.0
+    w = tw.window
+    gran = 60 if w.seconds <= 2 * 86400 else 3600  # classic-log bucket size (see measure.py)
+    script = _build_measure_script(
+        w.start_utc + shift, None if tw.open_ended else w.end_utc + shift,
+        journalctl_prefix=" ".join(_journalctl_prefix()), kratos_user=SSH_TARGET_USER,
+        classic_granularity=gran,
+    )
+    result = _run_remote_script(script, timeout=_MEASURE_BUDGET + 60, shell="sh")
+    if not result.ok and not result.stdout.strip():
+        return None, None, {"status": "error", "observation": f"measurement over SSH failed: {(result.stderr or result.stdout).strip()}"}
+    m = _parse_measure_output(result.stdout, w.start_utc, w.end_utc, shift, classic_granularity=gran)
+    block = _measurement_window_block(tw, m, clock_offset)
+    run_ctx = _current_time_context()
+    if run_ctx is not None:  # what Guard 7 verifies the final answer's numbers against
+        run_ctx.measurements[w.id] = _measurement_summary(m)
+        run_ctx.measurement_objects[w.id] = m
+    # Persist in the exact shapes correlate_findings already reads, so its rule engine
+    # works from the exhaustive counts (latest file by mtime wins). A comparison's baseline
+    # windows are NOT persisted (persist=False): correlation must describe the period of
+    # interest, not whichever window happened to be measured last.
+    stats = m.as_auth_stats()
+    stats.update({
+        "source": f"ssh_target_measurement:{_ssh_target_label()}",
+        "since": w.label, "since_utc": block["since_utc"], "until_utc": block["until_utc"],
+        "window_id": w.id,
+        "coverage": {"measurement": {"truncated": block["truncated"], "returned": m.lines,
+                                     "oldest_returned": block["covered_from"]}},
+    })
+    stats_out = patterns_out = None
+    if persist:
+        logs_dir = data_dir / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        # window id + second-resolution stamp: two windows measured in one second never
+        # collide, and the stamp stays LAST (utils/latest_file.files_in_date_range reads the
+        # date from the second-to-last "_" field).
+        ts_tag = f"{w.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        stats_out = logs_dir / f"auth_stats_{ts_tag}.json"
+        patterns_out = logs_dir / f"auth_patterns_{ts_tag}.json"
+        stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+        patterns_out.write_text(json.dumps(m.as_auth_patterns(), indent=2), encoding="utf-8")
+
+    top_ips = sorted(m.by_ip.items(), key=lambda kv: -kv[1]["count"])[:10]
+    return m, block, {
+        "status": "ok",
+        "target": _ssh_target_label(),
+        "measurement": "exhaustive (every matching event in the covered window, counted on the target)",
+        "window": block,
+        "counts": dict(sorted(m.counts.items())),
+        "failed_login_sources": [
+            {"ip": ip, "failed_logins": d["count"], "first_seen": _epoch_to_iso_utc(d["first"]),
+             "last_seen": _epoch_to_iso_utc(d["last"])} for ip, d in top_ips
+        ],
+        "distinct_failed_login_ips": len(m.by_ip),
+        "top_failed_login_users": [{"user": u, "count": c} for u, c in sorted(m.by_user.items(), key=lambda kv: -kv[1])[:5]],
+        "bursts": m.bursts,
+        "fail2ban": {"bans": sum(1 for e in m.fail2ban if e["action"] == "ban"),
+                     "unbans": sum(1 for e in m.fail2ban if e["action"] == "unban"), "events": m.fail2ban[:20]},
+        "sources": {"used": m.sources_used, "journald": m.journald, "classic_logs": m.classic_status,
+                    "classic_files": m.classic_files, "target_timezone": m.tz_name or m.tz_offset},
+        "samples": {"note": "SAMPLE lines only -- counts above are authoritative", "newest": m.samples[:10],
+                    "first_line_per_failing_ip": m.first_per_ip[:10]},
+        "kratos_own_activity_excluded": {"kratos_ip": m.kratos_ip, "events": m.self_excluded},
+        "persisted": {"stats_file": str(stats_out) if stats_out else None,
+                      "patterns_file": str(patterns_out) if patterns_out else None},
+    }
+
+
+@register_tool(
+    name="compare_periods",
+    description=(
+        "COMPARES authentication activity on the MONITORED TARGET across two or more time periods "
+        "(e.g. this week vs last week, last 30 minutes vs the 30 before). Measures every period "
+        "exhaustively (same engine as measure_auth_activity, reusing any measurement already taken), "
+        "normalizes to a rate per day of covered time, checks coverage, and applies a statistical "
+        "test so ordinary variation is reported as 'no_meaningful_change' rather than a trend. Use it "
+        "for ANY comparison or trend question -- never compare numbers yourself. Cite its comparison "
+        "id in a \"trend\" claim."
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "metric": {"type": "str", "description": "What to compare: " + ", ".join(sorted(_CLAIM_METRICS))},
+        "windows": {"type": "list", "description": "Two or more window ids (\"w1\") or time intent objects; "
+                    "e.g. [\"w1\", {\"kind\": \"relative_to\", \"window\": \"w1\", \"shift\": {\"amount\": -7, \"unit\": \"day\"}}]"},
+    },
+)
+def tool_compare_periods(data_dir: Path, metric: str, windows: Any) -> dict[str, Any]:
+    data_dir = Path(data_dir)
+    if metric not in _CLAIM_METRICS:
+        return {"status": "error", "observation": f"unknown metric {metric!r}; use one of {', '.join(sorted(_CLAIM_METRICS))}"}
+    if isinstance(windows, str):
+        try:
+            windows = json.loads(windows)
+        except json.JSONDecodeError:
+            windows = [w.strip() for w in windows.split(",") if w.strip()]
+    if not isinstance(windows, list) or len(windows) < 2:
+        return {"status": "error", "observation": "compare_periods needs at least two windows"}
+    resolved = []
+    for i, ref in enumerate(windows):
+        try:
+            tw = _resolve_tool_window(window=ref, tool="compare_periods")
+        except (_TimeBoundError, _TimeIntentError) as e:
+            return {"status": "error", "observation": f"window #{i + 1}: invalid time window: {e}"}
+        if tw is None:
+            return {"status": "error", "observation": f"window #{i + 1} is empty"}
+        resolved.append(tw)
+    if len({tw.window.id for tw in resolved}) < len(resolved):
+        return {"status": "error", "observation": "the windows to compare must be different periods"}
+
+    run_ctx = _current_time_context()
+    rows = []
+    for idx, tw in enumerate(resolved):
+        m = run_ctx.measurement_objects.get(tw.window.id) if run_ctx else None
+        if m is None:
+            # only the first (period of interest) feeds correlate_findings; baselines don't
+            m, _block, payload = _measure_window(data_dir, tw, persist=(idx == 0))
+            if m is None:
+                return payload
+        summ = _measurement_summary(m)
+        cov = m.coverage()
+        summ["covered_seconds"] = cov["percent"] / 100.0 * tw.window.seconds
+        rows.append((tw.window, summ))
+    result = _compare_measurements(metric, rows)
+    cid = "c1"
+    if run_ctx is not None:
+        n = sum(1 for k in run_ctx.measurements if k.startswith("compare:")) + 1
+        cid = f"c{n}"
+        allowed = {int(r["value"]) for r in result["windows"]}
+        allowed |= {int(round(r["rate_per_day"])) for r in result["windows"] if r["rate_per_day"] is not None}
+        allowed |= {int(round(abs(pr["rate_change_percent"]))) for pr in result["pairs"] if pr.get("rate_change_percent") is not None}
+        run_ctx.measurements[f"compare:{cid}"] = {"metric": metric, "pairs": result["pairs"], "values": allowed}
+    return {"status": "ok", "comparison_id": cid, **result,
+            "note": "Verdicts are computed by Kratos: quote them; do not re-derive trends from the numbers."}
+
+
+@register_tool(
+    name="state_as_of",
+    description=(
+        "What the MONITORED TARGET looked like at a past time, from Kratos's OWN saved observations "
+        "(scans, baselines, system snapshots, integrity checks, findings) -- for questions logs can't "
+        "answer: 'was port 8080 open last week?', 'who had sudo on Monday?', 'what did the last scan "
+        "before the incident show?'. Give either `at` (a point in time) or `window` (a period). Returns "
+        "the nearest snapshot at or before that time and how far from it that snapshot is, or says "
+        "plainly that there is no record -- it never interpolates. Categories: "
+        + ", ".join(f"{k} ({v})" for k, v in _SNAPSHOT_DESCRIPTIONS.items())
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "category": {"type": "str", "description": "Snapshot category (see description)"},
+        "at": {"type": "str|null", "description": "A point in time: 'now', '3 days ago', '2026-09-20 09:00' (user's timezone)", "default": None},
+        "window": {"type": "object|str|null", "description": "A window id or time intent: snapshots inside it + the last one before it", "default": None},
+    },
+)
+def tool_state_as_of(data_dir: Path, category: str, at: str | None = None, window: Any = None) -> dict[str, Any]:
+    data_dir = Path(data_dir)
+    if category not in _SNAPSHOT_DESCRIPTIONS:
+        return {"status": "error", "observation": f"unknown category {category!r}; use one of {', '.join(_SNAPSHOT_DESCRIPTIONS)}"}
+    target = get_active_target() if category not in ("integrity_baseline",) else None
+    run_ctx = _current_time_context()
+
+    def record(snap: Any) -> dict[str, Any]:
+        d = snap.as_dict() | {"state": _snapshot_summary(snap)}
+        sid = "s" + hashlib.sha1(snap.path.encode()).hexdigest()[:8]  # stable across runs
+        d["snapshot_id"] = sid
+        if run_ctx is not None:  # a "state" claim may cite it (Guard 7)
+            run_ctx.measurements[f"snapshot:{sid}"] = {"values": set()}
+        if snap.target is None:
+            d["target_note"] = "this snapshot does not record which host it describes"
+        return d
+
+    hz = _snapshot_horizon(data_dir).get(category)
+    if window not in (None, "", {}):
+        try:
+            tw = _resolve_tool_window(window=window, tool="state_as_of")
+        except (_TimeBoundError, _TimeIntentError) as e:
+            return {"status": "error", "observation": f"invalid time window: {e}"}
+        w = tw.window
+        inside = _snapshots_within(data_dir, category, w.start_utc, w.end_utc, target)
+        before = _snapshot_as_of(data_dir, category, w.start_utc, target)
+        return {"status": "ok", "category": category, "window": {"id": w.id, "chip": w.summary()},
+                "snapshots_in_window": [record(x) for x in inside[-5:]], "count_in_window": len(inside),
+                "last_before_window": record(before) if before else None, "history": hz,
+                "note": ("no snapshot inside this window -- Kratos did not observe this during that period"
+                         if not inside else "state is only known at the listed capture times, not in between")}
+    try:
+        t = _resolve_time_bound(at) if at else time.time()
+    except _TimeBoundError as e:
+        return {"status": "error", "observation": f"invalid time: {e}"}
+    snap = _snapshot_as_of(data_dir, category, t, target)
+    if snap is None:
+        return {"status": "ok", "category": category, "requested_at": _epoch_to_iso_utc(t), "snapshot": None,
+                "history": hz, "note": ("no record: Kratos has no " + category + " snapshot at or before that time"
+                                        + (f" (its history starts {hz['oldest']})" if hz else ""))}
+    gap = t - snap.captured_at
+    return {"status": "ok", "category": category, "requested_at": _epoch_to_iso_utc(t), "snapshot": record(snap),
+            "distance": f"captured {gap / 86400:.1f} days before the requested time" if gap >= 86400
+            else f"captured {gap / 3600:.1f} hours before the requested time",
+            "history": hz, "note": "this is what Kratos observed at the capture time; the state may have changed since"}
 
 
 @register_tool(

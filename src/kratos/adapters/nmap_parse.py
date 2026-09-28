@@ -17,7 +17,9 @@ from typing import Any
 
 def find_latest_nmap_xml(data_dir: Path) -> Path | None:
     scans_dir = data_dir / "scans"
-    xml_files = sorted(scans_dir.glob("nmap_*.xml"), reverse=True)
+    # newest by modification time, NOT by name: a filename sort put 'nmap_kratos_<old>' above
+    # 'nmap_10.136..._<new>' and scan-summary silently reported an August scan (regression check §2.2)
+    xml_files = sorted(scans_dir.glob("nmap_*.xml"), key=lambda p: p.stat().st_mtime, reverse=True)
     return xml_files[0] if xml_files else None
 
 
