@@ -19,6 +19,7 @@ the rest is text generation. It never runs anything with sudo itself.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import socket
 import sys
@@ -43,11 +44,18 @@ def listener_running(port: int = DEFAULT_PORT, host: str = "127.0.0.1", timeout:
 
 
 def _kratos_executable() -> str:
-    """Best-effort path to the `kratos` CLI for a service ExecStart line."""
+    """Path to the `kratos` CLI for a service ExecStart line.
+
+    The console script installed beside the RUNNING interpreter comes first: it
+    is the same install the user is running now, and it works from a venv that
+    was never put on PATH (a systemd service has no activated venv). Then PATH,
+    then `<python> -m kratos.cli.app` (which cli/app.py's __main__ guard runs)."""
+    beside = Path(sys.executable).parent / "kratos"
+    if beside.is_file() and os.access(beside, os.X_OK):
+        return str(beside)
     found = shutil.which("kratos")
     if found:
         return found
-    # Fall back to `<python> -m kratos.cli.app` if the console script isn't on PATH.
     return f"{sys.executable} -m kratos.cli.app"
 
 
@@ -61,6 +69,15 @@ def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str =
     """A systemd unit that runs the core telemetry listener always-on."""
     exec_start = core_service_exec_start(data_dir, port=port, bind_host=bind_host)
     wanted_by = "default.target" if user_mode else "multi-user.target"
+    # A SYSTEM service runs as root unless told otherwise, and would then create
+    # root-owned kratos.db-wal/-shm files the user's own TUI/CLI can't write.
+    # Run it as the installing user (a user service already is).
+    run_as = ""
+    if not user_mode and os.geteuid() != 0:
+        import grp
+        import pwd
+
+        run_as = f"User={pwd.getpwuid(os.getuid()).pw_name}\nGroup={grp.getgrgid(os.getgid()).gr_name}\n"
     return (
         "[Unit]\n"
         "Description=Kratos sub-agent telemetry listener (core)\n"
@@ -69,6 +86,7 @@ def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str =
         "\n"
         "[Service]\n"
         "Type=simple\n"
+        f"{run_as}"
         f"ExecStart={exec_start}\n"
         "Restart=always\n"
         "RestartSec=5\n"

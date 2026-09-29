@@ -1467,3 +1467,9 @@ def main(argv: list[str] | None = None) -> int:
     load_kept_tools()
 
     return int(args.func(args))
+
+
+if __name__ == "__main__":
+    # `python -m kratos.cli.app ...` -- the fallback a systemd unit uses when the
+    # `kratos` console script isn't available (core_listener._kratos_executable).
+    raise SystemExit(main())

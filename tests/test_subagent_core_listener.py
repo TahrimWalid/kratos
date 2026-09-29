@@ -58,3 +58,39 @@ def test_install_commands_user_mode_no_sudo(tmp_path):
 
 def test_passwordless_sudo_available_returns_bool():
     assert isinstance(cl.passwordless_sudo_available(), bool)
+
+
+
+def test_system_unit_runs_as_the_installing_user_not_root(tmp_path):
+    import os
+    import pwd
+
+    unit = cl.core_service_unit(tmp_path, user_mode=False)
+    if os.geteuid() != 0:
+        assert f"User={pwd.getpwuid(os.getuid()).pw_name}" in unit and "Group=" in unit
+    assert "User=" not in cl.core_service_unit(tmp_path, user_mode=True)
+
+
+def test_executable_prefers_the_console_script_beside_the_interpreter(tmp_path, monkeypatch):
+    import sys
+
+    (tmp_path / "python").write_text("")
+    script = tmp_path / "kratos"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "python"))
+    monkeypatch.setenv("PATH", "/nonexistent")
+    assert cl._kratos_executable() == str(script)
+    script.unlink()
+    assert cl._kratos_executable() == f"{tmp_path / 'python'} -m kratos.cli.app"
+
+
+def test_module_fallback_really_runs_the_cli():
+    """`python -m kratos.cli.app` must dispatch to main() -- without a __main__
+    guard it silently exits 0 and a systemd unit restart-loops listening on nothing."""
+    import subprocess
+    import sys
+
+    r = subprocess.run([sys.executable, "-m", "kratos.cli.app", "subagent-serve", "--help"],
+                       capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and "--port" in r.stdout
