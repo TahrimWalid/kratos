@@ -24,6 +24,21 @@ class _Host(App):
         return "test-model"
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _kratos_key(tmp_path, monkeypatch):
+    """A real-looking local key, so no test touches ~/.ssh."""
+    key = tmp_path / "keys" / "id_ed25519"
+    key.parent.mkdir()
+    key.write_text("PRIVATE")
+    (key.parent / "id_ed25519.pub").write_text("ssh-ed25519 AAAAONBOARD kratos@core\n")
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_KEY_PATH", key)
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_USER", "ubuntu")
+    return key
+
+
 def _log_texts(screen: OnboardTargetScreen) -> list[str]:
     out = []
     for st in screen.query("#ob-log Static"):
@@ -97,7 +112,7 @@ def test_ssh_path_shows_checklist_and_passing_probe(tmp_path, monkeypatch):
 
     asyncio.run(run())
     texts = captured["texts"]
-    assert any("setup for 203.0.113.5" in t for t in texts)  # checklist shown
+    assert not any("setup for 203.0.113.5" in t for t in texts)  # nothing left to set up -> no checklist
     assert any("ssh_reachable" in t for t in texts)  # probe table shown
     assert any("you're ready" in t for t in texts)  # all-pass summary
 
@@ -204,3 +219,115 @@ def test_new_session_flow_onboards_remote_but_not_host(tmp_path, monkeypatch):
     seen_host, opened_host = scenario(["127.0.0.1", ""])
     assert "OnboardTargetScreen" not in seen_host  # loopback needs no setup
     assert opened_host
+
+
+# --- WS4: the first-contact SSH bootstrap ----------------------------------
+def _onboard(tmp_path, monkeypatch, answers, probe, *, host="203.0.113.5"):
+    """Run the SSH path with canned modal answers; return log texts, the modals
+    that were awaited, and the screen on top at the end."""
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks", probe)
+    monkeypatch.setattr("kratos.adapters.target_setup.generate_target_setup_checklist",
+                        lambda h: f"# setup for {h}")
+    out: dict = {"awaited": []}
+
+    async def run():
+        app = _Host()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            it = iter(answers)
+
+            async def canned(modal):
+                out["awaited"].append(modal)
+                return next(it)
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            screen = OnboardTargetScreen(tmp_path, host)
+            app.push_screen(screen)
+            for _ in range(4):
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+            out["texts"] = "\n".join(_log_texts(screen))
+            out["top"] = app.screen
+
+    asyncio.run(run())
+    return out
+
+
+def _denied(stderr="ubuntu@203.0.113.5: Permission denied (publickey)."):
+    from kratos.adapters.ssh_remote import SSHResult
+
+    return lambda: SSHResult(ok=False, returncode=255, stdout="", stderr=stderr)
+
+
+def test_key_not_accepted_and_i_can_log_in(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import CommandModal, ListPickerModal
+
+    out = _onboard(tmp_path, monkeypatch, ["ssh", "login"], _denied())
+    assert isinstance(out["awaited"][1], ListPickerModal)
+    assert isinstance(out["top"], CommandModal)
+    assert "ssh-ed25519 AAAAONBOARD kratos@core" in out["top"]._command
+    assert "logged in as ubuntu" in out["top"]._title
+    assert "doesn't accept this machine's SSH key" in out["texts"]
+
+
+def test_key_not_accepted_and_someone_else_runs_it(tmp_path, monkeypatch):
+    import shlex
+
+    from kratos.utils import ssh_keys
+
+    out = _onboard(tmp_path, monkeypatch, ["ssh", "admin"], _denied())
+    cmd = out["top"]._command
+    argv = shlex.split(cmd)
+    assert argv[:5] == ["sudo", "-u", "ubuntu", "-H", "sh"] and argv[-1] == ssh_keys.authorize_key_command()
+
+
+def test_password_only_explains_pubkey_authentication(tmp_path, monkeypatch):
+    out = _onboard(tmp_path, monkeypatch, ["ssh", "login"],
+                   _denied("ubuntu@203.0.113.5: Permission denied (password,keyboard-interactive)."))
+    assert "PubkeyAuthentication" in out["top"]._note
+
+
+def test_no_way_in_yet_is_said_plainly(tmp_path, monkeypatch):
+    out = _onboard(tmp_path, monkeypatch, ["ssh", "none"], _denied())
+    assert "Nothing to do until you have a way in" in out["texts"]
+    assert "sub-agent needs the same one-time access" in out["texts"]
+
+
+def test_no_local_key_is_created_only_on_yes(tmp_path, monkeypatch, _kratos_key):
+    for f in _kratos_key.parent.iterdir():
+        f.unlink()
+    ok = [{"check": "ssh_reachable", "status": "PASS", "detail": "ok"}]
+    declined = _onboard(tmp_path, monkeypatch, ["ssh", False], lambda: ok)
+    assert not _kratos_key.exists() and "you're ready" not in declined["texts"]
+    made = _onboard(tmp_path, monkeypatch, ["ssh", True], lambda: ok)
+    assert _kratos_key.exists() and "Created" in made["texts"] and "you're ready" in made["texts"]
+
+
+def test_missing_public_half_is_rebuilt_from_the_key(tmp_path, monkeypatch, _kratos_key):
+    import subprocess
+
+    _kratos_key.unlink()
+    (_kratos_key.parent / "id_ed25519.pub").unlink()
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(_kratos_key)], check=True)
+    (_kratos_key.parent / "id_ed25519.pub").unlink()
+    ok = [{"check": "ssh_reachable", "status": "PASS", "detail": "ok"}]
+    out = _onboard(tmp_path, monkeypatch, ["ssh", True], lambda: ok)
+    assert "Rebuilt" in out["texts"] and (_kratos_key.parent / "id_ed25519.pub").read_text().startswith("ssh-ed25519")
+
+
+def test_network_failure_gets_its_own_next_step(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import CommandModal
+
+    out = _onboard(tmp_path, monkeypatch, ["ssh"],
+                   _denied("ssh: connect to host 203.0.113.5 port 22: Connection timed out"))
+    assert "didn't answer" in out["texts"] and isinstance(out["top"], CommandModal)
+    assert out["top"]._command == "tailscale status"
+
+
+def test_info_rows_are_not_failures_and_failing_checks_show_the_checklist(tmp_path, monkeypatch):
+    info = [{"check": "ssh_reachable", "status": "PASS", "detail": ""},
+            {"check": "target_timezone", "status": "INFO", "detail": "UTC"}]
+    assert "you're ready" in _onboard(tmp_path, monkeypatch, ["ssh"], lambda: info)["texts"]
+    failing = info + [{"check": "lsof_installed", "status": "FAIL", "detail": "missing"}]
+    out = _onboard(tmp_path, monkeypatch, ["ssh"], lambda: failing)
+    assert "setup for 203.0.113.5" in out["texts"] and "1 check(s) aren't passing" in out["texts"]

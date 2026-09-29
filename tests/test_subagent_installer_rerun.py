@@ -20,7 +20,7 @@ from kratos.subagent import installer as I
 from kratos.subagent.agent import SubAgent
 
 TOOLS = ("sh", "python3", "base64", "cat", "mkdir", "mv", "date", "grep", "id", "test", "tee", "kill", "nohup",
-         "rm", "sleep", "printf")
+         "rm", "sleep", "printf", "tail", "tr")
 
 
 def test_upgrade_needs_no_code_and_never_passes_one():
@@ -34,7 +34,7 @@ def test_every_path_restarts_and_fails_loudly():
     script = I.generate_installer("10.0.0.1", "AB12-CD34")
     assert 'systemctl restart "$SERVICE_NAME.service"' in script
     assert 'systemctl --user restart "$SERVICE_NAME.service"' in script
-    for code in ("no_python", "python_too_old", "no_base64", "not_paired", "write_failed"):
+    for code in ("no_python", "python_too_old", "no_base64", "not_paired", "write_failed", "start_failed"):
         assert f"die {code} " in script
     assert "--enable-execution" not in script
     for s in (script, I.uninstall_command()):
@@ -78,6 +78,9 @@ def test_background_install_rerun_replaces_the_agent_and_repairs_identity(box):
     # Core address that refuses connections -- the agent just retries; nothing leaves the host.
     r1 = _run(I.generate_installer("127.0.0.1", "AAAA-1111", core_port=9), env)
     assert r1.returncode == 0 and "KRATOS_INSTALL_OK mode=user service=none" in r1.stdout, r1.stderr
+    # No systemd and no OpenRC: says it won't survive a reboot and leaves the exact restart script.
+    start = home / ".kratos-subagent" / "start.sh"
+    assert f"boot=no start={start}" in r1.stdout and "--state-file" in start.read_text()
     pid1 = int((home / ".kratos-subagent/agent.pid").read_text())
     time.sleep(1.0)
     assert _alive(pid1)
@@ -113,3 +116,21 @@ def test_agent_built_before_its_loop_starts_cleanly(tmp_path):
     agent = SubAgent("127.0.0.1", 9, state_file=tmp_path / "s.json", pairing_code="AAAA-1111", local_allow_file=None)
     agent.stop()
     asyncio.run(asyncio.wait_for(agent.run_forever(), 5))
+
+
+def test_an_agent_that_dies_at_start_is_reported_not_called_installed(box, tmp_path):
+    """Found on a real Alpine box: the background path used to print INSTALL_OK even when the
+    agent never ran. Now the installer checks it is still alive and says why it isn't."""
+    home, env, _ = box
+    real = shutil.which("python3")
+    fake = Path(env["PATH"]) / "python3"
+    fake.unlink()
+    fake.write_text(f"""#!/bin/sh
+if [ "$1" = "-m" ]; then echo "Traceback: boom from the agent" >&2; exit 1; fi
+exec {real} "$@"
+""")
+    fake.chmod(0o755)
+    r = _run(I.generate_installer("127.0.0.1", "AAAA-1111", core_port=9), env)
+    assert r.returncode != 0 and "KRATOS_INSTALL_OK" not in r.stdout
+    assert "KRATOS_INSTALL_ERROR: start_failed: the agent exited right after starting" in r.stderr
+    assert "boom from the agent" in r.stderr

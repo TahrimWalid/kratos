@@ -81,9 +81,14 @@ def _host_key_opts() -> list[str]:
 
 
 def _base_ssh_argv() -> list[str]:
+    # Offer only Kratos's key when it exists: an agent full of other keys can
+    # otherwise hit the server's MaxAuthTries ("Too many authentication
+    # failures") before this one is ever tried.
+    only = ["-o", "IdentitiesOnly=yes"] if Path(SSH_TARGET_KEY_PATH).exists() else []
     return [
         "ssh",
         "-i", str(SSH_TARGET_KEY_PATH),
+        *only,
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
         *_host_key_opts(),
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",

@@ -253,10 +253,45 @@ start_plain() {{
             log "Stopped the previous background agent (pid $OLD_PID)."
         fi
     fi
-    # shellcheck disable=SC2086
-    ( cd "$INSTALL_DIR" && nohup $EXEC_CMD >"$INSTALL_DIR/agent.log" 2>&1 & echo $! > "$PIDFILE" )
-    log "Started. Logs: $INSTALL_DIR/agent.log"
-    printf 'KRATOS_INSTALL_OK mode=%s service=none dir=%s\\n' "$MODE" "$INSTALL_DIR"
+    LOGFILE="$INSTALL_DIR/agent.log"
+    START="$INSTALL_DIR/start.sh"
+    # Fully detached (stdin from /dev/null, output to the log) so the ssh
+    # session that ran this installer can close and the agent outlives it.
+    # Written to start.sh so the exact same launch can run again at boot.
+    # With sudo it runs as root: the install dir is root's.
+    printf '#!/bin/sh\\n# Starts the Kratos sub-agent in the background (no systemd on this box).\\ncd %s || exit 1\\nnohup %s >%s 2>&1 </dev/null &\\necho $! > %s\\n' \\
+        "'$INSTALL_DIR'" "$EXEC_CMD" "'$LOGFILE'" "'$PIDFILE'" | $SUDO tee "$START" >/dev/null \\
+        || die write_failed "could not write $START"
+    $SUDO chmod 755 "$START" 2>/dev/null || true
+    $SUDO sh "$START" || die start_failed "could not start the agent in the background"
+    sleep 2
+    NEW_PID=$($SUDO cat "$PIDFILE" 2>/dev/null || true)
+    if [ -z "$NEW_PID" ] || ! $SUDO kill -0 "$NEW_PID" 2>/dev/null; then
+        die start_failed "the agent exited right after starting: $($SUDO tail -n 3 "$LOGFILE" 2>/dev/null | tr '\\n' ' ')"
+    fi
+    log "Started (pid $NEW_PID). Logs: $LOGFILE"
+    # Survive a reboot where the box's own init allows it without systemd:
+    # OpenRC (Alpine etc.) runs /etc/local.d/*.start at boot.
+    BOOT=no
+    if [ "$MODE" = "system" ] && [ -d /etc/local.d ] && command -v rc-update >/dev/null 2>&1; then
+        printf '#!/bin/sh\\nexec sh %s\\n' "'$START'" | $SUDO tee /etc/local.d/$SERVICE_NAME.start >/dev/null \\
+            && $SUDO chmod 755 /etc/local.d/$SERVICE_NAME.start \\
+            && $SUDO rc-update add local default >/dev/null 2>&1 && BOOT=yes
+    fi
+    if [ "$BOOT" = "yes" ]; then
+        log "It will start again at boot (OpenRC: /etc/local.d/$SERVICE_NAME.start)."
+    else
+        log "It will NOT start again after a reboot. To start it by hand: $SUDO sh $START"
+    fi
+    printf 'KRATOS_INSTALL_OK mode=%s service=none dir=%s boot=%s start=%s\\n' "$MODE" "$INSTALL_DIR" "$BOOT" "$START"
+}}
+
+# A crashing agent under Restart=always looks "installed"; make sure it stays up.
+check_service() {{
+    sleep 3
+    if ! $1 is-active --quiet "$SERVICE_NAME.service"; then
+        die start_failed "the $SERVICE_NAME service is not running: $($2 -u "$SERVICE_NAME" -n 3 --no-pager -o cat 2>/dev/null | tr '\\n' ' ')"
+    fi
 }}
 
 if [ "$MODE" = "system" ]; then
@@ -286,6 +321,7 @@ UNIT_EOF
     # restart, not just enable --now: an already-running agent must load the
     # new code and identity.
     $SUDO systemctl restart "$SERVICE_NAME.service"
+    check_service "$SUDO systemctl" "$SUDO journalctl"
     log "Service installed and started: $SERVICE_NAME"
     log "  status: $SUDO systemctl status $SERVICE_NAME"
     log "  logs:   $SUDO journalctl -u $SERVICE_NAME -f"
@@ -318,14 +354,17 @@ UNIT_EOF
         start_plain
         exit 0
     }}
+    check_service "systemctl --user" "journalctl --user"
     log "User service installed and started: $SERVICE_NAME"
+    LINGER=yes
     if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != "yes" ]; then
+        LINGER=no
         log "  It runs while you are logged in. To keep it running after logout:"
         log "    sudo loginctl enable-linger $(id -un)"
     fi
     log "  status: systemctl --user status $SERVICE_NAME"
     log "  logs:   journalctl --user -u $SERVICE_NAME -f"
-    printf 'KRATOS_INSTALL_OK mode=user service=%s dir=%s\\n' "$SERVICE_NAME" "$INSTALL_DIR"
+    printf 'KRATOS_INSTALL_OK mode=user service=%s dir=%s linger=%s user=%s\\n' "$SERVICE_NAME" "$INSTALL_DIR" "$LINGER" "$(id -un)"
 fi
 
 log ""
@@ -338,11 +377,14 @@ def uninstall_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
     whichever way it was installed (system service, user service, or a
     background process). Safe to run when parts are already gone."""
     svc = service_name
+    # $S is sudo unless already root (a root shell may have no sudo at all).
     return (
-        f"if [ -f /etc/systemd/system/{svc}.service ]; then sudo systemctl disable --now {svc}; "
-        f"sudo rm -f /etc/systemd/system/{svc}.service; sudo systemctl daemon-reload; fi; "
+        'S=sudo; [ "$(id -u)" = 0 ] && S=; '
+        f"if [ -f /etc/systemd/system/{svc}.service ]; then $S systemctl disable --now {svc}; "
+        f"$S rm -f /etc/systemd/system/{svc}.service; $S systemctl daemon-reload; fi; "
         f"systemctl --user disable --now {svc} 2>/dev/null; rm -f ~/.config/systemd/user/{svc}.service; "
-        "for d in /opt/kratos-subagent ~/.kratos-subagent; do "
-        "[ -f $d/agent.pid ] && kill $(cat $d/agent.pid) 2>/dev/null; done; "
-        "sudo rm -rf /opt/kratos-subagent; rm -rf ~/.kratos-subagent"
+        "[ -f /opt/kratos-subagent/agent.pid ] && $S kill $(cat /opt/kratos-subagent/agent.pid) 2>/dev/null; "
+        "[ -f ~/.kratos-subagent/agent.pid ] && kill $(cat ~/.kratos-subagent/agent.pid) 2>/dev/null; "
+        f"$S rm -f /etc/local.d/{svc}.start; "
+        "$S rm -rf /opt/kratos-subagent; rm -rf ~/.kratos-subagent"
     )

@@ -56,7 +56,14 @@ def generate_target_setup_checklist(target_host: str) -> str:
     try:
         pubkey = pubkey_path.read_text(encoding="utf-8").strip()
     except OSError:
-        pubkey = f"<could not read {pubkey_path} -- paste your real public key here>"
+        pubkey = ""
+    from kratos.utils.ssh_keys import authorize_key_command
+
+    # Idempotent and safe on a file with no trailing newline (see ssh_keys).
+    authorize = authorize_key_command(pubkey) if pubkey else (
+        f"mkdir -p ~/.ssh && chmod 700 ~/.ssh\n"
+        f"echo '<could not read {pubkey_path} -- paste your real public key here>' >> ~/.ssh/authorized_keys\n"
+        "chmod 600 ~/.ssh/authorized_keys")
 
     kratos_ip = _detect_local_ip(target_host)
     kratos_ip_display = kratos_ip or "<KRATOS_HOST_IP -- could not auto-detect, fill in manually>"
@@ -69,10 +76,8 @@ def generate_target_setup_checklist(target_host: str) -> str:
 # (console access, your cloud provider's own SSH, etc.) -- Kratos never
 # provisions its own initial access, by design.
 
-# 1. SSH key access
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-echo '{pubkey}' >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+# 1. SSH key access (as {SSH_TARGET_USER})
+{authorize}
 
 # 2. journalctl access (read logs) -- group membership, no sudo needed.
 #    Takes effect on Kratos's NEXT ssh connection (it opens a fresh one per

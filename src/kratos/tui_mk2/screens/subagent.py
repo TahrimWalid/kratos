@@ -34,10 +34,12 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Static
 
 from kratos.storage.subagent_store import SubAgentStore
+from kratos.subagent import deploy_diagnosis as DD
 from kratos.subagent import hub_address, installer
 from kratos.subagent import status as ST
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
+from kratos.utils import ssh_keys
 
 
 def _cl_default_bind() -> str:
@@ -46,51 +48,19 @@ def _cl_default_bind() -> str:
     return _cl.DEFAULT_BIND_HOST
 
 
-def _is_publickey_denied(detail: str) -> bool:
-    d = (detail or "").lower()
-    return "permission denied" in d and "publickey" in d
+def valid_ssh_address(addr: str) -> str | None:
+    """None if `addr` is usable as an scp/ssh destination, else why not. A
+    leading '-' would be read by ssh as an option (e.g. -oProxyCommand=...)."""
+    if not addr:
+        return "enter an address"
+    if addr.startswith("-"):
+        return "an address can't start with '-'"
+    if any(c.isspace() for c in addr) or any(c in addr for c in "'\"`$;&|<>"):
+        return "an address can't contain spaces or shell characters"
+    if addr.endswith("@") or addr.startswith("@"):
+        return "use user@host"
+    return None
 
-
-def _authorize_key_command() -> str | None:
-    """`echo '<this host's target pubkey>' >> ~/.ssh/authorized_keys`, for the
-    user to paste ON the target so this host can SSH in. None if the pubkey
-    can't be read. Mirrors what generate_target_setup_checklist already shows for
-    the direct-SSH path -- same key, so authorizing it once covers both."""
-    from kratos import kratos_config as _kc
-
-    pub = _kc.SSH_TARGET_KEY_PATH.with_name(_kc.SSH_TARGET_KEY_PATH.name + ".pub")
-    try:
-        key = pub.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not key:
-        return None
-    # Robust + idempotent: create ~/.ssh with correct perms first, so it also
-    # works on a brand-new box where ~/.ssh doesn't exist yet, and fix the
-    # authorized_keys mode (sshd ignores it if it's group/other-writable).
-    return (
-        "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-        f"echo '{key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-    )
-
-
-def _deploy_failure_message(ssh_addr: str, detail: str) -> str:
-    """The log message shown when an SSH deploy fails. On a public-key rejection
-    (this host's key isn't authorized on the target yet), hand the user the exact
-    command to paste ON the target to grant it -- not just 'do it yourself'."""
-    lines = [f"Couldn't deploy to {ssh_addr}: {detail}"]
-    authorize = _authorize_key_command() if _is_publickey_denied(detail) else None
-    if authorize:
-        login = ssh_addr.split("@", 1)[0] if "@" in ssh_addr else "the login user"
-        lines += [
-            "",
-            f"{ssh_addr} doesn't accept this host's SSH key yet. Grant it by running this ON the",
-            f"target (as {login}, the user you connect as), then press 'a' to retry the deploy:",
-            f"    {authorize}",
-        ]
-    else:
-        lines.append("Run the scp/ssh commands above yourself (needs key-based SSH access to the target).")
-    return "\n".join(lines)
 
 _DEFAULT_CORE_PORT = 8765
 # How long `L` waits for the new service to register before calling it failed.
@@ -124,6 +94,7 @@ class SubAgentScreen(Screen):
         Binding("p", "repair", "re-pair", show=False),
         Binding("n", "new_code", "new code", show=False),
         Binding("x", "dismiss_code", "dismiss code", show=False),
+        Binding("d", "deploy", "deploy over SSH", show=False),
         Binding("f", "forget", "forget", show=False),
         Binding("c", "copy_commands", "copy deploy cmds", show=True),
         Binding("l", "install_service", "always-on listener", show=True),
@@ -462,6 +433,33 @@ class SubAgentScreen(Screen):
         await self._start_pairing(old.get("name"), replaces_target_id=old.get("replaces_target_id"),
                                   host=old.get("core_host"))
 
+    @work
+    async def action_deploy(self) -> None:
+        """(Re)deploy the selected waiting code's installer over SSH -- the retry
+        after fixing whatever the last deploy attempt said was wrong."""
+        row = self._selected_row()
+        if row is None or row["kind"] != "pending":
+            self._log(Text("Select a waiting pairing-code row (⧗) to deploy its installer.", style=T.TEXT_DIM))
+            return
+        c = row["code"]
+        expires = ST.parse_stored_instant(c.get("expires_at"))
+        if expires is None or expires <= ST.utc_now():
+            self._log(Text("That code has expired — press n on its row for a fresh one.", style=T.ATTENTION))
+            return
+        host = c.get("core_host")
+        if not host:
+            self._log(Text("This code was made without a Kratos address — press n on its row for a fresh one.",
+                           style=T.ATTENTION))
+            return
+        out = self._write_installer(c.get("name"), host, c["code"])
+        if out is None:
+            return
+        watched = self._watched_codes.setdefault(c["code"], {"name": c.get("name"), "host": host})
+        watched["out_path"] = str(out)
+        self._last_deploy_commands = self._deploy_commands(out, watched.get("ssh_addr") or "<user@target>")
+        await self._offer_ssh_deploy(out, c.get("name"), c["code"])
+        self._refresh()
+
     def action_dismiss_code(self) -> None:
         row = self._selected_row()
         if row is None or row["kind"] != "pending":
@@ -592,71 +590,116 @@ class SubAgentScreen(Screen):
         ))
         if not deploy:
             return
-        default_ssh = f"root@{self._default_name}" if self._default_name else ""
-        ssh_addr = await self.app.push_screen_wait(PromptModal(
-            "Target SSH address",
-            hint="user@host to deploy to (e.g. ubuntu@203.0.113.5). Needs key-based SSH access.",
-            initial=default_ssh,
-        ))
-        ssh_addr = (ssh_addr or "").strip()
-        if not ssh_addr:
-            return
+        from kratos import kratos_config as _kc
+
+        # Default to the login user Kratos is configured to SSH as (the same one
+        # the investigation tools use), never a guessed root.
+        previous = (self._watched_codes.get(code) or {}).get("ssh_addr") if code else None
+        initial = previous or (f"{_kc.SSH_TARGET_USER}@{self._default_name}" if self._default_name else "")
+        while True:
+            ssh_addr = await self.app.push_screen_wait(PromptModal(
+                "Target SSH address",
+                hint="user@host to deploy to (e.g. ubuntu@203.0.113.5). Needs key-based SSH access.",
+                initial=initial,
+            ))
+            ssh_addr = (ssh_addr or "").strip()
+            if not ssh_addr:
+                return
+            problem = valid_ssh_address(ssh_addr)
+            if problem is None:
+                break
+            self._log(Text(f"Not a usable SSH address ({problem}).", style=T.ATTENTION))
+            initial = ssh_addr
         # Now that we know the real target address, make `c` copy the concrete
         # commands (with the address filled in) instead of the placeholder.
         self._last_deploy_commands = self._deploy_commands(out_path, ssh_addr)
+        if code and code in self._watched_codes:
+            self._watched_codes[code]["ssh_addr"] = ssh_addr
         self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
         self._ssh_deploy_worker(str(out_path), ssh_addr, code)
 
-    @work(thread=True)
-    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str, code: str | None = None) -> None:
-        import subprocess
-
+    @staticmethod
+    def _ssh_options() -> list[str]:
         from kratos import kratos_config as _kc
 
+        opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
+        # Present exactly Kratos's configured key -- the one whose public half a
+        # failure tells the user to authorize. IdentitiesOnly stops ssh offering
+        # every key in the agent first and hitting "Too many authentication
+        # failures" before it ever tries this one.
+        if Path(_kc.SSH_TARGET_KEY_PATH).exists():
+            opts += ["-o", "IdentitiesOnly=yes", "-i", str(_kc.SSH_TARGET_KEY_PATH)]
+        return opts
+
+    @work(thread=True)
+    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str, code: str | None = None) -> None:
+        import shlex
+        import subprocess
+
         basename = Path(script_path).name
-        ssh_opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
-        # Present Kratos's configured target key, so the key we deploy with is the
-        # same one whose public half we tell the user to authorize on a failure.
-        if _kc.SSH_TARGET_KEY_PATH.exists():
-            ssh_opts += ["-i", str(_kc.SSH_TARGET_KEY_PATH)]
+        ssh_opts = self._ssh_options()
+        stage = "copy"
         try:
             scp = subprocess.run(
-                ["scp", *ssh_opts, script_path, f"{ssh_addr}:{basename}"],
-                capture_output=True, text=True, timeout=60,
+                ["scp", *ssh_opts, "--", script_path, f"{ssh_addr}:{basename}"],
+                capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
             )
             if scp.returncode != 0:
                 self._deploy_failed(ssh_addr, (scp.stderr or scp.stdout).strip())
                 return
+            stage = "install"
+            # The installer holds a pairing code: remove it once it ran cleanly
+            # (kept on failure so the operator can re-run it by hand).
+            q = shlex.quote(basename)
             run = subprocess.run(
-                ["ssh", *ssh_opts, ssh_addr, f"sh {basename}"],
-                capture_output=True, text=True, timeout=120,
+                ["ssh", *ssh_opts, "--", ssh_addr, f"sh {q} && rm -f {q}"],
+                capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL,
             )
             if run.returncode != 0:
-                self._deploy_failed(ssh_addr, (run.stderr or run.stdout).strip())
+                self._deploy_failed(ssh_addr, "\n".join(x for x in (run.stderr, run.stdout) if x).strip())
                 return
-            self.app.call_from_thread(self._log, Text(
-                f"✓ Installer ran on {ssh_addr}. Waiting for it to check in…", style=f"bold {T.SAFE}"
-            ))
+            row = self._sa_store.get_pairing_code(code) if code else None
+            waiting = "" if (row is not None and row.get("used_at")) else " Waiting for it to check in…"
+            self.app.call_from_thread(self._log, Text(f"✓ Installer ran on {ssh_addr}.{waiting}",
+                                                      style=f"bold {T.SAFE}"))
+            warning = DD.install_warning(run.stdout)
+            if warning is not None:
+                self.app.call_from_thread(self._show_diagnosis, warning, ssh_addr, T.ATTENTION)
             if code and code in self._watched_codes:
                 import time as _time
 
                 self._watched_codes[code]["deployed_at"] = _time.time()
+        except subprocess.TimeoutExpired:
+            what = "copying the installer" if stage == "copy" else "running the installer"
+            self._deploy_failed(ssh_addr, "", timed_out=what)
         except (OSError, subprocess.SubprocessError) as exc:
             self._deploy_failed(ssh_addr, str(exc))
 
-    def _deploy_failed(self, ssh_addr: str, detail: str) -> None:
-        self.app.call_from_thread(self._log, Text(_deploy_failure_message(ssh_addr, detail), style=T.CRITICAL))
-        # On a public-key rejection, also pop a click-to-copy box with the exact
-        # authorize command, so the user pastes it verbatim (no OCR/line-wrap
-        # corruption -- the failure mode that broke a real manual paste).
-        authorize = _authorize_key_command() if _is_publickey_denied(detail) else None
-        if authorize:
-            login = ssh_addr.split("@", 1)[0] if "@" in ssh_addr else "the login user"
-            note = f"Run this ON the target (as {login}), then press 'a' to retry the deploy."
-            self.app.call_from_thread(
-                self.app.push_screen,
-                CommandModal(authorize, title="Authorize Kratos on the target", note=note),
-            )
+    def _deploy_failed(self, ssh_addr: str, detail: str, *, timed_out: str | None = None) -> None:
+        if timed_out:
+            diag = DD.Diagnosis(
+                "deploy_timeout", f"{ssh_addr} stopped responding while {timed_out}.",
+                "The connection may have dropped, or the target is very slow. Check it by hand, then retry "
+                "(press c for the commands).")
+        else:
+            diag = DD.diagnose(detail, ssh_addr=ssh_addr, authorize_command=ssh_keys.authorize_key_command())
+        self.app.call_from_thread(self._show_diagnosis, diag, ssh_addr, T.CRITICAL, detail)
+
+    def _show_diagnosis(self, diag: DD.Diagnosis, ssh_addr: str, style: str, raw: str = "") -> None:
+        """Say what went wrong and what to do; pop a copy-safe box for the fix
+        command (pasting a wrapped command by hand broke a real deploy)."""
+        lines = [diag.summary, diag.next_step]
+        if diag.kind == "no_local_key":
+            lines.append("Onboarding a target (/target) can create it for you, or run: "
+                         f"ssh-keygen -t ed25519 -N '' -f {ssh_keys._key_path()}")
+        if diag.retry:
+            lines.append("Then select its waiting row and press d to deploy again (n if the code has expired).")
+        self._log(Text("\n".join(lines), style=style))
+        if raw and diag.kind != "unknown":
+            self._log(Text(raw if len(raw) < 600 else raw[-600:], style=T.TEXT_DIM))
+        if diag.command:
+            where = "ON the target" if diag.run_on == DD.ON_TARGET else "on THIS machine (where Kratos runs)"
+            self.app.push_screen(CommandModal(diag.command, title=f"Run this {where}", note=diag.next_step))
 
     # ------------------------------------------------------------------
     @work
@@ -795,7 +838,10 @@ class SubAgentScreen(Screen):
         ))
 
     def _deploy_commands(self, out_path: Path, ssh_addr: str = "<user@target>") -> str:
-        return f"scp {out_path} {ssh_addr}:~/\nssh {ssh_addr} 'sh {out_path.name}'"
+        import shlex
+
+        name = shlex.quote(out_path.name)
+        return f"scp {shlex.quote(str(out_path))} {ssh_addr}:~/\nssh {ssh_addr} 'sh {name} && rm -f {name}'"
 
     def action_copy_commands(self) -> None:
         if not self._last_deploy_commands:
@@ -860,7 +906,7 @@ def _pending_cells(code: dict[str, Any], now, names: dict[str, str]) -> tuple:
     if left > 0:
         status = Text("⧗ waiting", style=T.ATTENTION)
         detail = (f"code {code['code']} · expires in {int(left) // 60}:{int(left) % 60:02d} · run its installer on the "
-                  "server (x dismiss · n new code)")
+                  "server (d deploy over SSH · x dismiss · n new code)")
     else:
         status = Text("⧖ code expired", style=T.CRITICAL)
         tried = (f" · {code['last_attempt_host']} tried it {ST.human_age(ST._age(code['last_attempt_at'], now))}"
