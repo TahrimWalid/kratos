@@ -76,8 +76,6 @@ def test_paired_target_appears_with_status(tmp_path):
 
 def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch):
     # Fast, deterministic: canned modal answers, no serve socket, quick timeout.
-    monkeypatch.setattr(sa_mod, "_CHECKIN_TIMEOUT_SECONDS", 0.05)
-    monkeypatch.setattr(sa_mod, "_CHECKIN_POLL_SECONDS", 0.01)
     screen = SubAgentScreen(tmp_path)
     captured: dict[str, list[str]] = {}
 
@@ -116,25 +114,29 @@ def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch
     assert any("No listener is running" in t for t in texts)
 
 
-def test_await_checkin_detects_new_target(tmp_path, monkeypatch):
-    monkeypatch.setattr(sa_mod, "_CHECKIN_TIMEOUT_SECONDS", 2.0)
-    monkeypatch.setattr(sa_mod, "_CHECKIN_POLL_SECONDS", 0.01)
+def test_check_in_is_announced_by_the_refresh_not_a_blocking_wait(tmp_path):
+    """WS7: a code started here is announced once when it's used -- from the
+    regular refresh, so it works even after the add flow has returned."""
     sa = SubAgentStore(tmp_path / "kratos.db")
     screen = SubAgentScreen(tmp_path)
-    captured: dict[str, list[str]] = {}
+    captured: dict = {}
 
     async def run():
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            pre_ids: set[str] = set(t["target_id"] for t in sa.list_targets())
-            # Simulate the target checking in a moment after we start waiting.
-            _pair(sa, "web-02")
-            await screen._await_checkin(pre_ids, "web-02")
+            code = sa.create_pairing_code(name="web-02", core_host="10.0.0.1")["code"]
+            screen._watched_codes[code] = {"name": "web-02", "host": "10.0.0.1"}
+            screen._refresh()
+            captured["pending_row"] = str(screen.query_one("#sa-table").get_row_at(0)[5])
+            sa.redeem_pairing_code(code, agent_id="a", hostname="web-02", agent_version="0.2.0")
+            screen._refresh()
+            screen._refresh()  # announced once, not twice
             captured["texts"] = _log_texts(screen)
 
     asyncio.run(run())
-    assert any("paired" in t and "telemetry live" in t for t in captured["texts"])
+    assert "expires in" in captured["pending_row"]
+    assert sum("web-02 paired" in t for t in captured["texts"]) == 1
 
 
 def test_command_modal_copies_and_closes(monkeypatch):
@@ -244,8 +246,6 @@ def test_deploy_failure_message_other_error_is_generic(tmp_path, monkeypatch):
 
 
 def test_manual_hub_address_prompt(tmp_path, monkeypatch):
-    monkeypatch.setattr(sa_mod, "_CHECKIN_TIMEOUT_SECONDS", 0.02)
-    monkeypatch.setattr(sa_mod, "_CHECKIN_POLL_SECONDS", 0.01)
     screen = SubAgentScreen(tmp_path)
 
     async def run():

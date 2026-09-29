@@ -95,8 +95,9 @@ def _deploy_failure_message(ssh_addr: str, detail: str) -> str:
 _DEFAULT_CORE_PORT = 8765
 # How long `L` waits for the new service to register before calling it failed.
 _SERVICE_CONFIRM_SECONDS = 15.0
-_CHECKIN_POLL_SECONDS = 1.0
-_CHECKIN_TIMEOUT_SECONDS = 900  # a pairing code lives 15 min; stop waiting when it can no longer be used.
+# After a successful SSH deploy, how long to wait for the check-in before
+# explaining how to find out why it hasn't happened.
+_CHECKIN_HINT_AFTER_SECONDS = 90.0
 
 # Glyph + colour per assessed state (subagent.status.assess). Every state has
 # its own label -- a zombie never reads "connected", and "no listener" never
@@ -118,6 +119,12 @@ class SubAgentScreen(Screen):
         Binding("escape,q", "back", "back", show=True),
         Binding("a", "add_server", "add a server", show=True),
         Binding("t", "telemetry", "latest telemetry", show=True),
+        Binding("i", "details", "details", show=True),
+        Binding("u", "unpair", "unpair", show=True),
+        Binding("p", "repair", "re-pair", show=False),
+        Binding("n", "new_code", "new code", show=False),
+        Binding("x", "dismiss_code", "dismiss code", show=False),
+        Binding("f", "forget", "forget", show=False),
         Binding("c", "copy_commands", "copy deploy cmds", show=True),
         Binding("l", "install_service", "always-on listener", show=True),
         Binding("r", "refresh", "refresh", show=False),
@@ -146,6 +153,13 @@ class SubAgentScreen(Screen):
         self._sa_store = SubAgentStore(self._data_dir / "kratos.db")
         self._targets: list[dict[str, Any]] = []
         self._states: dict[str, ST.ConnectionState] = {}
+        # One entry per table row: {"kind": "target", "target", "state"} or
+        # {"kind": "pending", "code": <pairing-code row>} -- the cursor maps
+        # through this, never through a positional list of targets.
+        self._rows: list[dict[str, Any]] = []
+        # Codes started from THIS screen: announce their check-in / expiry once
+        # (the table itself always shows every pending code, from the DB).
+        self._watched_codes: dict[str, dict[str, Any]] = {}
         # systemd scope / lingering are external process calls -- cached so the
         # 3s auto-refresh doesn't spawn systemctl every tick.
         self._svc_cache: tuple[float, str | None, bool | None] | None = None
@@ -167,7 +181,8 @@ class SubAgentScreen(Screen):
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
-                Text("a add a server · t latest telemetry · c copy deploy cmds · l always-on listener · r refresh · esc back", style=T.TEXT_DIM),
+                Text("a add · t telemetry · i details · u unpair · p re-pair · n new code · x dismiss code · "
+                     "f forget (unpaired) · c copy deploy cmds · l always-on listener · esc back", style=T.TEXT_DIM),
                 id="sa-hints",
             )
 
@@ -224,41 +239,107 @@ class SubAgentScreen(Screen):
         table = self.query_one("#sa-table", DataTable)
         prev = table.cursor_row  # preserve selection across the rebuild (auto-refresh)
         table.clear()
-        assessed = ST.assess_all(self._sa_store)
+        now = ST.utc_now()
+        assessed = ST.assess_all(self._sa_store, now=now)
         self._targets = [t for t, _ in assessed]
         self._states = {t["target_id"]: st for t, st in assessed}
-        if not self._targets:
-            table.add_row(Text("— no paired targets yet —", style=T.TEXT_DIM), "", "", "", "", "")
+        names = {t["target_id"]: t.get("name") or t.get("hostname") or t["target_id"] for t in self._targets}
+        pending = self._sa_store.list_pending_pairing_codes()
+        self._announce_watched(now)
+
+        rank = {"critical": 0, "attention": 1, "ok": 2, "muted": 3}
+        ordered = sorted(
+            assessed,
+            key=lambda ts: (ts[1].state == ST.STATE_REVOKED, rank.get(ts[1].severity, 3),
+                            (ts[0].get("name") or ts[0].get("hostname") or "").lower()),
+        )
+        self._rows = [{"kind": "pending", "code": c} for c in pending] + [
+            {"kind": "target", "target": t, "state": st} for t, st in ordered]
+        if not self._rows:
+            table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
+                          "", "", "", "", "")
             return
-        for t, st in assessed:
+        for row in self._rows:
+            if row["kind"] == "pending":
+                table.add_row(*_pending_cells(row["code"], now, names))
+                continue
+            t, st = row["target"], row["state"]
             glyph, color = _STATE_STYLE.get(st.state, ("○", T.TEXT_DIM))
+            dim = st.state == ST.STATE_REVOKED
             table.add_row(
                 Text(f"{glyph} {st.label}", style=color),
-                Text(t.get("name") or "—"),
-                Text(t.get("hostname") or "—"),
-                Text(t.get("agent_version") or "—"),
-                Text(ST.human_age(ST._age(st.last_contact, ST.utc_now())) if st.last_contact else "never",
-                     style=T.TEXT_DIM),
+                Text(t.get("name") or "—", style=T.TEXT_DIM if dim else ""),
+                Text(t.get("hostname") or "—", style=T.TEXT_DIM if dim else ""),
+                Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else ""),
+                Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
                 Text(st.reason, style=T.TEXT_DIM),
             )
-        if prev is not None and 0 <= prev < len(self._targets):
+        if prev is not None and 0 <= prev < len(self._rows):
             try:
                 table.move_cursor(row=prev)
             except Exception:  # noqa: BLE001 -- cursor restore is best-effort
                 pass
 
+    def _announce_watched(self, now) -> None:
+        """Say once when a code started here is used (paired) or runs out --
+        whether or not the add flow is still on screen (WS7: the refresh owns
+        liveness; there is no separate blocking wait)."""
+        for code, ctx in list(self._watched_codes.items()):
+            row = self._sa_store.get_pairing_code(code)
+            label = ctx.get("name") or "the new server"
+            if row is None:
+                self._watched_codes.pop(code)
+                continue
+            if row.get("used_by_target_id"):
+                self._watched_codes.pop(code)
+                t = self._sa_store.get_target(row["used_by_target_id"]) or {}
+                replaced = " It replaced the previous pairing." if row.get("replaces_target_id") else ""
+                self._log(Text(f"✓ {label} paired ({t.get('hostname') or '?'}, agent {t.get('agent_version') or '?'})"
+                               f" -- telemetry is live.{replaced} It is recommend-only; turn on direct execution "
+                               "from /whitelist only if you want it.", style=f"bold {T.SAFE}"))
+                continue
+            expires = ST.parse_stored_instant(row["expires_at"])
+            if expires is not None and expires < now:
+                self._watched_codes.pop(code)
+                tried = (f" {row['last_attempt_host']} tried to pair with it after it expired."
+                         if row.get("last_attempt_host") else "")
+                self._log(Text(f"⧗ The pairing code for {label} expired unused.{tried} Select its row and press n "
+                               "for a fresh code (the installer is regenerated to match).", style=T.ATTENTION))
+                continue
+            deployed = ctx.get("deployed_at")
+            if deployed and not ctx.get("hinted") and (now.timestamp() - deployed) > _CHECKIN_HINT_AFTER_SECONDS:
+                ctx["hinted"] = True
+                self._checkin_help(label, ctx)
+
+    def _checkin_help(self, label: str, ctx: dict[str, Any]) -> None:
+        """The installer ran but nothing checked in: the box can't reach this
+        core, or the agent failed to start. Say how to tell which."""
+        host = ctx.get("host") or "<core-address>"
+        cmd = (f"sudo journalctl -u kratos-subagent -n 30 --no-pager; "
+               f"python3 -c \"import socket; socket.create_connection(('{host}', {self._core_port}), 5); "
+               f"print('this box CAN reach Kratos at {host}:{self._core_port}')\"")
+        self._log(Text(f"{label}'s installer ran, but it hasn't checked in yet. Either the box can't reach this "
+                       f"core at {host}:{self._core_port} (firewall / tailnet / wrong address), or the agent failed "
+                       "to start. Run the command in the box ON the target to tell which.", style=T.ATTENTION))
+        self.app.push_screen(CommandModal(cmd, title="Why hasn't it checked in?",
+                                          note="Run ON the target: shows the agent's own log, then tests the path back "
+                                               "to this core."))
+
     def action_back(self) -> None:
         self.app.pop_screen()
 
     # ------------------------------------------------------------------
+    def _selected_row(self) -> dict[str, Any] | None:
+        if not self._rows:
+            return None
+        row = self.query_one("#sa-table", DataTable).cursor_row
+        if row is None or row < 0 or row >= len(self._rows):
+            return None
+        return self._rows[row]
+
     def _selected_target(self) -> dict[str, Any] | None:
-        if not self._targets:
-            return None
-        table = self.query_one("#sa-table", DataTable)
-        row = table.cursor_row
-        if row is None or row < 0 or row >= len(self._targets):
-            return None
-        return self._targets[row]
+        row = self._selected_row()
+        return row["target"] if row and row["kind"] == "target" else None
 
     def action_telemetry(self) -> None:
         target = self._selected_target()
@@ -275,7 +356,10 @@ class SubAgentScreen(Screen):
     # ------------------------------------------------------------------
     @work
     async def action_add_server(self) -> None:
-        """Full add-a-server flow: name → hub address → code → installer → wait."""
+        """Add a server: name (with a duplicate guard) → hub address → code →
+        installer → optional SSH deploy. Never blocks waiting for the check-in:
+        the code's row shows the countdown and the refresh announces the
+        result, even if you leave this screen and come back."""
         name = await self.app.push_screen_wait(
             PromptModal(
                 "Add a server",
@@ -286,44 +370,200 @@ class SubAgentScreen(Screen):
         if name is None:
             return  # cancelled
         name = (name or "").strip() or None
+        replaces = None
+        if name:
+            decision = await self._resolve_duplicate_name(name)
+            if decision is None:
+                return
+            name, replaces = decision
+        await self._start_pairing(name, replaces_target_id=replaces)
 
-        host = await self._pick_hub_address()
+    async def _resolve_duplicate_name(self, name: str) -> tuple[str, str | None] | None:
+        """(name, replaces_target_id) -- or None to stop. Two servers with one
+        name make every later choice ambiguous, so ask instead of guessing."""
+        existing = [t for t in self._sa_store.list_targets(include_revoked=False)
+                    if (t.get("name") or "").lower() == name.lower()]
+        waiting = [c for c in self._sa_store.list_pending_pairing_codes(include_expired_since_seconds=0)
+                   if (c.get("name") or "").lower() == name.lower()]
+        if not existing and not waiting:
+            return name, None
+        free = _free_name(name, {(t.get("name") or "").lower() for t in self._sa_store.list_targets()}
+                          | {(c.get("name") or "").lower() for c in waiting})
+        entries: list[tuple[str, str]] = []
+        if existing:
+            entries.append(("repair", f"Re-pair “{name}” — the old pairing is replaced once the new agent checks in"))
+        if waiting:
+            entries.append(("reuse", f"Use the code that's already waiting for “{name}” ({waiting[0]['code']})"))
+        entries.append(("second", f"Add a different server named “{free}”"))
+        what = "is already paired" if existing else "already has a pairing code waiting"
+        picked = await self.app.push_screen_wait(ListPickerModal(f"“{name}” {what}", entries))
+        if picked == "repair":
+            return name, existing[0]["target_id"]
+        if picked == "second":
+            return free, None
+        if picked == "reuse":
+            code = waiting[0]
+            self._watched_codes.setdefault(code["code"], {"name": name, "host": code.get("core_host")})
+            self._log(Text(f"Code {code['code']} for {name} is still valid — use its installer, or press n on its "
+                           "row for a fresh one.", style=T.TEXT_MUTED))
+        return None
+
+    async def _start_pairing(self, name: str | None, *, replaces_target_id: str | None = None,
+                             host: str | None = None) -> None:
+        host = host or await self._pick_hub_address()
         if host is None:
             return
-
-        # A NEW target row appearing after this snapshot = a successful check-in.
-        pre_ids = {t["target_id"] for t in self._sa_store.list_targets()}
-
-        result = self._sa_store.create_pairing_code(name=name)
+        result = self._sa_store.create_pairing_code(name=name, replaces_target_id=replaces_target_id, core_host=host)
         code = result["code"]
-        ttl_min = result["ttl_seconds"] // 60
+        out_path = self._write_installer(name, host, code)
+        if out_path is None:
+            self._sa_store.cancel_pairing_code(code)
+            return
+        self._watched_codes[code] = {"name": name, "host": host, "out_path": str(out_path)}
+        # Make sure a listener is accepting connections, so the target can
+        # actually check in -- no second terminal needed.
+        self._announce_listener()
+        self._render_pairing_instructions(name, host, code, result["ttl_seconds"] // 60, out_path)
+        # Offer to copy+run the installer on the target over SSH (one keypress
+        # instead of manual scp/ssh). Falls back cleanly to the manual steps.
+        await self._offer_ssh_deploy(out_path, name, code)
+        self._log(Text(f"Waiting for {name or 'the target'} to check in — its row above counts down. You can leave "
+                       "this screen; the result shows up either way.", style=T.ATTENTION))
+        self._refresh()
 
+    def _write_installer(self, name: str | None, host: str, code: str) -> Path | None:
         try:
             script = installer.generate_installer(host, code, core_port=self._core_port)
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate installer: {exc}", style=T.CRITICAL))
-            return
-
+            return None
         slug = _slug(name) or code.replace("-", "").lower()
         out_path = self._data_dir / f"kratos-subagent-install-{slug}.sh"
         try:
             out_path.write_text(script, encoding="utf-8")
+            out_path.chmod(0o600)  # carries a live pairing code
         except OSError as exc:
             self._log(Text(f"Could not write installer to {out_path}: {exc}", style=T.CRITICAL))
+            return None
+        return out_path
+
+    # --- lifecycle actions on the selected row ---------------------------
+    @work
+    async def action_new_code(self) -> None:
+        row = self._selected_row()
+        if row is None or row["kind"] != "pending":
+            self._log(Text("Select a pairing-code row (⧗) to make a fresh code for it.", style=T.TEXT_DIM))
             return
+        old = row["code"]
+        self._sa_store.cancel_pairing_code(old["code"])
+        self._watched_codes.pop(old["code"], None)
+        self._log(Text(f"Old code {old['code']} cancelled; making a fresh one for {old.get('name') or 'this server'}.",
+                       style=T.TEXT_MUTED))
+        await self._start_pairing(old.get("name"), replaces_target_id=old.get("replaces_target_id"),
+                                  host=old.get("core_host"))
 
-        # Make sure a listener is accepting connections, so the target can
-        # actually check in -- no second terminal needed.
-        self._announce_listener()
+    def action_dismiss_code(self) -> None:
+        row = self._selected_row()
+        if row is None or row["kind"] != "pending":
+            self._log(Text("Select a pairing-code row (⧗) to dismiss it.", style=T.TEXT_DIM))
+            return
+        self._sa_store.cancel_pairing_code(row["code"]["code"])
+        self._watched_codes.pop(row["code"]["code"], None)
+        self._log(Text(f"Pairing code {row['code']['code']} dismissed — it can no longer be used.", style=T.TEXT_MUTED))
+        self._refresh()
 
-        self._render_pairing_instructions(name, host, code, ttl_min, out_path)
+    @work
+    async def action_repair(self) -> None:
+        t = self._selected_target()
+        if t is None or t.get("revoked_at"):
+            self._log(Text("Select a paired (not unpaired) server to re-pair it.", style=T.TEXT_DIM))
+            return
+        label = t.get("name") or t.get("hostname") or t["target_id"]
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            f"Re-pair {label}?",
+            "Makes a new pairing code and installer. Run that installer on the box: it starts a fresh identity, and "
+            "the current pairing is replaced the moment the new one checks in (until then, nothing changes). Use this "
+            "when the box lost its identity, was rebuilt, or its agent should be reinstalled cleanly."))
+        if ok:
+            await self._start_pairing(t.get("name") or t.get("hostname"), replaces_target_id=t["target_id"])
 
-        # Offer to copy+run the installer on the target over SSH (one keypress
-        # instead of manual scp/ssh). Falls back cleanly to the manual steps.
-        await self._offer_ssh_deploy(out_path, name)
+    @work
+    async def action_unpair(self) -> None:
+        t = self._selected_target()
+        if t is None or t.get("revoked_at"):
+            self._log(Text("Select a paired server to unpair it.", style=T.TEXT_DIM))
+            return
+        label = t.get("name") or t.get("hostname") or t["target_id"]
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            f"Unpair {label}?",
+            "Kratos stops accepting this server: a live connection is dropped within seconds and it can no longer "
+            "send telemetry. This does NOT stop or remove the agent on the box — you'll get the command for that "
+            "next. You can pair it again later."))
+        if not ok:
+            self._log(Text(f"{label} left paired.", style=T.TEXT_DIM))
+            return
+        self._sa_store.revoke_target(t["target_id"])
+        self._log(Text(f"{label} unpaired. Its row stays (dimmed) until you forget it with f.", style=T.TEXT_MUTED))
+        self._refresh()
+        self.app.push_screen(CommandModal(
+            installer.uninstall_command(), title=f"Stop and remove the agent on {label}",
+            note="Run this ON the server (it works however the agent was installed). Until then the agent keeps "
+                 "trying to connect, and Kratos keeps refusing it."))
 
-        self._log(Text(f"Waiting for {name or 'the target'} to check in… (you can leave this screen; it keeps pairing)", style=T.ATTENTION))
-        await self._await_checkin(pre_ids, name)
+    @work
+    async def action_forget(self) -> None:
+        t = self._selected_target()
+        if t is None or not t.get("revoked_at"):
+            self._log(Text("Only an unpaired server can be forgotten — unpair it first (u).", style=T.TEXT_DIM))
+            return
+        label = t.get("name") or t.get("hostname") or t["target_id"]
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            f"Forget {label}?", "Deletes this unpaired server and its stored telemetry and connection history from "
+            "Kratos. This can't be undone."))
+        if ok and self._sa_store.forget_target(t["target_id"]):
+            self._log(Text(f"{label} forgotten.", style=T.TEXT_MUTED))
+            self._refresh()
+
+    def action_details(self) -> None:
+        row = self._selected_row()
+        if row is None:
+            return
+        if row["kind"] == "pending":
+            c = row["code"]
+            body = Table(show_header=False, box=None)
+            body.add_column(style=T.TEXT_DIM)
+            body.add_column()
+            for k in ("code", "name", "core_host", "created_at", "expires_at", "last_attempt_at", "last_attempt_host",
+                      "last_attempt_reason"):
+                if c.get(k):
+                    body.add_row(k, str(c[k]))
+            self._log(Text("Pairing code:", style=f"bold {T.ACCENT}"))
+            self._log(body)
+            return
+        t, st = row["target"], row["state"]
+        conn = self._sa_store.get_connection(t["target_id"]) or {}
+        body = Table(show_header=False, box=None)
+        body.add_column(style=T.TEXT_DIM)
+        body.add_column()
+        body.add_row("state", f"{st.label} — {st.reason}")
+        for k in ("target_id", "hostname", "agent_version", "paired_at", "last_seen", "revoked_at"):
+            if t.get(k):
+                body.add_row(k, str(t[k]))
+        for k in ("peer", "connected_at", "disconnected_at", "disconnect_reason", "last_telemetry_at",
+                  "collect_interval"):
+            if conn.get(k) is not None:
+                body.add_row(k, str(conn[k]))
+        self._log(Text(f"{t.get('name') or t['target_id']}:", style=f"bold {T.ACCENT}"))
+        self._log(body)
+        events = self._sa_store.recent_events(t["target_id"], 24 * 3600)[-10:]
+        if events:
+            hist = Table(show_header=True, box=None, header_style=T.TEXT_DIM)
+            hist.add_column("when")
+            hist.add_column("event")
+            hist.add_column("detail")
+            for e in events:
+                hist.add_row(ST.human_age(ST._age(e["at"], ST.utc_now())), e["event"], e.get("detail") or "")
+            self._log(hist)
 
     def _announce_listener(self) -> None:
         ensure = getattr(self.app, "ensure_core_listener", None)
@@ -344,7 +584,7 @@ class SubAgentScreen(Screen):
                 style=T.ATTENTION,
             ))
 
-    async def _offer_ssh_deploy(self, out_path: Path, name: str | None) -> None:
+    async def _offer_ssh_deploy(self, out_path: Path, name: str | None, code: str | None = None) -> None:
         deploy = await self.app.push_screen_wait(ConfirmModal(
             "Deploy over SSH now?",
             "Copy the installer to the target and run it over SSH for you? "
@@ -365,10 +605,10 @@ class SubAgentScreen(Screen):
         # commands (with the address filled in) instead of the placeholder.
         self._last_deploy_commands = self._deploy_commands(out_path, ssh_addr)
         self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
-        self._ssh_deploy_worker(str(out_path), ssh_addr)
+        self._ssh_deploy_worker(str(out_path), ssh_addr, code)
 
     @work(thread=True)
-    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str) -> None:
+    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str, code: str | None = None) -> None:
         import subprocess
 
         from kratos import kratos_config as _kc
@@ -397,6 +637,10 @@ class SubAgentScreen(Screen):
             self.app.call_from_thread(self._log, Text(
                 f"✓ Installer ran on {ssh_addr}. Waiting for it to check in…", style=f"bold {T.SAFE}"
             ))
+            if code and code in self._watched_codes:
+                import time as _time
+
+                self._watched_codes[code]["deployed_at"] = _time.time()
         except (OSError, subprocess.SubprocessError) as exc:
             self._deploy_failed(ssh_addr, str(exc))
 
@@ -563,29 +807,6 @@ class SubAgentScreen(Screen):
             note="Copies the installer to the target and runs it. Replace <user@target> with the target's SSH address.",
         ))
 
-    async def _await_checkin(self, pre_ids: set[str], name: str | None) -> None:
-        waited = 0.0
-        while waited < _CHECKIN_TIMEOUT_SECONDS:
-            await asyncio.sleep(_CHECKIN_POLL_SECONDS)
-            waited += _CHECKIN_POLL_SECONDS
-            targets = self._sa_store.list_targets()
-            new = [t for t in targets if t["target_id"] not in pre_ids]
-            if new:
-                t = new[0]
-                who = t.get("hostname") or name or t["target_id"]
-                self._log(Text(
-                    f"✓ {who} paired — {t.get('agent_version') or 'sub-agent'} · telemetry live.\n"
-                    f"  It is recommend-only by default; turn on direct execution any time from /whitelist.",
-                    style=f"bold {T.SAFE}",
-                ))
-                self._refresh()
-                return
-        self._log(Text(
-            f"⧗ No check-in within {_CHECKIN_TIMEOUT_SECONDS // 60} min — the code likely expired unused.\n"
-            f"  The installer was never run, or this core wasn't listening. Add the server again for a fresh code.",
-            style=T.ATTENTION,
-        ))
-
 
 def _slug(name: str | None) -> str:
     if not name:
@@ -619,3 +840,31 @@ def _iso(epoch: float) -> str:
     from datetime import datetime, timezone
 
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+
+
+def _free_name(name: str, taken: set[str]) -> str:
+    n = 2
+    while f"{name}-{n}".lower() in taken:
+        n += 1
+    return f"{name}-{n}"
+
+
+def _pending_cells(code: dict[str, Any], now, names: dict[str, str]) -> tuple:
+    """Table cells for an unused pairing code: a live countdown, or 'expired'
+    (plus who tried to use it after that)."""
+    expires = ST.parse_stored_instant(code.get("expires_at"))
+    left = (expires - now).total_seconds() if expires else -1
+    label = code.get("name") or "(unnamed)"
+    if code.get("replaces_target_id"):
+        label += f" (re-pair of {names.get(code['replaces_target_id'], code['replaces_target_id'])})"
+    if left > 0:
+        status = Text("⧗ waiting", style=T.ATTENTION)
+        detail = (f"code {code['code']} · expires in {int(left) // 60}:{int(left) % 60:02d} · run its installer on the "
+                  "server (x dismiss · n new code)")
+    else:
+        status = Text("⧖ code expired", style=T.CRITICAL)
+        tried = (f" · {code['last_attempt_host']} tried it {ST.human_age(ST._age(code['last_attempt_at'], now))}"
+                 if code.get("last_attempt_at") else "")
+        detail = f"code {code['code']} expired {ST.human_age(-left)}{tried} · press n for a fresh code"
+    return (status, Text(label), Text(code.get("last_attempt_host") or "—", style=T.TEXT_DIM), Text("—"),
+            Text("—", style=T.TEXT_DIM), Text(detail, style=T.TEXT_DIM))

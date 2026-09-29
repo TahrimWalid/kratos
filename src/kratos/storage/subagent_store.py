@@ -182,7 +182,7 @@ class SubAgentStore:
             )
             # Additive migration of an existing pairing-codes table.
             have = {r["name"] for r in conn.execute("PRAGMA table_info(subagent_pairing_codes)")}
-            for col in ("replaces_target_id", "last_attempt_at", "last_attempt_host", "last_attempt_reason"):
+            for col in ("replaces_target_id", "last_attempt_at", "last_attempt_host", "last_attempt_reason", "core_host"):
                 if col not in have:
                     conn.execute(f"ALTER TABLE subagent_pairing_codes ADD COLUMN {col} TEXT")
             conn.execute("COMMIT")
@@ -195,7 +195,9 @@ class SubAgentStore:
     # ------------------------------------------------------------------
     # Pairing
     # ------------------------------------------------------------------
-    def create_pairing_code(self, name: str | None = None, *, replaces_target_id: str | None = None) -> dict[str, Any]:
+    def create_pairing_code(
+        self, name: str | None = None, *, replaces_target_id: str | None = None, core_host: str | None = None
+    ) -> dict[str, Any]:
         """A single-use code. `replaces_target_id` makes this a RE-PAIR: when
         the new agent checks in, the old target is revoked in the same
         transaction -- so the old pairing keeps working right up until its
@@ -211,9 +213,9 @@ class SubAgentStore:
                 (_expiry_iso(-PAIRING_CODE_PURGE_AFTER_SECONDS),),
             )
             conn.execute(
-                "INSERT INTO subagent_pairing_codes (code, name, created_at, expires_at, replaces_target_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (code, name, now, expires_at, replaces_target_id),
+                "INSERT INTO subagent_pairing_codes (code, name, created_at, expires_at, replaces_target_id, core_host) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (code, name, now, expires_at, replaces_target_id, core_host),
             )
             conn.execute("COMMIT")
         except Exception:
