@@ -134,3 +134,21 @@ exec {real} "$@"
     assert r.returncode != 0 and "KRATOS_INSTALL_OK" not in r.stdout
     assert "KRATOS_INSTALL_ERROR: start_failed: the agent exited right after starting" in r.stderr
     assert "boom from the agent" in r.stderr
+
+
+def test_uninstall_really_removes_a_user_install_without_sudo(box):
+    """The one-liner Kratos shows after unpairing, run for real by a user with no sudo: the
+    background agent dies, its files go, and it never tries sudo (none is on PATH here)."""
+    home, env, _ = box
+    r = _run(I.generate_installer("127.0.0.1", "AAAA-1111", core_port=9), env)
+    assert r.returncode == 0, r.stderr
+    pid = int((home / ".kratos-subagent" / "agent.pid").read_text().strip())
+    assert _alive(pid)
+    u = subprocess.run(["/bin/sh", "-c", I.uninstall_command()], text=True, capture_output=True, env=env,
+                       timeout=30)
+    assert u.returncode == 0 and "sudo" not in u.stderr, u.stderr
+    for _ in range(50):
+        if not _alive(pid):
+            break
+        time.sleep(0.1)
+    assert not _alive(pid) and not (home / ".kratos-subagent").exists()

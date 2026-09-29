@@ -378,13 +378,17 @@ def uninstall_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
     background process). Safe to run when parts are already gone."""
     svc = service_name
     # $S is sudo unless already root (a root shell may have no sudo at all).
+    # Every privileged step is guarded by an existence check, so a user
+    # without sudo removing their own user-mode agent never hits a sudo prompt.
     return (
         'S=sudo; [ "$(id -u)" = 0 ] && S=; '
         f"if [ -f /etc/systemd/system/{svc}.service ]; then $S systemctl disable --now {svc}; "
         f"$S rm -f /etc/systemd/system/{svc}.service; $S systemctl daemon-reload; fi; "
-        f"systemctl --user disable --now {svc} 2>/dev/null; rm -f ~/.config/systemd/user/{svc}.service; "
-        "[ -f /opt/kratos-subagent/agent.pid ] && $S kill $(cat /opt/kratos-subagent/agent.pid) 2>/dev/null; "
-        "[ -f ~/.kratos-subagent/agent.pid ] && kill $(cat ~/.kratos-subagent/agent.pid) 2>/dev/null; "
-        f"$S rm -f /etc/local.d/{svc}.start; "
-        "$S rm -rf /opt/kratos-subagent; rm -rf ~/.kratos-subagent"
+        f"if [ -f ~/.config/systemd/user/{svc}.service ]; then systemctl --user disable --now {svc} 2>/dev/null; "
+        f"rm -f ~/.config/systemd/user/{svc}.service; systemctl --user daemon-reload 2>/dev/null; fi; "
+        "if [ -f /opt/kratos-subagent/agent.pid ]; then $S kill $(cat /opt/kratos-subagent/agent.pid) 2>/dev/null; fi; "
+        "if [ -f ~/.kratos-subagent/agent.pid ]; then kill $(cat ~/.kratos-subagent/agent.pid) 2>/dev/null; fi; "
+        f"if [ -e /etc/local.d/{svc}.start ]; then $S rm -f /etc/local.d/{svc}.start; fi; "
+        "if [ -e /opt/kratos-subagent ]; then $S rm -rf /opt/kratos-subagent; fi; "
+        "rm -rf ~/.kratos-subagent"
     )
