@@ -87,6 +87,7 @@ STATE_OFFLINE = "offline"                  # not connected for longer than any r
 STATE_NOT_WATCHED = "not_watched"          # no Kratos listener is running, so nothing can be known
 STATE_NEVER = STATUS_NEVER
 STATE_REVOKED = "revoked"
+STATE_SUPERSEDED = "superseded"            # down, and a newer pairing from the same machine is live
 
 LISTENER_HEARTBEAT_SECONDS = 5.0
 # A listener whose heartbeat is older than this is treated as gone.
@@ -96,6 +97,9 @@ DEFAULT_COLLECT_INTERVAL = 30.0
 # The agent's reconnect backoff tops out at 60s (agent.BACKOFF_MAX_SECONDS);
 # a drop younger than this is "reconnecting", not "offline".
 RECONNECT_GRACE_SECONDS = 90.0
+# core_server's reason when IT closed a link that went silent (the agent may
+# not have noticed yet).
+SILENT_DROP_PREFIX = "no message from the agent"
 FLAKY_DISCONNECTS_PER_HOUR = 3
 # A revoked agent that tried to connect this recently is still running on its box.
 REVOKED_STILL_TRYING_SECONDS = 600.0
@@ -204,16 +208,40 @@ def assess(
     down_age = _age(conn.get("disconnected_at"), now)
     why = conn.get("disconnect_reason") or "connection closed"
     if down_age is not None and down_age <= RECONNECT_GRACE_SECONDS:
+        if why.startswith(SILENT_DROP_PREFIX):
+            # Core gave up on a silent link; the agent notices on its own
+            # timer, so a countdown from core's drop time would be wrong
+            # (a real link drill showed it hitting "~1s" again and again).
+            when = "retries on its own once it notices the silence, then at most a minute apart"
+        else:
+            when = f"tries again in ~{max(1, round(next_agent_retry_in(down_age)))}s"
         return ConnectionState(STATE_RECONNECTING, "reconnecting",
-                               f"dropped {human_age(down_age)} ({why}); the agent retries on its own within a minute"
+                               f"dropped {human_age(down_age)} ({why}); if its agent is still running it {when}"
                                f"{flaky_note}", "attention", last_contact, flaky)
     if not conn and last_seen_age <= CONNECTED_WINDOW_SECONDS:
         # Recorded before connection tracking existed; fall back to recency.
         return ConnectionState(STATE_CONNECTED, "connected", f"last contact {human_age(last_seen_age)}", "ok",
                                last_contact)
     detail = f"; last disconnect: {why}" if conn else ""
-    return ConnectionState(STATE_OFFLINE, "offline", f"no contact since {human_age(last_seen_age)}{detail}{flaky_note}",
+    return ConnectionState(STATE_OFFLINE, "offline",
+                           f"no contact since {human_age(last_seen_age)}{detail}. If its agent is still running it "
+                           f"retries about once a minute and reappears on its own when the link is back{flaky_note}",
                            "critical", last_contact, flaky)
+
+
+def next_agent_retry_in(down_age: float) -> float:
+    """Seconds until a still-running agent's next reconnect attempt, from its
+    backoff policy (agent.py: 2s doubling to 60s, reset by a working session)
+    counted from the drop. An estimate: a connect attempt over a dead link can
+    itself take a while."""
+    from kratos.subagent.agent import BACKOFF_INITIAL_SECONDS, BACKOFF_MAX_SECONDS
+
+    t, step = 0.0, BACKOFF_INITIAL_SECONDS
+    while True:
+        t += step
+        if t > down_age:
+            return t - down_age
+        step = min(step * 2, BACKOFF_MAX_SECONDS)
 
 
 def assess_all(store: Any, now: datetime | None = None) -> list[tuple[dict[str, Any], ConnectionState]]:
@@ -229,4 +257,34 @@ def assess_all(store: Any, now: datetime | None = None) -> list[tuple[dict[str, 
         interval = estimate_collect_interval(conn, store.telemetry_received_times(t["target_id"]))
         out.append((t, assess(t, connection=conn, listener_live=listener_live, events=events,
                               collect_interval=interval, now=now)))
+    return mark_superseded(out, {tid: (c or {}).get("peer") for tid, c in connections.items()})
+
+
+def mark_superseded(assessed: list[tuple[dict[str, Any], ConnectionState]],
+                    peers: dict[str, str | None]) -> list[tuple[dict[str, Any], ConnectionState]]:
+    """An offline pairing is almost certainly a machine's OLD identity -- left
+    behind when the box was reinstalled or paired again outside the re-pair
+    flow -- when a NEWER pairing that is connected reports the same hostname
+    AND connects from the same address. Both must match: cloud VMs often share
+    a default hostname, and a real outage must never be relabelled on a
+    hostname alone. Still an action item for the operator (unpair it)."""
+    live: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for t, st in assessed:
+        peer = peers.get(t["target_id"])
+        if st.state == STATE_CONNECTED and t.get("hostname") and peer:
+            live.setdefault((t["hostname"], peer), []).append(t)
+    out = []
+    for t, st in assessed:
+        peer = peers.get(t["target_id"])
+        if st.state == STATE_OFFLINE and t.get("hostname") and peer:
+            newer = [o for o in live.get((t["hostname"], peer), [])
+                     if o["target_id"] != t["target_id"] and (o.get("paired_at") or "") > (t.get("paired_at") or "")]
+            if newer:
+                n = newer[0]
+                st = ConnectionState(
+                    STATE_SUPERSEDED, "replaced?",
+                    f"probably an old identity: {n.get('name') or n['target_id']} from the same machine "
+                    f"({t['hostname']}, {peer}) paired later and is live. Unpair this row (u) if so.",
+                    "attention", st.last_contact, st.flaky)
+        out.append((t, st))
     return out

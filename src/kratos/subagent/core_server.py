@@ -51,7 +51,12 @@ from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import protocol as proto
 from kratos.subagent import signing
 from kratos.subagent import whitelist as wl
-from kratos.subagent.status import LISTENER_HEARTBEAT_SECONDS, LISTENER_STALE_AFTER_SECONDS, derive_status
+from kratos.subagent.status import (
+    LISTENER_HEARTBEAT_SECONDS,
+    LISTENER_STALE_AFTER_SECONDS,
+    SILENT_DROP_PREFIX,
+    derive_status,
+)
 
 logger = logging.getLogger("kratos.subagent.core_server")
 
@@ -443,7 +448,7 @@ class CoreServer:
                 asyncio.create_task(self._push_current_whitelist(target_id))
             close_reason = await self._receive_loop(reader, writer, target_id, token)
         except asyncio.TimeoutError:
-            close_reason = f"no message from the agent for {PING_TIMEOUT_SECONDS}s"
+            close_reason = f"{SILENT_DROP_PREFIX} for {PING_TIMEOUT_SECONDS}s"
             logger.info("connection from %s (target=%s) ended: timed out", peer, target_id)
         except (proto.ProtocolError, ConnectionError, OSError) as e:
             close_reason = f"connection lost ({type(e).__name__}: {e})" if str(e) else f"connection lost ({type(e).__name__})"

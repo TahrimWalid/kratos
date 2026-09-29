@@ -350,3 +350,52 @@ def test_expired_code_attempt_is_recorded_and_guessing_is_throttled(tmp_path, mo
 def test_announced_intervals_are_sanity_checked():
     assert CS._interval(30) == 30.0 and CS._interval(0.2) is None and CS._interval(True) is None
     assert CS._interval("30") is None and CS._interval(99999) is None
+
+
+def test_next_retry_follows_the_agents_backoff():
+    from kratos.subagent import agent
+    from kratos.subagent.status import next_agent_retry_in
+
+    assert agent.BACKOFF_INITIAL_SECONDS == 2.0 and agent.BACKOFF_MAX_SECONDS == 60.0
+    # attempts at 2, 6, 14, 30, 62, 122 ... seconds after the drop
+    assert next_agent_retry_in(0) == 2
+    assert next_agent_retry_in(5) == 1
+    assert next_agent_retry_in(20) == 10
+    assert next_agent_retry_in(62) == 60
+    assert next_agent_retry_in(500) <= 60
+
+
+def test_countdown_only_when_both_sides_saw_the_drop():
+    from datetime import timedelta
+
+    from kratos.subagent.status import SILENT_DROP_PREFIX, assess, utc_now
+
+    now = utc_now()
+    ago = (now - timedelta(seconds=5)).isoformat(timespec="seconds")
+    target = {"target_id": "t", "last_seen": ago}
+    clean = assess(target, connection={"connected_at": ago, "disconnected_at": ago,
+                                       "disconnect_reason": "the agent closed the connection"},
+                   listener_live=True, events=[], now=now)
+    assert clean.state == "reconnecting" and "tries again in ~1s" in clean.reason
+    silent = assess(target, connection={"connected_at": ago, "disconnected_at": ago,
+                                        "disconnect_reason": f"{SILENT_DROP_PREFIX} for 30s"},
+                    listener_live=True, events=[], now=now)
+    assert "tries again in" not in silent.reason and "once it notices the silence" in silent.reason
+
+
+def test_old_identity_needs_same_hostname_and_same_address():
+    from kratos.subagent.status import ConnectionState, mark_superseded
+
+    def st(state):
+        return ConnectionState(state, state, "r", "critical", None)
+
+    old = {"target_id": "old", "hostname": "web", "paired_at": "2026-09-01T00:00:00+00:00", "name": "web"}
+    new = {"target_id": "new", "hostname": "web", "paired_at": "2026-09-02T00:00:00+00:00", "name": "web"}
+    rows = [(old, st("offline")), (new, st("connected"))]
+    assert [s.state for _, s in mark_superseded(rows, {"old": "10.0.0.5", "new": "10.0.0.5"})][0] == "superseded"
+    # a different machine that merely shares a default hostname: a real outage, left as one
+    assert mark_superseded(rows, {"old": "10.0.0.5", "new": "10.0.0.9"})[0][1].state == "offline"
+    assert mark_superseded(rows, {"old": None, "new": "10.0.0.5"})[0][1].state == "offline"
+    # an OLDER live pairing never marks a newer offline one
+    assert mark_superseded([(new, st("offline")), (old, st("connected"))],
+                           {"old": "10.0.0.5", "new": "10.0.0.5"})[0][1].state == "offline"

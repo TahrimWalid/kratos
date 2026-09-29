@@ -287,3 +287,22 @@ def test_installed_but_never_checked_in_gets_a_diagnosis(tmp_path, monkeypatch):
     out = _run(screen, script)
     assert isinstance(out["screen"], CommandModal)
     assert "journalctl -u kratos-subagent" in out["screen"]._command and "100.97.223.65" in out["screen"]._command
+
+
+def test_live_codes_first_expired_after_servers_and_succeeded_ones_hidden(tmp_path):
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    stale = sa.create_pairing_code(name="gone")["code"]       # expired, never paired: shown, below servers
+    done = sa.create_pairing_code(name="web")["code"]         # expired, but "web" paired since: hidden
+    for c in (stale, done):
+        sa._write("UPDATE subagent_pairing_codes SET expires_at = ?, created_at = ? WHERE code = ?",
+                  (_expiry_iso(-600), _expiry_iso(-1500), c))
+    _pair(sa, "web")
+    live = sa.create_pairing_code(name="new")["code"]
+    screen = SubAgentScreen(tmp_path)
+    order: list = []
+
+    async def script(app, pilot):
+        order.extend(r["code"]["code"] if r["kind"] == "pending" else r["target"]["name"] for r in screen._rows)
+
+    _run(screen, script)
+    assert order == [live, "web", stale]

@@ -81,6 +81,7 @@ _STATE_STYLE = {
     ST.STATE_NOT_WATCHED: ("?", T.ATTENTION),
     ST.STATE_NEVER: ("○", T.TEXT_DIM),
     ST.STATE_REVOKED: ("⊘", T.TEXT_DIM),
+    ST.STATE_SUPERSEDED: ("◌", T.ATTENTION),
 }
 
 
@@ -230,8 +231,23 @@ class SubAgentScreen(Screen):
             key=lambda ts: (ts[1].state == ST.STATE_REVOKED, rank.get(ts[1].severity, 3),
                             (ts[0].get("name") or ts[0].get("hostname") or "").lower()),
         )
-        self._rows = [{"kind": "pending", "code": c} for c in pending] + [
-            {"kind": "target", "target": t, "state": st} for t, st in ordered]
+        # Live codes are the thing being set up right now: top. An expired code
+        # is a leftover attempt -- below the servers, and gone once a server
+        # with that name has paired since (the attempt succeeded another way).
+        live_codes, expired = [], []
+        for c in pending:
+            expires = ST.parse_stored_instant(c.get("expires_at"))
+            if expires is not None and expires > now:
+                live_codes.append(c)
+            elif not any(c.get("name") and t.get("name") == c["name"] and not t.get("revoked_at")
+                         and t["target_id"] != c.get("replaces_target_id")
+                         and (t.get("paired_at") or "") > (c.get("created_at") or "") for t in self._targets):
+                expired.append(c)
+        targets = [{"kind": "target", "target": t, "state": st} for t, st in ordered]
+        self._rows = ([{"kind": "pending", "code": c} for c in live_codes]
+                      + [r for r in targets if r["state"].state != ST.STATE_REVOKED]
+                      + [{"kind": "pending", "code": c} for c in expired]
+                      + [r for r in targets if r["state"].state == ST.STATE_REVOKED])
         if not self._rows:
             table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
                           "", "", "", "", "")
