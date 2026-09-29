@@ -824,6 +824,8 @@ def cmd_scheduled_run(args: argparse.Namespace) -> int:
     if record.get("notified"):
         d = record.get("delivered") or {}
         print(f"[KRATOS]   notify: {d.get('status', 'sent')}")
+        if d.get("status") != "sent" and d.get("observation"):
+            print(f"[KRATOS]     {d['observation']}")
     if record.get("error"):
         print(f"[KRATOS]   note: {record['error']}")
     # Exit 0 for a run that completed (clean or with findings); 1 for a failure

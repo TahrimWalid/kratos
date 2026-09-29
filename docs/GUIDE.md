@@ -399,6 +399,24 @@ If you find yourself running the same investigation often, save it.
 - **Triggers** watch for a kind of finding and react — for example, send a
   notification when anything high-severity turns up.
 
+### Getting alerts on your phone
+
+Alerts are sent through [ntfy](https://ntfy.sh), a free push-notification
+service, and they're **off until you turn them on**:
+
+1. Run `/doctor`. The "notifications" line suggests a random topic name, like
+   `KRATOS_NTFY_TOPIC=kratos-3f9c…`.
+2. Add that line to your `.env` file and restart Kratos.
+3. Install the ntfy app and subscribe to the same topic name.
+
+One thing to know: an ntfy topic has no password. **Anyone who knows the topic
+name can read every alert sent to it**, and alerts include your findings. That's
+why Kratos never comes with a topic filled in, and why the suggested one is long
+and random. For anything beyond trying it out, run your own ntfy server (set
+`KRATOS_NTFY_BASE_URL`) or use an ntfy access token (set `KRATOS_NTFY_TOKEN`).
+Until a topic is set, schedules still save their reports on disk; they just
+don't send them anywhere.
+
 ---
 
 ## Keeping an eye on things

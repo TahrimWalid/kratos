@@ -135,8 +135,25 @@ def _check_build(out: list[Check]) -> None:
                         fix="quit and run `kratos` again to use the code on disk."))
 
 
+def _check_notifications(out: list[Check]) -> None:
+    from kratos.agent.notify import notify_config_status
+
+    status, detail = notify_config_status()
+    if status == "off":
+        out.append(_row("notifications", "info", detail,
+                        fix="add that line to .env and subscribe to the topic in the ntfy app to get alerts."))
+    elif status == "bad":
+        out.append(_row("notifications", "fail", detail, fix="set KRATOS_NTFY_TOPIC in .env to a topic of your own."))
+    elif status == "warn":
+        out.append(_row("notifications", "warn", detail,
+                        fix="self-host ntfy (KRATOS_NTFY_BASE_URL) or set KRATOS_NTFY_TOKEN."))
+    else:
+        out.append(_row("notifications", "pass", detail))
+
+
 _SECTIONS = (
     ("Kratos build", _check_build),
+    ("notifications", _check_notifications),
     ("LLM endpoint", _check_llm_endpoint),
     (".env profile", _check_env_profile),
     ("backend", _check_backend),

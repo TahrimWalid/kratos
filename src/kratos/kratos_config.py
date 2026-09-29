@@ -162,10 +162,17 @@ def save_local_config(data_dir: Path, **updates: Any) -> None:
     _local_config_path(data_dir).write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 # ---------------------------------------------------------------------------
-# Notifications (ntfy.sh)
+# Notifications (ntfy) -- OFF until KRATOS_NTFY_TOPIC is set. There is no
+# default topic on purpose: a topic written in this (public) source would be
+# public knowledge, and an ntfy topic is unauthenticated -- anyone who knows its
+# name can read every message sent to it. Each install picks its own
+# (`/doctor` suggests a random one). For real deployments use a self-hosted
+# ntfy (KRATOS_NTFY_BASE_URL) and/or an access token (KRATOS_NTFY_TOKEN).
+# agent/notify.py reads these live, so tests and a changed environment apply.
 # ---------------------------------------------------------------------------
 NTFY_BASE_URL = os.environ.get("KRATOS_NTFY_BASE_URL", "https://ntfy.sh")
-NTFY_TOPIC = os.environ.get("KRATOS_NTFY_TOPIC", "kratos-alerts-n4qk9zxp2v7m")
+NTFY_TOPIC = os.environ.get("KRATOS_NTFY_TOPIC", "").strip() or None
+NTFY_TOKEN = os.environ.get("KRATOS_NTFY_TOKEN", "").strip() or None
 NTFY_REQUEST_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_NTFY_TIMEOUT", "10"))
 
 # ---------------------------------------------------------------------------

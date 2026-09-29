@@ -55,6 +55,8 @@ Be aware of two things before you point Kratos at anything real:
 - **By default, your data goes to a hosted model.** The logs, scan output, and findings Kratos reasons over are sent to whatever LLM you configure. If that's a cloud provider, that provider sees them. If you want nothing to leave your hardware, self-host the model (see [Backends](#backends)) — Kratos works the same either way.
 - **A cloud model costs money per run.** Each investigation spends tokens. `/usage` shows what a session has cost so far, and scheduled runs warn you before they rack up a recurring bill. A self-hosted model is free to run.
 
+Alerts (from schedules, triggers, or the notify tool) go through [ntfy](https://ntfy.sh) and are **off until you choose your own topic** (`KRATOS_NTFY_TOPIC` in `.env`; `/doctor` suggests a random one). Kratos ships no default topic on purpose: an ntfy topic has no password, so **anyone who knows the topic name can read every alert sent to it**, findings included. On the public ntfy.sh server, use a long random topic at the very least; for real deployments, run your own ntfy server (`KRATOS_NTFY_BASE_URL`) or use an ntfy access token (`KRATOS_NTFY_TOKEN`).
+
 One optional feature, threat-intel enrichment, is **off by default** and, when you turn it on, sends an IP address to a reputation service to check it. It's clearly separate from the core analysis, and Kratos runs fully without it.
 
 ---

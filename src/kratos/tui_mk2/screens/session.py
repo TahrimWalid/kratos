@@ -2376,6 +2376,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
         cmds = _U.install_commands(sch, service_path, timer_path)
         detail = f"{sch.kind}, {sch.cadence}" + (f", {len(sch.jobs)} jobs" if sch.kind == "group" else "")
         self._emit(R.success_line(f"Saved schedule {sch.name!r} ({detail})."))
+        from kratos.agent.notify import notify_config_status
+
+        if notify_config_status()[0] in ("off", "bad"):
+            self._emit(R.note_line("Notifications are off, so this schedule will only save reports on disk. "
+                                   "To get alerts, set KRATOS_NTFY_TOPIC in .env (/doctor suggests one)."))
         self._emit(R.command_block_panel(
             "Activate it — run these once (Kratos never runs systemctl for you)", cmds,
             note="systemd then owns the timing, reboot-survival, and catch-up. "

@@ -1367,7 +1367,7 @@ def tool_run_config_audit() -> dict[str, Any]:
 @register_tool(
     name="send_notification",
     description=(
-        "Send an alert notification via ntfy.sh (not tied to the SSH target -- an external push "
+        "Send an alert notification via ntfy (not tied to the SSH target -- an external push "
         "notification service). Never crashes the caller if ntfy is unreachable; failure is reported "
         "in the returned status instead."
     ),

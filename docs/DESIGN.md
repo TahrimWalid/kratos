@@ -411,6 +411,16 @@ onto ntfy's three tiers), never from caller-supplied text; there's no
 parameter through which a connecting client can inject an arbitrary
 notification.
 
+Where notifications go is the install's own choice, never the project's:
+there is no default ntfy topic in the source, and sending is off until
+`KRATOS_NTFY_TOPIC` is set. An ntfy topic is unauthenticated — the topic name
+is the only thing standing between the findings and anyone who subscribes —
+so a topic written in public source would publish every default install's
+findings. For the same reason a topic that ever appeared in the source is
+refused, `/doctor` warns when a topic sits on the public server without an
+access token, and real deployments are pointed at a self-hosted ntfy
+(`KRATOS_NTFY_BASE_URL`) or a token (`KRATOS_NTFY_TOKEN`).
+
 ## REPL implementation notes
 
 A few small, deliberate scope decisions in `cli/repl.py` worth recording
