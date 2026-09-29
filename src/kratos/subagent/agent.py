@@ -185,7 +185,12 @@ class SubAgent:
 
         self._buffer: deque[dict[str, Any]] = deque(maxlen=BUFFER_MAX)
         self._seq = 0
-        self._stop = asyncio.Event()
+        # Created inside run_forever(), not here: before Python 3.10 an
+        # asyncio.Event binds to whatever loop exists at construction, and
+        # main() builds the agent BEFORE its loop -- on 3.8/3.9 hosts (RHEL 9,
+        # Debian 11) that crashed every start with "attached to a different loop".
+        self._stop: asyncio.Event | None = None
+        self._stop_requested = False
         # Set by _handshake on each successful connect -- exposed for tests/
         # observability, not required for correctness.
         self.last_target_id: str | None = None
@@ -268,10 +273,15 @@ class SubAgent:
         return any(addr in net for net in _TRUSTED_TRANSPORT_NETWORKS)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_requested = True
+        if self._stop is not None:
+            self._stop.set()
 
     async def run_forever(self) -> None:
         backoff = BACKOFF_INITIAL_SECONDS
+        self._stop = asyncio.Event()
+        if self._stop_requested:
+            self._stop.set()
         while not self._stop.is_set():
             try:
                 await self._serve_until_stopped()

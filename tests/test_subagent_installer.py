@@ -53,7 +53,8 @@ def test_generate_installer_substitutes_address_port_code():
     assert "CORE_HOST='host.example'" in script
     assert "CORE_PORT=9999" in script
     assert "PAIR_CODE='CODE-ABCD'" in script
-    assert "--core-host $CORE_HOST --core-port $CORE_PORT --pair $PAIR_CODE" in script
+    assert "--core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE" in script
+    assert 'EXEC_CMD="$EXEC_CMD --pair $PAIR_CODE"' in script  # only added when a code is given
 
 
 def test_generate_installer_never_enables_execution():

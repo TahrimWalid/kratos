@@ -96,10 +96,11 @@ def _sh_squote(value: str) -> str:
 
 def generate_installer(
     core_host: str,
-    pairing_code: str,
+    pairing_code: str | None,
     *,
     core_port: int = DEFAULT_CORE_PORT,
     service_name: str = DEFAULT_SERVICE_NAME,
+    upgrade: bool = False,
 ) -> str:
     """Return a self-contained POSIX-``sh`` installer for the sub-agent.
 
@@ -109,11 +110,21 @@ def generate_installer(
     ``SubAgentStore.create_pairing_code`` -- it is only consumed on the agent's
     first successful connect; once a token is saved the code is ignored, so it
     is safe to leave in the persistent service's command line.
+
+    Re-running on a box that already has an agent is safe either way:
+    - with a pairing code (the default), the box starts a FRESH identity -- the
+      old state file is kept aside (never deleted) and the new code is used,
+      which is what re-pairing needs;
+    - with ``upgrade=True`` (no code), the existing identity is kept and only
+      the agent code is replaced -- the path for updating an agent in place.
+    Either way the service is RESTARTED, so the new code actually runs.
     """
     if not core_host or not str(core_host).strip():
         raise InstallerError("core_host is required")
-    if not pairing_code or not str(pairing_code).strip():
-        raise InstallerError("pairing_code is required")
+    if upgrade:
+        pairing_code = ""
+    elif not pairing_code or not str(pairing_code).strip():
+        raise InstallerError("pairing_code is required (or use upgrade=True to keep the existing pairing)")
     try:
         port = int(core_port)
     except (TypeError, ValueError) as exc:
@@ -134,7 +145,7 @@ def generate_installer(
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     host_q = _sh_squote(str(core_host).strip())
-    code_q = _sh_squote(str(pairing_code).strip())
+    code_q = _sh_squote(str(pairing_code or "").strip())
     svc_q = _sh_squote(service_name)
 
     return _TEMPLATE.format(
@@ -145,6 +156,7 @@ def generate_installer(
         port=port,
         code_q=code_q,
         svc_q=svc_q,
+        upgrade="1" if upgrade else "0",
         blob_section=blob_section,
         eof=_EOF,
     )
@@ -163,19 +175,24 @@ _TEMPLATE = """\
 # enabled by this installer.
 #
 # Run once on the target:  sh kratos-subagent-install.sh
+# Safe to re-run: it replaces the agent code and restarts it.
 set -eu
 
 CORE_HOST={host_q}
 CORE_PORT={port}
 PAIR_CODE={code_q}
+UPGRADE={upgrade}
 SERVICE_NAME={svc_q}
 
 log() {{ printf '%s\\n' "$*"; }}
-die() {{ printf 'error: %s\\n' "$*" >&2; exit 1; }}
+# Machine-readable failure line (Kratos classifies these), then a plain one.
+die() {{ printf 'KRATOS_INSTALL_ERROR: %s: %s\\n' "$1" "$2" >&2; printf 'error: %s\\n' "$2" >&2; exit 1; }}
 
 PY=$(command -v python3 || true)
-[ -n "$PY" ] || die "python3 is required on the target but was not found"
-command -v base64 >/dev/null 2>&1 || die "base64 is required on the target but was not found"
+[ -n "$PY" ] || die no_python "python3 is required on the target but was not found"
+"$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' \\
+    || die python_too_old "python3 is too old ($("$PY" -V 2>&1)); the agent needs Python 3.8 or newer"
+command -v base64 >/dev/null 2>&1 || die no_base64 "base64 is required on the target but was not found"
 
 # Decide where to install and whether we can manage a system service.
 # Priority: real root -> passwordless sudo -> unprivileged user install.
@@ -193,16 +210,27 @@ else
 fi
 STATE_FILE="$INSTALL_DIR/state.json"
 
+if [ "$UPGRADE" = "1" ]; then
+    $SUDO grep -q '"token": "' "$STATE_FILE" 2>/dev/null || die not_paired "this box has no paired Kratos agent to upgrade ($STATE_FILE missing) -- use a pairing installer instead"
+    log "Upgrading the Kratos sub-agent in $INSTALL_DIR (mode: $MODE); keeping its pairing."
+elif $SUDO test -e "$STATE_FILE"; then
+    # Re-pairing: a saved token would make the agent ignore the new code, so
+    # move the old identity aside (kept, never deleted) and start fresh.
+    OLD="$STATE_FILE.replaced-$(date +%s)"
+    $SUDO mv "$STATE_FILE" "$OLD"
+    log "Found an existing Kratos sub-agent here; its old identity was moved to $OLD and this box will pair again."
+fi
+
 log "Installing Kratos sub-agent into $INSTALL_DIR (mode: $MODE)"
-$SUDO mkdir -p "$INSTALL_DIR/subagent"
+$SUDO mkdir -p "$INSTALL_DIR/subagent" || die write_failed "could not create $INSTALL_DIR"
 
 # write_file <relative-path> : base64 body on stdin -> decoded file on disk.
 write_file() {{
     _dest="$INSTALL_DIR/$1"
     if [ -n "$SUDO" ]; then
-        base64 -d | $SUDO tee "$_dest" >/dev/null
+        base64 -d | $SUDO tee "$_dest" >/dev/null || die write_failed "could not write $_dest (disk full or read-only?)"
     else
-        base64 -d > "$_dest"
+        base64 -d > "$_dest" || die write_failed "could not write $_dest (disk full or read-only?)"
     fi
 }}
 
@@ -210,18 +238,29 @@ write_file() {{
 
 log "Bundle written."
 
-EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --pair $PAIR_CODE --state-file $STATE_FILE"
+EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE"
+[ -n "$PAIR_CODE" ] && EXEC_CMD="$EXEC_CMD --pair $PAIR_CODE"
 
 start_plain() {{
     log "systemd not available -- starting in the background (will NOT survive a reboot)."
     log "To make it permanent, re-run this on a systemd host, or add your own init script."
+    PIDFILE="$INSTALL_DIR/agent.pid"
+    # Stop a previous background agent from an earlier run (never two at once).
+    if [ -f "$PIDFILE" ]; then
+        OLD_PID=$(cat "$PIDFILE" 2>/dev/null || true)
+        if [ -n "$OLD_PID" ] && grep -q subagent.agent "/proc/$OLD_PID/cmdline" 2>/dev/null; then
+            $SUDO kill "$OLD_PID" 2>/dev/null || true
+            log "Stopped the previous background agent (pid $OLD_PID)."
+        fi
+    fi
     # shellcheck disable=SC2086
-    ( cd "$INSTALL_DIR" && nohup $EXEC_CMD >"$INSTALL_DIR/agent.log" 2>&1 & )
+    ( cd "$INSTALL_DIR" && nohup $EXEC_CMD >"$INSTALL_DIR/agent.log" 2>&1 & echo $! > "$PIDFILE" )
     log "Started. Logs: $INSTALL_DIR/agent.log"
+    printf 'KRATOS_INSTALL_OK mode=%s service=none dir=%s\\n' "$MODE" "$INSTALL_DIR"
 }}
 
 if [ "$MODE" = "system" ]; then
-    if ! command -v systemctl >/dev/null 2>&1; then
+    if ! command -v systemctl >/dev/null 2>&1 || [ ! -d /run/systemd/system ]; then
         start_plain
         exit 0
     fi
@@ -243,12 +282,16 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT_EOF
     $SUDO systemctl daemon-reload
-    $SUDO systemctl enable --now "$SERVICE_NAME.service"
+    $SUDO systemctl enable "$SERVICE_NAME.service"
+    # restart, not just enable --now: an already-running agent must load the
+    # new code and identity.
+    $SUDO systemctl restart "$SERVICE_NAME.service"
     log "Service installed and started: $SERVICE_NAME"
     log "  status: $SUDO systemctl status $SERVICE_NAME"
     log "  logs:   $SUDO journalctl -u $SERVICE_NAME -f"
+    printf 'KRATOS_INSTALL_OK mode=system service=%s dir=%s\\n' "$SERVICE_NAME" "$INSTALL_DIR"
 else
-    if ! command -v systemctl >/dev/null 2>&1; then
+    if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
         start_plain
         exit 0
     fi
@@ -271,17 +314,35 @@ RestartSec=5
 WantedBy=default.target
 UNIT_EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now "$SERVICE_NAME.service" || {{
+    systemctl --user enable "$SERVICE_NAME.service" && systemctl --user restart "$SERVICE_NAME.service" || {{
         start_plain
         exit 0
     }}
     log "User service installed and started: $SERVICE_NAME"
-    log "  It runs while you are logged in. To keep it running after logout:"
-    log "    sudo loginctl enable-linger $(id -un)"
+    if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null)" != "yes" ]; then
+        log "  It runs while you are logged in. To keep it running after logout:"
+        log "    sudo loginctl enable-linger $(id -un)"
+    fi
     log "  status: systemctl --user status $SERVICE_NAME"
     log "  logs:   journalctl --user -u $SERVICE_NAME -f"
+    printf 'KRATOS_INSTALL_OK mode=user service=%s dir=%s\\n' "$SERVICE_NAME" "$INSTALL_DIR"
 fi
 
 log ""
 log "Done. The sub-agent is starting and will check in with Kratos shortly."
 """
+
+
+def uninstall_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
+    """One command, run ON the target, that stops and removes the agent
+    whichever way it was installed (system service, user service, or a
+    background process). Safe to run when parts are already gone."""
+    svc = service_name
+    return (
+        f"if [ -f /etc/systemd/system/{svc}.service ]; then sudo systemctl disable --now {svc}; "
+        f"sudo rm -f /etc/systemd/system/{svc}.service; sudo systemctl daemon-reload; fi; "
+        f"systemctl --user disable --now {svc} 2>/dev/null; rm -f ~/.config/systemd/user/{svc}.service; "
+        "for d in /opt/kratos-subagent ~/.kratos-subagent; do "
+        "[ -f $d/agent.pid ] && kill $(cat $d/agent.pid) 2>/dev/null; done; "
+        "sudo rm -rf /opt/kratos-subagent; rm -rf ~/.kratos-subagent"
+    )
