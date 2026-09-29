@@ -13,6 +13,21 @@ Scope: this store only ever records read-only telemetry FROM a paired
 target and the pairing/auth state needed to accept it. There is no table,
 column, or method here that represents a command TO be sent to a target --
 capability 2 (direct execution) is separate, gated, and not built.
+
+Connection truth across processes (docs/subagent_connection_ux.md WS1/WS10):
+the listener (`kratos subagent-serve`, often a systemd service) and the TUI
+are different processes, so live-socket state can't be read from memory.
+The listener writes it here instead:
+  - `subagent_listeners` -- every running listener registers itself and
+    heartbeats; a listener whose heartbeat stops is treated as gone, so a
+    crashed listener never leaves targets looking "connected".
+  - `subagent_connections` -- one row per target: which listener holds its
+    socket, when it connected/disconnected and why, and when the last frame
+    and the last telemetry snapshot arrived (a socket that pings but sends no
+    telemetry is a zombie, not "connected").
+  - `subagent_connection_events` -- a bounded history of connects,
+    disconnects and rejected attempts (revoked token, expired pairing code),
+    so a flaky link or a still-running revoked agent is visible.
 """
 from __future__ import annotations
 
@@ -29,6 +44,13 @@ _BUSY_TIMEOUT_MS = 5000
 # Matches the pairing-wizard mockup's stated "expires in 15 min" (see
 # tui_mk2/screens/phase2_preview.py::_pairing_wizard).
 PAIRING_CODE_TTL_SECONDS = 15 * 60
+
+# How many connection events to keep per target (connects, disconnects,
+# rejections) -- enough to judge an hour of a flaky link.
+CONNECTION_EVENT_RETENTION_PER_TARGET = 200
+# Expired, unused pairing codes older than this are purged when a new code is
+# created -- they can never be used again and would otherwise pile up.
+PAIRING_CODE_PURGE_AFTER_SECONDS = 7 * 24 * 3600
 
 # Bounded per target -- an always-on stream must not grow the DB without
 # limit. 500 rows at the default 30s collection interval is ~4 hours of
@@ -113,6 +135,56 @@ class SubAgentStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_subagent_telemetry_target ON subagent_telemetry(target_id, id)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subagent_listeners (
+                    listener_id TEXT PRIMARY KEY,
+                    pid INTEGER,
+                    host TEXT,
+                    port INTEGER,
+                    mode TEXT,
+                    build TEXT,
+                    started_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    stopped_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subagent_connections (
+                    target_id TEXT PRIMARY KEY,
+                    listener_id TEXT,
+                    peer TEXT,
+                    connected_at TEXT,
+                    disconnected_at TEXT,
+                    disconnect_reason TEXT,
+                    last_frame_at TEXT,
+                    last_telemetry_at TEXT,
+                    collect_interval REAL,
+                    ping_interval REAL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subagent_connection_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    target_id TEXT NOT NULL,
+                    at TEXT NOT NULL,
+                    event TEXT NOT NULL,
+                    detail TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_subagent_conn_events ON subagent_connection_events(target_id, id)"
+            )
+            # Additive migration of an existing pairing-codes table.
+            have = {r["name"] for r in conn.execute("PRAGMA table_info(subagent_pairing_codes)")}
+            for col in ("replaces_target_id", "last_attempt_at", "last_attempt_host", "last_attempt_reason"):
+                if col not in have:
+                    conn.execute(f"ALTER TABLE subagent_pairing_codes ADD COLUMN {col} TEXT")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -123,15 +195,25 @@ class SubAgentStore:
     # ------------------------------------------------------------------
     # Pairing
     # ------------------------------------------------------------------
-    def create_pairing_code(self, name: str | None = None) -> dict[str, Any]:
+    def create_pairing_code(self, name: str | None = None, *, replaces_target_id: str | None = None) -> dict[str, Any]:
+        """A single-use code. `replaces_target_id` makes this a RE-PAIR: when
+        the new agent checks in, the old target is revoked in the same
+        transaction -- so the old pairing keeps working right up until its
+        replacement is actually live, and never both at once."""
         code = _new_pairing_code()
         now = utc_now_iso()
+        expires_at = _expiry_iso(PAIRING_CODE_TTL_SECONDS)
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "INSERT INTO subagent_pairing_codes (code, name, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (code, name, now, _expiry_iso(PAIRING_CODE_TTL_SECONDS)),
+                "DELETE FROM subagent_pairing_codes WHERE used_at IS NULL AND expires_at < ?",
+                (_expiry_iso(-PAIRING_CODE_PURGE_AFTER_SECONDS),),
+            )
+            conn.execute(
+                "INSERT INTO subagent_pairing_codes (code, name, created_at, expires_at, replaces_target_id) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (code, name, now, expires_at, replaces_target_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -139,7 +221,61 @@ class SubAgentStore:
             raise
         finally:
             conn.close()
-        return {"code": code, "created_at": now, "ttl_seconds": PAIRING_CODE_TTL_SECONDS}
+        return {"code": code, "created_at": now, "expires_at": expires_at, "ttl_seconds": PAIRING_CODE_TTL_SECONDS}
+
+    def get_pairing_code(self, code: str) -> dict[str, Any] | None:
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM subagent_pairing_codes WHERE code = ?", (code,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def list_pending_pairing_codes(self, *, include_expired_since_seconds: int = 3600) -> list[dict[str, Any]]:
+        """Unused codes: still valid, or expired within the last hour (so the
+        UI can say "expired -- make a new one" instead of silently dropping
+        them). Newest first."""
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM subagent_pairing_codes WHERE used_at IS NULL AND expires_at >= ? ORDER BY created_at DESC",
+                (_expiry_iso(-include_expired_since_seconds),),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def cancel_pairing_code(self, code: str) -> None:
+        """Make an unused code unusable now (e.g. superseded by a fresh one)."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM subagent_pairing_codes WHERE code = ? AND used_at IS NULL", (code,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def record_pairing_attempt(self, code: str, host: str | None, reason: str) -> None:
+        """A rejected attempt to pair with a code that EXISTS (expired or
+        already used). Unknown codes are not stored -- a stranger guessing
+        codes must not be able to write into this table."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE subagent_pairing_codes SET last_attempt_at = ?, last_attempt_host = ?, last_attempt_reason = ? "
+                "WHERE code = ?",
+                (utc_now_iso(), (host or "")[:200] or None, reason[:200], code),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
 
     def redeem_pairing_code(self, code: str, agent_id: str | None, hostname: str | None, agent_version: str | None) -> dict[str, Any] | None:
         """Validate an unused, unexpired code and mint a new paired target +
@@ -150,7 +286,8 @@ class SubAgentStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT code, name, expires_at, used_at FROM subagent_pairing_codes WHERE code = ?", (code,)
+                "SELECT code, name, expires_at, used_at, replaces_target_id FROM subagent_pairing_codes WHERE code = ?",
+                (code,),
             ).fetchone()
             if row is None or row["used_at"] is not None or _is_expired(row["expires_at"]):
                 conn.execute("ROLLBACK")
@@ -174,6 +311,11 @@ class SubAgentStore:
                 "UPDATE subagent_pairing_codes SET used_at = ?, used_by_target_id = ? WHERE code = ?",
                 (now, target_id, code),
             )
+            if row["replaces_target_id"]:
+                conn.execute(
+                    "UPDATE subagent_targets SET revoked_at = ? WHERE target_id = ? AND revoked_at IS NULL",
+                    (now, row["replaces_target_id"]),
+                )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -185,6 +327,16 @@ class SubAgentStore:
     # ------------------------------------------------------------------
     # Targets
     # ------------------------------------------------------------------
+    def find_target_by_token_any(self, token: str) -> dict[str, Any] | None:
+        """Like get_target_by_token but also finds a REVOKED target -- only to
+        record that a revoked agent is still trying to connect."""
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM subagent_targets WHERE token = ?", (token,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
     def get_target_by_token(self, token: str) -> dict[str, Any] | None:
         conn = _connect(self.db_path)
         try:
@@ -203,10 +355,11 @@ class SubAgentStore:
             conn.close()
         return dict(row) if row else None
 
-    def list_targets(self) -> list[dict[str, Any]]:
+    def list_targets(self, *, include_revoked: bool = True) -> list[dict[str, Any]]:
         conn = _connect(self.db_path)
         try:
-            rows = conn.execute("SELECT * FROM subagent_targets ORDER BY paired_at DESC").fetchall()
+            where = "" if include_revoked else " WHERE revoked_at IS NULL"
+            rows = conn.execute(f"SELECT * FROM subagent_targets{where} ORDER BY paired_at DESC").fetchall()
         finally:
             conn.close()
         return [dict(r) for r in rows]
@@ -230,7 +383,9 @@ class SubAgentStore:
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("UPDATE subagent_targets SET last_seen = ? WHERE target_id = ?", (utc_now_iso(), target_id))
+            now = utc_now_iso()
+            conn.execute("UPDATE subagent_targets SET last_seen = ? WHERE target_id = ?", (now, target_id))
+            conn.execute("UPDATE subagent_connections SET last_frame_at = ? WHERE target_id = ?", (now, target_id))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -239,13 +394,250 @@ class SubAgentStore:
             conn.close()
 
     def revoke_target(self, target_id: str) -> None:
-        """Invalidate a target's token (its next hello is rejected). Kept
-        deliberately simple -- no execution/whitelist state exists to tear
-        down alongside it, since capability 2 isn't built."""
+        """Invalidate a target's token: its next hello is rejected, and a
+        running listener drops its open connection within a heartbeat (see
+        CoreServer's heartbeat loop). The agent on the box keeps running and
+        retrying until someone stops it there -- the UI says so."""
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("UPDATE subagent_targets SET revoked_at = ? WHERE target_id = ?", (utc_now_iso(), target_id))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def forget_target(self, target_id: str) -> bool:
+        """Delete a REVOKED target and everything recorded about it. Refuses
+        (returns False) for a target that isn't revoked -- unpair first."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT revoked_at FROM subagent_targets WHERE target_id = ?", (target_id,)).fetchone()
+            if row is None or row["revoked_at"] is None:
+                conn.execute("ROLLBACK")
+                return False
+            for table in ("subagent_telemetry", "subagent_connections", "subagent_connection_events"):
+                conn.execute(f"DELETE FROM {table} WHERE target_id = ?", (target_id,))
+            conn.execute("UPDATE subagent_pairing_codes SET replaces_target_id = NULL WHERE replaces_target_id = ?",
+                         (target_id,))
+            conn.execute("DELETE FROM subagent_targets WHERE target_id = ?", (target_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return True
+
+    def revoked_among(self, target_ids: list[str]) -> set[str]:
+        if not target_ids:
+            return set()
+        conn = _connect(self.db_path)
+        try:
+            marks = ",".join("?" * len(target_ids))
+            rows = conn.execute(
+                f"SELECT target_id FROM subagent_targets WHERE revoked_at IS NOT NULL AND target_id IN ({marks})",
+                target_ids,
+            ).fetchall()
+        finally:
+            conn.close()
+        return {r["target_id"] for r in rows}
+
+    # ------------------------------------------------------------------
+    # Listeners + live connections (written by the listener process)
+    # ------------------------------------------------------------------
+    def register_listener(self, listener_id: str, *, pid: int, host: str, port: int, mode: str, build: str) -> None:
+        now = utc_now_iso()
+        self._write(
+            "INSERT OR REPLACE INTO subagent_listeners (listener_id, pid, host, port, mode, build, started_at, heartbeat_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (listener_id, pid, host, port, mode, build, now, now),
+        )
+
+    def heartbeat_listener(self, listener_id: str) -> None:
+        self._write("UPDATE subagent_listeners SET heartbeat_at = ? WHERE listener_id = ?", (utc_now_iso(), listener_id))
+
+    def stop_listener(self, listener_id: str) -> None:
+        now = utc_now_iso()
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE subagent_listeners SET stopped_at = ?, heartbeat_at = ? WHERE listener_id = ?",
+                         (now, now, listener_id))
+            self._close_connections_of(conn, "listener_id = ?", (listener_id,), now, "the Kratos listener stopped")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def live_listeners(self, max_age_seconds: float) -> list[dict[str, Any]]:
+        """Listeners that are running now (fresh heartbeat, not stopped)."""
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM subagent_listeners WHERE stopped_at IS NULL AND heartbeat_at >= ? ORDER BY started_at DESC",
+                (_expiry_iso(-max_age_seconds),),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def close_orphaned_connections(self, max_age_seconds: float) -> int:
+        """Close connection rows held by listeners that died without saying so
+        (crash, SIGKILL, power loss). Run by every listener at start-up."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            n = self._close_connections_of(
+                conn,
+                "listener_id NOT IN (SELECT listener_id FROM subagent_listeners WHERE stopped_at IS NULL AND heartbeat_at >= ?)",
+                (_expiry_iso(-max_age_seconds),),
+                utc_now_iso(),
+                "the Kratos listener stopped unexpectedly",
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return n
+
+    def _close_connections_of(self, conn: sqlite3.Connection, where: str, args: tuple, now: str, reason: str) -> int:
+        rows = conn.execute(
+            f"SELECT target_id FROM subagent_connections WHERE disconnected_at IS NULL AND {where}", args
+        ).fetchall()
+        for r in rows:
+            conn.execute(
+                "UPDATE subagent_connections SET disconnected_at = ?, disconnect_reason = ? WHERE target_id = ?",
+                (now, reason, r["target_id"]),
+            )
+            self._add_event(conn, r["target_id"], "disconnected", reason, now)
+        return len(rows)
+
+    def record_connection_open(
+        self, target_id: str, *, listener_id: str, peer: str | None,
+        collect_interval: float | None = None, ping_interval: float | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO subagent_connections
+                    (target_id, listener_id, peer, connected_at, disconnected_at, disconnect_reason, last_frame_at,
+                     collect_interval, ping_interval)
+                VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)
+                ON CONFLICT(target_id) DO UPDATE SET
+                    listener_id = excluded.listener_id, peer = excluded.peer, connected_at = excluded.connected_at,
+                    disconnected_at = NULL, disconnect_reason = NULL, last_frame_at = excluded.last_frame_at,
+                    collect_interval = excluded.collect_interval, ping_interval = excluded.ping_interval
+                """,
+                (target_id, listener_id, (peer or "")[:100] or None, now, now, collect_interval, ping_interval),
+            )
+            self._add_event(conn, target_id, "connected", peer, now)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def record_connection_closed(self, target_id: str, *, listener_id: str, reason: str) -> None:
+        """Only closes the row if THIS listener still owns it -- a newer
+        connection (e.g. through another listener) is never marked closed by
+        an old one tearing down."""
+        now = utc_now_iso()
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            n = self._close_connections_of(conn, "target_id = ? AND listener_id = ?", (target_id, listener_id),
+                                           now, reason[:200])
+            if not n:
+                conn.execute("ROLLBACK")
+                return
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def record_connection_event(self, target_id: str, event: str, detail: str | None = None) -> None:
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._add_event(conn, target_id, event, detail, utc_now_iso())
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def _add_event(self, conn: sqlite3.Connection, target_id: str, event: str, detail: str | None, at: str) -> None:
+        conn.execute(
+            "INSERT INTO subagent_connection_events (target_id, at, event, detail) VALUES (?, ?, ?, ?)",
+            (target_id, at, event, (detail or "")[:300] or None),
+        )
+        conn.execute(
+            """
+            DELETE FROM subagent_connection_events WHERE target_id = ? AND id NOT IN (
+                SELECT id FROM subagent_connection_events WHERE target_id = ? ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (target_id, target_id, CONNECTION_EVENT_RETENTION_PER_TARGET),
+        )
+
+    def get_connection(self, target_id: str) -> dict[str, Any] | None:
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM subagent_connections WHERE target_id = ?", (target_id,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def list_connections(self) -> dict[str, dict[str, Any]]:
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute("SELECT * FROM subagent_connections").fetchall()
+        finally:
+            conn.close()
+        return {r["target_id"]: dict(r) for r in rows}
+
+    def recent_events(self, target_id: str, since_seconds: float) -> list[dict[str, Any]]:
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM subagent_connection_events WHERE target_id = ? AND at >= ? ORDER BY id",
+                (target_id, _expiry_iso(-since_seconds)),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def telemetry_received_times(self, target_id: str, limit: int = 6) -> list[str]:
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT received_at FROM subagent_telemetry WHERE target_id = ? ORDER BY id DESC LIMIT ?",
+                (target_id, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r["received_at"] for r in rows]
+
+    def _write(self, sql: str, args: tuple) -> None:
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(sql, args)
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -266,6 +658,10 @@ class SubAgentStore:
                 (target_id, seq, collected_at, now, json.dumps(payload)),
             )
             conn.execute("UPDATE subagent_targets SET last_seen = ? WHERE target_id = ?", (now, target_id))
+            conn.execute(
+                "UPDATE subagent_connections SET last_frame_at = ?, last_telemetry_at = ? WHERE target_id = ?",
+                (now, now, target_id),
+            )
             # Bounded retention: prune anything beyond the newest N rows for
             # this target, in the same transaction as the insert.
             conn.execute(

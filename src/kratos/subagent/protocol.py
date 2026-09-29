@@ -23,7 +23,8 @@ huge length prefix.
 
 Message shapes (every message has a "type" field):
   hello              {type, version, agent_id, auth: {token} | {pairing_code},
-                      hostname, agent_version, session_nonce?, ceiling?}
+                      hostname, agent_version, session_nonce?, ceiling?,
+                      collect_interval?, ping_interval?}
   hello_ack          {type, target_id, token}
   hello_reject       {type, reason}
   telemetry          {type, seq, collected_at, payload}
@@ -139,6 +140,7 @@ async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any] | None:
 def build_hello(
     agent_id: str, auth: dict[str, str], hostname: str, agent_version: str,
     session_nonce: str | None = None, ceiling: dict[str, Any] | None = None,
+    collect_interval: float | None = None, ping_interval: float | None = None,
 ) -> dict[str, Any]:
     msg = {
         "type": MSG_HELLO,
@@ -152,6 +154,12 @@ def build_hello(
         msg["session_nonce"] = session_nonce
     if ceiling is not None:
         msg["ceiling"] = ceiling
+    # How often this agent sends snapshots/pings, so core can tell "quiet on
+    # schedule" from "stalled" without guessing.
+    if collect_interval is not None:
+        msg["collect_interval"] = collect_interval
+    if ping_interval is not None:
+        msg["ping_interval"] = ping_interval
     return msg
 
 

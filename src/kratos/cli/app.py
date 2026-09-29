@@ -267,13 +267,35 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
     from kratos.storage.subagent_store import SubAgentStore
     from kratos.subagent.core_server import CoreServer, DEFAULT_PORT
 
+    import signal
+
     store = SubAgentStore(args.data_dir / "kratos.db")
     server = CoreServer(store, host=args.host, port=args.port)
     print(f"[KRATOS] Sub-agent telemetry server listening on {args.host}:{args.port} (Ctrl+C to stop)")
+
+    async def _main() -> None:
+        # SIGTERM (systemctl stop/restart) and Ctrl+C both shut down cleanly,
+        # so connected targets are recorded as "listener stopped" at once
+        # rather than looking connected until the heartbeat goes stale.
+        loop = asyncio.get_running_loop()
+        serve = asyncio.create_task(server.serve_forever())
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, serve.cancel)
+            except (NotImplementedError, RuntimeError):
+                pass
+        try:
+            await serve
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await server.close()
+
     try:
-        asyncio.run(server.serve_forever())
+        asyncio.run(_main())
     except KeyboardInterrupt:
-        print("\n[KRATOS] Sub-agent telemetry server stopped.")
+        pass
+    print("\n[KRATOS] Sub-agent telemetry server stopped.")
     return 0
 
 
@@ -314,17 +336,22 @@ def cmd_subagent_status(args: argparse.Namespace) -> int:
     subagent/status.py) since this is a separate process from any running
     `subagent-serve` -- it has no live-socket visibility of its own."""
     from kratos.storage.subagent_store import SubAgentStore
-    from kratos.subagent.status import derive_status
+    from kratos.subagent.status import LISTENER_STALE_AFTER_SECONDS, assess_all
 
     store = SubAgentStore(args.data_dir / "kratos.db")
-    targets = store.list_targets()
-    if not targets:
-        print("[KRATOS] No sub-agents paired yet. Run: kratos subagent-pair")
+    assessed = assess_all(store)
+    if not assessed:
+        print("[KRATOS] No sub-agents paired yet. Run: kratos subagent-install")
         return 0
-    for t in targets:
-        status = derive_status(t["last_seen"])
-        revoked = " (REVOKED)" if t["revoked_at"] else ""
-        print(f"[KRATOS] {t['target_id']}{revoked}  {t['hostname'] or '?'}  status={status}  last_seen={t['last_seen']}")
+    listeners = store.live_listeners(LISTENER_STALE_AFTER_SECONDS)
+    if listeners:
+        lst = listeners[0]
+        print(f"[KRATOS] listener: {lst['mode']} (pid {lst['pid']}, port {lst['port']}, build {lst['build']})")
+    else:
+        print("[KRATOS] listener: NONE RUNNING -- targets can't check in; statuses below are unknown")
+    for t, st in assessed:
+        print(f"[KRATOS] {t['target_id']}  {t.get('name') or t['hostname'] or '?'}  status={st.state}  "
+              f"last_seen={t['last_seen']}  -- {st.reason}")
         latest = store.get_latest_telemetry(t["target_id"])
         if latest:
             host = (latest["payload"].get("host") or {})

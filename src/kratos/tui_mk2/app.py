@@ -374,6 +374,7 @@ class KratosTUI(ResilientWorkerHost, App):
                 SubAgentStore(self.data_dir / "kratos.db"),
                 host=_cl.DEFAULT_BIND_HOST,
                 port=_cl.DEFAULT_PORT,
+                mode="in_process",
             )
             self.run_worker(
                 self._serve_core_listener(self._core_server),
@@ -395,8 +396,14 @@ class KratosTUI(ResilientWorkerHost, App):
         import asyncio
         import contextlib
 
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await server.serve_forever()
+        try:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await server.serve_forever()
+        finally:
+            # Say so right away, so targets read "listener stopped" instead of
+            # looking connected until the heartbeat goes stale.
+            with contextlib.suppress(Exception):
+                server.store.stop_listener(server.listener_id)
 
 
 def _restore_terminal_mouse() -> None:

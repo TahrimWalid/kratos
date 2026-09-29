@@ -295,12 +295,16 @@ class SubAgent:
         try:
             await asyncio.wait({serve, stopped}, return_when=asyncio.FIRST_COMPLETED)
         finally:
+            # asyncio.wait never raises the waited task's outcome, so this can't
+            # swallow a cancellation of THIS task (no `return` in here either --
+            # that would discard an in-flight CancelledError and leave the
+            # reconnect loop running forever).
             stopped.cancel()
             if not serve.done():
                 serve.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await serve
-                return
+                await asyncio.wait({serve})
+        if serve.cancelled():
+            return  # stop() was called
         serve.result()  # re-raise a connection error for run_forever's backoff handling
 
     async def _connect_and_serve(self) -> None:
@@ -320,9 +324,7 @@ class SubAgent:
                 # so no loop outlives its connection.
                 for t in tasks:
                     t.cancel()
-                for t in tasks:
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await t
+                await asyncio.wait(tasks)  # waits without re-raising their outcomes
             for t in done:
                 if not t.cancelled() and t.exception() is not None:
                     raise t.exception()
@@ -348,6 +350,7 @@ class SubAgent:
         await proto.write_frame(writer, proto.build_hello(
             self.agent_id, auth, _hostname(), AGENT_VERSION,
             session_nonce=self._session_nonce, ceiling=self.ceiling_report(),
+            collect_interval=self.collect_interval, ping_interval=self.ping_interval,
         ))
         reply = await asyncio.wait_for(proto.read_frame(reader), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         if reply is None:

@@ -40,16 +40,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import time
 import uuid
+from collections import deque
 from typing import Any
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import protocol as proto
 from kratos.subagent import signing
 from kratos.subagent import whitelist as wl
-from kratos.subagent.status import derive_status
+from kratos.subagent.status import LISTENER_HEARTBEAT_SECONDS, LISTENER_STALE_AFTER_SECONDS, derive_status
 
 logger = logging.getLogger("kratos.subagent.core_server")
 
@@ -75,6 +77,16 @@ WHITELIST_WATCH_INTERVAL_SECONDS = 2.0
 
 _SESSION_NONCE_RE = re.compile(r"^[0-9a-f]{16,128}$")
 
+# A new session for a target replaces an existing one only if the existing one
+# has been silent this long -- the signature of a half-open TCP connection the
+# agent already gave up on (NAT timeout, suspended laptop). An existing session
+# that is still talking is kept, and the newcomer refused.
+SILENT_SESSION_REPLACE_SECONDS = 15.0
+# Failed pairing/auth attempts from one address within the window before
+# further attempts are refused without a lookup (slows code guessing).
+AUTH_FAILURE_LIMIT = 10
+AUTH_FAILURE_WINDOW_SECONDS = 60.0
+
 
 class CoreServer:
     def __init__(
@@ -83,11 +95,21 @@ class CoreServer:
         host: str = "0.0.0.0",
         port: int = DEFAULT_PORT,
         whitelist_store: Any | None = None,
+        mode: str | None = None,
     ) -> None:
         self.store = store
         self.host = host
         self.port = port
         self.whitelist_store = whitelist_store
+        # How this listener runs, recorded so the UI can say whether telemetry
+        # survives closing Kratos: "service" (under systemd), "in_process"
+        # (inside a TUI), or "process" (a foreground `kratos subagent-serve`).
+        self.mode = mode or ("service" if os.environ.get("INVOCATION_ID") else "process")
+        self.listener_id = "lsn_" + uuid.uuid4().hex[:12]
+        self._heartbeat_task: asyncio.Task | None = None
+        self._stop_event: asyncio.Event | None = None
+        self._last_frame: dict[str, float] = {}
+        self._auth_failures: dict[str, deque] = {}
         # target_id -> writer, for real live-connection status -- ground
         # truth ONLY within this running process (a separate CLI query has
         # no visibility into this and falls back to last_seen recency, see
@@ -105,6 +127,8 @@ class CoreServer:
         # target_id -> the live connection's session nonce (absent for an
         # agent too old to send one -- such an agent gets telemetry only).
         self._session_nonce: dict[str, str] = {}
+        # Why a connection is being closed from THIS side (recorded on close).
+        self._close_reason: dict[str, str] = {}
 
     def live_target_ids(self) -> set[str]:
         return set(self._live.keys())
@@ -130,21 +154,95 @@ class CoreServer:
         sockets = self._server.sockets or []
         addrs = ", ".join(str(sock.getsockname()) for sock in sockets)
         logger.info("kratos subagent core server listening on %s", addrs)
+        self._register()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         if self.whitelist_store is not None:
             self._watch_task = asyncio.create_task(self._whitelist_watch_loop())
-        async with self._server:
-            await self._server.serve_forever()
+        self._stop_event = asyncio.Event()
+        try:
+            # Deliberately NOT asyncio's Server.serve_forever(): on cancellation
+            # it calls close() + wait_closed(), which (Python 3.12+) waits for
+            # every open connection -- and those handlers are blocked reading
+            # from agents, so a SIGTERM or TUI quit would hang forever.
+            # start_server() is already accepting; just wait to be stopped.
+            await self._stop_event.wait()
+        finally:
+            self._drop_live_connections()
+            self._server.close()
+
+    def stop(self) -> None:
+        """Ask serve_forever() to return (it then drops live connections)."""
+        if self._stop_event is not None:
+            self._stop_event.set()
+
+    def _drop_live_connections(self) -> None:
+        for target_id, writer in list(self._live.items()):
+            self._close_reason.setdefault(target_id, "the Kratos listener stopped")
+            writer.close()
+
+    def _register(self) -> None:
+        """Announce this listener (only once it has actually bound the port)
+        and close connection rows left open by a listener that died."""
+        from kratos.utils.build_info import RUNNING_BUILD
+
+        try:
+            self.store.close_orphaned_connections(LISTENER_STALE_AFTER_SECONDS)
+            self.store.register_listener(self.listener_id, pid=os.getpid(), host=self.host, port=self.port,
+                                         mode=self.mode, build=RUNNING_BUILD)
+        except Exception as e:  # noqa: BLE001 -- bookkeeping must never stop the listener
+            logger.warning("could not register listener: %s", e)
+
+    async def _heartbeat_loop(self) -> None:
+        """Keep this listener visibly alive, and enforce revocation on LIVE
+        connections: a target unpaired from another process (the TUI) is
+        disconnected here within one beat, not just refused next time."""
+        while True:
+            await asyncio.sleep(LISTENER_HEARTBEAT_SECONDS)
+            try:
+                self.store.heartbeat_listener(self.listener_id)
+                for target_id in self.store.revoked_among(list(self._live)):
+                    writer = self._live.get(target_id)
+                    if writer is not None:
+                        logger.info("target %s was unpaired -- closing its connection", target_id)
+                        self._close_reason[target_id] = "unpaired in Kratos"
+                        writer.close()
+            except Exception as e:  # noqa: BLE001 -- one bad beat must not kill the loop
+                logger.warning("listener heartbeat failed: %s", e)
+
+    def _auth_blocked(self, peer_ip: str) -> bool:
+        q = self._auth_failures.get(peer_ip)
+        now = time.monotonic()
+        while q and now - q[0] > AUTH_FAILURE_WINDOW_SECONDS:
+            q.popleft()
+        return bool(q) and len(q) >= AUTH_FAILURE_LIMIT
+
+    def _note_auth_failure(self, peer_ip: str) -> None:
+        if len(self._auth_failures) > 4096:  # bound memory under a spray from many addresses
+            self._auth_failures.clear()
+        self._auth_failures.setdefault(peer_ip, deque(maxlen=AUTH_FAILURE_LIMIT)).append(time.monotonic())
 
     async def close(self) -> None:
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._heartbeat_task
+        with contextlib.suppress(Exception):
+            if self._server is not None:
+                self.store.stop_listener(self.listener_id)
         if self._watch_task is not None:
             self._watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watch_task
         if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-        for writer in list(self._live.values()):
-            writer.close()
+            self._server.close()  # stop accepting new connections first
+        # Close live connections BEFORE waiting: on Python 3.12+ wait_closed()
+        # waits for every open connection's handler to finish, and those are
+        # blocked reading from agents -- waiting first deadlocks (a systemctl
+        # stop/restart would hang until systemd SIGKILLs the process).
+        self._drop_live_connections()
+        if self._server is not None:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self._server.wait_closed(), timeout=5.0)
 
     async def _whitelist_watch_loop(self) -> None:
         """Local-DB-only polling of `whitelist_version` AND the dispatch
@@ -275,8 +373,14 @@ class CoreServer:
 
     async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
+        peer_ip = peer[0] if isinstance(peer, tuple) and peer else "?"
         target_id: str | None = None
+        owns_session = False
+        close_reason = "connection closed"
         try:
+            if self._auth_blocked(peer_ip):
+                await proto.write_frame(writer, proto.build_hello_reject("too many failed attempts; try again later"))
+                return
             hello = await asyncio.wait_for(proto.read_frame(reader), timeout=HELLO_TIMEOUT_SECONDS)
             if hello is None or hello.get("type") != proto.MSG_HELLO:
                 await proto.write_frame(writer, proto.build_hello_reject("expected a hello message first"))
@@ -284,20 +388,41 @@ class CoreServer:
             target_id, token, reject_reason = self._authenticate(hello)
             if reject_reason:
                 logger.info("rejected connection from %s: %s", peer, reject_reason)
+                self._note_auth_failure(peer_ip)
+                self._record_rejection(hello, peer_ip, reject_reason)
+                target_id = None
                 await proto.write_frame(writer, proto.build_hello_reject(reject_reason))
                 return
             assert target_id is not None and token is not None
-            if target_id in self._live:
-                # Two live sessions for one target would make "connected"
-                # status and telemetry ordering ambiguous -- refuse the new
-                # one rather than silently replacing the old.
-                await proto.write_frame(writer, proto.build_hello_reject("already connected from another session"))
-                return
+            existing = self._live.get(target_id)
+            if existing is not None:
+                silent = time.monotonic() - self._last_frame.get(target_id, 0.0)
+                if silent < SILENT_SESSION_REPLACE_SECONDS:
+                    # Two live sessions for one target would make status and
+                    # telemetry ordering ambiguous -- refuse the newcomer. If
+                    # this keeps happening, one identity is running on two boxes.
+                    self._safe(self.store.record_connection_event, target_id, "rejected",
+                               f"a second connection from {peer_ip} while one is active "
+                               "(is this agent's state file copied to another machine?)")
+                    target_id = None
+                    await proto.write_frame(writer, proto.build_hello_reject("already connected from another session"))
+                    return
+                # The old session went silent: the agent has already given up
+                # on it (half-open TCP). Replace it instead of refusing.
+                self._close_reason[target_id] = "replaced by a new connection from the agent"
+                existing.close()
+                self._safe(self.store.record_connection_event, target_id, "replaced",
+                           f"previous session silent for {int(silent)}s; the agent reconnected from {peer_ip}")
             self._live[target_id] = writer
+            owns_session = True
+            self._last_frame[target_id] = time.monotonic()
             nonce = hello.get("session_nonce")
             if isinstance(nonce, str) and _SESSION_NONCE_RE.fullmatch(nonce):
                 self._session_nonce[target_id] = nonce
             self.store.record_connected(target_id, hostname=hello.get("hostname"), agent_version=hello.get("agent_version"))
+            self._safe(self.store.record_connection_open, target_id, listener_id=self.listener_id, peer=peer_ip,
+                       collect_interval=_interval(hello.get("collect_interval")),
+                       ping_interval=_interval(hello.get("ping_interval")))
             if self.whitelist_store is not None and hasattr(self.whitelist_store, "record_agent_hello"):
                 self.whitelist_store.record_agent_hello(
                     target_id, agent_version=hello.get("agent_version"), ceiling=hello.get("ceiling")
@@ -316,18 +441,49 @@ class CoreServer:
                 # push's own ack timeout (a real bug, caught by this
                 # module's own test suite) -- the two run concurrently instead.
                 asyncio.create_task(self._push_current_whitelist(target_id))
-            await self._receive_loop(reader, writer, target_id, token)
-        except (asyncio.TimeoutError, proto.ProtocolError, ConnectionError, OSError) as e:
+            close_reason = await self._receive_loop(reader, writer, target_id, token)
+        except asyncio.TimeoutError:
+            close_reason = f"no message from the agent for {PING_TIMEOUT_SECONDS}s"
+            logger.info("connection from %s (target=%s) ended: timed out", peer, target_id)
+        except (proto.ProtocolError, ConnectionError, OSError) as e:
+            close_reason = f"connection lost ({type(e).__name__}: {e})" if str(e) else f"connection lost ({type(e).__name__})"
             logger.info("connection from %s (target=%s) ended: %s", peer, target_id, e)
         finally:
-            if target_id is not None and self._live.get(target_id) is writer:
-                del self._live[target_id]
-                self._pushed_version.pop(target_id, None)
-                self._session_nonce.pop(target_id, None)
-                logger.info("target %s disconnected", target_id)
+            if target_id is not None and owns_session:
+                reason = self._close_reason.pop(target_id, None) or close_reason
+                if self._live.get(target_id) is writer:
+                    del self._live[target_id]
+                    self._pushed_version.pop(target_id, None)
+                    self._session_nonce.pop(target_id, None)
+                    self._last_frame.pop(target_id, None)
+                    self._safe(self.store.record_connection_closed, target_id,
+                               listener_id=self.listener_id, reason=reason)
+                logger.info("target %s disconnected (%s)", target_id, reason)
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
+
+    def _record_rejection(self, hello: dict[str, Any], peer_ip: str, reason: str) -> None:
+        """Remember WHY a known agent was turned away, so the UI can say "your
+        unpaired agent is still running" or "that pairing code expired"."""
+        auth = hello.get("auth") or {}
+        who = f"{hello.get('hostname') or '?'} ({peer_ip})"
+        token, code = auth.get("token"), auth.get("pairing_code")
+        if isinstance(token, str) and token:
+            t = self._safe(self.store.find_target_by_token_any, token)
+            if t:
+                self._safe(self.store.record_connection_event, t["target_id"], "rejected", f"{reason} -- from {who}")
+        elif isinstance(code, str) and code:
+            self._safe(self.store.record_pairing_attempt, code[:32], who, reason)
+
+    @staticmethod
+    def _safe(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Connection bookkeeping must never take a live connection down."""
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("bookkeeping call %s failed: %s", getattr(fn, "__name__", fn), e)
+            return None
 
     def _authenticate(self, hello: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
         auth = hello.get("auth") or {}
@@ -363,11 +519,12 @@ class CoreServer:
 
     async def _receive_loop(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, target_id: str, token: str
-    ) -> None:
+    ) -> str:
         while True:
             msg = await asyncio.wait_for(proto.read_frame(reader), timeout=PING_TIMEOUT_SECONDS)
             if msg is None:
-                return  # clean EOF -- the agent closed deliberately.
+                return "the agent closed the connection"  # clean EOF
+            self._last_frame[target_id] = time.monotonic()
             mtype = msg.get("type")
             if mtype == proto.MSG_TELEMETRY:
                 self.store.record_telemetry(
@@ -387,3 +544,10 @@ class CoreServer:
                     fut.set_result(msg)
             else:
                 logger.warning("ignoring unexpected message type %r from target %s", mtype, target_id)
+
+
+def _interval(value: Any) -> float | None:
+    """An agent-announced interval, if it's a sane number of seconds."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 1 <= value <= 3600 else None

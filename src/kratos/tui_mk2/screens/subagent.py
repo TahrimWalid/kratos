@@ -35,13 +35,7 @@ from textual.widgets import DataTable, Static
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import hub_address, installer
-from kratos.subagent.status import (
-    STATUS_CONNECTED,
-    STATUS_NEVER,
-    STATUS_STALE,
-    STATUS_UNREACHABLE,
-    derive_status,
-)
+from kratos.subagent import status as ST
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
 
@@ -102,11 +96,18 @@ _DEFAULT_CORE_PORT = 8765
 _CHECKIN_POLL_SECONDS = 1.0
 _CHECKIN_TIMEOUT_SECONDS = 900  # a pairing code lives 15 min; stop waiting when it can no longer be used.
 
-_STATUS_STYLE = {
-    STATUS_CONNECTED: ("●", T.SAFE, "connected"),
-    STATUS_STALE: ("◐", T.ATTENTION, "stale"),
-    STATUS_UNREACHABLE: ("●", T.CRITICAL, "unreachable"),
-    STATUS_NEVER: ("○", T.TEXT_DIM, "never connected"),
+# Glyph + colour per assessed state (subagent.status.assess). Every state has
+# its own label -- a zombie never reads "connected", and "no listener" never
+# reads as the target being down.
+_STATE_STYLE = {
+    ST.STATE_CONNECTED: ("●", T.SAFE),
+    ST.STATE_STALLED: ("◐", T.ATTENTION),
+    ST.STATE_UNRESPONSIVE: ("◐", T.CRITICAL),
+    ST.STATE_RECONNECTING: ("↻", T.ATTENTION),
+    ST.STATE_OFFLINE: ("●", T.CRITICAL),
+    ST.STATE_NOT_WATCHED: ("?", T.ATTENTION),
+    ST.STATE_NEVER: ("○", T.TEXT_DIM),
+    ST.STATE_REVOKED: ("⊘", T.TEXT_DIM),
 }
 
 
@@ -141,6 +142,7 @@ class SubAgentScreen(Screen):
         self._core_port = core_port
         self._sa_store = SubAgentStore(self._data_dir / "kratos.db")
         self._targets: list[dict[str, Any]] = []
+        self._states: dict[str, ST.ConnectionState] = {}
         # When opened from onboarding: jump straight into the add-a-server flow
         # with the target's name pre-filled.
         self._auto_add = auto_add
@@ -164,7 +166,7 @@ class SubAgentScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#sa-table", DataTable)
-        table.add_columns("status", "name", "host", "agent", "last seen")
+        table.add_columns("status", "name", "host", "agent", "last contact", "detail")
         self._refresh()
         # Make sure a listener is up while this screen is open, so paired targets
         # stream telemetry without a second terminal. Defensive getattr: a bare
@@ -192,19 +194,22 @@ class SubAgentScreen(Screen):
         table = self.query_one("#sa-table", DataTable)
         prev = table.cursor_row  # preserve selection across the rebuild (auto-refresh)
         table.clear()
-        self._targets = self._sa_store.list_targets()
+        assessed = ST.assess_all(self._sa_store)
+        self._targets = [t for t, _ in assessed]
+        self._states = {t["target_id"]: st for t, st in assessed}
         if not self._targets:
-            table.add_row(Text("— no paired targets yet —", style=T.TEXT_DIM), "", "", "", "")
+            table.add_row(Text("— no paired targets yet —", style=T.TEXT_DIM), "", "", "", "", "")
             return
-        for t in self._targets:
-            status = derive_status(t.get("last_seen"))
-            glyph, color, label = _STATUS_STYLE.get(status, ("○", T.TEXT_DIM, status))
+        for t, st in assessed:
+            glyph, color = _STATE_STYLE.get(st.state, ("○", T.TEXT_DIM))
             table.add_row(
-                Text(f"{glyph} {label}", style=color),
+                Text(f"{glyph} {st.label}", style=color),
                 Text(t.get("name") or "—"),
                 Text(t.get("hostname") or "—"),
                 Text(t.get("agent_version") or "—"),
-                Text(_short_ts(t.get("last_seen")), style=T.TEXT_DIM),
+                Text(ST.human_age(ST._age(st.last_contact, ST.utc_now())) if st.last_contact else "never",
+                     style=T.TEXT_DIM),
+                Text(st.reason, style=T.TEXT_DIM),
             )
         if prev is not None and 0 <= prev < len(self._targets):
             try:
@@ -509,13 +514,6 @@ class SubAgentScreen(Screen):
             f"  The installer was never run, or this core wasn't listening. Add the server again for a fresh code.",
             style=T.ATTENTION,
         ))
-
-
-def _short_ts(iso: str | None) -> str:
-    if not iso:
-        return "never"
-    # Keep it compact; display-zone conversion is handled elsewhere for live views.
-    return iso.replace("T", " ").split(".")[0].replace("+00:00", "Z")
 
 
 def _slug(name: str | None) -> str:

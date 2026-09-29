@@ -267,3 +267,35 @@ def test_manual_hub_address_prompt(tmp_path, monkeypatch):
     scripts = list(tmp_path.glob("kratos-subagent-install-*.sh"))
     assert len(scripts) == 1
     assert "vpn.example.com" in scripts[0].read_text()
+
+
+def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
+    """WS1: with no listener running, a recently-seen target reads "not watched"
+    (its state is unknown), not "connected"; with a listener and a stalled
+    connection it reads "telemetry stalled", never "connected"."""
+    from kratos.utils.timeutil import utc_now_iso
+
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    tid = _pair(sa)
+    screen = SubAgentScreen(tmp_path)
+    labels: list = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            labels.append(str(screen.query_one("#sa-table").get_row_at(0)[0]))
+            sa.register_listener("L1", pid=1, host="0.0.0.0", port=8765, mode="service", build="b")
+            sa.record_connection_open(tid, listener_id="L1", peer="10.0.0.9", collect_interval=30, ping_interval=10)
+            sa._write("UPDATE subagent_connections SET connected_at = ?, last_telemetry_at = ? WHERE target_id = ?",
+                      ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00", tid))
+            sa._write("UPDATE subagent_connections SET last_frame_at = ? WHERE target_id = ?", (utc_now_iso(), tid))
+            screen._refresh()
+            await pilot.pause()
+            row = screen.query_one("#sa-table").get_row_at(0)
+            labels.append(str(row[0]))
+            labels.append(str(row[5]))
+
+    asyncio.run(run())
+    assert "not watched" in labels[0]
+    assert "telemetry stalled" in labels[1] and "no snapshot" in labels[2]
