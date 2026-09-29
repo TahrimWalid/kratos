@@ -202,7 +202,10 @@ def describe_listener(
     if len(listeners) > 1:
         extra = f" ({len(listeners)} listeners registered -- only one can hold the port; the others are retrying)"
     older = lst.get("build") and lst["build"] != disk_build
-    stale = f" It runs an older build ({lst['build']}); press L to restart it on the current one." if older else ""
+    from kratos.utils.build_info import display_build
+
+    stale = (f" It runs an older build ({display_build(lst['build'])}); press L to restart it on the current one."
+             if older else "")
     mode = lst.get("mode")
     if mode == "service":
         where = f"{scope} service" if scope else "systemd service"

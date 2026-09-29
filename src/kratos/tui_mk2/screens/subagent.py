@@ -203,7 +203,13 @@ class SubAgentScreen(Screen):
             listeners, in_process_here=here, disk_build=current_disk_build(), scope=scope, linger=linger)
         color = {"ok": T.SAFE, "attention": T.ATTENTION, "critical": T.CRITICAL}.get(severity, T.TEXT_DIM)
         glyph = {"ok": "●", "attention": "◐", "critical": "○"}.get(severity, "·")
-        self.query_one("#sa-listener", Static).update(Text(f"{glyph} {msg}", style=color))
+        line = Text(f"{glyph} {msg}", style=color)
+        from kratos.utils.build_info import restart_hint
+
+        hint = restart_hint()
+        if hint:  # this screen's own code may be older than what's described above
+            line.append(f"\n◐ {hint}", style=T.ATTENTION)
+        self.query_one("#sa-listener", Static).update(line)
 
     def _refresh(self) -> None:
         self._refresh_listener_line()

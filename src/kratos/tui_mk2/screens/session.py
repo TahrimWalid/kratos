@@ -436,6 +436,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         footer.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
             footer.append(" · will compact soon", style=T.CRITICAL)
+        from kratos.utils.build_info import newer_build_on_disk
+
+        if newer_build_on_disk():
+            footer.append("  ·  updated on disk — restart Kratos", style=T.ATTENTION)
         self.query_one("#statusfooter", Static).update(footer)
 
     def refresh_theme(self) -> None:

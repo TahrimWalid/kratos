@@ -123,7 +123,20 @@ def _check_kept_tools(out: list[Check]) -> None:
         out.append(_row("kept tools", "pass", f"{len(meta)} kept, all source files present"))
 
 
+def _check_build(out: list[Check]) -> None:
+    from kratos.utils.build_info import RUNNING_BUILD, display_build, newer_build_on_disk
+
+    disk = newer_build_on_disk()
+    if disk is None:
+        out.append(_row("Kratos build", "info", f"running {display_build(RUNNING_BUILD)} (matches the code on disk)"))
+    else:
+        out.append(_row("Kratos build", "warn",
+                        f"running {display_build(RUNNING_BUILD)}, but the code on disk changed ({display_build(disk)})",
+                        fix="quit and run `kratos` again to use the code on disk."))
+
+
 _SECTIONS = (
+    ("Kratos build", _check_build),
     ("LLM endpoint", _check_llm_endpoint),
     (".env profile", _check_env_profile),
     ("backend", _check_backend),

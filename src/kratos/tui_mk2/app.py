@@ -93,6 +93,10 @@ class TooSmallScreen(Screen):
         yield Static(Align.center(Text(self._message)))
 
 
+# How often a running window checks whether the code on disk changed.
+_BUILD_CHECK_SECONDS = 60.0
+
+
 class KratosTUI(ResilientWorkerHost, App):
     CSS = T.APP_CSS
     TITLE = "kratos"
@@ -225,7 +229,21 @@ class KratosTUI(ResilientWorkerHost, App):
         # saved (e.g. a profile set up before detection existed). Background
         # thread: it's a network call and must never delay startup.
         self.run_worker(self._autofill_active_context, thread=True, group="context-autofill")
+        # A long-lived window keeps running the code it started with; say so
+        # (once) when the code on disk changes underneath it.
+        self._build_change_noted = False
+        self.set_interval(_BUILD_CHECK_SECONDS, self._check_build_on_disk)
         self._boot()
+
+    def _check_build_on_disk(self) -> None:
+        from kratos.utils.build_info import restart_hint
+
+        if self._build_change_noted:
+            return
+        hint = restart_hint()
+        if hint:
+            self._build_change_noted = True
+            self.notify(hint, title="Kratos was updated", severity="warning", timeout=20)
 
     def _autofill_active_context(self) -> None:
         from kratos.adapters import llm_profiles
