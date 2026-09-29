@@ -33,9 +33,47 @@ sandbox_staging/
 # src/kratos/agent/self_write_loop.py.
 kept_tools/
 
-# Local configs
+# Local configs and secrets -- .env.example is the only env-shaped file shipped
 .env
-.env.bak*
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+id_ecdsa*
+known_hosts
+
+# Databases / session stores anywhere (the default lives in data/, but a
+# custom --data-dir or a copied snapshot can land elsewhere)
+*.db
+*.db-*
+*.db.*
+*.sqlite
+*.sqlite3
+
+# Generated sub-agent installers (they embed a live pairing code)
+kratos-subagent-install-*.sh
+kratos-subagent-upgrade-*.sh
+
+# Captures, logs, screenshots
+*.pcap
+*.pcapng
+logs/
+screenshots/
+*.png
+*.jpg
+*.jpeg
+*.gif
+!docs/images/**
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # LLM model files (large binaries — download separately)
 llm/models/
@@ -54,14 +92,19 @@ llm/not
 llm/notes
 llm/work/
 
-# Shell scripts, markdown, and text files (except README and the published
-# design doc -- everything else under docs/ is working notes, not shipped)
+# Shell scripts, markdown, and text files -- working notes, not shipped --
+# except the published docs listed here. Named explicitly (not a blanket
+# !README.md) so a README in a private or generated directory, e.g.
+# docs/deprecated/, is never pulled in.
 *.sh
 *.md
 *.txt
-!README.md
+!/README.md
 !docs/DESIGN.md
 !docs/GUIDE.md
+!yara_rules/README.md
+!scripts/attacks/README.md
+!scripts/attacks/wordlists/README.md
 # Test fixtures are shipped data, not scratch -- keep them tracked despite the
 # blanket *.sh/*.md/*.txt ignores above.
 !tests/fixtures/**

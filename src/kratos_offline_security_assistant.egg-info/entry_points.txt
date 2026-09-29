@@ -1,3 +1,0 @@
-[console_scripts]
-kratos = kratos.cli.app:main
-kratos-mk2 = kratos.tui_mk2.app:main

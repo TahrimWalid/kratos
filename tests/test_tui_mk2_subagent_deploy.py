@@ -177,7 +177,7 @@ def test_install_timeout_is_not_blamed_on_the_network(tmp_path, key, monkeypatch
 
 def test_d_redeploys_a_waiting_code_and_remembers_the_address(tmp_path, key, monkeypatch):
     sa = SubAgentStore(tmp_path / "kratos.db")
-    code = sa.create_pairing_code(name="web", core_host="100.97.223.65")["code"]
+    code = sa.create_pairing_code(name="web", core_host="100.64.0.10")["code"]
     screen = SubAgentScreen(tmp_path)
     deployed = []
     monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker",
@@ -255,7 +255,7 @@ def test_expired_while_on_the_prompt_is_caught_before_deploying(tmp_path, key, m
 @pytest.mark.parametrize("choice", ["upgrade", "pair", "cancel"])
 def test_box_that_already_runs_an_agent(tmp_path, key, monkeypatch, choice):
     sa = SubAgentStore(tmp_path / "kratos.db")
-    code = sa.create_pairing_code(name="web", core_host="100.97.223.65")["code"]
+    code = sa.create_pairing_code(name="web", core_host="100.64.0.10")["code"]
     screen = SubAgentScreen(tmp_path)
     deployed = []
     monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker",
@@ -279,7 +279,7 @@ def test_box_that_already_runs_an_agent(tmp_path, key, monkeypatch, choice):
         path, c, kw = deployed[0]
         assert c is None and kw == {"upgrade": True} and sa.get_pairing_code(code) is None
         body = open(path).read()
-        assert "UPGRADE=1" in body and "PAIR_CODE=''" in body and "100.97.223.65" in body
+        assert "UPGRADE=1" in body and "PAIR_CODE=''" in body and "100.64.0.10" in body
 
 
 def test_a_repair_code_never_asks(tmp_path, key, monkeypatch):

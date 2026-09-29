@@ -305,7 +305,7 @@ class SubAgentStore:
                 # The name the operator chose when creating the code (e.g. the
                 # address they onboarded) wins; the agent's own hostname is
                 # only a fallback. It used to be discarded, so a server added as
-                # "15.204.216.9" was stored as "devserver3" and nothing could
+                # "203.0.113.9" was stored as its hostname "web-01" and nothing could
                 # connect the two again.
                 (target_id, (row["name"] or "").strip() or hostname, token, agent_id, hostname, agent_version, now, now),
             )

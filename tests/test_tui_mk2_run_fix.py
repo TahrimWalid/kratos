@@ -17,9 +17,9 @@ def _pair(sa: SubAgentStore, name: str) -> str:
 
 def test_pairing_keeps_the_chosen_name(tmp_path):
     sa = SubAgentStore(tmp_path / "kratos.db")
-    tid = _pair(sa, "15.204.216.9")
+    tid = _pair(sa, "203.0.113.9")
     t = sa.get_target(tid)
-    assert t["name"] == "15.204.216.9" and t["hostname"] == "host-15.204.216.9"
+    assert t["name"] == "203.0.113.9" and t["hostname"] == "host-203.0.113.9"
     code = sa.create_pairing_code()["code"]  # no name chosen -> hostname
     assert sa.get_target(sa.redeem_pairing_code(code, agent_id="z", hostname="box", agent_version="0.2.0")["target_id"])["name"] == "box"
 
@@ -56,8 +56,8 @@ def test_nothing_offered_when_disabled_unpaired_ambiguous_or_not_on_the_target(t
 
 def test_an_explicitly_picked_machine_is_matched(tmp_path):
     sa = SubAgentStore(tmp_path / "kratos.db")
-    tid = _pair(sa, "devserver3")
-    fake = SimpleNamespace(session_state={"targets": ["15.204.216.9"]}, _data_dir=tmp_path)
+    tid = _pair(sa, "web-01")
+    fake = SimpleNamespace(session_state={"targets": ["203.0.113.9"]}, _data_dir=tmp_path)
     assert SessionScreen._match_runnable_fixes(fake, [BAN]) == []           # no automatic tie
     [fix] = SessionScreen._match_runnable_fixes(fake, [BAN], target_id=tid)  # the user said which machine
     assert fix["target_id"] == tid

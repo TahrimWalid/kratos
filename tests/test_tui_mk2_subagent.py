@@ -85,7 +85,7 @@ def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch
             await pilot.pause()
 
             # name, hub address pick, deploy-over-SSH? (decline)
-            answers = iter(["web-01", "100.97.223.65", False])
+            answers = iter(["web-01", "100.64.0.10", False])
 
             async def canned(_modal):
                 return next(answers)
@@ -104,7 +104,7 @@ def test_add_server_flow_writes_installer_and_creates_code(tmp_path, monkeypatch
     assert len(scripts) == 1
     body = scripts[0].read_text()
     assert body.startswith("#!/bin/sh")
-    assert "100.97.223.65" in body
+    assert "100.64.0.10" in body
     assert "--enable-execution" not in body  # onboarding never enables cap2
 
     texts = captured["texts"]

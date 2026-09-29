@@ -139,14 +139,14 @@ def test_ssh_path_reports_unreachable(tmp_path, monkeypatch):
                 return "ssh"
 
             monkeypatch.setattr(app, "push_screen_wait", canned)
-            screen = OnboardTargetScreen(tmp_path, "15.204.216.9")
+            screen = OnboardTargetScreen(tmp_path, "203.0.113.9")
             app.push_screen(screen)
             await app.workers.wait_for_complete()
             await pilot.pause()
             captured["texts"] = _log_texts(screen)
 
     asyncio.run(run())
-    assert any("can't SSH into 15.204.216.9 yet" in t for t in captured["texts"])
+    assert any("can't SSH into 203.0.113.9 yet" in t for t in captured["texts"])
     assert any("Permission denied" in t for t in captured["texts"])
 
 

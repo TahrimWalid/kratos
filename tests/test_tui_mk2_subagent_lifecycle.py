@@ -152,7 +152,7 @@ def test_pending_code_row_counts_down_and_expired_row_says_who_tried(tmp_path):
 def test_new_code_replaces_an_expired_one_with_the_same_intent(tmp_path, monkeypatch):
     sa = SubAgentStore(tmp_path / "kratos.db")
     tid = _pair(sa, "web")
-    old = sa.create_pairing_code(name="web", replaces_target_id=tid, core_host="100.97.223.65")["code"]
+    old = sa.create_pairing_code(name="web", replaces_target_id=tid, core_host="100.64.0.10")["code"]
     sa._write("UPDATE subagent_pairing_codes SET expires_at = ? WHERE code = ?", (_expiry_iso(-600), old))
     screen = SubAgentScreen(tmp_path)
 
@@ -168,7 +168,7 @@ def test_new_code_replaces_an_expired_one_with_the_same_intent(tmp_path, monkeyp
     _run(screen, script, fake_wait=no)
     assert sa.get_pairing_code(old) is None
     [new] = sa.list_pending_pairing_codes()
-    assert new["name"] == "web" and new["replaces_target_id"] == tid and new["core_host"] == "100.97.223.65"
+    assert new["name"] == "web" and new["replaces_target_id"] == tid and new["core_host"] == "100.64.0.10"
     assert (tmp_path / "kratos-subagent-install-web.sh").read_text().count(new["code"]) >= 1
 
 
@@ -276,17 +276,17 @@ def test_details_show_connection_history(tmp_path):
 
 def test_installed_but_never_checked_in_gets_a_diagnosis(tmp_path, monkeypatch):
     sa = SubAgentStore(tmp_path / "kratos.db")
-    code = sa.create_pairing_code(name="quiet", core_host="100.97.223.65")["code"]
+    code = sa.create_pairing_code(name="quiet", core_host="100.64.0.10")["code"]
     screen = SubAgentScreen(tmp_path)
 
     async def script(app, pilot):
-        screen._watched_codes[code] = {"name": "quiet", "host": "100.97.223.65", "deployed_at": 1.0}
+        screen._watched_codes[code] = {"name": "quiet", "host": "100.64.0.10", "deployed_at": 1.0}
         screen._refresh()
         await pilot.pause()
 
     out = _run(screen, script)
     assert isinstance(out["screen"], CommandModal)
-    assert "journalctl -u kratos-subagent" in out["screen"]._command and "100.97.223.65" in out["screen"]._command
+    assert "journalctl -u kratos-subagent" in out["screen"]._command and "100.64.0.10" in out["screen"]._command
 
 
 def test_live_codes_first_expired_after_servers_and_succeeded_ones_hidden(tmp_path):

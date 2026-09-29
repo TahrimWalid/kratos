@@ -31,7 +31,7 @@ def _extract_blobs(script: str) -> dict[str, str]:
 
 
 def test_generate_installer_embeds_all_bundle_files_roundtrip():
-    script = installer.generate_installer("100.97.223.65", "CODE-1234", core_port=8765)
+    script = installer.generate_installer("100.64.0.10", "CODE-1234", core_port=8765)
     blobs = _extract_blobs(script)
 
     # __init__.py plus the five real bundle files.
@@ -96,7 +96,7 @@ def test_generate_installer_rejects_bad_port():
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
 def test_generated_script_is_valid_posix_sh(tmp_path):
-    script = installer.generate_installer("100.97.223.65", "CODE-9", core_port=8765)
+    script = installer.generate_installer("100.64.0.10", "CODE-9", core_port=8765)
     path = tmp_path / "install.sh"
     path.write_text(script, encoding="utf-8")
     # `sh -n` parses without executing -- catches quoting/heredoc/syntax errors.

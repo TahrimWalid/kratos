@@ -257,7 +257,7 @@ def test_garbage_actions_in_a_push_are_reported_not_fatal(tmp_path):
 # F9 -- trusted transport
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("peer,trusted", [
-    ("127.0.0.1", True), ("::1", True), ("100.97.223.65", True), ("fd7a:115c:a1e0::5", True),
+    ("127.0.0.1", True), ("::1", True), ("100.64.0.10", True), ("fd7a:115c:a1e0::5", True),
     ("::ffff:127.0.0.1", True), ("10.136.28.1", False), ("192.168.1.10", False), ("203.0.113.9", False),
     (None, False), ("not-an-ip", False),
 ])
