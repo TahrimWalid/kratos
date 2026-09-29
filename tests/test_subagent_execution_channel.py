@@ -24,11 +24,28 @@ import pytest
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.storage.whitelist_store import WhitelistStore
+from kratos.subagent import ceiling as C
 from kratos.subagent import protocol as proto
 from kratos.subagent import signing
 from kratos.subagent import whitelist as W
 from kratos.subagent.agent import SubAgent
 from kratos.subagent.core_server import CoreServer
+
+# The shipped ceiling plus a harmless `echo <token>` shape, so a REAL
+# subprocess can run end to end without touching anything on this machine.
+TEST_CEILING = C.Ceiling(version=1, shapes=(
+    *C.DEFAULT_CEILING.shapes,
+    C.Shape(id="test.echo", binary="echo", args=(C.Var(W.Slot(kind="token")),),
+            description="Echo one token.", reversible=True, disrupts_running_service=False),
+))
+
+ECHO_SPEC = W.ActionSpec(
+    id="test.echo", layer="maintainer",
+    argv_template=("echo", "{msg}"),
+    slots={"msg": W.Slot(kind="token")},
+    effect="Echoes a token to stdout.", reversibility="No state change to reverse.",
+    blast_radius="None -- stdout only.", source_recommendation=("TEST-ECHO",),
+)
 
 
 def _free_port() -> int:
@@ -66,6 +83,7 @@ async def _stop_agent(agent: SubAgent, task: asyncio.Task) -> None:
 
 
 async def _pair_agent(store, port, tmp_path, *, name=None, execution_enabled=False, **kwargs) -> tuple[SubAgent, asyncio.Task, str]:
+    kwargs.setdefault("local_allow_file", None)  # hermetic: never read this machine's /etc
     pairing = store.create_pairing_code(name=name)
     agent = SubAgent(
         core_host="127.0.0.1", core_port=port,
@@ -78,6 +96,7 @@ async def _pair_agent(store, port, tmp_path, *, name=None, execution_enabled=Fal
     )
     task = asyncio.create_task(agent.run_forever())
     await _wait_until(lambda: agent.last_target_id is not None)
+    await _wait_until(agent._execution_armed)  # the first signed pong has arrived
     return agent, task, agent.last_target_id
 
 
@@ -179,25 +198,30 @@ def test_equal_version_repush_is_accepted_idempotently(tmp_path):
     asyncio.run(run())
 
 
-def test_a_malformed_action_rejects_the_whole_push(tmp_path):
+def test_actions_outside_the_ceiling_are_dropped_and_reported(tmp_path):
+    """A signed push from core is NOT trusted to define what may run: an
+    action outside the agent's own ceiling is refused and reported in the
+    ack, and the rest of the push still applies."""
+
     async def run():
         store = SubAgentStore(tmp_path / "kratos.db")
+        wstore = WhitelistStore(tmp_path / "kratos.db")
         port = _free_port()
         server = await _start_server(store, port)
+        server.whitelist_store = wstore  # record the ack, without the watch loop re-pushing
         try:
             agent, task, target_id = await _pair_agent(store, port, tmp_path)
             try:
                 good = next(s for s in W.list_builtin_action_specs() if s.id == "fail2ban.ban_ip")
-                target = store.get_target(target_id)
                 bad_wire = W.spec_to_wire(good)
-                bad_wire["argv_template"] = ["bash", "-c", "{ip}"]  # would be a HardExclusionError
-                key = signing.derive_signing_key(target["token"])
-                envelope = {"type": proto.MSG_WHITELIST_PUSH, "version": 1, "actions": [W.spec_to_wire(good), bad_wire]}
-                envelope["sig"] = signing.sign_envelope(key, envelope)
-                await proto.write_frame(server._live[target_id], envelope)
-                await asyncio.sleep(0.3)
-                assert agent._whitelist_version is None  # the WHOLE push rejected, not partially applied
-                assert agent._whitelist_specs == {}
+                bad_wire["id"] = "evil.shell"
+                bad_wire["argv_template"] = ["bash", "-c", "{ip}"]
+                target = store.get_target(target_id)
+                ok = await server.push_whitelist(target_id, target["token"], [W.spec_to_wire(good), bad_wire], 1)
+                assert ok is True
+                assert set(agent._whitelist_specs) == {"fail2ban.ban_ip"}
+                rejected = wstore.get_agent_state(target_id)["rejected"]
+                assert [r["id"] for r in rejected] == ["evil.shell"]
             finally:
                 await _stop_agent(agent, task)
         finally:
@@ -242,17 +266,11 @@ def test_dispatch_succeeds_end_to_end_with_execution_enabled(tmp_path):
         port = _free_port()
         server = await _start_server(store, port)
         try:
-            agent, task, target_id = await _pair_agent(store, port, tmp_path, execution_enabled=True)
+            agent, task, target_id = await _pair_agent(store, port, tmp_path, execution_enabled=True,
+                                                       ceiling=TEST_CEILING)
             try:
-                harmless = W.ActionSpec(
-                    id="test.echo", layer="maintainer",
-                    argv_template=("echo", "{msg}"),
-                    slots={"msg": W.Slot(kind="token")},
-                    effect="Echoes a token to stdout.", reversibility="No state change to reverse.",
-                    blast_radius="None -- stdout only.", source_recommendation=("TEST-ECHO",),
-                )
                 target = store.get_target(target_id)
-                ok = await server.push_whitelist(target_id, target["token"], [W.spec_to_wire(harmless)], 1)
+                ok = await server.push_whitelist(target_id, target["token"], [W.spec_to_wire(ECHO_SPEC)], 1)
                 assert ok is True
 
                 result = await server.dispatch_action(

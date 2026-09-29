@@ -37,7 +37,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, ListItem, ListView, Static
+from textual.widgets import Button, Input, Label, ListItem, ListView, SelectionList, Static
 
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.render import approval_panel, plan_preview_panel
@@ -847,4 +847,54 @@ class CommandModal(ModalScreen[None]):
         self.app.notify("Copied to clipboard.", timeout=3)
 
     def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class MultiSelectModal(ModalScreen[list[Any] | None]):
+    """Tick one or more items (space toggles, Enter confirms). Returns the
+    ticked values in their original order, or None on esc. At least one must
+    stay ticked -- an empty choice would mean "allow nothing", which is what
+    disabling is for."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        # priority: the SelectionList would otherwise consume Enter as a toggle,
+        # leaving no way to finish with the keyboard.
+        Binding("enter", "done", "done", show=True, priority=True),
+    ]
+
+    CSS = """
+    MultiSelectModal SelectionList { height: auto; max-height: 20; }
+    """
+
+    def __init__(self, title: str, entries: list[tuple[Any, str]], selected: list[Any] | None = None,
+                 subtitle: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._subtitle = subtitle
+        self._entries = entries
+        self._selected = set(selected if selected is not None else [v for v, _ in entries])
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            if self._subtitle:
+                yield Static(Text(self._subtitle, style=T.TEXT_DIM))
+            yield SelectionList(*[(label, i, value in self._selected)
+                                  for i, (value, label) in enumerate(self._entries)], id="multi")
+            yield Static(Text("↑↓ move · space tick/untick · Enter done · esc cancel", style=T.TEXT_DIM),
+                         id="multi-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#multi", SelectionList).focus()
+
+    def action_done(self) -> None:
+        picked = sorted(self.query_one("#multi", SelectionList).selected)
+        if not picked:
+            self.query_one("#multi-hint", Static).update(
+                Text("Tick at least one (esc to cancel).", style=f"bold {T.ATTENTION}"))
+            return
+        self.dismiss([self._entries[i][0] for i in picked])
+
+    def action_cancel(self) -> None:
         self.dismiss(None)

@@ -32,6 +32,15 @@ this target's current policy look like" state as the two above:
     reads it as "on" unless a human explicitly set it, and clearing it here
     is immediate and sufficient to stop future dispatch (in-flight ones are
     a separate, already-signed concern the execution channel itself owns).
+  - `whitelist_custom_entries` -- a user's OWN command (typed blanks or a
+    fully exact command), stored as a whole ActionSpec. Accepted only if it
+    fits the target's execution CEILING (`kratos.subagent.ceiling`: the shape
+    set the agent ships as code, plus exact commands the target's admin
+    listed on the target itself). Re-checked on every read.
+  - `whitelist_agent_state` -- what each agent last REPORTED about itself:
+    its ceiling fingerprint, the exact local commands its admin allowlisted,
+    and which pushed actions it refused. Display/validation input only; the
+    agent enforces its own ceiling regardless of anything stored here.
   - `whitelist_dispatch_requests` -- a small durable QUEUE, not a live RPC
     channel: the consent/approval UI (running in the TUI process) and the
     `kratos subagent-serve` process (running `CoreServer`) are separate OS
@@ -50,10 +59,12 @@ from __future__ import annotations
 import json
 import secrets
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kratos.subagent import ceiling as C
 from kratos.subagent import whitelist as W
 from kratos.subagent import whitelist_templates as T
 from kratos.utils.timeutil import utc_now_iso
@@ -75,6 +86,20 @@ def _new_entry_id() -> str:
     return secrets.token_hex(8)  # [a-f0-9]+ -- matches whitelist_templates' instance_id shape
 
 
+def _sanitize_ceiling_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the expected, bounded fields of an agent's ceiling report --
+    it arrives from the network and is later shown in the UI."""
+    def _strs(v: Any, limit: int) -> list[str]:
+        return [str(x)[:600] for x in v[:limit]] if isinstance(v, list) else []
+
+    return {
+        "version": report.get("version") if type(report.get("version")) is int else None,
+        "fingerprint": str(report.get("fingerprint") or "")[:64],
+        "local_commands": _strs(report.get("local_commands"), C.MAX_LOCAL_COMMANDS),
+        "local_problems": _strs(report.get("local_problems"), 50),
+    }
+
+
 @dataclass
 class WhitelistEntryStatus:
     """One user entry as returned by `list_user_entries` -- either a usable
@@ -92,6 +117,11 @@ class WhitelistEntryStatus:
     effective_spec: W.ActionSpec | None
     tier: W.Sensitivity | None
     error: str | None
+    # An exact command saved before the target's admin allowed it on the
+    # target: kept, shown as waiting, never dispatchable until the agent
+    # reports that line.
+    pending: bool = False
+    stored_spec: W.ActionSpec | None = None
 
 
 class WhitelistStore:
@@ -168,6 +198,33 @@ class WhitelistStore:
                 "CREATE INDEX IF NOT EXISTS idx_whitelist_dispatch_pending "
                 "ON whitelist_dispatch_requests(target_id, status)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS whitelist_custom_entries (
+                    entry_id TEXT PRIMARY KEY,
+                    target_id TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    spec_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_whitelist_custom_entries_target ON whitelist_custom_entries(target_id)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS whitelist_agent_state (
+                    target_id TEXT PRIMARY KEY,
+                    agent_version TEXT,
+                    ceiling_json TEXT,
+                    acked_version INTEGER,
+                    rejected_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -236,9 +293,9 @@ class WhitelistStore:
         if template is None:
             raise ValueError(f"no such template {template_id!r}")
         entry_id = _new_entry_id()
-        T.build_effective_spec(  # validate before persisting anything
+        C.check_spec(T.build_effective_spec(  # validate (incl. the shipped ceiling) before persisting anything
             template, instance_id=entry_id, selected_values=selected_values, extra_values=extra_values
-        )
+        ))
         now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
@@ -278,9 +335,9 @@ class WhitelistStore:
         template = T.get_template(row["template_id"])
         if template is None:
             raise ValueError(f"entry {entry_id!r} references an unknown template {row['template_id']!r}")
-        T.build_effective_spec(  # re-validate the NEW values before writing
+        C.check_spec(T.build_effective_spec(  # re-validate the NEW values before writing
             template, instance_id=entry_id, selected_values=selected_values, extra_values=extra_values
-        )
+        ))
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -302,14 +359,14 @@ class WhitelistStore:
         doc §9 #3/architecture doc 3a: 'enabling/disabling ... cannot create a
         new capability'). No re-validation needed: toggling never changes
         WHAT the entry could do, only whether it currently may."""
-        row = self._get_user_entry_row(entry_id)
+        row, table = self._find_entry(entry_id)
         if row is None:
             raise ValueError(f"no such whitelist entry {entry_id!r}")
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
-                "UPDATE whitelist_user_entries SET enabled = ?, updated_at = ? WHERE entry_id = ?",
+                f"UPDATE {table} SET enabled = ?, updated_at = ? WHERE entry_id = ?",
                 (1 if enabled else 0, utc_now_iso(), entry_id),
             )
             if cur.rowcount == 0:
@@ -323,11 +380,13 @@ class WhitelistStore:
         self._bump_whitelist_version(row["target_id"])
 
     def delete_user_entry(self, entry_id: str) -> None:
-        row = self._get_user_entry_row(entry_id)
+        row, table = self._find_entry(entry_id)
+        if row is None:
+            return
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute("DELETE FROM whitelist_user_entries WHERE entry_id = ?", (entry_id,))
+            conn.execute(f"DELETE FROM {table} WHERE entry_id = ?", (entry_id,))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -336,6 +395,19 @@ class WhitelistStore:
             conn.close()
         if row is not None:
             self._bump_whitelist_version(row["target_id"])
+
+    def _find_entry(self, entry_id: str) -> tuple[sqlite3.Row | None, str]:
+        """(row, table) for a template-instance or custom entry. `table` is
+        one of two fixed names, never caller input."""
+        row = self._get_user_entry_row(entry_id)
+        if row is not None:
+            return row, "whitelist_user_entries"
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM whitelist_custom_entries WHERE entry_id = ?", (entry_id,)).fetchone()
+        finally:
+            conn.close()
+        return row, "whitelist_custom_entries"
 
     def _get_user_entry_row(self, entry_id: str) -> sqlite3.Row | None:
         conn = _connect(self.db_path)
@@ -373,9 +445,9 @@ class WhitelistStore:
                     effective_spec = T.build_effective_spec(
                         template, instance_id=row["entry_id"], selected_values=selected, extra_values=extra
                     )
-                    tier = W.compute_sensitivity_tier(effective_spec)
-                except (T.TemplateInstanceError, W.ActionSpecError) as e:
-                    error = str(e)
+                    tier = C.tier_for(effective_spec)
+                except (T.TemplateInstanceError, W.ActionSpecError, C.CeilingError) as e:
+                    effective_spec, error = None, str(e)
             out.append(
                 WhitelistEntryStatus(
                     entry_id=row["entry_id"], target_id=row["target_id"], template_id=row["template_id"],
@@ -384,7 +456,7 @@ class WhitelistStore:
                     effective_spec=effective_spec, tier=tier, error=error,
                 )
             )
-        return out
+        return out + self._list_custom_entries(target_id)
 
     # ------------------------------------------------------------------
     # Maintainer layer -- per-target enable/disable override only (§6: never
@@ -446,10 +518,251 @@ class WhitelistStore:
         overrides = self._maintainer_overrides(target_id)
         out = []
         for spec in W.list_builtin_action_specs():
-            tier = W.compute_sensitivity_tier(spec)
+            tier = C.tier_for(spec)
             enabled = overrides.get(spec.id, W.default_enabled_for_tier(tier))
             out.append({"spec": spec, "tier": tier, "enabled": enabled, "overridden": spec.id in overrides})
         return out
+
+    # ------------------------------------------------------------------
+    # Custom entries -- the user's own commands, within the target's ceiling.
+    # ------------------------------------------------------------------
+    def create_custom_entry(
+        self,
+        target_id: str,
+        argv_template: Sequence[str],
+        slots: dict[str, W.Slot] | None = None,
+        *,
+        effect: str,
+        reversibility: str,
+        blast_radius: str,
+        reversible: bool = False,
+        disrupts_running_service: bool = False,
+        reachability_adjacent: bool = False,
+        allow_pending: bool = False,
+    ) -> str:
+        """A user-authored command: a fixed argv with `{name}` blanks typed by
+        `slots` (or no blanks at all -- an exact command). Accepted only if it
+        fits the target's ceiling. `effect`/`reversibility`/`blast_radius` are
+        what the approval screen shows, so they must be written by the human.
+        The shown tier is raised to the ceiling's floor: a user can declare
+        MORE risk than the ceiling assumes, never less."""
+        if not target_id:
+            raise ValueError("target_id is required -- whitelist entries are per-target scoped (design doc §6)")
+        entry_id = _new_entry_id()
+        spec = W.ActionSpec(
+            id=f"user.custom.{entry_id}",
+            layer="user",
+            argv_template=tuple(C.normalize_command(list(argv_template))),
+            slots=dict(slots or {}),
+            effect=effect.strip(),
+            reversibility=reversibility.strip(),
+            blast_radius=blast_radius.strip(),
+            reversible=reversible,
+            disrupts_running_service=disrupts_running_service,
+            reachability_adjacent=reachability_adjacent,
+        )
+        try:
+            self._check_custom(target_id, spec)
+        except C.CeilingError:
+            # Only an exact command may wait for the target's admin; it is
+            # still fully validated as a plain, shell-free command first.
+            if not (allow_pending and not spec.slots):
+                raise
+            C.parse_command_line(C.shlex.join(spec.argv_template))
+            W.validate_spec(spec, hard_exclusions=False)
+        now = utc_now_iso()
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO whitelist_custom_entries (entry_id, target_id, enabled, spec_json, created_at, updated_at) "
+                "VALUES (?, ?, 1, ?, ?, ?)",
+                (entry_id, target_id, json.dumps(W.spec_to_wire(spec)), now, now),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        self._bump_whitelist_version(target_id)
+        return entry_id
+
+    def create_exact_command_entry(
+        self, target_id: str, command_line: str, *, effect: str, reversibility: str, blast_radius: str
+    ) -> str:
+        """A complete command with no blanks, e.g. `adduser alice`. It can
+        only be dispatched if the target's admin also listed exactly that
+        command on the target (C.LOCAL_ALLOW_FILE), unless a shipped shape
+        already covers it."""
+        tokens = C.parse_command_line(command_line)
+        return self.create_custom_entry(
+            target_id, tokens, None, effect=effect, reversibility=reversibility, blast_radius=blast_radius,
+            allow_pending=True,
+        )
+
+    def update_custom_entry(
+        self, entry_id: str, *, slots: dict[str, W.Slot] | None = None,
+        effect: str | None = None, reversibility: str | None = None, blast_radius: str | None = None,
+    ) -> None:
+        """Edit a custom entry's approval texts and/or narrow its blanks. The
+        command itself is fixed -- a different command is a new entry.
+        Re-validated against the ceiling before anything is written."""
+        row, table = self._find_entry(entry_id)
+        if row is None or table != "whitelist_custom_entries":
+            raise ValueError(f"no such custom whitelist entry {entry_id!r}")
+        old = W.spec_from_wire(json.loads(row["spec_json"]))
+        if slots is not None and set(slots) != set(old.slots):
+            raise ValueError("an edit can change what each blank allows, not which blanks exist")
+        spec = W.ActionSpec(
+            id=old.id, layer="user", argv_template=old.argv_template,
+            slots=dict(slots) if slots is not None else old.slots,
+            effect=(effect if effect is not None else old.effect).strip(),
+            reversibility=(reversibility if reversibility is not None else old.reversibility).strip(),
+            blast_radius=(blast_radius if blast_radius is not None else old.blast_radius).strip(),
+            reversible=old.reversible, disrupts_running_service=old.disrupts_running_service,
+            reachability_adjacent=old.reachability_adjacent,
+        )
+        try:
+            self._check_custom(row["target_id"], spec)
+        except C.CeilingError:
+            if spec.slots:
+                raise
+            W.validate_spec(spec, hard_exclusions=False)  # still-pending exact command
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("UPDATE whitelist_custom_entries SET spec_json = ?, updated_at = ? WHERE entry_id = ?",
+                         (json.dumps(W.spec_to_wire(spec)), utc_now_iso(), entry_id))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        self._bump_whitelist_version(row["target_id"])
+
+    def request_resync(self, target_id: str) -> int:
+        """Ask core to re-push this target's whitelist on its next watch-loop
+        tick; the agent's ack reports its current allow file back. Pushing an
+        unchanged action set is harmless (the agent applies it idempotently)."""
+        return self._bump_whitelist_version(target_id)
+
+    def _check_custom(self, target_id: str, spec: W.ActionSpec) -> list[C.Shape]:
+        try:
+            return C.check_spec(spec, self.target_ceiling(target_id))
+        except C.CeilingError as e:
+            if not spec.slots:
+                raise C.CeilingError(
+                    f"{e}. To allow this exact command, add the line {C.shlex.join(spec.argv_template)!r} to "
+                    f"{C.LOCAL_ALLOW_FILE} on the target (owned by root, not group/world-writable); the agent "
+                    "reports it on its next connection."
+                ) from e
+            raise
+
+    def _list_custom_entries(self, target_id: str) -> list[WhitelistEntryStatus]:
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT * FROM whitelist_custom_entries WHERE target_id = ? ORDER BY created_at", (target_id,)
+            ).fetchall()
+        finally:
+            conn.close()
+        ceiling = self.target_ceiling(target_id)
+        out: list[WhitelistEntryStatus] = []
+        for row in rows:
+            spec: W.ActionSpec | None = None
+            stored: W.ActionSpec | None = None
+            tier: W.Sensitivity | None = None
+            error: str | None = None
+            pending = False
+            try:
+                stored = W.spec_from_wire(json.loads(row["spec_json"]))
+                tier = C.tier_for(stored, ceiling)
+                spec = stored
+            except C.CeilingError as e:
+                if stored is not None and not stored.slots:
+                    pending = True
+                    error = "waiting for the target: its admin hasn't allowed this exact command there yet"
+                else:
+                    error = str(e)
+            except (W.ActionSpecError, ValueError) as e:
+                error = str(e)
+            out.append(WhitelistEntryStatus(
+                entry_id=row["entry_id"], target_id=row["target_id"], template_id="custom",
+                enabled=bool(row["enabled"]), selected_values={}, extra_values={},
+                created_at=row["created_at"], updated_at=row["updated_at"],
+                effective_spec=spec, tier=tier, error=error, pending=pending, stored_spec=stored,
+            ))
+        return out
+
+    # ------------------------------------------------------------------
+    # What each agent reported about itself (display + core-side checks only;
+    # the agent enforces its own ceiling whatever is recorded here).
+    # ------------------------------------------------------------------
+    def record_agent_hello(self, target_id: str, *, agent_version: Any, ceiling: Any) -> None:
+        self._upsert_agent_state(target_id, agent_version=agent_version if isinstance(agent_version, str) else None,
+                                 ceiling=ceiling)
+
+    def record_push_ack(self, target_id: str, version: int, rejected: list[Any], ceiling: Any) -> None:
+        clean = [
+            {"id": str(r.get("id", "?"))[:200], "reason": str(r.get("reason", ""))[:1000]}
+            for r in rejected if isinstance(r, dict)
+        ][:500]
+        self._upsert_agent_state(target_id, ceiling=ceiling, acked_version=version, rejected=clean)
+
+    def _upsert_agent_state(self, target_id: str, *, agent_version: str | None = None, ceiling: Any = None,
+                            acked_version: int | None = None, rejected: list[dict[str, str]] | None = None) -> None:
+        ceiling_json = json.dumps(_sanitize_ceiling_report(ceiling)) if isinstance(ceiling, dict) else None
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO whitelist_agent_state
+                    (target_id, agent_version, ceiling_json, acked_version, rejected_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_id) DO UPDATE SET
+                    agent_version = COALESCE(excluded.agent_version, agent_version),
+                    ceiling_json = COALESCE(excluded.ceiling_json, ceiling_json),
+                    acked_version = COALESCE(excluded.acked_version, acked_version),
+                    rejected_json = CASE WHEN excluded.acked_version IS NULL
+                                         THEN rejected_json ELSE excluded.rejected_json END,
+                    updated_at = excluded.updated_at
+                """,
+                (target_id, agent_version, ceiling_json, acked_version, json.dumps(rejected or []), utc_now_iso()),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def get_agent_state(self, target_id: str) -> dict[str, Any] | None:
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM whitelist_agent_state WHERE target_id = ?", (target_id,)).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        return {
+            "target_id": row["target_id"],
+            "agent_version": row["agent_version"],
+            "ceiling": json.loads(row["ceiling_json"]) if row["ceiling_json"] else None,
+            "acked_version": row["acked_version"],
+            "rejected": json.loads(row["rejected_json"] or "[]"),
+            "updated_at": row["updated_at"],
+        }
+
+    def target_ceiling(self, target_id: str) -> C.Ceiling:
+        """Core's view of what `target_id` will run: the shipped ceiling plus
+        the exact local commands its agent last reported. Used to validate
+        entries early and explain refusals; the agent re-checks everything."""
+        state = self.get_agent_state(target_id)
+        local = ((state or {}).get("ceiling") or {}).get("local_commands") or []
+        return C.with_local_commands(C.DEFAULT_CEILING, [c for c in local if isinstance(c, str)])
 
     # ------------------------------------------------------------------
     # Combined view -- what the (not-yet-built) execution channel / consent

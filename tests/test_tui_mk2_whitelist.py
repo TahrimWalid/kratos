@@ -87,9 +87,10 @@ def test_single_target_autoselects_and_shows_default_enabled_actions(tmp_path):
             await pilot.pause()
             assert screen._target_id == tid
             table = screen.query_one("#wl-table")
-            # Only the two LOW-tier fail2ban actions are enabled by default;
-            # the two service.* actions are high-tier, disabled by default.
-            assert table.row_count == 2
+            # All four built-ins are listed; only the two LOW-tier fail2ban
+            # actions are on by default (service.* are high-tier, off).
+            assert table.row_count == 4
+            assert [r["state"] for r in screen._rows] == ["on", "on", "off", "off"]
             assert wl.get_execution_opt_in(tid) is False
 
     asyncio.run(run())
@@ -313,7 +314,7 @@ def test_high_tier_action_requires_a_second_confirmation(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
             table = screen.query_one("#wl-table")
-            assert table.row_count == 3  # ban_ip, unban_ip, + the newly-opted-in service.enable_now
+            assert [r["state"] for r in screen._rows].count("on") == 3  # + the newly-opted-in service.enable_now
             app.push_screen_wait = fake_push_screen_wait
             # Find the service.enable_now row and select it.
             row_index = next(i for i, r in enumerate(screen._rows) if r["spec"].id == "service.enable_now")
@@ -395,3 +396,238 @@ def test_target_picker_shown_when_multiple_targets_paired(tmp_path):
             assert screen._target_id in (tid_a, tid_b)
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Managing the allowlist (add / edit / on-off / delete / details / ceiling)
+# and the /run-fix preselect entry point.
+# ---------------------------------------------------------------------------
+from kratos.subagent import whitelist as W  # noqa: E402
+from kratos.tui_mk2.modals import CommandModal, MultiSelectModal  # noqa: E402
+
+
+def _drive(screen, answers, action, *, after=None, ticks=40, early=False):
+    seen: list = []
+    it = iter(answers)
+
+    async def fake_push_screen_wait(modal):
+        seen.append(type(modal).__name__)
+        return next(it)
+
+    out: dict = {}
+
+    async def run():
+        app = _Host(screen)
+        if early:  # the screen starts a flow on mount (preselect)
+            app.push_screen_wait = fake_push_screen_wait
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen_wait = fake_push_screen_wait
+            action()
+            for _ in range(ticks):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+            out["texts"] = _log_texts(screen)
+            out["screen"] = app.screen
+            if after:
+                after(app)
+
+    asyncio.run(run())
+    out["seen"] = seen
+    return out
+
+
+def test_add_a_command_with_blanks(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    out = _drive(screen, ["blanks", "sudo fail2ban-client set {jail} banip {ip}",
+                          "Bans an attacker IP.", "Unban it.", "One IP."], screen.action_add_entry)
+    [entry] = wl.list_user_entries(tid)
+    assert entry.template_id == "custom" and entry.effective_spec.argv_template[0] == "fail2ban-client"
+    assert entry.effective_spec.slots["ip"].ip_deny_private is True  # type came from the ceiling
+    assert entry.effective_spec.reversible is True and entry.tier == "low"  # flags from the vetted shape
+    assert any("Added" in t for t in out["texts"])
+
+
+def test_add_with_blanks_reprompts_on_a_form_the_ceiling_does_not_allow(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    out = _drive(screen, ["blanks", "systemctl reboot", None], screen.action_add_entry)
+    assert any("isn't an allowed form" in t for t in out["texts"]) and wl.list_user_entries(_pair and screen._target_id) == []
+
+
+def test_add_an_exact_command_waits_and_shows_the_target_snippet(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    out = _drive(screen, ["exact", "sudo adduser --disabled-password alice", "Adds alice.", "deluser alice", "One account."],
+                 screen.action_add_entry)
+    [entry] = wl.list_user_entries(tid)
+    assert entry.pending and screen._rows[-1]["state"] == "waiting"
+    assert isinstance(out["screen"], CommandModal) and "allowed-commands" in out["screen"]._command
+    assert "adduser --disabled-password alice" in out["screen"]._command
+
+
+def test_add_exact_refuses_shell_syntax_and_reprompts(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    out = _drive(screen, ["exact", "adduser x; reboot", None], screen.action_add_entry)
+    assert wl.list_user_entries(tid) == [] and any("shell syntax" in t for t in out["texts"])
+
+
+def test_add_from_template_narrows_the_values(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    out = _drive(screen, ["template", "service.enable_now", ["fail2ban"]], screen.action_add_entry)
+    assert "MultiSelectModal" in out["seen"]
+    [entry] = wl.list_user_entries(tid)
+    assert entry.effective_spec.slots["unit"].values == ("fail2ban",) and entry.tier == "low"
+
+
+def test_turning_on_a_high_risk_builtin_needs_a_confirmation(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+
+    def select_enable_now_then(answers):
+        def act():
+            idx = next(i for i, r in enumerate(screen._rows) if r["label"] == "service.enable_now")
+            screen.query_one("#wl-table").move_cursor(row=idx)
+            screen.action_toggle_entry()
+        return act
+
+    _drive(screen, [False], select_enable_now_then([False]))
+    assert next(r for r in screen._rows if r["label"] == "service.enable_now")["state"] == "off"
+    screen2 = WhitelistScreen(tmp_path)
+    screen = screen2
+    _drive(screen2, [True], select_enable_now_then([True]))
+    assert next(r for r in screen2._rows if r["label"] == "service.enable_now")["state"] == "on"
+
+
+def test_delete_a_user_entry_and_details_and_ceiling_view(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.create_custom_entry(tid, ["systemctl", "disable", "--now", "{u}"], {"u": W.Slot(kind="enum", values=("cups",))},
+                           effect="Stops cups.", reversibility="Enable it again.", blast_radius="Printing.")
+    screen = WhitelistScreen(tmp_path)
+
+    def details_ceiling_delete():
+        screen.query_one("#wl-table").move_cursor(row=len(screen._rows) - 1)
+        screen.action_entry_details()
+        screen.action_show_ceiling()
+        screen.action_delete_entry()
+
+    out = _drive(screen, [True], details_ceiling_delete)
+    joined = "\n".join(out["texts"])
+    assert "Stops cups." in joined and "one of: cups" in joined
+    assert "systemctl disable --now <one of:" in joined  # the ceiling view lists allowed forms
+    assert wl.list_user_entries(tid) == []
+
+
+def test_running_an_off_entry_explains_instead_of_prompting(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+
+    def run_off_row():
+        screen.query_one("#wl-table").move_cursor(row=3)
+        screen.action_activate_selected()
+
+    out = _drive(screen, [], run_off_row)
+    assert out["seen"] == [] and any("turned off" in t for t in out["texts"])
+
+
+def test_preselected_recommendation_opens_the_same_gate_prefilled(tmp_path, monkeypatch):
+    monkeypatch.setattr(wl_mod, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(wl_mod, "_POLL_TIMEOUT_SECONDS", 0.05)
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.set_execution_opt_in(tid, True)
+    screen = WhitelistScreen(tmp_path, target_id=tid,
+                             preselect={"action_id": "fail2ban.ban_ip", "values": {"jail": "sshd", "ip": "8.8.8.8"}})
+    out = _drive(screen, [True], lambda: None, ticks=60, early=True)
+    assert out["seen"] == ["TypedExecuteModal"]  # no slot prompts -- only the approval gate
+    [req] = wl.list_pending_dispatch_requests(tid)
+    assert req["slot_values"] == {"jail": "sshd", "ip": "8.8.8.8"}
+
+
+def test_multiselect_modal_real_keys(tmp_path):
+    result: dict = {}
+
+    class _M(App):
+        def on_mount(self):
+            self.push_screen(MultiSelectModal("pick", [("a", "a"), ("b", "b"), ("c", "c")]),
+                             callback=lambda r: result.setdefault("r", r))
+
+    async def run():
+        app = _M()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("down", "space", "enter")  # untick "b"
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert result["r"] == ["a", "c"]
+
+
+def test_multiselect_modal_refuses_an_empty_choice(tmp_path):
+    result: dict = {}
+
+    class _M(App):
+        def on_mount(self):
+            self.push_screen(MultiSelectModal("pick", [("a", "a")]), callback=lambda r: result.setdefault("r", r))
+
+    async def run():
+        app = _M()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("space", "enter")  # untick the only one, try to finish
+            await pilot.pause()
+            assert "r" not in result
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert result["r"] is None
+
+
+def test_real_keys_reach_the_screen_actions(tmp_path):
+    """The table has focus; enter/space/a/i must still reach the screen (the
+    checklist modal's own Enter was once swallowed by its list widget)."""
+    from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal
+
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    screen = WhitelistScreen(tmp_path)
+    seen: list = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("enter")          # run row 0 -> first slot prompt (jail picker)
+            await pilot.pause()
+            seen.append(type(app.screen).__name__)
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("down", "down", "space")  # service.enable_now (high) -> confirm
+            await pilot.pause()
+            seen.append(type(app.screen).__name__)
+            await pilot.press("n")
+            await pilot.pause()
+            await pilot.press("a")               # add -> how picker
+            await pilot.pause()
+            seen.append(type(app.screen).__name__)
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert seen == ["ListPickerModal", "ConfirmModal", "ListPickerModal"]
+    assert next(r for r in build_rows(wl, tid) if r["label"] == "service.enable_now")["state"] == "off"
+
+
+from kratos.tui_mk2.screens.whitelist import build_rows  # noqa: E402

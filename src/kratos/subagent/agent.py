@@ -15,26 +15,37 @@ single dispatch, fail-closed on any failure:
      ever actually execute anything (see docs/subagent_whitelist_design.md
      and the architecture doc's "independent review gates ENABLING, not
      building" framing).
-  2. The dispatch's signature verifies under this agent's OWN derived
-     signing key (`signing.derive_signing_key(self.token)`) -- control 2.
-  3. The dead-man's switch is armed: this agent has had a fresh, real
-     message from core within `DEAD_MANS_SWITCH_SECONDS` (design doc §9 #5)
-     -- a severed or silently-dead core connection disarms execution.
-  4. The dispatch's `whitelist_version` matches this agent's CURRENTLY
+  2. The connection to core runs over a trusted transport: core's address is
+     loopback or a Tailscale address, unless the operator explicitly passed
+     --allow-untrusted-transport (review finding F9 -- this channel has no TLS
+     of its own, so on a plain network the pairing token could be sniffed).
+  3. The dispatch's signature verifies under this agent's OWN derived
+     signing key (`signing.derive_signing_key(self.token)`) -- control 2 --
+     and it carries this connection's `session_nonce` and a dispatch_id not
+     already seen on it (F4: no replay across or within connections).
+  4. The dead-man's switch is armed: a SIGNED pong carrying the current
+     session nonce arrived within `DEAD_MANS_SWITCH_SECONDS` (design doc §9
+     #5, F6) -- a severed, silent, or impersonated core disarms execution.
+  5. The dispatch's `whitelist_version` matches this agent's CURRENTLY
      applied whitelist version exactly -- an old version can never be
      replayed to roll back a revocation (fail-closed on stale, §9 #5).
-  5. The action_id is present in this agent's own whitelist copy, and
-     `whitelist.validate_spec()`/`render_argv()` (the SAME independent
-     re-validation the design doc requires on the agent side, never trusting
-     that core already validated) accept it.
+  6. The action_id is present in this agent's own whitelist copy and still
+     fits the agent's own execution CEILING (kratos.subagent.ceiling --
+     shipped as code here plus exact commands the target's admin listed in
+     /etc/kratos-subagent/allowed-commands). Core can only ever narrow what
+     the ceiling allows; it can't widen it (review findings F1/F2/F3).
+  7. The concrete argv `render_argv` produced matches the ceiling AGAIN, and
+     the binary resolves to an absolute path inside a trusted system
+     directory -- the final check is on exactly what will run.
 Only then is `subprocess.run(argv, shell=False, ...)` ever reached -- no
-shell, no string concatenation, the exact argv `render_argv` returned.
+shell, no string concatenation, no $PATH lookup, a fixed minimal environment.
 Every dispatch attempt (refused or executed) is logged locally via the
 standard `logging` module (control 4: independent sub-agent-side logging).
 
-Deploy by copying this file plus protocol.py, collector.py, signing.py, and
-whitelist.py onto the target as a `subagent/` package directory (they must
-stay siblings -- all five are stdlib-only, confirmed by import) and running,
+Deploy by copying this file plus protocol.py, collector.py, signing.py,
+whitelist.py, and ceiling.py onto the target as a `subagent/` package
+directory (they must stay siblings -- all six are stdlib-only, confirmed by
+import) and running,
 from the parent of that directory:
 
     python3 -m subagent.agent --core-host <core-ip> --core-port 8765 --pair CODE-1234
@@ -59,9 +70,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import functools
+import hashlib
+import ipaddress
 import json
 import logging
+import secrets
 import signal
 import subprocess
 import time
@@ -71,8 +86,9 @@ from pathlib import Path
 from typing import Any
 
 try:  # `python3 -m subagent.agent` (preferred) -- real package-relative import.
-    from . import collector, protocol as proto, signing, whitelist as wl
+    from . import ceiling as cl, collector, protocol as proto, signing, whitelist as wl
 except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.py` run directly.
+    import ceiling as cl  # type: ignore[no-redef]
     import collector  # type: ignore[no-redef]
     import protocol as proto  # type: ignore[no-redef]
     import signing  # type: ignore[no-redef]
@@ -80,7 +96,7 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -103,6 +119,14 @@ HANDSHAKE_TIMEOUT_SECONDS = 10.0
 DEAD_MANS_SWITCH_SECONDS = 45.0
 EXEC_TIMEOUT_SECONDS = 30.0
 OUTPUT_TAIL_MAX_CHARS = 4000
+# Bound on dispatch ids remembered per connection for replay de-duplication.
+SEEN_DISPATCH_IDS_MAX = 4096
+
+# Transport check for execution (F9): core must be reached over loopback or a
+# Tailscale/WireGuard tailnet address, since this channel has no TLS itself.
+_TRUSTED_TRANSPORT_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("127.0.0.0/8", "::1/128", "100.64.0.0/10", "fd7a:115c:a1e0::/48")
+)
 
 
 def _load_state(state_file: Path) -> dict[str, Any]:
@@ -131,6 +155,9 @@ class SubAgent:
         watch_files: list[str] | None = None,
         services: list[str] | None = None,
         execution_enabled: bool = False,
+        allow_untrusted_transport: bool = False,
+        ceiling: "cl.Ceiling" = cl.DEFAULT_CEILING,
+        local_allow_file: str | None = cl.LOCAL_ALLOW_FILE,
     ) -> None:
         self.core_host = core_host
         self.core_port = core_port
@@ -143,12 +170,18 @@ class SubAgent:
         # Capability 2, local opt-in only -- see this module's own docstring.
         # Defaults OFF; nothing in this codebase flips it on for a real target.
         self.execution_enabled = execution_enabled
+        self.allow_untrusted_transport = allow_untrusted_transport
+        # The shipped ceiling is code; tests may pass a different one. Nothing
+        # received over the wire can ever replace it.
+        self._base_ceiling = ceiling
+        self._local_allow_file = local_allow_file
 
-        state = _load_state(state_file)
-        self.agent_id: str = state.get("agent_id") or uuid.uuid4().hex
-        self.token: str | None = state.get("token")
-        if not state.get("agent_id"):
-            _save_state(state_file, {"agent_id": self.agent_id, "token": self.token})
+        self._state = _load_state(state_file)
+        self.agent_id: str = self._state.get("agent_id") or uuid.uuid4().hex
+        self.token: str | None = self._state.get("token")
+        if not self._state.get("agent_id"):
+            self._state["agent_id"] = self.agent_id
+            self._persist_state()
 
         self._buffer: deque[dict[str, Any]] = deque(maxlen=BUFFER_MAX)
         self._seq = 0
@@ -169,6 +202,70 @@ class SubAgent:
         self._whitelist_specs: dict[str, "wl.ActionSpec"] = {}
         self._whitelist_version: int | None = None
         self._last_core_message_ts: float | None = None
+        # Per-connection replay protection (F4) and the address core was
+        # actually reached at (F9). Reset on every handshake.
+        self._session_nonce: str | None = None
+        self._seen_dispatch_ids: set[str] = set()
+        self._peer_ip: str | None = None
+
+    # ------------------------------------------------------------------
+    # Persistent state
+    # ------------------------------------------------------------------
+    def _persist_state(self) -> None:
+        self._state["agent_id"] = self.agent_id
+        self._state["token"] = self.token
+        _save_state(self.state_file, self._state)
+
+    def _token_key(self) -> str:
+        return hashlib.sha256((self.token or "").encode()).hexdigest()[:16]
+
+    def _version_floor(self) -> int | None:
+        """The newest whitelist version ever applied under the CURRENT token,
+        persisted across restarts (F5): a fresh process must not accept an
+        older push that a restart would otherwise let through. Keyed by token
+        so re-pairing (a new token, a new core-side counter) starts fresh."""
+        floors = self._state.get("whitelist_version_floor") or {}
+        v = floors.get(self._token_key()) if isinstance(floors, dict) else None
+        return v if type(v) is int else None
+
+    def _record_version_floor(self, version: int) -> None:
+        floors = self._state.get("whitelist_version_floor")
+        if not isinstance(floors, dict):
+            floors = {}
+        floors[self._token_key()] = version
+        self._state["whitelist_version_floor"] = floors
+        self._persist_state()
+
+    # ------------------------------------------------------------------
+    # Ceiling
+    # ------------------------------------------------------------------
+    def _effective_ceiling(self) -> tuple["cl.Ceiling", list[str]]:
+        """Shipped ceiling + the target admin's exact local commands, re-read
+        every time so removing a line revokes it immediately."""
+        if not self._local_allow_file:
+            return self._base_ceiling, []
+        shapes, problems = cl.load_local_commands(self._local_allow_file)
+        return cl.with_local_commands(self._base_ceiling, shapes), problems
+
+    def ceiling_report(self) -> dict[str, Any]:
+        ceiling, problems = self._effective_ceiling()
+        return {
+            "version": ceiling.version,
+            "fingerprint": ceiling.fingerprint(),
+            "local_commands": [s.description for s in ceiling.shapes if s.local],
+            "local_problems": problems,
+        }
+
+    def _transport_trusted(self) -> bool:
+        if self.allow_untrusted_transport:
+            return True
+        try:
+            addr = ipaddress.ip_address((self._peer_ip or "").split("%", 1)[0])
+        except ValueError:
+            return False
+        if getattr(addr, "ipv4_mapped", None):
+            addr = addr.ipv4_mapped
+        return any(addr in net for net in _TRUSTED_TRANSPORT_NETWORKS)
 
     def stop(self) -> None:
         self._stop.set()
@@ -177,7 +274,7 @@ class SubAgent:
         backoff = BACKOFF_INITIAL_SECONDS
         while not self._stop.is_set():
             try:
-                await self._connect_and_serve()
+                await self._serve_until_stopped()
                 backoff = BACKOFF_INITIAL_SECONDS  # a clean session (even a short one) means the link works -- don't keep penalizing it.
             except (OSError, asyncio.TimeoutError, proto.ProtocolError) as e:
                 logger.warning("sub-agent connection ended (%s) -- retrying in %.0fs", e, backoff)
@@ -189,28 +286,46 @@ class SubAgent:
                 pass
             backoff = min(backoff * 2, BACKOFF_MAX_SECONDS)
 
+    async def _serve_until_stopped(self) -> None:
+        """One connection, torn down as soon as stop() is called -- otherwise a
+        live connection would keep the process alive until systemd's stop
+        timeout SIGKILLs it."""
+        serve = asyncio.create_task(self._connect_and_serve())
+        stopped = asyncio.create_task(self._stop.wait())
+        try:
+            await asyncio.wait({serve, stopped}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            stopped.cancel()
+            if not serve.done():
+                serve.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await serve
+                return
+        serve.result()  # re-raise a connection error for run_forever's backoff handling
+
     async def _connect_and_serve(self) -> None:
         reader, writer = await asyncio.open_connection(self.core_host, self.core_port)
         try:
             await self._handshake(reader, writer)
             await self._flush_buffer(writer)  # anything queued from a prior drop goes out immediately, not on the next collect tick.
-            collect_task = asyncio.create_task(self._collect_loop(writer))
-            ping_task = asyncio.create_task(self._ping_loop(writer))
-            receive_task = asyncio.create_task(self._receive_loop(reader, writer))
-            done, pending = await asyncio.wait(
-                {collect_task, ping_task, receive_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for t in pending:
-                t.cancel()
-            for t in pending:
-                try:
-                    await t
-                except asyncio.CancelledError:
-                    pass
+            tasks = {
+                asyncio.create_task(self._collect_loop(writer)),
+                asyncio.create_task(self._ping_loop(writer)),
+                asyncio.create_task(self._receive_loop(reader, writer)),
+            }
+            try:
+                done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                # Also runs when this coroutine itself is cancelled (stop()),
+                # so no loop outlives its connection.
+                for t in tasks:
+                    t.cancel()
+                for t in tasks:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await t
             for t in done:
-                exc = t.exception()
-                if exc is not None:
-                    raise exc
+                if not t.cancelled() and t.exception() is not None:
+                    raise t.exception()
         finally:
             writer.close()
             try:
@@ -225,7 +340,15 @@ class SubAgent:
             auth = {"pairing_code": self.pairing_code}
         else:
             raise proto.ProtocolError("no saved token and no pairing code -- pair this agent first (--pair CODE)")
-        await proto.write_frame(writer, proto.build_hello(self.agent_id, auth, _hostname(), AGENT_VERSION))
+        self._session_nonce = secrets.token_hex(16)
+        self._seen_dispatch_ids = set()
+        self._last_core_message_ts = None  # only a signed pong on THIS connection re-arms execution
+        peer = writer.get_extra_info("peername")
+        self._peer_ip = peer[0] if isinstance(peer, tuple) and peer else None
+        await proto.write_frame(writer, proto.build_hello(
+            self.agent_id, auth, _hostname(), AGENT_VERSION,
+            session_nonce=self._session_nonce, ceiling=self.ceiling_report(),
+        ))
         reply = await asyncio.wait_for(proto.read_frame(reader), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         if reply is None:
             raise proto.ProtocolError("core closed the connection during handshake")
@@ -236,10 +359,9 @@ class SubAgent:
         new_token = reply.get("token")
         if new_token and new_token != self.token:
             self.token = new_token
-            _save_state(self.state_file, {"agent_id": self.agent_id, "token": self.token})
+            self._persist_state()
         self.last_target_id = reply.get("target_id")
         self.pairing_code = None  # single-use; never retried even if a later reconnect races with a core-side "already used" state.
-        self._last_core_message_ts = time.time()  # a fresh, real message from core -- (re-)arms the dead-man's switch
         logger.info("paired -- target_id=%s", self.last_target_id)
 
     async def _collect_loop(self, writer: asyncio.StreamWriter) -> None:
@@ -260,9 +382,11 @@ class SubAgent:
             self._buffer.popleft()
 
     async def _ping_loop(self, writer: asyncio.StreamWriter) -> None:
+        # First ping immediately, so a fresh connection earns its signed pong
+        # (and an armed dead-man's switch) without waiting a full interval.
         while True:
-            await asyncio.sleep(self.ping_interval)
             await proto.write_frame(writer, proto.build_ping(time.time()))
+            await asyncio.sleep(self.ping_interval)
 
     async def _receive_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         # Drains telemetry_ack/pong frames so the peer's write buffer never
@@ -276,33 +400,49 @@ class SubAgent:
             if msg is None:
                 raise proto.ProtocolError("core closed the connection")
             mtype = msg.get("type")
-            if mtype in (proto.MSG_TELEMETRY_ACK, proto.MSG_PONG):
-                # The dedicated, REGULAR liveness signals -- these are what
-                # actually arm the dead-man's switch. Deliberately does NOT
-                # include whitelist_push/exec_dispatch: an exec_dispatch's
-                # own arrival must not be usable as the heartbeat that
-                # justifies processing that same dispatch (that would make
-                # the switch self-defeating for the one message it exists to
-                # gate); a genuinely severed-then-recovered link re-arms via
-                # the next real ping/pong exchange, which happens well
-                # before any dispatch would normally follow it.
-                self._last_core_message_ts = time.time()
+            if mtype == proto.MSG_TELEMETRY_ACK:
                 continue
-            if mtype == proto.MSG_WHITELIST_PUSH:
-                await self._handle_whitelist_push(msg, writer)
-            elif mtype == proto.MSG_EXEC_DISPATCH:
-                await self._handle_exec_dispatch(msg, writer)
-            else:
-                logger.warning("ignoring unexpected message type %r from core", mtype)
+            if mtype == proto.MSG_PONG:
+                # The ONLY thing that arms the dead-man's switch: a pong SIGNED
+                # by core for this connection's session nonce (F6). An
+                # unsigned pong/ack proves nothing about who is on the other
+                # end. Deliberately not whitelist_push/exec_dispatch either --
+                # a dispatch's own arrival must never be the heartbeat that
+                # justifies running it.
+                if self._pong_is_authentic(msg):
+                    self._last_core_message_ts = time.time()
+                continue
+            try:
+                if mtype == proto.MSG_WHITELIST_PUSH:
+                    await self._handle_whitelist_push(msg, writer)
+                elif mtype == proto.MSG_EXEC_DISPATCH:
+                    await self._handle_exec_dispatch(msg, writer)
+                else:
+                    logger.warning("ignoring unexpected message type %r from core", mtype)
+            except (OSError, proto.ProtocolError):
+                raise
+            except Exception:  # noqa: BLE001 -- a malformed message must never kill the connection (F7)
+                logger.exception("error handling %r from core -- ignored", mtype)
+
+    def _pong_is_authentic(self, msg: dict[str, Any]) -> bool:
+        if not self.token or msg.get("session_nonce") != self._session_nonce:
+            return False
+        return signing.verify_envelope(signing.derive_signing_key(self.token), msg)
 
     async def _handle_whitelist_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
-        """Apply (or reject) a signed whitelist push -- design doc §9 #4/#5:
-        the agent's whitelist is authoritative-FROM-core, but the agent still
-        independently re-validates every action (never trusts that core
-        already did), and rejects any push whose version doesn't strictly
-        advance (anti-rollback -- a MITM replaying an old, pre-revocation
-        push must not be able to resurrect a revoked action). A push with
-        even ONE invalid action is rejected in full, never partially applied."""
+        """Apply (or reject) a signed whitelist push.
+
+        Every action is checked independently against this agent's OWN
+        ceiling (never trusting that core already did). An action outside the
+        ceiling is dropped and reported back in the ack; the rest are applied.
+        That is safe because each surviving action is still bounded by the
+        ceiling on its own, and it lets an older agent keep working when a
+        newer core offers actions it doesn't know yet.
+
+        Anti-rollback (design doc §9 #5, F5): a push older than the newest
+        version ever applied under this token -- including across restarts --
+        is refused outright. An EQUAL version is accepted idempotently (a
+        reconnect re-syncing unchanged state)."""
         if not self.token:
             logger.warning("rejected whitelist_push: not paired")
             return
@@ -311,67 +451,105 @@ class SubAgent:
             logger.warning("rejected whitelist_push: invalid signature")
             return
         version = msg.get("version")
-        if not isinstance(version, int) or (self._whitelist_version is not None and version < self._whitelist_version):
-            # Strictly older than what we already have -> a real rollback
-            # attempt, rejected (anti-rollback, design doc §9 #5). An EQUAL
-            # version is accepted idempotently -- e.g. a fresh reconnect
-            # re-pushing the same, unchanged whitelist is normal, not replay.
-            logger.warning(
-                "rejected whitelist_push: version %r is older than current %r (anti-rollback)",
-                version, self._whitelist_version,
-            )
+        if type(version) is not int or version < 0:  # F8: no bools, no floats
+            logger.warning("rejected whitelist_push: version %r is not a non-negative integer", version)
             return
+        floor = max((v for v in (self._whitelist_version, self._version_floor()) if v is not None), default=None)
+        if floor is not None and version < floor:
+            logger.warning("rejected whitelist_push: version %r is older than %r (anti-rollback)", version, floor)
+            return
+        actions = msg.get("actions")
+        if not isinstance(actions, list):
+            logger.warning("rejected whitelist_push: actions is not a list")
+            return
+
+        ceiling, _ = self._effective_ceiling()
         new_specs: dict[str, wl.ActionSpec] = {}
-        try:
-            for raw in msg.get("actions") or []:
+        rejected: list[dict[str, str]] = []
+        for raw in actions:
+            action_id = raw.get("id") if isinstance(raw, dict) else None
+            label = action_id if isinstance(action_id, str) else "?"
+            try:
+                if not isinstance(raw, dict):
+                    raise wl.ActionSpecError("action is not an object")
                 spec = wl.spec_from_wire(raw)
-                wl.validate_spec(spec)  # independent re-validation -- never trust core blindly
-                new_specs[spec.id] = spec
-        except wl.ActionSpecError as e:
-            logger.warning("rejected whitelist_push: an action failed independent re-validation: %s", e)
-            return
+                if spec.id in new_specs:
+                    raise wl.ActionSpecError("duplicate action id")
+                cl.check_spec(spec, ceiling)
+            except (wl.ActionSpecError, cl.CeilingError, TypeError, ValueError) as e:
+                rejected.append({"id": label, "reason": str(e)})
+                continue
+            new_specs[spec.id] = spec
+        if rejected:
+            logger.warning("whitelist_push v%s: refused %d action(s) outside this agent's ceiling: %s",
+                           version, len(rejected), "; ".join(r["reason"] for r in rejected))
         self._whitelist_specs = new_specs
         self._whitelist_version = version
+        self._record_version_floor(version)
         logger.info("applied whitelist_push: version=%s, %d action(s)", version, len(new_specs))
-        await proto.write_frame(writer, proto.build_whitelist_push_ack(version))
+        await proto.write_frame(writer, proto.build_whitelist_push_ack(version, rejected, self.ceiling_report()))
 
     async def _handle_exec_dispatch(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
-        dispatch_id = msg.get("dispatch_id") or ""
-        action_id = msg.get("action_id")
-        result = await self._process_exec_dispatch(msg)
+        dispatch_id = msg.get("dispatch_id") if isinstance(msg.get("dispatch_id"), str) else ""
+        try:
+            result = await self._process_exec_dispatch(msg)
+        except Exception as e:  # noqa: BLE001 -- "never raises" (F7): any surprise is a refusal, not a crash
+            logger.exception("exec_dispatch %s: unexpected error", dispatch_id)
+            result = {"status": "refused", "reason": f"internal error: {type(e).__name__}"}
         logger.info("exec_dispatch %s: action=%r status=%s reason=%s",
-                    dispatch_id, action_id, result.get("status"), result.get("reason"))
+                    dispatch_id, msg.get("action_id"), result.get("status"), result.get("reason"))
         await proto.write_frame(writer, proto.build_exec_result(dispatch_id, ts=time.time(), **result))
 
     async def _process_exec_dispatch(self, msg: dict[str, Any]) -> dict[str, Any]:
         """Every gate below is fail-closed and checked fresh, in order, on
         EVERY dispatch -- see this module's own docstring for the full list.
-        Returns kwargs for `protocol.build_exec_result` (never raises)."""
+        Returns kwargs for `protocol.build_exec_result`."""
         if not self.execution_enabled:
             return {"status": "refused", "reason": "execution is not enabled on this agent (local opt-in required)"}
         if not self.token:
             return {"status": "refused", "reason": "not paired"}
+        if not self._transport_trusted():
+            return {"status": "refused", "reason": (
+                f"core is reached at {self._peer_ip!r}, which is not loopback or a Tailscale address -- "
+                "this channel has no encryption of its own; use Tailscale/WireGuard "
+                "(or start the agent with --allow-untrusted-transport to accept the risk)")}
+        dispatch_id, action_id = msg.get("dispatch_id"), msg.get("action_id")
+        slot_values, version = msg.get("slot_values"), msg.get("whitelist_version")
+        if not isinstance(dispatch_id, str) or not dispatch_id or len(dispatch_id) > 128:
+            return {"status": "refused", "reason": "malformed dispatch_id"}
+        if not isinstance(action_id, str) or not isinstance(slot_values, dict) or type(version) is not int:
+            return {"status": "refused", "reason": "malformed dispatch (action_id/slot_values/whitelist_version types)"}
         key = signing.derive_signing_key(self.token)
         if not signing.verify_envelope(key, msg):
             return {"status": "refused", "reason": "invalid signature"}
+        if msg.get("session_nonce") != self._session_nonce:
+            return {"status": "refused", "reason": "dispatch is not for this connection (replay?)"}
+        if dispatch_id in self._seen_dispatch_ids:
+            return {"status": "refused", "reason": "duplicate dispatch_id (replay?)"}
+        if len(self._seen_dispatch_ids) >= SEEN_DISPATCH_IDS_MAX:
+            return {"status": "refused", "reason": "too many dispatches on this connection -- reconnect"}
+        self._seen_dispatch_ids.add(dispatch_id)
         if not self._execution_armed():
             return {"status": "refused", "reason": "dead-man's switch: no fresh authenticated heartbeat from core"}
-        version = msg.get("whitelist_version")
         if version != self._whitelist_version:
             return {
                 "status": "refused",
                 "reason": f"stale whitelist_version (dispatch={version!r}, agent has={self._whitelist_version!r})",
             }
-        action_id = msg.get("action_id")
         spec = self._whitelist_specs.get(action_id)
         if spec is None:
             return {"status": "refused", "reason": f"unknown action_id {action_id!r} in this agent's whitelist copy"}
+        ceiling, _ = self._effective_ceiling()  # re-read: a removed local command is revoked immediately
         try:
-            wl.validate_spec(spec)  # re-validate the STORED spec itself, never just trust a past check
-            argv = wl.render_argv(spec, msg.get("slot_values") or {})
-        except (wl.ActionSpecError, wl.SlotValueError) as e:
+            local = cl.uses_local_command(spec, ceiling)
+            argv = wl.render_argv(spec, slot_values, hard_exclusions=not local)
+            cl.match_argv(argv, ceiling)  # the final gate is on exactly what will run
+        except (wl.ActionSpecError, wl.SlotValueError, cl.CeilingError) as e:
             return {"status": "refused", "reason": f"validation failed: {e}"}
-        return await self._run_argv(argv)
+        executable = cl.resolve_executable(argv[0])
+        if executable is None:
+            return {"status": "error", "reason": f"{argv[0]!r} is not installed in {', '.join(cl.TRUSTED_BIN_DIRS)}"}
+        return await self._run_argv([executable, *argv[1:]])
 
     def _execution_armed(self) -> bool:
         if self._last_core_message_ts is None:
@@ -387,7 +565,8 @@ class SubAgent:
             proc = await loop.run_in_executor(
                 None,
                 functools.partial(subprocess.run, argv, shell=False, capture_output=True,
-                                   timeout=EXEC_TIMEOUT_SECONDS, text=True),
+                                   timeout=EXEC_TIMEOUT_SECONDS, text=True, stdin=subprocess.DEVNULL,
+                                   env=dict(cl.EXEC_ENV), cwd="/"),
             )
         except subprocess.TimeoutExpired:
             return {"status": "error", "reason": f"command timed out after {EXEC_TIMEOUT_SECONDS}s"}
@@ -430,6 +609,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "(docs/subagent_whitelist_design.md §9 #7) has passed for the code actually running here."
         ),
     )
+    p.add_argument(
+        "--allow-untrusted-transport", dest="allow_untrusted_transport", action="store_true", default=False,
+        help=(
+            "Allow execution even when core is not reached over loopback or Tailscale. The channel has no "
+            "encryption of its own, so on a shared network the pairing token (and with it the signing key) "
+            "can be sniffed. Leave off unless the network itself is trusted."
+        ),
+    )
+    p.add_argument(
+        "--local-allow-file", default=cl.LOCAL_ALLOW_FILE,
+        help="Exact commands this target's admin allows Kratos to run, one per line (default: %(default)s).",
+    )
     return p
 
 
@@ -445,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
         collect_interval=args.collect_interval,
         ping_interval=args.ping_interval,
         execution_enabled=args.execution_enabled,
+        allow_untrusted_transport=args.allow_untrusted_transport,
+        local_allow_file=args.local_allow_file,
     )
     if args.execution_enabled:
         logger.warning(

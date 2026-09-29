@@ -23,6 +23,14 @@ schema, the four closed slot-validator types, the hard exclusions, computed
 sensitivity tiering, and argv assembly. `ActionSpec`/`Slot` are frozen
 dataclasses; every function is side-effect-free.
 
+**Trust model (2026-09-28, review findings F1/F2)**: the checks in this module
+are a DENYLIST and are no longer the execution boundary on their own. The
+boundary is `kratos.subagent.ceiling` -- an allowlist of exact binaries and
+argument shapes shipped as code inside the agent itself, which every pushed
+action and every concrete argv must match before anything runs. This module
+stays as the schema, the slot validators, and an early, friendlier reject for
+obviously-bad definitions.
+
 The one principle everything here enforces (design doc §2): an action is a
 fixed command template with typed, validated parameter *slots* -- never a
 command string, never free text, never a shell. `render_argv` assembles an
@@ -315,8 +323,19 @@ def _validate_slot_value(action_id: str, name: str, slot: Slot, value: object) -
         raise SlotValueError(f"{action_id}: slot {name!r} has an unrecognized kind {slot.kind!r}")
 
 
+def validate_slot_value(action_id: str, name: str, slot: Slot, value: object) -> None:
+    """Public form of the per-slot value validator (raises SlotValueError).
+    Shared with `ceiling`, which applies the same closed validators to the
+    concrete argv the agent is about to run."""
+    _validate_slot_value(action_id, name, slot, value)
+
+
 def _check_hard_exclusions(spec: ActionSpec, literal_tokens: list[str]) -> None:
-    for tok in literal_tokens:
+    # Enum VALUES land in the argv exactly like literals do, so they get the
+    # same binary checks (review finding F3: `busybox {applet}` with an enum
+    # of {"sh"} used to smuggle a shell past a literal-only scan).
+    enum_values = [v for slot in spec.slots.values() if slot.kind == "enum" for v in (slot.values or ())]
+    for tok in (*literal_tokens, *enum_values):
         base = _basename(tok).lower()
         if base in _BANNED_SHELL_INTERPRETERS:
             raise HardExclusionError(
@@ -333,7 +352,9 @@ def _check_hard_exclusions(spec: ActionSpec, literal_tokens: list[str]) -> None:
                 f"{spec.id}: {tok!r} changes user/privilege/account state -- excluded from the default set "
                 "(design doc §5)"
             )
-        if base in _BANNED_REACHABILITY_BINARIES:
+        # Firewall names are legitimate enum VALUES (a systemd unit called
+        # "ufw"); only invoking the firewall CLI itself is banned here.
+        if base in _BANNED_REACHABILITY_BINARIES and tok in literal_tokens:
             raise HardExclusionError(
                 f"{spec.id}: {tok!r} can affect network/firewall reachability directly -- excluded per "
                 "design doc §9 #6 (default-deny; no firewall-rule action shipped)"
@@ -377,7 +398,7 @@ def _check_reachability_declaration(spec: ActionSpec) -> None:
         )
 
 
-def validate_spec(spec: ActionSpec) -> None:
+def validate_spec(spec: ActionSpec, *, hard_exclusions: bool = True) -> None:
     """Structural validation of an ActionSpec definition -- the definition-
     time half of the whitelist boundary. Raises ActionSpecError (or its
     HardExclusionError subclass for a §5 category) on any violation; returns
@@ -390,7 +411,13 @@ def validate_spec(spec: ActionSpec) -> None:
 
     Does NOT check `source_recommendation` coverage or `inverse_id`
     symmetry -- those are properties of a whole SET of specs (a lone spec
-    can't see its siblings); see `validate_action_set`."""
+    can't see its siblings); see `validate_action_set`.
+
+    `hard_exclusions=False` skips only the §5 denylist, for an entry that
+    matches an exact command the TARGET's own admin allowlisted on the target
+    (`ceiling.load_local_commands`) -- that explicit local choice outranks the
+    maintainer denylist. Only `ceiling.check_spec` passes False, and only
+    after it has confirmed the match."""
     if not spec.id or not re.fullmatch(r"[a-z][a-z0-9_.]*", spec.id):
         raise ActionSpecError(f"invalid action id {spec.id!r} -- must be a lowercase dotted identifier")
     if spec.layer not in _VALID_LAYERS:
@@ -402,8 +429,10 @@ def validate_spec(spec: ActionSpec) -> None:
         )
     if not spec.argv_template or not isinstance(spec.argv_template, tuple):
         raise ActionSpecError(f"{spec.id}: argv_template must be a non-empty tuple of strings, never a string")
-    if any(not isinstance(t, str) or not t for t in spec.argv_template):
-        raise ActionSpecError(f"{spec.id}: every argv_template token must be a non-empty string")
+    if any(not isinstance(t, str) for t in spec.argv_template) or not spec.argv_template[0]:
+        # An empty ARGUMENT is legitimate (e.g. `adduser --gecos '' alice`; argv
+        # has no shell to mangle it) -- only the program itself must be named.
+        raise ActionSpecError(f"{spec.id}: argv_template must be strings, and the program (first token) non-empty")
     if _PLACEHOLDER_RE.fullmatch(spec.argv_template[0]):
         raise ActionSpecError(
             f"{spec.id}: argv_template[0] (the binary) must be a fixed literal -- an action whose command "
@@ -439,7 +468,8 @@ def validate_spec(spec: ActionSpec) -> None:
             "(control 7's source of truth for an approval screen)"
         )
 
-    _check_hard_exclusions(spec, literal_tokens)
+    if hard_exclusions:
+        _check_hard_exclusions(spec, literal_tokens)
     _check_reachability_declaration(spec)
 
 
@@ -512,7 +542,7 @@ def default_enabled_for_tier(tier: Sensitivity) -> bool:
     return tier != "high"
 
 
-def render_argv(spec: ActionSpec, slot_values: dict[str, object]) -> list[str]:
+def render_argv(spec: ActionSpec, slot_values: dict[str, object], *, hard_exclusions: bool = True) -> list[str]:
     """Assemble the concrete argv LIST for one dispatch of `spec` with
     `slot_values` -- never a shell string, never string concatenation.
     Re-validates the spec itself first, then every supplied value against its
@@ -520,7 +550,7 @@ def render_argv(spec: ActionSpec, slot_values: dict[str, object]) -> list[str]:
     ActionSpecError), never a clamp-and-continue. This function has no
     knowledge of signing or transport -- it only ever returns a list of
     strings; the execution channel decides what to do with it."""
-    validate_spec(spec)
+    validate_spec(spec, hard_exclusions=hard_exclusions)
     provided = set(slot_values)
     declared = set(spec.slots)
     if provided != declared:

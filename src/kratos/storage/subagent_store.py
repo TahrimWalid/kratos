@@ -150,7 +150,7 @@ class SubAgentStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT code, expires_at, used_at FROM subagent_pairing_codes WHERE code = ?", (code,)
+                "SELECT code, name, expires_at, used_at FROM subagent_pairing_codes WHERE code = ?", (code,)
             ).fetchone()
             if row is None or row["used_at"] is not None or _is_expired(row["expires_at"]):
                 conn.execute("ROLLBACK")
@@ -163,7 +163,12 @@ class SubAgentStore:
                 INSERT INTO subagent_targets (target_id, name, token, agent_id, hostname, agent_version, paired_at, last_seen)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (target_id, hostname, token, agent_id, hostname, agent_version, now, now),
+                # The name the operator chose when creating the code (e.g. the
+                # address they onboarded) wins; the agent's own hostname is
+                # only a fallback. It used to be discarded, so a server added as
+                # "15.204.216.9" was stored as "devserver3" and nothing could
+                # connect the two again.
+                (target_id, (row["name"] or "").strip() or hostname, token, agent_id, hostname, agent_version, now, now),
             )
             conn.execute(
                 "UPDATE subagent_pairing_codes SET used_at = ?, used_by_target_id = ? WHERE code = ?",

@@ -29,13 +29,18 @@ subsequent change -- a LOCAL SQLite version check on a short interval, not a
 network poll of the agent (the agent is still only ever pushed to, never
 polled, preserving the "core never dials the agent" transport invariant).
 None of this makes an agent actually execute anything: that also requires
-the agent's own local `execution_enabled` opt-in (see agent.py).
+the agent's own local `execution_enabled` opt-in (see agent.py), and whatever
+core pushes is checked on the agent against the agent's OWN execution ceiling
+(kratos.subagent.ceiling) -- core can narrow what a target allows, never widen
+it. Each connection's `session_nonce` is carried in every signed dispatch and
+pong so a captured message can't be replayed later (review findings F4/F6).
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -68,6 +73,8 @@ EXEC_RESULT_TIMEOUT_SECONDS = 35.0
 # an already-open connection, never a new outbound dial to the agent.
 WHITELIST_WATCH_INTERVAL_SECONDS = 2.0
 
+_SESSION_NONCE_RE = re.compile(r"^[0-9a-f]{16,128}$")
+
 
 class CoreServer:
     def __init__(
@@ -95,6 +102,9 @@ class CoreServer:
         self._pending_exec: dict[str, asyncio.Future] = {}
         self._pushed_version: dict[str, int] = {}
         self._watch_task: asyncio.Task | None = None
+        # target_id -> the live connection's session nonce (absent for an
+        # agent too old to send one -- such an agent gets telemetry only).
+        self._session_nonce: dict[str, str] = {}
 
     def live_target_ids(self) -> set[str]:
         return set(self._live.keys())
@@ -206,7 +216,15 @@ class CoreServer:
         try:
             await proto.write_frame(writer, envelope)
             ack = await asyncio.wait_for(fut, timeout=WHITELIST_PUSH_ACK_TIMEOUT_SECONDS)
-            return ack.get("version") == version
+            if ack.get("version") != version:
+                return False
+            rejected = ack.get("rejected") if isinstance(ack.get("rejected"), list) else []
+            if rejected:
+                logger.warning("target %s refused %d pushed action(s) as outside its ceiling: %s",
+                               target_id, len(rejected), rejected)
+            if self.whitelist_store is not None and hasattr(self.whitelist_store, "record_push_ack"):
+                self.whitelist_store.record_push_ack(target_id, version, rejected, ack.get("ceiling"))
+            return True
         except (asyncio.TimeoutError, OSError, proto.ProtocolError):
             return False
         finally:
@@ -226,6 +244,11 @@ class CoreServer:
         writer = self._live.get(target_id)
         if writer is None:
             raise RuntimeError(f"target {target_id!r} is not currently connected")
+        session_nonce = self._session_nonce.get(target_id)
+        if session_nonce is None:
+            raise RuntimeError(
+                f"target {target_id!r} runs a sub-agent too old for execution (no session nonce) -- update it"
+            )
         dispatch_id = uuid.uuid4().hex
         key = signing.derive_signing_key(token)
         envelope: dict[str, Any] = {
@@ -234,6 +257,7 @@ class CoreServer:
             "action_id": action_id,
             "slot_values": slot_values,
             "whitelist_version": whitelist_version,
+            "session_nonce": session_nonce,
         }
         envelope["sig"] = signing.sign_envelope(key, envelope)
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -270,7 +294,14 @@ class CoreServer:
                 await proto.write_frame(writer, proto.build_hello_reject("already connected from another session"))
                 return
             self._live[target_id] = writer
+            nonce = hello.get("session_nonce")
+            if isinstance(nonce, str) and _SESSION_NONCE_RE.fullmatch(nonce):
+                self._session_nonce[target_id] = nonce
             self.store.record_connected(target_id, hostname=hello.get("hostname"), agent_version=hello.get("agent_version"))
+            if self.whitelist_store is not None and hasattr(self.whitelist_store, "record_agent_hello"):
+                self.whitelist_store.record_agent_hello(
+                    target_id, agent_version=hello.get("agent_version"), ceiling=hello.get("ceiling")
+                )
             await proto.write_frame(writer, proto.build_hello_ack(target_id, token))
             logger.info("target %s connected from %s", target_id, peer)
             if self.whitelist_store is not None:
@@ -285,13 +316,14 @@ class CoreServer:
                 # push's own ack timeout (a real bug, caught by this
                 # module's own test suite) -- the two run concurrently instead.
                 asyncio.create_task(self._push_current_whitelist(target_id))
-            await self._receive_loop(reader, writer, target_id)
+            await self._receive_loop(reader, writer, target_id, token)
         except (asyncio.TimeoutError, proto.ProtocolError, ConnectionError, OSError) as e:
             logger.info("connection from %s (target=%s) ended: %s", peer, target_id, e)
         finally:
             if target_id is not None and self._live.get(target_id) is writer:
                 del self._live[target_id]
                 self._pushed_version.pop(target_id, None)
+                self._session_nonce.pop(target_id, None)
                 logger.info("target %s disconnected", target_id)
             writer.close()
             with contextlib.suppress(OSError):
@@ -318,7 +350,20 @@ class CoreServer:
             return result["target_id"], result["token"], None
         return None, None, "no token or pairing code supplied"
 
-    async def _receive_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, target_id: str) -> None:
+    def _pong(self, target_id: str, token: str, ts: Any) -> dict[str, Any]:
+        """A pong signed for this connection's session nonce -- the only thing
+        that arms the agent's dead-man's switch (F6). An old agent without a
+        nonce just gets the plain pong it always did."""
+        pong = proto.build_pong(ts)
+        nonce = self._session_nonce.get(target_id)
+        if nonce is not None:
+            pong["session_nonce"] = nonce
+            pong["sig"] = signing.sign_envelope(signing.derive_signing_key(token), pong)
+        return pong
+
+    async def _receive_loop(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, target_id: str, token: str
+    ) -> None:
         while True:
             msg = await asyncio.wait_for(proto.read_frame(reader), timeout=PING_TIMEOUT_SECONDS)
             if msg is None:
@@ -331,7 +376,7 @@ class CoreServer:
                 await proto.write_frame(writer, proto.build_telemetry_ack(msg.get("seq")))
             elif mtype == proto.MSG_PING:
                 self.store.touch_last_seen(target_id)
-                await proto.write_frame(writer, proto.build_pong(msg.get("ts")))
+                await proto.write_frame(writer, self._pong(target_id, token, msg.get("ts")))
             elif mtype == proto.MSG_WHITELIST_PUSH_ACK:
                 fut = self._pending_whitelist_ack.get(target_id)
                 if fut is not None and not fut.done():

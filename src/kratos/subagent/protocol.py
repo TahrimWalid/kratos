@@ -23,13 +23,15 @@ huge length prefix.
 
 Message shapes (every message has a "type" field):
   hello              {type, version, agent_id, auth: {token} | {pairing_code},
-                      hostname, agent_version}
+                      hostname, agent_version, session_nonce?, ceiling?}
   hello_ack          {type, target_id, token}
   hello_reject       {type, reason}
   telemetry          {type, seq, collected_at, payload}
   telemetry_ack      {type, seq}
   ping               {type, ts}
-  pong               {type, ts}          -- echoes the ping's ts
+  pong               {type, ts, session_nonce?, sig?}  -- echoes the ping's ts;
+                      signed when the agent sent a session_nonce (only a
+                      verified pong arms the agent's dead-man's switch)
 
 Capability 2 (direct execution) messages -- see kratos.subagent.signing for
 the HMAC envelope these carry, kratos.subagent.whitelist for the ActionSpec
@@ -40,9 +42,17 @@ enable execution against any real target -- see agent.py's own
 `execution_enabled` flag, which defaults OFF and is the one thing that must
 be explicitly, locally set on the target for a dispatch to ever actually run.
   whitelist_push      {type, version, actions: [ActionSpec-as-dict, ...], sig}
-  whitelist_push_ack  {type, version}
+  whitelist_push_ack  {type, version, rejected: [{id, reason}], ceiling}
   exec_dispatch       {type, dispatch_id, action_id, slot_values,
-                       whitelist_version, sig}
+                       whitelist_version, session_nonce, sig}
+
+`session_nonce` is fresh random per agent connection; the agent refuses any
+signed dispatch/pong that doesn't carry the current one, so a captured
+message can't be replayed on a later connection (and dispatch ids are
+de-duplicated within one). `ceiling` describes the agent's own execution
+ceiling (kratos.subagent.ceiling): {version, fingerprint, local_commands,
+local_problems} -- what this target will actually run, reported so core can
+show it, never something core can change.
   exec_result         {type, dispatch_id, status: "ok"|"refused"|"error",
                        reason, exit_code, stdout_tail, stderr_tail, ts}
 """
@@ -126,8 +136,11 @@ async def read_frame(reader: asyncio.StreamReader) -> dict[str, Any] | None:
 # Message builders -- both sides use these so the shape is defined exactly
 # once, not re-typed (and potentially drifted) at every call site.
 # ---------------------------------------------------------------------------
-def build_hello(agent_id: str, auth: dict[str, str], hostname: str, agent_version: str) -> dict[str, Any]:
-    return {
+def build_hello(
+    agent_id: str, auth: dict[str, str], hostname: str, agent_version: str,
+    session_nonce: str | None = None, ceiling: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    msg = {
         "type": MSG_HELLO,
         "version": PROTOCOL_VERSION,
         "agent_id": agent_id,
@@ -135,6 +148,11 @@ def build_hello(agent_id: str, auth: dict[str, str], hostname: str, agent_versio
         "hostname": hostname,
         "agent_version": agent_version,
     }
+    if session_nonce is not None:
+        msg["session_nonce"] = session_nonce
+    if ceiling is not None:
+        msg["ceiling"] = ceiling
+    return msg
 
 
 def build_hello_ack(target_id: str, token: str) -> dict[str, Any]:
@@ -165,12 +183,15 @@ def build_whitelist_push(version: int, actions: list[dict[str, Any]], sig: str) 
     return {"type": MSG_WHITELIST_PUSH, "version": version, "actions": actions, "sig": sig}
 
 
-def build_whitelist_push_ack(version: int) -> dict[str, Any]:
-    return {"type": MSG_WHITELIST_PUSH_ACK, "version": version}
+def build_whitelist_push_ack(
+    version: int, rejected: list[dict[str, str]] | None = None, ceiling: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return {"type": MSG_WHITELIST_PUSH_ACK, "version": version, "rejected": rejected or [], "ceiling": ceiling}
 
 
 def build_exec_dispatch(
-    dispatch_id: str, action_id: str, slot_values: dict[str, Any], whitelist_version: int, sig: str
+    dispatch_id: str, action_id: str, slot_values: dict[str, Any], whitelist_version: int,
+    session_nonce: str, sig: str,
 ) -> dict[str, Any]:
     return {
         "type": MSG_EXEC_DISPATCH,
@@ -178,6 +199,7 @@ def build_exec_dispatch(
         "action_id": action_id,
         "slot_values": slot_values,
         "whitelist_version": whitelist_version,
+        "session_nonce": session_nonce,
         "sig": sig,
     }
 

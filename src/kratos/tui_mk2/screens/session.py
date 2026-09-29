@@ -93,7 +93,8 @@ _PALETTE_COMMANDS = [
     ("/sessions", "back to the session picker (keeps this session)"),
     ("/settings", "settings — models, tool approvals, timezone"),
     ("/subagent", "add / manage sub-agents — pair a target for read-only telemetry"),
-    ("/whitelist", "a paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
+    ("/whitelist", "a paired target's allowlist — add/edit entries, opt-in, typed-EXECUTE dispatch"),
+    ("/run-fix", "run the last recommended command via the target's sub-agent (if it's in the allowlist)"),
     ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]
@@ -201,6 +202,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy
         self._last_commands: list[str] = []  # recommended commands from the last turn, for ctrl+y
+        # Recommended commands from the last turn that match an ENABLED
+        # allowlist entry on the target's paired sub-agent -- what /run-fix offers.
+        self._runnable_fixes: list[dict[str, Any]] = []
+        self._last_target_commands: list[dict[str, Any]] = []
         # ↑/↓ non-destructive message-history recall state (shell-style):
         self._hist_turns: list[dict[str, Any]] | None = None  # loaded lazily on first ↑
         self._hist_index = 0               # position within _hist_turns; == len means "composing new"
@@ -786,6 +791,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.whitelist import WhitelistScreen
 
             self.app.push_screen(WhitelistScreen(self._data_dir))
+        elif cmd in ("/run-fix", "/run-recommended"):
+            self._run_fix_flow()
         elif cmd in ("/investigate-host", "/investigate-self", "/host"):
             self._investigate_host_flow(rest)
         elif cmd == "/run":
@@ -3633,6 +3640,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(Text(reply or "(no reply)", style=T.TEXT))
             self._last_answer = reply
             self._last_commands = []  # a chat reply carries no remediation commands
+            self._runnable_fixes = []
             self._log_chat_turn(goal, reply)
             self._ctx_chars += len(goal) + len(reply)
             self._maybe_auto_compact()  # keep the growing chat context within the window
@@ -3939,6 +3947,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.recommended_command_panel(c, target_label))
         if self._last_commands:
             self._emit_from_worker(R.note_line("Ctrl+Y copies the recommended command(s) — Kratos does not run them."))
+        self._last_target_commands = [] if target_override else [
+            c for c in commands if str(c.get("run_on") or "target") == "target"]
+        self._runnable_fixes = [] if target_override else self._match_runnable_fixes(commands)
+        if self._runnable_fixes:
+            names = ", ".join(f["label"] for f in self._runnable_fixes)
+            self._emit_from_worker(R.note_line(
+                f"This target's sub-agent can run {'this' if len(self._runnable_fixes) == 1 else 'these'} "
+                f"({names}) — type /run-fix to review and approve it. Nothing runs without you typing EXECUTE."))
 
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
@@ -3948,6 +3964,79 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._remember_turn(goal, result.get("final_answer") or f"(investigation ended: {status})")
         self._ctx_chars += len(goal) + len(result.get("final_answer", "") or "")
         self.app.call_from_thread(self._refresh_footer)
+
+    def _match_runnable_fixes(self, commands: list[dict[str, Any]], target_id: str | None = None) -> list[dict[str, Any]]:
+        """Recommended target commands that are exactly one run of an ENABLED
+        allowlist entry on this session's target's paired sub-agent. Only
+        offers -- running still goes through /whitelist's typed-EXECUTE gate.
+        `target_id` names the sub-agent explicitly (the user picked it);
+        otherwise it is found by the session target's name/hostname, and only
+        a UNIQUE match counts -- never a guess about which machine."""
+        targets = self.session_state.get("targets") or []
+        if not commands or (not targets and target_id is None):
+            return []
+        try:
+            from kratos.storage.subagent_store import SubAgentStore
+            from kratos.storage.whitelist_store import WhitelistStore
+            from kratos.subagent.entry_builder import match_recommendation
+            from kratos.tui_mk2.screens.whitelist import build_rows
+
+            if target_id is None:
+                wanted = str(targets[0]).strip().lower()
+                paired = [t for t in SubAgentStore(self._data_dir / "kratos.db").list_targets()
+                          if not t.get("revoked_at")
+                          and wanted in {str(t.get("name") or "").lower(), str(t.get("hostname") or "").lower()}]
+                if len(paired) != 1:
+                    return []  # none, or ambiguous -- /run-fix asks instead of guessing
+                target_id = paired[0]["target_id"]
+            tid = target_id
+            rows = [r for r in build_rows(WhitelistStore(self._data_dir / "kratos.db"), tid) if r["state"] == "on"]
+        except Exception:  # noqa: BLE001 -- an offer is optional; never break the turn over it
+            return []
+        out = []
+        for c in commands:
+            if str(c.get("run_on") or "target") != "target":
+                continue
+            hit = match_recommendation(str(c.get("command") or ""), rows)
+            if hit:
+                row, values = hit
+                out.append({"target_id": tid, "action_id": row["spec"].id, "values": values,
+                            "label": row["label"], "command": str(c.get("command"))})
+        return out
+
+    @work
+    async def _run_fix_flow(self) -> None:
+        fixes = list(self._runnable_fixes)
+        if not fixes and self._last_target_commands:
+            # The session target couldn't be tied to one paired sub-agent
+            # automatically -- ask which machine it is rather than guess.
+            from kratos.storage.subagent_store import SubAgentStore
+
+            paired = [t for t in SubAgentStore(self._data_dir / "kratos.db").list_targets() if not t.get("revoked_at")]
+            if paired:
+                label = (self.session_state.get("targets") or ["the target"])[0]
+                tid = await self.app.push_screen_wait(ListPickerModal(
+                    f"Which paired machine is {label}?",
+                    [(t["target_id"], f"{t.get('name') or '?'}  ({t.get('hostname') or '?'}, {t['target_id']})") for t in paired]))
+                if tid is None:
+                    return
+                fixes = self._match_runnable_fixes(self._last_target_commands, target_id=tid)
+        if not fixes:
+            self._emit(R.note_line(
+                "No recommended command from the last investigation matches an enabled allowlist entry on this "
+                "target's sub-agent. Add one in /whitelist (a → exact command or a command with blanks)."))
+            return
+        fix = fixes[0]
+        if len(fixes) > 1:
+            idx = await self.app.push_screen_wait(ListPickerModal(
+                "Which recommended command?", [(i, f["command"]) for i, f in enumerate(fixes)]))
+            if idx is None:
+                return
+            fix = fixes[idx]
+        from kratos.tui_mk2.screens.whitelist import WhitelistScreen
+
+        self.app.push_screen(WhitelistScreen(self._data_dir, target_id=fix["target_id"],
+                                             preselect={"action_id": fix["action_id"], "values": fix["values"]}))
 
     def _render_step(self, step: dict) -> None:
         tool_name = step.get("tool")

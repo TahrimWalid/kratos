@@ -42,6 +42,7 @@ BUNDLE_FILES: tuple[str, ...] = (
     "collector.py",
     "signing.py",
     "whitelist.py",
+    "ceiling.py",
 )
 
 DEFAULT_SERVICE_NAME = "kratos-subagent"
