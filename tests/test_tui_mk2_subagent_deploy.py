@@ -181,7 +181,8 @@ def test_d_redeploys_a_waiting_code_and_remembers_the_address(tmp_path, key, mon
     screen = SubAgentScreen(tmp_path)
     deployed = []
     monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker",
-                        lambda self, path, addr, c=None: deployed.append((path, addr, c)))
+                        lambda self, path, addr, c=None, **kw: deployed.append((path, addr, c)))
+    monkeypatch.setattr(SubAgentScreen, "_probe_existing_agent", lambda self, addr: None)
     answers = iter([True, "-oProxyCommand=x", "ubuntu@203.0.113.9"])
 
     async def fake(_modal):
@@ -229,3 +230,72 @@ def test_default_deploy_address_uses_the_configured_login_user(tmp_path, key, mo
 
     _run(screen, script, fake_wait=fake)
     assert seen[1]._initial == "opsuser@devbox"
+
+
+def test_expired_while_on_the_prompt_is_caught_before_deploying(tmp_path, key, monkeypatch):
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    code = sa.create_pairing_code(name="web", core_host="h")["code"]
+    screen = SubAgentScreen(tmp_path)
+    monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker", lambda *a, **k: pytest.fail("must not deploy"))
+    answers = iter([True, "u@h"])
+
+    async def fake(_modal):
+        addr = next(answers)
+        if addr == "u@h":  # the code runs out while the address prompt is open
+            sa._write("UPDATE subagent_pairing_codes SET expires_at = ? WHERE code = ?", (_expiry_iso(-1), code))
+        return addr
+
+    async def script(app, pilot):
+        await screen._offer_ssh_deploy(tmp_path / "x.sh", "web", code)
+
+    out = _run(screen, script, fake_wait=fake)
+    assert "expired while you were setting this up" in out["texts"]
+
+
+@pytest.mark.parametrize("choice", ["upgrade", "pair", "cancel"])
+def test_box_that_already_runs_an_agent(tmp_path, key, monkeypatch, choice):
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    code = sa.create_pairing_code(name="web", core_host="100.97.223.65")["code"]
+    screen = SubAgentScreen(tmp_path)
+    deployed = []
+    monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker",
+                        lambda self, path, addr, c=None, **kw: deployed.append((path, c, kw)))
+    monkeypatch.setattr(SubAgentScreen, "_probe_existing_agent", lambda self, a: "/opt/kratos-subagent/state.json")
+    answers = iter([True, "u@h", choice])
+
+    async def fake(_modal):
+        return next(answers)
+
+    async def script(app, pilot):
+        await screen._offer_ssh_deploy(tmp_path / "kratos-subagent-install-web.sh", "web", code)
+
+    out = _run(screen, script, fake_wait=fake)
+    if choice == "cancel":
+        assert deployed == [] and "nothing was changed" in out["texts"]
+        assert sa.get_pairing_code(code)["used_at"] is None  # the code is still usable
+    elif choice == "pair":
+        assert deployed[0][1] == code and deployed[0][2] == {"upgrade": False}
+    else:
+        path, c, kw = deployed[0]
+        assert c is None and kw == {"upgrade": True} and sa.get_pairing_code(code) is None
+        body = open(path).read()
+        assert "UPGRADE=1" in body and "PAIR_CODE=''" in body and "100.97.223.65" in body
+
+
+def test_a_repair_code_never_asks(tmp_path, key, monkeypatch):
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    code = sa.create_pairing_code(name="web", core_host="h", replaces_target_id="tgt_x")["code"]
+    screen = SubAgentScreen(tmp_path)
+    deployed = []
+    monkeypatch.setattr(SubAgentScreen, "_ssh_deploy_worker", lambda self, p, a, c=None, **k: deployed.append(c))
+    monkeypatch.setattr(SubAgentScreen, "_probe_existing_agent", lambda self, a: pytest.fail("no probe needed"))
+    answers = iter([True, "u@h"])
+
+    async def fake(_modal):
+        return next(answers)
+
+    async def script(app, pilot):
+        await screen._offer_ssh_deploy(tmp_path / "x.sh", "web", code)
+
+    _run(screen, script, fake_wait=fake)
+    assert deployed == [code]

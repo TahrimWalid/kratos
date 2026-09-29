@@ -632,13 +632,101 @@ class SubAgentScreen(Screen):
                 break
             self._log(Text(f"Not a usable SSH address ({problem}).", style=T.ATTENTION))
             initial = ssh_addr
+        if code and code in self._watched_codes:
+            self._watched_codes[code]["ssh_addr"] = ssh_addr
+        upgrade = False
+        if code and not self._code_usable(code):
+            # The operator can sit on these prompts past the 15-minute TTL.
+            self._log(Text("That pairing code expired while you were setting this up — select its row and press n "
+                           "for a fresh one.", style=T.ATTENTION))
+            return
+        if code:
+            plan = await self._existing_agent_plan(ssh_addr, code, name)
+            if plan is None:
+                self._log(Text("Deploy cancelled — nothing was changed on the target.", style=T.TEXT_MUTED))
+                return
+            if plan == "upgrade":
+                upgraded = self._write_upgrade_installer(name, code)
+                if upgraded is None:
+                    return
+                # Nothing will redeem this code now; don't leave it looking pending.
+                self._sa_store.cancel_pairing_code(code)
+                self._watched_codes.pop(code, None)
+                out_path, code, upgrade = upgraded, None, True
         # Now that we know the real target address, make `c` copy the concrete
         # commands (with the address filled in) instead of the placeholder.
         self._last_deploy_commands = self._deploy_commands(out_path, ssh_addr)
-        if code and code in self._watched_codes:
-            self._watched_codes[code]["ssh_addr"] = ssh_addr
         self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
-        self._ssh_deploy_worker(str(out_path), ssh_addr, code)
+        self._ssh_deploy_worker(str(out_path), ssh_addr, code, upgrade=upgrade)
+
+    def _code_usable(self, code: str) -> bool:
+        row = self._sa_store.get_pairing_code(code)
+        if row is None or row.get("used_at"):
+            return False
+        expires = ST.parse_stored_instant(row.get("expires_at"))
+        return expires is not None and expires > ST.utc_now()
+
+    async def _existing_agent_plan(self, ssh_addr: str, code: str, name: str | None) -> str | None:
+        """'pair' (go ahead), 'upgrade' (keep the box's current pairing, only
+        update its agent), or None (cancel). Asks only when the box already runs
+        a Kratos agent and this code isn't an intentional re-pair."""
+        row = self._sa_store.get_pairing_code(code) or {}
+        if row.get("replaces_target_id"):
+            return "pair"  # re-pair was chosen on purpose; the installer moves the old identity aside
+        found = await asyncio.to_thread(self._probe_existing_agent, ssh_addr)
+        if not found:
+            return "pair"  # none, or the probe itself failed (the deploy will explain that)
+        label = name or "this server"
+        choice = await self.app.push_screen_wait(ListPickerModal(
+            f"{ssh_addr} already runs a Kratos agent",
+            [
+                ("upgrade", "Keep its current pairing — just update the agent (no new server row)"),
+                ("pair", f"Pair it again as {label} — its old pairing stops receiving data (unpair that row after)"),
+                ("cancel", "Cancel — change nothing on the box"),
+            ],
+            subtitle=f"Found {found}. Updating keeps its history in one row; pairing again starts a new one.",
+        ))
+        if choice == "upgrade":
+            return "upgrade"
+        return "pair" if choice == "pair" else None
+
+    def _probe_existing_agent(self, ssh_addr: str) -> str | None:
+        """Where an existing agent's state file is on the box, or None (also on
+        any SSH failure -- the deploy that follows reports that properly).
+        Only checks that the file exists; never reads it (it holds a token)."""
+        import subprocess
+
+        script = ('for f in /opt/kratos-subagent/state.json "$HOME/.kratos-subagent/state.json"; do '
+                  '[ -e "$f" ] && echo "$f"; done; true')
+        try:
+            proc = subprocess.run(["ssh", *self._ssh_options(), "--", ssh_addr, script], capture_output=True,
+                                  text=True, timeout=30, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        found = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip().endswith("state.json")]
+        return " and ".join(found) if proc.returncode == 0 and found else None
+
+    def _write_upgrade_installer(self, name: str | None, code: str) -> Path | None:
+        row = self._sa_store.get_pairing_code(code) or {}
+        host = row.get("core_host") or (self._watched_codes.get(code) or {}).get("host")
+        if not host:
+            self._log(Text("Can't build the upgrade: this code has no Kratos address.", style=T.CRITICAL))
+            return None
+        try:
+            script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True)
+        except installer.InstallerError as exc:
+            self._log(Text(f"Could not generate the upgrade installer: {exc}", style=T.CRITICAL))
+            return None
+        out_path = self._data_dir / f"kratos-subagent-upgrade-{_slug(name) or 'server'}.sh"
+        try:
+            out_path.write_text(script, encoding="utf-8")
+            out_path.chmod(0o600)
+        except OSError as exc:
+            self._log(Text(f"Could not write {out_path}: {exc}", style=T.CRITICAL))
+            return None
+        self._log(Text(f"Upgrading in place: the pairing code was cancelled and {out_path.name} keeps the box's "
+                       "current identity.", style=T.TEXT_MUTED))
+        return out_path
 
     @staticmethod
     def _ssh_options() -> list[str]:
@@ -654,7 +742,8 @@ class SubAgentScreen(Screen):
         return opts
 
     @work(thread=True)
-    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str, code: str | None = None) -> None:
+    def _ssh_deploy_worker(self, script_path: str, ssh_addr: str, code: str | None = None, *,
+                           upgrade: bool = False) -> None:
         import shlex
         import subprocess
 
@@ -681,7 +770,10 @@ class SubAgentScreen(Screen):
                 self._deploy_failed(ssh_addr, "\n".join(x for x in (run.stderr, run.stdout) if x).strip())
                 return
             row = self._sa_store.get_pairing_code(code) if code else None
-            waiting = "" if (row is not None and row.get("used_at")) else " Waiting for it to check in…"
+            if upgrade:
+                waiting = " Its agent restarted on the new code and reconnects as its existing row."
+            else:
+                waiting = "" if (row is not None and row.get("used_at")) else " Waiting for it to check in…"
             self.app.call_from_thread(self._log, Text(f"✓ Installer ran on {ssh_addr}.{waiting}",
                                                       style=f"bold {T.SAFE}"))
             warning = DD.install_warning(run.stdout)
