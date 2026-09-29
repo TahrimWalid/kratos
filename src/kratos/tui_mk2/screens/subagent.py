@@ -93,6 +93,8 @@ def _deploy_failure_message(ssh_addr: str, detail: str) -> str:
     return "\n".join(lines)
 
 _DEFAULT_CORE_PORT = 8765
+# How long `L` waits for the new service to register before calling it failed.
+_SERVICE_CONFIRM_SECONDS = 15.0
 _CHECKIN_POLL_SECONDS = 1.0
 _CHECKIN_TIMEOUT_SECONDS = 900  # a pairing code lives 15 min; stop waiting when it can no longer be used.
 
@@ -123,7 +125,8 @@ class SubAgentScreen(Screen):
 
     CSS = """
     SubAgentScreen { padding: 1 2; }
-    SubAgentScreen #sa-banner { height: auto; padding: 0 0 1 0; }
+    SubAgentScreen #sa-banner { height: auto; padding: 0 0 0 0; }
+    SubAgentScreen #sa-listener { height: auto; padding: 0 0 1 0; }
     SubAgentScreen DataTable { height: auto; max-height: 14; }
     SubAgentScreen #sa-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
     SubAgentScreen #sa-hints { height: auto; padding-top: 1; }
@@ -143,6 +146,9 @@ class SubAgentScreen(Screen):
         self._sa_store = SubAgentStore(self._data_dir / "kratos.db")
         self._targets: list[dict[str, Any]] = []
         self._states: dict[str, ST.ConnectionState] = {}
+        # systemd scope / lingering are external process calls -- cached so the
+        # 3s auto-refresh doesn't spawn systemctl every tick.
+        self._svc_cache: tuple[float, str | None, bool | None] | None = None
         # When opened from onboarding: jump straight into the add-a-server flow
         # with the target's name pre-filled.
         self._auto_add = auto_add
@@ -157,6 +163,7 @@ class SubAgentScreen(Screen):
                 Text("Sub-agents — paired targets streaming read-only telemetry", style=f"bold {T.ACCENT}"),
                 id="sa-banner",
             )
+            yield Static(id="sa-listener")
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
@@ -190,7 +197,30 @@ class SubAgentScreen(Screen):
     def action_refresh(self) -> None:
         self._refresh()
 
+    def _service_facts(self) -> tuple[str | None, bool | None]:
+        import time as _time
+
+        from kratos.subagent import core_listener as _cl
+
+        if self._svc_cache is None or _time.monotonic() - self._svc_cache[0] > 30:
+            self._svc_cache = (_time.monotonic(), _cl.service_scope(), _cl.linger_enabled())
+        return self._svc_cache[1], self._svc_cache[2]
+
+    def _refresh_listener_line(self) -> None:
+        from kratos.subagent import core_listener as _cl
+        from kratos.utils.build_info import current_disk_build
+
+        listeners = self._sa_store.live_listeners(ST.LISTENER_STALE_AFTER_SECONDS)
+        here = getattr(self.app, "core_listener_in_process", lambda: False)()
+        scope, linger = self._service_facts() if listeners and listeners[0].get("mode") == "service" else (None, None)
+        msg, severity, _offer = _cl.describe_listener(
+            listeners, in_process_here=here, disk_build=current_disk_build(), scope=scope, linger=linger)
+        color = {"ok": T.SAFE, "attention": T.ATTENTION, "critical": T.CRITICAL}.get(severity, T.TEXT_DIM)
+        glyph = {"ok": "●", "attention": "◐", "critical": "○"}.get(severity, "·")
+        self.query_one("#sa-listener", Static).update(Text(f"{glyph} {msg}", style=color))
+
     def _refresh(self) -> None:
+        self._refresh_listener_line()
         table = self.query_one("#sa-table", DataTable)
         prev = table.cursor_row  # preserve selection across the rebuild (auto-refresh)
         table.clear()
@@ -387,59 +417,100 @@ class SubAgentScreen(Screen):
     # ------------------------------------------------------------------
     @work
     async def action_install_service(self) -> None:
-        """Install `subagent-serve` as an always-on service so telemetry keeps
-        arriving after Kratos is closed (and survives a reboot). System service
-        when passwordless sudo is available, else a user service (no root)."""
+        """Install (or restart) the always-on listener so telemetry keeps
+        arriving after Kratos is closed. Says exactly what it will do first:
+        a system service with passwordless sudo, else a user service -- and
+        whether that user service will survive logout/boot (lingering)."""
         from kratos.subagent import core_listener as _cl
 
-        user_mode = not _cl.passwordless_sudo_available()
-        cmds = _cl.core_service_install_commands(
-            self._data_dir, port=self._core_port, user_mode=user_mode
-        )
-        kind = "user" if user_mode else "system"
-        ok = await self.app.push_screen_wait(ConfirmModal(
-            "Install always-on listener?",
-            f"Install the telemetry listener as a {kind} service so it keeps receiving "
-            f"after you close Kratos and across reboots? You can undo it later with systemctl.",
-        ))
+        scope_now = _cl.service_scope()
+        linger = _cl.linger_enabled()
+        user_mode, explanation = _cl.service_plan(
+            passwordless_sudo=_cl.passwordless_sudo_available(), linger=linger, scope_now=scope_now)
+        title = "Restart the always-on listener?" if scope_now else "Install the always-on listener?"
+        ok = await self.app.push_screen_wait(ConfirmModal(title, explanation + "\n\nPress y to go ahead."))
+        cmds = (_cl.core_service_restart_commands(user_mode=user_mode) if scope_now else
+                _cl.core_service_install_commands(self._data_dir, port=self._core_port, user_mode=user_mode))
         if not ok:
-            self._log(Text("To install it later, run these once:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
+            self._log(Text("Nothing changed. To do it yourself later, run:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
             return
-        self._log(Text(f"Installing the always-on listener ({kind} service)…", style=T.ATTENTION))
-        self._install_service_worker(cmds)
+        # The in-process listener holds the port; hand it over, or the service
+        # restart-loops unable to bind until this window closes.
+        stopped_here = getattr(self.app, "stop_core_listener", lambda: False)()
+        self._log(Text(f"{'Restarting' if scope_now else 'Installing'} the always-on listener "
+                       f"({'user' if user_mode else 'system'} service)…", style=T.ATTENTION))
+        self._install_service_worker(cmds, user_mode, linger is False, stopped_here)
 
     @work(thread=True)
-    def _install_service_worker(self, cmds: list[str]) -> None:
+    def _install_service_worker(self, cmds: list[str], user_mode: bool, enable_linger: bool,
+                                stopped_here: bool) -> None:
         import subprocess
+        import time as _time
 
         from kratos.subagent import core_listener as _cl
 
+        started = _time.time()
         for cmd in cmds:
             try:
                 proc = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
             except (OSError, subprocess.SubprocessError) as exc:
-                self._service_install_failed(cmds, str(exc))
+                self._service_install_failed(cmds, str(exc), stopped_here)
                 return
             if proc.returncode != 0:
-                self._service_install_failed(cmds, (proc.stderr or proc.stdout).strip())
+                self._service_install_failed(cmds, (proc.stderr or proc.stdout).strip(), stopped_here)
                 return
-        if _cl.listener_running(self._core_port):
-            self.app.call_from_thread(self._log, Text(
-                "✓ Always-on listener installed and running — telemetry will keep arriving "
-                "even when Kratos is closed.", style=f"bold {T.SAFE}",
-            ))
-        else:
-            self.app.call_from_thread(self._log, Text(
-                "Service commands ran, but nothing is listening yet — check "
-                "`systemctl status kratos-core-listener` (or `--user`).", style=T.ATTENTION,
-            ))
+        if user_mode and enable_linger:
+            self._try_enable_linger()
+        # Real confirmation: a SERVICE listener registered after we started.
+        for _ in range(int(_SERVICE_CONFIRM_SECONDS / 0.5)):
+            _time.sleep(0.5)
+            fresh = [lst for lst in self._sa_store.live_listeners(ST.LISTENER_STALE_AFTER_SECONDS)
+                     if lst.get("mode") == "service" and (lst.get("started_at") or "") >= _iso(started - 1)]
+            if fresh:
+                self._svc_cache = None
+                self.app.call_from_thread(self._log, Text(
+                    f"✓ Always-on listener running (pid {fresh[0].get('pid')}). Telemetry keeps arriving after "
+                    "you close Kratos; connected servers reconnect to it within a minute.", style=f"bold {T.SAFE}"))
+                self.app.call_from_thread(self._refresh)
+                return
+        self._service_install_failed(
+            cmds, "the commands ran, but no service listener checked in within 15s "
+            f"(see `systemctl {'--user ' if user_mode else ''}status {_cl.CORE_SERVICE_NAME}`)".replace(
+                "15s", f"{int(_SERVICE_CONFIRM_SECONDS)}s"), stopped_here)
 
-    def _service_install_failed(self, cmds: list[str], detail: str) -> None:
+    def _try_enable_linger(self) -> None:
+        import getpass
+        import subprocess
+
+        user = getpass.getuser()
+        try:
+            ok = subprocess.run(["loginctl", "enable-linger", user], capture_output=True, timeout=10).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if ok:
+            self.app.call_from_thread(self._log, Text("✓ Lingering turned on: the listener now survives logout "
+                                                      "and starts at boot.", style=T.SAFE))
+            return
+        cmd = f"sudo loginctl enable-linger {user}"
         self.app.call_from_thread(self._log, Text(
-            f"Couldn't install the service automatically: {detail}\n"
-            "Run these once yourself:\n" + "\n".join(cmds),
-            style=T.CRITICAL,
-        ))
+            "Lingering is still off (turning it on needs admin rights here), so the listener stops when you log "
+            f"out. Run once: {cmd}", style=T.ATTENTION))
+        self.app.call_from_thread(self.app.push_screen, CommandModal(
+            cmd, title="Keep the listener running after logout",
+            note="Run this once on THIS machine (needs sudo). It lets your user services run without a login."))
+
+    def _service_install_failed(self, cmds: list[str], detail: str, stopped_here: bool) -> None:
+        if stopped_here:
+            # Don't leave the user with NO listener: bring the in-process one back.
+            ensure = getattr(self.app, "ensure_core_listener", None)
+            if ensure is not None:
+                self.app.call_from_thread(ensure)
+        self.app.call_from_thread(self._log, Text(
+            f"Couldn't set up the always-on listener: {detail}\n"
+            + ("Kratos is listening inside this window again for now.\n" if stopped_here else "")
+            + "Run these yourself (press c-copy from the box):", style=T.CRITICAL))
+        self.app.call_from_thread(self.app.push_screen, CommandModal(
+            "\n".join(cmds), title="Always-on listener commands", note="Run on THIS machine."))
 
     async def _pick_hub_address(self) -> str | None:
         """Ask which address the target should DIAL to reach this core."""
@@ -542,3 +613,9 @@ def _telemetry_table(latest: dict[str, Any]) -> Table:
 def _compact(val: Any, limit: int = 80) -> str:
     s = str(val)
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _iso(epoch: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")

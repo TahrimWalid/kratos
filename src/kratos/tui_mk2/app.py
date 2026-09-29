@@ -389,6 +389,18 @@ class KratosTUI(ResilientWorkerHost, App):
             self._core_listener_inproc = False
             return "unavailable"
 
+    def stop_core_listener(self) -> bool:
+        """Stop the in-process listener this app started (e.g. so the
+        always-on service can take the port). True if one was stopped."""
+        if not self._core_listener_inproc or self._core_server is None:
+            return False
+        self._core_server.stop()
+        self._core_listener_inproc = False
+        return True
+
+    def core_listener_in_process(self) -> bool:
+        return bool(self._core_listener_inproc)
+
     async def _serve_core_listener(self, server) -> None:
         """Run the listener until the worker is cancelled at shutdown, absorbing
         the CancelledError (and any teardown error) so the worker exits cleanly

@@ -126,6 +126,13 @@ def core_service_install_commands(
     ]
 
 
+def core_service_restart_commands(*, user_mode: bool, service_name: str = CORE_SERVICE_NAME) -> list[str]:
+    """Restart an installed listener service (e.g. to load a newer build)."""
+    if user_mode:
+        return ["systemctl --user daemon-reload", f"systemctl --user restart {service_name}.service"]
+    return ["sudo -n systemctl daemon-reload", f"sudo -n systemctl restart {service_name}.service"]
+
+
 def passwordless_sudo_available() -> bool:
     """True if `sudo -n true` succeeds -- i.e. we can install a system service
     without an interactive password prompt (which a TUI can't show)."""
@@ -137,3 +144,99 @@ def passwordless_sudo_available() -> bool:
         return subprocess.run(["sudo", "-n", "true"], capture_output=True, timeout=5).returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Who is listening, and will it survive closing Kratos? (connection-UX WS2)
+# ---------------------------------------------------------------------------
+def _run_quiet(cmd: list[str], timeout: float = 3.0) -> tuple[int, str]:
+    import subprocess
+
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or "").strip()
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+
+
+def service_scope(service_name: str = CORE_SERVICE_NAME) -> str | None:
+    """"user" or "system" if the always-on listener service is active in that
+    systemd scope, else None."""
+    if shutil.which("systemctl") is None:
+        return None
+    if _run_quiet(["systemctl", "--user", "is-active", f"{service_name}.service"])[1] == "active":
+        return "user"
+    if _run_quiet(["systemctl", "is-active", f"{service_name}.service"])[1] == "active":
+        return "system"
+    return None
+
+
+def linger_enabled(user: str | None = None) -> bool | None:
+    """Whether systemd keeps this user's services running without a login
+    session (so a USER service starts at boot). None if unknown."""
+    import getpass
+
+    if shutil.which("loginctl") is None:
+        return None
+    rc, out = _run_quiet(["loginctl", "show-user", user or getpass.getuser(), "-p", "Linger", "--value"])
+    return {"yes": True, "no": False}.get(out) if rc == 0 else None
+
+
+def describe_listener(
+    listeners: list[dict],
+    *,
+    in_process_here: bool,
+    disk_build: str,
+    scope: str | None,
+    linger: bool | None,
+) -> tuple[str, str, bool]:
+    """(message, severity, offer_L) for the /subagent listener line. Pure.
+
+    `listeners` are the live registrations (subagent_store.live_listeners);
+    `scope`/`linger` describe the always-on service when one is installed."""
+    if not listeners:
+        return ("Not listening: paired servers can't check in right now. Press L to install the always-on "
+                "listener (recommended), or keep Kratos open on this screen.", "critical", True)
+    lst = listeners[0]
+    extra = ""
+    if len(listeners) > 1:
+        extra = f" ({len(listeners)} listeners registered -- only one can hold the port; the others are retrying)"
+    older = lst.get("build") and lst["build"] != disk_build
+    stale = f" It runs an older build ({lst['build']}); press L to restart it on the current one." if older else ""
+    mode = lst.get("mode")
+    if mode == "service":
+        where = f"{scope} service" if scope else "systemd service"
+        if scope == "user" and linger is False:
+            return (f"Always-on listener ({where}, pid {lst.get('pid')}) -- but lingering is OFF, so it stops when "
+                    f"you log out and won't start at boot. Press L to fix.{stale}{extra}", "attention", True)
+        boot = " Starts at boot." if scope == "system" or linger else ""
+        return (f"Always-on listener ({where}, pid {lst.get('pid')}): keeps receiving after you close Kratos."
+                f"{boot}{stale}{extra}", "attention" if older else "ok", bool(older))
+    if mode == "in_process" and in_process_here:
+        return ("Listening inside this Kratos window: telemetry STOPS when you quit. Press L to keep it "
+                f"running always.{extra}", "attention", True)
+    if mode == "in_process":
+        return (f"Listening inside another Kratos window (pid {lst.get('pid')}): telemetry stops when that window "
+                f"closes. Press L for an always-on listener.{extra}", "attention", True)
+    return (f"Listening in a terminal (`kratos subagent-serve`, pid {lst.get('pid')}): stops when that terminal "
+            f"closes. Press L for an always-on listener.{stale}{extra}", "attention", True)
+
+
+def service_plan(*, passwordless_sudo: bool, linger: bool | None, scope_now: str | None) -> tuple[bool, str]:
+    """(user_mode, explanation) shown BEFORE `L` does anything."""
+    if scope_now:
+        return scope_now == "user", (
+            f"The always-on listener is already installed as a {scope_now} service. This restarts it so it runs the "
+            "build that is on disk now. Connected servers reconnect on their own within a minute.")
+    if passwordless_sudo:
+        return False, ("Installs a SYSTEM service (you have passwordless sudo). It runs as your user, starts at boot "
+                       "and keeps receiving whether or not anyone is logged in.")
+    linger_note = {
+        True: "Lingering is already ON for your user, so it also starts at boot without a login.",
+        False: "Lingering is OFF for your user, so it would stop when you log out; Kratos will try to turn it on "
+               "(`loginctl enable-linger`) and show you the command if that needs admin rights.",
+        None: "Kratos couldn't tell whether lingering is on; if the service stops when you log out, run "
+              "`sudo loginctl enable-linger $USER` once.",
+    }[linger]
+    return True, ("Installs a USER service (no passwordless sudo here): it runs as you and keeps receiving after you "
+                  f"close Kratos. {linger_note}")
