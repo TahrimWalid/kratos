@@ -101,7 +101,7 @@ def _tailscale_onboarding() -> Any:
     )
     abandoned = _win(
         "kratos — connecting",
-        Text("⧗ authorization abandoned", style=T.ATTENTION),
+        Text("… authorization abandoned", style=T.ATTENTION),
         Text("Browser tab closed / no response — detected by timeout, returns to a clean retry rather "
              "than hanging forever.", style=T.TEXT_MUTED),
         border=T.ATTENTION,
@@ -162,7 +162,7 @@ def _pairing_wizard() -> Any:
     )
     timeout = _win(
         "kratos — pair a target",
-        Text("⧗ pairing code expired unused", style=T.ATTENTION),
+        Text("… pairing code expired unused", style=T.ATTENTION),
         Text("The command/code was never run. Generate a fresh one to try again.", style=T.TEXT_MUTED),
         border=T.ATTENTION,
     )

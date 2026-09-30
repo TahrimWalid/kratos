@@ -4205,7 +4205,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if manual:
             self._emit_from_worker(R.note_line("Compacting the conversation (summarizing older turns, a moment)…"))
         else:
-            # Auto-compaction near the window limit — the receding ⤵ notice, same
+            # Auto-compaction near the window limit — the receding ↓ notice, same
             # visual language as the investigation loop's own compaction event.
             self._emit_from_worker(R.compaction_line())
         # Bound what we send the summarizer so an enormous context can't itself

@@ -304,7 +304,7 @@ class SubAgentScreen(Screen):
                 self._watched_codes.pop(code)
                 tried = (f" {row['last_attempt_host']} tried to pair with it after it expired."
                          if row.get("last_attempt_host") else "")
-                self._log(Text(f"⧗ The pairing code for {label} expired unused.{tried} Select its row and press n "
+                self._log(Text(f"The pairing code for {label} expired unused.{tried} Select its row and press n "
                                "for a fresh code (the installer is regenerated to match).", style=T.ATTENTION))
                 continue
             deployed = ctx.get("deployed_at")
@@ -453,7 +453,7 @@ class SubAgentScreen(Screen):
     async def action_new_code(self) -> None:
         row = self._selected_row()
         if row is None or row["kind"] != "pending":
-            self._log(Text("Select a pairing-code row (⧗) to make a fresh code for it.", style=T.TEXT_DIM))
+            self._log(Text("Select a pairing-code row (waiting or code expired) to make a fresh code for it.", style=T.TEXT_DIM))
             return
         old = row["code"]
         self._sa_store.cancel_pairing_code(old["code"])
@@ -469,7 +469,7 @@ class SubAgentScreen(Screen):
         after fixing whatever the last deploy attempt said was wrong."""
         row = self._selected_row()
         if row is None or row["kind"] != "pending":
-            self._log(Text("Select a waiting pairing-code row (⧗) to deploy its installer.", style=T.TEXT_DIM))
+            self._log(Text("Select a waiting pairing-code row to deploy its installer.", style=T.TEXT_DIM))
             return
         c = row["code"]
         expires = ST.parse_stored_instant(c.get("expires_at"))
@@ -493,7 +493,7 @@ class SubAgentScreen(Screen):
     def action_dismiss_code(self) -> None:
         row = self._selected_row()
         if row is None or row["kind"] != "pending":
-            self._log(Text("Select a pairing-code row (⧗) to dismiss it.", style=T.TEXT_DIM))
+            self._log(Text("Select a pairing-code row (waiting or code expired) to dismiss it.", style=T.TEXT_DIM))
             return
         self._sa_store.cancel_pairing_code(row["code"]["code"])
         self._watched_codes.pop(row["code"]["code"], None)
@@ -1026,11 +1026,11 @@ def _pending_cells(code: dict[str, Any], now, names: dict[str, str]) -> tuple:
     if code.get("replaces_target_id"):
         label += f" (re-pair of {names.get(code['replaces_target_id'], code['replaces_target_id'])})"
     if left > 0:
-        status = Text("⧗ waiting", style=T.ATTENTION)
+        status = Text("… waiting", style=T.ATTENTION)
         detail = (f"code {code['code']} · expires in {int(left) // 60}:{int(left) % 60:02d} · run its installer on the "
                   "server (d deploy over SSH · x dismiss · n new code)")
     else:
-        status = Text("⧖ code expired", style=T.CRITICAL)
+        status = Text("✗ code expired", style=T.CRITICAL)
         tried = (f" · {code['last_attempt_host']} tried it {ST.human_age(ST._age(code['last_attempt_at'], now))}"
                  if code.get("last_attempt_at") else "")
         detail = f"code {code['code']} expired {ST.human_age(-left)}{tried} · press n for a fresh code"

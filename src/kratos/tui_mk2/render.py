@@ -341,7 +341,7 @@ def compaction_line(context_tokens: int = 0, context_window: int = 0) -> Text:
     shrinks the model's prompt, never the record). Rendered faint, like the
     "Done in Ns" footer."""
     line = Text()
-    line.append("⤵ context compacted", style=T.TEXT_MUTED)
+    line.append("↓ context compacted", style=T.TEXT_MUTED)
     if context_window > 0 and context_tokens > 0:
         line.append(
             f"  (was {context_tokens / 1000:.1f}k/{context_window / 1000:.1f}k of the model window) ",
