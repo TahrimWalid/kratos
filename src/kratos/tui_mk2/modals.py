@@ -503,15 +503,86 @@ class GuideModal(ModalScreen[None]):
             yield Static(Text("esc close", style=T.TEXT_DIM))
 
     def _steps(self, rows: list[tuple[str, str]]) -> Table:
-        table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
-        table.add_column(style=T.ACCENT, no_wrap=True, justify="left")
-        table.add_column(style=T.TEXT_MUTED)
-        for left, right in rows:
-            table.add_row(left, right)
-        return table
+        return _step_table(rows)
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+def _step_table(rows: list[tuple[str, str]]) -> Table:
+    """Two-column 'label  explanation' table used by the explainer modals."""
+    table = Table(show_header=False, box=None, padding=(0, 1, 0, 0))
+    table.add_column(style=T.ACCENT, no_wrap=True, justify="left")
+    table.add_column(style=T.TEXT_MUTED)
+    for left, right in rows:
+        table.add_row(left, right)
+    return table
+
+
+class EvolveIntroModal(ModalScreen[bool]):
+    """What /evolve does, for someone who has never used it: shown once before a
+    user's first /evolve, and any time via `/evolve help`. Explanation only --
+    it changes nothing about what gets reviewed or when a human must say yes.
+
+    first_time=True: Enter starts the build (True), esc means "not now" (False).
+    first_time=False (help): esc/Enter just close."""
+
+    BINDINGS = [
+        Binding("enter", "go", "start", show=False),
+        Binding("escape,q", "not_now", "close", show=True),
+    ]
+
+    def __init__(self, first_time: bool = True) -> None:
+        super().__init__()
+        self._first_time = first_time
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="modal-card"):
+            yield Static(Text("Building a new tool with /evolve", style=f"bold {T.ACCENT}"),
+                         classes="modal-title")
+            yield Static(Text(
+                "When Kratos is missing a tool — say, “list the users who can use sudo” — /evolve "
+                "builds one. You describe the idea; Kratos writes the code, tests it safely and "
+                "shows it to you. Nothing is kept unless you say yes.", style=T.TEXT))
+            yield Static(Text("\nHow it works", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(_step_table([
+                ("1.  describe it", "one clear job, in plain words."),
+                ("2.  agree on the test", "Kratos drafts a short automatic test and shows you, in "
+                 "plain English, what it checks. That test is what “correct” means for the new tool; "
+                 "if a check is wrong, you correct it in plain English."),
+                ("3.  build and test", "Kratos writes the tool and runs your test in a locked-down "
+                 "sandbox (no network, none of your files), trying up to 3 times."),
+                ("4.  review and keep", "if it passes, you see the full code and anything worth a "
+                 "second look. y keeps it; anything else throws it away."),
+            ]))
+            yield Static(Text("\nWhy a test is required", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(Text(
+                "A kept tool runs on this machine, outside the sandbox, every time Kratos uses it. "
+                "The test is the one thing that pins down what it must do — without it, “the model "
+                "says it works” would be the only check. That's why you always see it before "
+                "anything is built.", style=T.TEXT_MUTED))
+            yield Static(Text("\nAsk before running?", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(Text(
+                "After you keep a tool, Kratos asks whether it may run on its own. Recommended: no, "
+                "until you've seen it work — then it asks you every time it runs. Anything but y "
+                "keeps it asking. You can change this later in Settings → Tools.", style=T.TEXT_MUTED))
+            yield Static(Text("\nIf it doesn't work out", style=f"bold {T.TEXT_BRIGHT}"))
+            yield Static(_step_table([
+                ("didn't pass", "nothing passed your test in 3 tries. Usually a check is too "
+                 "strict — relax it and run again."),
+                ("stalled", "the model kept giving back the same code. Describe the idea "
+                 "differently."),
+                ("you said no", "nothing is saved. Run /evolve again any time."),
+            ]))
+            hint = ("\nenter start building · esc not now · /evolve help shows this again"
+                    if self._first_time else "\nesc close")
+            yield Static(Text(hint, style=T.TEXT_DIM))
+
+    def action_go(self) -> None:
+        self.dismiss(self._first_time)
+
+    def action_not_now(self) -> None:
+        self.dismiss(False)
 
 
 class ListPickerModal(ModalScreen[Any]):

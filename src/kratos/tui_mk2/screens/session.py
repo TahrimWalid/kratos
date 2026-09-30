@@ -77,7 +77,7 @@ _PALETTE_COMMANDS = [
     ("/usage", "token usage + estimated cost this session (local = free)"),
     ("/context", "what's currently loaded in the context window"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
-    ("/evolve", "write a new tool for the current gap"),
+    ("/evolve", "write a new tool for the current gap  (/evolve help: how it works)"),
     ("/tools", "list the tools Kratos can use, by kind"),
     ("/use", "run ONE specific tool directly (deterministic, no model)"),
     ("/guide", "getting started — the first steps, in plain language"),
@@ -797,7 +797,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif cmd == "/timezone":
             self._cmd_timezone(rest)
         elif cmd == "/evolve":
-            self._evolve_flow(rest)
+            self._evolve_entry(rest)
         elif cmd == "/tools":
             self._render_tools()
         elif cmd in ("/use", "/tool", "/run-tool"):
@@ -2988,6 +2988,35 @@ class SessionScreen(ResilientWorkerHost, Screen):
         return R.profile_blurb(values)
 
     # --- /evolve ---------------------------------------------------------
+    # Persisted (like the first-run "trusted" flag) once the /evolve explainer
+    # has been seen, so it is shown before a user's first build and never again
+    # unless asked for with /evolve help.
+    _EVOLVE_INTRO_SEEN_KEY = "evolve_intro_seen"
+
+    def _evolve_entry(self, rest: str) -> None:
+        from kratos.tui_mk2.modals import EvolveIntroModal
+
+        arg = rest.strip().lower()
+        if arg in ("help", "?", "intro", "explain"):
+            self.app.push_screen(EvolveIntroModal(first_time=False))
+            return
+        if arg in ("list", "ls") or _kconfig.load_local_config(self._data_dir).get(self._EVOLVE_INTRO_SEEN_KEY):
+            self._evolve_flow(rest)
+            return
+        self._evolve_intro_then_build(rest)
+
+    @work(group="evolve-intro")
+    async def _evolve_intro_then_build(self, rest: str) -> None:
+        from kratos.tui_mk2.modals import EvolveIntroModal
+
+        go = await self.app.push_screen_wait(EvolveIntroModal(first_time=True))
+        # Seen either way: "not now" is still having read it.
+        _kconfig.save_local_config(self._data_dir, **{self._EVOLVE_INTRO_SEEN_KEY: True})
+        if go:
+            self._evolve_flow(rest)
+        else:
+            self._emit(R.note_line("Run /evolve whenever you're ready — /evolve help shows that explainer again."))
+
     @work(thread=True)
     def _evolve_flow(self, rest: str) -> None:
         """Guided /evolve. Drives the UI-agnostic guided build

@@ -838,6 +838,9 @@ def test_bare_evolve_opens_idea_box(tmp_path, monkeypatch):
     # intercepts push_screen and dismisses the modal (callback(None)) to let the
     # worker unblock and the flow end cleanly.
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos import kratos_config as kc
+
+    kc.save_local_config(tmp_path, evolve_intro_seen=True)  # a returning user: straight to the build
     prompted = {"titles": []}
 
     async def _run():
@@ -1042,3 +1045,66 @@ def test_narrow_terminal_keeps_clock_meter_and_panel_edges(tmp_path, monkeypatch
     assert "UTC" in out["header"] or ":" in out["header"].split("read-only")[-1]
     assert "ctx" in out["footer"] and "%" in out["footer"] and len(out["footer"].rstrip()) <= out["footer_w"]
     assert out["log_virtual_w"] <= out["log_w"], out
+
+
+def test_first_evolve_explains_first_then_never_again_and_help_reshows(tmp_path, monkeypatch):
+    """A7 first-timer explainer: shown before a user's first /evolve (Enter goes on to the
+    normal guided build), remembered in the local config, not shown on the next /evolve, and
+    always available via /evolve help. Explanation only: the build itself is untouched."""
+    from kratos import kratos_config as kc
+    from kratos.tui_mk2.modals import EvolveIntroModal
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    builds: list = []
+    monkeypatch.setattr(SessionScreen, "_evolve_flow", lambda self, rest: builds.append(rest))
+    seen: dict = {}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/evolve list the users who can use sudo")
+            await pilot.pause()
+            seen["first"] = isinstance(app.screen, EvolveIntroModal) and app.screen._first_time
+            await pilot.press("enter")
+            await pilot.pause()
+            seen["after_first"] = list(builds)
+            seen["flag"] = kc.load_local_config(tmp_path).get("evolve_intro_seen")
+
+            screen._dispatch_slash("/evolve another idea")
+            await pilot.pause()
+            seen["second_modal"] = isinstance(app.screen, EvolveIntroModal)
+            seen["after_second"] = list(builds)
+
+            screen._dispatch_slash("/evolve help")
+            await pilot.pause()
+            seen["help"] = isinstance(app.screen, EvolveIntroModal) and not app.screen._first_time
+            await pilot.press("escape")
+            await pilot.pause()
+            seen["after_help"] = list(builds)
+
+    asyncio.run(_run())
+    assert seen["first"] is True
+    assert seen["after_first"] == ["list the users who can use sudo"] and seen["flag"] is True
+    assert seen["second_modal"] is False and seen["after_second"][-1] == "another idea"
+    assert seen["help"] is True and seen["after_help"] == seen["after_second"]  # help never starts a build
+
+
+def test_not_now_on_the_first_explainer_builds_nothing_but_counts_as_seen(tmp_path, monkeypatch):
+    from kratos import kratos_config as kc
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    builds: list = []
+    monkeypatch.setattr(SessionScreen, "_evolve_flow", lambda self, rest: builds.append(rest))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/evolve something")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+    asyncio.run(_run())
+    assert builds == [] and kc.load_local_config(tmp_path).get("evolve_intro_seen") is True

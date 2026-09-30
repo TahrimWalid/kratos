@@ -371,6 +371,9 @@ which is exactly why the review step exists and why there's no way to skip it.
 By default a new tool asks you before each run until you trust it; you can change
 that later in Settings.
 
+The first time you run `/evolve`, Kratos shows a short explainer of all this
+before it starts. `/evolve help` brings it back any time.
+
 ---
 
 ## Saving and repeating work
