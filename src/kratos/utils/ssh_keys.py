@@ -47,14 +47,14 @@ def authorize_key_command(pubkey: str | None = None) -> str | None:
     key = pubkey if pubkey is not None else read_local_pubkey()
     if not key:
         return None
-    q = _sh_squote(key)
-    f = "~/.ssh/authorized_keys"
-    # A file whose last line has no newline would glue the new key onto the
-    # previous one (breaking both), so add the missing newline first.
+    # The key appears ONCE (bound to $k), keeping the line as short as it can
+    # be for the copy box. A file whose last line has no newline would glue
+    # the new key onto the previous one (breaking both), so add that first.
     return (
-        f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch {f} && "
-        f"{{ grep -qxF {q} {f} || {{ [ ! -s {f} ] || [ -z \"$(tail -c1 {f})\" ] || echo >> {f}; "
-        f"echo {q} >> {f}; }}; }} && chmod 600 {f}"
+        f"k={_sh_squote(key)}; f=\"$HOME/.ssh/authorized_keys\"; "
+        "mkdir -p \"$HOME/.ssh\" && chmod 700 \"$HOME/.ssh\" && touch \"$f\" && "
+        "{ grep -qxF \"$k\" \"$f\" || { [ ! -s \"$f\" ] || [ -z \"$(tail -c1 \"$f\")\" ] || echo >> \"$f\"; "
+        "printf '%s\\n' \"$k\" >> \"$f\"; }; } && chmod 600 \"$f\""
     )
 
 

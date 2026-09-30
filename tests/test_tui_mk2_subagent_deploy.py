@@ -69,8 +69,9 @@ def key(tmp_path, monkeypatch):
 # --- ssh_keys --------------------------------------------------------------
 def test_authorize_command_is_idempotent_and_quote_safe():
     cmd = ssh_keys.authorize_key_command("ssh-ed25519 AAAA it's@me")
-    assert "grep -qxF 'ssh-ed25519 AAAA it'\\''s@me'" in cmd
-    assert cmd.startswith("mkdir -p ~/.ssh && chmod 700 ~/.ssh") and cmd.endswith("chmod 600 ~/.ssh/authorized_keys")
+    assert cmd.startswith("k='ssh-ed25519 AAAA it'\\''s@me'; ")   # quote-safe
+    assert cmd.count("AAAA") == 1                                    # the key appears once
+    assert 'grep -qxF "$k"' in cmd and cmd.endswith('chmod 600 "$f"')  # idempotent, sshd-safe perms
 
 
 def test_authorize_command_really_works_in_sh(tmp_path):
