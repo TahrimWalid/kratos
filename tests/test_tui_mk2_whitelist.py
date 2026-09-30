@@ -667,3 +667,25 @@ def test_table_is_painted_at_full_width_after_the_target_picker(tmp_path):
     asyncio.run(run())
     painted = re.sub(r"&#160;", " ", out["svg"])
     assert "fail2ban.ban_ip" in painted and "built-in" in painted
+
+
+def test_table_is_as_tall_as_its_rows_and_the_space_below_says_what_it_is_for(tmp_path):
+    """A short allowlist used to sit above a fixed 12-row table and a large void."""
+    sa, _ = _make_stores(tmp_path)
+    _pair(sa, "web-01")
+    screen = WhitelistScreen(tmp_path)
+    out: dict = {}
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            table = screen.query_one("#wl-table")
+            out["height"], out["rows"] = table.size.height, table.row_count
+            screen._refresh()  # a second refresh must not repeat the hint
+            await pilot.pause()
+            out["texts"] = _log_texts(screen)
+
+    asyncio.run(run())
+    assert out["height"] == out["rows"] + 1  # header + one line per entry
+    assert sum("Details and results appear here" in " ".join(t.split()) for t in out["texts"]) == 1

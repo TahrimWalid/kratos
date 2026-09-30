@@ -121,7 +121,7 @@ class WhitelistScreen(Screen):
     CSS = """
     WhitelistScreen { padding: 1 2; }
     WhitelistScreen #wl-banner { height: auto; padding: 0 0 1 0; }
-    WhitelistScreen DataTable { height: 12; }
+    WhitelistScreen DataTable { height: auto; max-height: 60%; }
     WhitelistScreen #wl-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
     WhitelistScreen #wl-hints { height: auto; padding-top: 1; }
     """
@@ -235,6 +235,12 @@ class WhitelistScreen(Screen):
             table.add_row(*row, key=key)
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
+        if self._rows and not self.query_one("#wl-log", VerticalScroll).children:
+            # The area under the table is where details and results appear; say so
+            # rather than leave it blank.
+            self._log(Text("i shows what the highlighted entry runs and how risky it is · enter runs it "
+                           "(you confirm first) · a adds your own. Details and results appear here.",
+                           style=T.TEXT_DIM))
 
         enabled = sum(1 for r in self._rows if r["state"] == "on")
         banner = Text()
