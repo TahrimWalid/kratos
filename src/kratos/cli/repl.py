@@ -98,8 +98,9 @@ REPL_MAX_ITERS = 7
 # tool-calling loop, including a real, live nmap scan against the target,
 # with no confirmation. A deterministic greeting/keyword list was
 # considered and rejected as brittle and against the actual goal (Kratos
-# should decide per-turn whether a tool call is warranted, the way Claude
-# Code does, not via an external pattern-match gate). Fix: one single,
+# should decide per-turn whether a tool call is warranted, the way an
+# interactive coding assistant decides per turn, not via an external
+# pattern-match gate). Fix: one single,
 # cheap LLM completion (same active backend, low max_tokens, NO tools)
 # decides INVESTIGATE-or-chat before run_agent is ever invoked -- cheaper
 # than the multi-step tool loop it replaces for a trivial input, and the
