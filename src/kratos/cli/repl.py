@@ -566,8 +566,9 @@ def _choose_session(console, store: SessionStore, data_dir: Path) -> tuple[str, 
             # wizard-persisted default target is what a brand-new session
             # actually starts with -- see run_session()'s wizard wiring.
             default_target = _kconfig.get_active_target()
-            session_id = store.create_session([default_target], _model_backend_label())
-            return session_id, [default_target], "", None
+            targets = [default_target] if default_target else []  # none set yet: /target sets one
+            session_id = store.create_session(targets, _model_backend_label())
+            return session_id, targets, "", None
 
         _render_chooser(console, sessions)
 
@@ -604,8 +605,8 @@ def _choose_session(console, store: SessionStore, data_dir: Path) -> tuple[str, 
 
         if choice == "n":
             default_target = _kconfig.get_active_target()
-            target_input = input(f"Target(s) [default: {default_target}]: ").strip()
-            targets = target_input.split() if target_input else [default_target]
+            target_input = input(f"Target(s) [default: {default_target or 'none set'}]: ").strip()
+            targets = target_input.split() if target_input else ([default_target] if default_target else [])
             session_id = store.create_session(targets, _model_backend_label())
             return session_id, targets, "", None
 
@@ -1975,7 +1976,7 @@ def _run_first_run_wizard(console, data_dir: Path) -> bool:
 
     console.print(
         f"\nOptional: set a default target IP/hostname for investigations "
-        f"(currently: {_kconfig.SSH_TARGET_HOST}). You can change this anytime with /target -- "
+        f"(currently: {_kconfig.get_active_target() or 'none set'}). You can change this anytime with /target -- "
         "leave blank to skip for now if you're not ready to configure a real target."
     )
     target_input = input("Default target: ").strip()

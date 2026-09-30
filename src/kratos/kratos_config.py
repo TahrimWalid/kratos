@@ -25,7 +25,12 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 # ---------------------------------------------------------------------------
 # SSH target -- the remote device Kratos investigates over SSH.
 # ---------------------------------------------------------------------------
-SSH_TARGET_HOST = os.environ.get("KRATOS_SSH_HOST", "10.136.28.168")
+# No default: the machine to investigate always comes from the user --
+# KRATOS_SSH_HOST, the target saved at first run (default_target, see
+# seed_active_target_from_config), /target, or a session's own target. An
+# empty value means "none set yet"; target-facing tools say so instead of
+# guessing a host.
+SSH_TARGET_HOST = os.environ.get("KRATOS_SSH_HOST", "").strip()
 SSH_TARGET_USER = os.environ.get("KRATOS_SSH_USER", "ubuntu")
 SSH_TARGET_KEY_PATH = Path(
     os.environ.get("KRATOS_SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_ed25519"))
@@ -93,10 +98,9 @@ JOURNALCTL_USE_SUDO = os.environ.get("KRATOS_JOURNALCTL_USE_SUDO", "1") == "1"
 # run_vuln_scan still reading the frozen SSH_TARGET_HOST above regardless
 # -- the exact live-switchable-settings bug class described in
 # docs/DESIGN.md. get_active_target() is now the single chokepoint every
-# target-facing tool resolves its host through -- SSH_TARGET_HOST remains
-# the unconditional fallback (and the unchanged, only value non-REPL entry
-# points like `kratos investigate`/`kratos scan` ever see, no regression for
-# the common case).
+# target-facing tool resolves its host through -- SSH_TARGET_HOST (the
+# KRATOS_SSH_HOST env var) is the fallback, and the CLI's main() seeds the
+# saved default_target when that is unset (seed_active_target_from_config).
 #
 # Why a mutable module global, not an explicit parameter threaded through
 # run_agent()/execute_tool_call(): auditing every target-facing tool shows
@@ -119,13 +123,60 @@ JOURNALCTL_USE_SUDO = os.environ.get("KRATOS_JOURNALCTL_USE_SUDO", "1") == "1"
 _active_target_override: str | None = None
 
 
+NO_TARGET_MESSAGE = (
+    "No target is set yet, so there is no machine to investigate. Set one with "
+    "/target <host> in Kratos (or KRATOS_SSH_HOST for command-line runs)."
+)
+
+
+class NoTargetConfigured(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(NO_TARGET_MESSAGE)
+
+
 def get_active_target() -> str:
-    return _active_target_override or SSH_TARGET_HOST
+    """The host being investigated, or "" when none has been set."""
+    return (_active_target_override or SSH_TARGET_HOST or "").strip()
+
+
+def require_active_target() -> str:
+    target = get_active_target()
+    if not target:
+        raise NoTargetConfigured()
+    return target
 
 
 def set_active_target(host: str | None) -> None:
     global _active_target_override
     _active_target_override = host
+
+
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def remember_first_target(data_dir: Path, host: str) -> bool:
+    """Save `host` as the default target for command-line and scheduled runs if
+    none is saved yet (the first real target a user sets). Never overwrites a
+    saved default and skips Kratos's own host. True if it saved."""
+    host = (host or "").strip()
+    if not host or host.lower() in _LOOPBACK_HOSTS:
+        return False
+    if str(load_local_config(data_dir).get("default_target") or "").strip():
+        return False
+    save_local_config(data_dir, default_target=host)
+    return True
+
+
+def seed_active_target_from_config(data_dir: Path) -> str:
+    """For entry points without the TUI's boot flow (`kratos investigate`,
+    `kratos run`, systemd-scheduled runs): use the target saved at first run
+    unless KRATOS_SSH_HOST or an explicit override already chose one. Returns
+    the resulting active target ("" if still none)."""
+    if not get_active_target():
+        saved = str(load_local_config(data_dir).get("default_target") or "").strip()
+        if saved:
+            set_active_target(saved)
+    return get_active_target()
 
 
 # ---------------------------------------------------------------------------

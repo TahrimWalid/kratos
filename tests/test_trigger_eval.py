@@ -18,6 +18,12 @@ from kratos.agent import trigger_eval as TE
 from kratos.agent import triggers as TR
 
 
+@pytest.fixture(autouse=True)
+def _lab_target(monkeypatch):
+    """Kratos ships no default target, so these runs name the one they investigate."""
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_HOST", "10.136.28.168")
+
+
 _INJECTION = "user=<script>evil</script>; rm -rf / ; id=CRITICAL"
 _NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 

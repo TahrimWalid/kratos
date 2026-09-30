@@ -2936,6 +2936,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 )
             )
         self._emit(R.success_line(f"Target(s) set: {', '.join(targets)}"))
+        if _kconfig.remember_first_target(self._data_dir, targets[0]):
+            self._emit(R.note_line(f"Saved {targets[0]} as your default target for command-line and "
+                                   "scheduled runs."))
         self._setup_target_worker(targets[0])
 
     @work(thread=True)

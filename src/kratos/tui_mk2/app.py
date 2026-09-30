@@ -342,10 +342,11 @@ class KratosTUI(ResilientWorkerHost, App):
                 target = await self.push_screen_wait(
                     PromptModal(
                         "Default target (optional)",
-                        f"IP/hostname for investigations (currently {_kconfig.SSH_TARGET_HOST}) — Enter to skip",
+                        "IP/hostname of the machine to investigate — Enter to skip "
+                        f"(currently {_kconfig.get_active_target() or 'none set'})",
                     )
                 )
-                if not target:  # None (esc) or '' (skip) — leave the default in place
+                if not target:  # None (esc) or '' (skip) — set one later with /target or a new session
                     break
                 cleaned, err = validate_targets([target])
                 if err:

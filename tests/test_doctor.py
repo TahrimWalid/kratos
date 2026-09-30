@@ -132,6 +132,7 @@ def test_doctor_verdict_leads_the_output():
 def test_target_info_rows_are_facts_not_warnings(monkeypatch):
     """Found in the P2.5 snapshots: the target's timezone (an INFO probe row) was shown as a
     warning and counted in the '1 warning to review' verdict."""
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_HOST", "10.0.0.5")
     monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks", lambda: [
         {"check": "ssh_reachable", "status": "PASS", "detail": "ok"},
         {"check": "target_timezone", "status": "INFO", "detail": "Etc/UTC"},

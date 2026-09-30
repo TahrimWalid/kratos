@@ -106,6 +106,8 @@ def pin_target_host_key(target: str | None = None, known_hosts_path: Path | None
     SSH_KNOWN_HOSTS_PATH); returns an SSHResult (ok=False if keyscan finds
     nothing or no destination file is configured)."""
     host = target or get_active_target()
+    if not host:
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=_kconfig.NO_TARGET_MESSAGE)
     dest = known_hosts_path or _kconfig.SSH_KNOWN_HOSTS_PATH
     if dest is None:
         return SSHResult(ok=False, returncode=-1, stdout="",
@@ -130,8 +132,18 @@ def pin_target_host_key(target: str | None = None, known_hosts_path: Path | None
     return SSHResult(ok=True, returncode=0, stdout=f"Pinned {host} host key(s) into {dest}", stderr="")
 
 
+def _no_target_result() -> SSHResult | None:
+    """Every SSH call funnels through here: with no target set, say so plainly
+    instead of running `ssh user@` and surfacing ssh's own confusing error."""
+    if get_active_target():
+        return None
+    return SSHResult(ok=False, returncode=-1, stdout="", stderr=_kconfig.NO_TARGET_MESSAGE)
+
+
 def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
     """Run a single command string on the target over SSH."""
+    if (missing := _no_target_result()) is not None:
+        return missing
     try:
         result = subprocess.run(
             _base_ssh_argv() + [command],
@@ -150,6 +162,8 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
     """Run a multi-line script on the target via `<shell> -s`, fed over stdin (avoids
     shell-quoting a large one-liner). `shell="sh"` for POSIX scripts that must also run on
     hosts without bash (e.g. Alpine) -- timewin.measure's counter is one."""
+    if (missing := _no_target_result()) is not None:
+        return missing
     try:
         result = subprocess.run(
             _base_ssh_argv() + [shell, "-s"],

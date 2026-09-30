@@ -410,6 +410,25 @@ def run_scheduled(
         prior_target = active
         _kconfig.set_active_target(schedule.target)
 
+    if not target:
+        # Nothing to investigate: say so (and alert), rather than run every tool
+        # against no host. Fixed by saving a default target or giving the
+        # schedule its own.
+        _tools.set_approval_prompt_provider(prior_provider)
+        record = {
+            "schedule": schedule.name, "started_at": started_at,
+            "finished_at": utc_now_iso(), "status": "error", "target": None,
+            "kind": schedule.kind, "findings_count": 0, "severity_tally": {},
+            "omitted_gated_tools": [], "report_json": None, "report_md": None,
+            "delivered": None, "notified": False, "error": _kconfig.NO_TARGET_MESSAGE,
+        }
+        if deliver and "ntfy" in schedule.deliver:
+            record["delivered"] = notifier(
+                f"Scheduled run '{schedule.name}' did not run — {_kconfig.NO_TARGET_MESSAGE}", "warning")
+            record["notified"] = record["delivered"] is not None
+        _sched.append_run_record(data_dir, schedule.name, record)
+        return record
+
     # Concurrency (design doc §6): only one Kratos run may touch a given target at
     # a time. A scheduled run DEFERS to any run already in progress (e.g. an
     # interactive investigation) rather than colliding (interleaved data_dir

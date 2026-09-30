@@ -15,6 +15,12 @@ from kratos.agent import schedules as S
 from kratos.agent import scheduled_run as W
 
 
+@pytest.fixture(autouse=True)
+def _lab_target(monkeypatch):
+    """Kratos ships no default target, so these runs name the one they investigate."""
+    monkeypatch.setattr("kratos.kratos_config.SSH_TARGET_HOST", "10.136.28.168")
+
+
 # --------------------------------------------------------------------------- #
 # Store
 # --------------------------------------------------------------------------- #

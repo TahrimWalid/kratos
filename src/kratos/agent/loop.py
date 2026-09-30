@@ -41,7 +41,7 @@ def _handler_self_gates(tool: Any) -> bool:
         return "request_approval(" in inspect.getsource(tool.handler)
     except (OSError, TypeError):
         return False
-from kratos.kratos_config import get_active_target
+from kratos.kratos_config import NO_TARGET_MESSAGE, get_active_target
 from kratos.timewin.agentwin import (
     prepare_time_context as _prepare_time_context,
     render_time_block as _render_time_block,
@@ -377,6 +377,8 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                 ),
             }
         active_target = get_active_target()
+        if not active_target and target_value not in _LOOPBACK_SELF_TARGETS:
+            return {"status": "error", "observation": NO_TARGET_MESSAGE}
         if target_value != active_target and target_value not in _LOOPBACK_SELF_TARGETS:
             # See _LOOPBACK_SELF_TARGETS above for why 127.0.0.1/localhost/::1
             # are the one allowed exception, not this codebase inventing a new

@@ -349,10 +349,12 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         )
 
         default_target = _kconfig.get_active_target()
+        hint = (f"Target(s), space-separated [default: {default_target}]" if default_target
+                else "Target(s), space-separated — the machine(s) to investigate")
         while True:
             answer = await self.app.push_screen_wait(PromptModal(
                 "New session",
-                f"Target(s), space-separated [default: {default_target}]",
+                hint,
                 initial="",
                 quick_value=KRATOS_HOST_SENTINEL,
                 quick_label="[Kratos-Host] — this machine (127.0.0.1)",
@@ -363,6 +365,10 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                 targets = [KRATOS_HOST_VALUE]
                 break
             if not answer.strip():
+                if not default_target:
+                    self.app.notify("No default target yet — type a host, or pick [Kratos-Host] for this "
+                                    "machine.", severity="warning", timeout=6)
+                    continue
                 targets = [default_target]
                 break
             targets, err = validate_targets(expand_host_aliases(answer.split()))
@@ -371,6 +377,9 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                 # rather than letting it become an unresolvable active target.
                 self.app.notify(err, severity="error", timeout=6)
                 continue
+            if _kconfig.remember_first_target(self._data_dir, targets[0]):
+                self.app.notify(f"Saved {targets[0]} as your default target for command-line and "
+                                "scheduled runs.", timeout=6)
             break
         # Onboard a remote target BEFORE opening the session, so a first-time
         # user is walked through actually connecting it (SSH setup + probe, or a

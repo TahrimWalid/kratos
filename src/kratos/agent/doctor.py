@@ -85,7 +85,11 @@ def _check_target(out: list[Check]) -> None:
     from kratos.kratos_config import get_active_target
 
     target = get_active_target()
-    out.append(_row("active target", "info", target or "(none set — use /target)"))
+    if not target:
+        out.append(_row("active target", "warn", "none set yet — there is no machine to investigate",
+                        fix="set one with /target <host> (or KRATOS_SSH_HOST for command-line runs)."))
+        return
+    out.append(_row("active target", "info", target))
     probe = run_target_probe_checks()
     if isinstance(probe, list):
         if not probe:

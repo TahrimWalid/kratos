@@ -124,7 +124,10 @@ kratos
 ```
 
 > The first time, Kratos asks whether you trust it to run on this machine, and
-> offers to remember a default target. It only asks once.
+> offers to remember a default target. It only asks once. Kratos has no built-in
+> target: if you skip that question, the first machine you point it at (with
+> `/target` or a new session) becomes the default, which is what command-line and
+> scheduled runs use. `KRATOS_SSH_HOST` overrides it for a single command.
 
 Once you're in, you'll see the home screen:
 

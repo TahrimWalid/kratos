@@ -36,6 +36,7 @@ from kratos.kratos_config import (
     SSH_TARGET_USER,
     THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED,
     VULSCAN_UPDATE_PROMPT as _VULSCAN_UPDATE_PROMPT,
+    NO_TARGET_MESSAGE,
     get_active_target,
 )
 from kratos.agent import console as _console
@@ -273,6 +274,8 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
 def tool_run_nmap_scan(data_dir: Path, target: str | None = None) -> dict[str, Any]:
     data_dir = Path(data_dir)
     resolved_target = target or get_active_target()
+    if not resolved_target:
+        return {"status": "error", "observation": NO_TARGET_MESSAGE}
     out_xml = _run_nmap_scan(data_dir, resolved_target)
     parsed = _parse_nmap_xml_to_dict(out_xml)
     out_json = _write_parsed_json(data_dir, parsed)
@@ -1195,6 +1198,8 @@ def tool_run_yara_scan(scan_path: str, rules_path: str | Path | None = None) -> 
 def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: str | None = None) -> dict[str, Any]:
     data_dir = Path(data_dir)
     resolved_target = target or get_active_target()
+    if not resolved_target:
+        return {"status": "error", "observation": NO_TARGET_MESSAGE}
     resolved_tags = nuclei_tags or _DEFAULT_NUCLEI_TAGS
 
     staleness = _check_vulscan_db_staleness()

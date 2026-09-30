@@ -52,7 +52,7 @@ from kratos.storage.anomaly_store import AnomalyStore
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.self_write_loop import load_kept_tools
 from kratos.agent import console as _console
-from kratos.kratos_config import SSH_TARGET_HOST
+from kratos.kratos_config import get_active_target
 from kratos.llm_config import LLM_OPENAI_MODEL
 
 PROJECT_NAME = "kratos"
@@ -748,6 +748,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         set_active_target(args.target)
 
     target = get_active_target()
+    if not target:
+        from kratos.kratos_config import NO_TARGET_MESSAGE
+
+        print(f"[KRATOS] {NO_TARGET_MESSAGE} For this command you can also pass --target <host>.")
+        return 1
     print(f"[KRATOS] Standard audit — deterministic security sweep of {target} (no LLM).")
     try:
         outcome = run_pipeline(standard_audit_steps(), args.data_dir)
@@ -956,8 +961,15 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     max_iters = args.max_iters if args.max_iters is not None else DEFAULT_MAX_ITERS
 
     console = _console.get_console()
+    if not get_active_target():
+        # Stop before any (possibly billed) model call: every tool would fail.
+        from kratos.kratos_config import NO_TARGET_MESSAGE
+
+        _console.render_error(console, NO_TARGET_MESSAGE)
+        return 1
     backend_label = LLM_OPENAI_MODEL
-    _console.render_session_header(console, goal=goal, max_iters=max_iters, ssh_target=SSH_TARGET_HOST, backend=backend_label)
+    _console.render_session_header(console, goal=goal, max_iters=max_iters,
+                                   ssh_target=get_active_target(), backend=backend_label)
 
     session_events: list[str] = []
     findings_count = 0
@@ -1488,6 +1500,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     args.data_dir.mkdir(parents=True, exist_ok=True)
+
+    # No built-in default target: use KRATOS_SSH_HOST, else the target saved
+    # at first run, for every subcommand (investigate, run, a systemd-scheduled
+    # run...). The TUI's boot flow does the same for interactive use.
+    from kratos import kratos_config as _kc
+
+    _kc.seed_active_target_from_config(args.data_dir)
 
     # Re-register any previously-APPROVED self-written tools (Part D,
     # agent/self_write_loop.py) into TOOL_REGISTRY for this process, on top
