@@ -785,7 +785,9 @@ def doctor_table(checks: list[dict[str, str]]) -> Group:
                   title_justify="left", title_style=f"bold {T.ACCENT}")
     table.add_column(width=1, no_wrap=True)
     table.add_column(style=T.TEXT_BRIGHT, no_wrap=True)
-    table.add_column(style=T.TEXT_MUTED)
+    # fold, not the default ellipsis: a detail can be a value to copy (a URL, a
+    # suggested KRATOS_NTFY_TOPIC=...) and must never be cut off.
+    table.add_column(style=T.TEXT_MUTED, overflow="fold")
     for c in checks:
         icon, color = icons.get(c.get("status", "info"), ("·", T.TEXT_DIM))
         table.add_row(Text(icon, style=color), Text(str(c.get("check", "")), style=color),

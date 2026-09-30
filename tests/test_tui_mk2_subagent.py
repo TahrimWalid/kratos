@@ -123,7 +123,7 @@ def test_check_in_is_announced_by_the_refresh_not_a_blocking_wait(tmp_path):
 
     async def run():
         app = _Host(screen)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(220, 50)) as pilot:  # content, not layout
             await pilot.pause()
             code = sa.create_pairing_code(name="web-02", core_host="10.0.0.1")["code"]
             screen._watched_codes[code] = {"name": "web-02", "host": "10.0.0.1"}
@@ -248,7 +248,7 @@ def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
 
     async def run():
         app = _Host(screen)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(220, 50)) as pilot:  # content, not layout
             await pilot.pause()
             labels.append(str(screen.query_one("#sa-table").get_row_at(0)[0]))
             sa.register_listener("L1", pid=1, host="0.0.0.0", port=8765, mode="service", build="b")
@@ -265,3 +265,29 @@ def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
     asyncio.run(run())
     assert "not watched" in labels[0]
     assert "telemetry stalled" in labels[1] and "no snapshot" in labels[2]
+
+
+def test_every_column_stays_on_screen_at_80_columns(tmp_path):
+    """A long status detail used to push nothing but itself off-screen -- but at
+    80 columns the table scrolled sideways and hid the end of every row. The
+    detail is now shortened with an ellipsis (full text under i) so the row fits."""
+    from rich.cells import cell_len
+
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    _pair(sa, name="a-rather-long-server-name")
+    sa.create_pairing_code(name="edge-02", core_host="10.0.0.1")
+    screen = SubAgentScreen(tmp_path)
+    out: dict = {}
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            table = screen.query_one("#sa-table")
+            out["virtual"] = table.virtual_size.width
+            out["width"] = table.size.width
+            out["details"] = [str(table.get_row_at(i)[5]) for i in range(table.row_count)]
+
+    asyncio.run(run())
+    assert out["virtual"] <= out["width"], out
+    assert any(d.endswith("…") for d in out["details"])

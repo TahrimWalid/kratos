@@ -39,6 +39,7 @@ from kratos.subagent import hub_address, installer
 from kratos.subagent import status as ST
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
+from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils import ssh_keys
 
 
@@ -63,6 +64,7 @@ def valid_ssh_address(addr: str) -> str | None:
 
 
 _DEFAULT_CORE_PORT = 8765
+_TABLE_COLUMNS = ("status", "name", "host", "agent", "last contact", "detail")
 # How long `L` waits for the new service to register before calling it failed.
 _SERVICE_CONFIRM_SECONDS = 15.0
 # After a successful SSH deploy, how long to wait for the check-in before
@@ -160,7 +162,7 @@ class SubAgentScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#sa-table", DataTable)
-        table.add_columns("status", "name", "host", "agent", "last contact", "detail")
+        table.add_columns(*_TABLE_COLUMNS)
         self._refresh()
         # Make sure a listener is up while this screen is open, so paired targets
         # stream telemetry without a second terminal. Defensive getattr: a bare
@@ -252,21 +254,27 @@ class SubAgentScreen(Screen):
             table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
                           "", "", "", "", "")
             return
+        cells: list[list] = []
         for row in self._rows:
             if row["kind"] == "pending":
-                table.add_row(*_pending_cells(row["code"], now, names))
+                cells.append(list(_pending_cells(row["code"], now, names)))
                 continue
             t, st = row["target"], row["state"]
             glyph, color = _STATE_STYLE.get(st.state, ("○", T.TEXT_DIM))
             dim = st.state == ST.STATE_REVOKED
-            table.add_row(
+            cells.append([
                 Text(f"{glyph} {st.label}", style=color),
                 Text(t.get("name") or "—", style=T.TEXT_DIM if dim else ""),
                 Text(t.get("hostname") or "—", style=T.TEXT_DIM if dim else ""),
                 Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else ""),
                 Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
                 Text(st.reason, style=T.TEXT_DIM),
-            )
+            ])
+        # Keep every column on screen: shorten the detail first (the full text
+        # is under i), then long names/hosts.
+        available = table.size.width or max(self.app.size.width - 6, 40)
+        for row in fit_columns(cells, available, shrink=[(5, 12), (1, 8), (2, 8)], headers=_TABLE_COLUMNS):
+            table.add_row(*row)
         if prev is not None and 0 <= prev < len(self._rows):
             try:
                 table.move_cursor(row=prev)

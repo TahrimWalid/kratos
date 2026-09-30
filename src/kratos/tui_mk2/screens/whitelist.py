@@ -53,7 +53,9 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import (
     CommandModal, ConfirmModal, ExecutionConsentModal, ListPickerModal, MultiSelectModal, PromptModal, TypedExecuteModal,
 )
+from kratos.tui_mk2.table_fit import fit_columns
 
+_WL_COLUMNS = ("action", "runs", "source", "tier", "state")
 _POLL_INTERVAL_SECONDS = 0.5
 _POLL_TIMEOUT_SECONDS = 40.0
 
@@ -154,7 +156,7 @@ class WhitelistScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#wl-table", DataTable)
-        table.add_columns("action", "runs", "source", "tier", "state")
+        table.add_columns(*_WL_COLUMNS)
         targets = self._sa_store.list_targets()
         if self._requested_target and any(t["target_id"] == self._requested_target for t in targets):
             self._target_id = self._requested_target
@@ -195,6 +197,16 @@ class WhitelistScreen(Screen):
         self.query_one("#wl-log", VerticalScroll).mount(Static(renderable))
         self.query_one("#wl-log", VerticalScroll).scroll_end(animate=False)
 
+    def on_resize(self, event) -> None:
+        self.call_after_refresh(self._refresh)
+
+    def on_screen_resume(self) -> None:
+        # Rows filled in the moment a modal (target picker, add/edit flow)
+        # closes land before this screen is laid out again and keep the
+        # header-only column widths -- every cell cropped to its header.
+        # Rebuild once more after the next frame.
+        self.call_after_refresh(self._refresh)
+
     def _refresh(self) -> None:
         if self._target_id is None:
             return
@@ -206,15 +218,21 @@ class WhitelistScreen(Screen):
 
         table = self.query_one("#wl-table", DataTable)
         table.clear()
+        cells, keys = [], []
         for i, row in enumerate(self._rows):
             spec = row["spec"]
             runs = C.shlex.join(spec.argv_template) if spec else "?"
-            table.add_row(
+            cells.append([
                 row["label"], runs[:48], row["source"],
                 Text(row["tier"], style=_TIER_COLOR.get(row["tier"], T.TEXT)),
                 Text(row["state"], style=_STATE_COLOR.get(row["state"], T.TEXT)),
-                key=f"{row['kind']}:{row.get('entry_id') or spec.id}:{i}",
-            )
+            ])
+            keys.append(f"{row['kind']}:{row.get('entry_id') or spec.id}:{i}")
+        # Keep tier/state on screen: the command template gives way first (the
+        # full command is under i), then the entry name.
+        available = table.size.width or max(self.app.size.width - 6, 40)
+        for key, row in zip(keys, fit_columns(cells, available, shrink=[(1, 12), (0, 12)], headers=_WL_COLUMNS)):
+            table.add_row(*row, key=key)
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
 

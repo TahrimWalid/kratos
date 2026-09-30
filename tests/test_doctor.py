@@ -127,3 +127,35 @@ def test_doctor_verdict_leads_the_output():
 
     healthy = _render_doctor([{"check": "a", "status": "pass", "detail": ""}])
     assert "Everything looks healthy" in healthy
+
+
+def test_target_info_rows_are_facts_not_warnings(monkeypatch):
+    """Found in the P2.5 snapshots: the target's timezone (an INFO probe row) was shown as a
+    warning and counted in the '1 warning to review' verdict."""
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks", lambda: [
+        {"check": "ssh_reachable", "status": "PASS", "detail": "ok"},
+        {"check": "target_timezone", "status": "INFO", "detail": "Etc/UTC"},
+        {"check": "lsof_installed", "status": "UNKNOWN", "detail": "?"},
+    ])
+    rows: list = []
+    doctor._check_target(rows)
+    by = {r["check"]: r["status"] for r in rows}
+    assert by["target · target_timezone"] == "info"
+    assert by["target · ssh_reachable"] == "pass" and by["target · lsof_installed"] == "warn"
+
+
+def test_doctor_details_are_folded_not_cut_off():
+    """A detail can be a value to copy (the suggested ntfy topic, a URL); it must never end
+    in an ellipsis at a narrow width."""
+    import io
+
+    from rich.console import Console
+
+    from kratos.tui_mk2.render import doctor_table
+
+    value = "KRATOS_NTFY_TOPIC=kratos-1e2a29b3ed51ca9a8d7f00112233"
+    buf = io.StringIO()
+    Console(file=buf, width=60).print(doctor_table([{"check": "notifications", "status": "info",
+                                                     "detail": f"not configured. Suggested: {value}"}]))
+    text = buf.getvalue()
+    assert "…" not in text and value in "".join(text.split())

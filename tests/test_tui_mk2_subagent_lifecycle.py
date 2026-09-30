@@ -53,7 +53,7 @@ def _run(screen, script, *, fake_wait=None):
 
     async def run():
         app = _Host(screen)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(220, 50)) as pilot:  # these check cell content, not layout
             await pilot.pause()
             if fake_wait is not None:
                 app.push_screen_wait = fake_wait

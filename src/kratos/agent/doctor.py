@@ -94,7 +94,9 @@ def _check_target(out: list[Check]) -> None:
             return
         for c in probe:
             raw = str(c.get("status", "")).upper()
-            status = "pass" if raw in ("PASS", "OK") else "fail" if raw == "FAIL" else "warn"
+            # INFO is a fact (e.g. the target's timezone), not something to fix.
+            status = ("pass" if raw in ("PASS", "OK") else "fail" if raw == "FAIL"
+                      else "info" if raw == "INFO" else "warn")
             out.append(_row(f"target · {c.get('check', '?')}", status, c.get("detail", "")))
     else:
         # SSHResult -> couldn't even connect (port 22 blocked, wrong host, key).

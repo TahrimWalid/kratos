@@ -631,3 +631,39 @@ def test_real_keys_reach_the_screen_actions(tmp_path):
 
 
 from kratos.tui_mk2.screens.whitelist import build_rows  # noqa: E402
+
+
+def test_table_is_painted_at_full_width_after_the_target_picker(tmp_path):
+    """Found in the P2.5 snapshots: with two paired targets the screen opens on a picker,
+    and the rows filled in as it closed were painted with header-only column widths
+    ('fail2b', 'built-'). The widths were computed right; only the paint was stale."""
+    import re
+
+    sa, _ = _make_stores(tmp_path)
+    _pair(sa, "web-01")
+    _pair(sa, "db-01")
+    screen = WhitelistScreen(tmp_path)
+    out: dict = {}
+
+    from kratos.tui_mk2.app import KratosTUI
+
+    class _Kratos(KratosTUI):  # the real app (its CSS is what exposed the stale paint)
+        def _boot(self):
+            self._booted = True
+            self.push_screen(screen)
+
+        def _autofill_active_context(self):
+            pass
+
+    async def run():
+        app = _Kratos(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await pilot.press("enter")  # pick the first target
+            for _ in range(5):
+                await pilot.pause()
+            out["svg"] = app.export_screenshot()
+
+    asyncio.run(run())
+    painted = re.sub(r"&#160;", " ", out["svg"])
+    assert "fail2ban.ban_ip" in painted and "built-in" in painted

@@ -1013,3 +1013,32 @@ def test_dispatch_guard_survives_a_crashing_command(tmp_path, monkeypatch):
     assert emitted, "a friendly error line should have been shown"
     text = " ".join(str(getattr(r, "plain", r)) for r in emitted)
     assert "unexpected error" in text and "session is fine" in text
+
+
+def test_narrow_terminal_keeps_clock_meter_and_panel_edges(tmp_path, monkeypatch):
+    """Found in the P2.5 snapshots at 80x24: the header pushed its clock off-screen, the footer
+    cut off the context meter, and every transcript panel lost its right edge (RichLog's
+    default min_width of 78 is wider than the log on an 80-column terminal)."""
+    from kratos.tui_mk2 import render as R
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    out: dict = {}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen._refresh_header()
+            screen._refresh_footer()
+            screen._emit(R.result_panel("Kratos — investigation complete", "x " * 60, "#7f9e79", time_str="12:34"))
+            await pilot.pause()
+            out["header"] = str(screen.query_one("#appheader").render())
+            out["footer"] = str(screen.query_one("#statusfooter").render())
+            out["footer_w"] = screen.query_one("#statusfooter").size.width
+            log = screen.query_one("#transcript")
+            out["log_w"], out["log_virtual_w"] = log.size.width, log.virtual_size.width
+
+    asyncio.run(_run())
+    assert "UTC" in out["header"] or ":" in out["header"].split("read-only")[-1]
+    assert "ctx" in out["footer"] and "%" in out["footer"] and len(out["footer"].rstrip()) <= out["footer_w"]
+    assert out["log_virtual_w"] <= out["log_w"], out

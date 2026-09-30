@@ -224,7 +224,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def compose(self) -> ComposeResult:
         yield Static(id="appheader")
         with Vertical():
-            yield RichLog(id="transcript", wrap=True, markup=False, highlight=False)
+            # min_width: RichLog lays renderables out at >= 78 columns by default,
+            # which clips the right edge of every panel on an 80-column terminal
+            # (the log itself is narrower than the terminal).
+            yield RichLog(id="transcript", wrap=True, markup=False, highlight=False, min_width=40)
         yield Static("", id="activity")  # live "working…" spinner while a turn runs
         yield Input(placeholder="Describe what to investigate…", id="goal")
         yield Static(id="statusfooter")
@@ -360,6 +363,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # instant yields e.g. "EEST" / "+06" / "UTC".
         return timeutil.now_for_display("%Z", tz=self._display_tz) or "local"
 
+    def on_resize(self, event) -> None:
+        # The footer drops lower-priority parts to fit; re-fit at the new width.
+        self.call_after_refresh(self._refresh_footer)
+
     def _refresh_header(self) -> None:
         targets = self.session_state["targets"]
         target = targets[0] if targets else "(no target)"
@@ -370,14 +377,17 @@ class SessionScreen(ResilientWorkerHost, Screen):
         header.append(target, style=T.ACCENT)
         header.append("  ·  ", style=T.TEXT_GHOST)
         header.append("read-only", style=T.SAFE)
-        header.append("  —  no state changes without approval", style=T.TEXT_FAINT)
-        header.append("   ", style=T.TEXT_GHOST)
         # right-aligned clock via padding
         try:
             width = self.query_one("#appheader", Static).size.width or 80
         except Exception:  # noqa: BLE001
             width = 80
         clock = f"{now} {self._tz_label()}"
+        tagline = "  —  no state changes without approval"
+        # On a narrow terminal the tagline gives way before the clock does.
+        if header.cell_len + len(tagline) + 3 + len(clock) + 1 <= width:
+            header.append(tagline, style=T.TEXT_FAINT)
+        header.append("   ", style=T.TEXT_GHOST)
         left = header.plain
         pad = max(1, width - len(left) - len(clock) - 1)
         header.append(" " * pad)
@@ -423,23 +433,36 @@ class SessionScreen(ResilientWorkerHost, Screen):
             color = T.ATTENTION      # amber: getting full
         else:
             color = T.TEXT_FAINTER
-        footer = Text()
-        footer.append(f"session {st['session_id']}", style=T.TEXT_FAINTER)
-        footer.append("  ·  ", style=T.TEXT_GHOST)
-        footer.append(str(st["backend"]), style=T.TEXT_FAINTER)
-        footer.append("  ·  ", style=T.TEXT_GHOST)
-        footer.append(f"target {st['targets'][0] if st['targets'] else '(none)'}", style=T.TEXT_FAINTER)
-        footer.append("   ", style=T.TEXT_GHOST)
-        footer.append("ctx ", style=T.TEXT_FAINTER)
-        footer.append("█" * filled + "░" * (bar_w - filled), style=color)
+        meter = Text()
+        meter.append("ctx ", style=T.TEXT_FAINTER)
+        meter.append("█" * filled + "░" * (bar_w - filled), style=color)
         approx = "~" if estimated else ""  # ~ = estimated from loaded context, not yet measured
-        footer.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
+        meter.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
-            footer.append(" · will compact soon", style=T.CRITICAL)
+            meter.append(" · will compact soon", style=T.CRITICAL)
         from kratos.utils.build_info import newer_build_on_disk
 
         if newer_build_on_disk():
-            footer.append("  ·  updated on disk — restart Kratos", style=T.ATTENTION)
+            meter.append("  ·  updated on disk — restart Kratos", style=T.ATTENTION)
+        # What comes before the meter gives way on a narrow terminal (session id
+        # first, then the model name) so the context meter is never cut off.
+        parts = [f"session {st['session_id']}", str(st["backend"]),
+                 f"target {st['targets'][0] if st['targets'] else '(none)'}"]
+        try:
+            width = self.query_one("#statusfooter", Static).size.width or self.app.size.width
+        except Exception:  # noqa: BLE001
+            width = 0
+        while True:
+            footer = Text()
+            for i, part in enumerate(parts):
+                if i:
+                    footer.append("  ·  ", style=T.TEXT_GHOST)
+                footer.append(part, style=T.TEXT_FAINTER)
+            footer.append("   ", style=T.TEXT_GHOST)
+            footer.append_text(meter)
+            if not width or footer.cell_len <= width or len(parts) == 1:
+                break
+            parts.pop(0)
         self.query_one("#statusfooter", Static).update(footer)
 
     def refresh_theme(self) -> None:

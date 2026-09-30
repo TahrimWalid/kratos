@@ -29,7 +29,10 @@ from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import PromptModal, ResumeTierModal
+from kratos.tui_mk2.table_fit import fit_columns
 from kratos.tui_mk2.workers import ResilientWorkerHost
+
+_COLUMNS = ("#", "id", "name", "target", "last goal", "last active")
 
 CHOOSER_SESSION_LIMIT = 20
 
@@ -88,7 +91,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
     def on_mount(self) -> None:
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         table = self.query_one("#sessions", DataTable)
-        table.add_columns("#", "id", "name", "target", "last goal", "last active")
+        table.add_columns(*_COLUMNS)
         self._reload()
 
     def on_screen_resume(self) -> None:
@@ -148,12 +151,13 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             return "This month"
         return "Older"
 
-    def _rebuild_display(self) -> None:
+    def _rebuild_display(self, keep_cursor: bool = False) -> None:
         """Render self._rows into the table applying the live filter and (when
         browsing unfiltered recent sessions) relative date-bucket headers.
         Filtered or archived views are flat -- results are already few, and
         buckets would just be noise there."""
         table = self.query_one("#sessions", DataTable)
+        prev_cursor = table.cursor_row if keep_cursor else None
         table.clear()
         self._display = []
         q = self._filter.strip().lower()
@@ -161,27 +165,40 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         use_buckets = (not self._archived_mode) and not q
         n = 0
         current_bucket = None
+        rows: list[list] = []
         for s in filtered:
             if use_buckets:
                 b = self._bucket_for(s["last_active_at"])
                 if b != current_bucket:
                     current_bucket = b
                     self._display.append({"kind": "header", "label": b})
-                    table.add_row(Text(""), Text(""), Text(f"▾ {b}", style=f"bold {T.ACCENT}"),
-                                  Text(""), Text(""), Text(""))
+                    rows.append([Text(""), Text(""), Text(f"▾ {b}", style=f"bold {T.ACCENT}"),
+                                 Text(""), Text(""), Text("")])
             n += 1
             name = s.get("name") or "(unnamed)"
             targets = ", ".join(s["targets"]) if s["targets"] else "(none)"
             goal = s.get("latest_goal") or "(no turns yet)"
-            if len(goal) > 46:
-                goal = goal[:43] + "…"
             last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
             self._display.append({"kind": "session", "session": s})
-            table.add_row(str(n), s["session_id"], name, targets, goal, last_active)
+            rows.append([str(n), s["session_id"], name, targets, goal, last_active])
+        # Shorten the goal first, then the name (never below the widest
+        # date-bucket label), then the target list, so "last active" stays on
+        # screen (the full goal is searchable).
+        available = table.size.width or max(self.app.size.width - 4, 40)
+        for row in fit_columns(rows, available, shrink=[(4, 8), (2, 12), (3, 13)], headers=_COLUMNS):
+            table.add_row(*row)
         first = self._first_session_row()
-        if first is not None:
+        if prev_cursor is not None and 0 <= prev_cursor < len(self._display) \
+                and self._display[prev_cursor]["kind"] == "session":
+            table.move_cursor(row=prev_cursor)
+        elif first is not None:
             table.move_cursor(row=first)
         self._render_hints(shown=len(filtered))
+
+    def on_resize(self, event) -> None:
+        # Column widths depend on the table's width; re-fit, keeping the row.
+        if self._display or self._rows:
+            self.call_after_refresh(self._rebuild_display, keep_cursor=True)
 
     def _first_session_row(self) -> int | None:
         for i, item in enumerate(self._display):
