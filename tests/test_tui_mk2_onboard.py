@@ -2,7 +2,7 @@
 Headless pilots for the new-session target onboarding screen
 (tui_mk2/screens/onboard.py). Nothing here runs anything on a target: the SSH
 checklist generator and the read-only probe are both mocked, and the method
-choice is driven with a canned push_screen_wait.
+choice is made with real keys on the screen's own list.
 """
 from __future__ import annotations
 
@@ -51,6 +51,16 @@ def _log_texts(screen: OnboardTargetScreen) -> list[str]:
     return out
 
 
+_ORDER = ("ssh", "subagent", "skip")
+
+
+async def _pick(pilot, method: str) -> None:
+    for _ in range(_ORDER.index(method)):
+        await pilot.press("down")
+    await pilot.press("enter")
+    await pilot.pause()
+
+
 def test_needs_onboarding():
     assert needs_onboarding("203.0.113.5") is True
     assert needs_onboarding("vps.example.com") is True
@@ -68,12 +78,10 @@ def test_skip_dismisses_without_probe(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def canned(_modal):
-                return "skip"
-
-            monkeypatch.setattr(app, "push_screen_wait", canned)
             screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
             app.push_screen(screen, callback=results.append)
+            await pilot.pause()
+            await _pick(pilot, "skip")  # real keys on the in-screen list
             await app.workers.wait_for_complete()
             await pilot.pause()
 
@@ -100,12 +108,10 @@ def test_ssh_path_shows_checklist_and_passing_probe(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def canned(_modal):
-                return "ssh"
-
-            monkeypatch.setattr(app, "push_screen_wait", canned)
             screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
             app.push_screen(screen)
+            await pilot.pause()
+            await _pick(pilot, "ssh")  # real keys on the in-screen list
             await app.workers.wait_for_complete()
             await pilot.pause()
             captured["texts"] = _log_texts(screen)
@@ -135,14 +141,12 @@ def test_ssh_path_reports_unreachable(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def canned(_modal):
-                return "ssh"
-
-            monkeypatch.setattr(app, "push_screen_wait", canned)
             screen = OnboardTargetScreen(tmp_path, "203.0.113.9")
             app.push_screen(screen)
-            await app.workers.wait_for_complete()
             await pilot.pause()
+            await _pick(pilot, "ssh")  # real keys on the in-screen list
+            for _ in range(10):  # the next step opens a modal that waits for a person
+                await pilot.pause()
             captured["texts"] = _log_texts(screen)
 
     asyncio.run(run())
@@ -160,14 +164,12 @@ def test_subagent_path_opens_subagent_screen(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            async def canned(_modal):
-                return "subagent"
-
-            monkeypatch.setattr(app, "push_screen_wait", canned)
             screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
             app.push_screen(screen)
-            await app.workers.wait_for_complete()
             await pilot.pause()
+            await _pick(pilot, "subagent")  # real keys on the in-screen list
+            for _ in range(10):  # the next step opens a modal that waits for a person
+                await pilot.pause()
             captured["method"] = screen._method
             captured["has_subagent"] = any(isinstance(s, SubAgentScreen) for s in app.screen_stack)
 
@@ -243,6 +245,8 @@ def _onboard(tmp_path, monkeypatch, answers, probe, *, host="203.0.113.5"):
             monkeypatch.setattr(app, "push_screen_wait", canned)
             screen = OnboardTargetScreen(tmp_path, host)
             app.push_screen(screen)
+            await pilot.pause()
+            await _pick(pilot, next(it))  # the connection method: real keys on the list
             for _ in range(4):
                 await app.workers.wait_for_complete()
                 await pilot.pause()
@@ -263,7 +267,7 @@ def test_key_not_accepted_and_i_can_log_in(tmp_path, monkeypatch):
     from kratos.tui_mk2.modals import CommandModal, ListPickerModal
 
     out = _onboard(tmp_path, monkeypatch, ["ssh", "login"], _denied())
-    assert isinstance(out["awaited"][1], ListPickerModal)
+    assert isinstance(out["awaited"][0], ListPickerModal)
     assert isinstance(out["top"], CommandModal)
     assert "ssh-ed25519 AAAAONBOARD kratos@core" in out["top"]._command
     assert "logged in as ubuntu" in out["top"]._title
@@ -331,3 +335,88 @@ def test_info_rows_are_not_failures_and_failing_checks_show_the_checklist(tmp_pa
     failing = info + [{"check": "lsof_installed", "status": "FAIL", "detail": "missing"}]
     out = _onboard(tmp_path, monkeypatch, ["ssh"], lambda: failing)
     assert "setup for 203.0.113.5" in out["texts"] and "1 check(s) aren't passing" in out["texts"]
+
+
+# --- the choice list + live detail panel -------------------------------------
+def _choose_screen(tmp_path, size, script):
+    out: dict = {}
+
+    async def run():
+        app = _Host()
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
+            app.push_screen(screen)
+            await pilot.pause()
+            await script(app, pilot, screen, out)
+
+    asyncio.run(run())
+    return out
+
+
+def _panel_text(screen) -> str:
+    buf = io.StringIO()
+    Console(file=buf, width=200).print(screen.query_one("#ob-detail-body")._Static__content)
+    return buf.getvalue()
+
+
+def test_moving_the_selection_changes_only_the_detail_panel(tmp_path):
+    async def script(app, pilot, screen, out):
+        out["first"] = (screen.query_one("#ob-detail").border_title, _panel_text(screen))
+        await pilot.press("down")
+        await pilot.pause()
+        out["second"] = (screen.query_one("#ob-detail").border_title, _panel_text(screen))
+        out["options"] = screen.query_one("#ob-options").option_count
+
+    out = _choose_screen(tmp_path, (80, 24), script)
+    assert out["first"][0] == "Direct SSH  (recommended)" and "Nothing is installed on the box" in out["first"][1]
+    assert out["second"][0] == "Sub-agent" and "TELEMETRY-ONLY" in out["second"][1]
+    assert "does not run investigations yet" in out["second"][1]
+    assert out["options"] == 3
+
+
+def test_every_detail_fits_at_80x24_and_sits_beside_the_list_when_wide(tmp_path):
+    async def script(app, pilot, screen, out):
+        out["wide"] = screen.query_one("#ob-choose").has_class("-wide")
+        fits = []
+        for _ in range(3):
+            panel = screen.query_one("#ob-detail")
+            await pilot.pause()
+            fits.append((panel.border_title, panel.virtual_size.height, panel.scrollable_content_region.height))
+            await pilot.press("down")
+            await pilot.pause()
+        out["fits"] = fits
+
+    narrow = _choose_screen(tmp_path, (80, 24), script)
+    assert narrow["wide"] is False
+    for title, content_h, room in narrow["fits"]:
+        assert content_h <= room, (title, content_h, room)
+    assert _choose_screen(tmp_path, (120, 40), script)["wide"] is True
+
+
+def test_d_opens_the_full_detail_for_the_highlighted_option(tmp_path):
+    from kratos.tui_mk2.modals import InfoModal
+
+    async def script(app, pilot, screen, out):
+        await pilot.press("down")
+        await pilot.press("d")
+        await pilot.pause()
+        out["top"] = app.screen
+
+    out = _choose_screen(tmp_path, (80, 24), script)
+    assert isinstance(out["top"], InfoModal) and out["top"]._title == "Sub-agent"
+
+
+def test_c_while_choosing_picks_the_highlighted_option_not_skip(tmp_path, monkeypatch):
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks",
+                        lambda: [{"check": "ssh_reachable", "status": "PASS", "detail": "ok"}])
+
+    async def script(app, pilot, screen, out):
+        await pilot.press("c")
+        for _ in range(5):
+            await pilot.pause()
+        out["method"] = screen._method
+        out["list_shown"] = screen.query_one("#ob-choose").display
+
+    out = _choose_screen(tmp_path, (80, 24), script)
+    assert out["method"] == "ssh" and out["list_shown"] is False

@@ -519,6 +519,27 @@ def _step_table(rows: list[tuple[str, str]]) -> Table:
     return table
 
 
+class InfoModal(ModalScreen[None]):
+    """Read-only detail in the guide's scrollable card: a title and any Rich
+    renderable. For "the full story" behind a compact on-screen summary."""
+
+    BINDINGS = [Binding("escape,q,enter,d", "close", "close", show=True)]
+
+    def __init__(self, title: str, body: Any) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Static(self._body)
+            yield Static(Text("\nesc close", style=T.TEXT_DIM))
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class EvolveIntroModal(ModalScreen[bool]):
     """What /evolve does, for someone who has never used it: shown once before a
     user's first /evolve, and any time via `/evolve help`. Explanation only --

@@ -4,8 +4,10 @@ protect, BEFORE they land in a session that would otherwise just fail.
 
 Reached from the launcher's new-session flow and the first-run wizard, for any
 remote target that isn't the Kratos host itself. It asks the one question those
-entry points never did -- *how should Kratos reach this box?* -- and then walks
-the chosen path to a working connection:
+entry points never did -- *how should Kratos reach this box?* -- as a short
+list with a live detail panel (what the highlighted option is, how it works,
+what it can do today, and the one thing you'll have to do; `d` opens the full
+text), and then walks the chosen path to a working connection:
 
 - **Direct SSH** (Kratos connects in, read-only): the path every investigation
   tool uses today. Creates this machine's SSH key first if there is none (only
@@ -41,14 +43,15 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Static
+from textual.widgets import OptionList, Static
+from textual.widgets.option_list import Option
 
 from kratos import kratos_config as _kconfig
 from kratos.subagent import deploy_diagnosis as DD
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal
+from kratos.tui_mk2.modals import CommandModal, ConfirmModal, InfoModal, ListPickerModal
 from kratos.utils import ssh_keys
 
 # Targets that need no setup -- the Kratos host itself, monitored over loopback.
@@ -67,6 +70,52 @@ def _local_hostname() -> str:
         return "host"
 
 
+# The three ways to connect, in list order. Labels stay short; the detail
+# panel explains the highlighted one.
+_CHOICES = (
+    ("ssh", "Direct SSH  (recommended)"),
+    ("subagent", "Sub-agent"),
+    ("skip", "Skip for now"),
+)
+
+# Honest by construction: the sub-agent is telemetry-only today and must say so.
+_DETAILS: dict[str, list[tuple[str, str]]] = {
+    "ssh": [
+        ("What", "Kratos logs into this box over SSH with your key and READS its logs, config, "
+                 "processes and ports — read-only. It never changes anything without your approval."),
+        ("How", "You authorize Kratos's SSH key on the box once (Kratos gives you the exact one-line "
+                "command). It connects on demand when you investigate. Nothing is installed on the box."),
+        ("Today", "runs the full investigation toolset."),
+        ("You do", "add one authorized_keys line, and make sure the box is reachable (port 22)."),
+    ],
+    "subagent": [
+        ("What", "A small agent you install on the box. It dials OUT to Kratos (no inbound port on "
+                 "your box) and streams telemetry (uptime, disk, …). Later it can run a narrow "
+                 "allowlist of approved fixes — off by default."),
+        ("How", "A one-line installer sets it up as a service; it connects out (Tailscale or your "
+                "network). Kratos never opens a port on your box."),
+        ("Today", "TELEMETRY-ONLY — it does not run investigations yet; those still use SSH."),
+        ("You do", "run one install command on the box (Kratos generates it)."),
+    ],
+    "skip": [
+        ("Later", "Set up with /target (SSH) or /subagent. You can do both, and change any time."),
+    ],
+}
+_CHOICE_LABEL = dict(_CHOICES)
+# At this width and up the detail panel sits beside the list; below, under it.
+_WIDE_AT = 110
+
+
+def _detail_table(key: str) -> Table:
+    table = Table(show_header=False, box=None, padding=(0, 1, 0, 0), expand=True)
+    table.add_column(style=f"bold {T.TEXT_BRIGHT}", no_wrap=True)
+    table.add_column(style=T.TEXT_MUTED, ratio=1)
+    for label, text in _DETAILS[key]:
+        style = f"bold {T.ATTENTION}" if label == "Today" and key == "subagent" else T.TEXT_MUTED
+        table.add_row(label, Text(text, style=style))
+    return table
+
+
 def needs_onboarding(target_host: str) -> bool:
     """A remote target the user just entered that isn't the Kratos host."""
     return bool(target_host) and target_host.strip().lower() not in _LOCAL_TARGETS
@@ -76,13 +125,19 @@ class OnboardTargetScreen(Screen[str | None]):
     BINDINGS = [
         Binding("escape,q", "skip", "skip / set up later", show=True),
         Binding("p", "reprobe", "re-check", show=True),
+        Binding("d", "details", "full details", show=True),
         Binding("c,enter", "continue", "continue", show=True),
     ]
 
     CSS = """
     OnboardTargetScreen { padding: 1 2; }
     OnboardTargetScreen #ob-banner { height: auto; padding: 0 0 1 0; }
-    OnboardTargetScreen #ob-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
+    OnboardTargetScreen #ob-choose { height: 1fr; layout: vertical; }
+    OnboardTargetScreen #ob-choose.-wide { layout: horizontal; }
+    OnboardTargetScreen #ob-options { height: auto; border: none; padding: 0; margin: 0 0 1 0; }
+    OnboardTargetScreen #ob-choose.-wide #ob-options { width: 34; margin: 0 2 0 0; }
+    OnboardTargetScreen #ob-detail { height: auto; max-height: 100%; border: round $panel; padding: 0 1; }
+    OnboardTargetScreen #ob-log { height: 1fr; border-top: solid $panel; padding-top: 1; display: none; }
     OnboardTargetScreen #ob-hints { height: auto; padding-top: 1; }
     """
 
@@ -94,19 +149,62 @@ class OnboardTargetScreen(Screen[str | None]):
         self._method: str | None = None
 
     def compose(self) -> ComposeResult:
+        banner = Text(f"Connect Kratos to {self._target_host}", style=f"bold {T.ACCENT}")
+        banner.append("\nHow should Kratos reach it? You can set up both later.", style=T.TEXT_MUTED)
         with Vertical():
-            yield Static(
-                Text(f"Connect Kratos to {self._target_host}", style=f"bold {T.ACCENT}"),
-                id="ob-banner",
-            )
+            yield Static(banner, id="ob-banner")
+            with Container(id="ob-choose"):
+                yield OptionList(*(Option(label, id=key) for key, label in _CHOICES), id="ob-options")
+                with VerticalScroll(id="ob-detail"):
+                    yield Static(id="ob-detail-body")
             yield VerticalScroll(id="ob-log")
-            yield Static(
-                Text("p re-check · c/enter continue · esc set up later", style=T.TEXT_DIM),
-                id="ob-hints",
-            )
+            yield Static(self._choose_hints(), id="ob-hints")
 
     def on_mount(self) -> None:
-        self._choose_method()
+        self._apply_width(self.size.width or self.app.size.width)
+        options = self.query_one("#ob-options", OptionList)
+        options.highlighted = 0
+        options.focus()
+        # The panel title names the option it describes; the border itself stays quiet.
+        self.query_one("#ob-detail").styles.border_title_color = T.ACCENT
+        self._show_detail(_CHOICES[0][0])
+
+    def on_resize(self, event) -> None:
+        self._apply_width(event.size.width)
+
+    def _apply_width(self, width: int) -> None:
+        self.query_one("#ob-choose").set_class(width >= _WIDE_AT, "-wide")
+
+    @staticmethod
+    def _choose_hints() -> Text:
+        return Text("↑↓ choose · enter select · d full details · esc set up later", style=T.TEXT_DIM)
+
+    def _choosing(self) -> bool:
+        return self._method is None and self.query_one("#ob-choose").display
+
+    def _highlighted_key(self) -> str:
+        options = self.query_one("#ob-options", OptionList)
+        index = options.highlighted if options.highlighted is not None else 0
+        return options.get_option_at_index(index).id or _CHOICES[0][0]
+
+    def _show_detail(self, key: str) -> None:
+        panel = self.query_one("#ob-detail", VerticalScroll)
+        panel.border_title = _CHOICE_LABEL.get(key, key)
+        self.query_one("#ob-detail-body", Static).update(_detail_table(key))
+        panel.scroll_home(animate=False)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option.id:
+            self._show_detail(event.option.id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option.id:
+            self._select_method(event.option.id)
+
+    def action_details(self) -> None:
+        if self._choosing():
+            key = self._highlighted_key()
+            self.app.push_screen(InfoModal(_CHOICE_LABEL[key], _detail_table(key)))
 
     # ------------------------------------------------------------------
     def _log(self, renderable) -> None:
@@ -114,24 +212,16 @@ class OnboardTargetScreen(Screen[str | None]):
         log.mount(Static(renderable))
         log.scroll_end(animate=False)
 
-    @work
-    async def _choose_method(self) -> None:
-        entries = [
-            ("ssh", "Direct SSH — Kratos reads logs & config (investigations use this today)"),
-            ("subagent", "Sub-agent — always-on telemetry agent that dials back to Kratos"),
-            ("skip", "Skip for now — set up later (/target or /subagent)"),
-        ]
-        picked = await self.app.push_screen_wait(
-            ListPickerModal(
-                f"How should Kratos reach {self._target_host}?",
-                entries,
-                subtitle="You can do both later; SSH is the path today's investigations need.",
-            )
-        )
-        if picked is None or picked == "skip":
+    def _select_method(self, picked: str) -> None:
+        if picked == "skip":
             self.dismiss(None)
             return
         self._method = picked
+        # The choice is made: the list gives way to the chosen path's progress.
+        self.query_one("#ob-choose").display = False
+        self.query_one("#ob-log").display = True
+        self.query_one("#ob-hints", Static).update(
+            Text("p re-check · c/enter continue · esc set up later", style=T.TEXT_DIM))
         if picked == "ssh":
             _kconfig.set_active_target(self._target_host)
             self._start_ssh()
@@ -305,6 +395,9 @@ class OnboardTargetScreen(Screen[str | None]):
             self._start_ssh()
 
     def action_continue(self) -> None:
+        if self._choosing():
+            self._select_method(self._highlighted_key())
+            return
         self.dismiss(self._method)
 
     def action_skip(self) -> None:
