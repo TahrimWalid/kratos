@@ -17,8 +17,8 @@ What this does NOT do, on purpose:
   script onto the target and running it once is the operator's single
   bootstrap step -- the same unavoidable step every agent-based tool has.
 - It never enables capability 2 (direct execution). The generated service runs
-  the agent with telemetry only; ``--enable-execution`` is deliberately never
-  emitted here.
+  the agent read-only (telemetry + its own built-in investigation reads);
+  ``--enable-execution`` is deliberately never emitted here.
 
 Forward-compatible: when a ``kratos-agent`` PyPI package and a hosted
 ``pair.sh`` land (the pre-publication packaging step), the same pairing flow can
@@ -32,7 +32,7 @@ import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
 
-# The five stdlib-only files that make up the deployable agent bundle. They must
+# The stdlib-only files that make up the deployable agent bundle. They must
 # stay siblings in a ``subagent/`` package directory on the target (see
 # agent.py's module docstring). Order is irrelevant -- each is written
 # independently -- but agent.py is listed first as the entry point.
@@ -43,7 +43,17 @@ BUNDLE_FILES: tuple[str, ...] = (
     "signing.py",
     "whitelist.py",
     "ceiling.py",
+    "reads.py",
 )
+# Shipped from elsewhere in the package, written next to the files above:
+# the auth-measurement script builder (so the agent builds the SAME script the
+# SSH path runs) and the starter YARA rules (the agent scans with rules from
+# its own box only -- docs/subagent_read_routing.md D4).
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+EXTRA_BUNDLE_FILES: dict[str, Path] = {
+    "measure.py": _PACKAGE_ROOT / "timewin" / "measure.py",
+}
+YARA_RULES_SOURCE = _PACKAGE_ROOT.parent.parent / "yara_rules"
 
 DEFAULT_SERVICE_NAME = "kratos-subagent"
 DEFAULT_CORE_PORT = 8765
@@ -74,12 +84,17 @@ def read_bundle_files() -> dict[str, str]:
     """
     out: dict[str, str] = {}
     base = _bundle_dir()
-    for name in BUNDLE_FILES:
-        path = base / name
+    sources = {name: base / name for name in BUNDLE_FILES} | EXTRA_BUNDLE_FILES
+    for name, path in sources.items():
         try:
             out[name] = path.read_text(encoding="utf-8")
         except OSError as exc:  # pragma: no cover - defensive; the files ship with the package
             raise InstallerError(f"cannot read bundle file {name!r}: {exc}") from exc
+    for rule in sorted(YARA_RULES_SOURCE.glob("*.yar")) if YARA_RULES_SOURCE.is_dir() else []:
+        out[f"yara_rules/{rule.name}"] = rule.read_text(encoding="utf-8")
+    readme = YARA_RULES_SOURCE / "README.md"
+    if readme.is_file():  # source + license of the vendored rules travel with them
+        out["yara_rules/README.md"] = readme.read_text(encoding="utf-8")
     return out
 
 
@@ -101,6 +116,7 @@ def generate_installer(
     core_port: int = DEFAULT_CORE_PORT,
     service_name: str = DEFAULT_SERVICE_NAME,
     upgrade: bool = False,
+    allow_untrusted_transport: bool = False,
 ) -> str:
     """Return a self-contained POSIX-``sh`` installer for the sub-agent.
 
@@ -118,6 +134,11 @@ def generate_installer(
     - with ``upgrade=True`` (no code), the existing identity is kept and only
       the agent code is replaced -- the path for updating an agent in place.
     Either way the service is RESTARTED, so the new code actually runs.
+
+    ``allow_untrusted_transport`` lets investigation reads run when the box
+    reaches Kratos over a plain network (not loopback/Tailscale) -- the channel
+    has no encryption of its own, so only for a network the operator trusts.
+    It never enables execution.
     """
     if not core_host or not str(core_host).strip():
         raise InstallerError("core_host is required")
@@ -157,6 +178,7 @@ def generate_installer(
         code_q=code_q,
         svc_q=svc_q,
         upgrade="1" if upgrade else "0",
+        extra_flags=" --allow-untrusted-transport" if allow_untrusted_transport else "",
         blob_section=blob_section,
         eof=_EOF,
     )
@@ -223,7 +245,7 @@ elif $SUDO test -e "$STATE_FILE"; then
 fi
 
 log "Installing Kratos sub-agent into $INSTALL_DIR (mode: $MODE)"
-$SUDO mkdir -p "$INSTALL_DIR/subagent" || die write_failed "could not create $INSTALL_DIR"
+$SUDO mkdir -p "$INSTALL_DIR/subagent/yara_rules" || die write_failed "could not create $INSTALL_DIR"
 
 # write_file <relative-path> : base64 body on stdin -> decoded file on disk.
 write_file() {{
@@ -239,7 +261,7 @@ write_file() {{
 
 log "Bundle written."
 
-EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE"
+EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE{extra_flags}"
 [ -n "$PAIR_CODE" ] && EXEC_CMD="$EXEC_CMD --pair $PAIR_CODE"
 
 start_plain() {{

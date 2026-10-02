@@ -17,20 +17,29 @@ same partial-failure rule the rest of Kratos holds: an item that can't be
 resolved is reported as unknown/errored, never silently dropped -- a missing
 data point is itself information.
 
+One shared read set (docs/subagent_read_routing.md): the snapshot is a fixed
+bundle of the same reads investigations use -- commands run through
+reads.run_capped (binaries only from the trusted system dirs, fixed
+environment, output cap) and files are hashed by reads.hash_file -- with
+fixed parameters, pushed every collect interval exactly as before.
+
 Stdlib-only, no kratos-internal imports -- see protocol.py's module
 docstring for why (this file ships as a sibling of agent.py/protocol.py
 directly onto the target).
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
 import shutil
 import socket
-import subprocess
 import time
 from typing import Any
+
+try:  # bundle layout (sibling module)
+    from . import reads
+except ImportError:  # pragma: no cover -- `python3 subagent/agent.py` run directly
+    import reads  # type: ignore[no-redef]
 
 DEFAULT_WATCH_FILES = [
     "/etc/passwd",
@@ -40,21 +49,23 @@ DEFAULT_WATCH_FILES = [
 ]
 DEFAULT_SERVICE_WATCHLIST = ["ssh", "sshd", "fail2ban", "cron"]
 _CMD_TIMEOUT_SECONDS = 8
+_CMD_OUTPUT_CAP = 1024 * 1024
 
 
 def _run(argv: list[str]) -> dict[str, Any]:
-    """Run one fixed, read-only command. Never raises, never uses a shell."""
+    """Run one fixed, read-only command through the shared read runner. Never
+    raises, never uses a shell."""
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True, timeout=_CMD_TIMEOUT_SECONDS)
+        r = reads.run_capped(argv, timeout=_CMD_TIMEOUT_SECONDS, cap=_CMD_OUTPUT_CAP)
         return {
-            "ok": proc.returncode == 0,
-            "returncode": proc.returncode,
-            "stdout": proc.stdout.strip(),
-            "stderr": proc.stderr.strip()[:2000],
+            "ok": r["returncode"] == 0,
+            "returncode": r["returncode"],
+            "stdout": r["stdout"].strip(),
+            "stderr": r["stderr"].strip()[:2000],
         }
-    except FileNotFoundError:
+    except reads.ProbeMissing:
         return {"ok": False, "error": f"{argv[0]} not installed"}
-    except subprocess.TimeoutExpired:
+    except reads.ProbeTimeout:
         return {"ok": False, "error": f"{argv[0]} timed out after {_CMD_TIMEOUT_SECONDS}s"}
     except OSError as e:
         return {"ok": False, "error": str(e)}
@@ -130,18 +141,13 @@ def collect_file_hashes(paths: list[str] | None = None) -> dict[str, Any]:
     paths = DEFAULT_WATCH_FILES if paths is None else paths
     hashes: dict[str, Any] = {}
     for path in paths:
-        try:
-            h = hashlib.sha256()
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(65536), b""):
-                    h.update(chunk)
-            hashes[path] = h.hexdigest()
-        except FileNotFoundError:
+        line = reads.hash_file(path).split("\t")
+        if line[0] == "PRESENT":
+            hashes[path] = line[2]
+        elif line[0] == "MISSING":
             hashes[path] = None  # absent is informative on its own, not an error.
-        except PermissionError:
+        else:
             hashes[path] = "permission_denied"
-        except OSError as e:
-            hashes[path] = f"error: {e}"
     return {"file_hashes": hashes}
 
 

@@ -3,6 +3,15 @@ Kratos sub-agent daemon. Runs on the monitored target, dials OUT to Kratos's
 core, and continuously forwards read-only telemetry snapshots (capability 1;
 docs/subagent_architecture.md) -- always on, regardless of everything below.
 
+**Investigation reads** (docs/subagent_read_routing.md): core may also send a
+signed `read_request` naming one probe from this agent's own closed set
+(reads.py) with parameters this agent validates itself. No command text, path
+list or rule text is accepted from core. A read is refused unless it is signed
+for this connection's session nonce with a strictly increasing `seq` (no
+replay) and core is reached over loopback/Tailscale (or the operator passed
+--allow-untrusted-transport). Reads never change state and are unrelated to
+execution: they don't need, and can't turn on, anything below.
+
 **Capability 2 (direct execution)**: this file also receives a signed,
 versioned whitelist push and signed exec_dispatch messages from core (see
 protocol.py's message shapes and signing.py's HMAC envelope), but a dispatch
@@ -87,17 +96,18 @@ from pathlib import Path
 from typing import Any
 
 try:  # `python3 -m subagent.agent` (preferred) -- real package-relative import.
-    from . import ceiling as cl, collector, protocol as proto, signing, whitelist as wl
+    from . import ceiling as cl, collector, protocol as proto, reads, signing, whitelist as wl
 except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.py` run directly.
     import ceiling as cl  # type: ignore[no-redef]
     import collector  # type: ignore[no-redef]
     import protocol as proto  # type: ignore[no-redef]
+    import reads  # type: ignore[no-redef]
     import signing  # type: ignore[no-redef]
     import whitelist as wl  # type: ignore[no-redef]
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.2.0"
+AGENT_VERSION = "0.3.0"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -122,6 +132,10 @@ EXEC_TIMEOUT_SECONDS = 30.0
 OUTPUT_TAIL_MAX_CHARS = 4000
 # Bound on dispatch ids remembered per connection for replay de-duplication.
 SEEN_DISPATCH_IDS_MAX = 4096
+# Read probes run one at a time; at most this many may wait behind the running
+# one before further requests are answered "busy" (core sends one at a time,
+# so this only ever trips on a misbehaving peer).
+READ_QUEUE_MAX = 4
 
 # Transport check for execution (F9): core must be reached over loopback or a
 # Tailscale/WireGuard tailnet address, since this channel has no TLS itself.
@@ -229,6 +243,12 @@ class SubAgent:
         self._session_nonce: str | None = None
         self._seen_dispatch_ids: set[str] = set()
         self._peer_ip: str | None = None
+        # Read probes (docs/subagent_read_routing.md): per-connection replay
+        # floor, a one-at-a-time lock (made per connection, on the running
+        # loop), and the tasks to cancel when the connection ends.
+        self._last_read_seq = 0
+        self._read_lock: asyncio.Lock | None = None
+        self._read_tasks: set[asyncio.Task] = set()
 
     # ------------------------------------------------------------------
     # Persistent state
@@ -348,10 +368,12 @@ class SubAgent:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 # Also runs when this coroutine itself is cancelled (stop()),
-                # so no loop outlives its connection.
-                for t in tasks:
+                # so no loop (or read in flight) outlives its connection.
+                pending_reads = set(self._read_tasks)
+                for t in tasks | pending_reads:
                     t.cancel()
-                await asyncio.wait(tasks)  # waits without re-raising their outcomes
+                await asyncio.wait(tasks | pending_reads)  # waits without re-raising their outcomes
+                self._read_tasks.clear()
             for t in done:
                 if not t.cancelled() and t.exception() is not None:
                     raise t.exception()
@@ -371,6 +393,8 @@ class SubAgent:
             raise proto.ProtocolError("no saved token and no pairing code -- pair this agent first (--pair CODE)")
         self._session_nonce = secrets.token_hex(16)
         self._seen_dispatch_ids = set()
+        self._last_read_seq = 0
+        self._read_lock = asyncio.Lock()
         self._last_core_message_ts = None  # only a signed pong on THIS connection re-arms execution
         peer = writer.get_extra_info("peername")
         self._peer_ip = peer[0] if isinstance(peer, tuple) and peer else None
@@ -378,6 +402,7 @@ class SubAgent:
             self.agent_id, auth, _hostname(), AGENT_VERSION,
             session_nonce=self._session_nonce, ceiling=self.ceiling_report(),
             collect_interval=self.collect_interval, ping_interval=self.ping_interval,
+            read_probes=reads.READ_PROBES, read_api=reads.READ_API_VERSION,
         ))
         reply = await asyncio.wait_for(proto.read_frame(reader), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         if reply is None:
@@ -447,6 +472,10 @@ class SubAgent:
                     await self._handle_whitelist_push(msg, writer)
                 elif mtype == proto.MSG_EXEC_DISPATCH:
                     await self._handle_exec_dispatch(msg, writer)
+                elif mtype == proto.MSG_READ_REQUEST:
+                    # Never awaited here: a 3-minute YARA scan must not stop
+                    # this loop reading pongs and other messages.
+                    self._start_read(msg, writer)
                 else:
                     logger.warning("ignoring unexpected message type %r from core", mtype)
             except (OSError, proto.ProtocolError):
@@ -581,6 +610,76 @@ class SubAgent:
             return {"status": "error", "reason": f"{argv[0]!r} is not installed in {', '.join(cl.TRUSTED_BIN_DIRS)}"}
         return await self._run_argv([executable, *argv[1:]])
 
+    # ------------------------------------------------------------------
+    # Read probes -- separate from execution; see reads.py
+    # ------------------------------------------------------------------
+    def _check_read_request(self, msg: dict[str, Any]) -> str | None:
+        """Every gate, fail-closed, in order. Returns a refusal reason or None.
+        The signature is checked before anything that changes state, so an
+        unsigned message can't move the replay floor."""
+        if not self.token:
+            return "not paired"
+        if not self._transport_trusted():
+            return (f"core is reached at {self._peer_ip!r}, which is not loopback or a Tailscale address -- "
+                    "this channel has no encryption of its own, so investigation reads are refused on it. "
+                    "Reach Kratos over Tailscale/WireGuard, or reinstall the agent with "
+                    "--allow-untrusted-transport if this network is trusted")
+        request_id, probe, params, seq = msg.get("request_id"), msg.get("probe"), msg.get("params"), msg.get("seq")
+        if not isinstance(request_id, str) or not request_id or len(request_id) > 128:
+            return "malformed request_id"
+        if not isinstance(probe, str) or not isinstance(params, dict) or type(seq) is not int:
+            return "malformed read request (probe/params/seq types)"
+        if not signing.verify_envelope(signing.derive_signing_key(self.token), msg):
+            return "invalid signature"
+        if msg.get("session_nonce") != self._session_nonce:
+            return "read request is not for this connection (replay?)"
+        if seq <= self._last_read_seq:
+            return "read request is out of order or repeated (replay?)"
+        self._last_read_seq = seq
+        return None
+
+    def _start_read(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+        request_id = msg.get("request_id") if isinstance(msg.get("request_id"), str) else ""
+        reason = self._check_read_request(msg)
+        if reason is None and len(self._read_tasks) > READ_QUEUE_MAX:
+            reply = proto.build_read_result(request_id, "busy", reason="too many reads waiting on this agent")
+        elif reason is not None:
+            logger.warning("read_request refused: %s", reason)
+            reply = proto.build_read_result(request_id, "refused", reason=reason)
+        else:
+            task = asyncio.ensure_future(self._serve_read(msg, writer))
+            self._read_tasks.add(task)
+            task.add_done_callback(self._read_tasks.discard)
+            return
+        task = asyncio.ensure_future(self._send_read_reply(writer, reply))
+        self._read_tasks.add(task)
+        task.add_done_callback(self._read_tasks.discard)
+
+    async def _serve_read(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+        request_id, probe = msg["request_id"], msg["probe"]
+        lock = self._read_lock or asyncio.Lock()
+        async with lock:
+            loop = asyncio.get_event_loop()
+            started = time.monotonic()
+            try:
+                body = await loop.run_in_executor(None, reads.run_probe, probe, msg["params"])
+            except Exception as e:  # noqa: BLE001 -- run_probe never raises; belt and braces
+                body = {"status": "error", "reason": f"{type(e).__name__}"}
+        logger.info("read %s: probe=%s status=%s (%.1fs)", request_id, probe, body.get("status"),
+                    time.monotonic() - started)
+        await self._send_read_reply(writer, proto.build_read_result(
+            request_id, body["status"], reason=body.get("reason"), data=body.get("data"),
+            available=body.get("available")))
+
+    async def _send_read_reply(self, writer: asyncio.StreamWriter, reply: dict[str, Any]) -> None:
+        try:
+            await proto.write_frame(writer, reply)
+        except proto.FrameTooLargeError:
+            await proto.write_frame(writer, proto.build_read_result(
+                reply["request_id"], "error", reason="the result was too large to send -- narrow the request"))
+        except (OSError, ConnectionError):
+            pass  # the connection is going away; the receive loop handles that
+
     def _execution_armed(self) -> bool:
         if self._last_core_message_ts is None:
             return False
@@ -642,7 +741,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--allow-untrusted-transport", dest="allow_untrusted_transport", action="store_true", default=False,
         help=(
-            "Allow execution even when core is not reached over loopback or Tailscale. The channel has no "
+            "Allow execution and investigation reads even when core is not reached over loopback or "
+            "Tailscale. The channel has no "
             "encryption of its own, so on a shared network the pairing token (and with it the signing key) "
             "can be sniffed. Leave off unless the network itself is trusted."
         ),

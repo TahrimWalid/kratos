@@ -34,8 +34,10 @@ def test_generate_installer_embeds_all_bundle_files_roundtrip():
     script = installer.generate_installer("100.64.0.10", "CODE-1234", core_port=8765)
     blobs = _extract_blobs(script)
 
-    # __init__.py plus the five real bundle files.
-    assert set(blobs) == {"__init__.py", *installer.BUNDLE_FILES}
+    # __init__.py, the agent's own files, the shared measurement builder and
+    # the starter YARA rules (scanned with rules from the box only -- D4).
+    assert set(blobs) == {"__init__.py", *installer.read_bundle_files()}
+    assert {*installer.BUNDLE_FILES, "measure.py", "yara_rules/MALW_Eicar.yar", "yara_rules/README.md"} <= set(blobs)
 
     real = installer.read_bundle_files()
     for name, real_text in real.items():
@@ -127,3 +129,39 @@ def test_candidate_hub_addresses_dedups_and_shapes(monkeypatch):
 def test_detect_lan_ip_returns_ip_or_none():
     ip = hub_address.detect_lan_ip()
     assert ip is None or ip.count(".") == 3
+
+
+def test_bundle_runs_standalone_and_serves_reads(tmp_path):
+    """The extracted bundle imports and runs every read probe with only the
+    system python3 -- no kratos package on the path."""
+    import subprocess
+
+    script = installer.generate_installer("100.64.0.10", "CODE-1234", core_port=8765)
+    pkg = tmp_path / "subagent"
+    (pkg / "yara_rules").mkdir(parents=True)
+    for name, body in _extract_blobs(script).items():
+        (pkg / name).write_bytes(base64.b64decode(body.encode("ascii")))
+    code = (
+        "import json, sys; sys.path.insert(0, '.'); from subagent import reads, agent; "
+        "assert agent.AGENT_VERSION >= '0.3.0'; "
+        "print(json.dumps({p: reads.run_probe(p, {'lines': 2} if p == 'journal_fetch' else "
+        "{'start': 1790000000, 'granularity': 60} if p == 'measure_auth' else {})['status'] "
+        "for p in ('clock', 'file_hashes', 'processes', 'journal_fetch', 'config_audit', 'measure_auth')})); "
+        "print(reads.yara_rule_files('bundled')[0])"
+    )
+    out = subprocess.run(["/usr/bin/python3", "-I", "-c", code], cwd=tmp_path, capture_output=True, text=True,
+                         timeout=120)
+    assert out.returncode == 0, out.stderr
+    statuses, rules = out.stdout.splitlines()[:2]
+    import json
+
+    assert set(json.loads(statuses).values()) == {"ok"}
+    assert "MALW_Eicar.yar" in rules
+
+
+def test_installer_can_allow_an_untrusted_transport_for_reads_only():
+    plain = installer.generate_installer("192.168.1.20", "CODE-1234")
+    lan = installer.generate_installer("192.168.1.20", "CODE-1234", allow_untrusted_transport=True)
+    assert "--allow-untrusted-transport" not in plain
+    assert "--state-file $STATE_FILE --allow-untrusted-transport\"" in lan
+    assert "--enable-execution" not in lan

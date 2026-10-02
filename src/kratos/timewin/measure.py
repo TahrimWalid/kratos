@@ -376,21 +376,27 @@ def build_script(
     classic_granularity: int = 60,
     classic_globs: tuple[str, ...] = CLASSIC_GLOBS,
     fail2ban_glob: str = FAIL2BAN_GLOB,
+    kratos_ip: str | None = None,
 ) -> str:
     """The sh script run on the target. `since`/`until` are TARGET-clock epochs (the
     caller has already applied the measured clock offset). `classic_granularity` is the
-    bucket size (seconds) for classic-log counts: 60 for short windows, 3600 for long ones."""
+    bucket size (seconds) for classic-log counts: 60 for short windows, 3600 for long ones.
+    `kratos_ip`: Kratos's own source address, when the script is NOT run over
+    Kratos's SSH session (a sub-agent runs it locally, so $SSH_CONNECTION
+    can't say) -- its sessions are then excluded exactly as over SSH."""
     s = int(since_epoch)
     until_arg = f" --until @{int(until_epoch) + 1}" if until_epoch is not None else ""
     jc = f"{journalctl_prefix} journalctl".strip()
     classic_fn = _classic_section(since_epoch, until_epoch, journalctl_prefix, classic_granularity,
                                   classic_globs, fail2ban_glob)
     classic = "kratos_classic"  # called from each fallback point; defined once below
+    kip_line = (shlex.quote(kratos_ip) if kratos_ip
+                else "$(echo \"${SSH_CONNECTION:-}\" | awk '{print $1}')")
     return f"""set -u
 kratos_classic() {{
 {classic_fn}
 }}
-KIP=$(echo "${{SSH_CONNECTION:-}}" | awk '{{print $1}}')
+KIP={kip_line}
 printf 'META\\tkratos_ip\\t%s\\n' "$KIP"
 printf 'META\\tnow\\t%s\\n' "$(date +%s)"
 if ! command -v journalctl >/dev/null 2>&1; then printf 'META\\tjournald\\tabsent\\n'

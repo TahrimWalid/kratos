@@ -56,6 +56,18 @@ local_problems} -- what this target will actually run, reported so core can
 show it, never something core can change.
   exec_result         {type, dispatch_id, status: "ok"|"refused"|"error",
                        reason, exit_code, stdout_tail, stderr_tail, ts}
+
+Read probes (docs/subagent_read_routing.md) -- separate from execution, never
+gated by it, never able to change state. Core names a probe from the agent's
+closed set (kratos.subagent.reads) and passes parameters the agent validates;
+no command text crosses the wire. Signed like a dispatch, bound to the
+connection's session_nonce, and `seq` must strictly increase per connection
+(core sends one read at a time), so a captured request can't be replayed.
+  read_request        {type, request_id, probe, params, seq, session_nonce, sig}
+  read_result         {type, request_id, status: "ok"|"refused"|"unsupported"|
+                       "not_installed"|"timed_out"|"error"|"busy", reason?, data?}
+A hello from an agent that serves reads adds `read_api` (int) and
+`read_probes` (the names it has).
 """
 from __future__ import annotations
 
@@ -65,7 +77,9 @@ import struct
 from typing import Any
 
 PROTOCOL_VERSION = 1
-MAX_FRAME_BYTES = 1024 * 1024  # 1 MiB -- generous for one telemetry snapshot, bounded against abuse.
+# 8 MiB: a read result (e.g. a few thousand journal entries) is capped on the
+# agent at 4 MiB of output, which JSON-escaping can grow; still bounded.
+MAX_FRAME_BYTES = 8 * 1024 * 1024
 _LENGTH = struct.Struct(">I")
 
 MSG_HELLO = "hello"
@@ -80,6 +94,8 @@ MSG_WHITELIST_PUSH = "whitelist_push"
 MSG_WHITELIST_PUSH_ACK = "whitelist_push_ack"
 MSG_EXEC_DISPATCH = "exec_dispatch"
 MSG_EXEC_RESULT = "exec_result"
+MSG_READ_REQUEST = "read_request"
+MSG_READ_RESULT = "read_result"
 
 
 class ProtocolError(ValueError):
@@ -141,6 +157,7 @@ def build_hello(
     agent_id: str, auth: dict[str, str], hostname: str, agent_version: str,
     session_nonce: str | None = None, ceiling: dict[str, Any] | None = None,
     collect_interval: float | None = None, ping_interval: float | None = None,
+    read_probes: list[str] | tuple[str, ...] | None = None, read_api: int = 1,
 ) -> dict[str, Any]:
     msg = {
         "type": MSG_HELLO,
@@ -160,6 +177,9 @@ def build_hello(
         msg["collect_interval"] = collect_interval
     if ping_interval is not None:
         msg["ping_interval"] = ping_interval
+    if read_probes is not None:
+        msg["read_api"] = read_api
+        msg["read_probes"] = list(read_probes)
     return msg
 
 
@@ -232,3 +252,57 @@ def build_exec_result(
         "stderr_tail": stderr_tail,
         "ts": ts,
     }
+
+
+def build_read_request(request_id: str, probe: str, params: dict[str, Any], seq: int, session_nonce: str) -> dict[str, Any]:
+    """Unsigned envelope -- the caller adds `sig` (signing.sign_envelope)."""
+    return {"type": MSG_READ_REQUEST, "request_id": request_id, "probe": probe, "params": params,
+            "seq": seq, "session_nonce": session_nonce}
+
+
+def build_read_result(request_id: str, status: str, *, reason: str | None = None,
+                      data: dict[str, Any] | None = None, available: list[str] | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": MSG_READ_RESULT, "request_id": request_id, "status": status}
+    if reason is not None:
+        msg["reason"] = reason
+    if data is not None:
+        msg["data"] = data
+    if available is not None:
+        msg["available"] = available
+    return msg
+
+
+# ---------------------------------------------------------------------------
+# Blocking framing, for the local socket between an investigating process and
+# the listener (kratos.subagent.local_reads). Same frame format.
+# ---------------------------------------------------------------------------
+def _recv_exactly(sock: Any, n: int) -> bytes:
+    buf = bytearray()
+    while len(buf) < n:
+        chunk = sock.recv(min(n - len(buf), 1 << 20))
+        if not chunk:
+            if not buf:
+                raise EOFError("peer closed the connection")
+            raise ProtocolError(f"connection closed mid-frame ({len(buf)} of {n} bytes)")
+        buf += chunk
+    return bytes(buf)
+
+
+def send_frame_sync(sock: Any, message: dict[str, Any]) -> None:
+    sock.sendall(encode_frame(message))
+
+
+def recv_frame_sync(sock: Any) -> dict[str, Any]:
+    (length,) = _LENGTH.unpack(_recv_exactly(sock, _LENGTH.size))
+    if length > MAX_FRAME_BYTES:
+        raise FrameTooLargeError(f"peer declared a {length}-byte frame, over the {MAX_FRAME_BYTES}-byte limit")
+    if length == 0:
+        raise ProtocolError("zero-length frame")
+    body = _recv_exactly(sock, length)
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ProtocolError(f"malformed frame body: {e}") from e
+    if not isinstance(parsed, dict) or "type" not in parsed:
+        raise ProtocolError("frame body is not a JSON object with a 'type' field")
+    return parsed
