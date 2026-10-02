@@ -25,24 +25,28 @@ launches are fast and need no network of their own:
      `--no-profiles` alone drops the disk device too (the default profile
      provides both), so this profile exists specifically to keep the disk
      while dropping only the network device.
-  2. `kratos-sandbox-base` Incus image: built once (network required only
-     for THIS one-time step, never for an actual candidate's test run) by
-     launching the same images:ubuntu/jammy base other throwaway containers
-     use, installing pytest + requests (the ONLY two dependencies actually
-     needed -- see below), baking in a copy of this project's src/kratos/
-     tree at /opt/kratos/src, then publishing the result as a new local
-     image. Every actual test run afterward launches instantly from this
+  2. `kratos-sandbox-base-v2` Incus image: built once (network required
+     only for THIS one-time step, never for an actual candidate's test run)
+     by launching the same images:ubuntu/jammy base other throwaway
+     containers use, installing SANDBOX_PIP_PACKAGES (see below), then
+     publishing the result as a new local image. The image holds NO Kratos
+     code: the running Kratos package is pushed into every test container
+     fresh, so a candidate is always tested against the Kratos it will run
+     in (an earlier design baked a copy into the image once and never
+     refreshed it -- tests silently ran against months-old code, and on a
+     fresh machine the baked copy could not even be imported). Every actual test run afterward launches instantly from this
      cached image -- prepare once, launch fast and isolated repeatedly.
 
-Why pytest + requests are enough: a candidate/harness pair needs to import
+Why SANDBOX_PIP_PACKAGES is enough: a candidate/harness pair needs to import
 kratos.agent.tools (for @register_tool/TOOL_REGISTRY) and pytest (every
 human-authored harness, including tests/self_write_harnesses/*, is written
-against it). Tracing kratos.agent.tools's full import closure, the ONLY
-third-party package it transitively needs is `requests` (used by
-kratos.agent.notify for send_notification) -- fastapi/uvicorn/etc in
-pyproject.toml's dependency list are for the project's (currently unused
-here) API surface, not this path, so they're deliberately not installed
-into the sandbox image to keep it minimal.
+against it). kratos.agent.tools's third-party import closure is `requests`
+(kratos.agent.notify), `python-dotenv` (kratos_config), `rich` (the console renderers) and, on the image's
+Python 3.10, `tomli` (presets/schedules/triggers) -- a test in the suite
+imports kratos.agent.tools with only those available, so a new import is
+caught there, not by a user's first /evolve. Kratos's other dependencies
+(textual, mcp, ...) are for the UI and server surfaces, not this path,
+so they're deliberately not installed into the sandbox image.
 
 Measured timing: one-time base-image build ~3-4 min (apt/pip install +
 publish, dominated by apt-get update/install); PER-TEST-RUN round trip
@@ -63,7 +67,10 @@ from pathlib import Path
 from kratos.agent import console as _console
 
 INCUS_BASE_IMAGE = "images:ubuntu/jammy"    # same base image kratos-target/attacker-box use
-SANDBOX_IMAGE_ALIAS = "kratos-sandbox-base"  # one-time-built, then locally cached
+# Bump the alias whenever SANDBOX_PIP_PACKAGES changes: an existing image of
+# the same name is reused as-is.
+SANDBOX_IMAGE_ALIAS = "kratos-sandbox-base-v2"  # one-time-built, then locally cached
+SANDBOX_PIP_PACKAGES = ("pytest", "requests", "python-dotenv", "tomli", "rich")
 SANDBOX_PROFILE = "kratos-sandbox"           # no-network, resource-capped profile
 SANDBOX_CPU_LIMIT = "1"
 SANDBOX_MEMORY_LIMIT = "512MiB"
@@ -98,7 +105,8 @@ KRATOS_SRC_IN_CONTAINER = "/opt/kratos/src"
 CANDIDATE_PATH_IN_CONTAINER = "/root/candidate.py"
 HARNESS_PATH_IN_CONTAINER = "/root/harness.py"
 
-_KRATOS_REPO_ROOT = Path(__file__).resolve().parents[3]
+# The running Kratos package (editable checkout or installed wheel alike).
+_KRATOS_PACKAGE_DIR = Path(__file__).resolve().parents[1]
 
 
 @dataclass
@@ -165,11 +173,7 @@ def _ensure_sandbox_base_image() -> None:
             ["exec", builder, "--", "bash", "-c", "apt-get update -qq && apt-get install -y -qq python3-pip >/dev/null"],
             timeout=180,
         )
-        _run_incus(["exec", builder, "--", "pip3", "install", "--quiet", "pytest", "requests"], timeout=90)
-        _run_incus(
-            ["file", "push", "-r", "-p", str(_KRATOS_REPO_ROOT / "src" / "kratos"), f"{builder}/opt/kratos/src/"],
-            timeout=60,
-        )
+        _run_incus(["exec", builder, "--", "pip3", "install", "--quiet", *SANDBOX_PIP_PACKAGES], timeout=120)
         _run_incus(["stop", builder], timeout=30)
         _run_incus(["publish", builder, "--alias", SANDBOX_IMAGE_ALIAS], timeout=120)
     finally:
@@ -213,6 +217,15 @@ def run_sandbox_test(
             )
         launched = True
 
+        # This Kratos, not a copy from whenever the image was built.
+        push_kratos = _run_incus(["file", "push", "-r", "-p", str(_KRATOS_PACKAGE_DIR),
+                                  f"{container}{KRATOS_SRC_IN_CONTAINER}/"], timeout=60)
+        if push_kratos.returncode != 0:
+            return SandboxTestResult(
+                passed=False, timed_out=False, exit_code=None, stdout="", stderr="",
+                duration_seconds=time.monotonic() - t0,
+                infra_error=f"Failed to copy Kratos into the sandbox: {push_kratos.stderr.strip()}",
+            )
         push_candidate = _run_incus(["file", "push", str(candidate_path), f"{container}{CANDIDATE_PATH_IN_CONTAINER}"], timeout=30)
         push_harness = _run_incus(["file", "push", str(harness_path), f"{container}{HARNESS_PATH_IN_CONTAINER}"], timeout=30)
         if push_candidate.returncode != 0 or push_harness.returncode != 0:
