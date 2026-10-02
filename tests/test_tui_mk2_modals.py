@@ -145,3 +145,40 @@ def test_command_palette_prefers_exact_match():
     assert _type_and_enter("/tool") == "/tool"      # exact wins over /tools
     assert _type_and_enter("/tools") == "/tools"
     assert _type_and_enter("/tar") == "/target"     # substring fallback still works
+
+
+def test_multiselect_shows_ticked_and_unticked_by_shape_not_only_colour():
+    """Ticked vs unticked used to differ only by colour (the same X either way):
+    unreadable for colour-blind users, in grayscale or on low-contrast themes."""
+    import asyncio
+
+    from textual.app import App
+
+    from kratos.tui_mk2.modals import MultiSelectModal
+
+    out: dict = {}
+
+    class _H(App):
+        def on_mount(self):
+            self.push_screen(MultiSelectModal("pick", [("fail2ban", "fail2ban"), ("ufw", "ufw")],
+                                              selected=["fail2ban"]))
+
+    def painted(app) -> str:
+        from kratos.tui_mk2.modals import CheckboxSelectionList
+
+        lst = app.screen.query_one(CheckboxSelectionList)
+        return "\n".join(lst.render_line(i).text for i in range(lst.option_count))
+
+    async def run():
+        app = _H()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            out["before"] = painted(app)
+            await pilot.press("down", "space")  # tick ufw
+            await pilot.pause()
+            out["after"] = painted(app)
+
+    asyncio.run(run())
+    assert "[x] fail2ban" in out["before"] and "[ ] ufw" in out["before"]
+    assert "[x] ufw" in out["after"]
+    assert "▐X▌" not in out["before"]

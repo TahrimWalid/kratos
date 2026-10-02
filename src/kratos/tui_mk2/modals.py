@@ -29,6 +29,8 @@ from __future__ import annotations
 from typing import Any
 
 from rich.panel import Panel
+from rich.segment import Segment
+from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
@@ -37,7 +39,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.strip import Strip
 from textual.widgets import Button, Input, Label, ListItem, ListView, SelectionList, Static
+from textual.widgets.option_list import OptionDoesNotExist
 
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.render import approval_panel, plan_preview_panel
@@ -942,6 +946,33 @@ class CommandModal(ModalScreen[None]):
         self.dismiss(None)
 
 
+class CheckboxSelectionList(SelectionList):
+    """A SelectionList whose tick is a SHAPE -- [x] ticked, [ ] not -- instead
+    of Textual's default, which draws the same "X" either way and tells them
+    apart only by colour (unreadable for colour-blind users, in grayscale and
+    on low-contrast themes). Same three-cell width, so layout, the row
+    highlight and mouse clicks are unchanged."""
+
+    def render_line(self, y: int) -> Strip:
+        strip = super().render_line(y)
+        segments = list(strip)
+        _, scroll_y = self.scroll_offset
+        index = scroll_y + y
+        try:
+            option = self.get_option_at_index(index)
+        except OptionDoesNotExist:
+            return strip
+        if len(segments) < 4:
+            return strip
+        ticked = option.value in self._selected
+        # segments: [left, inner, right, " ", *prompt] -- keep the row's own
+        # background (highlight) from the " " segment, set our own foreground.
+        base = segments[3].style or Style()
+        mark = Style(color=T.ACCENT, bold=True) if ticked else Style(color=T.TEXT_MUTED)
+        style = base + mark + Style(meta={"option": index})
+        return Strip([Segment("[x]" if ticked else "[ ]", style), *segments[3:]])
+
+
 class MultiSelectModal(ModalScreen[list[Any] | None]):
     """Tick one or more items (space toggles, Enter confirms). Returns the
     ticked values in their original order, or None on esc. At least one must
@@ -972,7 +1003,7 @@ class MultiSelectModal(ModalScreen[list[Any] | None]):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._subtitle:
                 yield Static(Text(self._subtitle, style=T.TEXT_DIM))
-            yield SelectionList(*[(label, i, value in self._selected)
+            yield CheckboxSelectionList(*[(label, i, value in self._selected)
                                   for i, (value, label) in enumerate(self._entries)], id="multi")
             yield Static(Text("↑↓ move · space tick/untick · Enter done · esc cancel", style=T.TEXT_DIM),
                          id="multi-hint")
