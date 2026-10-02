@@ -223,13 +223,13 @@ class LocalReadServer:
 def _no_listener() -> LocalReadError:
     """Say which case it is: nothing running at all, or a listener that can't
     serve reads (an older build, or one started for a different data folder)."""
-    from kratos.subagent.core_listener import listener_running
+    from kratos.subagent.core_listener import listener_running, restart_listener_command
 
     if listener_running():
         return LocalReadError("no_listener", (
             "A Kratos listener is running, but it can't serve investigation reads -- it's an older build "
-            "or was started for a different data folder. Restart it (systemctl restart kratos-core-listener, "
-            "or the user service) so it picks up this version."))
+            f"or was started for a different data folder. Restart it ({restart_listener_command()}) so it "
+            "picks up this version."))
     return LocalReadError("no_listener", NO_LISTENER_MESSAGE)
 
 

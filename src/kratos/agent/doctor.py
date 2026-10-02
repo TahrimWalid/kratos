@@ -142,8 +142,11 @@ def _check_transport(out: list[Check], target: str) -> bool | None:
 
         detail = ("a Kratos listener is running but can't serve investigation reads (an older build, or a "
                   "different data folder)" if listener_running() else "no Kratos listener is running")
-        out.append(_row("sub-agent reads", "fail", detail,
-                        fix="restart the always-on listener (or open /subagent to start one in this window)."))
+        from kratos.subagent.core_listener import restart_listener_command
+
+        fix = (f"restart it: {restart_listener_command()}" if listener_running()
+               else "open /subagent to start one in this window, or install the always-on listener there (L).")
+        out.append(_row("sub-agent reads", "fail", detail, fix=fix))
         return False if link.mode == routing.MODE_SUBAGENT else None
     live = (status.get("live") or {}).get(link.target_id)
     if live is None:

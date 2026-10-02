@@ -171,6 +171,17 @@ def service_scope(service_name: str = CORE_SERVICE_NAME) -> str | None:
     return None
 
 
+def restart_listener_command(service_name: str = CORE_SERVICE_NAME) -> str:
+    """The exact command to restart the always-on listener, for the scope it
+    actually runs in (a user service needs no sudo)."""
+    scope = service_scope(service_name)
+    if scope == "user":
+        return f"systemctl --user restart {service_name}"
+    if scope == "system":
+        return f"sudo systemctl restart {service_name}"
+    return "restart the running `kratos subagent-serve`"
+
+
 def linger_enabled(user: str | None = None) -> bool | None:
     """Whether systemd keeps this user's services running without a login
     session (so a USER service starts at boot). None if unknown."""

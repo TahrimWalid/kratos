@@ -124,7 +124,11 @@ def test_no_listener_and_loose_socket_are_clear_errors(tmp_path, monkeypatch):
     from kratos.subagent import core_listener
 
     monkeypatch.setattr(core_listener, "listener_running", lambda *a, **k: True)
-    with pytest.raises(local_reads.LocalReadError, match="older build or was started for a different data"):
+    monkeypatch.setattr(core_listener, "service_scope", lambda *a, **k: "user")
+    with pytest.raises(local_reads.LocalReadError, match="systemctl --user restart kratos-core-listener"):
+        local_reads.request_read(tmp_path, "tgt_x", "clock", {})
+    monkeypatch.setattr(core_listener, "service_scope", lambda *a, **k: "system")
+    with pytest.raises(local_reads.LocalReadError, match="sudo systemctl restart kratos-core-listener"):
         local_reads.request_read(tmp_path, "tgt_x", "clock", {})
     monkeypatch.setattr(core_listener, "listener_running", lambda *a, **k: False)
     with pytest.raises(local_reads.LocalReadError, match="No Kratos listener") as e:
