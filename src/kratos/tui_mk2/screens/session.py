@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from rich.panel import Panel
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
@@ -48,6 +49,9 @@ from kratos.tui_mk2.modals import (
 )
 
 REPL_MAX_ITERS = 7  # matches cli/repl.py::REPL_MAX_ITERS -- a REPL turn is bounded/cheap
+# Transcript panels share one width: the column, but never wider than this
+# (long lines are hard to read).
+_PANEL_MAX_WIDTH = 100
 # A vuln sweep legitimately needs nmap + vuln + config
 # + correlate_findings + conclude = 5 steps with ZERO slack, so any single
 # rejected-early-conclusion (guard 1) pushed correlate_findings out of budget and
@@ -477,9 +481,23 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _log(self) -> RichLog:
         return self.query_one("#transcript", RichLog)
 
+    def _write(self, renderable: Any) -> None:
+        """The one place the transcript is written. Panels (findings, results,
+        conclusions) all get the same width -- the column, up to a readable
+        maximum -- instead of each shrinking to its own text, which left their
+        right edges staggered. Everything else keeps its natural width."""
+        if isinstance(renderable, Panel):
+            width = self._log.scrollable_content_region.width
+            if width > 0:
+                self._log.write(renderable, width=min(width, _PANEL_MAX_WIDTH))
+            else:  # not laid out yet: the deferred render fills the width once it is
+                self._log.write(renderable, expand=True)
+            return
+        self._log.write(renderable)
+
     def _emit(self, renderable: Any) -> None:
         """Write to the transcript from the EVENT LOOP (main-thread callers)."""
-        self._log.write(renderable)
+        self._write(renderable)
 
     def _emit_from_worker(self, renderable: Any) -> None:
         """Write to the transcript from a THREAD worker (on_step, etc.)."""
@@ -494,7 +512,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if date_str != self._last_day:
             self._last_day = date_str
             self._log.write(R.day_divider(date_str))
-        self._log.write(renderable)
+        self._write(renderable)
 
     def _emit_bubble_from_worker(self, renderable: Any, date_str: str) -> None:
         self.app.call_from_thread(self._emit_bubble, renderable, date_str)

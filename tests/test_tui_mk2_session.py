@@ -1108,3 +1108,33 @@ def test_not_now_on_the_first_explainer_builds_nothing_but_counts_as_seen(tmp_pa
 
     asyncio.run(_run())
     assert builds == [] and kc.load_local_config(tmp_path).get("evolve_intro_seen") is True
+
+
+def test_transcript_panels_share_one_width(tmp_path, monkeypatch):
+    """Findings used to be sized to their own text (HIGH near full width, MEDIUM about half),
+    so their right edges staggered. Every panel now takes the column, up to a readable max."""
+    from kratos.tui_mk2 import render as R
+    from kratos.tui_mk2.screens import session as S
+
+    widths: dict = {}
+    for size in ((120, 40), (200, 50)):
+        (tmp_path / f"w{size[0]}").mkdir()
+        store, sid, screen = _make_screen(tmp_path / f"w{size[0]}", monkeypatch)
+
+        async def _run():
+            app = _Host(screen)
+            async with app.run_test(size=size) as pilot:
+                await pilot.pause()
+                log = screen.query_one("#transcript")
+                start = len(log.lines)
+                screen._emit(R.finding_panel({"id": "AUTH-003", "severity": "medium", "title": "short"}))
+                screen._emit(R.finding_panel({"id": "CORR-SSH-001", "severity": "high",
+                                              "title": "a much longer title " * 3, "evidence": ["x" * 70]}))
+                screen._emit(R.result_panel("Kratos — investigation complete", "done", "#7f9e79"))
+                await pilot.pause()
+                tops = [line.text for line in log.lines[start:] if line.text.lstrip().startswith("╭")]
+                widths[size] = {len(t.rstrip()) for t in tops}
+
+        asyncio.run(_run())
+    assert len(widths[(120, 40)]) == 1                       # all the same width
+    assert widths[(200, 50)] == {S._PANEL_MAX_WIDTH}         # capped on a very wide terminal
