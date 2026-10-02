@@ -839,8 +839,8 @@ def generate_findings(
                     severity="info",
                     evidence=[_system_context_scope_note(system_context), f"kernel release: {rel}"],
                     recommendation=[
-                        "Document this environment in the thesis evaluation (some services/log formats differ from standard Linux).",
-                        "Validate core functionality on a non-WSL Linux host or SBC during the deployment/testing phase if possible.",
+                        "Expect some differences: services and log formats under WSL2 differ from a standard Linux host.",
+                        "For conclusions about a real server, investigate the server itself rather than a WSL2 environment.",
                     ],
                 )
             )

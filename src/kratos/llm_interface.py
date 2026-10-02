@@ -1,5 +1,6 @@
 """
-LLM Interface - Offline Qwen2.5-Coder 7B Integration
+LLM interface: one OpenAI-compatible query path (hosted or self-hosted), plus an
+optional in-process GGUF load (llama-cpp-python).
 """
 from __future__ import annotations
 import subprocess

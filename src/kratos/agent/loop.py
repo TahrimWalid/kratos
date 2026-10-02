@@ -264,7 +264,7 @@ It does NOT end the investigation: after the user answers (fed back as an Observ
 def build_system_prompt() -> str:
     tools_desc = render_tools_for_prompt()
     clarify_guidance = _clarify_guidance()
-    return f"""You are Kratos, an offline security investigation agent that monitors a separate target device over SSH.
+    return f"""You are Kratos, a security investigation agent that monitors a separate target device (read over SSH, or through a small agent running on it).
 
 You investigate step by step by calling ONE tool at a time and reading its result before deciding the next step.
 

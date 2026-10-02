@@ -452,7 +452,6 @@ class HelpModal(ModalScreen[None]):
                 ("/settings", "Settings — models, tools, name, timezone, this session (also 's' at the picker)"),
                 ("Ctrl+T", "Theme picker — from anywhere"),
                 ("/whitelist", "A paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
-                ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution"),
             ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))
 

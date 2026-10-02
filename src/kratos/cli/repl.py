@@ -109,7 +109,7 @@ REPL_MAX_ITERS = 7
 # routing decision happens strictly before that loop is ever entered.
 _INVESTIGATE_SENTINEL = "INVESTIGATE"
 _ROUTING_SYSTEM_PROMPT = (
-    "You are Kratos, an offline cybersecurity assistant. You can have a normal "
+    "You are Kratos, a cybersecurity assistant. You can have a normal "
     "conversation, AND you can investigate/scan/analyze a monitored target for "
     "security issues when genuinely asked to.\n\n"
     "Decide: is the user's message a genuine request for you to investigate, scan, "

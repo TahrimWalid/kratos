@@ -141,7 +141,7 @@ def cmd_prepare_bundle(args) -> int:
 
     # Build bundle text
     lines = []
-    lines.append("KRATOS PREPARED BUNDLE (offline / LLM-ready)")
+    lines.append("KRATOS PREPARED BUNDLE (LLM-ready)")
     lines.append(f"Generated: {gen_at}")
     lines.append(f"Environment: {env_label}")
     lines.append("")

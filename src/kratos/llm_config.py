@@ -1,7 +1,8 @@
 """
 LLM Configuration for Kratos
 =============================
-Offline security analysis using either Qwen2.5-Coder 7B GGUF or Ollama.
+Model wiring: any OpenAI-compatible endpoint (a hosted provider, or a self-hosted
+Ollama / vLLM / llama.cpp server), or an in-process GGUF model (llama-cpp-python).
 
 SETUP INSTRUCTIONS:
 ===================
@@ -295,7 +296,7 @@ def get_active_llm_context_source() -> str:
 # ---------------------------------------------------------------------------
 # System Prompt
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT_ANALYST = """You are Kratos, an offline AI security analyst.
+SYSTEM_PROMPT_ANALYST = """You are Kratos, an AI security analyst.
 
 CORE RULES:
 1. Use ONLY data provided in the bundle — never invent IPs, ports, usernames, or counts.
@@ -350,7 +351,7 @@ Be explicit about what data was and was not available."""
 # ---------------------------------------------------------------------------
 # UI Messages
 # ---------------------------------------------------------------------------
-MSG_LOADING = "[KRATOS-LLM] Starting offline LLM (Qwen2.5-Coder 7B)..."
+MSG_LOADING = "[KRATOS-LLM] Loading the local GGUF model..."
 MSG_READY = "[KRATOS-LLM] LLM ready."
 MSG_THINKING = "[KRATOS-LLM] Analyzing security data..."
 MSG_NO_MODEL = (

@@ -569,7 +569,7 @@ class ShellScreen(Screen):
         self._entry = entry
 
     def compose(self) -> ComposeResult:
-        yield Static("⚠  NOT WIRED — Phase 2 design preview · no backend exists", id="banner")
+        yield Static("⚠  DESIGN MOCKUPS — not the real screens (those are /subagent and /whitelist)", id="banner")
         if self._entry.get("gated"):
             yield Static(
                 Text(

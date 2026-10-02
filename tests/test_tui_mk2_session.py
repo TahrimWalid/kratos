@@ -133,7 +133,7 @@ def test_help_documents_every_primary_command():
         "/investigate-host", "/evolve", "/tools", "/use",
         "/target", "/model", "/timezone", "/settings",
         "/compact", "/clear", "/reset", "/delete", "/sessions", "/rename",
-        "/exit", "/preview",
+        "/exit",
     ]
 
     class _H(App):

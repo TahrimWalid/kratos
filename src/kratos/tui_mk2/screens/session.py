@@ -96,10 +96,9 @@ _PALETTE_COMMANDS = [
     ("/delete", "archive (soft-delete) this session"),
     ("/sessions", "back to the session picker (keeps this session)"),
     ("/settings", "settings — models, tool approvals, timezone"),
-    ("/subagent", "add / manage sub-agents — pair a target for read-only telemetry"),
+    ("/subagent", "add / manage sub-agents — reach a box with no inbound SSH (telemetry + investigations)"),
     ("/whitelist", "a paired target's allowlist — add/edit entries, opt-in, typed-EXECUTE dispatch"),
     ("/run-fix", "run the last recommended command via the target's sub-agent (if it's in the allowlist)"),
-    ("/preview", "Phase 2 design shells (not wired) — sub-agent / Tailscale / execution UI"),
     ("/exit", "leave the session"),
 ]
 

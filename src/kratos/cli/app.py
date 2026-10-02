@@ -374,7 +374,8 @@ def cmd_subagent_status(args: argparse.Namespace) -> int:
 
 def cmd_llm_serve(args: argparse.Namespace) -> int:
     """
-    Start the Qwen2.5-Coder LLM server (model loaded once, stays in memory).
+    Start a local model server (a GGUF model loaded once and kept in memory, or a
+    local Ollama) for the self-hosted path.
     Run this in a dedicated terminal before using kratos chat for fast responses.
     """
     import subprocess
@@ -414,7 +415,7 @@ def cmd_llm_serve(args: argparse.Namespace) -> int:
         OLLAMA_URL = OLLAMA_URL[: -len("/v1")]
 
     if local_model_ready and backend != "openai_compatible":
-        print(f"[KRATOS-LLM] Starting LLM server (Qwen2.5-Coder 7B)...", flush=True)
+        print("[KRATOS-LLM] Starting the local GGUF model server...", flush=True)
         print(f"[KRATOS-LLM] Host : {LLAMA_SERVER_HOST}:{LLAMA_SERVER_PORT}", flush=True)
         print(f"[KRATOS-LLM] Model: {MODEL_PATH}", flush=True)
         print(f"[KRATOS-LLM] Keep this terminal open. Run 'kratos chat' in another terminal.", flush=True)
@@ -651,7 +652,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if response is None:
         print("[KRATOS-LLM] LLM unavailable — showing raw findings instead.", flush=True)
         print("\n" + "=" * 70, flush=True)
-        print("  KRATOS RAW FINDINGS  (LLM offline — no AI interpretation)", flush=True)
+        print("  KRATOS RAW FINDINGS  (model unavailable — no AI interpretation)", flush=True)
         print("=" * 70, flush=True)
         print(bundle_text, flush=True)
         print("=" * 70, flush=True)
@@ -660,7 +661,7 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return 2  # 2 = partial success: findings shown, LLM unavailable
 
     print("\n" + "=" * 70, flush=True)
-    print("KRATOS SECURITY ANALYSIS  (powered by Qwen2.5-Coder 7B — offline)", flush=True)
+    print("KRATOS SECURITY ANALYSIS", flush=True)
     print("=" * 70, flush=True)
     print(flush=True)
     print(response, flush=True)
@@ -1090,7 +1091,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=PROJECT_NAME,
-        description="Kratos — Offline AI Security Assistant (thesis prototype)",
+        description="Kratos — a self-hostable, self-growing security assistant",
     )
     p.add_argument(
         "--data-dir",
@@ -1217,7 +1218,7 @@ def build_parser() -> argparse.ArgumentParser:
     bcompare = sub.add_parser("baseline-compare", help="Compare latest baseline vs current snapshot")
     bcompare.set_defaults(func=cmd_baseline_compare)
 
-    bundle = sub.add_parser("prepare-bundle", help="Create a clean, short text bundle for offline LLM input")
+    bundle = sub.add_parser("prepare-bundle", help="Create a clean, short text bundle for LLM input")
     bundle.add_argument("--max-words", type=int, default=500, help="Max words in the bundle (default: 500)")
     bundle.add_argument("--since", type=str, default=None, help="Start date in YYYYMMDD format (e.g., 20260201)")
     bundle.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
@@ -1227,7 +1228,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.set_defaults(func=cmd_analyze)
 
 
-    chat = sub.add_parser("chat", help="AI analysis of findings via Qwen2.5-Coder 7B (offline)")
+    chat = sub.add_parser("chat", help="AI analysis of the latest findings with the configured model")
     chat.add_argument(
         "--mode",
         choices=["summary", "deep"],
@@ -1372,10 +1373,11 @@ def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = Fal
     console = _console.get_console()
     console.print(
         Panel(
-            "Kratos analyzes system, network, and log data for security issues -- offline, "
-            "no cloud dependency by default.\n\n"
+            "Kratos looks over a machine you point it at -- logs, ports, processes, changed files -- "
+            "and explains what it finds in plain language, with the model you configure (hosted, or "
+            "self-hosted to keep data on your hardware).\n\n"
             "Example:\n  kratos investigate \"check for suspicious SSH activity\"",
-            title="kratos -- Offline AI Security Assistant",
+            title="kratos -- security assistant",
             border_style="cyan",
         )
     )

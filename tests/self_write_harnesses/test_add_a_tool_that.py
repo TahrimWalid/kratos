@@ -46,12 +46,11 @@ def _fake_ssh_response(command, *args, **kwargs):
     issue over SSH. The sandbox this harness runs in has NO network access (by
     design), so a candidate's SSH calls must be mocked here, not made for real --
     an unmocked call would just fail/time out regardless of whether the candidate's
-    own logic is correct. "sudo:x:27:sysadmin,komil" is the real target's own
-    /etc/group sudo line -- using real data here
-    so a correct implementation's result is independently checkable against reality."""
+    own logic is correct. "sudo:x:27:alice,bob" is a realistic /etc/group sudo
+    line (the real line's shape, with placeholder names)."""
     cmd = command if isinstance(command, str) else " ".join(command)
     if "sudo" in cmd and "getent" in cmd:
-        return SSHResult(ok=True, returncode=0, stdout="sudo:x:27:sysadmin,komil", stderr="")
+        return SSHResult(ok=True, returncode=0, stdout="sudo:x:27:alice,bob", stderr="")
     if "wheel" in cmd:
         return SSHResult(ok=False, returncode=2, stdout="", stderr="getent: Unknown group: wheel")
     if "sudoers" in cmd:
@@ -81,9 +80,9 @@ def test_sudo_users_nonempty(registered_handler):
     # (getent group sudo / /etc/group's sudo line lists explicit members
     # like real admin usernames, not root) -- a correct implementation that
     # only reports actual sudo-group members would fail a "root must be
-    # present" check. The fake sudo group membership above ("sysadmin,
-    # komil") matches the real target's actual /etc/group sudo line, so a
-    # correct implementation should find at least those two users.
+    # present" check. The fake sudo group membership above ("alice,bob")
+    # has the real line's shape, so a correct implementation should find at
+    # least those two users.
     with patch("kratos.adapters.ssh_remote.run_remote_command", side_effect=_fake_ssh_response), \
          patch("kratos.adapters.ssh_remote.run_remote_script", side_effect=_fake_ssh_response):
         result = registered_handler()
