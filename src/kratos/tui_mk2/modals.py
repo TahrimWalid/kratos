@@ -622,6 +622,7 @@ class ListPickerModal(ModalScreen[Any]):
     ListPickerModal ListView { width: 1fr; height: auto; max-height: 20; }
     ListPickerModal ListView > ListItem { width: 1fr; height: auto; }
     ListPickerModal ListView > ListItem > Label { width: 1fr; height: auto; }
+    ListPickerModal .picker-subtitle { margin-bottom: 1; }
     """
 
     def __init__(self, title: str, entries: list[tuple[Any, str]], subtitle: str = "") -> None:
@@ -634,7 +635,8 @@ class ListPickerModal(ModalScreen[Any]):
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._subtitle:
-                yield Static(Text(self._subtitle, style=T.TEXT_DIM))
+                # A blank line after it, so the options read as their own group.
+                yield Static(Text(self._subtitle, style=T.TEXT_DIM), classes="picker-subtitle")
             yield ListView(*[ListItem(Label(label)) for _, label in self._entries], id="picker")
             yield Static(Text("↑↓ select · Enter pick · esc cancel", style=T.TEXT_DIM))
 
@@ -988,6 +990,7 @@ class MultiSelectModal(ModalScreen[list[Any] | None]):
 
     CSS = """
     MultiSelectModal SelectionList { height: auto; max-height: 20; }
+    MultiSelectModal .picker-subtitle { margin-bottom: 1; }
     """
 
     def __init__(self, title: str, entries: list[tuple[Any, str]], selected: list[Any] | None = None,
@@ -1002,7 +1005,7 @@ class MultiSelectModal(ModalScreen[list[Any] | None]):
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._subtitle:
-                yield Static(Text(self._subtitle, style=T.TEXT_DIM))
+                yield Static(Text(self._subtitle, style=T.TEXT_DIM), classes="picker-subtitle")
             yield CheckboxSelectionList(*[(label, i, value in self._selected)
                                   for i, (value, label) in enumerate(self._entries)], id="multi")
             yield Static(Text("↑↓ move · space tick/untick · Enter done · esc cancel", style=T.TEXT_DIM),

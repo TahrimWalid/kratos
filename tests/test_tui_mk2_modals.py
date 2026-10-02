@@ -182,3 +182,28 @@ def test_multiselect_shows_ticked_and_unticked_by_shape_not_only_colour():
     assert "[x] fail2ban" in out["before"] and "[ ] ufw" in out["before"]
     assert "[x] ufw" in out["after"]
     assert "▐X▌" not in out["before"]
+
+
+def test_picker_description_is_separated_from_its_options():
+    import asyncio
+
+    from textual.app import App
+    from textual.widgets import ListView
+
+    from kratos.tui_mk2.modals import ListPickerModal
+
+    out: dict = {}
+
+    class _H(App):
+        def on_mount(self):
+            self.push_screen(ListPickerModal("How?", [("a", "one"), ("b", "two")], subtitle="Some context."))
+
+    async def run():
+        app = _H()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            sub = app.screen.query_one(".picker-subtitle")
+            out["gap"] = app.screen.query_one(ListView).region.y - (sub.region.y + sub.region.height)
+
+    asyncio.run(run())
+    assert out["gap"] == 1
