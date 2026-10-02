@@ -218,6 +218,7 @@ elif $SUDO test -e "$STATE_FILE"; then
     # move the old identity aside (kept, never deleted) and start fresh.
     OLD="$STATE_FILE.replaced-$(date +%s)"
     $SUDO mv "$STATE_FILE" "$OLD"
+    $SUDO chmod 600 "$OLD" 2>/dev/null || true  # it still holds the old token
     log "Found an existing Kratos sub-agent here; its old identity was moved to $OLD and this box will pair again."
 fi
 

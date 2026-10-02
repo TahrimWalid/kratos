@@ -76,6 +76,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import secrets
 import signal
 import subprocess
@@ -129,7 +130,19 @@ _TRUSTED_TRANSPORT_NETWORKS = tuple(
 )
 
 
+# The state file holds the pairing token, from which the channel's signing key
+# is derived: anyone who can read it can pose as this agent (or sign as core).
+# Owner read/write only -- never the default umask's world-readable 0644.
+_STATE_MODE = 0o600
+
+
 def _load_state(state_file: Path) -> dict[str, Any]:
+    try:
+        # Tighten a file an older agent wrote world-readable.
+        if state_file.exists() and (state_file.stat().st_mode & 0o077):
+            os.chmod(state_file, _STATE_MODE)
+    except OSError:
+        logger.warning("could not restrict %s to owner-only (0600) -- fix its permissions", state_file)
     try:
         return json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -139,7 +152,11 @@ def _load_state(state_file: Path) -> dict[str, Any]:
 def _save_state(state_file: Path, state: dict[str, Any]) -> None:
     state_file.parent.mkdir(parents=True, exist_ok=True)
     tmp = state_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state), encoding="utf-8")
+    # Created 0600 from the first byte (no window where the token is readable).
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _STATE_MODE)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(state))
+    os.chmod(tmp, _STATE_MODE)  # O_CREAT ignores the mode when tmp already existed
     tmp.replace(state_file)  # atomic on POSIX -- same convention as self_write_loop.py's kept-tool metadata writes.
 
 

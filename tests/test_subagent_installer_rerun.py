@@ -20,7 +20,7 @@ from kratos.subagent import installer as I
 from kratos.subagent.agent import SubAgent
 
 TOOLS = ("sh", "python3", "base64", "cat", "mkdir", "mv", "date", "grep", "id", "test", "tee", "kill", "nohup",
-         "rm", "sleep", "printf", "tail", "tr")
+         "rm", "sleep", "printf", "tail", "tr", "chmod")
 
 
 def test_upgrade_needs_no_code_and_never_passes_one():
@@ -86,6 +86,7 @@ def test_background_install_rerun_replaces_the_agent_and_repairs_identity(box):
     assert _alive(pid1)
     state = home / ".kratos-subagent/state.json"
     assert state.exists()  # the agent wrote its identity
+    assert os.stat(state).st_mode & 0o777 == 0o600  # ...owner-only (it holds the token)
 
     r2 = _run(I.generate_installer("127.0.0.1", "BBBB-2222", core_port=9), env)
     assert r2.returncode == 0 and "old identity was moved" in r2.stdout
@@ -93,7 +94,9 @@ def test_background_install_rerun_replaces_the_agent_and_repairs_identity(box):
     pid2 = int((home / ".kratos-subagent/agent.pid").read_text())
     time.sleep(1.0)
     assert pid2 != pid1 and not _alive(pid1) and _alive(pid2)  # never two agents at once
-    assert list((home / ".kratos-subagent").glob("state.json.replaced-*"))  # kept aside, not deleted
+    aside = list((home / ".kratos-subagent").glob("state.json.replaced-*"))
+    assert aside  # kept aside, not deleted
+    assert all(os.stat(a).st_mode & 0o777 == 0o600 for a in aside)  # the old token stays private
 
 
 def test_upgrade_refuses_a_box_that_was_never_paired(box):
