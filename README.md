@@ -203,7 +203,7 @@ Kratos began as a Bachelor's thesis (Tampere University of Applied Sciences, Sof
 Kratos is released under the [MIT License](LICENSE) — use it, change it, build on
 it freely; just keep the copyright notice when you redistribute it.
 
-One exception for the bundled extras: the YARA rules under `yara_rules/` are
+One exception for the bundled extras: the YARA rules under `src/kratos/yara_rules/` are
 third-party and stay under their own GPLv2 license (see
-[`yara_rules/README.md`](yara_rules/README.md)). They're included as separate data
+[`src/kratos/yara_rules/README.md`](src/kratos/yara_rules/README.md)). They're included as separate data
 files the scanner reads, not part of Kratos's own code.

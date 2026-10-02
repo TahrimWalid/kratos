@@ -53,7 +53,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "measure.py": _PACKAGE_ROOT / "timewin" / "measure.py",
 }
-YARA_RULES_SOURCE = _PACKAGE_ROOT.parent.parent / "yara_rules"
+YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 
 DEFAULT_SERVICE_NAME = "kratos-subagent"
 DEFAULT_CORE_PORT = 8765

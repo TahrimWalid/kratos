@@ -43,6 +43,12 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Non-Python files that must ship in the wheel: the starter YARA rules (third-
+# party, GPLv2 -- their README carries the source and license) are read by
+# run_yara_scan and bundled into every sub-agent installer.
+[tool.setuptools.package-data]
+kratos = ["yara_rules/*.yar", "yara_rules/README.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

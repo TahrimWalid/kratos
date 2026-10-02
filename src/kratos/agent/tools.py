@@ -1112,7 +1112,7 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
 # Bundled starter ruleset -- see yara_rules/README.md for source/license/citation. Deliberately
 # NOT a rule-management/update system: a small, real, vendored default plus a rules_path override,
 # nothing more.
-DEFAULT_YARA_RULES_DIR = Path(__file__).resolve().parents[3] / "yara_rules"
+DEFAULT_YARA_RULES_DIR = Path(__file__).resolve().parents[1] / "yara_rules"  # package data: ships with pip
 
 
 def _load_yara_rules_content(rules_path: Path | None) -> tuple[str, list[str]] | None:

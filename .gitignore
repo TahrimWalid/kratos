@@ -102,7 +102,7 @@ llm/work/
 !/README.md
 !docs/DESIGN.md
 !docs/GUIDE.md
-!yara_rules/README.md
+!src/kratos/yara_rules/README.md
 !scripts/attacks/README.md
 !scripts/attacks/wordlists/README.md
 # Test fixtures are shipped data, not scratch -- keep them tracked despite the
