@@ -33,6 +33,9 @@ from kratos.tui_mk2.table_fit import fit_columns
 from kratos.tui_mk2.workers import ResilientWorkerHost
 
 _COLUMNS = ("#", "id", "name", "target", "last goal", "last active")
+# Below this table width the 12-character id column is dropped: a newcomer
+# scans by name, and the resume prompt still shows the full id.
+_ID_COLUMN_FROM = 100
 
 CHOOSER_SESSION_LIMIT = 20
 
@@ -90,8 +93,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
 
     def on_mount(self) -> None:
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
-        table = self.query_one("#sessions", DataTable)
-        table.add_columns(*_COLUMNS)
+        self._show_id: bool | None = None  # columns are set by _rebuild_display, from the width
         self._reload()
 
     def on_screen_resume(self) -> None:
@@ -181,11 +183,21 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
             self._display.append({"kind": "session", "session": s})
             rows.append([str(n), s["session_id"], name, targets, goal, last_active])
+        available = table.size.width or max(self.app.size.width - 4, 40)
+        show_id = available >= _ID_COLUMN_FROM
+        if show_id != getattr(self, "_show_id", None):
+            table.clear(columns=True)
+            table.add_columns(*(_COLUMNS if show_id else _COLUMNS[:1] + _COLUMNS[2:]))
+            self._show_id = show_id
+        headers = _COLUMNS
+        if not show_id:
+            rows = [r[:1] + r[2:] for r in rows]
+            headers = _COLUMNS[:1] + _COLUMNS[2:]
+        goal, name, target = (headers.index(h) for h in ("last goal", "name", "target"))
         # Shorten the goal first, then the name (never below the widest
         # date-bucket label), then the target list, so "last active" stays on
         # screen (the full goal is searchable).
-        available = table.size.width or max(self.app.size.width - 4, 40)
-        for row in fit_columns(rows, available, shrink=[(4, 8), (2, 12), (3, 13)], headers=_COLUMNS):
+        for row in fit_columns(rows, available, shrink=[(goal, 8), (name, 12), (target, 13)], headers=headers):
             table.add_row(*row)
         first = self._first_session_row()
         if prev_cursor is not None and 0 <= prev_cursor < len(self._display) \

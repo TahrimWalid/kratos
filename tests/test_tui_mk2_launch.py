@@ -178,3 +178,35 @@ def test_bucket_header_row_is_inert(tmp_path):
     assert kinds[0] == "header"   # a bucket header leads the unfiltered list
     assert at0 is None            # header row is inert (Enter does nothing)
     assert at1 is not None        # the session sits right beneath it
+
+
+def test_id_column_is_dropped_on_a_narrow_terminal_and_returns_when_wide(tmp_path):
+    """At 80 columns the 12-character id squeezed the name a newcomer scans by. Below 100
+    columns it is hidden (the resume prompt still shows the full id); a resize brings it back."""
+    store, sid, screen = _make_launch(tmp_path)
+    store.rename_session(sid, "a fairly descriptive session name")
+    seen: dict = {}
+
+    def labels(table):
+        return [str(c.label) for c in table.columns.values()]
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            table = screen.query_one("#sessions")
+            seen["narrow"] = labels(table)
+            seen["name_cell"] = next(str(c) for c in table.get_row_at(1) if "fairly" in str(c))
+            await pilot.resize_terminal(140, 40)
+            for _ in range(4):
+                await pilot.pause()
+            seen["wide"] = labels(table)
+            await pilot.press("enter")  # the row still maps to the right session
+            await pilot.pause()
+            seen["resume_title"] = getattr(app.screen, "_session_id", None)
+
+    asyncio.run(run())
+    assert "id" not in seen["narrow"] and seen["narrow"][1] == "name"
+    assert seen["name_cell"].startswith("a fairly descriptive session")  # ~12 chars with the id column
+    assert "id" in seen["wide"]
+    assert seen["resume_title"] == sid
