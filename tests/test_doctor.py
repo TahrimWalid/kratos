@@ -160,3 +160,20 @@ def test_doctor_details_are_folded_not_cut_off():
                                                      "detail": f"not configured. Suggested: {value}"}]))
     text = buf.getvalue()
     assert "…" not in text and value in "".join(text.split())
+
+
+def test_fix_hints_use_the_accent_only_where_something_needs_doing():
+    from rich.console import Group
+
+    from kratos.tui_mk2 import theme as T
+    from kratos.tui_mk2.render import doctor_table
+
+    rows = [{"check": "notifications", "status": "info", "detail": "off", "fix": "add a topic"},
+            {"check": "target", "status": "fail", "detail": "down", "fix": "check port 22"},
+            {"check": "history", "status": "warn", "detail": "old", "fix": "re-run"}]
+    group = doctor_table(rows)
+    table = [r for r in group.renderables if hasattr(r, "columns")][0]
+    fix_cells = [cell for cell in table.columns[2]._cells if str(cell).startswith("→")]
+    styles = {str(c)[2:]: str(c.style) for c in fix_cells}
+    assert styles == {"add a topic": T.TEXT_MUTED, "check port 22": T.ACCENT, "re-run": T.ACCENT}
+    assert isinstance(group, Group)

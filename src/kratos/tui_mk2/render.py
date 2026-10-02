@@ -793,8 +793,11 @@ def doctor_table(checks: list[dict[str, str]]) -> Group:
         table.add_row(Text(icon, style=color), Text(str(c.get("check", "")), style=color),
                       Text(str(c.get("detail", "")), style=T.TEXT_DIM))
         fix = str(c.get("fix", "") or "")
-        if fix:  # actionable next step, indented under the row it fixes
-            table.add_row(Text(""), Text(""), Text(f"→ {fix}", style=T.ACCENT))
+        if fix:  # next step, indented under the row it belongs to
+            # Accent only where something needs doing; a hint on an informational
+            # row must not read like an error.
+            actionable = c.get("status") in ("fail", "warn")
+            table.add_row(Text(""), Text(""), Text(f"→ {fix}", style=T.ACCENT if actionable else T.TEXT_MUTED))
     return Group(verdict, tally, Text(""), table)
 
 
