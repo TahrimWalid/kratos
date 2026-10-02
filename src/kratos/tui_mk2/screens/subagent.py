@@ -63,6 +63,13 @@ def valid_ssh_address(addr: str) -> str | None:
     return None
 
 
+# One line on what "add a server" gives you; same honesty as the onboarding
+# choice: no inbound port, telemetry only today, execution off by default.
+_ADD_SERVER_SUMMARY = (
+    "Installs a small agent on {host} that dials OUT to Kratos and streams telemetry. No inbound port on "
+    "your box. Telemetry-only today; approved fixes are opt-in and OFF by default."
+)
+
 _DEFAULT_CORE_PORT = 8765
 _TABLE_COLUMNS = ("status", "name", "host", "agent", "last contact", "detail")
 # How long `L` waits for the new service to register before calling it failed.
@@ -361,10 +368,12 @@ class SubAgentScreen(Screen):
         installer → optional SSH deploy. Never blocks waiting for the check-in:
         the code's row shows the countdown and the refresh announces the
         result, even if you leave this screen and come back."""
+        self._log(Text(_ADD_SERVER_SUMMARY.format(host=self._default_name or "the box"), style=T.TEXT_MUTED))
         name = await self.app.push_screen_wait(
             PromptModal(
                 "Add a server",
-                hint="A short label for this target (e.g. web-01). Enter to skip.",
+                hint=_ADD_SERVER_SUMMARY.format(host=self._default_name or "the box")
+                     + "\n\nA short label for it (e.g. web-01). Enter to skip.",
                 initial=self._default_name or "",
             )
         )
@@ -428,8 +437,9 @@ class SubAgentScreen(Screen):
         # Offer to copy+run the installer on the target over SSH (one keypress
         # instead of manual scp/ssh). Falls back cleanly to the manual steps.
         await self._offer_ssh_deploy(out_path, name, code)
-        self._log(Text(f"Waiting for {name or 'the target'} to check in — its row above counts down. You can leave "
-                       "this screen; the result shows up either way.", style=T.ATTENTION))
+        self._log(Text(f"Waiting for {name or 'the target'} to dial back — this can take a few seconds after the "
+                       "installer runs. Its row above counts down; you can leave this screen, the result shows up "
+                       "either way.", style=T.ATTENTION))
         self._refresh()
 
     def _write_installer(self, name: str | None, host: str, code: str) -> Path | None:
@@ -930,8 +940,12 @@ class SubAgentScreen(Screen):
                 entries.append(("__manual__", "Enter a different address…"))
             else:
                 entries.append((c.address, f"{c.address}   ({c.kind}) — {c.note}"))
+        tailnet = any(c.kind == "tailscale" for c in candidates)
+        subtitle = ("The address the agent will DIAL to reach Kratos."
+                    + (" Tailscale is listed first: it reaches a box outside your network (a VPS, behind NAT)"
+                       " without opening any port." if tailnet else ""))
         picked = await self.app.push_screen_wait(
-            ListPickerModal("Which address will the target reach this core at?", entries)
+            ListPickerModal("Which address will the target reach this core at?", entries, subtitle=subtitle)
         )
         if picked is None:
             return None
@@ -948,11 +962,14 @@ class SubAgentScreen(Screen):
         # The exact scp+ssh commands, stashed so `c` can pop a click-to-copy box
         # (paste-safe, no OCR/line-wrap corruption). <user@target> is a fill-in.
         self._last_deploy_commands = self._deploy_commands(out_path)
-        self._log(Text(f"✓ Pairing code for {label}: {code}  (expires in {ttl_min} min)", style=f"bold {T.SAFE}"))
+        self._log(Text(f"✓ Pairing code for {label}: {code}", style=f"bold {T.SAFE}"))
+        self._log(Text(f"  Single-use and expires in {ttl_min} min — it authorizes this one agent.", style=T.TEXT_DIM))
         self._log(Text(
             f"Saved a one-command installer to:\n"
-            f"    {out_path}\n\n"
-            f"Get it onto the target and run it once (it opens NO inbound port, and does not enable execution):\n"
+            f"    {out_path}\n"
+            f"Run it ON the box: it installs a service and starts it. Kratos never runs anything on your box on its "
+            f"own — the next question offers to copy and run it over SSH for you.\n\n"
+            f"To do it yourself (it opens NO inbound port and does not enable execution):\n"
             f"    scp {out_path} <user@target>:~/     # or copy it over however you like\n"
             f"    ssh <user@target> 'sh {out_path.name}'\n\n"
             f"The target will dial back to this core at {host}:{self._core_port}.  Press 'c' to copy these commands.",

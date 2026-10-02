@@ -291,3 +291,45 @@ def test_every_column_stays_on_screen_at_80_columns(tmp_path):
     asyncio.run(run())
     assert out["virtual"] <= out["width"], out
     assert any(d.endswith("…") for d in out["details"])
+
+
+def test_add_server_explains_each_step_in_one_line(tmp_path, monkeypatch):
+    """A first-timer sees what they're getting (an outbound-only, telemetry-only agent, execution
+    off) and what each step is for -- one short line per step, nothing that oversells."""
+    from kratos.subagent import hub_address
+    from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+    monkeypatch.setattr(hub_address, "candidate_hub_addresses", lambda: [
+        hub_address.HubAddressCandidate("tailscale", "100.64.0.10", "on your tailnet"),
+        hub_address.HubAddressCandidate("manual", "", "")])
+    screen = SubAgentScreen(tmp_path, default_name="203.0.113.9")
+    seen: dict = {"modals": []}
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(220, 50)) as pilot:
+            await pilot.pause()
+            answers = iter(["web-01", "100.64.0.10", False])
+
+            async def canned(modal):
+                seen["modals"].append(modal)
+                return next(answers)
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            screen.action_add_server()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            seen["texts"] = " ".join(" ".join(t.split()) for t in _log_texts(screen))
+
+    asyncio.run(run())
+    name_prompt, address_picker = seen["modals"][0], seen["modals"][1]
+    assert isinstance(name_prompt, PromptModal) and "dials OUT to Kratos" in name_prompt._hint
+    assert "Telemetry-only today" in name_prompt._hint and "OFF by default" in name_prompt._hint
+    assert isinstance(address_picker, ListPickerModal) and "DIAL to reach Kratos" in address_picker._subtitle
+    assert "Tailscale is listed first" in address_picker._subtitle
+    texts = seen["texts"]
+    for line in ("Single-use and expires in 15 min — it authorizes this one agent",
+                 "Run it ON the box: it installs a service and starts it",
+                 "Kratos never runs anything on your box on its own",
+                 "dial back — this can take a few seconds"):
+        assert line in texts, line
