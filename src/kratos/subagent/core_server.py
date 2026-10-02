@@ -49,6 +49,7 @@ from typing import Any
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import protocol as proto
+from kratos.subagent import reads
 from kratos.subagent import signing
 from kratos.subagent import whitelist as wl
 from kratos.subagent.status import (
@@ -92,6 +93,15 @@ SILENT_SESSION_REPLACE_SECONDS = 15.0
 AUTH_FAILURE_LIMIT = 10
 AUTH_FAILURE_WINDOW_SECONDS = 60.0
 
+# Investigation reads (docs/subagent_read_routing.md): the first agent version
+# that serves them, how long past a probe's own on-box timeout to wait for its
+# reply, and how long a just-started listener / just-dropped agent is expected
+# to (re)connect -- the agent's reconnect backoff tops out at 60s.
+READ_MIN_AGENT_VERSION = (0, 3, 0)
+READ_REPLY_MARGIN_SECONDS = 15.0
+RECONNECT_EXPECTED_SECONDS = 90.0
+_MAX_ADVERTISED_PROBES = 64
+
 
 class CoreServer:
     def __init__(
@@ -101,6 +111,7 @@ class CoreServer:
         port: int = DEFAULT_PORT,
         whitelist_store: Any | None = None,
         mode: str | None = None,
+        read_socket_path: Any | None = None,
     ) -> None:
         self.store = store
         self.host = host
@@ -134,6 +145,17 @@ class CoreServer:
         self._session_nonce: dict[str, str] = {}
         # Why a connection is being closed from THIS side (recorded on close).
         self._close_reason: dict[str, str] = {}
+        # Investigation reads: what each live agent says it can read, one read
+        # at a time per target, a per-connection strictly increasing seq (the
+        # agent's replay floor), and the replies being waited for.
+        self.read_socket_path = read_socket_path
+        self._local_reads: Any | None = None
+        self._agent_reads: dict[str, dict[str, Any]] = {}
+        self._read_locks: dict[str, asyncio.Lock] = {}
+        self._read_seq: dict[str, int] = {}
+        self._pending_reads: dict[str, tuple[str, asyncio.Future]] = {}
+        self._disconnected_at: dict[str, float] = {}
+        self._started_monotonic = time.monotonic()
 
     def live_target_ids(self) -> set[str]:
         return set(self._live.keys())
@@ -160,6 +182,8 @@ class CoreServer:
         addrs = ", ".join(str(sock.getsockname()) for sock in sockets)
         logger.info("kratos subagent core server listening on %s", addrs)
         self._register()
+        self._started_monotonic = time.monotonic()
+        await self._start_local_reads()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         if self.whitelist_store is not None:
             self._watch_task = asyncio.create_task(self._whitelist_watch_loop())
@@ -174,6 +198,7 @@ class CoreServer:
         finally:
             self._drop_live_connections()
             self._server.close()
+            await self._stop_local_reads()
 
     def stop(self) -> None:
         """Ask serve_forever() to return (it then drops live connections)."""
@@ -238,6 +263,7 @@ class CoreServer:
             self._watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watch_task
+        await self._stop_local_reads()
         if self._server is not None:
             self._server.close()  # stop accepting new connections first
         # Close live connections BEFORE waiting: on Python 3.12+ wait_closed()
@@ -424,6 +450,7 @@ class CoreServer:
             nonce = hello.get("session_nonce")
             if isinstance(nonce, str) and _SESSION_NONCE_RE.fullmatch(nonce):
                 self._session_nonce[target_id] = nonce
+            self._note_read_capability(target_id, hello)
             self.store.record_connected(target_id, hostname=hello.get("hostname"), agent_version=hello.get("agent_version"))
             self._safe(self.store.record_connection_open, target_id, listener_id=self.listener_id, peer=peer_ip,
                        collect_interval=_interval(hello.get("collect_interval")),
@@ -461,12 +488,144 @@ class CoreServer:
                     self._pushed_version.pop(target_id, None)
                     self._session_nonce.pop(target_id, None)
                     self._last_frame.pop(target_id, None)
+                    self._agent_reads.pop(target_id, None)
+                    self._disconnected_at[target_id] = time.monotonic()
+                    self._fail_pending_reads(target_id, "the sub-agent disconnected before answering")
                     self._safe(self.store.record_connection_closed, target_id,
                                listener_id=self.listener_id, reason=reason)
                 logger.info("target %s disconnected (%s)", target_id, reason)
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
+
+    # ------------------------------------------------------------------
+    # Investigation reads (docs/subagent_read_routing.md)
+    # ------------------------------------------------------------------
+    async def _start_local_reads(self) -> None:
+        if self.read_socket_path is None:
+            return
+        from kratos.subagent.local_reads import LocalReadServer
+
+        server = LocalReadServer(self, self.read_socket_path)
+        try:
+            await server.start()
+        except Exception as e:  # noqa: BLE001 -- telemetry must keep working without it
+            logger.warning("investigation reads through sub-agents are unavailable: %s", e)
+            return
+        self._local_reads = server
+
+    async def _stop_local_reads(self) -> None:
+        server, self._local_reads = self._local_reads, None
+        if server is not None:
+            await server.close()
+
+    def _note_read_capability(self, target_id: str, hello: dict[str, Any]) -> None:
+        self._read_seq[target_id] = 0  # the agent's replay floor resets with each connection
+        probes = hello.get("read_probes")
+        if not isinstance(probes, list):
+            self._agent_reads.pop(target_id, None)
+            return
+        names = {p for p in probes[:_MAX_ADVERTISED_PROBES] if isinstance(p, str) and len(p) <= 64}
+        self._agent_reads[target_id] = {"probes": names, "api": hello.get("read_api"),
+                                        "version": hello.get("agent_version")}
+
+    def is_live(self, target_id: str) -> bool:
+        return target_id in self._live
+
+    def expect_reconnect(self, target_id: str, since_monotonic: float | None = None) -> bool:
+        """Is this target likely to (re)connect within seconds? True right after
+        this listener started (agents are still finding it) or right after the
+        target dropped (its own reconnect loop is running)."""
+        now = time.monotonic()
+        started = max(self._started_monotonic, since_monotonic or 0.0)
+        if now - started < RECONNECT_EXPECTED_SECONDS:
+            return self.store.get_target(target_id) is not None
+        dropped = self._disconnected_at.get(target_id)
+        return dropped is not None and now - dropped < RECONNECT_EXPECTED_SECONDS
+
+    def offline_result(self, target_id: str) -> dict[str, Any]:
+        target = self._safe(self.store.get_target, target_id)
+        if not target or target.get("revoked_at"):
+            return {"status": "offline", "reason": "this box is no longer paired with Kratos (it was unpaired) "
+                                                   "-- pair it again from /subagent"}
+        from kratos.subagent.status import _age, human_age, utc_now
+
+        name = target.get("name") or target.get("hostname") or target_id
+        last = human_age(_age(target.get("last_seen"), utc_now()))
+        return {"status": "offline", "reason": (
+            f"the sub-agent on {name} isn't connected to Kratos right now (last contact: {last}). "
+            "It reconnects by itself once the box and the network are up -- see /subagent for why it dropped.")}
+
+    def local_status(self) -> dict[str, Any]:
+        return {
+            "listener_id": self.listener_id,
+            "mode": self.mode,
+            "live": {tid: {"agent_version": info.get("version"), "read_probes": sorted(info.get("probes") or ()),
+                           "reads": tid in self._agent_reads}
+                     for tid in self._live for info in [self._agent_reads.get(tid, {})]},
+        }
+
+    def _fail_pending_reads(self, target_id: str, reason: str) -> None:
+        for request_id, (tid, fut) in list(self._pending_reads.items()):
+            if tid == target_id and not fut.done():
+                fut.set_result({"status": "offline", "reason": reason, "request_id": request_id})
+
+    async def read_probe(self, target_id: str, probe: str, params: dict[str, Any],
+                         timeout: float | None = None) -> dict[str, Any]:
+        """Send one signed read_request to a LIVE target and wait for its
+        read_result. Returns {status, reason?, data?}; never raises for an
+        operational failure (offline, old agent, timeout, dropped mid-read).
+        The agent re-validates everything itself -- this side's checks only
+        give a faster, clearer answer."""
+        if target_id not in self._live:
+            return self.offline_result(target_id)
+        info = self._agent_reads.get(target_id)
+        nonce = self._session_nonce.get(target_id)
+        if info is None or nonce is None:
+            version = self._safe(self.store.get_target, target_id) or {}
+            return {"status": "old_agent", "reason": (
+                f"this box runs sub-agent {version.get('agent_version') or 'of an older version'}; investigating "
+                f"through it needs {'.'.join(map(str, READ_MIN_AGENT_VERSION))} or newer. Update it from "
+                "/subagent (select it, press g) -- the box keeps its pairing.")}
+        if probe not in info["probes"]:
+            return {"status": "unsupported", "reason": (
+                f"this box's sub-agent ({info.get('version') or '?'}) can't do the {probe!r} read -- update it from "
+                "/subagent (select it, press g)"), "available": sorted(info["probes"])}
+        target = self.store.get_target(target_id)
+        if target is None or target.get("revoked_at"):
+            return self.offline_result(target_id)
+        budget = timeout or (reads.PROBE_TIMEOUT_SECONDS.get(probe, 30) + READ_REPLY_MARGIN_SECONDS)
+        lock = self._read_locks.setdefault(target_id, asyncio.Lock())
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=budget)
+        except asyncio.TimeoutError:
+            return {"status": "busy", "reason": "another read on this box is still running -- try again shortly"}
+        request_id = uuid.uuid4().hex
+        try:
+            writer = self._live.get(target_id)
+            nonce = self._session_nonce.get(target_id)
+            if writer is None or nonce is None:
+                return self.offline_result(target_id)
+            seq = self._read_seq.get(target_id, 0) + 1
+            self._read_seq[target_id] = seq
+            envelope = proto.build_read_request(request_id, probe, params, seq, nonce)
+            envelope["sig"] = signing.sign_envelope(signing.derive_signing_key(target["token"]), envelope)
+            fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            self._pending_reads[request_id] = (target_id, fut)
+            await proto.write_frame(writer, envelope)
+            reply = await asyncio.wait_for(fut, timeout=budget)
+        except asyncio.TimeoutError:
+            return {"status": "timed_out", "reason": f"the sub-agent didn't answer the {probe} read within {int(budget)}s"}
+        except (OSError, ConnectionError, proto.ProtocolError) as e:
+            return {"status": "offline", "reason": f"the connection to the sub-agent failed mid-read ({type(e).__name__})"}
+        finally:
+            self._pending_reads.pop(request_id, None)
+            lock.release()
+        out: dict[str, Any] = {"status": reply.get("status") if isinstance(reply.get("status"), str) else "error"}
+        for key in ("reason", "data", "available"):
+            if key in reply:
+                out[key] = reply[key]
+        return out
 
     def _record_rejection(self, hello: dict[str, Any], peer_ip: str, reason: str) -> None:
         """Remember WHY a known agent was turned away, so the UI can say "your
@@ -547,6 +706,11 @@ class CoreServer:
                 fut = self._pending_exec.get(msg.get("dispatch_id"))
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
+            elif mtype == proto.MSG_READ_RESULT:
+                pending = self._pending_reads.get(msg.get("request_id"))
+                # Only the target the request was sent to can answer it.
+                if pending is not None and pending[0] == target_id and not pending[1].done():
+                    pending[1].set_result(msg)
             else:
                 logger.warning("ignoring unexpected message type %r from target %s", mtype, target_id)
 

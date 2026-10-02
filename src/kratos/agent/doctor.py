@@ -90,6 +90,9 @@ def _check_target(out: list[Check]) -> None:
                         fix="set one with /target <host> (or KRATOS_SSH_HOST for command-line runs)."))
         return
     out.append(_row("active target", "info", target))
+    via_agent = _check_transport(out, target)
+    if via_agent is False:
+        return  # linked to a sub-agent that can't be read right now -- said why above
     probe = run_target_probe_checks()
     if isinstance(probe, list):
         if not probe:
@@ -102,12 +105,60 @@ def _check_target(out: list[Check]) -> None:
             status = ("pass" if raw in ("PASS", "OK") else "fail" if raw == "FAIL"
                       else "info" if raw == "INFO" else "warn")
             out.append(_row(f"target · {c.get('check', '?')}", status, c.get("detail", "")))
+    elif getattr(probe, "via", "ssh") == "subagent":
+        detail = (getattr(probe, "stderr", "") or "read failed").strip()
+        out.append(_row("target reachable", "fail", f"{target}: {detail[:200]}",
+                        fix="open /subagent to see why the box's agent isn't answering."))
     else:
         # SSHResult -> couldn't even connect (port 22 blocked, wrong host, key).
         detail = (getattr(probe, "stderr", "") or getattr(probe, "stdout", "") or "connection failed").strip()
         out.append(_row("target reachable", "fail", f"{target}: {detail[:140] or 'unreachable'}",
                         fix="confirm the host/IP with /target, that port 22 is open, and that the SSH key "
                             "(SSH_TARGET_KEY_PATH) is authorized on the target."))
+
+
+def _check_transport(out: list[Check], target: str) -> bool | None:
+    """How the target is reached. None = over SSH (no link); True = through a
+    sub-agent that can be read; False = linked, but the sub-agent path is
+    broken right now (each reason reported with its fix)."""
+    from kratos import kratos_config as _kc
+    from kratos.subagent import routing
+    from kratos.subagent.local_reads import listener_status
+
+    data_dir = _kc.get_active_data_dir()
+    link = routing.link_for(target, data_dir)
+    if link is None:
+        out.append(_row("target transport", "info", "over SSH"))
+        return None
+    how = routing.MODE_LABELS[link.mode]
+    if link.revoked:
+        out.append(_row("target transport", "fail", f"linked to sub-agent {link.label}, which was unpaired",
+                        fix="pair the box again from /subagent, or switch with /target link."))
+        return False
+    out.append(_row("target transport", "info", f"{how} ({link.label})"))
+    status = listener_status(data_dir) if data_dir is not None else None
+    if status is None:
+        from kratos.subagent.core_listener import listener_running
+
+        detail = ("a Kratos listener is running but can't serve investigation reads (an older build, or a "
+                  "different data folder)" if listener_running() else "no Kratos listener is running")
+        out.append(_row("sub-agent reads", "fail", detail,
+                        fix="restart the always-on listener (or open /subagent to start one in this window)."))
+        return False if link.mode == routing.MODE_SUBAGENT else None
+    live = (status.get("live") or {}).get(link.target_id)
+    if live is None:
+        out.append(_row("sub-agent reads", "warn", f"{link.label}'s agent isn't connected right now",
+                        fix="see /subagent for why it dropped; it reconnects by itself once the box is up."))
+        return False if link.mode == routing.MODE_SUBAGENT else None
+    if not live.get("reads"):
+        out.append(_row("sub-agent reads", "fail",
+                        f"{link.label} runs agent {live.get('agent_version') or '?'}, too old for investigations",
+                        fix="in /subagent select it and press g to update it (it keeps its pairing); it needs 0.3.0+."))
+        return False if link.mode == routing.MODE_SUBAGENT else None
+    out.append(_row("sub-agent reads", "pass",
+                    f"{link.label} connected (agent {live.get('agent_version')}, {len(live.get('read_probes') or [])} "
+                    f"reads; listener: {status.get('mode')})"))
+    return True
 
 
 def _check_kept_tools(out: list[Check]) -> None:

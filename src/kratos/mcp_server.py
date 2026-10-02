@@ -410,4 +410,7 @@ def run_stdio_server(data_dir: Path = Path("data")) -> None:
     disconnects or the process is killed."""
     global _data_dir
     _data_dir = data_dir
+    from kratos import kratos_config as _kc
+
+    _kc.set_active_data_dir(data_dir)
     mcp.run(transport="stdio")

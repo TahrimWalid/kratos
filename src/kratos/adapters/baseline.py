@@ -313,12 +313,20 @@ def diff_file_integrity(
     changed: list[dict[str, str]] = []
     added: list[dict[str, str]] = []
     removed: list[dict[str, str]] = []
+    unverifiable: list[dict[str, str]] = []
     unchanged_count = 0
 
     for path in all_paths:
         base_hash = baseline_hashes.get(path)
         cur_hash = current_hashes.get(path)
         if base_hash is None and cur_hash is None:
+            continue
+        if (base_hash is not None and cur_hash is not None and base_hash != cur_hash
+                and (_is_unreadable_marker(base_hash) or _is_unreadable_marker(cur_hash))):
+            # Readable on one side only (a privilege change, or SSH vs. a root
+            # sub-agent): nothing can be said about the content -- never call
+            # that a modification.
+            unverifiable.append({"path": path, "baseline": base_hash, "current": cur_hash})
             continue
         if base_hash is None and cur_hash is not None:
             added.append({"path": path, "hash": cur_hash})
@@ -329,12 +337,21 @@ def diff_file_integrity(
         else:
             unchanged_count += 1
 
-    return {
+    out = {
         "changed": changed,
         "added": added,
         "removed": removed,
         "unchanged_count": unchanged_count,
     }
+    if unverifiable:
+        out["unverifiable"] = unverifiable
+        out["unverifiable_note"] = ("readable at one check but not the other, so these could not be compared -- "
+                                    "not evidence of a change either way")
+    return out
+
+
+def _is_unreadable_marker(value: str | None) -> bool:
+    return isinstance(value, str) and value.startswith("<unreadable")
 
 
 def save_file_integrity_diff(

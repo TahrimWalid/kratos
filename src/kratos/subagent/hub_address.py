@@ -111,3 +111,28 @@ def candidate_hub_addresses() -> list[HubAddressCandidate]:
         )
     )
     return candidates
+
+
+def is_trusted_transport_address(host: str) -> bool:
+    """Would an agent dialing `host` count the link as trusted (loopback or a
+    Tailscale/WireGuard tailnet address)? The same networks the agent itself
+    checks (subagent/agent.py). A hostname is resolved; unresolvable = no."""
+    import ipaddress
+    import socket
+
+    from kratos.subagent.agent import _TRUSTED_TRANSPORT_NETWORKS
+
+    try:
+        addrs = [ipaddress.ip_address(host.strip().strip("[]"))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host.strip(), None)
+        except OSError:
+            return False
+        addrs = []
+        for info in infos:
+            try:
+                addrs.append(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
+            except ValueError:
+                continue
+    return bool(addrs) and all(any(a in net for net in _TRUSTED_TRANSPORT_NETWORKS) for a in addrs)

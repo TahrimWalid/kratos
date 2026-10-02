@@ -180,6 +180,20 @@ class SubAgentStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_subagent_conn_events ON subagent_connection_events(target_id, id)"
             )
+            # Which session target (an IP/hostname, lowercased) is read through
+            # which paired sub-agent -- only ever set explicitly by the user
+            # (docs/subagent_read_routing.md D3). mode: 'subagent' | 'ssh_first'.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS subagent_links (
+                    host TEXT PRIMARY KEY,
+                    target_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
             # Additive migration of an existing pairing-codes table.
             have = {r["name"] for r in conn.execute("PRAGMA table_info(subagent_pairing_codes)")}
             for col in ("replaces_target_id", "last_attempt_at", "last_attempt_host", "last_attempt_reason", "core_host"):
@@ -318,6 +332,9 @@ class SubAgentStore:
                     "UPDATE subagent_targets SET revoked_at = ? WHERE target_id = ? AND revoked_at IS NULL",
                     (now, row["replaces_target_id"]),
                 )
+                # A re-paired box is the same box: its target links follow it.
+                conn.execute("UPDATE subagent_links SET target_id = ?, updated_at = ? WHERE target_id = ?",
+                             (target_id, now, row["replaces_target_id"]))
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -421,7 +438,7 @@ class SubAgentStore:
             if row is None or row["revoked_at"] is None:
                 conn.execute("ROLLBACK")
                 return False
-            for table in ("subagent_telemetry", "subagent_connections", "subagent_connection_events"):
+            for table in ("subagent_telemetry", "subagent_connections", "subagent_connection_events", "subagent_links"):
                 conn.execute(f"DELETE FROM {table} WHERE target_id = ?", (target_id,))
             conn.execute("UPDATE subagent_pairing_codes SET replaces_target_id = NULL WHERE replaces_target_id = ?",
                          (target_id,))
@@ -433,6 +450,82 @@ class SubAgentStore:
         finally:
             conn.close()
         return True
+
+    # ------------------------------------------------------------------
+    # Target links (session target -> sub-agent), see kratos.subagent.routing
+    # ------------------------------------------------------------------
+    def set_link(self, host: str, target_id: str, mode: str) -> None:
+        from kratos.subagent.routing import MODES, normalize_host
+
+        host = normalize_host(host)
+        if not host:
+            raise ValueError("a target address is required")
+        if mode not in MODES:
+            raise ValueError(f"unknown link mode {mode!r}")
+        now = utc_now_iso()
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM subagent_targets WHERE target_id = ?", (target_id,)).fetchone() is None:
+                conn.execute("ROLLBACK")
+                raise ValueError(f"no paired sub-agent {target_id!r}")
+            conn.execute(
+                "INSERT INTO subagent_links (host, target_id, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(host) DO UPDATE SET target_id = excluded.target_id, mode = excluded.mode, "
+                "updated_at = excluded.updated_at",
+                (host, target_id, mode, now, now),
+            )
+            conn.execute("COMMIT")
+        except ValueError:
+            raise
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        _clear_link_cache()
+
+    def remove_link(self, host: str) -> bool:
+        from kratos.subagent.routing import normalize_host
+
+        conn = _connect(self.db_path)
+        try:
+            cur = conn.execute("DELETE FROM subagent_links WHERE host = ?", (normalize_host(host),))
+            removed = cur.rowcount > 0
+        finally:
+            conn.close()
+        _clear_link_cache()
+        return removed
+
+    def get_link(self, host: str) -> dict[str, Any] | None:
+        from kratos.subagent.routing import normalize_host
+
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM subagent_links WHERE host = ?", (normalize_host(host),)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def core_host_for_target(self, target_id: str) -> str | None:
+        """The Kratos address this box was told to dial when it paired (from
+        its pairing code), so an update keeps the same one."""
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT core_host FROM subagent_pairing_codes WHERE used_by_target_id = ? AND core_host IS NOT NULL "
+                "ORDER BY used_at DESC LIMIT 1", (target_id,)).fetchone()
+        finally:
+            conn.close()
+        return row["core_host"] if row else None
+
+    def list_links(self) -> list[dict[str, Any]]:
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute("SELECT * FROM subagent_links ORDER BY host").fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
 
     def revoked_among(self, target_ids: list[str]) -> set[str]:
         if not target_ids:
@@ -701,6 +794,12 @@ class SubAgentStore:
         finally:
             conn.close()
         return [_row_to_telemetry(r) for r in rows]
+
+
+def _clear_link_cache() -> None:
+    from kratos.subagent import routing
+
+    routing.clear_cache()
 
 
 def _row_to_telemetry(row: sqlite3.Row) -> dict[str, Any]:

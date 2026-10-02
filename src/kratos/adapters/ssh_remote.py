@@ -19,6 +19,13 @@ fixed, read-only actions (journalctl, file hashes, config audit, etc.) --
 every one of which only ever reads state, never changes it. Don't add a
 general-purpose "run this command on the target" tool on top of these; that
 would violate the boundary regardless of how the tool is scoped or gated.
+
+Sub-agent routing (docs/subagent_read_routing.md): a target linked to a paired
+sub-agent is read through it by the NAMED fetchers below -- each maps to one
+probe in kratos.subagent.reads, which also builds the commands used here, so
+both transports run the same reads and share one parser. run_remote_command/
+run_remote_script stay SSH-only: their input is free command text, which must
+never be sent to an agent, so for a sub-agent-only target they refuse.
 """
 from __future__ import annotations
 
@@ -32,6 +39,8 @@ from pathlib import Path
 from typing import Any
 
 from kratos import kratos_config as _kconfig
+from kratos.subagent import reads as _reads
+from kratos.subagent import routing as _routing
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
     SSH_TARGET_USER,
@@ -61,6 +70,10 @@ class SSHResult:
     returncode: int
     stdout: str
     stderr: str
+    # Set by a sub-agent read: its output hit the agent's cap (the newest part
+    # was kept), and which way the result came.
+    truncated: bool = False
+    via: str = "ssh"
 
 
 def target_label() -> str:
@@ -140,10 +153,29 @@ def _no_target_result() -> SSHResult | None:
     return SSHResult(ok=False, returncode=-1, stdout="", stderr=_kconfig.NO_TARGET_MESSAGE)
 
 
+_SSH_ONLY_MESSAGE = (
+    "not available over the sub-agent: {host} is reached only through its sub-agent, which runs "
+    "Kratos's built-in reads and nothing else -- this check reads the target over SSH. Set up SSH to "
+    "this box (and switch it with /target link) to use it."
+)
+
+
+def _ssh_blocked_result() -> SSHResult | None:
+    """Free command text never goes to a sub-agent: for a sub-agent-only
+    target, SSH-only callers (kept tools) are told so instead of failing
+    with a confusing SSH error."""
+    if _routing.is_subagent_only():
+        return SSHResult(ok=False, returncode=-1, stdout="",
+                         stderr=_SSH_ONLY_MESSAGE.format(host=get_active_target()), via="none")
+    return None
+
+
 def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
     """Run a single command string on the target over SSH."""
     if (missing := _no_target_result()) is not None:
         return missing
+    if (blocked := _ssh_blocked_result()) is not None:
+        return blocked
     try:
         result = subprocess.run(
             _base_ssh_argv() + [command],
@@ -164,6 +196,8 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
     hosts without bash (e.g. Alpine) -- timewin.measure's counter is one."""
     if (missing := _no_target_result()) is not None:
         return missing
+    if (blocked := _ssh_blocked_result()) is not None:
+        return blocked
     try:
         result = subprocess.run(
             _base_ssh_argv() + [shell, "-s"],
@@ -177,6 +211,67 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH script timed out after {timeout or SSH_COMMAND_TIMEOUT_SECONDS}s")
     except FileNotFoundError:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
+
+
+# ---------------------------------------------------------------------------
+# SSH or sub-agent
+# ---------------------------------------------------------------------------
+def _ssh_unreachable(result: SSHResult) -> bool:
+    """ssh's own failures (can't connect, auth refused, host key) exit 255;
+    a missing ssh binary is reported as -1. A remote command's own non-zero
+    exit, or a command that ran too long, is NOT a reason to switch paths."""
+    return result.returncode == 255 or (result.returncode == -1 and "ssh binary not found" in result.stderr)
+
+
+def _first_line(text: str, limit: int = 160) -> str:
+    line = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    return line[:limit] or "no detail"
+
+
+def agent_result(reply: dict[str, Any]) -> SSHResult:
+    """A sub-agent raw-output reply as the SSHResult the SSH path would give,
+    so one parser serves both transports."""
+    if reply.get("status") == "ok" and isinstance(reply.get("data"), dict):
+        data = reply["data"]
+        rc = data.get("returncode") if isinstance(data.get("returncode"), int) else -1
+        return SSHResult(ok=rc == 0, returncode=rc, stdout=str(data.get("stdout") or ""),
+                         stderr=str(data.get("stderr") or ""), truncated=bool(data.get("truncated")),
+                         via="subagent")
+    return SSHResult(ok=False, returncode=-1, stdout="", via="subagent",
+                     stderr=f"via the sub-agent: {reply.get('reason') or reply.get('status') or 'read failed'}")
+
+
+def _route(probe: str, params: dict[str, Any], ssh_call: Any, *, agent_call: Any = None) -> Any:
+    """Run one named read the right way for the active target:
+    no link -> SSH, unchanged; "subagent" link -> the agent only;
+    "ssh_first" -> SSH, and on an SSH connection failure the same read via
+    the agent (remembered briefly so one investigation doesn't wait out the
+    SSH timeout on every read). Leaves a transport note either way.
+    `agent_call(link)` overrides the default raw-output conversion."""
+    link = _routing.active_link()
+    if link is None:
+        return ssh_call()
+
+    def via_agent() -> Any:
+        if agent_call is not None:
+            return agent_call(link)
+        return agent_result(_routing.agent_read(link, probe, params))
+
+    if link.mode == _routing.MODE_SUBAGENT:
+        _routing.note(f"read through the sub-agent on {link.label} (this target is reached only that way)")
+        return via_agent()
+    down = _routing.ssh_down_reason(link.host)
+    if down is None:
+        result = ssh_call()
+        if not (isinstance(result, SSHResult) and _ssh_unreachable(result)):
+            return result
+        down = _first_line(result.stderr)
+        _routing.mark_ssh_down(link.host, down)
+    out = via_agent()
+    _routing.note(f"SSH to {link.host} failed ({down}); read through the sub-agent on {link.label} instead")
+    if isinstance(out, SSHResult) and not out.ok and out.via == "subagent":
+        out.stderr = f"SSH failed ({down}); {out.stderr}"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +339,7 @@ def measure_target_clock_offset(force: bool = False) -> float | None:
     if cached and not force and _time.time() - cached[0] < CLOCK_OFFSET_TTL_SECONDS:
         return cached[1]
     t0 = _time.time()
-    result = run_remote_command("date +%s.%N")
+    result = _route("clock", {}, lambda: run_remote_command(_reads.CLOCK_COMMAND))
     t1 = _time.time()
     offset: float | None = None
     if result.ok:
@@ -256,23 +351,9 @@ def measure_target_clock_offset(force: bool = False) -> float | None:
     return offset
 
 
-def _window_args(since_epoch: float | None, until_epoch: float | None, lines: int) -> list[str]:
-    """journalctl args for "the NEWEST `lines` entries in [since, until]".
-
-    Always absolute epochs (`@<epoch>`), never a relative string the target would
-    interpret on its own clock/timezone. Always `--reverse -n <lines+1>`: plain
-    `--since X -n N` returns the OLDEST N entries after X on systemd 249 (Ubuntu
-    22.04) but the newest N on systemd 255 -- confirmed live on both -- so relying
-    on `-n` alone silently dropped the most recent activity (including an in-
-    progress brute force) whenever the window held more than N lines. `--reverse`
-    makes it newest-first on every version; the one extra entry is how truncation
-    is detected (the caller drops it and flags the window as not fully covered)."""
-    args: list[str] = []
-    if since_epoch is not None:
-        args += ["--since", f"@{int(since_epoch)}"]
-    if until_epoch is not None:
-        args += ["--until", f"@{int(until_epoch)}"]
-    return args + ["--reverse", "-n", str(int(lines) + 1)]
+# Shared with the sub-agent (kratos.subagent.reads) -- see its docstring for why
+# every fetch is `--reverse -n <lines+1>` with absolute epochs.
+_window_args = _reads.window_args
 
 
 def _take_newest(raw_newest_first: list[dict[str, Any]], lines: int) -> tuple[list[dict[str, Any]], bool]:
@@ -313,34 +394,25 @@ def fetch_journalctl_entries(
     # (non-interactive, sudo path only): fail fast rather than hang if
     # passwordless sudo isn't configured, matching this file's existing
     # convention (see run_config_audit_checks's `sudo -n sshd -T`).
-    parts = _journalctl_prefix() + ["journalctl", "--no-pager", "-o", "json"]
-    if unit:
-        # Plain `-u <unit>` filters on _SYSTEMD_UNIT only -- but daemons like
-        # sshd are commonly logged under a per-connection scope unit (e.g.
-        # "session-375.scope" on the real target), never the literal
-        # "sshd.service" a caller would naturally pass, so `-u sshd.service`
-        # silently returns zero results despite real sshd activity existing
-        # (confirmed live: this happened investigating a real attack --
-        # read_journalctl(unit="sshd.service") returned 0 entries while the
-        # attack's real log lines were sitting right there under a
-        # different unit name). Match on BOTH _SYSTEMD_UNIT and _COMM
-        # (identifier, stripped of a trailing ".service") via journalctl's
-        # `+` OR-separator -- the exact same two-field pattern fail2ban's
-        # own sshd jail uses for the same reason (confirmed via
-        # `fail2ban-client status sshd`: "Journal matches: _SYSTEMD_UNIT=
-        # sshd.service + _COMM=sshd"). Can only broaden matches (OR), never
-        # narrows away a real match for daemons where the literal unit name
-        # IS how they're actually logged.
-        base = unit[: -len(".service")] if unit.endswith(".service") else unit
-        parts += [f"_SYSTEMD_UNIT={shlex.quote(unit)}", "+", f"_COMM={shlex.quote(base)}"]
-    parts += _window_args(since_epoch, until_epoch, lines)
-
-    result = run_remote_command(" ".join(parts))
+    # unit: plain `-u <unit>` filters on _SYSTEMD_UNIT only, but daemons like
+    # sshd are commonly logged under a per-connection scope unit (e.g.
+    # "session-375.scope"), never the literal "sshd.service" -- confirmed live:
+    # read_journalctl(unit="sshd.service") returned 0 entries while a real
+    # attack's lines sat under a different unit. The shared builder matches
+    # _SYSTEMD_UNIT OR _COMM (journalctl's `+`), the same two-field pattern
+    # fail2ban's own sshd jail uses; it can only broaden matches.
+    argv = _reads.journal_fetch_argv(unit, since_epoch, until_epoch, int(lines), prefix=_journalctl_prefix())
+    agent_lines = min(int(lines), 5000)  # the agent's per-read ceiling
+    params = {"unit": unit or None, "since": since_epoch, "until": until_epoch, "lines": agent_lines}
+    result = _route("journal_fetch", params, lambda: run_remote_command(shlex.join(argv)))
     if not result.ok:
         return result
+    if result.via == "subagent":
+        lines = agent_lines
 
     newest_first = [_parse_journal_entry(raw) for raw in _parse_json_lines(result.stdout)]
     entries, truncated = _take_newest(newest_first, int(lines))
+    truncated = truncated or result.truncated
     window = JournalWindow(
         since_epoch=since_epoch,
         until_epoch=until_epoch,
@@ -426,30 +498,32 @@ def fetch_journalctl_auth_entries(
     # and Alpine 3.22. Filtering on `sshd` alone left the correlation engine blind to
     # SSH brute force on every current distro. Repeating a field ORs it in journalctl
     # (verified on systemd 249 and 252); hosts with older OpenSSH are unaffected.
-    comm_filters = {"sshd": ("sshd", "sshd-session"), "sudo": ("sudo",)}
-    for identifier, comms in comm_filters.items():
+    # (The comm lists live in kratos.subagent.reads.AUTH_COMMS, shared with the agent.)
+    for identifier in _reads.AUTH_COMMS:
         # _journalctl_prefix(): see fetch_journalctl_entries above -- without
         # sudo OR systemd-journal group membership, journald's per-user ACL
         # silently hides privileged entries (confirmed live: a real attack's
         # "Failed password" lines were completely invisible to an
         # unprivileged query despite being well within the fetched window).
-        prefix = " ".join(_journalctl_prefix())
-        matches = " ".join(f"_COMM={c}" for c in comms)
-        cmd = f"{prefix} journalctl --no-pager -o json {matches}".strip()
-        cmd += " " + " ".join(_window_args(since_epoch, until_epoch, max_lines_per_identifier))
-        result = run_remote_command(cmd)
+        argv = _reads.journal_auth_argv(identifier, since_epoch, until_epoch, int(max_lines_per_identifier),
+                                        prefix=_journalctl_prefix())
+        per_id = int(max_lines_per_identifier)
+        params = {"identifier": identifier, "since": since_epoch, "until": until_epoch, "lines": min(per_id, 2000)}
+        result = _route("journal_auth", params, lambda argv=argv: run_remote_command(shlex.join(argv)))
         if not result.ok:
             errors.append(f"{identifier}: {(result.stderr or result.stdout).strip()}")
             continue
+        if result.via == "subagent":
+            per_id = min(per_id, 2000)
         parsed = [_parse_journal_entry_for_auth(raw) for raw in _parse_json_lines(result.stdout)]
-        truncated = len(parsed) > int(max_lines_per_identifier)
-        kept = parsed[: int(max_lines_per_identifier)]
+        truncated = len(parsed) > per_id or result.truncated
+        kept = parsed[:per_id]
         kept.reverse()  # chronological
         entries.extend(kept)
         windows[identifier] = JournalWindow(
             since_epoch=since_epoch,
             until_epoch=until_epoch,
-            requested=int(max_lines_per_identifier),
+            requested=per_id,
             returned=len(kept),
             truncated=truncated,
             oldest_returned=kept[0][0] if kept else None,
@@ -462,11 +536,9 @@ def fetch_journalctl_auth_entries(
 # lsof
 # ---------------------------------------------------------------------------
 def fetch_open_files(pid: int | None) -> SSHResult | list[dict[str, str]]:
-    parts = ["lsof", "-n", "-P"]
-    if pid is not None:
-        parts += ["-p", str(int(pid))]
-
-    result = run_remote_command(" ".join(parts))
+    argv = _reads.lsof_argv(pid)
+    result = _route("open_files", {"pid": int(pid) if pid is not None else None},
+                    lambda: run_remote_command(" ".join(argv)))
     if not result.ok:
         return result
 
@@ -485,7 +557,7 @@ def fetch_open_files(pid: int | None) -> SSHResult | list[dict[str, str]]:
 # ps aux
 # ---------------------------------------------------------------------------
 def fetch_processes() -> SSHResult | list[dict[str, str]]:
-    result = run_remote_command("ps aux")
+    result = _route("processes", {}, lambda: run_remote_command(" ".join(_reads.PS_ARGV)))
     if not result.ok:
         return result
 
@@ -503,15 +575,11 @@ def fetch_processes() -> SSHResult | list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 # File integrity (hashing)
 # ---------------------------------------------------------------------------
-CRITICAL_PATHS: tuple[str, ...] = (
-    "/etc/passwd",
-    "/etc/ssh/sshd_config",
-    "/etc/sudoers",
-    "/etc/crontab",
-)
+CRITICAL_PATHS: tuple[str, ...] = _reads.CRITICAL_PATHS
 
 
 UNREADABLE_SENTINEL = "<unreadable: permission denied to SSH user>"
+AGENT_UNREADABLE_SENTINEL = "<unreadable: permission denied to the sub-agent>"
 
 
 def fetch_file_hashes(paths: tuple[str, ...] = CRITICAL_PATHS) -> SSHResult | dict[str, str | None]:
@@ -524,148 +592,33 @@ def fetch_file_hashes(paths: tuple[str, ...] = CRITICAL_PATHS) -> SSHResult | di
     existence, not readability, so a permission-denied sha256sum silently
     produced an empty string instead of a clear, distinguishable result.
     """
-    quoted = " ".join(shlex.quote(p) for p in paths)
-    script = (
-        f"for f in {quoted}; do "
-        'if [ ! -f "$f" ]; then printf \'MISSING\\t%s\\n\' "$f"; '
-        'elif [ ! -r "$f" ]; then printf \'UNREADABLE\\t%s\\n\' "$f"; '
-        "else printf 'PRESENT\\t%s\\t%s\\n' \"$f\" \"$(sha256sum \"$f\" | cut -d' ' -f1)\"; "
-        "fi; done"
-    )
-    result = run_remote_command(script)
+    def via_agent(link: Any) -> SSHResult | dict[str, str | None]:
+        if tuple(paths) != CRITICAL_PATHS:  # the agent hashes only its own fixed list
+            return SSHResult(ok=False, returncode=-1, stdout="", via="subagent",
+                             stderr="via the sub-agent: only Kratos's fixed critical-file list can be hashed")
+        return agent_result(_routing.agent_read(link, "file_hashes", {}))
+
+    result = _route("file_hashes", {}, lambda: run_remote_command(_reads.file_hash_script(tuple(paths))),
+                    agent_call=via_agent)
     if not result.ok:
         return result
-
-    hashes: dict[str, str | None] = {}
-    for line in result.stdout.strip().splitlines():
-        cols = line.split("\t")
-        if cols[0] == "PRESENT" and len(cols) == 3 and cols[2]:
-            hashes[cols[1]] = cols[2]
-        elif cols[0] == "MISSING" and len(cols) == 2:
-            hashes[cols[1]] = None
-        elif cols[0] == "UNREADABLE" and len(cols) == 2:
-            hashes[cols[1]] = UNREADABLE_SENTINEL
-    return hashes
+    marker = AGENT_UNREADABLE_SENTINEL if result.via == "subagent" else UNREADABLE_SENTINEL
+    return _reads.parse_hash_lines(result.stdout, marker)
 
 
 # ---------------------------------------------------------------------------
 # Config audit
 # ---------------------------------------------------------------------------
-_CONFIG_AUDIT_SCRIPT = r"""
-prl=$(sudo -n sshd -T 2>/dev/null | grep -i '^permitrootlogin' | awk '{print $2}')
-if [ -z "$prl" ]; then
-  printf 'ssh_root_login\tUNKNOWN\tCould not determine effective PermitRootLogin (sudo -n sshd -T unavailable)\n'
-elif [ "$prl" = "no" ]; then
-  printf 'ssh_root_login\tPASS\tRoot login is disabled (PermitRootLogin no)\n'
-elif [ "$prl" = "without-password" ] || [ "$prl" = "prohibit-password" ]; then
-  printf 'ssh_root_login\tPASS\tRoot login only allowed via key, not password (PermitRootLogin %s)\n' "$prl"
-else
-  printf 'ssh_root_login\tFAIL\tRoot login permitted (PermitRootLogin %s)\n' "$prl"
-fi
-
-pa=$(sudo -n sshd -T 2>/dev/null | grep -i '^passwordauthentication' | awk '{print $2}')
-if [ -z "$pa" ]; then
-  printf 'ssh_password_auth\tUNKNOWN\tCould not determine effective PasswordAuthentication (sudo -n sshd -T unavailable)\n'
-elif [ "$pa" = "no" ]; then
-  printf 'ssh_password_auth\tPASS\tKey-only authentication enforced (PasswordAuthentication no)\n'
-else
-  printf 'ssh_password_auth\tWARN\tPassword authentication is enabled (PasswordAuthentication %s); key-only is stronger\n' "$pa"
-fi
-
-fw_found=0
-if command -v ufw >/dev/null 2>&1; then
-  fw_found=1
-  ufw_status=$(sudo -n ufw status 2>/dev/null | head -1)
-  if echo "$ufw_status" | grep -qi 'active'; then
-    printf 'firewall\tPASS\tufw is active (%s)\n' "$ufw_status"
-  else
-    printf 'firewall\tFAIL\tufw installed but not active (%s)\n' "$ufw_status"
-  fi
-elif command -v nft >/dev/null 2>&1; then
-  fw_found=1
-  nft_rules=$(sudo -n nft list ruleset 2>/dev/null | wc -l)
-  if [ "$nft_rules" -gt 0 ]; then
-    printf 'firewall\tPASS\tnftables has %s rule line(s) configured\n' "$nft_rules"
-  else
-    printf 'firewall\tFAIL\tnftables installed but no rules configured\n'
-  fi
-elif command -v iptables >/dev/null 2>&1; then
-  fw_found=1
-  ipt_rules=$(sudo -n iptables -L -n 2>/dev/null | grep -vc '^Chain\|^target\|^$')
-  if [ "$ipt_rules" -gt 0 ]; then
-    printf 'firewall\tPASS\tiptables has %s active rule(s)\n' "$ipt_rules"
-  else
-    printf 'firewall\tFAIL\tiptables installed but no rules configured\n'
-  fi
-fi
-if [ "$fw_found" -eq 0 ]; then
-  printf 'firewall\tUNKNOWN\tNo firewall tool found on target (ufw/nft/iptables not installed)\n'
-fi
-
-ww=$(find /etc -xdev -type f -perm -0002 2>/dev/null)
-ww_count=$(printf '%s' "$ww" | grep -c . || true)
-if [ "$ww_count" -eq 0 ]; then
-  printf 'world_writable_etc\tPASS\tNo world-writable files found under /etc\n'
-else
-  ww_sample=$(printf '%s' "$ww" | head -5 | tr '\n' ',')
-  printf 'world_writable_etc\tFAIL\t%s world-writable file(s) found under /etc, e.g. %s\n' "$ww_count" "$ww_sample"
-fi
-
-if dpkg -l unattended-upgrades 2>/dev/null | grep -q '^ii'; then
-  enabled=$(systemctl is-enabled unattended-upgrades.service 2>/dev/null || echo unknown)
-  if [ "$enabled" = "enabled" ]; then
-    printf 'unattended_upgrades\tPASS\tunattended-upgrades installed and service enabled\n'
-  else
-    printf 'unattended_upgrades\tWARN\tunattended-upgrades installed but service state is: %s\n' "$enabled"
-  fi
-else
-  printf 'unattended_upgrades\tFAIL\tunattended-upgrades package is not installed\n'
-fi
-
-f2b_installed=0
-if command -v fail2ban-client >/dev/null 2>&1 || dpkg -l fail2ban 2>/dev/null | grep -q '^ii'; then
-  f2b_installed=1
-fi
-
-if [ "$f2b_installed" -eq 0 ]; then
-  printf 'fail2ban_status\tFAIL\tfail2ban is not installed\n'
-else
-  f2b_active=$(systemctl is-active fail2ban 2>/dev/null || echo inactive)
-  if [ "$f2b_active" != "active" ]; then
-    printf 'fail2ban_status\tFAIL\tfail2ban is installed but the service is not active (status: %s)\n' "$f2b_active"
-  else
-    jails=$(sudo -n fail2ban-client status 2>/dev/null | sed -n 's/.*Jail list:[[:space:]]*//p')
-    ssh_jail=""
-    if echo "$jails" | grep -qiw 'sshd'; then
-      ssh_jail="sshd"
-    elif echo "$jails" | grep -qiw 'ssh'; then
-      ssh_jail="ssh"
-    fi
-    if [ -z "$ssh_jail" ]; then
-      printf 'fail2ban_status\tWARN\tfail2ban is installed and active but no SSH-specific jail is configured (jails: %s)\n' "${jails:-none}"
-    else
-      maxretry=$(sudo -n fail2ban-client get "$ssh_jail" maxretry 2>/dev/null)
-      bantime=$(sudo -n fail2ban-client get "$ssh_jail" bantime 2>/dev/null)
-      printf 'fail2ban_status\tPASS\tfail2ban active with SSH jail "%s" (maxretry=%s, bantime=%ss) -- reported as-is, not checked against any specific target values\n' "$ssh_jail" "${maxretry:-unknown}" "${bantime:-unknown}"
-    fi
-  fi
-fi
-"""
+# The script itself lives in kratos.subagent.reads (shared with the agent); over
+# SSH it reads sshd -T / firewall / fail2ban through `sudo -n`.
+_CONFIG_AUDIT_SCRIPT = _reads.config_audit_script("sudo -n")
 
 
 def run_config_audit_checks() -> SSHResult | list[dict[str, str]]:
-    result = run_remote_script(_CONFIG_AUDIT_SCRIPT)
+    result = _route("config_audit", {}, lambda: run_remote_script(_CONFIG_AUDIT_SCRIPT))
     if not result.ok:
         return result
-
-    checks = []
-    for line in result.stdout.strip().splitlines():
-        cols = line.split("\t", 2)
-        if len(cols) != 3:
-            continue
-        check_id, status, detail = cols
-        checks.append({"check": check_id, "status": status, "detail": detail})
-    return checks
+    return _reads.parse_check_lines(result.stdout)
 
 
 # ---------------------------------------------------------------------------
@@ -751,60 +704,63 @@ def run_target_probe_checks() -> SSHResult | list[dict[str, str]]:
     checklist; left as a manual step, called out with extra emphasis in the
     checklist text itself given it's a real, previously-hit failure mode
     (Kratos's own SSH traffic getting itself banned mid-investigation)."""
-    result = run_remote_script(_TARGET_PROBE_SCRIPT)
-    if not result.ok:
+    result = _route("capabilities", {}, lambda: run_remote_script(_TARGET_PROBE_SCRIPT),
+                    agent_call=agent_capabilities)
+    if isinstance(result, list) or not result.ok:
         return result
+    return _reads.parse_check_lines(result.stdout)
 
-    checks = []
-    for line in result.stdout.strip().splitlines():
-        cols = line.split("\t", 2)
-        if len(cols) != 3:
-            continue
-        check_id, status, detail = cols
-        checks.append({"check": check_id, "status": status, "detail": detail})
-    return checks
+
+def agent_capabilities(link: Any) -> SSHResult | list[dict[str, str]]:
+    """The sub-agent edition of the setup probe: what the agent can read on
+    its box, led by a row saying how the box is reached."""
+    reply = _routing.agent_read(link, "capabilities", {})
+    if reply.get("status") != "ok" or not isinstance(reply.get("data"), dict):
+        return agent_result(reply)
+    checks = [c for c in reply["data"].get("checks") or [] if isinstance(c, dict)]
+    head = {"check": "subagent_reachable", "status": "PASS",
+            "detail": f"Connected through the sub-agent on {link.label} ({_routing.MODE_LABELS[link.mode]})"}
+    return [head, *checks]
 
 
 # ---------------------------------------------------------------------------
 # YARA scanning
 # ---------------------------------------------------------------------------
-_YARA_STRING_MATCH_RE = re.compile(r"^0x[0-9a-fA-F]+:")
+_parse_yara_output = _reads.parse_yara_output  # shared with the sub-agent
 
 
-def _parse_yara_output(stdout: str) -> list[dict[str, Any]]:
-    """
-    Parses `yara -s` output. String-match lines ("0xOFFSET:$id: matched
-    content") carry no leading whitespace in this yara version's output, so
-    indentation can't be used to distinguish them from a rule-match line
-    ("RuleName /matched/path") -- both start at column 0. The reliable
-    distinguisher instead: a YARA rule identifier can never start with
-    "0x" (identifiers must start with a letter or underscore), so a line
-    matching ^0x[hex]: is always a string-match continuation of the most
-    recent rule-match line, never a new one. Matched string content is
-    split on ':' with maxsplit=2 so arbitrary bytes in the matched content
-    itself (which may include colons) don't break parsing.
-    """
-    matches: list[dict[str, Any]] = []
-    current: dict[str, Any] | None = None
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        if _YARA_STRING_MATCH_RE.match(line) and current is not None:
-            string_parts = line.split(":", 2)
-            if len(string_parts) == 3:
-                offset, identifier, content = string_parts
-                current["strings"].append({"offset": offset, "identifier": identifier.strip(), "matched": content.strip()})
-        else:
-            parts = line.split(" ", 1)
-            if len(parts) != 2:
-                continue
-            rule_name, file_path = parts
-            current = {"rule": rule_name, "file": file_path, "strings": []}
-            matches.append(current)
-    return matches
+class YaraMatches(list):
+    """The match list, plus what a sub-agent scan reports about its own scope
+    (files scanned, credential/unreadable files skipped, truncation) in
+    `.scan_info` -- empty for an SSH scan."""
+
+    scan_info: dict[str, Any]
+
+    def __init__(self, items: Any = (), scan_info: dict[str, Any] | None = None):
+        super().__init__(items)
+        self.scan_info = scan_info or {}
 
 
-def fetch_yara_scan(scan_path: str, rules_content: str) -> SSHResult | list[dict[str, Any]]:
+def _yara_via_agent(link: Any, scan_path: str, custom_rules: bool) -> SSHResult | YaraMatches:
+    if custom_rules:
+        return SSHResult(ok=False, returncode=-1, stdout="", via="subagent", stderr=(
+            "via the sub-agent: custom rules can't be sent to a sub-agent (a rule sent from Kratos could be "
+            "used to read file contents back). Place them on the box in /etc/kratos-subagent/yara/ "
+            "(root-owned) and scan again without rules_path."))
+    reply = _routing.agent_read(link, "yara_scan", {"path": scan_path})
+    if reply.get("status") != "ok" or not isinstance(reply.get("data"), dict):
+        reason = reply.get("reason") or reply.get("status")
+        if reply.get("status") == "refused" and "scan roots" in str(reason):
+            reason = f"{reason}. Through the sub-agent YARA only scans those places."
+        return SSHResult(ok=False, returncode=-1, stdout="", via="subagent", stderr=f"via the sub-agent: {reason}")
+    data = reply["data"]
+    info = {k: data.get(k) for k in ("files_scanned", "skipped_credential", "skipped_unreadable", "skipped_large",
+                                      "truncated", "file_limit_hit", "rule_files", "rule_problems", "scan_path")}
+    info["matched_content"] = "not returned through the sub-agent (rule, file and offset only)"
+    return YaraMatches(data.get("matches") or [], info)
+
+
+def fetch_yara_scan(scan_path: str, rules_content: str, custom_rules: bool = False) -> SSHResult | list[dict[str, Any]]:
     """
     Runs `yara` ON THE TARGET (must be installed there -- see docs/DESIGN.md's
     "Target-facing tools" section) against scan_path, a path that already
@@ -845,7 +801,10 @@ def fetch_yara_scan(scan_path: str, rules_content: str) -> SSHResult | list[dict
     # line in the script above never got to run (the whole remote script
     # was killed mid-execution) -- see the module-level SSH client-timeout
     # cleanup note for why that's still safe.
-    result = run_remote_script(script, timeout=YARA_SCAN_TIMEOUT_SECONDS)
+    result = _route("yara_scan", {}, lambda: run_remote_script(script, timeout=YARA_SCAN_TIMEOUT_SECONDS),
+                    agent_call=lambda link: _yara_via_agent(link, scan_path, custom_rules))
+    if isinstance(result, YaraMatches):
+        return result
     if not result.ok:
         if result.returncode == -1 and "timed out" in result.stderr:
             # Replace run_remote_script's generic "SSH script timed out"
@@ -866,3 +825,36 @@ def fetch_yara_scan(scan_path: str, rules_content: str) -> SSHResult | list[dict
             )
         return result
     return _parse_yara_output(result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Exhaustive auth measurement (timewin.measure) -- SSH or sub-agent
+# ---------------------------------------------------------------------------
+# The address Kratos's own SSH sessions come from, per target, as the last SSH
+# measurement saw it ($SSH_CONNECTION on the target). A measurement run by the
+# sub-agent can't see that, so it is passed along to keep Kratos's own logins
+# out of the counts (parity with the SSH path).
+_kratos_ip_by_host: dict[str, str] = {}
+
+
+def remember_kratos_ip(ip: str | None) -> None:
+    if ip:
+        _kratos_ip_by_host[get_active_target()] = ip
+
+
+def run_auth_measurement(since_epoch: float, until_epoch: float | None, *, granularity: int,
+                         kratos_user: str, timeout: int) -> SSHResult:
+    """Run the target-side measurement script for one window. Over SSH the
+    script is built here; through the sub-agent the agent builds the SAME
+    script (its bundled copy of timewin/measure.py) from validated
+    parameters -- no script text is sent."""
+    from kratos.timewin.measure import build_script
+
+    def over_ssh() -> SSHResult:
+        script = build_script(since_epoch, until_epoch, journalctl_prefix=" ".join(_journalctl_prefix()),
+                              kratos_user=kratos_user, classic_granularity=granularity)
+        return run_remote_script(script, timeout=timeout, shell="sh")
+
+    params = {"start": since_epoch, "end": until_epoch, "granularity": granularity, "exclude_user": kratos_user,
+              "exclude_ip": _kratos_ip_by_host.get(get_active_target())}
+    return _route("measure_auth", params, over_ssh)

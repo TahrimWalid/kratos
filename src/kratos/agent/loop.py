@@ -41,7 +41,24 @@ def _handler_self_gates(tool: Any) -> bool:
         return "request_approval(" in inspect.getsource(tool.handler)
     except (OSError, TypeError):
         return False
+from kratos import kratos_config as _kconfig
 from kratos.kratos_config import NO_TARGET_MESSAGE, get_active_target
+from kratos.subagent import routing as _subagent_routing
+
+
+def _reads_target_over_ssh(tool: Any) -> bool:
+    """A kept (self-written) tool that reaches the target with its own SSH
+    command. Built-in tools route through the named reads instead, so they
+    work through a sub-agent; a kept tool's free command can't. Reads the
+    tool's whole module, and fails SAFE to True if it can't be read."""
+    if (getattr(tool.handler, "__module__", "") or "").startswith("kratos."):
+        return False  # built-in: reads through the named, routable fetchers
+    from kratos.agent.self_smoke import is_target_facing
+
+    try:
+        return is_target_facing(inspect.getsource(inspect.getmodule(tool.handler)))
+    except (OSError, TypeError):
+        return True
 from kratos.timewin.agentwin import (
     prepare_time_context as _prepare_time_context,
     render_time_block as _render_time_block,
@@ -295,6 +312,7 @@ RULES:
 - Never invent data. Only reference facts that appeared in an Observation.
 - Do not call the same tool with the same args twice in a row.
 - If a tool result shows an error, adapt (try different args, or move to a different tool, or give a final_answer noting the limitation) rather than repeating the same failing call.
+- If a tool result has a "coverage_gap", your final_answer must say plainly that this part was NOT checked -- never describe the target as fully checked or clean on that point.
 """
 
 
@@ -329,6 +347,7 @@ def _parse_agent_json(text: str) -> dict[str, Any] | None:
 
 
 def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    _kconfig.set_active_data_dir(data_dir)  # SSH/sub-agent routing reads the link + socket from here
     tool = TOOL_REGISTRY.get(tool_name)
     if tool is None:
         valid_names = ", ".join(sorted(TOOL_REGISTRY.keys()))
@@ -399,6 +418,24 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                     "specifically intend to check Kratos's own host."
                 ),
             }
+
+    # A kept tool's own SSH command can't go through a sub-agent (no free
+    # command text is ever sent to one). For a target reached only that way,
+    # refuse it here -- a kept tool that turns the refusal into an empty
+    # result would otherwise report "nothing found" (seen live: "no listening
+    # services" on a box running sshd).
+    if _subagent_routing.is_subagent_only() and _reads_target_over_ssh(tool):
+        target = get_active_target()
+        return {
+            "status": "error",
+            "observation": (
+                f"'{tool_name}' reads the target over SSH, and {target} is reached only through its sub-agent, "
+                "which runs Kratos's built-in reads and nothing else -- so it was NOT run. Use the built-in "
+                "tools, and say in your answer that what this tool checks was not checked."
+            ),
+            "coverage_gap": f"what '{tool_name}' checks was not checked ({target} is reached only through its "
+                            "sub-agent; this tool needs SSH)",
+        }
 
     # run_linux_command runs on Kratos's OWN host and, during an investigation,
     # is for READ-ONLY local self-diagnostics only -- NOT a way to reach or
@@ -480,7 +517,8 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
             }
 
     try:
-        result = tool.handler(**call_args)
+        with _subagent_routing.collect_notes() as transport_notes:
+            result = tool.handler(**call_args)
     except TypeError as e:
         return {"status": "error", "observation": f"Bad arguments for tool '{tool_name}': {e}"}
     except Exception as e:
@@ -496,6 +534,12 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
                 "check its return value before taking any irreversible action)."
             ),
         }
+
+    if transport_notes and isinstance(result, dict):
+        # How the target was reached -- "through its sub-agent", or "SSH failed,
+        # so ..." -- first, so neither the model nor a person misreads a
+        # fallback as the usual path.
+        result = {"transport": "; ".join(transport_notes), **result}
 
     if tool_name == "run_linux_command" and isinstance(result, dict):
         # Stamp the result unmissably as the Kratos host so the model can't
@@ -551,6 +595,20 @@ def _sanitize_recommended_commands(raw: Any) -> list[dict[str, str]]:
         if len(out) >= _MAX_RECOMMENDED_COMMANDS:
             break
     return out
+
+
+_GAP_ACKNOWLEDGED_RE = re.compile(
+    r"\b(not|n't|never|unable to|could ?not|couldn't|cannot|can't)\b[^.]{0,60}\b(check|checked|scan|scanned|"
+    r"available|covered|examined|assessed|verified)", re.IGNORECASE)
+
+
+def _unstated_coverage_gaps(gaps: list[str], answer: str) -> list[str]:
+    """Gaps the answer doesn't acknowledge. Deliberately simple: an answer that
+    says anything was not checked/scanned is taken as acknowledging them; the
+    NOTE is the backstop for one that says nothing at all."""
+    if not gaps or _GAP_ACKNOWLEDGED_RE.search(answer or ""):
+        return []
+    return gaps
 
 
 def _cap(text: str, limit: int = OBSERVATION_CHAR_CAP) -> str:
@@ -901,6 +959,9 @@ def _run_agent_loop(
     # had used it. It now applies only when NO data-gathering tool returned real data
     # in this run (then there is genuinely nothing to correlate).
     tools_called: set[str] = set()
+    # What a tool said it could NOT check (e.g. no network scan for a target
+    # reached only through its sub-agent) -- named in the final answer.
+    coverage_gaps: list[str] = []
     any_data_tool_ok = False
     # Guard 6 (time scope, design §12 item 10): a goal that names a period must get that
     # period queried by a time-aware tool -- otherwise the answer isn't about that period.
@@ -1389,6 +1450,13 @@ def _run_agent_loop(
                     "this investigation -- anything attributed to it above is unverified.]\n\n" + final_answer_text
                 )
 
+            unstated_gaps = _unstated_coverage_gaps(coverage_gaps, final_answer_text)
+            if unstated_gaps:
+                final_answer_text = (
+                    "[NOTE: not checked in this investigation: " + "; ".join(unstated_gaps)
+                    + ". Nothing above covers it.]\n\n" + final_answer_text
+                )
+
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
@@ -1605,6 +1673,10 @@ def _run_agent_loop(
         exec_result = execute_tool_call(tool_name, args, data_dir)
         tools_called.add(tool_name)
         _inner = exec_result.get("result") if isinstance(exec_result, dict) else None
+        for _src in (exec_result, _inner):
+            gap = _src.get("coverage_gap") if isinstance(_src, dict) else None
+            if isinstance(gap, str) and gap not in coverage_gaps:
+                coverage_gaps.append(gap)
         if (
             isinstance(exec_result, dict)
             and exec_result.get("status") == "ok"

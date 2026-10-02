@@ -269,8 +269,10 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
 
     import signal
 
+    from kratos.subagent.local_reads import socket_path
+
     store = SubAgentStore(args.data_dir / "kratos.db")
-    server = CoreServer(store, host=args.host, port=args.port)
+    server = CoreServer(store, host=args.host, port=args.port, read_socket_path=socket_path(args.data_dir))
     print(f"[KRATOS] Sub-agent telemetry server listening on {args.host}:{args.port} (Ctrl+C to stop)")
 
     async def _main() -> None:
@@ -1507,6 +1509,7 @@ def main(argv: list[str] | None = None) -> int:
     from kratos import kratos_config as _kc
 
     _kc.seed_active_target_from_config(args.data_dir)
+    _kc.set_active_data_dir(args.data_dir)
 
     # Re-register any previously-APPROVED self-written tools (Part D,
     # agent/self_write_loop.py) into TOOL_REGISTRY for this process, on top

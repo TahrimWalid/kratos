@@ -151,6 +151,22 @@ def set_active_target(host: str | None) -> None:
     _active_target_override = host
 
 
+# The data folder of this process (the CLI's --data-dir, the TUI's, MCP's). Set
+# once at startup and by every tool dispatch; read by code with no data_dir
+# parameter of its own -- the SSH/sub-agent routing in adapters/ssh_remote.py
+# needs it to find the target's link and the local listener socket.
+_active_data_dir: Path | None = None
+
+
+def set_active_data_dir(data_dir: Path | str | None) -> None:
+    global _active_data_dir
+    _active_data_dir = Path(data_dir).resolve() if data_dir else None
+
+
+def get_active_data_dir() -> Path | None:
+    return _active_data_dir
+
+
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 

@@ -47,7 +47,6 @@ from kratos.utils.time_window import (
 from kratos.timewin.toolwin import resolve_tool_window as _resolve_tool_window
 from kratos.timewin.measure import (
     DEFAULT_TIME_BUDGET_SECONDS as _MEASURE_BUDGET,
-    build_script as _build_measure_script,
     parse_output as _parse_measure_output,
 )
 from kratos.timewin.windows import TimeIntentError as _TimeIntentError, current_context as _current_time_context
@@ -61,6 +60,7 @@ from kratos.timewin.snapshots import (
     within as _snapshots_within,
 )
 from kratos.utils.time_window import resolve_time_bound as _resolve_time_bound
+from kratos.subagent import routing as _subagent_routing
 from kratos.adapters.ssh_remote import (
     target_label as _ssh_target_label,
     fetch_journalctl_entries as _fetch_journalctl_entries,
@@ -72,8 +72,8 @@ from kratos.adapters.ssh_remote import (
     fetch_file_hashes as _fetch_file_hashes,
     run_config_audit_checks as _run_config_audit_checks,
     fetch_yara_scan as _fetch_yara_scan,
-    run_remote_script as _run_remote_script,
-    _journalctl_prefix,
+    run_auth_measurement as _run_auth_measurement,
+    remember_kratos_ip as _remember_kratos_ip,
     SSHResult as _SSHResult,
 )
 from kratos.adapters.baseline import (
@@ -252,6 +252,26 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     return approved
 
 
+def _remote_failure(result: Any) -> str:
+    """'over SSH failed: <why>' / 'through the sub-agent failed: <why>'."""
+    text = (result.stderr or result.stdout or "").strip()
+    if result.via == "subagent":
+        return "through the sub-agent failed: " + text.removeprefix("via the sub-agent: ")
+    return f"over SSH failed: {text}"
+
+
+def _network_scan_gap(host: str) -> dict[str, Any] | None:
+    """A sub-agent-only target has no network path from Kratos: refuse the scan
+    (never scan a substitute address) and record what was NOT checked, so the
+    final answer can't present the exposure picture as complete."""
+    reason = _subagent_routing.network_scan_refusal(host)
+    if reason is None:
+        return None
+    return {"status": "error", "observation": reason,
+            "coverage_gap": f"network exposure (open ports/services) of {host} was not checked -- "
+                            "it is reached only through its sub-agent"}
+
+
 @register_tool(
     name="run_nmap_scan",
     description=(
@@ -276,6 +296,8 @@ def tool_run_nmap_scan(data_dir: Path, target: str | None = None) -> dict[str, A
     resolved_target = target or get_active_target()
     if not resolved_target:
         return {"status": "error", "observation": NO_TARGET_MESSAGE}
+    if (gap := _network_scan_gap(resolved_target)) is not None:
+        return gap
     out_xml = _run_nmap_scan(data_dir, resolved_target)
     parsed = _parse_nmap_xml_to_dict(out_xml)
     out_json = _write_parsed_json(data_dir, parsed)
@@ -650,7 +672,7 @@ def tool_read_journalctl(
     if isinstance(result, _SSHResult):
         return {
             "status": "error",
-            "observation": f"journalctl over SSH failed: {(result.stderr or result.stdout).strip()}",
+            "observation": f"journalctl {_remote_failure(result)}",
             "auth_correlation_data": auth_correlation,
         }
     entries, fetch_window = result
@@ -773,15 +795,15 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
     shift = clock_offset or 0.0
     w = tw.window
     gran = 60 if w.seconds <= 2 * 86400 else 3600  # classic-log bucket size (see measure.py)
-    script = _build_measure_script(
+    result = _run_auth_measurement(
         w.start_utc + shift, None if tw.open_ended else w.end_utc + shift,
-        journalctl_prefix=" ".join(_journalctl_prefix()), kratos_user=SSH_TARGET_USER,
-        classic_granularity=gran,
+        granularity=gran, kratos_user=SSH_TARGET_USER, timeout=_MEASURE_BUDGET + 60,
     )
-    result = _run_remote_script(script, timeout=_MEASURE_BUDGET + 60, shell="sh")
     if not result.ok and not result.stdout.strip():
-        return None, None, {"status": "error", "observation": f"measurement over SSH failed: {(result.stderr or result.stdout).strip()}"}
+        return None, None, {"status": "error", "observation": f"measurement {_remote_failure(result)}"}
     m = _parse_measure_output(result.stdout, w.start_utc, w.end_utc, shift, classic_granularity=gran)
+    if result.via == "ssh":
+        _remember_kratos_ip(m.kratos_ip)
     block = _measurement_window_block(tw, m, clock_offset)
     run_ctx = _current_time_context()
     if run_ctx is not None:  # what Guard 7 verifies the final answer's numbers against
@@ -988,7 +1010,7 @@ def tool_state_as_of(data_dir: Path, category: str, at: str | None = None, windo
 def tool_list_open_files(pid: int | None = None) -> dict[str, Any]:
     result = _fetch_open_files(pid)
     if isinstance(result, _SSHResult):
-        return {"status": "error", "observation": f"lsof over SSH failed: {(result.stderr or result.stdout).strip()}"}
+        return {"status": "error", "observation": f"lsof {_remote_failure(result)}"}
     return {"status": "ok", "target": _ssh_target_label(), "pid": pid, "count": len(result), "entries": result}
 
 
@@ -1006,7 +1028,7 @@ def tool_list_open_files(pid: int | None = None) -> dict[str, Any]:
 def tool_list_processes() -> dict[str, Any]:
     result = _fetch_processes()
     if isinstance(result, _SSHResult):
-        return {"status": "error", "observation": f"ps aux over SSH failed: {(result.stderr or result.stdout).strip()}"}
+        return {"status": "error", "observation": f"ps aux {_remote_failure(result)}"}
     return {"status": "ok", "target": _ssh_target_label(), "count": len(result), "entries": result}
 
 
@@ -1035,7 +1057,7 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
 
     current = _fetch_file_hashes()
     if isinstance(current, _SSHResult):
-        return {"status": "error", "observation": f"File integrity check over SSH failed: {(current.stderr or current.stdout).strip()}"}
+        return {"status": "error", "observation": f"File integrity check {_remote_failure(current)}"}
 
     existing = _load_file_integrity_baseline(data_dir, baseline_name)
     fell_back_from: str | None = None
@@ -1123,7 +1145,11 @@ def _load_yara_rules_content(rules_path: Path | None) -> tuple[str, list[str]] |
         "TARGET over SSH -- it must already be installed there; "
         "this tool does not install it. No scanned file's CONTENT is ever pulled back to the "
         "Kratos host, only match results (rule name, matched file path, offset, matched string) "
-        "cross the wire -- same posture as check_file_integrity's hashing. Relevant as a targeted "
+        "cross the wire -- same posture as check_file_integrity's hashing. For a target reached "
+        "through its SUB-AGENT: the box's own rules are used (rules_path can't be sent), only "
+        "rule/file/offset come back (no matched text), credential files are never scanned, and "
+        "scan_path must be inside a common drop location (/tmp, /var/tmp, /dev/shm, /home, /root, "
+        "/srv, /opt, /var/www, /usr/local/*, cron and systemd unit directories). Relevant as a targeted "
         "follow-up once a SPECIFIC suspicious file, directory, or web-server document root has "
         "already been identified (e.g. via list_open_files, list_processes, or file integrity "
         "findings) -- not a first step, and not something to call speculatively across the whole "
@@ -1150,21 +1176,34 @@ def tool_run_yara_scan(scan_path: str, rules_path: str | Path | None = None) -> 
         }
     rules_content, rule_files = loaded
 
-    result = _fetch_yara_scan(scan_path, rules_content)
+    result = _fetch_yara_scan(scan_path, rules_content, custom_rules=resolved_rules_path is not None)
     if isinstance(result, _SSHResult):
         return {
             "status": "error",
-            "observation": f"YARA scan over SSH failed: {(result.stderr or result.stdout).strip()}",
+            "observation": f"YARA scan {_remote_failure(result)}",
             "rules_used": rule_files,
         }
-    return {
+    out = {
         "status": "ok",
         "target": _ssh_target_label(),
         "scan_path": scan_path,
         "rules_used": rule_files,
         "match_count": len(result),
-        "matches": result,
+        "matches": list(result),
     }
+    info = getattr(result, "scan_info", None)
+    if info:  # a sub-agent scan: its own rules, its own scope -- say exactly what was covered
+        out["rules_used"] = info.get("rule_files") or []
+        out["scan_scope"] = {k: v for k, v in info.items() if k not in ("rule_files",) and v not in (None, [], 0)}
+        skipped = [f"{info[k]} {label}" for k, label in (("skipped_credential", "credential file(s)"),
+                                                         ("skipped_unreadable", "unreadable"),
+                                                         ("skipped_large", "over 64 MB"))
+                   if info.get(k)]
+        if skipped or info.get("truncated"):
+            out["coverage_gap"] = (f"YARA through the sub-agent did not scan everything under {scan_path}: "
+                                   + ", ".join(skipped or ["scan limit reached"])
+                                   + (" (stopped at the file or match limit)" if info.get("truncated") and skipped else ""))
+    return out
 
 
 @register_tool(
@@ -1200,6 +1239,10 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     resolved_target = target or get_active_target()
     if not resolved_target:
         return {"status": "error", "observation": NO_TARGET_MESSAGE}
+    if (gap := _network_scan_gap(resolved_target)) is not None:
+        gap["coverage_gap"] = gap["coverage_gap"].replace("network exposure (open ports/services)",
+                                                          "known vulnerabilities on network services")
+        return gap
     resolved_tags = nuclei_tags or _DEFAULT_NUCLEI_TAGS
 
     staleness = _check_vulscan_db_staleness()
@@ -1365,7 +1408,7 @@ def tool_check_ip_reputation(ip: str) -> dict[str, Any]:
 def tool_run_config_audit() -> dict[str, Any]:
     result = _run_config_audit_checks()
     if isinstance(result, _SSHResult):
-        return {"status": "error", "observation": f"Config audit over SSH failed: {(result.stderr or result.stdout).strip()}"}
+        return {"status": "error", "observation": f"Config audit {_remote_failure(result)}"}
     return {"status": "ok", "target": _ssh_target_label(), "checks": result}
 
 
