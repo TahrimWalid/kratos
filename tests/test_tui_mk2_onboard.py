@@ -370,8 +370,8 @@ def test_moving_the_selection_changes_only_the_detail_panel(tmp_path):
 
     out = _choose_screen(tmp_path, (80, 24), script)
     assert out["first"][0] == "Direct SSH  (recommended)" and "Nothing is installed on the box" in out["first"][1]
-    assert out["second"][0] == "Sub-agent" and "TELEMETRY-ONLY" in out["second"][1]
-    assert "does not run investigations yet" in out["second"][1]
+    assert out["second"][0] == "Sub-agent" and "except network scans" in out["second"][1]
+    assert "Investigations work through it" in out["second"][1]
     assert out["options"] == 3
 
 

@@ -171,16 +171,28 @@ the box** — there are two ways, and for most people the first is the right one
 
 - **Direct SSH (recommended).** Kratos logs into the box over SSH with your key and
   reads its logs, config, processes, and ports — read-only. Nothing is installed on
-  the box. **This is the only path that runs investigations today**, so it's what
-  you want unless you have a specific reason not to. You authorize Kratos's SSH key
-  on the box once (Kratos gives you the exact command) and make sure it's reachable.
+  the box. This runs every investigation tool, so it's what you want unless you
+  have a specific reason not to. You authorize Kratos's SSH key on the box once
+  (Kratos gives you the exact command) and make sure it's reachable.
 - **Sub-agent (for boxes you can't or won't open to SSH).** You install a small
   agent on the box; it *dials out* to Kratos, so there's no inbound port to open —
-  handy for a machine behind NAT or a strict firewall. Today it streams basic status
-  (always-on), but it does **not** run the investigation tools yet; those still use
-  Direct SSH. (Letting Kratos *act* on a target through this agent is a planned
-  opt-in — not built yet.)
+  handy for a machine behind NAT or a strict firewall. It streams basic status
+  (always-on) and answers investigations with its own fixed set of reads: logs,
+  processes, open files, config checks, file hashes and YARA scans. It can't run
+  anything else, and Kratos can't send it commands. Two things work differently:
+  network scans (open ports, known vulnerabilities) need a direct path from Kratos,
+  so they're skipped for a box reached only this way, and the answer says what
+  wasn't checked; and YARA uses the rules on the box itself and reports rule, file
+  and offset only. Credential files (SSH keys, `.env`, shadow…) are never scanned.
 - **Skip for now** — set it up later with `/target` or `/subagent`.
+
+Kratos never guesses which machine a target is. Picking **Sub-agent** links the box
+to its agent once it checks in; if you later type an address that looks like a box
+you've already paired, Kratos *asks* before linking. `/target link` changes how a
+target is reached (sub-agent only, or SSH first with the sub-agent as a fallback),
+and `/doctor` shows which way it is reached right now. An agent installed before
+this feature needs one update: open `/subagent`, select it and press **g** — it
+keeps its pairing.
 
 For the common case, choose Direct SSH. Point Kratos at a host:
 

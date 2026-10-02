@@ -16,6 +16,19 @@ from kratos.tui_mk2.screens import subagent as sa_mod
 from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _hub_addresses_count_as_tailnet(monkeypatch):
+    """These pilots script the add-server modals in order; the plain-network
+    question (asked only for a non-Tailscale address) has its own tests in
+    test_tui_mk2_target_link.py."""
+    from kratos.subagent import hub_address
+
+    monkeypatch.setattr(hub_address, "is_trusted_transport_address", lambda host: True)
+
+
 class _Host(App):
     def __init__(self, screen):
         super().__init__()

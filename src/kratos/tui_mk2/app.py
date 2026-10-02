@@ -129,6 +129,7 @@ class KratosTUI(ResilientWorkerHost, App):
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
         self.data_dir = data_dir
+        _kconfig.set_active_data_dir(data_dir)
         self.store = SessionStore(data_dir / "kratos.db")
         self._too_small_active = False
         self._booted = False  # gate the resize guard until boot pushed a real screen
@@ -388,12 +389,14 @@ class KratosTUI(ResilientWorkerHost, App):
         try:
             from kratos.storage.subagent_store import SubAgentStore
             from kratos.subagent.core_server import CoreServer
+            from kratos.subagent.local_reads import socket_path
 
             self._core_server = CoreServer(
                 SubAgentStore(self.data_dir / "kratos.db"),
                 host=_cl.DEFAULT_BIND_HOST,
                 port=_cl.DEFAULT_PORT,
                 mode="in_process",
+                read_socket_path=socket_path(self.data_dir),
             )
             self.run_worker(
                 self._serve_core_listener(self._core_server),

@@ -446,6 +446,7 @@ class HelpModal(ModalScreen[None]):
             yield Static(self._table("Configuration", [
                 ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
                 ("/target verify", "Re-check the active target's setup"),
+                ("/target link", "Read the target through a paired sub-agent (or back to SSH)"),
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Settings — models, tools, name, timezone, this session (also 's' at the picker)"),

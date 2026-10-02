@@ -21,8 +21,12 @@ text), and then walks the chosen path to a working connection:
   - anything else (timeout, DNS, refused, host key changed, ...) -> what it
     means and the next step, from the same classifier the deploy flow uses.
 - **Sub-agent** (a small agent on the target dials back): always-on read-only
-  telemetry, right for a behind-NAT / no-inbound box. Hands off to the real
-  `/subagent` add flow.
+  telemetry AND investigations through the agent's fixed set of reads, right
+  for a behind-NAT / no-inbound box. Hands off to the real `/subagent` add
+  flow; once the new agent checks in, this target is linked to it (that choice
+  was the user's, so the link is explicit, docs/subagent_read_routing.md D3).
+- **Its paired sub-agent** (only when the typed target looks like a box that is
+  already paired): link to it directly -- offered, never assumed.
 - **Skip**: proceed anyway; set it up later from `/target` or `/subagent`.
 
 This screen never runs anything on the target and never takes the target's
@@ -78,7 +82,7 @@ _CHOICES = (
     ("skip", "Skip for now"),
 )
 
-# Honest by construction: the sub-agent is telemetry-only today and must say so.
+# Honest by construction: say exactly what each path can and can't do.
 _DETAILS: dict[str, list[tuple[str, str]]] = {
     "ssh": [
         ("What", "Kratos logs into this box over SSH with your key and READS its logs, config, "
@@ -90,11 +94,13 @@ _DETAILS: dict[str, list[tuple[str, str]]] = {
     ],
     "subagent": [
         ("What", "A small agent you install on the box. It dials OUT to Kratos (no inbound port on "
-                 "your box) and streams telemetry (uptime, disk, …). Later it can run a narrow "
-                 "allowlist of approved fixes — off by default."),
+                 "your box), streams telemetry, and answers investigations with a fixed set of "
+                 "built-in reads (logs, processes, open files, config, file hashes, YARA). It can't "
+                 "run anything else; fixes stay off unless you turn them on."),
         ("How", "A one-line installer sets it up as a service; it connects out (Tailscale or your "
                 "network). Kratos never opens a port on your box."),
-        ("Today", "TELEMETRY-ONLY — it does not run investigations yet; those still use SSH."),
+        ("Today", "Investigations work through it, except network scans (open ports / vulnerabilities) "
+                  "— those need a direct path from Kratos and are skipped, and the answer says so."),
         ("You do", "run one install command on the box (Kratos generates it)."),
     ],
     "skip": [
@@ -106,12 +112,12 @@ _CHOICE_LABEL = dict(_CHOICES)
 _WIDE_AT = 110
 
 
-def _detail_table(key: str) -> Table:
+def _detail_table(key: str, details: dict[str, list[tuple[str, str]]] | None = None) -> Table:
     table = Table(show_header=False, box=None, padding=(0, 1, 0, 0), expand=True)
     table.add_column(style=f"bold {T.TEXT_BRIGHT}", no_wrap=True)
     table.add_column(style=T.TEXT_MUTED, ratio=1)
-    for label, text in _DETAILS[key]:
-        style = f"bold {T.ATTENTION}" if label == "Today" and key == "subagent" else T.TEXT_MUTED
+    for label, text in (details or _DETAILS)[key]:
+        style = f"bold {T.ATTENTION}" if label == "Today" and key in ("subagent", "paired") else T.TEXT_MUTED
         table.add_row(label, Text(text, style=style))
     return table
 
@@ -147,6 +153,28 @@ class OnboardTargetScreen(Screen[str | None]):
         self._target_host = target_host
         self._core_port = core_port
         self._method: str | None = None
+        # A box this target looks like (by name/hostname/address) that is
+        # already paired: offered as its own choice, never linked silently.
+        from kratos.tui_mk2 import target_link as TL
+
+        try:
+            self._paired = [] if TL.current_link(data_dir, target_host) else TL.matching_agents(data_dir, target_host)
+        except Exception:  # noqa: BLE001 -- a store problem must not block onboarding
+            self._paired = []
+        self._choices = list(_CHOICES)
+        self._labels = dict(_CHOICE_LABEL)
+        self._details = dict(_DETAILS)
+        if self._paired:
+            name = TL.agent_label(self._paired[0])
+            self._choices.insert(0, ("paired", f"Its paired sub-agent  ({name})"))
+            self._labels["paired"] = self._choices[0][1]
+            self._details["paired"] = [
+                ("What", f"{target_host} looks like {name}, a box you've already paired. Kratos would read it "
+                         "through that sub-agent's fixed set of built-in reads."),
+                ("Today", "Investigations work through it, except network scans (open ports / vulnerabilities) "
+                          "— those need a direct path and are skipped, and the answer says so."),
+                ("You do", "confirm it's the same machine — a wrong link would read the wrong box."),
+            ]
 
     def compose(self) -> ComposeResult:
         banner = Text(f"Connect Kratos to {self._target_host}", style=f"bold {T.ACCENT}")
@@ -154,7 +182,7 @@ class OnboardTargetScreen(Screen[str | None]):
         with Vertical():
             yield Static(banner, id="ob-banner")
             with Container(id="ob-choose"):
-                yield OptionList(*(Option(label, id=key) for key, label in _CHOICES), id="ob-options")
+                yield OptionList(*(Option(label, id=key) for key, label in self._choices), id="ob-options")
                 with VerticalScroll(id="ob-detail"):
                     yield Static(id="ob-detail-body")
             yield VerticalScroll(id="ob-log")
@@ -167,7 +195,7 @@ class OnboardTargetScreen(Screen[str | None]):
         options.focus()
         # The panel title names the option it describes; the border itself stays quiet.
         self.query_one("#ob-detail").styles.border_title_color = T.ACCENT
-        self._show_detail(_CHOICES[0][0])
+        self._show_detail(self._choices[0][0])
 
     def on_resize(self, event) -> None:
         self._apply_width(event.size.width)
@@ -185,12 +213,12 @@ class OnboardTargetScreen(Screen[str | None]):
     def _highlighted_key(self) -> str:
         options = self.query_one("#ob-options", OptionList)
         index = options.highlighted if options.highlighted is not None else 0
-        return options.get_option_at_index(index).id or _CHOICES[0][0]
+        return options.get_option_at_index(index).id or self._choices[0][0]
 
     def _show_detail(self, key: str) -> None:
         panel = self.query_one("#ob-detail", VerticalScroll)
-        panel.border_title = _CHOICE_LABEL.get(key, key)
-        self.query_one("#ob-detail-body", Static).update(_detail_table(key))
+        panel.border_title = self._labels.get(key, key)
+        self.query_one("#ob-detail-body", Static).update(_detail_table(key, self._details))
         panel.scroll_home(animate=False)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
@@ -204,7 +232,7 @@ class OnboardTargetScreen(Screen[str | None]):
     def action_details(self) -> None:
         if self._choosing():
             key = self._highlighted_key()
-            self.app.push_screen(InfoModal(_CHOICE_LABEL[key], _detail_table(key)))
+            self.app.push_screen(InfoModal(self._labels[key], _detail_table(key, self._details)))
 
     # ------------------------------------------------------------------
     def _log(self, renderable) -> None:
@@ -225,17 +253,37 @@ class OnboardTargetScreen(Screen[str | None]):
         if picked == "ssh":
             _kconfig.set_active_target(self._target_host)
             self._start_ssh()
+        elif picked == "paired":
+            self._link_paired()
         elif picked == "subagent":
             self._log(Text(
                 "Opening sub-agent setup — add your server there (press 'a'), then Esc to come back "
-                "and Enter to continue into your session.",
+                "and Enter to continue into your session. Once the agent checks in, investigations of "
+                f"{self._target_host} read through it.",
                 style=T.TEXT_MUTED,
             ))
             from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
             self.app.push_screen(
-                SubAgentScreen(self._data_dir, self._core_port, auto_add=True, default_name=self._target_host)
+                SubAgentScreen(self._data_dir, self._core_port, auto_add=True, default_name=self._target_host,
+                               link_host=self._target_host)
             )
+
+    @work
+    async def _link_paired(self) -> None:
+        from kratos.tui_mk2 import target_link as TL
+
+        agent = self._paired[0]
+        mode = await TL.ask_mode(self.app, self._target_host, agent)
+        if mode is None:
+            self._log(Text("Not linked. Press esc to set up later, or pick another way.", style=T.TEXT_MUTED))
+            return
+        self._log(TL.apply_link(self._data_dir, self._target_host, agent["target_id"], mode))
+        _kconfig.set_active_target(self._target_host)
+        ensure = getattr(self.app, "ensure_core_listener", None)
+        if ensure is not None:
+            ensure()
+        self._reprobe_worker()
 
     # --- direct SSH ------------------------------------------------------
     @work
@@ -282,9 +330,16 @@ class OnboardTargetScreen(Screen[str | None]):
     def _probe_inner(self) -> None:
         from kratos.adapters.ssh_remote import SSHResult, run_target_probe_checks
 
-        self.app.call_from_thread(self._log, Text(f"Checking whether Kratos can log in to {self._target_host}…",
-                                                  style=T.TEXT_DIM))
+        via_agent = self._method == "paired"
+        self.app.call_from_thread(self._log, Text(
+            f"Checking what Kratos can read on {self._target_host} through its sub-agent…" if via_agent
+            else f"Checking whether Kratos can log in to {self._target_host}…", style=T.TEXT_DIM))
         result = run_target_probe_checks()
+        if isinstance(result, SSHResult) and via_agent:
+            self.app.call_from_thread(self._log, Text(
+                f"Couldn't read {self._target_host} through its sub-agent yet: {(result.stderr or '').strip()} "
+                "— press p to re-check.", style=T.ATTENTION))
+            return
         if isinstance(result, SSHResult):
             addr = f"{_kconfig.SSH_TARGET_USER}@{self._target_host}"
             raw = (result.stderr or result.stdout or "").strip()
@@ -303,7 +358,8 @@ class OnboardTargetScreen(Screen[str | None]):
         table.add_column("Check")
         table.add_column("Status")
         table.add_column("Detail")
-        colors = {"PASS": T.SAFE, "FAIL": T.CRITICAL, "UNKNOWN": T.ATTENTION, "INFO": T.TEXT_MUTED}
+        colors = {"PASS": T.SAFE, "FAIL": T.CRITICAL, "UNKNOWN": T.ATTENTION, "WARN": T.ATTENTION,
+                  "INFO": T.TEXT_MUTED}
         n_fail = 0
         for c in result:
             status = c.get("status", "UNKNOWN")
@@ -315,9 +371,11 @@ class OnboardTargetScreen(Screen[str | None]):
                 Text(c.get("detail", ""), style=T.TEXT_DIM),
             )
         self.app.call_from_thread(self._log, table)
-        if n_fail == 0:
+        if n_fail == 0 or via_agent:
             self.app.call_from_thread(self._log, Text(
-                f"✓ Kratos can reach {self._target_host} — you're ready. Press Enter to start.",
+                f"✓ Kratos can reach {self._target_host} — you're ready. Press Enter to start."
+                + (" Anything marked FAIL above is something the agent can't read on that box; the "
+                   "investigation will say so where it matters." if n_fail and via_agent else ""),
                 style=f"bold {T.SAFE}",
             ))
             return
@@ -393,6 +451,8 @@ class OnboardTargetScreen(Screen[str | None]):
     def action_reprobe(self) -> None:
         if self._method == "ssh":
             self._start_ssh()
+        elif self._method == "paired":
+            self._reprobe_worker()
 
     def action_continue(self) -> None:
         if self._choosing():

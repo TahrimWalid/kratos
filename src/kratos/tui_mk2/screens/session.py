@@ -244,6 +244,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._user_name = (_kconfig.load_local_config(self._data_dir).get("user_name") or "").strip()
         if self.session_state["targets"]:
             _kconfig.set_active_target(self.session_state["targets"][0])
+            from kratos.subagent import routing as _routing
+
+            if _routing.active_link() is not None:
+                self._ensure_listener_for_reads()  # reads through its sub-agent need a listener
         self._refresh_header()
         self._refresh_footer()
         self.set_interval(1.0, self._refresh_header)  # live clock
@@ -2893,7 +2897,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
         just a read-out of the current value."""
         rest = rest.strip()
         if rest == "verify":
+            self._emit(self._transport_line())
             self._probe_target_worker()
+            return
+        if rest in ("link", "unlink", "via"):
+            await self._target_link_flow(unlink=rest == "unlink")
             return
         if not rest:
             from kratos.tui_mk2.target_input import KRATOS_HOST_SENTINEL, KRATOS_HOST_VALUE
@@ -2980,7 +2988,69 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if _kconfig.remember_first_target(self._data_dir, targets[0]):
             self._emit(R.note_line(f"Saved {targets[0]} as your default target for command-line and "
                                    "scheduled runs."))
-        self._setup_target_worker(targets[0])
+        self._connect_target_flow(targets[0])
+
+    def _transport_line(self) -> Text:
+        from kratos.tui_mk2 import target_link as TL
+
+        return TL.describe(self._data_dir, _kconfig.get_active_target())
+
+    @work(group="target-connect")
+    async def _connect_target_flow(self, host: str) -> None:
+        """How will Kratos reach this target? If it looks like a paired box,
+        ASK (never assume) whether to read it through that sub-agent; then
+        check the path that will actually be used."""
+        from kratos.tui_mk2 import target_link as TL
+
+        try:
+            await TL.offer_link(self.app, self._data_dir, host)
+        except Exception as e:  # noqa: BLE001 -- the offer is a convenience; SSH setup still follows
+            self._emit(R.note_line(f"Couldn't check paired sub-agents: {e}"))
+        self._emit(TL.describe(self._data_dir, host))
+        if TL.current_link(self._data_dir, host) is not None:
+            self._ensure_listener_for_reads()
+            self._probe_target_worker()
+            return
+        self._setup_target_worker(host)
+
+    async def _target_link_flow(self, unlink: bool = False) -> None:
+        from kratos.subagent import routing as _routing
+        from kratos.tui_mk2 import target_link as TL
+
+        host = _kconfig.get_active_target()
+        if not host:
+            self._emit(R.error_line(_kconfig.NO_TARGET_MESSAGE))
+            return
+        if unlink:
+            link = TL.current_link(self._data_dir, host)
+            if link is None:
+                self._emit(R.note_line(f"{host} isn't linked to a sub-agent — it's reached over SSH."))
+                return
+            from kratos.storage.subagent_store import SubAgentStore
+
+            SubAgentStore(self._data_dir / "kratos.db").remove_link(host)
+            _routing.clear_ssh_down(host)
+            self._emit(R.success_line(f"{host} is reached over SSH only now (unlinked from {link.label})."))
+            return
+        line = await TL.choose_link(self.app, self._data_dir, host)
+        if line is None:
+            self._emit(R.note_line("Link unchanged."))
+            return
+        _routing.clear_ssh_down(host)
+        self._emit(line)
+        if TL.current_link(self._data_dir, host) is not None:
+            self._ensure_listener_for_reads()
+            self._probe_target_worker()
+
+    def _ensure_listener_for_reads(self) -> None:
+        """Reads through a sub-agent go via the listener that holds its
+        connection: start one in this window if none is running."""
+        ensure = getattr(self.app, "ensure_core_listener", None)
+        if ensure is not None:
+            try:
+                ensure()
+            except Exception:  # noqa: BLE001 -- reads then report "no listener" plainly
+                pass
 
     @work(thread=True)
     def _setup_target_worker(self, target_host: str) -> None:
@@ -3012,13 +3082,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         result = run_target_probe_checks()
         if isinstance(result, SSHResult):
-            self._emit_from_worker(R.error_line(f"Could not reach target to verify setup: {(result.stderr or result.stdout).strip()}"))
+            how = "through its sub-agent" if result.via == "subagent" else "over SSH"
+            self._emit_from_worker(R.error_line(
+                f"Could not reach the target {how} to verify setup: {(result.stderr or result.stdout).strip()}"))
             return
         table = Table(show_header=True, header_style="bold", title="Target setup check")
         table.add_column("Check")
         table.add_column("Status")
         table.add_column("Detail")
-        colors = {"PASS": T.SAFE, "FAIL": T.CRITICAL, "UNKNOWN": T.ATTENTION}
+        colors = {"PASS": T.SAFE, "FAIL": T.CRITICAL, "UNKNOWN": T.ATTENTION, "WARN": T.ATTENTION}
         for c in result:
             table.add_row(c["check"], Text(c["status"], style=colors.get(c["status"], T.TEXT)), c["detail"])
         self._emit_from_worker(table)

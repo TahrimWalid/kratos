@@ -64,10 +64,11 @@ def valid_ssh_address(addr: str) -> str | None:
 
 
 # One line on what "add a server" gives you; same honesty as the onboarding
-# choice: no inbound port, telemetry only today, execution off by default.
+# choice: no inbound port, read-only (telemetry + its own built-in reads),
+# execution off by default.
 _ADD_SERVER_SUMMARY = (
-    "Installs a small agent on {host} that dials OUT to Kratos and streams telemetry. No inbound port on "
-    "your box. Telemetry-only today; approved fixes are opt-in and OFF by default."
+    "Installs a small agent on {host} that dials OUT to Kratos, streams telemetry and answers investigations "
+    "with its own built-in reads only. No inbound port on your box. Approved fixes are opt-in and OFF by default."
 )
 
 _DEFAULT_CORE_PORT = 8765
@@ -108,6 +109,8 @@ class SubAgentScreen(Screen):
         Binding("f", "forget", "forget", show=False),
         Binding("c", "copy_commands", "copy deploy cmds", show=True),
         Binding("l", "install_service", "always-on listener", show=True),
+        Binding("k", "link_target", "link a target", show=True),
+        Binding("g", "update_agent", "update agent", show=False),
         Binding("r", "refresh", "refresh", show=False),
     ]
 
@@ -127,6 +130,7 @@ class SubAgentScreen(Screen):
         *,
         auto_add: bool = False,
         default_name: str | None = None,
+        link_host: str | None = None,
     ) -> None:
         super().__init__()
         self._data_dir = Path(data_dir)
@@ -148,6 +152,13 @@ class SubAgentScreen(Screen):
         # with the target's name pre-filled.
         self._auto_add = auto_add
         self._default_name = default_name
+        # From onboarding's "Sub-agent" choice: once a server added here checks
+        # in, investigations of this target read through it (the user already
+        # chose that -- docs/subagent_read_routing.md D3).
+        self._link_host = link_host
+        # Per Kratos address: may investigation reads run over a plain (not
+        # loopback/Tailscale) network? Asked once, only for such an address.
+        self._allow_untrusted: dict[str, bool] = {}
         # The manual scp+ssh deploy commands for the most-recently-added server,
         # so `c` can pop a click-to-copy box for them (same as the authorize cmd).
         self._last_deploy_commands: str | None = None
@@ -162,8 +173,9 @@ class SubAgentScreen(Screen):
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
-                Text("a add · t telemetry · i details · u unpair · p re-pair · n new code · x dismiss code · "
-                     "f forget (unpaired) · c copy deploy cmds · l always-on listener · esc back", style=T.TEXT_DIM),
+                Text("a add · k link a target · g update agent · t telemetry · i details · u unpair · p re-pair · "
+                     "n new code · x dismiss code · f forget (unpaired) · c copy deploy cmds · l always-on listener · "
+                     "esc back", style=T.TEXT_DIM),
                 id="sa-hints",
             )
 
@@ -305,6 +317,7 @@ class SubAgentScreen(Screen):
                 self._log(Text(f"✓ {label} paired ({t.get('hostname') or '?'}, agent {t.get('agent_version') or '?'})"
                                f" -- telemetry is live.{replaced} It is recommend-only; turn on direct execution "
                                "from /whitelist only if you want it.", style=f"bold {T.SAFE}"))
+                self._link_new_agent(row["used_by_target_id"])
                 continue
             expires = ST.parse_stored_instant(row["expires_at"])
             if expires is not None and expires < now:
@@ -423,6 +436,8 @@ class SubAgentScreen(Screen):
         host = host or await self._pick_hub_address()
         if host is None:
             return
+        if await self._ask_plain_network(host) is None:
+            return
         result = self._sa_store.create_pairing_code(name=name, replaces_target_id=replaces_target_id, core_host=host)
         code = result["code"]
         out_path = self._write_installer(name, host, code)
@@ -444,7 +459,8 @@ class SubAgentScreen(Screen):
 
     def _write_installer(self, name: str | None, host: str, code: str) -> Path | None:
         try:
-            script = installer.generate_installer(host, code, core_port=self._core_port)
+            script = installer.generate_installer(host, code, core_port=self._core_port,
+                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False))
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate installer: {exc}", style=T.CRITICAL))
             return None
@@ -591,6 +607,11 @@ class SubAgentScreen(Screen):
                   "collect_interval"):
             if conn.get(k) is not None:
                 body.add_row(k, str(conn[k]))
+        links = [ln for ln in self._sa_store.list_links() if ln["target_id"] == t["target_id"]]
+        from kratos.subagent import routing as _routing
+
+        body.add_row("investigated as", ", ".join(f"{ln['host']} ({_routing.MODE_LABELS.get(ln['mode'], ln['mode'])})"
+                                                for ln in links) or "— not linked to a target (press k) —")
         self._log(Text(f"{t.get('name') or t['target_id']}:", style=f"bold {T.ACCENT}"))
         self._log(body)
         events = self._sa_store.recent_events(t["target_id"], 24 * 3600)[-10:]
@@ -602,6 +623,47 @@ class SubAgentScreen(Screen):
             for e in events:
                 hist.add_row(ST.human_age(ST._age(e["at"], ST.utc_now())), e["event"], e.get("detail") or "")
             self._log(hist)
+
+    def _link_new_agent(self, target_id: str) -> None:
+        if not self._link_host:
+            return
+        from kratos.subagent import routing as _routing
+        from kratos.tui_mk2 import target_link as TL
+
+        if TL.current_link(self._data_dir, self._link_host) is not None:
+            return
+        try:
+            self._log(TL.apply_link(self._data_dir, self._link_host, target_id, _routing.MODE_SUBAGENT))
+            self._log(Text(f"Investigations of {self._link_host} now go through this sub-agent. Esc to go back and "
+                           "continue; /target link changes it later.", style=T.TEXT_MUTED))
+        except ValueError as e:
+            self._log(Text(f"Couldn't link {self._link_host}: {e}", style=T.ATTENTION))
+
+    @work
+    async def action_link_target(self) -> None:
+        """Link a session target (an IP/hostname you investigate) to the
+        selected paired box, so investigations read through its sub-agent."""
+        from kratos import kratos_config as _kc
+        from kratos.tui_mk2 import target_link as TL
+
+        target = self._selected_target()
+        if target is None or target.get("revoked_at"):
+            self._log(Text("Select a paired server first.", style=T.TEXT_DIM))
+            return
+        host = await self.app.push_screen_wait(PromptModal(
+            f"Which target is {TL.agent_label(target)}?",
+            "The IP or hostname you investigate this box as (it must really be this machine)",
+            initial=_kc.get_active_target() or target.get("name") or "",
+        ))
+        if not host or not host.strip():
+            return
+        mode = await TL.ask_mode(self.app, host.strip(), target)
+        if mode is None:
+            return
+        try:
+            self._log(TL.apply_link(self._data_dir, host.strip(), target["target_id"], mode))
+        except ValueError as e:
+            self._log(Text(f"Couldn't link: {e}", style=T.ATTENTION))
 
     def _announce_listener(self) -> None:
         ensure = getattr(self.app, "ensure_core_listener", None)
@@ -622,7 +684,71 @@ class SubAgentScreen(Screen):
                 style=T.ATTENTION,
             ))
 
-    async def _offer_ssh_deploy(self, out_path: Path, name: str | None, code: str | None = None) -> None:
+    async def _ask_plain_network(self, host: str) -> bool | None:
+        """Over a plain network (not loopback or Tailscale) the agent refuses
+        investigation reads unless allowed at install time: the channel has no
+        encryption of its own, and reads carry log lines and process lists.
+        Returns the choice (False when no question was needed), None to stop."""
+        if host in self._allow_untrusted:
+            return self._allow_untrusted[host]
+        if await asyncio.to_thread(hub_address.is_trusted_transport_address, host):
+            self._allow_untrusted[host] = False
+            return False
+        picked = await self.app.push_screen_wait(ListPickerModal(
+            f"{host} isn't a Tailscale address",
+            [
+                ("off", "Telemetry only on this network — use Tailscale for investigations (safer)"),
+                ("on", "Also allow investigations — this network is mine and trusted"),
+            ],
+            subtitle="The link between the box and Kratos has no encryption of its own. Telemetry flows either way; "
+                     "investigation reads send log lines and process lists, so the agent refuses them on a plain "
+                     "network unless you allow it here. Direct execution is unaffected (still off).",
+        ))
+        if picked is None:
+            return None
+        self._allow_untrusted[host] = picked == "on"
+        return self._allow_untrusted[host]
+
+    @work
+    async def action_update_agent(self) -> None:
+        """Update the selected box's agent in place: same pairing, new code
+        (e.g. so it can answer investigations). Generates the upgrade
+        installer and offers to run it over SSH, like adding a server."""
+        target = self._selected_target()
+        if target is None or target.get("revoked_at"):
+            self._log(Text("Select a paired server to update.", style=T.TEXT_DIM))
+            return
+        from kratos.subagent.agent import AGENT_VERSION
+
+        label = target.get("name") or target.get("hostname") or target["target_id"]
+        host = self._sa_store.core_host_for_target(target["target_id"]) or await self._pick_hub_address()
+        if not host:
+            return
+        allow = await self._ask_plain_network(host)
+        if allow is None:
+            return
+        try:
+            script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True,
+                                                  allow_untrusted_transport=allow)
+        except installer.InstallerError as exc:
+            self._log(Text(f"Could not generate the update: {exc}", style=T.CRITICAL))
+            return
+        out_path = self._data_dir / f"kratos-subagent-upgrade-{_slug(label) or 'server'}.sh"
+        try:
+            out_path.write_text(script, encoding="utf-8")
+            out_path.chmod(0o600)
+        except OSError as exc:
+            self._log(Text(f"Could not write {out_path}: {exc}", style=T.CRITICAL))
+            return
+        self._last_deploy_commands = self._deploy_commands(out_path)
+        self._log(Text(
+            f"Update for {label}: agent {target.get('agent_version') or '?'} → {AGENT_VERSION}, same pairing, "
+            f"execution stays off. Saved {out_path.name}. Run it ON the box (c copies the commands), or deploy "
+            "it over SSH next.", style=T.TEXT_MUTED))
+        await self._offer_ssh_deploy(out_path, label, upgrade=True)
+
+    async def _offer_ssh_deploy(self, out_path: Path, name: str | None, code: str | None = None,
+                                upgrade: bool = False) -> None:
         deploy = await self.app.push_screen_wait(ConfirmModal(
             "Deploy over SSH now?",
             "Copy the installer to the target and run it over SSH for you? "
@@ -652,7 +778,6 @@ class SubAgentScreen(Screen):
             initial = ssh_addr
         if code and code in self._watched_codes:
             self._watched_codes[code]["ssh_addr"] = ssh_addr
-        upgrade = False
         if code and not self._code_usable(code):
             # The operator can sit on these prompts past the 15-minute TTL.
             self._log(Text("That pairing code expired while you were setting this up — select its row and press n "
@@ -731,7 +856,8 @@ class SubAgentScreen(Screen):
             self._log(Text("Can't build the upgrade: this code has no Kratos address.", style=T.CRITICAL))
             return None
         try:
-            script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True)
+            script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True,
+                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False))
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate the upgrade installer: {exc}", style=T.CRITICAL))
             return None

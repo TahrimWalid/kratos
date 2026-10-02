@@ -18,6 +18,19 @@ from kratos.tui_mk2.screens import subagent as sa_mod
 from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
 
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _hub_addresses_count_as_tailnet(monkeypatch):
+    """These pilots script the add-server modals in order; the plain-network
+    question (asked only for a non-Tailscale address) has its own tests in
+    test_tui_mk2_target_link.py."""
+    from kratos.subagent import hub_address
+
+    monkeypatch.setattr(hub_address, "is_trusted_transport_address", lambda host: True)
+
+
 class _Host(App):
     def __init__(self, screen):
         super().__init__()
@@ -294,7 +307,7 @@ def test_every_column_stays_on_screen_at_80_columns(tmp_path):
 
 
 def test_add_server_explains_each_step_in_one_line(tmp_path, monkeypatch):
-    """A first-timer sees what they're getting (an outbound-only, telemetry-only agent, execution
+    """A first-timer sees what they're getting (an outbound-only, read-only agent, execution
     off) and what each step is for -- one short line per step, nothing that oversells."""
     from kratos.subagent import hub_address
     from kratos.tui_mk2.modals import ListPickerModal, PromptModal
@@ -324,7 +337,7 @@ def test_add_server_explains_each_step_in_one_line(tmp_path, monkeypatch):
     asyncio.run(run())
     name_prompt, address_picker = seen["modals"][0], seen["modals"][1]
     assert isinstance(name_prompt, PromptModal) and "dials OUT to Kratos" in name_prompt._hint
-    assert "Telemetry-only today" in name_prompt._hint and "OFF by default" in name_prompt._hint
+    assert "built-in reads only" in name_prompt._hint and "OFF by default" in name_prompt._hint
     assert isinstance(address_picker, ListPickerModal) and "DIAL to reach Kratos" in address_picker._subtitle
     assert "Tailscale is listed first" in address_picker._subtitle
     texts = seen["texts"]
