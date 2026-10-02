@@ -7,7 +7,10 @@ the worker (ordered execution, union findings, per-job records, the on_failure
 policy, gated exclusion applied group-wide)."""
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
 
 import pytest
 

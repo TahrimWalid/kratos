@@ -1,7 +1,10 @@
 """Scripted tests for the A6.4 triggers store (agent/triggers.py)."""
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10
+    import tomli as tomllib  # type: ignore[no-redef]
 
 import pytest
 

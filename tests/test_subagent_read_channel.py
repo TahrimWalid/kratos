@@ -43,7 +43,10 @@ class Harness:
                               pairing_code=code, local_allow_file=None, collect_interval=300, **kwargs)
         self.tasks.append(asyncio.create_task(self.agent.run_forever()))
         for _ in range(200):
-            if self.core._live:
+            # Both ends done: core holds the connection AND the agent has
+            # processed the hello_ack (saved its token). Core marks a target
+            # live just before the agent reads that reply.
+            if self.core._live and self.agent.token and self.agent.last_target_id:
                 return next(iter(self.core._live))
             await asyncio.sleep(0.02)
         raise AssertionError("agent never connected")

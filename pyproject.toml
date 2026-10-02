@@ -11,19 +11,19 @@ requires-python = ">=3.10"
 license = { file = "LICENSE" }
 dependencies = [
     "requests",
-    "uvicorn",
-    "fastapi",
-    "sse-starlette",
-    "pydantic-settings",
-    "starlette-context",
     "python-dotenv",
-    "rich",
+    "rich>=13",
     "prompt_toolkit",
-    "textual>=0.60",
-    "mcp",
+    # Upper bounds on the two libraries whose majors break Kratos: mcp 2.x renamed
+    # FastMCP (kratos mcp-serve failed to import on a fresh install), and Textual
+    # changes its API between majors. Raise each after testing on the new major.
+    "textual>=8.2,<9",
+    "mcp>=1.10,<2",
     # IANA tz database for zoneinfo on hosts without /usr/share/zoneinfo (containers,
     # Windows) -- time-window resolution must never silently fall back to UTC.
     "tzdata",
+    # Presets, schedules and triggers are TOML; tomllib is stdlib from 3.11.
+    "tomli>=1.1; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]
