@@ -495,6 +495,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         self._log.write(renderable)
 
+    def _write_full(self, renderable: Any) -> None:
+        """Write at the transcript's full width (for content that centres itself)."""
+        width = self._log.scrollable_content_region.width
+        if width > 0:
+            self._log.write(renderable, width=width)
+        else:
+            self._log.write(renderable, expand=True)
+
     def _emit(self, renderable: Any) -> None:
         """Write to the transcript from the EVENT LOOP (main-thread callers)."""
         self._write(renderable)
@@ -560,13 +568,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
         model = get_active_llm_model()
         base = (get_active_llm_base_url() or "").lower()
         is_local = any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
-        self._emit(R.home_banner(target, n_builtin, n_kept, model=model,
-                                 model_is_local=is_local, resumed=bool(st["resume_context"])))
+        # Full transcript width, so the centred home block is centred on screen
+        # rather than inside a block sized to its own text at the left edge.
+        self._write_full(R.home_banner(target, n_builtin, n_kept, model=model,
+                                       model_is_local=is_local, resumed=bool(st["resume_context"])))
         # Secondary hints (kept dim, below the banner) for the less-obvious moves.
-        self._emit(Text(
-            "Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list · "
-            "esc/Ctrl+C stops a response · ask “investigate your own host” to check Kratos itself",
-            style=T.TEXT_GHOST))
+        # Two short lines, so they stay whole and centred even at 80 columns.
+        self._write_full(Text(
+            "Ctrl+P commands · ↑/↓ edit a previous turn · Ctrl+B session list\n"
+            "esc stops a response · “investigate your own host” checks Kratos",
+            style=T.TEXT_GHOST, justify="center"))
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay ([f]) ---------------

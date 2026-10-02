@@ -59,7 +59,8 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
                 model: str = "", model_is_local: bool = False,
                 resumed: bool = False) -> Group:
     """The idle / home screen: a centered KRATOS wordmark, a one-line identity,
-    three at-a-glance cards (target · model · tools), and starter tips. Shown
+    three at-a-glance cards (target · model · tools), and starter tips, all
+    centred (write it at the full transcript width so it centres). Shown
     when a session has no messages yet. The wordmark + 'Kratos:' voice use the
     active theme's brand color (red by default), so this restyles with the theme.
 
@@ -86,17 +87,18 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     # ask a question, learn more. (No "connect a sub-agent" tip -- that path isn't
     # built yet; /target is how you point Kratos at a host today.)
     tips = Text()
+    # Every line stays under ~66 columns, so the block is whole (and centred) on
+    # an 80-column terminal, where the transcript is about 71 wide.
     tips.append("new here?  ", style=f"bold {T.TEXT_FAINTER}")
-    tips.append("start with  ", style=T.TEXT_DIM)
     tips.append("/target <host>", style=T.ACCENT)
-    tips.append("  to connect a machine, then ask in plain language\n", style=T.TEXT_DIM)
+    tips.append(" to connect, then ask in plain words\n", style=T.TEXT_DIM)
     tips.append("  ·  try  ", style=T.TEXT_FAINTER)
     tips.append("“check this host for signs of an SSH brute-force”\n", style=T.TEXT_MUTED)
     tips.append("  ·  ", style=T.TEXT_FAINTER)
     tips.append("/guide", style=T.ACCENT)
-    tips.append(" getting started    ", style=T.TEXT_DIM)
+    tips.append(" getting started   ", style=T.TEXT_DIM)
     tips.append("/doctor", style=T.ACCENT)
-    tips.append(" check your setup    ", style=T.TEXT_DIM)
+    tips.append(" check setup   ", style=T.TEXT_DIM)
     tips.append("?", style=T.ACCENT)
     tips.append(" all commands", style=T.TEXT_DIM)
 
@@ -104,7 +106,8 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     if resumed:
         parts.append(Align.center(Text("— resumed prior context loaded —", style=T.TEXT_FAINTER)))
         parts.append(Text(""))
-    parts.append(tips)
+    # Centred as a block (its lines stay left-aligned), like the cards above.
+    parts.append(Align.center(tips))
     parts.append(Text(""))
     return Group(*parts)
 

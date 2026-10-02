@@ -1138,3 +1138,30 @@ def test_transcript_panels_share_one_width(tmp_path, monkeypatch):
         asyncio.run(_run())
     assert len(widths[(120, 40)]) == 1                       # all the same width
     assert widths[(200, 50)] == {S._PANEL_MAX_WIDTH}         # capped on a very wide terminal
+
+
+def test_home_block_is_centred_and_whole_at_80_columns(tmp_path, monkeypatch):
+    """At 120 columns the home cards and tips sat left-packed (the block was drawn at its own
+    width, then placed at the left edge). It is now centred; at 80 its lines stay whole."""
+    lines: dict = {}
+    for size in ((120, 40), (80, 24)):
+        d = tmp_path / f"w{size[0]}"
+        d.mkdir()
+        store, sid, screen = _make_screen(d, monkeypatch, resume_context="")
+
+        async def _run():
+            app = _Host(screen)
+            async with app.run_test(size=size) as pilot:
+                await pilot.pause()
+                log = screen.query_one("#transcript")
+                lines[size] = ([s.text.rstrip() for s in log.lines], log.scrollable_content_region.width)
+
+        asyncio.run(_run())
+
+    wide, width = lines[(120, 40)]
+    guide = next(t for t in wide if "/guide" in t)
+    left = len(guide) - len(guide.lstrip())
+    assert abs(left - (width - len(guide))) <= 2, (left, width - len(guide))   # symmetric margins
+    narrow, _ = lines[(80, 24)]
+    assert any("new here?" in t and "plain words" in t for t in narrow)        # not wrapped
+    assert any("/guide" in t and "all commands" in t for t in narrow)
