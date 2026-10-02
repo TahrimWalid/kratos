@@ -72,6 +72,13 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
+Kratos also uses a couple of standard command-line tools for its network checks, which aren't Python packages — install them on the **Kratos machine** with your package manager:
+
+- **`nmap`** (required for the port scan and the standard audit) — e.g. `sudo apt install nmap`.
+- **`nuclei`** (optional, for deeper vulnerability scanning) — see the [nuclei install guide](https://github.com/projectdiscovery/nuclei#install-nuclei). Kratos works without it; the vulnerability scan simply skips the active checks.
+
+Two more small tools — `yara` and `lsof` — go on the **machine you watch**, not the Kratos host; Kratos's setup check tells you if they're missing and gives you the command.
+
 Then tell Kratos which model to use. Copy the example config and fill in three values:
 
 ```bash

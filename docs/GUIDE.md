@@ -74,8 +74,18 @@ pip install -e .
 ```
 
 That last line installs Kratos into a private environment so it doesn't disturb
-anything else on your system. When it finishes, Kratos is installed — but it
-still needs a model, which is the next step.
+anything else on your system.
+
+Kratos also leans on one standard command-line tool for its network checks that
+isn't a Python package: **`nmap`**. Install it on the Kratos machine with your
+package manager (for example `sudo apt install nmap`). If you want the deeper
+vulnerability scan as well, also install **`nuclei`** (optional — Kratos runs fine
+without it and just skips those active checks). Two more tiny tools, `yara` and
+`lsof`, go on the machine you *watch*, not here — and Kratos's setup check will tell
+you if they're missing and hand you the command.
+
+When that's done, Kratos is installed — but it still needs a model, which is the
+next step.
 
 ---
 
@@ -156,7 +166,23 @@ Useful to know from the start:
 ## Connecting a machine to watch
 
 Before Kratos can investigate a machine, it needs to be able to reach it and read
-a few things. Point Kratos at a host:
+a few things. When you add a new machine, Kratos first asks **how it should reach
+the box** — there are two ways, and for most people the first is the right one:
+
+- **Direct SSH (recommended).** Kratos logs into the box over SSH with your key and
+  reads its logs, config, processes, and ports — read-only. Nothing is installed on
+  the box. **This is the only path that runs investigations today**, so it's what
+  you want unless you have a specific reason not to. You authorize Kratos's SSH key
+  on the box once (Kratos gives you the exact command) and make sure it's reachable.
+- **Sub-agent (for boxes you can't or won't open to SSH).** You install a small
+  agent on the box; it *dials out* to Kratos, so there's no inbound port to open —
+  handy for a machine behind NAT or a strict firewall. Today it streams basic status
+  (always-on), but it does **not** run the investigation tools yet; those still use
+  Direct SSH. (Letting Kratos *act* on a target through this agent is a planned
+  opt-in — not built yet.)
+- **Skip for now** — set it up later with `/target` or `/subagent`.
+
+For the common case, choose Direct SSH. Point Kratos at a host:
 
 ```
 /target 192.168.1.50
