@@ -276,6 +276,14 @@ class WhitelistScreen(Screen):
     # ------------------------------------------------------------------
     # Control 6.
     # ------------------------------------------------------------------
+    def _target_label(self) -> str:
+        """How people know the target: its name (and host, if different) --
+        the same as the banner, never just the internal id."""
+        target = self._sa_store.get_target(self._target_id) if self._target_id else None
+        name = (target or {}).get("name") or self._target_id or "?"
+        host = (target or {}).get("hostname")
+        return f"{name} ({host})" if host and host != name else name
+
     @work
     async def action_enable_execution(self) -> None:
         if self._target_id is None:
@@ -283,10 +291,10 @@ class WhitelistScreen(Screen):
         if self._wl_store.get_execution_opt_in(self._target_id):
             self._log(Text("Direct execution is already enabled for this target.", style=T.TEXT_DIM))
             return
-        confirmed = await self.app.push_screen_wait(ExecutionConsentModal(self._target_id))
+        confirmed = await self.app.push_screen_wait(ExecutionConsentModal(self._target_label()))
         if confirmed:
             self._wl_store.set_execution_opt_in(self._target_id, True)
-            self._log(Text(f"✓ direct execution enabled for {self._target_id}.", style=f"bold {T.SAFE}"))
+            self._log(Text(f"✓ direct execution enabled for {self._target_label()}.", style=f"bold {T.SAFE}"))
         else:
             self._log(Text("Declined -- staying recommend-only.", style=T.TEXT_DIM))
         self._refresh()
@@ -296,10 +304,10 @@ class WhitelistScreen(Screen):
         if self._target_id is None or not self._wl_store.get_execution_opt_in(self._target_id):
             return
         confirmed = await self.app.push_screen_wait(
-            ConfirmModal("Disable direct execution?", f"Turn direct execution back off for {self._target_id}?"))
+            ConfirmModal("Disable direct execution?", f"Turn direct execution back off for {self._target_label()}?"))
         if confirmed:
             self._wl_store.set_execution_opt_in(self._target_id, False)
-            self._log(Text(f"Direct execution disabled for {self._target_id}.", style=T.TEXT_DIM))
+            self._log(Text(f"Direct execution disabled for {self._target_label()}.", style=T.TEXT_DIM))
             self._refresh()
 
     # ------------------------------------------------------------------
@@ -359,7 +367,7 @@ class WhitelistScreen(Screen):
         if tier == "high":
             second = await self.app.push_screen_wait(ConfirmModal(
                 "Second confirmation required (HIGH sensitivity)",
-                f"Really dispatch {spec.id} to {self._target_id} now?"))
+                f"Really dispatch {spec.id} to {self._target_label()} now?"))
             if not second:
                 self._log(Text("Cancelled at the second confirmation.", style=T.TEXT_DIM))
                 return

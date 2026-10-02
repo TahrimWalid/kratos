@@ -689,3 +689,29 @@ def test_table_is_as_tall_as_its_rows_and_the_space_below_says_what_it_is_for(tm
     asyncio.run(run())
     assert out["height"] == out["rows"] + 1  # header + one line per entry
     assert sum("Details and results appear here" in " ".join(t.split()) for t in out["texts"]) == 1
+
+
+def test_consent_names_the_target_not_its_internal_id(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import ExecutionConsentModal
+
+    sa, _ = _make_stores(tmp_path)
+    tid = _pair(sa, "web-01")
+    screen = WhitelistScreen(tmp_path)
+    seen: list = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            async def canned(modal):
+                seen.append(modal)
+                return False
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            await pilot.press("e")
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert isinstance(seen[0], ExecutionConsentModal)
+    assert seen[0]._target_label == "web-01" and tid not in seen[0]._target_label
