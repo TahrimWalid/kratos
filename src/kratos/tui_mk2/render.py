@@ -185,6 +185,19 @@ def window_chip(window: dict[str, Any]) -> Text | None:
     return t
 
 
+def transport_chip(result: Any) -> Text | None:
+    """How a target read was obtained, when it wasn't plain SSH: through the
+    target's sub-agent, or through it because SSH failed (amber -- a fallback
+    should never pass unnoticed). docs/subagent_read_routing.md §5."""
+    note = result.get("transport") if isinstance(result, dict) else None
+    if not isinstance(note, str) or not note:
+        return None
+    fallback = "SSH" in note and "failed" in note
+    t = Text("    ↳ ", style=T.TEXT_FAINTER)
+    t.append(note, style=T.ATTENTION if fallback else T.TEXT_MUTED)
+    return t
+
+
 def _time_subtitle(time_str: str | None) -> Text | None:
     """The in-bubble timestamp: a fine-print, display-zone time tucked into a
     panel's bottom-right border, like a chat app's per-message time. `time_str`

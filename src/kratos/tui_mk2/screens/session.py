@@ -675,6 +675,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     self._emit_bubble(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)), self._fmt_stored_date(when_value))
             else:
                 self._emit(R.tool_call_line(tool_name, effective_status))
+            via = R.transport_chip(result)
+            if via is not None:
+                self._emit(via)
         elif step.get("tool_proposal"):
             # Review finding #5: previously silently dropped on replay (this
             # branch didn't exist at all -- the leading `if not tool_name:
@@ -4236,6 +4239,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
             chip = R.window_chip(result.get("window")) if isinstance(result, dict) else None
             if chip is not None:
                 self._emit_from_worker(chip)
+            via = R.transport_chip(result)
+            if via is not None:
+                self._emit_from_worker(via)
         elif step.get("tool_proposal"):
             proposal = step["tool_proposal"]
             self.session_state["pending_evolve_suggestion"] = proposal

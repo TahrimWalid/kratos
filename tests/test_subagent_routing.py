@@ -225,3 +225,14 @@ def test_answer_that_ignores_a_gap_gets_a_note():
     assert _unstated_coverage_gaps(gaps, "All clear: no brute force, ports look fine.") == gaps
     assert _unstated_coverage_gaps(gaps, "No brute force. Open ports were not checked (no network path).") == []
     assert _unstated_coverage_gaps([], "anything") == []
+
+
+def test_the_transport_note_is_shown_and_a_fallback_stands_out():
+    from kratos.tui_mk2 import render as R
+    from kratos.tui_mk2 import theme as T
+
+    assert R.transport_chip({"status": "ok"}) is None and R.transport_chip(None) is None
+    via = R.transport_chip({"transport": "read through the sub-agent on web-01 (this target is reached only that way)"})
+    assert "sub-agent on web-01" in via.plain and str(via.spans[-1].style) == T.TEXT_MUTED
+    fb = R.transport_chip({"transport": "SSH to web-01 failed (timed out); read through the sub-agent on web-01 instead"})
+    assert str(fb.spans[-1].style) == T.ATTENTION

@@ -288,6 +288,16 @@ def render_tool_metadata_notes(console: Console, result: dict[str, Any]) -> None
         console.print(f"    [dim {ATTENTION}]• staleness_warning: {_truncate_note(staleness_warning)}[/]")
 
 
+def render_transport_note(console: Console, result: Any) -> None:
+    """How a target read was obtained, when not plain SSH (through the target's
+    sub-agent, or through it because SSH failed) -- the CLI counterpart of
+    tui_mk2.render.transport_chip."""
+    note = result.get("transport") if isinstance(result, dict) else None
+    if isinstance(note, str) and note:
+        style = ATTENTION if ("SSH" in note and "failed" in note) else TEXT_SECONDARY
+        console.print(f"    [dim {style}]↳ {note}[/]", highlight=False)
+
+
 def render_window_note(console: Console, result: Any) -> None:
     """One dim line naming the exact time window a tool queried (and whether it was
     fully covered) -- the CLI counterpart of tui_mk2.render.window_chip."""

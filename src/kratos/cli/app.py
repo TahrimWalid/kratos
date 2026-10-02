@@ -1050,6 +1050,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             _console.render_tool_call(console, tool_name, effective_status)
             session_events.append(f"Step {iteration}: used {tool_name}")
         _console.render_window_note(console, tool_result)
+        _console.render_transport_note(console, tool_result)
 
     started_at = time.monotonic()
     try:
