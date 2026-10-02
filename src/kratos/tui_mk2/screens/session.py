@@ -446,27 +446,39 @@ class SessionScreen(ResilientWorkerHost, Screen):
             meter.append(" · will compact soon", style=T.CRITICAL)
         from kratos.utils.build_info import newer_build_on_disk
 
-        if newer_build_on_disk():
-            meter.append("  ·  updated on disk — restart Kratos", style=T.ATTENTION)
-        # What comes before the meter gives way on a narrow terminal (session id
-        # first, then the model name) so the context meter is never cut off.
+        rebuilt = newer_build_on_disk()
+        # What comes before the meter gives way on a narrow terminal (session id,
+        # then the model, then the target), and the build note shortens, so the
+        # context meter is never cut off.
         parts = [f"session {st['session_id']}", str(st["backend"]),
                  f"target {st['targets'][0] if st['targets'] else '(none)'}"]
         try:
             width = self.query_one("#statusfooter", Static).size.width or self.app.size.width
         except Exception:  # noqa: BLE001
             width = 0
-        while True:
+
+        def build(parts: list[str], note: str) -> Text:
             footer = Text()
             for i, part in enumerate(parts):
                 if i:
                     footer.append("  ·  ", style=T.TEXT_GHOST)
                 footer.append(part, style=T.TEXT_FAINTER)
-            footer.append("   ", style=T.TEXT_GHOST)
+            if parts:
+                footer.append("   ", style=T.TEXT_GHOST)
             footer.append_text(meter)
-            if not width or footer.cell_len <= width or len(parts) == 1:
+            if note:
+                footer.append(note, style=T.ATTENTION)
+            return footer
+
+        notes = ["  ·  updated on disk — restart Kratos", "  ·  restart: updated"] if rebuilt else [""]
+        candidates = [(parts[i:], note) for note in notes[:1] for i in range(len(parts) + 1)]
+        candidates += [([], note) for note in notes[1:]]
+        footer = build(*candidates[-1])
+        for cand_parts, note in candidates:
+            attempt = build(cand_parts, note)
+            if not width or attempt.cell_len <= width:
+                footer = attempt
                 break
-            parts.pop(0)
         self.query_one("#statusfooter", Static).update(footer)
 
     def refresh_theme(self) -> None:

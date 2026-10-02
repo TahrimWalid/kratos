@@ -1165,3 +1165,24 @@ def test_home_block_is_centred_and_whole_at_80_columns(tmp_path, monkeypatch):
     narrow, _ = lines[(80, 24)]
     assert any("new here?" in t and "plain words" in t for t in narrow)        # not wrapped
     assert any("/guide" in t and "all commands" in t for t in narrow)
+
+
+def test_footer_keeps_the_meter_whole_even_with_the_build_note_at_80(tmp_path, monkeypatch):
+    """Found by the full suite: with the 'updated on disk' note showing, the 80-column footer
+    still overflowed (it stopped trimming at the target)."""
+    monkeypatch.setattr("kratos.utils.build_info.newer_build_on_disk", lambda: "x")
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    out: dict = {}
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen._refresh_footer()
+            await pilot.pause()
+            out["footer"] = str(screen.query_one("#statusfooter").render()).rstrip()
+            out["w"] = screen.query_one("#statusfooter").size.width
+
+    asyncio.run(_run())
+    assert len(out["footer"]) <= out["w"], out
+    assert "%" in out["footer"] and "restart" in out["footer"]
