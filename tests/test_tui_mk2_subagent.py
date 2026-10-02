@@ -333,3 +333,31 @@ def test_add_server_explains_each_step_in_one_line(tmp_path, monkeypatch):
                  "Kratos never runs anything on your box on its own",
                  "dial back — this can take a few seconds"):
         assert line in texts, line
+
+
+def test_shown_commands_are_the_ones_c_copies(tmp_path, monkeypatch):
+    """The do-it-yourself commands on screen and the click-to-copy box are one source:
+    both run the installer and then remove it (it holds the pairing code)."""
+    screen = SubAgentScreen(tmp_path)
+    out: dict = {}
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(220, 50)) as pilot:
+            await pilot.pause()
+            answers = iter(["web-01", "10.0.0.1", False])
+
+            async def canned(_modal):
+                return next(answers)
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            screen.action_add_server()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            out["texts"] = "\n".join(_log_texts(screen))
+            out["copied"] = screen._last_deploy_commands
+
+    asyncio.run(run())
+    for line in out["copied"].splitlines():
+        assert line in out["texts"]
+    assert "&& rm -f" in out["copied"]

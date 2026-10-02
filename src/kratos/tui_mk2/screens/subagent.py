@@ -970,8 +970,8 @@ class SubAgentScreen(Screen):
             f"Run it ON the box: it installs a service and starts it. Kratos never runs anything on your box on its "
             f"own — the next question offers to copy and run it over SSH for you.\n\n"
             f"To do it yourself (it opens NO inbound port and does not enable execution):\n"
-            f"    scp {out_path} <user@target>:~/     # or copy it over however you like\n"
-            f"    ssh <user@target> 'sh {out_path.name}'\n\n"
+            + "".join(f"    {line}\n" for line in self._last_deploy_commands.splitlines())
+            + "\n"
             f"The target will dial back to this core at {host}:{self._core_port}.  Press 'c' to copy these commands.",
             style=T.TEXT_MUTED,
         ))
