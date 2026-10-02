@@ -90,3 +90,19 @@ def test_sudo_users_nonempty(registered_handler):
 
     assert len(result["users"]) >= 1, "At least one user with sudo access should be found on a real system"
     assert all(isinstance(user, str) and user for user in result["users"]), "Usernames must be non-empty strings"
+
+def test_a_failed_read_is_an_error_not_no_sudo_users(registered_handler):
+    # A failed SSH read used to come back as users=[] -- "nobody has sudo".
+    failed = SSHResult(ok=False, returncode=255, stdout="", stderr="ssh: connect to host x port 22: timed out")
+    with patch("kratos.adapters.ssh_remote.run_remote_command", return_value=failed), \
+         patch("kratos.adapters.ssh_remote.run_remote_script", return_value=failed):
+        result = registered_handler()
+    assert result.get("status") == "error" and "timed out" in result["observation"]
+
+
+def test_no_sudo_group_is_a_real_empty_answer(registered_handler):
+    missing = SSHResult(ok=False, returncode=2, stdout="", stderr="")
+    with patch("kratos.adapters.ssh_remote.run_remote_command", return_value=missing), \
+         patch("kratos.adapters.ssh_remote.run_remote_script", return_value=missing):
+        result = registered_handler()
+    assert result["users"] == []

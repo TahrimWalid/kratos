@@ -106,3 +106,52 @@ def test_no_flag_on_compound_boolop_test():
         "    return {'results': results}\n"
     )
     assert "silent-item-drop-on-subfetch-failure" not in _flag_categories(source)
+
+
+# --- check f: a failed remote read reported as an empty result --------------
+_RETURNS_EMPTY_ON_FAILURE = '''
+from kratos.adapters import ssh_remote
+def tool_x():
+    result = ssh_remote.run_remote_command("ss -tlnp")
+    if not result.ok or not result.stdout:
+        return []
+    return result.stdout.splitlines()
+'''
+
+_FALLS_THROUGH = '''
+from kratos.adapters import ssh_remote
+def tool_x():
+    result = ssh_remote.run_remote_command("getent group sudo")
+    users = []
+    if result.ok and result.stdout:
+        users = result.stdout.split(":")[3].split(",")
+    return {"users": users}
+'''
+
+_HANDLES_FAILURE = '''
+from kratos.adapters import ssh_remote
+def tool_x():
+    result = ssh_remote.run_remote_command("ss -tlnp")
+    if not result.ok:
+        return {"status": "error", "observation": result.stderr}
+    if not result.stdout:
+        return []
+    return result.stdout.splitlines()
+'''
+
+
+def _failed_read_flags(src):
+    return [f.category for f in scan_review_flags(src) if f.category.startswith("failed-read")]
+
+
+def test_failed_read_returned_as_empty_is_flagged():
+    assert _failed_read_flags(_RETURNS_EMPTY_ON_FAILURE) == ["failed-read-returned-as-empty"]
+
+
+def test_failed_read_falling_through_is_flagged():
+    assert _failed_read_flags(_FALLS_THROUGH) == ["failed-read-falls-through-as-empty"]
+
+
+def test_an_explicit_error_return_is_not_flagged():
+    # "no output" (a successful read that found nothing) may legitimately be empty
+    assert _failed_read_flags(_HANDLES_FAILURE) == []

@@ -315,6 +315,95 @@ def _check_e_silent_drop_on_subfetch_failure(tree: ast.AST) -> list[ReviewFlag]:
     return flags
 
 
+_REMOTE_CALLS = {"run_remote_command", "run_remote_script"}
+
+
+def _remote_result_names(func: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = node.value.func
+            called = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else None
+            if called in _REMOTE_CALLS:
+                names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+    return names
+
+
+def _ok_checks(test: ast.AST, name: str) -> tuple[bool, bool]:
+    """(tests `name.ok` positively, tests it negatively / its returncode)."""
+    positive = negative = False
+    for node in ast.walk(test):
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            inner = node.operand
+            if isinstance(inner, ast.Attribute) and inner.attr == "ok" and \
+                    isinstance(inner.value, ast.Name) and inner.value.id == name:
+                negative = True
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == name:
+            if node.attr == "returncode":
+                negative = True
+    for node in ast.walk(test):
+        if isinstance(node, ast.Attribute) and node.attr == "ok" and \
+                isinstance(node.value, ast.Name) and node.value.id == name:
+            positive = True
+    return positive and not negative, negative
+
+
+def _is_empty_value(node: ast.AST | None) -> bool:
+    if node is None:
+        return True
+    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+        return not node.elts
+    if isinstance(node, ast.Dict):
+        return all(_is_empty_value(v) for v in node.values)
+    if isinstance(node, ast.Constant):
+        return node.value in (None, 0, "", False)
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("list", "dict", "set"):
+        return not node.args
+    return False
+
+
+def _check_f_failed_read_reported_as_empty(tree: ast.AST) -> list[ReviewFlag]:
+    """Added after two kept target-facing tools turned a FAILED SSH read into
+    an ordinary empty result ([] / users=[]) -- an investigation then reported
+    "nothing is listening" on a box running sshd. Two shapes: an
+    `if not result.ok: return <empty>`, and an `if result.ok ...:` with no
+    branch anywhere handling the failed case (it falls through to the normal,
+    empty return)."""
+    flags: list[ReviewFlag] = []
+    for func in ast.walk(tree):
+        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for name in _remote_result_names(func):
+            ifs = [n for n in ast.walk(func) if isinstance(n, ast.If)]
+            handles_failure = False
+            positive_only: list[ast.If] = []
+            for node in ifs:
+                pos, neg = _ok_checks(node.test, name)
+                if neg:
+                    body_return = next((st for st in node.body if isinstance(st, ast.Return)), None)
+                    if body_return is not None and _is_empty_value(body_return.value):
+                        flags.append(ReviewFlag(
+                            "failed-read-returned-as-empty",
+                            f'When the remote command fails ("{name}.ok" is false) this returns an EMPTY result, '
+                            "which the investigation will read as \"nothing found\". A failed read should return "
+                            'an error ({"status": "error", "observation": ...}) so it is never mistaken for a '
+                            "clean answer.",
+                            node.lineno,
+                        ))
+                    handles_failure = True
+                elif pos and not node.orelse:
+                    positive_only.append(node)
+            if not handles_failure and positive_only:
+                flags.append(ReviewFlag(
+                    "failed-read-falls-through-as-empty",
+                    f'Only the success case of "{name}" is handled -- if the remote command fails, the tool '
+                    "skips parsing and returns its normal (empty) result, so a failed read looks like "
+                    "\"nothing found\". Add an explicit error return for the failed case.",
+                    positive_only[0].lineno,
+                ))
+    return flags
+
+
 def _find_register_tool_description(tree: ast.AST) -> tuple[str | None, str | None]:
     """
     Returns (description, docstring) for the first @register_tool(...)
@@ -408,7 +497,7 @@ def _check_d_description_coverage(tree: ast.AST, description, docstring) -> list
 
 def scan_review_flags(source_code: str) -> list[ReviewFlag]:
     """
-    Public entry point. Parses source_code ONCE and runs all four checks
+    Public entry point. Parses source_code ONCE and runs every check
     against that single tree. Returns an empty list, never raises, on
     anything that isn't syntactically valid Python -- by the time this
     runs the candidate already passed Part A's own AST validation and a
@@ -428,6 +517,7 @@ def scan_review_flags(source_code: str) -> list[ReviewFlag]:
     flags.extend(_check_b_inclusion_affecting_branches(tree))
     flags.extend(_check_c_invented_filter_criteria(tree, name_map, description, docstring))
     flags.extend(_check_e_silent_drop_on_subfetch_failure(tree))
+    flags.extend(_check_f_failed_read_reported_as_empty(tree))
     flags.extend(_check_d_description_coverage(tree, description, docstring))
     return flags
 

@@ -110,3 +110,15 @@ def test_list_net_services_includes_ports_with_unknown_process(registered_handle
     assert result[0]["protocol"] == "tcp"
     assert result[0]["process"] is None
     assert result[0]["pid"] is None
+
+def test_list_net_services_reports_a_failed_read_as_an_error(registered_handler):
+    # Live finding (2026-10-02): any SSH failure used to come back as [] -- i.e.
+    # "nothing is listening" -- and an investigation repeated that as fact on a
+    # box running sshd. A failed read must be an error, never an empty result.
+    with patch(
+        "kratos.adapters.ssh_remote.run_remote_command",
+        return_value=SSHResult(ok=False, returncode=255, stdout="", stderr="Permission denied (publickey)."),
+    ):
+        result = registered_handler()
+    assert isinstance(result, dict) and result.get("status") == "error"
+    assert "Permission denied" in result["observation"]
