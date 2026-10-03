@@ -71,6 +71,24 @@ def build_auth_trends_report(
     else:
         stat_files = sorted(logs_dir.glob("auth_stats_*.json"))
     
+    # Only one machine's runs form a trend: with a target set, stats files that
+    # describe another machine (or don't say) are left out.
+    from kratos.adapters.findings_engine import _host_key, input_hosts
+    from kratos.kratos_config import get_active_target
+
+    target = get_active_target()
+    if target:
+        active = _host_key(target)
+
+        def _describes_target(f: Path) -> bool:
+            try:
+                hosts = input_hosts("auth_stats", json.loads(f.read_text(encoding="utf-8", errors="replace")))
+            except (OSError, ValueError):
+                return False
+            return bool(hosts) and active in hosts
+
+        stat_files = [f for f in stat_files if _describes_target(f)]
+
     if len(stat_files) < 2:
         raise RuntimeError(f"Not enough auth_stats files for trends (found {len(stat_files)}). Run logs-parse a few times first.")
 
@@ -110,6 +128,7 @@ def build_auth_trends_report(
     out_md = reports_dir / f"auth_trends_{ts}.md"
 
     report: dict[str, Any] = {
+        **({"target": target} if target else {}),
         "generated_at": utc_now_iso(),
         "inputs": {
             "stats_files": [p.file for p in points],

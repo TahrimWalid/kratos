@@ -134,6 +134,7 @@ def analyze_auth_patterns(
     event_types: list[str] | None = None,
     window_minutes: int = 5,
     threshold: int = 3,
+    target: str | None = None,
 ) -> Path:
     """
     Loads auth events JSON and writes a patterns JSON:
@@ -173,6 +174,9 @@ def analyze_auth_patterns(
         burst["context_excerpt_file"] = excerpt_path.name
 
     patterns = {
+        # Which machine these events came from: correlate_findings only uses
+        # inputs collected from the target it is reporting on.
+        **({"target": target} if target else {}),
         "source_events_file": events_file.name,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "params": {

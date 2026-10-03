@@ -37,20 +37,88 @@ from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 # ---------------------------
 # Helpers: find latest files
 # ---------------------------
-def find_latest_inputs(data_dir: Path) -> dict[str, Path | None]:
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_key(value: Any) -> str:
+    """A comparable host: lower-case, without user@ or [] around IPv6, loopback names unified."""
+    host = str(value or "").rpartition("@")[2].strip().strip("[]").lower()
+    return "loopback" if host in _LOOPBACK_NAMES else host
+
+
+_ACTIVE = object()  # find_latest_inputs' default: the active target
+_INPUT_FILES_CONSIDERED = 100
+
+
+def input_hosts(category: str, data: Any) -> set[str] | None:
+    """The machine(s) a saved correlation input describes, as comparable host keys
+    (see _host_key), or None when the file doesn't say.
+
+    Several machines share one data folder (the configured target, /investigate-host
+    on Kratos's own machine, earlier targets), so "the newest file of each kind"
+    can describe a different machine than the one being reported on."""
+    if not isinstance(data, dict):
+        return None
+    if data.get("target"):
+        return {_host_key(data["target"])}
+    if category == "auth_stats":
+        source = str(data.get("source") or "")
+        if source.startswith("ssh_target_"):
+            return {_host_key(source.partition(":")[2])}
+        return {"loopback"} if source else None  # parse_auth_log: Kratos's own logs
+    if category == "nmap_parsed":
+        ips = {_host_key(h.get("ip")) for h in data.get("hosts") or [] if isinstance(h, dict) and h.get("ip")}
+        return ips or None
+    if category == "system_context":
+        return {"loopback"}  # collect_system_context only ever describes Kratos's own host
+    return None
+
+
+def _latest_input_for(dir_path: Path, pattern: str, category: str, active: str) -> Path | None:
+    """The newest `pattern` file in `dir_path` describing `active` (a host key);
+    with no active target, simply the newest. Files that don't say which machine
+    they describe, or can't be read, are skipped while a target is set."""
+    try:
+        files = sorted(dir_path.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    if not active:
+        return files[0] if files else None
+    for path in files[:_INPUT_FILES_CONSIDERED]:
+        try:
+            hosts = input_hosts(category, _read_json(path))
+        except (OSError, ValueError):
+            continue
+        if hosts and active in hosts:
+            return path
+    return None
+
+
+def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE) -> dict[str, Path | None]:
+    """The newest input file of each kind describing `target` (default: the active
+    target; None: any machine)."""
     scans_dir = data_dir / "scans"
     logs_dir = data_dir / "logs"
     ctx_dir = data_dir / "context"
     reports_dir = data_dir / "reports"
     baseline_dir = data_dir / "baseline"
+    if target is _ACTIVE:
+        from kratos.kratos_config import get_active_target
+
+        target = get_active_target()
+    active = _host_key(target) if target else ""
+
+    def pick(dir_path: Path, pattern: str, category: str) -> Path | None:
+        return _latest_input_for(dir_path, pattern, category, active)
 
     return {
-        "nmap_parsed": latest_file(scans_dir, "parsed_*.json"),
-        "auth_stats": latest_file(logs_dir, "auth_stats_*.json"),
-        "auth_patterns": latest_file(logs_dir, "auth_patterns_*.json"),
-        "system_context": latest_file(ctx_dir, "system_context_*.json"),
-        "auth_trends": latest_file(reports_dir, "auth_trends_*.json"),
-        "file_integrity": latest_file(baseline_dir, "file_integrity_diff_*.json"),
+        "nmap_parsed": pick(scans_dir, "parsed_*.json", "nmap_parsed"),
+        "auth_stats": pick(logs_dir, "auth_stats_*.json", "auth_stats"),
+        "auth_patterns": pick(logs_dir, "auth_patterns_*.json", "auth_patterns"),
+        "system_context": pick(ctx_dir, "system_context_*.json", "system_context"),
+        "auth_trends": pick(reports_dir, "auth_trends_*.json", "auth_trends"),
+        "file_integrity": pick(baseline_dir, "file_integrity_diff_*.json", "file_integrity"),
+        # Filtered by its own loader (_load_recent_privileged_snapshot).
         "privileged_accounts": latest_file(ctx_dir, "privileged_accounts_*.json"),
     }
 
@@ -1115,15 +1183,6 @@ PRIVILEGED_SNAPSHOT_MAX_AGE_HOURS = 24
 VULN_SCAN_MAX_AGE_HOURS = 24
 _VULN_SCAN_GLOB = "vuln_scan_*.json"
 _VULN_SCAN_FILES_CONSIDERED = 200
-_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
-
-
-def _host_key(value: Any) -> str:
-    """A comparable host: lower-case, without user@ or [] around IPv6, loopback names unified."""
-    host = str(value or "").rpartition("@")[2].strip().strip("[]").lower()
-    return "loopback" if host in _LOOPBACK_NAMES else host
-
-
 def _snapshot_time(data: dict[str, Any], key: str, path: Path) -> float:
     try:
         return datetime.fromisoformat(str(data.get(key))).timestamp()

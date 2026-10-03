@@ -305,7 +305,7 @@ def tool_run_nmap_scan(data_dir: Path, target: str | None = None) -> dict[str, A
     if (gap := _network_scan_gap(resolved_target)) is not None:
         return gap
     out_xml = _run_nmap_scan(data_dir, resolved_target)
-    parsed = _parse_nmap_xml_to_dict(out_xml)
+    parsed = {"target": resolved_target, **_parse_nmap_xml_to_dict(out_xml)}
     out_json = _write_parsed_json(data_dir, parsed)
 
     hosts = parsed.get("hosts", [])
@@ -428,7 +428,7 @@ def tool_parse_auth_log(
     # _persist_target_auth_correlation_data) already runs exactly this analysis.
     # Wired the same way (a direct call, matching that path) so the two auth
     # sources stay symmetric.
-    patterns_out = _analyze_auth_patterns(Path(data_dir), events_file=events_out)
+    patterns_out = _analyze_auth_patterns(Path(data_dir), events_file=events_out, target="127.0.0.1")
     return {
         "events_file": str(events_out),
         "stats_file": str(stats_out),
@@ -584,6 +584,7 @@ def _persist_target_auth_correlation_data(
     ]
     stats = _compute_basic_stats(events)
     stats["source"] = f"ssh_target_journald:{target}"
+    stats["target"] = target
     stats["since"] = since
     stats["until"] = until
     stats["since_utc"] = _epoch_to_iso_utc(since_epoch) if since_epoch is not None else None
@@ -602,7 +603,7 @@ def _persist_target_auth_correlation_data(
     events_out.write_text(json.dumps([asdict(e) for e in events], indent=2), encoding="utf-8")
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
-    patterns_out = _analyze_auth_patterns(data_dir, events_file=events_out)
+    patterns_out = _analyze_auth_patterns(data_dir, events_file=events_out, target=target)
 
     return {
         "events_file": str(events_out),
@@ -838,7 +839,8 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
         stats_out = logs_dir / f"auth_stats_{ts_tag}.json"
         patterns_out = logs_dir / f"auth_patterns_{ts_tag}.json"
         stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-        patterns_out.write_text(json.dumps(m.as_auth_patterns(), indent=2), encoding="utf-8")
+        patterns_out.write_text(json.dumps({"target": _ssh_target_label(), **m.as_auth_patterns()}, indent=2),
+                                encoding="utf-8")
 
     top_ips = sorted(m.by_ip.items(), key=lambda kv: -kv[1]["count"])[:10]
     return m, block, {
