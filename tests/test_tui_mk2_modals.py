@@ -235,3 +235,33 @@ def test_picker_description_is_separated_from_its_options():
 
     asyncio.run(run())
     assert out["gap"] == 1
+
+
+def test_first_run_welcome_says_what_kratos_does_and_where_data_goes(tmp_path, monkeypatch):
+    """The first-run prompt asked "Do you trust the files in this folder?", which
+    no longer applies (Kratos doesn't work on the folder it's started in)."""
+    from kratos.tui_mk2.app import KratosTUI
+
+    app = KratosTUI(tmp_path)
+    monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url", lambda: "https://api.provider.example/v1")
+    hosted = app._first_run_text().plain
+    assert "doesn't change them" in hosted and "api.provider.example" in hosted and "sent to" in hosted
+    assert str(tmp_path.resolve()) in hosted and "trust the files" not in hosted
+    monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url", lambda: "http://127.0.0.1:11434/v1")
+    assert "nothing leaves your hardware" in app._first_run_text().plain
+
+
+def test_confirm_modal_can_name_its_keys():
+    from kratos.tui_mk2.modals import ConfirmModal
+
+    class _H(App):
+        def on_mount(self):
+            self.push_screen(ConfirmModal("Welcome", "body", yes_label="continue", no_label="quit"))
+
+    async def _run():
+        app = _H()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            return app.export_screenshot()
+    svg = asyncio.run(_run())
+    assert "continue" in svg and "quit" in svg

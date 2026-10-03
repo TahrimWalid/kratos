@@ -227,16 +227,18 @@ class ConfirmModal(ModalScreen[bool]):
             event.stop()
             self.action_cancel()
 
-    def __init__(self, title: str, body: str) -> None:
+    def __init__(self, title: str, body: str | Text, yes_label: str = "confirm", no_label: str = "no") -> None:
         super().__init__()
         self._title = title
         self._body = body
+        self._yes_label = yes_label
+        self._no_label = no_label
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ATTENTION}"), classes="modal-title")
-            yield Static(Text(self._body, style=T.TEXT))
-            yield Static(_decision_hint("confirm", "no"))
+            yield Static(self._body if isinstance(self._body, Text) else Text(self._body, style=T.TEXT))
+            yield Static(_decision_hint(self._yes_label, self._no_label))
 
     def action_confirm(self) -> None:
         self.dismiss(True)

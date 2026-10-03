@@ -176,8 +176,9 @@ Start Kratos:
 kratos
 ```
 
-> The first time, Kratos asks whether you trust it to run on this machine, and
-> offers to remember a default target. It only asks once. Kratos has no built-in
+> The first time, Kratos says what it does (reads machines without changing
+> them, where what it reads is sent for analysis, where it keeps its data) and
+> asks you to continue, then offers to remember a default target. It only asks once. Kratos has no built-in
 > target: if you skip that question, the first machine you point it at (with
 > `/target` or a new session) becomes the default, which is what command-line and
 > scheduled runs use. `KRATOS_SSH_HOST` overrides it for a single command.
@@ -639,7 +640,8 @@ don't send them anywhere.
     <img src="images/doctor.svg" width="840" alt="The /doctor self-check with a verdict and an inline fix">
   </p>
 
-- **`/usage`** shows how many tokens this session has used and a rough cost. With
+- **`/usage`** shows how many tokens this session has used and a rough cost, per
+  model, counting every time you've opened the session (it's saved with it). With
   a local model it's free and says so.
 
   <p align="center">

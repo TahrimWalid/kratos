@@ -324,16 +324,39 @@ class KratosTUI(ResilientWorkerHost, App):
         # Textual runs this as a worker so push_screen_wait can be awaited.
         self.run_worker(self._boot_flow(), exclusive=True)
 
+    def _first_run_text(self) -> Text:
+        """What a new user should know before starting: what Kratos does, where
+        what it reads goes (depends on the model set up), and where it keeps data."""
+        from urllib.parse import urlparse
+
+        from kratos.llm_config import get_active_llm_base_url
+
+        base = get_active_llm_base_url() or ""
+        host = urlparse(base).hostname or base or "your model"
+        local = host in ("127.0.0.1", "localhost", "::1", "0.0.0.0")
+        model_line = (f"What it reads is analysed by the model running on this machine ({host}) — "
+                      "nothing leaves your hardware." if local else
+                      f"What it reads (log lines, scan results) is sent to your AI model provider "
+                      f"({host}) to be analysed.")
+        text = Text()
+        text.append("Kratos looks over machines you point it at and explains what it finds.\n\n", style=T.TEXT)
+        for line in (
+            "It READS those machines — logs, settings, open ports — and doesn't change them "
+            "(fixes stay off unless you switch them on for a machine yourself).",
+            model_line,
+            "Anything that would run on this machine asks you first.",
+            f"Your settings and sessions are kept in {Path(self.data_dir).resolve()}.",
+        ):
+            text.append("  •  ", style=T.ACCENT)
+            text.append(line + "\n", style=T.TEXT)
+        text.append("\nYou can change the model any time with /model.", style=T.TEXT_DIM)
+        return text
+
     async def _boot_flow(self) -> None:
         config = _kconfig.load_local_config(self.data_dir)
         if not config.get("trusted"):
             trusted = await self.push_screen_wait(
-                ConfirmModal(
-                    "Kratos — first run",
-                    "Do you trust the files in this folder?\n\n"
-                    "Kratos may read, write, or execute files in this directory.",
-                )
-            )
+                ConfirmModal("Welcome to Kratos", self._first_run_text(), yes_label="continue", no_label="quit"))
             if not trusted:
                 self.exit()
                 return
