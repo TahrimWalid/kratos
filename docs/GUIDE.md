@@ -98,10 +98,18 @@ against a list of known CVEs. That list isn't bundled; to add it, run:
 kratos vulscan-install
 ```
 
-It downloads nmap's vulscan script and its CVE list. Know its limit before relying
-on it: the copy that can be downloaded freely stops at CVEs from **2013**. What it
-matches is real, but anything newer isn't checked — Kratos says that in its answer
-rather than calling a service up to date, and `/doctor` shows how far your copy goes.
+It downloads nmap's vulscan script and builds an up-to-date CVE list from the
+public feeds of the US National Vulnerability Database (NVD). That takes about a
+minute; run the same command again every month or so to refresh it. `/doctor` shows
+how current your copy is. If the list is missing or old, Kratos says in its answer
+which CVEs weren't checked rather than calling a service up to date. (This product
+uses data from the NVD API but is not endorsed or certified by the NVD.)
+
+Keep in mind how the matching works: vulscan compares the product name and version
+that nmap detects against the text of each CVE description. That finds real
+candidates quickly, but it is a heuristic: some matches won't apply to your exact
+build (distributions often patch without changing the version number), and some
+real issues won't be matched. Treat CVE results as leads to check, not a verdict.
 
 Only if you want Kratos to build new tools for itself (`/evolve`): install
 [Incus](https://linuxcontainers.org/incus/) on the Kratos machine. Every new tool is

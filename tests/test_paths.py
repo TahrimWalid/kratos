@@ -177,6 +177,19 @@ def _csv(newest_year: int) -> bytes:
     return "".join(rows).encode()
 
 
+def _feed(year: int, n: int = 3, extra: list | None = None) -> bytes:
+    """A gzipped NVD 2.0 feed shaped like the real one (pretty-printed, header first)."""
+    import gzip
+    import json
+
+    items = [{"cve": {"id": f"CVE-{year}-{1000 + i}", "vulnStatus": "Analyzed",
+                      "descriptions": [{"lang": "en", "value": f"OpenSSH {i}.0 in {year}; allows\nthings"}]}}
+             for i in range(n)]
+    items += extra or []
+    doc = {"resultsPerPage": len(items), "format": "NVD_CVE", "version": "2.0", "vulnerabilities": items}
+    return gzip.compress(json.dumps(doc, indent=2).encode())
+
+
 class _Resp:
     def __init__(self, status, body):
         self.status_code, self._body = status, body
@@ -193,61 +206,149 @@ class _Resp:
 
 
 class _Session:
-    def __init__(self, files):
-        self.files, self.calls = files, []
+    """Serves the vulscan repo files by name and any NVD year feed; `files` overrides."""
+
+    def __init__(self, files=None, feeds=None):
+        self.files = {"vulscan.nse": NSE, "COPYING.TXT": b"GPL\n", **(files or {})}
+        self.feeds = feeds or {}
+        self.calls = []
 
     def get(self, url, stream=True, timeout=None):
         name = url.rsplit("/", 1)[-1]
         self.calls.append(name)
-        body = self.files.get(name)
+        if name.startswith("nvdcve-2.0-"):
+            year = int(name.split("-")[2].split(".")[0])
+            body = self.feeds.get(year, _feed(year))
+        else:
+            body = self.files.get(name)
         return _Resp(200, body) if body is not None else _Resp(404, b"")
 
 
-def _good_files(year=2013):
-    return {"vulscan.nse": NSE, "cve.csv": _csv(year), "COPYING.TXT": b"GPL\n"}
-
-
-def test_install_vulscan_puts_files_where_nmap_expects_them(tmp_path):
+@pytest.fixture
+def _small_nvd(monkeypatch):
     from kratos.adapters import vuln_scan
 
-    ok, msg = vuln_scan.install_vulscan(tmp_path, session=_Session(_good_files()))
+    monkeypatch.setattr(vuln_scan, "MIN_BUILT_CVE_ENTRIES", 10)
+
+
+def test_feed_items_stream_across_tiny_reads():
+    import io
+    import json
+
+    from kratos.adapters import vuln_scan
+
+    doc = {"format": "NVD_CVE", "vulnerabilities": [{"cve": {"id": f"CVE-2024-{i}", "d": "x ] , { y"}}
+                                                    for i in range(50)]}
+    text = json.dumps(doc, indent=3)
+    items = list(vuln_scan.iter_nvd_feed(io.StringIO(text), chunk_size=7))
+    assert [i["cve"]["id"] for i in items] == [f"CVE-2024-{i}" for i in range(50)]
+    assert list(vuln_scan.iter_nvd_feed(io.StringIO('{"vulnerabilities": [ ]}'))) == []
+
+
+@pytest.mark.parametrize("text", ['{"vulnerabilities": [{"cve": {"id": "CVE-2024-1"}}, {"cve": {"id": "CV',
+                                  '{"something": "else"}'])
+def test_a_cut_off_or_wrong_feed_is_an_error(text):
+    import io
+
+    from kratos.adapters import vuln_scan
+
+    with pytest.raises(ValueError):
+        list(vuln_scan.iter_nvd_feed(io.StringIO(text), chunk_size=5))
+
+
+def test_feed_items_become_lines_vulscan_can_read():
+    from kratos.adapters import vuln_scan
+
+    line = vuln_scan.nvd_item_to_line({"cve": {"id": "CVE-2025-1", "descriptions": [
+        {"lang": "es", "value": "no"}, {"lang": "en", "value": "Bad; thing\nin  OpenSSH"}]}})
+    assert line == "CVE-2025-1;Bad, thing in OpenSSH"  # vulscan splits on ';' and reads line by line
+    assert vuln_scan.nvd_item_to_line({"cve": {"id": "CVE-2025-2", "vulnStatus": "Rejected",
+                                               "descriptions": [{"lang": "en", "value": "x"}]}}) is None
+    assert vuln_scan.nvd_item_to_line({"cve": {"id": "not-a-cve", "descriptions": [{"lang": "en", "value": "x"}]}}) is None
+    assert vuln_scan.nvd_item_to_line({"cve": {"id": "CVE-2025-3", "descriptions": []}}) is None
+
+
+def test_build_writes_the_list_and_its_source_notice(tmp_path, _small_nvd):
+    from datetime import datetime
+
+    from kratos.adapters import vuln_scan
+
+    db = tmp_path / "cve.csv"
+    years = range(2002, datetime.now().year + 1)
+    ok, msg = vuln_scan.build_cve_csv_from_nvd(db, session=_Session(), years=years)
+    assert ok, msg
+    lines = db.read_text().splitlines()
+    assert len(lines) == 3 * len(years) and all(line.count(";") == 1 for line in lines)
+    assert vuln_scan.newest_cve_year(db) == datetime.now().year
+    assert "not endorsed or certified by the NVD" in (tmp_path / "SOURCE.txt").read_text()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["SOURCE.txt", "cve.csv"]  # no temp files
+
+
+@pytest.mark.parametrize("bad", ["missing_year", "truncated_feed", "too_few"])
+def test_a_failed_build_leaves_the_existing_list_alone(tmp_path, monkeypatch, _small_nvd, bad):
+    from datetime import datetime
+
+    from kratos.adapters import vuln_scan
+
+    db = tmp_path / "cve.csv"
+    db.write_bytes(_csv(2013))
+    before = db.read_bytes()
+    years = list(range(2020, datetime.now().year + 1))
+    if bad == "missing_year":
+        session = _Session(feeds={2021: None})  # served as HTTP 404
+    elif bad == "truncated_feed":
+        session = _Session(feeds={2022: _feed(2022)[:-40]})
+    else:
+        monkeypatch.setattr(vuln_scan, "MIN_BUILT_CVE_ENTRIES", 10_000)
+        session = _Session()
+    ok, msg = vuln_scan.build_cve_csv_from_nvd(db, session=session, years=years)
+    assert not ok and "Nothing was changed" in msg
+    assert db.read_bytes() == before
+    assert [p.name for p in tmp_path.iterdir()] == ["cve.csv"]
+
+
+def test_install_vulscan_puts_files_where_nmap_expects_them(tmp_path, _small_nvd):
+    from datetime import datetime
+
+    from kratos.adapters import vuln_scan
+
+    ok, msg = vuln_scan.install_vulscan(tmp_path, session=_Session())
     assert ok, msg
     base = tmp_path / "scripts" / "vulscan"
-    assert {p.name for p in base.iterdir()} == {"vulscan.nse", "cve.csv", "COPYING.TXT"}
-    assert vuln_scan.vulscan_installed(tmp_path) and "up to 2013" in msg
+    assert {p.name for p in base.iterdir()} == {"vulscan.nse", "cve.csv", "COPYING.TXT", "SOURCE.txt"}
+    assert vuln_scan.vulscan_installed(tmp_path)
+    assert vuln_scan.newest_cve_year(base / "cve.csv") == datetime.now().year
 
 
-def test_a_bad_download_changes_nothing(tmp_path):
+def test_a_current_install_is_a_no_op(tmp_path, _small_nvd):
     from kratos.adapters import vuln_scan
 
-    assert vuln_scan.install_vulscan(tmp_path, session=_Session(_good_files()))[0]
-    base = tmp_path / "scripts" / "vulscan"
-    before = {p.name: p.read_bytes() for p in base.iterdir()}
-    bad = _good_files()
-    bad["cve.csv"] = b"<!DOCTYPE html><title>Just a moment...</title>" * 50
-    ok, msg = vuln_scan.install_vulscan(tmp_path, force=True, session=_Session(bad))
-    assert not ok and "Nothing was changed" in msg
-    assert {p.name: p.read_bytes() for p in base.iterdir()} == before  # no temp files, nothing replaced
-
-
-def test_a_missing_file_upstream_changes_nothing(tmp_path):
-    from kratos.adapters import vuln_scan
-
-    files = _good_files()
-    del files["COPYING.TXT"]
-    ok, msg = vuln_scan.install_vulscan(tmp_path, session=_Session(files))
-    assert not ok and "HTTP 404" in msg
-    assert not vuln_scan.vulscan_installed(tmp_path)
-    assert list((tmp_path / "scripts" / "vulscan").iterdir()) == []
-
-
-def test_already_installed_is_a_no_op(tmp_path):
-    from kratos.adapters import vuln_scan
-
-    vuln_scan.install_vulscan(tmp_path, session=_Session(_good_files()))
-    s = _Session(_good_files())
+    vuln_scan.install_vulscan(tmp_path, session=_Session())
+    s = _Session()
     ok, msg = vuln_scan.install_vulscan(tmp_path, session=s)
-    assert ok and "Already installed" in msg and s.calls == []
+    assert ok and "Already installed and current" in msg and s.calls == []
+
+
+def test_an_old_list_is_rebuilt_without_redownloading_the_script(tmp_path, _small_nvd):
+    from kratos.adapters import vuln_scan
+
+    base = tmp_path / "scripts" / "vulscan"
+    base.mkdir(parents=True)
+    (base / "vulscan.nse").write_bytes(NSE)
+    (base / "COPYING.TXT").write_bytes(b"GPL\n")
+    (base / "cve.csv").write_bytes(_csv(2013))  # the 2013 list from the vulscan repo
+    s = _Session()
+    ok, msg = vuln_scan.install_vulscan(tmp_path, session=s)
+    assert ok and "rebuilt from NVD" in msg
+    assert "vulscan.nse" not in s.calls and not vuln_scan.check_vulscan_db_staleness(base / "cve.csv")["stale"]
+
+
+def test_a_bad_script_download_changes_nothing(tmp_path, _small_nvd):
+    from kratos.adapters import vuln_scan
+
+    ok, msg = vuln_scan.install_vulscan(tmp_path, session=_Session(files={"vulscan.nse": b"<html>nope</html>"}))
+    assert not ok and "Nothing was changed" in msg
+    assert list((tmp_path / "scripts" / "vulscan").iterdir()) == []
 
 
 def test_staleness_is_judged_by_the_newest_cve_not_the_file_date(tmp_path):

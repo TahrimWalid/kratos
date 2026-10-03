@@ -277,12 +277,15 @@ nmap's `vulners.nse` script queries a live external API per scan, which
 would reopen the same tension; `run_vuln_scan` uses `vulscan` against a
 locally-cached, offline CVE database instead, at the cost of that database
 needing its own periodic refresh and staleness reporting
-(`check_vulscan_db_staleness`). Staleness is judged by the newest CVE id the
-file contains, not by the file's date: the freely downloadable copy
-(`kratos vulscan-install`, from the vulscan repository) stops at 2013, and the
-up-to-date mirror rejects scripted downloads. An old or missing list is
-returned as a `coverage_gap`, so the final answer must say which CVEs weren't
-checked instead of calling a service up to date.
+(`check_vulscan_db_staleness`). The list vulscan ships in its repository stops
+at 2013 and its maintained mirror rejects scripted downloads, so
+`kratos vulscan-install` builds `cve.csv` itself from NVD's public yearly JSON
+feeds, in vulscan's `ID;description` format (each ~300 MB feed is parsed as a
+stream, so memory stays around 200 MB; the result replaces the old list only
+after it validates). Staleness is judged by the newest CVE id the file contains
+as well as the file's age. An old or missing list is returned as a
+`coverage_gap`, so the final answer must say which CVEs weren't checked instead
+of calling a service up to date.
 
 ## Self-writing tool loop
 
@@ -571,10 +574,10 @@ it any more. Two notes that still apply:
 
 ## Known limitations
 
-- **CVE list age**: the CVE list `run_vuln_scan` can download stops at 2013
-  (see "Threat-intel enrichment" above). Its matches are real, but newer
-  CVEs aren't checked; the result carries that as a coverage gap. A current
-  list would need a different source.
+- **CVE matching is textual**: vulscan matches nmap's detected product and
+  version against CVE description text. It surfaces real candidates, but
+  distribution backports and loosely worded descriptions mean both false
+  matches and misses; results are leads, not a verdict.
 - **OT/ICS coverage**: neither of `run_vuln_scan`'s two scanners
   meaningfully covers OT/ICS protocols (Modbus, DNP3, etc.) — Nuclei's
   templates are overwhelmingly HTTP/web-focused, and vulscan only

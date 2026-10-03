@@ -102,8 +102,7 @@ def _check_vulscan(out: list[Check]) -> None:
     status = vuln_scan.check_vulscan_db_staleness()
     if status["note"]:
         out.append(_row("CVE list (vulscan)", "warn", status["note"],
-                        fix=f"the up-to-date upstream copy can't be fetched by scripts (bot check); if you have "
-                            f"a newer cve.csv, put it at {vuln_scan.VULSCAN_DB_PATH}."))
+                        fix="run `kratos vulscan-install` to rebuild it from NVD (a couple of minutes)."))
     else:
         out.append(_row("CVE list (vulscan)", "pass", f"CVEs up to {status['newest_cve_year']}"))
 

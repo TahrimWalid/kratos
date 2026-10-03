@@ -22,13 +22,15 @@ limited). See docs/DESIGN.md's "Known limitations" section.
 """
 from __future__ import annotations
 
+import gzip
+import json
 import os
 import re
 import subprocess
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable, Iterator
 
 from kratos import paths as _paths
 
@@ -45,28 +47,36 @@ VULSCAN_DIR = _paths.vulscan_dir()
 VULSCAN_NSE_PATH = VULSCAN_DIR / "scripts" / "vulscan" / "vulscan.nse"
 VULSCAN_DB_PATH = VULSCAN_DIR / "scripts" / "vulscan" / "cve.csv"
 VULSCAN_DB_FILENAME = "cve.csv"
-VULSCAN_UPDATE_URL = "https://www.computec.ch/projekte/vulscan/download/cve.csv"
+VULSCAN_SOURCE_FILENAME = "SOURCE.txt"
 
-# First install comes from the project's own repository: unlike the computec.ch
-# mirror above it isn't behind a bot challenge. Its cve.csv is an old snapshot
-# (see newest_cve_year below), which is why staleness is judged by content, not
-# by the file's date.
+# The script and its licence come from the vulscan repository. Its CVE list does
+# NOT: the copy there is a 2017 snapshot whose newest CVE is from 2013, and the
+# maintained one (computec.ch) sits behind a bot challenge that rejects any
+# scripted download. Kratos builds cve.csv itself from NVD's public yearly
+# feeds instead (see build_cve_csv_from_nvd), in the same `ID;description`
+# shape vulscan.nse reads.
 VULSCAN_REPO_RAW = "https://raw.githubusercontent.com/scipag/vulscan/master"
-VULSCAN_INSTALL_FILES = ("vulscan.nse", "cve.csv", "COPYING.TXT")
-VULSCAN_INSTALL_MAX_BYTES = 200 * 1024 * 1024
+VULSCAN_SCRIPT_FILES = ("vulscan.nse", "COPYING.TXT")
+VULSCAN_SCRIPT_MAX_BYTES = 5 * 1024 * 1024
 VULSCAN_INSTALL_HINT = "run `kratos vulscan-install` on the Kratos machine"
+
+NVD_FEED_URL = "https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{year}.json.gz"
+NVD_FIRST_FEED_YEAR = 2002          # the 2002 feed also holds CVE-1999..2001
+NVD_FEED_MAX_BYTES = 200 * 1024 * 1024   # compressed; the largest year is ~35 MB today
+NVD_NOTICE = ("This product uses data from the NVD API but is not endorsed or certified by the NVD. "
+              "CVE descriptions: National Vulnerability Database (https://nvd.nist.gov), public domain.")
+# A built list smaller than this, or one without CVEs from last year, means a
+# feed was cut short or changed shape: refuse it rather than replace a good list.
+MIN_BUILT_CVE_ENTRIES = 100_000
 
 # A CVE list whose newest entry is older than this many years misses most of
 # what a scan should find, however recently the file itself was copied.
 STALE_CVE_YEARS = 1
 
-# 30 days: vulscan's own upstream mirror isn't a real-time feed either (its
-# own update.sh just re-downloads a periodically-refreshed CSV snapshot), so
-# "perfectly fresh" isn't achievable regardless of how often Kratos checks.
-# 30 days balances "know about anything from the last month" against not
+# 30 days: a rebuild from NVD takes a couple of minutes, so it isn't done per
+# scan. 30 days balances "know about anything from the last month" against not
 # nagging the operator on every single investigation -- a round, operationally
-# reasonable number, not a precisely-derived one, and stated as such rather
-# than dressed up as more rigorous than it is.
+# reasonable number, not a precisely-derived one.
 STALENESS_THRESHOLD_DAYS = 30
 
 # The actual tag names nuclei-templates metadata uses, not the plural/
@@ -132,10 +142,11 @@ def check_vulscan_db_staleness(db_path: Path = VULSCAN_DB_PATH) -> dict[str, Any
     note = None
     if old_content:
         note = (f"The local CVE list only goes up to {newest}: vulnerabilities published after that are "
-                "not matched, so a clean CVE result is not evidence the services are up to date."
-                if newest else "The local CVE list contains no recognisable CVE ids.")
+                "not matched, so a clean CVE result is not evidence the services are up to date "
+                f"({VULSCAN_INSTALL_HINT} to rebuild it from NVD)."
+                if newest else f"The local CVE list contains no recognisable CVE ids ({VULSCAN_INSTALL_HINT}).")
     elif age_days > STALENESS_THRESHOLD_DAYS:
-        note = f"The local CVE list was last refreshed {age_days} days ago."
+        note = f"The local CVE list was last rebuilt {age_days} days ago ({VULSCAN_INSTALL_HINT} to refresh it)."
     return {
         "exists": True,
         "last_updated": mtime.isoformat(timespec="seconds"),
@@ -151,138 +162,194 @@ def vulscan_installed(vulscan_dir: Path = VULSCAN_DIR) -> bool:
     return (base / "vulscan.nse").is_file() and (base / VULSCAN_DB_FILENAME).is_file()
 
 
-def install_vulscan(vulscan_dir: Path = VULSCAN_DIR, *, force: bool = False,
-                    base_url: str = VULSCAN_REPO_RAW, session: Any = None) -> tuple[bool, str]:
-    """Download vulscan.nse, cve.csv and its licence into `vulscan_dir` in the
-    nested layout nmap needs. Every file is downloaded to a temp name and
-    validated before anything in place is replaced; a failure leaves an
-    existing install untouched. Already installed -> no-op unless `force`."""
-    import requests
+def install_vulscan(vulscan_dir: Path = VULSCAN_DIR, *, force: bool = False, session: Any = None,
+                    progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
+    """Install vulscan in the nested layout nmap needs: the script and its licence
+    from the vulscan repository, and a CVE list built from NVD's feeds.
 
+    Each part is (re)done only when needed -- the script when it's missing, the
+    CVE list when it's missing or stale -- or always with `force`. Nothing in
+    place is replaced unless its new version downloaded and validated."""
     dest = vulscan_dir / "scripts" / "vulscan"
-    if vulscan_installed(vulscan_dir) and not force:
-        return True, f"Already installed in {dest} (use --force to download it again)."
-    http = session or requests
     dest.mkdir(parents=True, exist_ok=True)
+    done: list[str] = []
+    script_missing = not all((dest / name).is_file() for name in VULSCAN_SCRIPT_FILES)
+    if force or script_missing:
+        ok, message = _install_script_files(dest, session=session)
+        if not ok:
+            return False, message
+        done.append("the vulscan script")
+    db = dest / VULSCAN_DB_FILENAME
+    if force or check_vulscan_db_staleness(db)["stale"]:
+        ok, message = build_cve_csv_from_nvd(db, session=session, progress=progress)
+        if not ok:
+            return False, message if not done else f"Installed {done[0]}, but: {message}"
+        done.append(message)
+    if not done:
+        newest = newest_cve_year(db)
+        return True, f"Already installed and current in {dest} (CVEs up to {newest}); --force rebuilds it."
+    return True, f"Installed into {dest}: " + "; ".join(done) + "."
+
+
+def update_vulscan_db(db_path: Path = VULSCAN_DB_PATH) -> tuple[bool, str]:
+    """Rebuild cve.csv from NVD (the "refresh the stale database" path).
+    A failed or partial rebuild leaves the existing database untouched."""
+    return build_cve_csv_from_nvd(db_path)
+
+
+def _install_script_files(dest: Path, *, session: Any = None) -> tuple[bool, str]:
     staged: list[tuple[Path, Path]] = []
     try:
-        for name in VULSCAN_INSTALL_FILES:
+        for name in VULSCAN_SCRIPT_FILES:
             tmp = dest / f".{name}.download"
             staged.append((tmp, dest / name))
-            try:
-                with http.get(f"{base_url}/{name}", stream=True, timeout=60) as resp:
-                    if resp.status_code != 200:
-                        return False, f"Download of {name} failed: HTTP {resp.status_code}. Nothing was changed."
-                    size = 0
-                    with tmp.open("wb") as fh:
-                        for chunk in resp.iter_content(chunk_size=1 << 16):
-                            size += len(chunk)
-                            if size > VULSCAN_INSTALL_MAX_BYTES:
-                                return False, f"{name} is larger than expected; download stopped. Nothing was changed."
-                            fh.write(chunk)
-            except requests.RequestException as e:
-                return False, f"Download of {name} failed: {e.__class__.__name__}. Nothing was changed."
-        nse_tmp = staged[0][0]
-        if b"vulscan" not in nse_tmp.read_bytes()[:4096] or nse_tmp.stat().st_size < 1024:
+            ok, message = _download(f"{VULSCAN_REPO_RAW}/{name}", tmp, VULSCAN_SCRIPT_MAX_BYTES, session)
+            if not ok:
+                return False, f"Download of {name} failed: {message}. Nothing was changed."
+        nse = staged[0][0].read_bytes()
+        if b"vulscan" not in nse[:4096] or len(nse) < 1024:
             return False, "The downloaded vulscan.nse doesn't look like the vulscan script. Nothing was changed."
-        valid, reason = _looks_like_valid_cve_csv(staged[1][0])
-        if not valid:
-            return False, f"The downloaded cve.csv failed validation ({reason}). Nothing was changed."
         for tmp, final in staged:
             tmp.replace(final)
         staged = []
-        newest = newest_cve_year(dest / VULSCAN_DB_FILENAME)
-        return True, (f"Installed vulscan into {dest} (CVE list up to {newest})." if newest
-                      else f"Installed vulscan into {dest}.")
+        return True, "ok"
     finally:
         for tmp, _final in staged:
             tmp.unlink(missing_ok=True)
 
 
-def update_vulscan_db(db_path: Path = VULSCAN_DB_PATH) -> tuple[bool, str]:
-    """Re-downloads cve.csv from the same upstream mirror vulscan's own
-    update.sh uses. Downloads to a temp path first, only replacing the real
-    file on a verified-nonempty success -- a failed/partial download must
-    never silently truncate or corrupt the existing database.
+def _http(session: Any):
+    if session is not None:
+        return session
+    import requests
 
-    A "successful" (HTTP 200, nonzero-byte) download from computec.ch can
-    still be a Cloudflare bot-challenge HTML page rather than the real CSV
-    -- curl's exit code and a nonzero byte count both look like success
-    while the content is garbage. A byte-count-only check would silently
-    replace a working 16MB database with a 5KB challenge page, so
-    _looks_like_valid_cve_csv below rejects anything that doesn't look
-    like actual CVE CSV content before it ever replaces the live file,
-    regardless of what curl's exit code claimed.
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = db_path.with_suffix(".csv.new")
+    return requests
+
+
+def _download(url: str, out: Path, max_bytes: int, session: Any = None) -> tuple[bool, str]:
+    import requests
+
     try:
-        result = subprocess.run(
-            ["curl", "-sS", "-m", "60", "-o", str(tmp_path), VULSCAN_UPDATE_URL],
-            capture_output=True, text=True, timeout=70,
-        )
-        if result.returncode != 0 or not tmp_path.exists() or tmp_path.stat().st_size == 0:
-            return False, f"Download failed: {result.stderr.strip() or 'empty/missing response'}"
-        valid, reason = _looks_like_valid_cve_csv(tmp_path)
-        if not valid:
-            if _looks_like_cloudflare_challenge(tmp_path):
-                return False, (
-                    "Update failed: the upstream vulscan mirror (computec.ch) returned a "
-                    "Cloudflare bot-challenge page instead of the real database. This is a "
-                    "known limitation of the upstream mirror, not a bug in Kratos's update logic "
-                    "-- automated curl-based updates will likely keep failing here. The existing "
-                    f"database ({db_path.stat().st_size} bytes) was left untouched, exactly as "
-                    "intended. If a fresh database is genuinely needed, download cve.csv manually "
-                    "(e.g. via a browser session that can pass the challenge) and place it at "
-                    f"{db_path}. Working around the bot challenge is out of scope for this tool."
-                )
-            return False, (
-                f"Download completed but content failed validation ({reason}) -- existing "
-                f"database left untouched. Downloaded {tmp_path.stat().st_size} bytes."
-            )
-        tmp_path.replace(db_path)
-        return True, f"Updated {db_path} ({db_path.stat().st_size} bytes)"
-    except subprocess.TimeoutExpired:
-        return False, "Download timed out"
-    except FileNotFoundError:
-        return False, "curl not found"
+        with _http(session).get(url, stream=True, timeout=60) as resp:
+            if resp.status_code != 200:
+                return False, f"HTTP {resp.status_code}"
+            size = 0
+            with out.open("wb") as fh:
+                for chunk in resp.iter_content(chunk_size=1 << 16):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return False, "larger than expected, download stopped"
+                    fh.write(chunk)
+        return True, "ok"
+    except requests.RequestException as e:
+        return False, e.__class__.__name__
+
+
+def iter_nvd_feed(text: Any, chunk_size: int = 1 << 20) -> Iterator[dict[str, Any]]:
+    """Yield the items of an NVD 2.0 feed's "vulnerabilities" array one at a time
+    from a text stream, so a 300 MB year never sits in memory as one document.
+    Raises ValueError on a feed that isn't shaped like one or ends early."""
+    decoder = json.JSONDecoder()
+    buf = ""
+    while True:
+        at = buf.find('"vulnerabilities"')
+        bracket = buf.find("[", at) if at != -1 else -1
+        if bracket != -1:
+            pos = bracket + 1
+            break
+        data = text.read(chunk_size)
+        if not data or len(buf) > 1 << 20:
+            raise ValueError("not an NVD feed (no vulnerabilities array)")
+        buf += data
+    eof = False
+    skip = re.compile(r"[\s,]*")
+    while True:
+        pos = skip.match(buf, pos).end()
+        if pos < len(buf) and buf[pos] == "]":
+            return
+        if pos < len(buf):
+            try:
+                item, pos = decoder.raw_decode(buf, pos)
+            except json.JSONDecodeError:
+                item = None
+            if item is not None:
+                yield item
+                continue
+        if eof:
+            raise ValueError("feed ended in the middle of the vulnerabilities array")
+        buf = buf[pos:]
+        pos = 0
+        if len(buf) > 64 << 20:
+            raise ValueError("feed item larger than 64 MB")
+        data = text.read(chunk_size)
+        eof = not data
+        buf += data
+
+
+def nvd_item_to_line(item: dict[str, Any]) -> str | None:
+    """One cve.csv line (`CVE-ID;description`) from an NVD feed item, or None for a
+    rejected or description-less entry. vulscan splits on ';' and reads line by
+    line, so both are removed from the description."""
+    cve = item.get("cve") or {}
+    cve_id = cve.get("id") or ""
+    if not re.fullmatch(r"CVE-\d{4}-\d+", cve_id) or cve.get("vulnStatus") == "Rejected":
+        return None
+    descriptions = cve.get("descriptions") or []
+    text = next((d.get("value") for d in descriptions if d.get("lang") == "en"), None)
+    if not text and descriptions:
+        text = descriptions[0].get("value")
+    if not text or text.startswith("** REJECT"):
+        return None
+    text = " ".join(text.replace(";", ",").split())
+    return f"{cve_id};{text}"
+
+
+def build_cve_csv_from_nvd(db_path: Path = VULSCAN_DB_PATH, *, session: Any = None,
+                           years: Iterable[int] | None = None,
+                           progress: Callable[[str], None] | None = None) -> tuple[bool, str]:
+    """Build vulscan's cve.csv from NVD's yearly JSON feeds (public data, current
+    to the day). Each yearly feed (~2-35 MB compressed) is downloaded to a temp
+    file and decompressed and parsed as a stream; the list is written to a temp file and only replaces `db_path` once it has every year
+    and passes validation, so an interrupted or failed build changes nothing."""
+    years = list(years) if years is not None else list(range(NVD_FIRST_FEED_YEAR, datetime.now().year + 1))
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = db_path.with_name(f".{db_path.name}.building")
+    total = 0
+    try:
+        with tmp.open("w", encoding="utf-8") as out:
+            for year in years:
+                url = NVD_FEED_URL.format(year=year)
+                gz_tmp = db_path.with_name(f".nvd-{year}.json.gz")
+                try:
+                    ok, message = _download(url, gz_tmp, NVD_FEED_MAX_BYTES, session)
+                    if not ok:
+                        return False, f"Couldn't download the NVD {year} feed ({message}). Nothing was changed."
+                    count = 0
+                    with gzip.open(gz_tmp, "rt", encoding="utf-8") as feed:
+                        for item in iter_nvd_feed(feed):
+                            line = nvd_item_to_line(item)
+                            if line:
+                                out.write(line + "\n")
+                                count += 1
+                except (OSError, EOFError, ValueError) as e:
+                    return False, f"The NVD {year} feed couldn't be read ({e}). Nothing was changed."
+                finally:
+                    gz_tmp.unlink(missing_ok=True)
+                total += count
+                if progress:
+                    progress(f"{year}: {count:,} CVEs")
+        newest = newest_cve_year(tmp)
+        if total < MIN_BUILT_CVE_ENTRIES:
+            return False, f"Only {total:,} CVEs came back from NVD, fewer than expected. Nothing was changed."
+        if newest is None or newest < datetime.now().year - STALE_CVE_YEARS:
+            return False, f"The NVD feeds stop at {newest}, which looks incomplete. Nothing was changed."
+        tmp.replace(db_path)
+        db_path.with_name(VULSCAN_SOURCE_FILENAME).write_text(
+            f"cve.csv built by Kratos from NVD's yearly feeds on {datetime.now():%Y-%m-%d}.\n{NVD_NOTICE}\n",
+            encoding="utf-8")
+        return True, f"CVE list rebuilt from NVD: {total:,} CVEs, up to {newest}"
     finally:
-        if tmp_path.exists():
-            tmp_path.unlink(missing_ok=True)
-
-
-# The real cve.csv is ~16MB; a bot-challenge/error page is typically a few
-# KB. 1MB is a conservative, deliberately generous floor -- real content
-# should clear it by more than an order of magnitude, so this only catches
-# genuinely wrong content, not normal size variation between snapshots.
-_MIN_VALID_CVE_CSV_BYTES = 1_000_000
-_CVE_CSV_LINE_RE = re.compile(r"^CVE-\d{4}-\d+;")
-
-
-def _looks_like_valid_cve_csv(path: Path) -> tuple[bool, str]:
-    size = path.stat().st_size
-    if size < _MIN_VALID_CVE_CSV_BYTES:
-        return False, f"only {size} bytes, expected several MB"
-    with path.open("r", encoding="utf-8", errors="replace") as f:
-        first_line = f.readline()
-    if "<html" in first_line.lower() or "<!doctype" in first_line.lower():
-        return False, "content looks like an HTML page, not CSV"
-    if not _CVE_CSV_LINE_RE.match(first_line):
-        return False, f"first line doesn't match the expected 'CVE-YYYY-NNNN;...' format: {first_line[:80]!r}"
-    return True, "ok"
-
-
-# The challenge page's <title> is literally "Just a moment...". Kept
-# narrow/specific deliberately -- this exists to give a precise, actionable
-# message for the one known cause, not to generically guess at every
-# possible reason content might fail validation (see the fallback message
-# in update_vulscan_db for anything that doesn't match this).
-_CLOUDFLARE_CHALLENGE_MARKERS = ("just a moment", "cf-chl", "cloudflare")
-
-
-def _looks_like_cloudflare_challenge(path: Path) -> bool:
-    head = path.read_text(encoding="utf-8", errors="replace")[:4096].lower()
-    return any(marker in head for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
+        tmp.unlink(missing_ok=True)
 
 
 def run_nmap_vulscan(target: str, data_dir: Path, *, use_vulscan: bool = True) -> Path:

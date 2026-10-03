@@ -246,8 +246,9 @@ def cmd_vulscan_install(args: argparse.Namespace) -> int:
     """Download nmap's vulscan script and CVE list into Kratos's data home."""
     from kratos.adapters import vuln_scan
 
-    print(f"[KRATOS] Downloading vulscan from {vuln_scan.VULSCAN_REPO_RAW} ...")
-    ok, message = vuln_scan.install_vulscan(force=args.force)
+    print("[KRATOS] Installing vulscan: the script from its repository, the CVE list built from NVD's "
+          "public feeds (a couple of minutes) ...")
+    ok, message = vuln_scan.install_vulscan(force=args.force, progress=lambda m: print(f"         {m}", flush=True))
     print(f"[KRATOS] {message}")
     if ok:
         status = vuln_scan.check_vulscan_db_staleness()
@@ -1324,9 +1325,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     vulscan_p = sub.add_parser(
         "vulscan-install",
-        help="Download the CVE list the vulnerability scan matches services against (nmap vulscan)",
+        help="Install or refresh the CVE list the vulnerability scan matches services against (built from NVD)",
     )
-    vulscan_p.add_argument("--force", action="store_true", help="Download again even if already installed")
+    vulscan_p.add_argument("--force", action="store_true", help="Rebuild everything even if it's current")
     vulscan_p.set_defaults(func=cmd_vulscan_install)
 
     # ====== Sub-agent telemetry (capability 1 only -- docs/subagent_architecture.md) ======

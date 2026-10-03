@@ -94,7 +94,7 @@ A few standard tools aren't Python packages — install them with your package m
 
 - **`nmap`** on the Kratos machine (required for the port scan and the standard audit) — e.g. `sudo apt install nmap`.
 - **`nuclei`** on the Kratos machine (optional, for deeper vulnerability scanning) — see the [nuclei install guide](https://github.com/projectdiscovery/nuclei#install-nuclei). Without it the vulnerability scan skips the active checks.
-- **The CVE list** the vulnerability scan matches service versions against (optional): run `kratos vulscan-install` once. It downloads nmap's [vulscan](https://github.com/scipag/vulscan) script and its CVE list. Be aware that the freely downloadable list stops at **2013**: matches are real, but anything newer isn't checked, and Kratos says so in its answer. `/doctor` shows how far your copy goes.
+- **The CVE list** the vulnerability scan matches service versions against (optional): run `kratos vulscan-install`. It downloads nmap's [vulscan](https://github.com/scipag/vulscan) script and builds a current CVE list from the [NVD](https://nvd.nist.gov)'s public feeds (about a minute; run it again monthly to refresh). `/doctor` shows how current your copy is, and if it's missing or old, Kratos's answers say which CVEs weren't checked. *This product uses data from the NVD API but is not endorsed or certified by the NVD.*
 - **[Incus](https://linuxcontainers.org/incus/)** on the Kratos machine (only for `/evolve`): new tools are tested inside a throwaway container with no network. The first `/evolve` builds the sandbox image once (a few minutes, needs internet).
 - **`yara`** and **`lsof`** on the **machine you watch** — Kratos's setup check tells you if they're missing and gives you the command.
 
