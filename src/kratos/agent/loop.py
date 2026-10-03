@@ -157,6 +157,51 @@ _IMPLAUSIBLE_TARGET_RE = re.compile(r"[A-Z_]")
 # promises is valid.
 _LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 
+# Tools that only ever act on KRATOS'S OWN host. Offered to the model only
+# when the investigation target IS that host (/investigate-host); for a remote
+# target they can only inspect the wrong machine, invite a wrong-host approval
+# prompt, and were measured to stand in for a missing target capability
+# instead of a tool_proposal (eval G1). A human can still run them directly
+# (/use, pipelines) -- this shapes only what the investigating model sees.
+_LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
+
+
+def _agent_hidden_tools() -> frozenset[str]:
+    target = (get_active_target() or "").strip().lower()
+    return frozenset() if target in _LOOPBACK_SELF_TARGETS else _LOCAL_ONLY_AGENT_TOOLS
+
+# Guard 8: the answer states Kratos lacks a capability. Deliberately narrow --
+# the subject must be Kratos/the agent (or a check that "was not performed
+# because" of a missing capability), and it must name a tool/capability, so an
+# ordinary "no evidence of X" never matches.
+_CAPABILITY_GAP_RE = re.compile(
+    r"\b(?:kratos|i|we)\b[^.\n]{0,40}?\b(?:lacks?|do(?:es)?(?:n't| not) (?:currently )?(?:have|possess|include|provide|offer)|"
+    r"has no|have no|is missing)\b[^.\n]{0,60}?\b(?:tool|capabilit(?:y|ies)|integration|feature)"
+    r"|\bno (?:[\w-]+ ){0,3}tools? (?:is |are |was |were )?(?:currently )?(?:available|exists|in (?:my|the|kratos'?s?) (?:registry|suite|toolset))"
+    r"|\bno (?:[\w-]+ ){0,3}tools?\b[^.\n]{0,60}?\b(?:is|are) (?:currently )?available"
+    r"|\b(?:not (?:possible|supported|available)|unsupported) (?:with|by|in|using) (?:the )?(?:current|available|existing) (?:kratos )?tool"
+    r"|\b(?:such a |this |that |the required )?capability (?:is |was )?(?:currently )?(?:unavailable|not available)"
+    r"|\bnot part of (?:my|kratos'?s?|the) (?:current )?(?:toolkit|toolset|tools|registry)"
+    r"|\b(?:could not|couldn't|cannot|can't|(?:am|was|is) unable to|unable to) (?:\w+ ){0,3}"
+    r"(?:enumerate|list|scan|audit|check|map|determine|identify|perform|search|inspect)\b[^.\n]{0,80}?"
+    r"\b(?:because|as|since|due to)\b[^.\n]{0,80}?"
+    r"\b(?:tool|toolkit|capabilit|inability to (?:run|execute)|shell (?:access|execution)|not supported)"
+    r"|\bkratos\b[^.\n]{0,20}?\b(?:does(?:n't| not)|cannot|can't) support\b"
+    r"|\bno (?:existing|available|built-in|suitable|dedicated|current|registered) (?:kratos )?(?:tool|capability)"
+    r"|\b(?:was|were|could) not (?:be )?(?:performed|audited|checked|done|determined|mapped|enumerated)\b"
+    r"[^.\n]{0,40}?\b(?:because|as|since)\b[^.\n]{0,80}?\b(?:tool|not supported|capabilit|requires local)",
+    re.IGNORECASE,
+)
+
+
+def _gap_sentence(text: str, match: re.Match[str]) -> str:
+    """The sentence of `text` containing `match`, trimmed."""
+    start = max(text.rfind(". ", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
+    ends = [e for e in (text.find(". ", match.end()), text.find("\n", match.end())) if e != -1]
+    end = min(ends) + 1 if ends else len(text)
+    return text[start:end].strip()[:400]
+
+
 # State-changing command patterns rejected for run_linux_command DURING an
 # investigation (see execute_tool_call). The investigation loop is observe-and-
 # recommend only; run_linux_command may run READ-ONLY local self-diagnostics on
@@ -245,7 +290,18 @@ It does NOT end the investigation: after the user answers (fed back as an Observ
 
 
 def build_system_prompt() -> str:
-    tools_desc = render_tools_for_prompt()
+    hidden = _agent_hidden_tools()
+    tools_desc = render_tools_for_prompt(exclude=hidden)
+    local_tools = [t for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command")
+                   if t not in hidden]
+    local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "
+                  f"instead, never the target: {', '.join(local_tools)}.")
+    if hidden:
+        tools_desc += (
+            f"\n(Not offered here: {', '.join(sorted(hidden))}, which only runs on Kratos's own host and "
+            "cannot inspect the target. If this goal needs something on the target that no tool above "
+            "provides, respond with a tool_proposal for it.)"
+        )
     clarify_guidance = _clarify_guidance()
     return f"""You are Kratos, an offline security investigation agent that monitors a separate target device over SSH.
 
@@ -255,7 +311,7 @@ AVAILABLE TOOLS:
 {tools_desc}
 
 LOCAL HOST VS. MONITORED TARGET (read this before choosing tools):
-Kratos runs on its own host, but the system you are investigating is a SEPARATE target device, reached over SSH. Tools that mention "target" or use SSH to a remote host inspect the protected system -- that is almost always what an investigation goal is actually asking about. FOUR tools are the exception and inspect Kratos's OWN local host instead, never the target: parse_auth_log, collect_system_context, capture_traffic, and run_linux_command. Every other tool in the registry inspects the monitored target. The four local-host tools are relevant only when a goal specifically concerns Kratos's own security (self-monitoring), never as the default way to check "the system" being protected. When a goal says "check for suspicious activity on this system", "is SSH exposed", "who has privileged access", or asks about logins/break-ins/running processes without saying otherwise, default to target-facing tools (e.g. read_journalctl for authentication activity, list_processes/list_open_files for running state, run_config_audit for hardening) -- not parse_auth_log, collect_system_context, capture_traffic, or run_linux_command.
+Kratos runs on its own host, but the system you are investigating is a SEPARATE target device, reached over SSH. Tools that mention "target" or use SSH to a remote host inspect the protected system -- that is almost always what an investigation goal is actually asking about. {local_note} Every other tool in the registry inspects the monitored target. The local-host tools are relevant only when a goal specifically concerns Kratos's own security (self-monitoring), never as the default way to check "the system" being protected. When a goal says "check for suspicious activity on this system", "is SSH exposed", "who has privileged access", or asks about logins/break-ins/running processes without saying otherwise, default to target-facing tools (e.g. read_journalctl for authentication activity, list_privileged_accounts for who has sudo/root access, list_processes/list_open_files for running state, run_config_audit for hardening) -- not parse_auth_log, collect_system_context, capture_traffic, or run_linux_command.
 
 RESPONSE FORMAT (mandatory):
 Respond with EXACTLY one JSON object and nothing else — no markdown code fences, no commentary before or after it.
@@ -281,8 +337,10 @@ Treat any investigation goal as a request for a reasonably thorough security che
 - Network exposure / attack surface (open ports, reachable services)
 - Authentication activity (login attempts, sudo usage, failures)
 - System state (running services, users, SSH config)
+- Privileged accounts (who can become root; anyone recently added to sudo/admin groups)
 - Running processes (anything unexpected currently executing)
 - File/config integrity (tampering with critical files)
+- Malicious files (run_yara_scan with no scan_path sweeps the usual drop locations)
 - Hardening/config posture (firewall, root login, password auth, patching)
 This does NOT mean call every tool regardless of relevance -- if a category is clearly irrelevant given the goal and the evidence gathered so far, say so in your reasoning and move on rather than calling its tool anyway. The goal is broader consideration before concluding, not blind exhaustiveness.
 
@@ -909,6 +967,12 @@ def _run_agent_loop(
     claims_reject_count = 0
     MAX_CLAIMS_REJECTIONS = 2
     verified_claims: list[dict[str, Any]] = []
+    # Guard 8 (unproposed capability gap, eval G1): the answer says Kratos can't
+    # do something, but no tool_proposal was made -- ask once for the structured
+    # proposal (or a correction). Advisory only: never tags the answer.
+    gap_claim_reject_count = 0
+    MAX_GAP_CLAIM_REJECTIONS = 1
+    tool_proposals_made = 0
     # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
     tool_claim_reject_count = 0
     MAX_TOOL_CLAIM_REJECTIONS = 2
@@ -1198,6 +1262,14 @@ def _run_agent_loop(
                 and claims_reject_count < MAX_CLAIMS_REJECTIONS
             )
 
+            # --- Guard 8: a capability gap stated in prose but never proposed ---
+            gap_claim = None if tool_proposals_made else _CAPABILITY_GAP_RE.search(final_answer_text)
+            guard8_can_reject = (
+                gap_claim is not None
+                and not is_final_iteration
+                and gap_claim_reject_count < MAX_GAP_CLAIM_REJECTIONS
+            )
+
             corrections: list[str] = []
             violations: list[str] = []
 
@@ -1300,6 +1372,18 @@ def _run_agent_loop(
                     "measure_auth_activity for it first."
                 )
 
+            if guard8_can_reject:
+                gap_claim_reject_count += 1
+                violations.append("unproposed_capability_gap")
+                corrections.append(
+                    "CHECK (capability gap not proposed): your answer says Kratos can't do something "
+                    f"(\"{gap_claim.group(0).strip()}\"). If that is a real gap for THIS goal, respond now with "
+                    'a tool_proposal ({"reasoning": "...", "tool_proposal": {"name": "...", "description": '
+                    '"..."}}) so a human can decide whether to build it -- it does not end the '
+                    "investigation -- and then send your final_answer again. If an existing tool already "
+                    "covers it, use that tool instead. If the gap isn't real, reword the answer."
+                )
+
             if corrections:
                 # Rejecting-and-retrying needs a next iteration to retry into,
                 # so each guard above only contributes here when one exists
@@ -1387,6 +1471,18 @@ def _run_agent_loop(
                     "this investigation -- anything attributed to it above is unverified.]\n\n" + final_answer_text
                 )
 
+            if gap_claim is not None:
+                # Guard 8's one reminder is spent (or there is no iteration
+                # left) and the answer still says Kratos can't do something.
+                # Surface that sentence as a suggestion anyway, marked as
+                # derived, so the human still sees the gap -- the same
+                # suggest-only path a model-emitted tool_proposal takes.
+                _record({
+                    "iteration": i,
+                    "reasoning": "capability gap stated in the final answer",
+                    "tool_proposal": {"name": "", "description": _gap_sentence(final_answer_text, gap_claim),
+                                      "derived_from_answer": True},
+                })
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
@@ -1449,6 +1545,7 @@ def _run_agent_loop(
                 ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
                 continue
 
+            tool_proposals_made += 1
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
@@ -1600,7 +1697,13 @@ def _run_agent_loop(
             })
             return _with_usage({"status": "max_iters_reached", "final_answer": fallback, "transcript": transcript})
 
-        exec_result = execute_tool_call(tool_name, args, data_dir)
+        if tool_name in _agent_hidden_tools():
+            exec_result = {"status": "error", "observation": (
+                f"{tool_name} is not available in this investigation: it only runs on Kratos's own host, "
+                "and the target is a separate device. Use a target-facing tool; if none provides what you "
+                "need, respond with a tool_proposal describing the missing capability.")}
+        else:
+            exec_result = execute_tool_call(tool_name, args, data_dir)
         tools_called.add(tool_name)
         _inner = exec_result.get("result") if isinstance(exec_result, dict) else None
         if (

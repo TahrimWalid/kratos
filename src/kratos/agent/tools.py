@@ -71,6 +71,8 @@ from kratos.adapters.ssh_remote import (
     fetch_file_hashes as _fetch_file_hashes,
     run_config_audit_checks as _run_config_audit_checks,
     fetch_yara_scan as _fetch_yara_scan,
+    fetch_yara_sweep as _fetch_yara_sweep,
+    DEFAULT_YARA_SWEEP_PATHS as _DEFAULT_YARA_SWEEP_PATHS,
     run_remote_script as _run_remote_script,
     _journalctl_prefix,
     SSHResult as _SSHResult,
@@ -1007,6 +1009,93 @@ def tool_list_processes() -> dict[str, Any]:
     return {"status": "ok", "target": _ssh_target_label(), "count": len(result), "entries": result}
 
 
+_PRIV_SNAPSHOT_GLOB = "privileged_accounts_*.json"
+
+
+def _previous_privileged_snapshot(data_dir: Path, target: str) -> dict[str, Any] | None:
+    """Newest earlier snapshot for the same target, by its recorded capture
+    time (never by filename)."""
+    best: tuple[str, dict[str, Any]] | None = None
+    for f in (data_dir / "context").glob(_PRIV_SNAPSHOT_GLOB):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(d, dict) and d.get("target") == target and isinstance(d.get("checked_at"), str):
+            if best is None or d["checked_at"] > best[0]:
+                best = (d["checked_at"], d)
+    return best[1] if best else None
+
+
+@register_tool(
+    name="list_privileged_accounts",
+    description=(
+        "Answers WHO HAS PRIVILEGED ACCESS on the SSH TARGET DEVICE (not the local Kratos host): "
+        "members of sudo/wheel/admin, members of root-equivalent groups (docker, lxd, libvirt, disk, "
+        "shadow), UID-0 accounts, and direct sudoers grants -- plus RECENT account/group changes from "
+        "the target's own logs (who was added to sudo, when) and what changed since Kratos last "
+        "checked. Use it for any question about admins, root/sudo access, privilege escalation, new or "
+        "backdoor accounts, or 'who can become root'. Read-only. Its result is also saved so "
+        "correlate_findings can raise a finding for a newly privileged account."
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "lookback_days": {"type": "int", "description": "How far back to look for account/group changes (1-365)", "default": 30},
+    },
+)
+def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> dict[str, Any]:
+    from kratos.adapters import privileged_accounts as _PA
+
+    data_dir = Path(data_dir)
+    try:
+        lookback_days = max(1, min(365, int(lookback_days)))
+    except (TypeError, ValueError):
+        lookback_days = 30
+    target = _ssh_target_label()
+    fetched = _PA.fetch(lookback_days, run_remote_script=_run_remote_script, journalctl_prefix=_journalctl_prefix())
+    if isinstance(fetched, _SSHResult):
+        return {"status": "error", "observation": f"privileged-account check over SSH failed: {(fetched.stderr or fetched.stdout).strip()}"}
+    inv, since = fetched
+
+    accounts = sorted(inv.accounts.values(), key=lambda a: (a.get("uid") != 0, a["user"]))
+    all_grants = [
+        {"time": _PA.iso(e["ts"]), "action": e["action"], "user": e["user"], "group": e.get("group"),
+         "uid": e.get("uid"), "source": e["source"], "in_effect": _PA.grant_in_effect(inv, e),
+         "now": _PA.grant_status(inv, e)}
+        for e in _PA.notable_events(inv)
+    ]
+    grants = [g for g in all_grants if g["in_effect"]]
+    past_grants = [g for g in all_grants if not g["in_effect"]]
+    other_changes = [
+        {"time": _PA.iso(e["ts"]), "action": e["action"], "user": e["user"], "group": e.get("group")}
+        for e in inv.events if e not in _PA.notable_events(inv)
+    ][-20:]
+    previous = _previous_privileged_snapshot(data_dir, target)
+    changed = _PA.diff_accounts(previous, inv.accounts)
+    checked_at = datetime.now().astimezone().isoformat(timespec="seconds")
+    result: dict[str, Any] = {
+        "status": "ok",
+        "target": target,
+        "checked_at": checked_at,
+        "lookback_days": lookback_days,
+        "privileged_accounts": accounts,
+        "recent_privilege_grants": grants,
+        # Grants to accounts that have since lost that access or been deleted --
+        # history worth knowing, NOT a current risk.
+        "past_privilege_grants_no_longer_in_effect": past_grants,
+        "other_account_changes": other_changes,
+        "changed_since_last_check": changed,
+        "evidence_gaps": _PA.evidence_gaps(inv, since),
+        "sudoers_grants": inv.sudoers_grants[:50],
+    }
+    snap_dir = data_dir / "context"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    snap = snap_dir / f"privileged_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+    snap.write_text(json.dumps({**result, "accounts": inv.accounts}, indent=2, default=str), encoding="utf-8")
+    result["snapshot_file"] = str(snap)
+    return result
+
+
 @register_tool(
     name="check_file_integrity",
     description=(
@@ -1120,21 +1209,23 @@ def _load_yara_rules_content(rules_path: Path | None) -> tuple[str, list[str]] |
         "TARGET over SSH -- it must already be installed there; "
         "this tool does not install it. No scanned file's CONTENT is ever pulled back to the "
         "Kratos host, only match results (rule name, matched file path, offset, matched string) "
-        "cross the wire -- same posture as check_file_integrity's hashing. Relevant as a targeted "
-        "follow-up once a SPECIFIC suspicious file, directory, or web-server document root has "
-        "already been identified (e.g. via list_open_files, list_processes, or file integrity "
-        "findings) -- not a first step, and not something to call speculatively across the whole "
-        "filesystem. Uses Kratos's small bundled starter ruleset (yara_rules/, sourced from the "
+        "cross the wire -- same posture as check_file_integrity's hashing. THE tool for any goal "
+        "about malware, malicious or suspicious files, viruses, or webshells: with no scan_path it "
+        "sweeps the usual drop locations (home directories, /root, /tmp, /var/tmp, /dev/shm, web "
+        "roots, /usr/local/bin) in one call and reports exactly which of them were scanned; pass "
+        "scan_path to scan one specific file or directory instead (e.g. a suspicious path found via "
+        "list_open_files/list_processes). Never pass '/' -- the whole filesystem takes far too long. "
+        "Uses Kratos's small bundled starter ruleset (yara_rules/, sourced from the "
         "public Yara-Rules project) by default; pass rules_path to use a custom rules file or "
         "directory INSTEAD of the bundled defaults (replaces, does not merge with, the bundled "
         "set)."
     ),
     parameters={
-        "scan_path": {"type": "str", "description": "File or directory path ON THE TARGET to scan."},
+        "scan_path": {"type": "str|null", "description": "File or directory ON THE TARGET to scan. Omit for the default sweep of common malware drop locations.", "default": None},
         "rules_path": {"type": "str|null", "description": "Local Kratos-host path to a custom .yar file or directory of .yar files, used INSTEAD of the bundled default ruleset. Omit to use the bundled defaults.", "default": None},
     },
 )
-def tool_run_yara_scan(scan_path: str, rules_path: str | Path | None = None) -> dict[str, Any]:
+def tool_run_yara_scan(scan_path: str | None = None, rules_path: str | Path | None = None) -> dict[str, Any]:
     resolved_rules_path = Path(rules_path) if rules_path else None
     loaded = _load_yara_rules_content(resolved_rules_path)
     if loaded is None:
@@ -1146,6 +1237,34 @@ def tool_run_yara_scan(scan_path: str, rules_path: str | Path | None = None) -> 
             ),
         }
     rules_content, rule_files = loaded
+
+    if not scan_path:
+        sweep = _fetch_yara_sweep(_DEFAULT_YARA_SWEEP_PATHS, rules_content)
+        if isinstance(sweep, _SSHResult):
+            return {"status": "error", "observation": f"YARA sweep over SSH failed: {(sweep.stderr or sweep.stdout).strip()}",
+                    "rules_used": rule_files}
+        out = {
+            "status": "ok",
+            "target": _ssh_target_label(),
+            "scan_path": None,
+            "scanned_paths": sweep["scanned"],
+            "not_present_on_target": [p for p in _DEFAULT_YARA_SWEEP_PATHS if p not in sweep["scanned"]],
+            "rules_used": rule_files,
+            "match_count": len(sweep["matches"]),
+            "matches": sweep["matches"],
+        }
+        notes = []
+        if sweep["unreadable_paths"]:
+            notes.append(f"NOT scanned (the SSH user cannot read them): {', '.join(sweep['unreadable_paths'])}.")
+        for path, n in sweep["partially_unreadable"].items():
+            notes.append(f"Inside {path}, {n['unreadable_dirs']} director(ies) and {n['unreadable_files']} file(s) "
+                         "could not be read and were skipped.")
+        if sweep["unreadable"]:
+            notes.append(f"yara reported {sweep['unreadable']} error line(s) while scanning.")
+        if notes:
+            out["unreadable_paths"] = sweep["unreadable_paths"]
+            out["coverage_note"] = " ".join(notes) + " A clean result does not cover what was skipped."
+        return out
 
     result = _fetch_yara_scan(scan_path, rules_content)
     if isinstance(result, _SSHResult):
@@ -1434,7 +1553,7 @@ def tool_run_linux_command(command: str, reason: str) -> dict[str, Any]:
         }
 
 
-def render_tools_for_prompt() -> str:
+def render_tools_for_prompt(exclude: frozenset[str] = frozenset()) -> str:
     """
     Human/LLM-readable listing of every registered tool (name, description,
     params) -- this is the ONLY thing the agent loop's LLM ever sees of the
@@ -1456,6 +1575,8 @@ def render_tools_for_prompt() -> str:
     """
     lines: list[str] = []
     for tool in TOOL_REGISTRY.values():
+        if tool.name in exclude:
+            continue
         approval_note = " [REQUIRES HUMAN APPROVAL]" if tool.requires_approval else ""
         lines.append(f"- {tool.name}{approval_note}: {tool.description}")
         for pname, pinfo in tool.parameters.items():

@@ -42,6 +42,7 @@ CATEGORIES: dict[str, tuple[str, str, str | None]] = {
     "integrity_baseline": ("baseline", "file_integrity_*.json", r"^file_integrity_diff_"),
     "auth_stats": ("logs", "auth_stats_*.json", None),
     "findings": ("reports", "findings_*.json", None),
+    "privileged_accounts": ("context", "privileged_accounts_*.json", None),
 }
 DESCRIPTIONS = {
     "open_ports": "open ports/services seen by an nmap scan of the target",
@@ -53,6 +54,7 @@ DESCRIPTIONS = {
     "integrity_baseline": "named file-integrity reference baseline",
     "auth_stats": "authentication activity counts",
     "findings": "correlated findings report",
+    "privileged_accounts": "who held sudo/root-equivalent access on the target",
 }
 _STAMP_RE = re.compile(r"(\d{8})_(\d{6})")
 _IP_RE = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
@@ -268,6 +270,9 @@ def summarize(s: Snapshot) -> dict[str, Any]:
     if s.category == "findings":
         return {"findings": [{"id": f.get("id"), "severity": f.get("severity"), "title": f.get("title")}
                              for f in d.get("findings", [])]}
+    if s.category == "privileged_accounts":
+        return {"accounts": {a: v.get("via") for a, v in (d.get("accounts") or {}).items()},
+                "recent_privilege_grants": d.get("recent_privilege_grants")}
     if s.category == "auth_stats":
         return {"events_by_type": d.get("events_by_type"), "top_failed_login_ips": d.get("top_failed_login_ips"),
                 "window": d.get("since")}
