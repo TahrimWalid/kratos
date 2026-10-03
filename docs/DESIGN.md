@@ -113,7 +113,9 @@ separate:
 - **Telemetry** — a read-only snapshot (host, disk, listening ports, process
   count, services, critical file hashes, recent auth summary) every 30s.
 - **Investigation reads** — named probes from one closed set shipped in the
-  agent (`subagent/reads.py`). Kratos names a probe and passes parameters;
+  agent (`subagent/reads.py`): clock, journal, auth journal, auth
+  measurement, privileged accounts, processes, open files, file hashes, config
+  audit, capabilities, YARA. Kratos names a probe and passes parameters;
   the agent validates every parameter with closed, type-strict validators and
   runs a fixed argv (or a fixed script) with no shell, a fixed environment,
   binaries only from system directories, a per-probe timeout and an output
@@ -439,7 +441,11 @@ investigation conclusions. It auto-discovers the newest input file per
 category (`scans`, `logs`, `context`, `reports`, `baseline`) under the
 active `data_dir`, so a call doesn't need to be told which specific file to
 read. Finding IDs follow a fixed prefix scheme: `NET-*`, `AUTH-*`,
-`CORR-*`, `INTEG-*`.
+`CORR-*`, `INTEG-*`, `PRIV-*`. `PRIV-*` comes from `list_privileged_accounts`
+snapshots, and only from one that is fresh (24 h) and of the active target, so
+an old "X was just added to sudo" can't keep re-firing or leak into another
+machine's report; grants to accounts that have since lost the access are kept
+as history, never reported as current risk.
 
 The agent loop enforces a few structural checks on any `final_answer`
 before accepting it, rather than trusting the model's own claim:
@@ -460,6 +466,15 @@ before accepting it, rather than trusting the model's own claim:
   never ran.
 - It can't present the target as fully checked when a step reported a
   coverage gap (e.g. no network scan for a sub-agent-only target).
+- If it says Kratos lacks a capability without proposing a tool for it, it
+  is asked once for a structured `tool_proposal`; if it still answers in
+  prose, that sentence is surfaced as a suggestion for `/evolve`. Advisory
+  only — this one never tags the answer, and it ignores a sub-agent's known
+  coverage limit, which no new tool could fix.
+
+`run_linux_command` (Kratos's own host only) isn't offered to the model when
+the target is remote: there it could only inspect the wrong machine, and it was
+measured standing in for a missing target capability instead of a proposal.
 
 A violated check produces one combined rejection per iteration (multiple
 violations on the same answer are folded into a single retry prompt, not

@@ -277,6 +277,12 @@ Other things you can ask, to get a feel for it:
 - *"is anything listening on the network that shouldn't be?"*
 - *"have any important system files changed recently?"*
 - *"who has been using sudo in the last day?"*
+- *"who can become root on this box, and was anyone added recently?"* — Kratos lists
+  sudo/admin members, root-equivalent groups (docker, lxd, …), extra UID-0 accounts and
+  sudoers grants, plus who was added and when, and what changed since it last checked.
+- *"is there any malware on this machine?"* — a YARA sweep of the usual drop locations
+  (home directories, `/tmp`, web roots, …), reporting exactly which places it scanned
+  and what it couldn't read.
 
 You don't have to phrase these a special way. If your request is unclear or could
 go several directions, Kratos asks you first (see below) rather than guessing.
@@ -467,8 +473,8 @@ row turns **connected**.
 - It streams the machine's status — uptime, disk, listening ports, hashes of
   critical files — every 30 seconds, whether or not you're investigating.
 - Investigations read the machine through the agent's own fixed set of reads:
-  logs and login activity, processes, open files, configuration checks, file
-  hashes, and YARA scans. Kratos never sends it command text, every request is
+  logs and login activity, privileged accounts, processes, open files,
+  configuration checks, file hashes, and YARA scans. Kratos never sends it command text, every request is
   signed, and a replayed request is refused. Each step says it was read through
   the sub-agent.
 - Port and vulnerability scans need a direct network path from Kratos, so they're
@@ -513,7 +519,9 @@ a check it doesn't have, it can write one for itself — but only with your revi
 
 Here's the whole flow:
 
-1. **You give it an idea.** `/evolve` on its own uses a suggestion Kratos made, or
+1. **You give it an idea.** `/evolve` on its own uses a suggestion Kratos made — it
+   makes one when an investigation hits something no tool covers, including when its
+   own answer says it couldn't check something — or
    `/evolve "list which users can use sudo on the target"` starts from your words.
 2. **Kratos writes a test first.** Every tool needs a small test that defines what
    "correct" means for it. Kratos can draft that test for you from your idea; you
