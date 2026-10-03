@@ -148,9 +148,9 @@ class WhitelistScreen(Screen):
             yield DataTable(id="wl-table", cursor_type="row")
             yield VerticalScroll(id="wl-log")
             yield Static(
-                Text("↑↓ select · enter run · a add · m edit · space on/off · x delete · i details · "
-                     "c what the target allows · s re-sync · e enable exec · d disable · t telemetry · "
-                     "r rollback last · esc back", style=T.TEXT_DIM),
+                Text("↑↓ select · enter run · a add · m edit · space on/off · x delete · i details\n"
+                     "c what the target allows · s re-sync · t telemetry · r roll back last run\n"
+                     "e allow fixes on this target · d stop fixes · esc back", style=T.TEXT_DIM),
                 id="wl-hints",
             )
 

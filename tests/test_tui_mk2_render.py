@@ -285,3 +285,28 @@ def test_long_text_and_the_kratos_host_stamp_get_their_own_lines():
 def test_any_shape_renders():
     for data in ([{"a": 1}], [], "plain text", 42, None, {"nested": {"deep": {"deeper": [1, 2]}}}):
         assert _plain(R.tool_result_panel("x", data))
+
+
+def test_home_tip_depends_on_whether_a_machine_is_connected():
+    with_target = _plain(R.home_banner("web-01", 19, 2, model="m"))
+    assert "ready" in with_target and "/target to switch" in with_target and "new here?" not in with_target
+    assert "2 built by you" in with_target
+    without = _plain(R.home_banner("", 19, 0, model="m"))
+    assert "new here?" in without and "/target <host> to connect" in without
+
+
+def test_key_hint_lines_fit_an_80_column_terminal():
+    """Long one-line key hints (/subagent, /whitelist, Settings) were clipped
+    mid-word, even at 120 columns."""
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "kratos" / "tui_mk2"
+    too_long = []
+    for f in sorted(root.rglob("*.py")):
+        for node in ast.walk(ast.parse(f.read_text())):
+            if (isinstance(node, ast.Constant) and isinstance(node.value, str) and " · " in node.value
+                    and ("esc" in node.value or "↑↓" in node.value) and not node.value.startswith("Usage:")):
+                too_long += [f"{f.name}:{node.lineno} ({len(line)}) {line}"
+                             for line in node.value.split("\n") if len(line) > 78]
+    assert not too_long, "\n".join(too_long)

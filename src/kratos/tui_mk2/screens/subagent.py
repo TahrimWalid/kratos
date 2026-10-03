@@ -174,9 +174,9 @@ class SubAgentScreen(Screen):
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
             yield Static(
-                Text("a add · k link a target · g update agent · t telemetry · i details · u unpair · p re-pair · "
-                     "n new code · x dismiss code · f forget (unpaired) · c copy deploy cmds · l always-on listener · "
-                     "esc back", style=T.TEXT_DIM),
+                Text("a add a server · k link to a target · g update agent · u unpair · p re-pair\n"
+                     "t telemetry · i details · c copy deploy commands · l always-on listener\n"
+                     "n new pairing code · x dismiss code · f forget unpaired · esc back", style=T.TEXT_DIM),
                 id="sa-hints",
             )
 

@@ -347,7 +347,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             with TabPane("Models", id="tab-models"):
                 yield DataTable(id="ms-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter/s switch · a add · e edit context window · d delete · "
+                    Text("↑↓ select · enter/s switch · a add · e edit context window · d delete\n"
                          "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="ms-hint")
                 yield Static("", id="ms-status")
@@ -359,14 +359,14 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     classes="set-placeholder")
                 yield DataTable(id="ap-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter/space ask first on/off (your tools) · v view code · "
+                    Text("↑↓ select · enter/space ask first on/off (your tools) · v view code\n"
                          "c edit description (your tools) · ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
                 yield DataTable(id="gen-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter change · n name · t theme · u timezone auto · "
+                    Text("↑↓ select · enter change · n name · t theme · u timezone auto\n"
                          "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
@@ -374,7 +374,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                 with TabPane("This session", id="tab-session"):
                     yield DataTable(id="sess-table", cursor_type="row", zebra_stripes=False)
                     yield Static(
-                        Text("↑↓ select · enter act (closes settings, acts in the session) · "
+                        Text("↑↓ select · enter act (closes settings, acts in the session)\n"
                              "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                         id="sess-hint")
 

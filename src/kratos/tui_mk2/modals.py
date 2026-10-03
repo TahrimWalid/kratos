@@ -276,7 +276,8 @@ class PromptModal(ModalScreen[str | None]):
             yield Input(value=self._initial, id="prompt-input", select_on_focus=False)
             if self._quick_label:
                 yield Button(self._quick_label, id="prompt-quick", variant="primary")
-                yield Static(Text("Enter to use what you typed · Tab then Enter (or click) for the option · esc cancel", style=T.TEXT_DIM))
+                yield Static(Text("Enter uses what you typed · Tab then Enter picks the option · esc cancel",
+                                  style=T.TEXT_DIM))
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
