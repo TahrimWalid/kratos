@@ -772,7 +772,41 @@ _YARA_UNREADABLE_MARK = "KRATOS_UNREADABLE\t"
 _YARA_SKIPPED_MARK = "KRATOS_SKIPPED\t"
 
 
-def fetch_yara_sweep(paths: tuple[str, ...], rules_content: str) -> SSHResult | dict[str, Any]:
+def _yara_sweep_via_agent(link: Any, paths: tuple[str, ...], custom_rules: bool) -> SSHResult | dict[str, Any]:
+    """The sweep through a sub-agent: one named yara_scan read per root (the
+    agent never takes a path list), each under its own scope rules -- the box's
+    own rules, credential files skipped, rule/file/offset only."""
+    if custom_rules:
+        return _yara_via_agent(link, "", custom_rules=True)
+    matches: list[dict[str, Any]] = []
+    scanned: list[str] = []
+    notes: list[str] = []
+    for path in paths:
+        reply = _routing.agent_read(link, "yara_scan", {"path": path})
+        status, reason = reply.get("status"), str(reply.get("reason") or "")
+        if status == "ok" and isinstance(reply.get("data"), dict):
+            data = reply["data"]
+            scanned.append(path)
+            matches.extend(data.get("matches") or [])
+            skipped = [f"{data[k]} {label}" for k, label in (("skipped_credential", "credential file(s)"),
+                                                             ("skipped_unreadable", "unreadable item(s)"),
+                                                             ("skipped_large", "file(s) over 64 MB"))
+                       if data.get(k)]
+            if skipped:
+                notes.append(f"Inside {path}, {', '.join(skipped)} were skipped.")
+            if data.get("truncated"):
+                notes.append(f"The scan of {path} stopped at its file or match limit.")
+        elif status == "refused" and "does not exist" in reason:
+            continue  # not on this box -- reported as not present
+        else:
+            return SSHResult(ok=False, returncode=-1, stdout="", via="subagent",
+                             stderr=f"via the sub-agent: {reason or status}")
+    return {"matches": matches, "scanned": scanned, "unreadable": 0, "unreadable_paths": [],
+            "partially_unreadable": {}, "agent_notes": notes,
+            "matched_content": "not returned through the sub-agent (rule, file and offset only)"}
+
+
+def fetch_yara_sweep(paths: tuple[str, ...], rules_content: str, custom_rules: bool = False) -> SSHResult | dict[str, Any]:
     """Scan every path in `paths` that exists on the target, in one SSH call.
     Returns {"matches", "scanned", "unreadable"} -- `scanned` lists the paths
     that really existed and were scanned, `unreadable` counts files yara could
@@ -804,7 +838,10 @@ def fetch_yara_sweep(paths: tuple[str, ...], rules_content: str) -> SSHResult | 
         "rm -f \"$RULES_FILE\" \"$ERR_FILE\"\n"
         "exit 0\n"
     )
-    result = run_remote_script(script, timeout=YARA_SCAN_TIMEOUT_SECONDS)
+    result = _route("yara_scan", {}, lambda: run_remote_script(script, timeout=YARA_SCAN_TIMEOUT_SECONDS),
+                    agent_call=lambda link: _yara_sweep_via_agent(link, paths, custom_rules))
+    if isinstance(result, dict):
+        return result
     if not result.ok:
         if result.returncode == -1 and "timed out" in result.stderr:
             return SSHResult(ok=False, returncode=-1, stdout="", stderr=(
@@ -932,3 +969,27 @@ def run_auth_measurement(since_epoch: float, until_epoch: float | None, *, granu
     params = {"start": since_epoch, "end": until_epoch, "granularity": granularity, "exclude_user": kratos_user,
               "exclude_ip": _kratos_ip_by_host.get(get_active_target())}
     return _route("measure_auth", params, over_ssh)
+
+
+# ---------------------------------------------------------------------------
+# Privileged accounts (list_privileged_accounts) -- SSH or sub-agent
+# ---------------------------------------------------------------------------
+def fetch_privileged_accounts(lookback_days: int) -> SSHResult | tuple[Any, int]:
+    """(inventory, since_epoch), or the failed SSHResult. Both transports run the
+    same script (adapters/privileged_accounts.build_script); through the
+    sub-agent it is the agent's own `privileged_accounts` read, so no script
+    text is sent."""
+    import time as _time
+
+    from kratos.adapters import privileged_accounts as PA
+
+    since = int(_time.time() - max(1, int(lookback_days)) * 86400)
+
+    def over_ssh() -> SSHResult:
+        prefix = " ".join(shlex.quote(p) for p in _journalctl_prefix())
+        return run_remote_script(PA.build_script(since, prefix + " " if prefix else ""), shell="sh")
+
+    result = _route("privileged_accounts", {"since": since}, over_ssh)
+    if not result.ok:
+        return result
+    return PA.parse_output(result.stdout), since

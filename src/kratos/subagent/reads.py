@@ -37,13 +37,15 @@ import threading
 import time
 from typing import Any, Callable
 
-try:  # in the agent bundle: sibling module
-    from . import measure  # type: ignore[attr-defined]
+try:  # in the agent bundle: sibling modules
+    from . import measure, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
-    try:
-        from kratos.timewin import measure  # core side (the same file)
+    try:  # core side (the same files)
+        from kratos.adapters import privileged_accounts
+        from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
         import measure  # type: ignore[no-redef]
+        import privileged_accounts  # type: ignore[no-redef]
 
 READ_API_VERSION = 1
 
@@ -405,6 +407,7 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
         "exclude_user": (v_user, False, ""),
         "exclude_ip": (v_ip, False, None),
     },
+    "privileged_accounts": {"since": (v_epoch, True, None)},
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -413,12 +416,12 @@ READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
 PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "clock": 5, "journal_fetch": 30, "journal_auth": 30, "open_files": 30, "processes": 15,
     "file_hashes": 15, "config_audit": 45, "capabilities": 20, "yara_scan": 180,
-    "measure_auth": MEASURE_BUDGET_SECONDS + 60,
+    "measure_auth": MEASURE_BUDGET_SECONDS + 60, "privileged_accounts": 30,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
     "open_files": 4 * 1024 * 1024, "processes": 2 * 1024 * 1024,
-    "config_audit": 256 * 1024, "measure_auth": 4 * 1024 * 1024,
+    "config_audit": 256 * 1024, "measure_auth": 4 * 1024 * 1024, "privileged_accounts": 1024 * 1024,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -742,6 +745,17 @@ def _p_measure_auth(p: dict[str, Any]) -> dict[str, Any]:
                       cap=OUTPUT_CAP_BYTES["measure_auth"], stdin_text=script)
 
 
+def _p_privileged_accounts(p: dict[str, Any]) -> dict[str, Any]:
+    """Who can become root, and account/group changes since `since` -- the same
+    script the SSH path runs (kratos.adapters.privileged_accounts), with a root
+    agent reading sudoers directly."""
+    script = privileged_accounts.build_script(int(p["since"]), " ".join(journal_prefix()) + " " if journal_prefix() else "",
+                                              sudo=_sudo())
+    sh = resolve_binary("sh") or "/bin/sh"
+    return run_capped([sh, "-s"], timeout=PROBE_TIMEOUT_SECONDS["privileged_accounts"],
+                      cap=OUTPUT_CAP_BYTES["privileged_accounts"], stdin_text=script)
+
+
 def _quick(argv: list[str], timeout: float = 8) -> tuple[int | None, str]:
     try:
         r = run_capped(argv, timeout=timeout, cap=64 * 1024)
@@ -977,7 +991,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
     "config_audit": _p_config_audit, "capabilities": _p_capabilities, "yara_scan": _p_yara_scan,
-    "measure_auth": _p_measure_auth,
+    "measure_auth": _p_measure_auth, "privileged_accounts": _p_privileged_accounts,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

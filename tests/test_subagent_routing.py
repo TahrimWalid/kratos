@@ -236,3 +236,45 @@ def test_the_transport_note_is_shown_and_a_fallback_stands_out():
     assert "sub-agent (web-01)" in via.plain and str(via.spans[-1].style) == T.TEXT_MUTED
     fb = R.transport_chip({"transport": "SSH to web-01 failed (timed out); read through its sub-agent (web-01) instead"})
     assert str(fb.spans[-1].style) == T.ATTENTION
+
+
+def test_privileged_accounts_read_through_the_agent(env):
+    env["store"].set_link("203.0.113.10", env["target_id"], routing.MODE_SUBAGENT)
+    env["agent"]["reply"] = {"status": "ok", "data": {"returncode": 0, "stderr": "", "stdout":
+                             "GROUP\tsudo:x:27:alice\nPASSWD\talice\t1000\t1000\t/bin/bash\nSUDOERS_OK\n"}}
+    inv, since = ssh_remote.fetch_privileged_accounts(30)
+    assert "alice" in inv.accounts and env["calls"]["ssh"] == []
+    assert env["calls"]["agent"][0][1] == "privileged_accounts" and env["calls"]["agent"][0][2] == {"since": since}
+
+
+def test_the_yara_sweep_goes_root_by_root_through_the_agent(env):
+    env["store"].set_link("203.0.113.10", env["target_id"], routing.MODE_SUBAGENT)
+    replies = {
+        "/home": {"status": "ok", "data": {"matches": [{"rule": "EICAR", "file": "/home/u/e", "strings": []}],
+                                           "skipped_credential": 2}},
+        "/srv": {"status": "refused", "reason": "yara_scan: /srv does not exist on this box"},
+    }
+    seen = []
+
+    def agent(link, probe, params):
+        seen.append(params)
+        return replies[params["path"]]
+
+    routing.agent_read = agent
+    out = ssh_remote.fetch_yara_sweep(("/home", "/srv"), "ignored")
+    assert seen == [{"path": "/home"}, {"path": "/srv"}]
+    assert out["scanned"] == ["/home"] and out["matches"][0]["rule"] == "EICAR"
+    assert "2 credential file(s)" in out["agent_notes"][0] and out["matched_content"]
+    custom = ssh_remote.fetch_yara_sweep(("/home",), "rule x { condition: true }", custom_rules=True)
+    assert isinstance(custom, SSHResult) and "custom rules can't be sent" in custom.stderr
+
+
+def test_guard8_leaves_a_known_subagent_coverage_limit_alone():
+    from kratos.agent.loop import _CAPABILITY_GAP_RE, _KNOWN_COVERAGE_LIMIT_RE, _gap_sentence
+
+    text = "Kratos does not have a tool to scan open ports through the sub-agent. Logins look normal."
+    m = _CAPABILITY_GAP_RE.search(text)
+    assert m and _KNOWN_COVERAGE_LIMIT_RE.search(_gap_sentence(text, m))
+    real = "Kratos does not have a tool to list SUID binaries on the target."
+    m2 = _CAPABILITY_GAP_RE.search(real)
+    assert m2 and not _KNOWN_COVERAGE_LIMIT_RE.search(_gap_sentence(real, m2))

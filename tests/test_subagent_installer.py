@@ -37,7 +37,8 @@ def test_generate_installer_embeds_all_bundle_files_roundtrip():
     # __init__.py, the agent's own files, the shared measurement builder and
     # the starter YARA rules (scanned with rules from the box only -- D4).
     assert set(blobs) == {"__init__.py", *installer.read_bundle_files()}
-    assert {*installer.BUNDLE_FILES, "measure.py", "yara_rules/MALW_Eicar.yar", "yara_rules/README.md"} <= set(blobs)
+    assert {*installer.BUNDLE_FILES, "measure.py", "privileged_accounts.py", "yara_rules/MALW_Eicar.yar",
+            "yara_rules/README.md"} <= set(blobs)
 
     real = installer.read_bundle_files()
     for name, real_text in real.items():
@@ -147,6 +148,7 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
         "print(json.dumps({p: reads.run_probe(p, {'lines': 2} if p == 'journal_fetch' else "
         "{'start': 1790000000, 'granularity': 60} if p == 'measure_auth' else {})['status'] "
         "for p in ('clock', 'file_hashes', 'processes', 'journal_fetch', 'config_audit', 'measure_auth')})); "
+        "import time; assert reads.run_probe('privileged_accounts', {'since': time.time() - 86400})['status'] == 'ok'; "
         "print(reads.yara_rule_files('bundled')[0])"
     )
     out = subprocess.run(["/usr/bin/python3", "-I", "-c", code], cwd=tmp_path, capture_output=True, text=True,

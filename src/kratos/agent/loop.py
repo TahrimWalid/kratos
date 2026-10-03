@@ -211,6 +211,12 @@ _CAPABILITY_GAP_RE = re.compile(
 )
 
 
+# A stated "Kratos can't ..." that is really a reported coverage limit of how the
+# target is reached (no network path through a sub-agent), not a missing tool.
+_KNOWN_COVERAGE_LIMIT_RE = re.compile(
+    r"sub-?agent|network (?:scan|exposure|path)|open ports?|port scan|nmap|vulnerabilit", re.IGNORECASE)
+
+
 def _gap_sentence(text: str, match: re.Match[str]) -> str:
     """The sentence of `text` containing `match`, trimmed."""
     start = max(text.rfind(". ", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
@@ -1327,6 +1333,12 @@ def _run_agent_loop(
 
             # --- Guard 8: a capability gap stated in prose but never proposed ---
             gap_claim = None if tool_proposals_made else _CAPABILITY_GAP_RE.search(final_answer_text)
+            if gap_claim is not None and coverage_gaps and _KNOWN_COVERAGE_LIMIT_RE.search(
+                    _gap_sentence(final_answer_text, gap_claim)):
+                # The "can't" is a tool's own reported coverage gap (e.g. no network
+                # scan through a sub-agent) -- already named in the answer, and not
+                # something a new tool could fix.
+                gap_claim = None
             guard8_can_reject = (
                 gap_claim is not None
                 and not is_final_iteration
@@ -1547,10 +1559,13 @@ def _run_agent_loop(
                 # Surface that sentence as a suggestion anyway, marked as
                 # derived, so the human still sees the gap -- the same
                 # suggest-only path a model-emitted tool_proposal takes.
+                # Search again: notes may have been prepended since gap_claim was
+                # matched, which would shift its offsets.
+                gap_now = _CAPABILITY_GAP_RE.search(final_answer_text) or gap_claim
                 _record({
                     "iteration": i,
                     "reasoning": "capability gap stated in the final answer",
-                    "tool_proposal": {"name": "", "description": _gap_sentence(final_answer_text, gap_claim),
+                    "tool_proposal": {"name": "", "description": _gap_sentence(final_answer_text, gap_now),
                                       "derived_from_answer": True},
                 })
             _record({

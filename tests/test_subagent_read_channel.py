@@ -83,6 +83,8 @@ def test_probes_answer_and_bad_requests_are_refused(tmp_path):
             bad = await h.read(tid, "open_files", {"pid": "1; id"})
             assert bad["status"] == "refused" and "pid" in bad["reason"]
             assert (await h.read(tid, "capabilities"))["data"]["checks"]
+            priv = await h.read(tid, "privileged_accounts", {"since": time.time() - 86400})
+            assert priv["status"] == "ok" and "PASSWD\troot\t0" in priv["data"]["stdout"]
         finally:
             await h.stop()
     run(go())

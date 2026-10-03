@@ -76,8 +76,7 @@ from kratos.adapters.ssh_remote import (
     remember_kratos_ip as _remember_kratos_ip,
     fetch_yara_sweep as _fetch_yara_sweep,
     DEFAULT_YARA_SWEEP_PATHS as _DEFAULT_YARA_SWEEP_PATHS,
-    run_remote_script as _run_remote_script,
-    _journalctl_prefix,
+    fetch_privileged_accounts as _fetch_privileged_accounts,
     SSHResult as _SSHResult,
 )
 from kratos.adapters.baseline import (
@@ -1079,9 +1078,9 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     except (TypeError, ValueError):
         lookback_days = 30
     target = _ssh_target_label()
-    fetched = _PA.fetch(lookback_days, run_remote_script=_run_remote_script, journalctl_prefix=_journalctl_prefix())
+    fetched = _fetch_privileged_accounts(lookback_days)
     if isinstance(fetched, _SSHResult):
-        return {"status": "error", "observation": f"privileged-account check over SSH failed: {(fetched.stderr or fetched.stdout).strip()}"}
+        return {"status": "error", "observation": f"privileged-account check {_remote_failure(fetched)}"}
     inv, since = fetched
 
     accounts = sorted(inv.accounts.values(), key=lambda a: (a.get("uid") != 0, a["user"]))
@@ -1270,10 +1269,10 @@ def tool_run_yara_scan(scan_path: str | None = None, rules_path: str | Path | No
     rules_content, rule_files = loaded
 
     if not scan_path:
-        sweep = _fetch_yara_sweep(_DEFAULT_YARA_SWEEP_PATHS, rules_content)
+        sweep = _fetch_yara_sweep(_DEFAULT_YARA_SWEEP_PATHS, rules_content,
+                                  custom_rules=resolved_rules_path is not None)
         if isinstance(sweep, _SSHResult):
-            return {"status": "error", "observation": f"YARA sweep over SSH failed: {(sweep.stderr or sweep.stdout).strip()}",
-                    "rules_used": rule_files}
+            return {"status": "error", "observation": f"YARA sweep {_remote_failure(sweep)}", "rules_used": rule_files}
         out = {
             "status": "ok",
             "target": _ssh_target_label(),
@@ -1292,9 +1291,14 @@ def tool_run_yara_scan(scan_path: str | None = None, rules_path: str | Path | No
                          "could not be read and were skipped.")
         if sweep["unreadable"]:
             notes.append(f"yara reported {sweep['unreadable']} error line(s) while scanning.")
+        notes.extend(sweep.get("agent_notes") or [])
+        if sweep.get("matched_content"):  # a sub-agent sweep: the box's own rules, no matched text
+            out["rules_used"] = "the rules on the box (bundled with its agent, plus any in /etc/kratos-subagent/yara)"
+            out["matched_content"] = sweep["matched_content"]
         if notes:
             out["unreadable_paths"] = sweep["unreadable_paths"]
             out["coverage_note"] = " ".join(notes) + " A clean result does not cover what was skipped."
+            out["coverage_gap"] = "YARA did not scan everything in the sweep: " + " ".join(notes)
         return out
 
     result = _fetch_yara_scan(scan_path, rules_content, custom_rules=resolved_rules_path is not None)

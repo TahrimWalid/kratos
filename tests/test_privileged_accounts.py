@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from kratos.adapters import findings_engine as FE
+from kratos.adapters import ssh_remote
 from kratos.adapters import privileged_accounts as PA
 from kratos.adapters.ssh_remote import SSHResult
 from kratos.agent import tools
@@ -132,7 +133,7 @@ def fake_target(monkeypatch):
     prev = kratos_config.get_active_target()
     kratos_config.set_active_target("10.0.0.5")
     state = {"out": _probe()}
-    monkeypatch.setattr(tools, "_run_remote_script", lambda script, **kw: SSHResult(ok=True, returncode=0, stdout=state["out"], stderr=""))
+    monkeypatch.setattr(ssh_remote, "run_remote_script", lambda script, **kw: SSHResult(ok=True, returncode=0, stdout=state["out"], stderr=""))
     monkeypatch.setattr(tools, "_ssh_target_label", lambda: "ubuntu@10.0.0.5")
     yield state
     kratos_config.set_active_target(prev)
@@ -182,7 +183,7 @@ def test_an_old_snapshot_no_longer_feeds_findings(tmp_path, fake_target):
 
 
 def test_ssh_failure_is_an_error_not_an_empty_inventory(tmp_path, monkeypatch):
-    monkeypatch.setattr(tools, "_run_remote_script", lambda script, **kw: SSHResult(ok=False, returncode=255, stdout="", stderr="Permission denied (publickey)"))
+    monkeypatch.setattr(ssh_remote, "run_remote_script", lambda script, **kw: SSHResult(ok=False, returncode=255, stdout="", stderr="Permission denied (publickey)"))
     res = tools.tool_list_privileged_accounts(tmp_path)
     assert res["status"] == "error" and "Permission denied" in res["observation"]
 
@@ -239,3 +240,23 @@ def test_a_snapshot_of_another_machine_never_feeds_this_targets_report(tmp_path,
 def test_probe_script_resolves_sudoers_groups():
     script = PA.build_script(SINCE, "")
     assert "SGROUP" in script and "%[A-Za-z0-9_.-]+" in script
+
+
+
+def test_the_same_script_runs_over_ssh_and_through_the_agent():
+    """One builder for both transports; only the sudoers privilege prefix differs (a root agent
+    reads sudoers directly)."""
+    ssh = PA.build_script(1790000000, "sudo -n ")
+    root_agent = PA.build_script(1790000000, "", sudo="")
+    assert ssh.startswith("SUDO='sudo -n'\n") and root_agent.startswith("SUDO=''\n")
+    assert ssh.split("\n", 1)[1].replace("sudo -n journalctl", "journalctl") == root_agent.split("\n", 1)[1]
+    assert "sudo -n grep" not in ssh  # sudoers is read through $SUDO, never a hard-coded sudo
+
+
+def test_the_agent_read_is_validated_and_needs_a_time():
+    from kratos.subagent import reads
+
+    assert reads.validate_params("privileged_accounts", {"since": 1790000000}) == {"since": 1790000000.0}
+    for bad in ({}, {"since": "yesterday"}, {"since": 1790000000, "script": "id"}):
+        with pytest.raises(reads.ReadParamError):
+            reads.validate_params("privileged_accounts", bad)

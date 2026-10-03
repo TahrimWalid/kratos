@@ -17,6 +17,10 @@ collects:
 
 Nothing here changes the target. The parsing is split from the SSH call so it
 can be tested on captured output.
+
+Standard library only: this file also ships in the sub-agent bundle, where the
+agent runs the same script for its `privileged_accounts` read
+(kratos.subagent.reads) -- one builder for both transports.
 """
 from __future__ import annotations
 
@@ -42,11 +46,12 @@ MAX_EVENTS = 500
 _NOLOGIN_SHELLS = ("nologin", "false", "sync", "halt", "shutdown")
 
 
-def build_script(since_epoch: int, journalctl_prefix: str) -> str:
-    """The read-only probe. Every record is one tab-separated line."""
+def build_script(since_epoch: int, journalctl_prefix: str, sudo: str = "sudo -n") -> str:
+    """The read-only probe. Every record is one tab-separated line. `sudo` is
+    how sudoers is read: "sudo -n" over SSH, empty for an agent running as root."""
     groups = " ".join(PRIVILEGED_GROUPS)
     idents = " ".join(f"SYSLOG_IDENTIFIER={i}" for i in ACCOUNT_CHANGE_IDENTIFIERS)
-    return f"""
+    return f"""SUDO={shlex.quote(sudo)}
 for g in {groups}; do
   line=$(getent group "$g" 2>/dev/null) && printf 'GROUP\\t%s\\n' "$line"
 done
@@ -54,18 +59,18 @@ awk -F: 'NF >= 7 {{ printf "PASSWD\\t%s\\t%s\\t%s\\t%s\\n", $1, $3, $4, $7 }}' /
 for f in /etc/passwd /etc/group /etc/sudoers /etc/sudoers.d; do
   m=$(stat -c %Y "$f" 2>/dev/null) && printf 'MTIME\\t%s\\t%s\\n' "$f" "$m"
 done
-if sudo -n true 2>/dev/null; then
-  sudo -n grep -rH -v -E '^[[:space:]]*(#|$)' /etc/sudoers /etc/sudoers.d 2>/dev/null | while IFS= read -r l; do
+if $SUDO true 2>/dev/null; then
+  $SUDO grep -rH -v -E '^[[:space:]]*(#|$)' /etc/sudoers /etc/sudoers.d 2>/dev/null | while IFS= read -r l; do
     printf 'SUDOERS\\t%s\\n' "$l"
   done
   printf 'SUDOERS_OK\\n'
   # Groups granted sudo IN sudoers (e.g. %devops) beyond the well-known ones:
   # resolve their members too, or a real admin would be missed.
-  for g in $(sudo -n grep -rhoE '^[[:space:]]*%[A-Za-z0-9_.-]+' /etc/sudoers /etc/sudoers.d 2>/dev/null | tr -d ' %\\t' | sort -u); do
+  for g in $($SUDO grep -rhoE '^[[:space:]]*%[A-Za-z0-9_.-]+' /etc/sudoers /etc/sudoers.d 2>/dev/null | tr -d ' %\\t' | sort -u); do
     line=$(getent group "$g" 2>/dev/null) && printf 'SGROUP\\t%s\\n' "$line"
   done
 else
-  printf 'SUDOERS_ERR\\tthe SSH user cannot read sudoers (no passwordless sudo)\\n'
+  printf 'SUDOERS_ERR\\tsudoers is not readable here (not root, and no passwordless sudo)\\n'
 fi
 if command -v journalctl >/dev/null 2>&1; then
   if ev=$({journalctl_prefix}journalctl --no-pager -q -o short-unix --since @{since_epoch} --reverse -n {MAX_EVENTS} {idents} 2>&1); then
