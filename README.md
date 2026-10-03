@@ -3,48 +3,62 @@
 **Self-hostable, self-growing security analysis, with a terminal UI built for all.**
 
 <p align="center">
-  <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
+  <img src="docs/images/investigation.gif" width="840" alt="Asking Kratos whether anyone tried to brute-force SSH: it measures the last 24 hours, scans, audits the config, correlates three findings and answers with a copyable fix">
 </p>
 
-Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, and so on. It explains what it found and what it would do about it. By default it doesn't change the target itself — acting on its advice is your call (see [Safe by default](#safe-by-default)).
+Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, risky configuration. It explains what it found and what it would do about it. By default it doesn't change the machine itself — acting on its advice is your call (see [Safe by default](#safe-by-default)).
 
-By default it talks to a hosted model, so you can start in a few minutes without running your own. If you'd rather keep everything on your own hardware, point it at a model you host yourself and no data leaves the box.
+It reaches a machine over SSH, or — for a box you can't or won't open to SSH — through a small agent that dials out to Kratos. It talks to a hosted model by default, so you can start in minutes; point it at a model you host yourself and nothing leaves your hardware.
 
 When Kratos runs into something it has no tool for, it can write one, test it in a sandbox, and keep it — but only after you've read the code and approved it.
 
-Kratos started as a Bachelor's thesis at Tampere University of Applied Sciences (Software Engineering, 2026), asking whether a small model running on cheap edge hardware could do real, explainable security analysis without sending anything to the cloud. It has since grown into a full assistant you talk to in plain language.
+---
+
+## What it does
+
+**Investigate in plain words.** Ask *"has anyone been trying to log in as root?"* or *"is anything listening that shouldn't be?"*. Kratos picks its own read-only checks — auth logs, open ports, processes, open files, file integrity, configuration, YARA, known vulnerabilities — runs them one at a time, correlates what it saw, and writes up findings with a recommended next step. If your request could go several ways, it asks first.
+
+**Answers you can check.** Findings come from a rule engine (plain rules, no model), and the model's conclusion is checked against them: it can't call a host clean over a real high-severity finding, can't claim a time period its data doesn't cover, and can't finish without running the correlation step. "In the last 24 hours" means exactly that — Kratos counts every matching event in that window on the target itself and says if any part wasn't covered. It can also compare periods (*"this week vs last"*) and look up what a machine looked like at a past time from its own saved observations.
+
+**Repeatable when you need it.** `/run` is a fixed audit with no model in the loop. Save any investigation as a **preset**, chain read-only tools into a **pipeline** (or describe one in words and let Kratos draft it for your review), preview a run with `/plan`, put it on a **schedule**, and set **triggers** that notify you or show a response playbook when a finding appears. Alerts go to your phone through [ntfy](https://ntfy.sh).
+
+**Reach any box.** Over SSH (nothing installed on the target), or through a **sub-agent**: a small agent that dials out to Kratos — no inbound port, works behind NAT, best over Tailscale — streams live status and answers investigations with its own fixed set of reads.
+
+**Grows with you.** `/evolve` writes a new tool when Kratos is missing one: you approve a test, it writes the tool, tests it in a locked-down sandbox, and shows you the code and its review flags. Nothing is kept until you say yes.
+
+**Fits how you work.** A full-screen terminal UI with a command palette, session history and four themes; `kratos investigate "<goal>"` and `kratos run` for scripts and cron; and an [MCP](https://modelcontextprotocol.io) server so other agent tools (e.g. Claude Desktop) can ask Kratos to investigate — read-only. `/doctor` checks your whole setup and tells you the fix for anything wrong.
 
 ---
 
 ## What it looks like in use
 
-You describe a goal. Kratos decides which read-only checks to run, does them, correlates what it saw, and writes up findings with a recommended next step.
+When a request could go several genuinely different ways, Kratos asks instead of guessing:
 
 <p align="center">
-  <img src="docs/images/investigation.svg" width="840" alt="An investigation: Kratos reads the journal, correlates findings, and reports an SSH brute-force with the source IP and a recommendation">
+  <img src="docs/images/clarify.svg" width="820" alt="Kratos asking how deep to go, with three labeled choices and one recommended">
 </p>
 
-When a request could go several genuinely different ways, it asks first instead of guessing — with the options laid out and one recommended:
+A machine reached only through its sub-agent: every read says how it was obtained, the network scan that needs a direct path is skipped, and the answer says what wasn't checked:
 
 <p align="center">
-  <img src="docs/images/clarify.svg" width="820" alt="Kratos asking how deep to take an investigation, with three labeled choices and one recommended">
+  <img src="docs/images/subagent_investigation.svg" width="840" alt="An investigation of a box reached through its sub-agent: the port scan is refused, each read is marked as read through the sub-agent, and the answer notes that network exposure was not checked">
 </p>
 
-And it can check its own setup — model, target, tools — and tell you the fix when something's off:
+And `/doctor` checks the model, the target and the tools in one go:
 
 <p align="center">
-  <img src="docs/images/doctor.svg" width="840" alt="The /doctor self-check: a verdict headline over a table of checks, with an inline fix for the failing row">
+  <img src="docs/images/doctor.svg" width="840" alt="The /doctor self-check: a verdict over a table of checks, with an inline fix for the warning">
 </p>
 
 ---
 
 ## Safe by default
 
-Kratos observes and recommends. In every current build it does not, and cannot, change the machine it's watching. Every tool it can point at a target is read-only — it inspects logs, ports, processes, and files, but there is no path for it to alter anything there. It reads, it reasons, it reports. What to do with that is up to a person.
+Kratos observes and recommends. Every tool it can point at a target is read-only: it inspects logs, ports, processes and files and changes nothing there. A sub-agent runs only its own built-in reads (unless you turn on the experimental channel below), and no command text is ever sent to it. Recommended fixes are shown as commands for **you** to run — Kratos does not run them.
 
-That's the default, not a permanent limit. A narrow, opt-in path for Kratos to *act* on a target — dispatching only a small set of pre-approved, whitelisted actions to a lightweight agent running there — is designed and on the roadmap. It stays off for every target unless you turn it on, and the whitelist of allowed actions (not a password prompt, not a signature) is what keeps it safe. **This part is not built yet.** Until it is, Kratos only observes a target — that's the whole of what it can do to one today.
+Everywhere a decision has real consequences — running a command on the Kratos machine, keeping a self-written tool — Kratos asks, and a non-answer means no. There is no "force yes."
 
-Everywhere a decision has real consequences — running a local command, keeping a self-written tool — Kratos asks, and a non-answer means no. There is no "force yes."
+**One experimental, off-by-default exception.** Kratos contains a path to carry out a small set of allowlisted fixes (for example, ban an IP in fail2ban) through a box's sub-agent. It is off for every box, and turning it on takes all of: a switch set on the box itself when the agent is started (the installer never sets it), your consent for that box in Kratos, the action being in that box's allowlist, and typing `EXECUTE` for each run. The allowlist is the safety boundary: the agent carries its own list of exactly which programs and arguments it will ever run, and Kratos can narrow that list but never widen it. **This path has not yet had its independent security review — don't enable it on a machine you care about.**
 
 ---
 
@@ -57,27 +71,31 @@ Be aware of two things before you point Kratos at anything real:
 
 Alerts (from schedules, triggers, or the notify tool) go through [ntfy](https://ntfy.sh) and are **off until you choose your own topic** (`KRATOS_NTFY_TOPIC` in `.env`; `/doctor` suggests a random one). Kratos ships no default topic on purpose: an ntfy topic has no password, so **anyone who knows the topic name can read every alert sent to it**, findings included. On the public ntfy.sh server, use a long random topic at the very least; for real deployments, run your own ntfy server (`KRATOS_NTFY_BASE_URL`) or use an ntfy access token (`KRATOS_NTFY_TOKEN`).
 
+The sub-agent's link to Kratos carries no encryption of its own, which is why Tailscale (or another private network) is the recommended way to connect one. Over a plain network the agent sends status but refuses investigation reads unless you allow it when you install it.
+
 One optional feature, threat-intel enrichment, is **off by default** and, when you turn it on, sends an IP address to a reputation service to check it. It's clearly separate from the core analysis, and Kratos runs fully without it.
 
 ---
 
 ## Install
 
-You'll need Python 3.10 or newer and SSH access to whatever machine you want Kratos to watch.
+You'll need Linux, Python 3.10 or newer, and a way to reach the machine you want to watch (SSH, or a sub-agent you install on it).
 
 ```bash
 git clone https://github.com/TahrimWalid/kratos.git
 cd kratos
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-Kratos also uses a couple of standard command-line tools for its network checks, which aren't Python packages — install them on the **Kratos machine** with your package manager:
+(On Debian/Ubuntu, `python3 -m venv` needs the `python3-venv` package first.)
 
-- **`nmap`** (required for the port scan and the standard audit) — e.g. `sudo apt install nmap`.
-- **`nuclei`** (optional, for deeper vulnerability scanning) — see the [nuclei install guide](https://github.com/projectdiscovery/nuclei#install-nuclei). Kratos works without it; the vulnerability scan simply skips the active checks.
+A few standard tools aren't Python packages — install them with your package manager:
 
-Two more small tools — `yara` and `lsof` — go on the **machine you watch**, not the Kratos host; Kratos's setup check tells you if they're missing and gives you the command.
+- **`nmap`** on the Kratos machine (required for the port scan and the standard audit) — e.g. `sudo apt install nmap`.
+- **`nuclei`** on the Kratos machine (optional, for deeper vulnerability scanning) — see the [nuclei install guide](https://github.com/projectdiscovery/nuclei#install-nuclei). Without it the vulnerability scan skips the active checks.
+- **[Incus](https://linuxcontainers.org/incus/)** on the Kratos machine (only for `/evolve`): new tools are tested inside a throwaway container with no network. The first `/evolve` builds the sandbox image once (a few minutes, needs internet).
+- **`yara`** and **`lsof`** on the **machine you watch** — Kratos's setup check tells you if they're missing and gives you the command.
 
 Then tell Kratos which model to use. Copy the example config and fill in three values:
 
@@ -99,26 +117,42 @@ kratos
 
 ## First steps
 
-Kratos opens on the home screen above. From there:
+<p align="center">
+  <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
+</p>
 
-1. **Connect a machine.** `/target <host>` points Kratos at a host over SSH and checks what it needs (a key, a couple of read permissions, one or two small tools). It walks you through anything missing.
-2. **Ask a question.** Type what you want to know, in normal words — *"has anyone been trying to log in as root?"*, *"is anything listening that shouldn't be?"* Kratos picks its own read-only tools and explains what it finds.
+1. **Connect a machine.** Start a new session (or `/target <host>`). Kratos asks how to reach it — direct SSH or a sub-agent — and walks you through the one-time setup on that box.
+2. **Ask a question.** Type what you want to know, in normal words. Kratos picks its own read-only tools and explains what it finds.
 3. **Check your setup** any time with `/doctor`, and see a session's findings with `/report`.
 
 Type `/guide` inside Kratos for the short version, `?` for every command, or read the full [user guide](docs/GUIDE.md).
 
-Two ways to run an analysis:
+---
 
-- **Just ask** and let Kratos reason step by step, choosing tools based on what it finds.
-- **`/run`** for a fixed, repeatable audit — the same checks every time, with no model in the loop.
+## Machines you can't SSH into
+
+<p align="center">
+  <img src="docs/images/onboard.svg" width="410" alt="Choosing how Kratos should reach a new machine: direct SSH, a sub-agent, or later, with a panel explaining the highlighted option">
+  <img src="docs/images/subagent.svg" width="410" alt="The /subagent screen: paired boxes with their status, agent version and last contact, and the details of one linked to a target">
+</p>
+
+Pick **Sub-agent** when you add a machine and Kratos generates a one-command installer for it (and can copy and run it over SSH for you, once). The agent runs as a service, dials out to Kratos, and opens no port on the box. From then on:
+
+- **Status** streams in continuously (uptime, disk, listening ports, critical file hashes), whether or not you're investigating.
+- **Investigations** read the box through the agent's fixed set of reads: logs and auth activity, processes, open files, configuration, file hashes, and YARA with the rules on the box itself (credential files are never scanned, and only rule/file/offset comes back). No command text is ever sent to the agent, every request is signed, and a replayed one is refused.
+- **What it can't do** is reach the box over the network: port and vulnerability scans are skipped for a box reached only through its agent, and the answer says so.
+
+Kratos never guesses which machine a target is: choosing Sub-agent links the box once its agent checks in, and a target that merely *looks* like a paired box is offered, never linked silently. `/target link` switches a target between "sub-agent only" and "SSH first, sub-agent if SSH fails". `/subagent` manages the agents (add, update in place, unpair) and an always-on listener so status keeps arriving after you close Kratos.
 
 ---
 
 ## It grows with you
 
-If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the idea; it writes the tool and a test, runs the test in a locked-down sandbox with no network or filesystem access, and shows you the result. Nothing is kept until you read the code and say yes. Kept tools become part of Kratos for next time — and you can always ask it to run just one tool, directly, with `/use`.
+<p align="center">
+  <img src="docs/images/evolve.svg" width="820" alt="The /evolve review: the tool's description, review flags, passing tests and source, and the keep decision">
+</p>
 
-You can also save any investigation as a **preset** to re-run or schedule, and chain read-only tools into a **pipeline** for a repeatable, deterministic sweep.
+If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the idea; Kratos drafts a test that defines "correct" (you read and can edit it), writes the tool, runs the test in a container with no network, and shows you the code with review flags pointing at what's worth a second look — such as a failed read that would quietly come back as "nothing found". Nothing is kept until you say yes, and by default a kept tool still asks before each run. You can always run just one tool, directly, with `/use`.
 
 ---
 
@@ -140,7 +174,7 @@ One setting drives every backend. Point `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MO
 - a **hosted provider** (any OpenAI-compatible API) — the quickest way to start;
 - a **model you host yourself** — Ollama, vLLM, or llama.cpp — if you want your data to stay entirely local.
 
-Self-hosting is fully supported; it's just not the default anymore, because most people would rather not run a model to try a tool. The trade-off is yours to make, per your own privacy needs.
+Self-hosting is fully supported; it's just not the default, because most people would rather not run a model to try a tool. `/model` switches backends live, and the home screen always shows whether the current one is local or billed.
 
 ---
 
@@ -151,46 +185,45 @@ flowchart TD
     you([You]) --> entry
 
     subgraph entry [How you talk to Kratos]
-        tui[Textual TUI]
-        repl[Classic text REPL]
-        mcp[MCP server]
+        tui[Terminal UI]
+        cli[Command line<br/>investigate / run / scheduled runs]
+        mcp[MCP server<br/>read/investigate only]
     end
 
     entry --> brain
 
     subgraph brain [Kratos core]
         loop[Agentic loop<br/>picks read-only tools, step by step]
-        pipeline[Deterministic pipeline<br/>fixed, repeatable audit]
-        evolve[Self-writing loop<br/>write to sandbox-test to your review to keep]
+        pipeline[Deterministic pipelines<br/>fixed, repeatable audits]
+        evolve[Self-writing loop<br/>write, sandbox-test, your review, keep]
+        rules[Findings engine<br/>plain rules, no model]
     end
 
     llm[(Language model<br/>hosted by default, or self-hosted)]
     loop <--> llm
     evolve <--> llm
 
-    brain -->|read-only, over SSH and network| target[[Monitored machine]]
-    target --> findings[Findings engine<br/>correlates what was observed]
-    findings --> out[Plain-language findings<br/>and recommended actions]
-    brain --> store[(Sessions and presets)]
+    brain -->|read-only, over SSH| target[[Monitored machine]]
+    brain -->|signed, named reads only| agent[Sub-agent on a machine<br/>dials out to Kratos]
+    agent -->|status + read results| brain
+    rules --> out[Plain-language findings<br/>and recommended commands]
 
-    subgraph later [Planned — designed, not built]
-        whitelist{{Action whitelist<br/>the security boundary}}
-        subagent[Lightweight sub-agent<br/>runs on the target]
+    subgraph optin [Experimental, off by default]
+        allow{{Allowlist held by the agent<br/>the security boundary}}
     end
-    out -.->|you opt in, per target| whitelist
-    whitelist -.-> subagent
-    subagent -.->|only whitelisted actions| target
+    out -.->|you opt in per box, type EXECUTE| allow
+    allow -.-> agent
 ```
 
-The core reasons about a goal and picks its own read-only tools; a findings engine (plain rules, no model) correlates what was observed into findings. The dashed part — a small agent on the target that can carry out a fixed set of whitelisted actions — is designed but not built. More detail in [docs/DESIGN.md](docs/DESIGN.md).
+The core reasons about a goal and picks its own read-only tools; a findings engine (plain rules, no model) correlates what was observed. The dashed path is the experimental, off-by-default fix channel described above. More detail in [docs/DESIGN.md](docs/DESIGN.md).
 
 ---
 
 ## Status and roadmap
 
-Kratos is under active development. Working today: the agentic and deterministic analysis, read-only investigation over SSH, the findings engine, the self-writing loop, presets and pipelines, scheduling, the MCP server, and the terminal UI.
+Kratos is under active development. Working today: investigations and fixed audits, over SSH or a sub-agent; exact time windows and period comparisons; the findings engine and its checks on the model's conclusions; presets, pipelines, schedules and triggers; the self-writing loop; the MCP server; and the terminal UI. Its 1,800+ automated tests pass on Python 3.10 and 3.12.
 
-On the roadmap, not yet built: the opt-in, whitelist-gated execution path (letting Kratos act on a target through a lightweight sub-agent), and running against several machines at once. Both are gated on the action whitelist being designed and independently reviewed first — that's the safety boundary, and it comes before any of it ships.
+Not yet: an independent security review of the experimental fix channel (required before it should be enabled anywhere real), running one investigation across several machines at once, and email delivery for scheduled reports.
 
 ---
 

@@ -15,12 +15,16 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 10. [When Kratos asks permission](#when-kratos-asks-permission)
 11. [Two ways to analyze](#two-ways-to-analyze)
 12. [The commands](#the-commands)
-13. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
-14. [Saving and repeating work](#saving-and-repeating-work)
-15. [Keeping an eye on things](#keeping-an-eye-on-things)
-16. [Making it yours](#making-it-yours)
-17. [When something goes wrong](#when-something-goes-wrong)
-18. [Words you'll see](#words-youll-see)
+13. [Questions about time](#questions-about-time)
+14. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
+15. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
+16. [Saving and repeating work](#saving-and-repeating-work)
+17. [Keeping an eye on things](#keeping-an-eye-on-things)
+18. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
+19. [The experimental fix channel](#the-experimental-fix-channel)
+20. [Making it yours](#making-it-yours)
+21. [When something goes wrong](#when-something-goes-wrong)
+22. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -34,9 +38,9 @@ you can actually read. If it finds a problem, it tells you how to fix it.
 
 The one thing to hold onto: **by default, Kratos observes and recommends — it
 doesn't change the machine itself.** It reads and it advises; whether you act on
-the advice is up to you. (A future opt-in will let Kratos carry out a small set of
-approved actions on a target you choose; that path isn't built yet, so today it
-only observes.)
+the advice is up to you. (There is one experimental, off-by-default exception — see
+[The experimental fix channel](#the-experimental-fix-channel) — which you'll never
+hit by accident.)
 
 You don't need to know the names of any security tools. You describe what you
 care about ("has anyone been trying to break in?") and Kratos figures out which
@@ -50,11 +54,11 @@ Three things:
 
 - **A computer to run Kratos on.** Any recent Linux machine works. You'll use a
   terminal (the black text window). Kratos itself is light.
-- **A machine you want to watch, and a way to reach it over SSH.** This can be
-  the same computer Kratos runs on, another server, or a box on your network. You
-  need an SSH key that can log into it. (If "SSH key" is new to you, it's the
-  standard passwordless way to log into a server — any beginner SSH tutorial
-  covers making one.)
+- **A machine you want to watch, and a way to reach it.** This can be the same
+  computer Kratos runs on, another server, or a box on your network. Usually that's
+  SSH with a key (the standard passwordless way to log into a server — Kratos can
+  create the key for you). For a box you can't reach over SSH, a small agent you
+  install on it can connect to Kratos instead.
 - **A model for Kratos to think with.** By default this is a hosted AI model you
   reach with an API key (quick to set up). If you'd rather nothing leaves your own
   hardware, you can run a model yourself instead. Both are covered below.
@@ -68,10 +72,13 @@ You need Python 3.10 or newer. In a terminal:
 ```bash
 git clone https://github.com/TahrimWalid/kratos.git
 cd kratos
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
+
+(On Debian or Ubuntu, if `python3 -m venv` complains, install the `python3-venv`
+package first.)
 
 That last line installs Kratos into a private environment so it doesn't disturb
 anything else on your system.
@@ -83,6 +90,11 @@ vulnerability scan as well, also install **`nuclei`** (optional — Kratos runs 
 without it and just skips those active checks). Two more tiny tools, `yara` and
 `lsof`, go on the machine you *watch*, not here — and Kratos's setup check will tell
 you if they're missing and hand you the command.
+
+Only if you want Kratos to build new tools for itself (`/evolve`): install
+[Incus](https://linuxcontainers.org/incus/) on the Kratos machine. Every new tool is
+tested inside a throwaway container with no network; the first `/evolve` builds that
+container image once, which takes a few minutes and needs internet.
 
 When that's done, Kratos is installed — but it still needs a model, which is the
 next step.
@@ -116,8 +128,8 @@ service, but it's worth knowing. It also costs a small amount per investigation.
 **Option B — a model you run yourself (fully private).** If you install something
 like [Ollama](https://ollama.com) and pull a model, you can point Kratos at it on
 your own machine. Then nothing leaves your hardware, and there's no per-use cost.
-The default `.env` values already point at a local Ollama, so if you're running
-one, you may not need to change anything. This is a bit more setup, but it's the
+If you leave every profile in `.env` commented out, Kratos uses a local Ollama at
+`127.0.0.1:11434`, so if you're running one, you may not need to change anything. This is a bit more setup, but it's the
 private, free path.
 
 You can change this later at any time from inside Kratos with `/model` — you don't
@@ -139,7 +151,14 @@ kratos
 > `/target` or a new session) becomes the default, which is what command-line and
 > scheduled runs use. `KRATOS_SSH_HOST` overrides it for a single command.
 
-Once you're in, you'll see the home screen:
+Every later launch opens on your past sessions, newest first and grouped by
+day. Type to filter them, press Enter to resume one, or `n` for a new session:
+
+<p align="center">
+  <img src="images/picker.svg" width="840" alt="The session picker: past sessions grouped by day, with a filter box">
+</p>
+
+Once you're in a session, you'll see the home screen:
 
 <p align="center">
   <img src="images/home.svg" width="840" alt="The Kratos home screen">
@@ -194,7 +213,13 @@ and `/doctor` shows which way it is reached right now. An agent installed before
 this feature needs one update: open `/subagent`, select it and press **g** — it
 keeps its pairing.
 
-For the common case, choose Direct SSH. Point Kratos at a host:
+<p align="center">
+  <img src="images/onboard.svg" width="820" alt="Choosing how Kratos should reach a new machine, with a panel explaining the highlighted option">
+</p>
+
+The rest of this section is the Direct SSH path; the sub-agent path has its own
+section, [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent).
+Point Kratos at a host:
 
 ```
 /target 192.168.1.50
@@ -344,10 +369,12 @@ but here's the map. Everything starts with `/`.
 | --- | --- |
 | `/guide` | the short, in-app version of this guide |
 | `/help` or `?` | list every command |
-| `/target <host>` | connect a machine to watch (and check its setup); `/target verify` re-checks |
+| `/target <host>` | connect a machine to watch (and check its setup); `/target verify` re-checks; `/target link` changes how it's reached |
 | `/sessions` (or `Ctrl+B`) | go back to the list of past sessions |
 | `/rename <name>` | give this session a name |
 | `/clear` | clear the screen (your history is kept) |
+| `/reset` | start this session fresh (old history is archived, not deleted) |
+| `/delete` | archive this session |
 | `/exit` | leave |
 
 **Investigating**
@@ -356,18 +383,21 @@ but here's the map. Everything starts with `/`.
 | --- | --- |
 | *(just type a question)* | Kratos investigates it, picking its own tools |
 | `/run` | the standard fixed audit (no model steering) |
+| `/plan` | preview exactly which steps a run will take; fixed audits show this preview and ask first by default (`/plan gate off` skips it) |
 | `/report` | show this session's findings by severity |
 | `/investigate-host` | investigate the Kratos machine itself, not the target |
 | `/use <tool>` | run one specific tool directly |
+| `/tools` | list every tool Kratos can use, built-in and self-written |
 
 **Building and reusing**
 
 | Command | What it does |
 | --- | --- |
 | `/evolve` | build a new tool for something Kratos can't do yet |
-| `/preset` | save an investigation to re-run later (`/preset new`, `list`, `run`, …) |
+| `/preset` | save an investigation to re-run later (`/preset new`, `list`, `run`, `show`, `edit`, `delete`, `export`, `import`) |
+| `/preset-describe` | describe a pipeline in words; Kratos drafts it for you to review |
 | `/schedule` | run an audit or preset automatically on a timer |
-| `/trigger` | do something (notify, etc.) when a finding shows up |
+| `/trigger` | when a finding shows up: notify you, show a response playbook, or investigate it |
 
 **Checking and configuring**
 
@@ -375,10 +405,104 @@ but here's the map. Everything starts with `/`.
 | --- | --- |
 | `/doctor` | check that your setup (model, target, tools) is healthy |
 | `/usage` | tokens used and rough cost this session |
-| `/context` | how full the model's memory is right now |
+| `/context` | how full the model's memory is right now (`/compact` makes room) |
 | `/model` | switch, add, or edit which model Kratos uses |
 | `/settings` | models, tools, timezone, and this session's options |
+| `/timezone` | show or set the timezone times are displayed in (stored times stay UTC) |
+| `/subagent` | add and manage the agents on machines you can't SSH into |
+| `/whitelist` | a sub-agent's allowlist for the experimental fix channel |
+| `/run-fix` | send a recommended fix to a box's sub-agent, if it's allowlisted there |
 | `Ctrl+T` | change the color theme |
+
+---
+
+## Questions about time
+
+Ask about a period in normal words — *"in the last 24 hours"*, *"since Monday"*,
+*"this week compared with last week"* — and Kratos works out the exact window and
+shows it under the step that used it:
+
+```
+✓ measure_auth_activity  Measure auth activity
+    window w1 last 24 hours: 2026-10-01 09:00 → 2026-10-02 09:00 (UTC) · counted in full
+```
+
+For logins and sudo use it doesn't read a sample of log lines and estimate: it
+counts **every** matching event in that window on the target itself, and says
+plainly when part of the window couldn't be covered (logs that were rotated away, a
+machine that was off). If the target's clock is wrong, Kratos measures the offset
+and corrects for it. Comparisons ("is this more than usual?") are worked out by
+Kratos from the counts, not by the model.
+
+You can also ask what a machine looked like at a past time — *"was port 8080 open
+last week?"*, *"who had sudo on Monday?"* — and Kratos answers from its own saved
+scans, baselines and snapshots, telling you how close in time the nearest one is,
+or that it has no record. It never fills the gap with a guess.
+
+Times are shown in your timezone (`/timezone` to change it) and stored in UTC.
+
+---
+
+## Machines you reach through a sub-agent
+
+Some machines can't take an SSH connection from Kratos: a VPS behind a provider
+firewall, a box behind NAT, one where you'd rather not open port 22 at all. For
+those, you install a small **sub-agent** on the machine. It connects *out* to
+Kratos, so the machine opens no port, and it runs as a service so it survives
+reboots.
+
+<p align="center">
+  <img src="images/subagent.svg" width="840" alt="The /subagent screen: paired machines with their status, agent version and last contact, and the details of one linked to a target">
+</p>
+
+**Adding one.** Choose **Sub-agent** when you add a machine, or open `/subagent`
+and press `a`. Kratos asks for a name and which address the machine should connect
+to (your Tailscale address is listed first — it reaches a machine anywhere, without
+opening ports), then writes a one-command installer. Run it on the machine
+yourself, or let Kratos copy and run it over SSH for you once. Within seconds the
+row turns **connected**.
+
+**What it does from then on.**
+
+- It streams the machine's status — uptime, disk, listening ports, hashes of
+  critical files — every 30 seconds, whether or not you're investigating.
+- Investigations read the machine through the agent's own fixed set of reads:
+  logs and login activity, processes, open files, configuration checks, file
+  hashes, and YARA scans. Kratos never sends it command text, every request is
+  signed, and a replayed request is refused. Each step says it was read through
+  the sub-agent.
+- Port and vulnerability scans need a direct network path from Kratos, so they're
+  skipped for a machine reached only through its agent — and the answer tells you
+  that part wasn't checked.
+- YARA uses the rules on the machine itself (a starter set ships with the agent;
+  add your own under `/etc/kratos-subagent/yara/`), scans common places like
+  `/tmp`, `/home`, `/var/www` and `/opt`, never scans credential files (SSH keys,
+  `.env`, shadow…), and reports which rule matched which file at which offset —
+  never the matched text.
+
+<p align="center">
+  <img src="images/subagent_investigation.svg" width="840" alt="An investigation of a machine reached through its sub-agent: the port scan is skipped, each read is marked as read through the sub-agent, and the answer notes what wasn't checked">
+</p>
+
+**Which machine is which.** Kratos never guesses. Choosing Sub-agent links the
+machine to its agent once it checks in. If you later type an address that looks
+like a machine you've paired, Kratos *asks* before linking. `/target link` switches
+a target between **sub-agent only** and **SSH first, sub-agent if SSH can't
+connect**; `/target verify` and `/doctor` show which way it's reached right now.
+
+**Keeping it running.** The agents connect to a *listener* in Kratos. Opening
+`/subagent` starts one inside the running Kratos; press `l` there to install it as
+an always-on service instead, so status keeps arriving after you close Kratos.
+
+**Updating, unpairing.** Select a machine and press `g` to update its agent in
+place (it keeps its pairing), `u` to unpair it, `k` to link it to a target, `i`
+for details. An agent installed before investigations-through-the-agent existed
+needs one `g` update.
+
+**On a plain network.** The link between agent and Kratos has no encryption of its
+own — that's why Tailscale is recommended. If you pick a non-Tailscale address,
+Kratos asks whether to allow investigation reads over it; if you don't, the agent
+still sends status but refuses reads.
 
 ---
 
@@ -491,6 +615,67 @@ don't send them anywhere.
 
 ---
 
+## Using Kratos from the command line and other tools
+
+Everything starts from `kratos`, but a few things work without the full-screen UI:
+
+| Command | What it does |
+| --- | --- |
+| `kratos investigate "<goal>"` | one investigation, printed to the terminal |
+| `kratos run` | the standard fixed audit |
+| `kratos scheduled-run <name>` | run one saved schedule (what the installed timers call) |
+| `kratos subagent-install` | write a sub-agent installer from the command line |
+| `kratos subagent-serve` | run the sub-agent listener in the foreground |
+| `kratos subagent-status` | list paired machines and whether they're connected |
+| `kratos mcp-serve` | start the MCP server (below) |
+
+`kratos --help --all` lists every subcommand. Without a session, these use the
+default target Kratos saved the first time you set one (or `KRATOS_SSH_HOST`).
+
+**MCP.** `kratos mcp-serve` lets other AI tools that speak the
+[Model Context Protocol](https://modelcontextprotocol.io) — Claude Desktop,
+OpenWebUI and others — ask Kratos to investigate a machine, fetch a session's
+findings, list sessions, and send a notification built from real findings. It's
+read/investigate-only on purpose: every tool that would need a yes/no from you is
+left out, and the other tool never picks Kratos's internal steps — Kratos's own
+loop does, with all its checks.
+
+---
+
+## The experimental fix channel
+
+Everything above is observe-and-recommend: Kratos tells you what to run, and you
+run it. There is one experimental exception, and it is **off for every machine**.
+
+With a sub-agent on a machine, Kratos can carry out a small set of allowlisted
+fixes there — for example "ban this IP in fail2ban" or "enable and start this
+service". `/whitelist` shows each machine's allowlist: which actions are on, how
+risky each is, and what the machine's own agent will accept.
+
+<p align="center">
+  <img src="images/whitelist.svg" width="840" alt="The /whitelist screen: a machine's allowlisted actions with the command each runs, its source, risk tier and on/off state">
+</p>
+
+What has to be true before anything runs:
+
+1. The agent on that machine was started with execution switched on. That's a
+   setting on the machine itself; the installer never sets it.
+2. You've given consent for that machine in `/whitelist` (it explains the risk
+   first).
+3. The action is on in that machine's allowlist. The agent carries its own fixed
+   list of exactly which programs and arguments it will ever run; Kratos can
+   narrow that list, never widen it. Exact commands beyond it can only be added by
+   the machine's own administrator, in a root-owned file on the machine.
+4. You type `EXECUTE` for that run (high-risk actions ask a second time). After an
+   investigation recommends a fix that matches an allowlisted action, `/run-fix`
+   opens that same confirmation.
+
+**This channel has not yet had its independent security review. Don't turn it on
+for a machine you care about.** Leaving it off costs you nothing: every
+recommendation still comes with the exact command for you to run.
+
+---
+
 ## Making it yours
 
 Press `Ctrl+T` (or open `/settings`) to change the color theme. Kratos comes in
@@ -509,6 +694,12 @@ ask before running, and set your timezone.
 ---
 
 ## When something goes wrong
+
+**"A sub-agent machine shows as not connected."** Open `/subagent` and select it
+(`i`) — it says why it dropped. If Kratos says *"No Kratos listener is running"*,
+open `/subagent` (which starts one) or install the always-on listener there (`l`).
+If it says the listener *"can't serve investigation reads"*, restart it with the
+command shown, so it runs the same version as the rest of Kratos.
 
 **"It can't connect to the target."** Run `/doctor`. It will point at the exact
 problem — the host is wrong, the SSH port is closed, the key isn't accepted, or a
@@ -543,7 +734,13 @@ permission prompt, pressing Enter is always the safe "no."
 - **Preset** — a saved investigation you can re-run.
 - **Pipeline** — a fixed sequence of tools run in order, with no model steering.
 - **Observe-only** — by default, Kratos reads and advises; it doesn't change the
-  target itself. (Acting on a target is a planned opt-in, not built yet.)
+  target itself. (The one exception is the experimental fix channel, off unless
+  you turn it on for a machine.)
+- **Sub-agent** — a small agent on a machine that connects out to Kratos, for
+  machines Kratos can't reach over SSH.
+- **Listener** — the part of Kratos that sub-agents connect to.
+- **Allowlist** — the fixed set of actions a machine's sub-agent will accept, if
+  the experimental fix channel is on for it.
 - **Sandbox** — the locked-down space where a newly written tool is tested safely.
 - **Approval / "requires approval"** — a yes/no gate before something with real
   consequences happens. A non-answer always means no.

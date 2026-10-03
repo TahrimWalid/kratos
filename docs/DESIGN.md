@@ -1,9 +1,11 @@
 # Kratos — architecture & design notes
 
 Kratos is a defensive security assistant: it investigates a monitored target
-(and, optionally, its own host) over read-only channels and produces
-findings and recommendations for a human. It has two entry points into the
-same tool registry — a fixed pipeline (`kratos scan` / `kratos run`, a
+(and, optionally, its own host) over read-only channels — SSH, or a sub-agent
+running on the target — and produces findings and recommendations for a human.
+The primary interface is a Textual terminal UI (`tui_mk2/`); the same core is
+reachable from the command line and an MCP server. It has two ways into the
+same tool registry — a fixed pipeline (`kratos run`, `/run`, presets: a
 deterministic sequence of tool calls) and an agentic ReAct loop
 (`kratos investigate "<goal>"`, `agent/loop.py`) that picks tools based on
 the stated goal. Both dispatch through the same `TOOL_REGISTRY`
@@ -57,24 +59,22 @@ accidents:
   generate_target_setup_checklist`) produces shell commands for a *human*
   to paste into the target's own shell. Kratos never runs them.
 
-A narrow, per-target opt-in exception is planned but not implemented: a
-user could explicitly enable "direct execution" for one target, after which
-Kratos would be allowed to dispatch signed, whitelisted commands to a
-sub-agent running on that target — a small, human-curated action whitelist
-with no arbitrary shell execution and no arbitrary config writes. The
-whitelist, not the signing, is what actually bounds the risk. Nothing here
-exists in code today; there is no sub-agent, no execution channel, and no
-per-target toggle. The Textual-based TUI ships a dedicated, clearly-labelled
-preview gallery showing what the eventual screens for this layer would look
-like — every one of them carries a persistent "not wired" banner and is
-reachable only from that gallery, never from the normal session flow, so a
-finished-looking mockup can never be mistaken for a working feature.
+There is one narrow, per-target, opt-in exception, and it is experimental
+and off by default: dispatching a small set of allowlisted actions to a
+target's sub-agent (see "Sub-agents" below). It is not reachable from the
+agent loop's tool dispatch at all — no tool in the registry can trigger it;
+it only runs from a human's typed `EXECUTE` in the UI — and it requires an
+explicit switch on the target itself. The allowlist the *agent* carries, not
+the signing and not the approval prompt, is what bounds the risk. It has not
+yet had its independent security review, which gates enabling it on any real
+target.
 
 ## Target-facing tools and operational requirements
 
 A target needs a few things set up before Kratos can investigate it fully.
-`/target <host>` (REPL) runs a setup checklist and a read-only probe that
-checks these automatically:
+`/target <host>` runs a setup checklist and a read-only probe that checks
+these automatically (for SSH; a sub-agent target gets the agent's own
+capability check instead):
 
 - SSH key auth to a user with either passwordless sudo for a small, fixed
   set of commands (`journalctl`, `sshd -T`, one of `ufw`/`nft`/`iptables`,
@@ -98,6 +98,91 @@ checks these automatically:
 - The target's fail2ban `ignoreip` should include the Kratos host's own
   address — otherwise Kratos's own investigative SSH traffic can trip the
   target's SSH jail and get itself banned mid-investigation.
+
+## Sub-agents
+
+A sub-agent (`subagent/agent.py` and its siblings: standard library only,
+Python 3.8+, installed by a generated one-command installer) runs on a
+monitored machine as a service and dials *out* to Kratos's listener
+(`subagent/core_server.py`), so the machine opens no inbound port and can sit
+behind NAT. Pairing redeems a single-use code for a per-agent token; the
+token file is owner-only, and the HMAC key every signed message uses is
+derived from it. Three things travel over the connection, kept deliberately
+separate:
+
+- **Telemetry** — a read-only snapshot (host, disk, listening ports, process
+  count, services, critical file hashes, recent auth summary) every 30s.
+- **Investigation reads** — named probes from one closed set shipped in the
+  agent (`subagent/reads.py`). Kratos names a probe and passes parameters;
+  the agent validates every parameter with closed, type-strict validators and
+  runs a fixed argv (or a fixed script) with no shell, a fixed environment,
+  binaries only from system directories, a per-probe timeout and an output
+  cap. No command text, path list or rule text is ever accepted from Kratos.
+  Each request is signed for the connection's session nonce with a strictly
+  increasing sequence number, so a captured request can't be replayed; reads
+  are refused on a plain (non-loopback, non-Tailscale) network unless the
+  operator allowed it at install, because the channel has no encryption of
+  its own. The SSH path builds its commands with the *same* builders and both
+  transports' output goes through the same parsers, so results can't drift —
+  verified on real hosts (identical journal reads, config verdicts and
+  exhaustive auth counts over SSH and through the agent). YARA over the agent
+  uses only rules that live on the machine (shipped with the agent, or placed
+  by its administrator) and returns rule/file/offset, never matched bytes,
+  over a closed set of scan roots with credential paths skipped: with rules
+  supplied by Kratos, even match/no-match per rule would be an oracle for
+  file contents.
+- **Execution (experimental, off by default)** — the agent carries its own
+  ceiling (`subagent/ceiling.py`): exactly which binaries and argument shapes
+  it will ever run. Kratos can push a narrower allowlist, never a wider one;
+  each pushed action and the final argv are re-checked on the agent. A
+  dispatch also needs the agent's local `--enable-execution` switch, a
+  trusted transport, a signed heartbeat within the dead-man's window, the
+  current allowlist version (anti-rollback), per-target consent in Kratos and
+  a typed `EXECUTE`. The machine's administrator can add exact commands in a
+  root-owned local file Kratos cannot write. None of this has had its
+  independent review yet.
+
+**Routing.** A session target (an IP or hostname) is read through a sub-agent
+only after an explicit link (`subagent_links`), made when the user picks
+"Sub-agent" in onboarding or accepts an offered match — never inferred, since
+a wrong inference would read the wrong machine. A link is "sub-agent only" or
+"SSH first, sub-agent if SSH can't connect". Routing happens at the named
+fetchers in `adapters/ssh_remote.py`; `run_remote_command` /
+`run_remote_script` take free command text, so they stay SSH-only and refuse
+for a sub-agent-only target, and a kept tool that issues its own SSH command
+is refused at dispatch for such a target (a kept tool that turned the refusal
+into an empty result once made a live investigation report "no listening
+services" on a box running sshd). Network scans refuse for a sub-agent-only
+target and record a coverage gap; if the final answer doesn't say what wasn't
+checked, the loop adds a note. Every routed result carries a transport note,
+shown on screen (amber when SSH failed and the read fell back).
+
+**Process boundary.** The investigation usually runs in a different process
+from the listener holding the agents' connections, so they talk over an
+owner-only Unix socket (`subagent/local_reads.py`): created 0600 before it can
+be reached, peer uid checked with `SO_PEERCRED`, a stale socket from a crashed
+listener replaced and a live one never stolen, and every failure turned into a
+message that says what to do.
+
+## Time windows
+
+A phrase like "in the last 24 hours" or "this week vs last" is resolved to
+exact UTC bounds in code (`timewin/`), never by the model. Every journal fetch
+uses absolute epochs and `--reverse -n N+1`: plain `--since X -n N` returns the
+*oldest* N entries on systemd 249 but the newest on 255, which once hid a live
+brute force from an investigation; the extra entry is how truncation is
+detected and reported. Counting questions don't read a capped sample:
+`timewin/measure.py` builds a POSIX-sh + portable-awk script that counts every
+matching event in the window on the target (journald, falling back to classic
+syslog files) and returns totals, coverage, boot gaps and a few labelled
+samples; the target's clock offset is measured and applied. The answer's
+numbers are then checked: a final answer about a time period carries
+structured claims that are verified against these measurements, a period the
+goal asked about but nobody queried is tagged, and a tool the answer cites but
+never ran is flagged. Comparisons between periods are computed by Kratos.
+"What did it look like then" questions are answered from Kratos's own saved
+snapshots — the nearest one at or before the time asked, with its distance —
+never interpolated.
 
 ## LLM backend
 
@@ -140,7 +225,7 @@ for the resulting privacy and per-run cost posture.
 A recurring bug shape, worth naming once: a module that does
 `from kratos.kratos_config import SOME_SETTING` binds that name to whatever
 value `SOME_SETTING` held at import time. If something later changes the
-"live" value (a REPL command, a test's `monkeypatch`), code holding the
+"live" value (a slash command, a test's `monkeypatch`), code holding the
 frozen import never sees the update — it keeps using whatever was true when
 the process started. This has bitten three different live-switchable
 settings independently: the active LLM profile (`/model`), the active
@@ -223,15 +308,16 @@ filter criterion" (a hardcoded literal used in a filter role inside a
 function whose own description implies general filtering logic), and a
 check for a specific failure shape — a per-item loop that silently drops
 the item entirely when a sub-fetch for it fails, rather than including it
-with a null/error marker. That last check exists because two independently
-self-written tools reproduced the same bug on their own: an unattributed
+with a null/error marker — and a failed remote read that comes back as an
+ordinary empty result ("nothing found") instead of an error. The last two
+exist because self-written tools reproduced each bug independently: an unattributed
 or unresolved item is a more suspicious result for a security tool to
 surface, not a less interesting one to drop. Full source is always shown
 to the reviewer regardless of which flags fire — the flags direct
 attention, they don't substitute for reading the code.
 
-`run_self_write_loop` has exactly one internal caller path today, wired
-into the REPL's `/evolve` command; nothing in the agent loop's own tool
+`run_self_write_loop` is reached only from a human's `/evolve` in the UI
+(directly, or through the guided wrapper below); nothing in the agent loop's own tool
 dispatch (`execute_tool_call`) can reach it, so a running investigation
 can never trigger a write/test/keep cycle on its own. The agent may emit a
 non-terminal `tool_proposal` suggesting a gap it noticed, but that's
@@ -240,7 +326,11 @@ automatically.
 
 The sandbox itself (`self_test.py`) is an ephemeral container with no
 network device at all — not a disabled or firewalled one; the isolation
-mechanism is the device's absence. It reuses the write step's candidate
+mechanism is the device's absence. Its image holds only the few packages the
+tool layer imports (a test imports the tool layer with nothing else allowed,
+so a new dependency is caught in the suite); the *running* Kratos package is
+copied into each test container, so a candidate is always tested against the
+Kratos it will run in, not a copy from whenever the image was built. It reuses the write step's candidate
 file path only to read and execute it inside that container; nothing in
 the write or approval stages ever imports or runs candidate code directly.
 
@@ -269,8 +359,7 @@ keep operations (not malicious, just ordinary concurrent use) can corrupt
 it if the write isn't protected. The persist step writes via a temp file
 plus atomic rename, and serializes the whole read-modify-write span under
 one file lock, so concurrent keeps always produce a clean, single winner
-rather than a merged or corrupted file. The REPL's own session store
-(SQLite) has the same category of risk from two concurrent `kratos`
+rather than a merged or corrupted file. The session store (SQLite) has the same category of risk from two concurrent `kratos`
 processes and is covered by its own concurrent-write test for the same
 reason — this is a recurring pattern in the codebase, not two unrelated
 fixes.
@@ -303,7 +392,7 @@ close.
 
 ## Session persistence
 
-The REPL stores session/turn history in SQLite (`data_dir/kratos.db`), no
+Kratos stores session/turn history in SQLite (`data_dir/kratos.db`), no
 server, no auth. Every turn is its own committed write as it happens, not
 buffered and flushed on exit, so a crash or Ctrl+C never loses session
 state. Concurrent writers (two terminal tabs against the same store) are a
@@ -314,7 +403,7 @@ independent processes.
 
 ## Presets and pipelines
 
-Saved presets (`/preset` in the REPL/TUI) let a user name and re-run an
+Saved presets (`/preset`) let a user name and re-run an
 investigation without retyping it. Two kinds share one schema and one
 storage layer (`agent/presets.py`, one TOML file per preset under
 `data_dir/presets/`, atomic writes):
@@ -366,6 +455,11 @@ before accepting it, rather than trusting the model's own claim:
 - It can't claim a specific recency window (e.g. "in the last 24 hours")
   when `correlate_findings`'s own staleness check already flagged its
   inputs as spanning a wider range than that claim implies.
+- Its numbers and "none" statements about a period are checked against the
+  exhaustive measurements (see "Time windows"), and it can't cite a tool it
+  never ran.
+- It can't present the target as fully checked when a step reported a
+  coverage gap (e.g. no network scan for a sub-agent-only target).
 
 A violated check produces one combined rejection per iteration (multiple
 violations on the same answer are folded into a single retry prompt, not
@@ -421,20 +515,18 @@ refused, `/doctor` warns when a topic sits on the public server without an
 access token, and real deployments are pointed at a self-hosted ntfy
 (`KRATOS_NTFY_BASE_URL`) or a token (`KRATOS_NTFY_TOKEN`).
 
-## REPL implementation notes
+## Interface notes
 
-A few small, deliberate scope decisions in `cli/repl.py` worth recording
-so they aren't re-litigated as gaps:
+The Textual TUI (`tui_mk2/`) is what bare `kratos` launches. The older
+prompt_toolkit REPL (`cli/repl.py`) is still in the tree, but nothing launches
+it any more. Two notes that still apply:
 
-- The session chooser caps its default listing at a fixed count
-  (`CHOOSER_SESSION_LIMIT`) with a `[m] more sessions` overflow view rather
-  than full pagination — reasonable for the session counts a single-user
-  deployment actually accumulates, not built out further than that.
-- `/delete` only ever soft-deletes the *currently running* session, never
-  an arbitrary other session picked from the chooser — a real but
-  explicitly out-of-scope feature for later, not an oversight.
-- The interactive approval prompt (`agent/tools.py::request_approval`)
-  must get a static terminal to read from. A busy-spinner animation
+- The approval gate (`agent/tools.py::request_approval`) has one fail-safe
+  for every interface: the TUI renders it as a modal through a provider hook,
+  and any error or non-answer still resolves to "no" inside
+  `request_approval` itself.
+- At a plain terminal (`kratos investigate`), the prompt must get a static
+  terminal to read from. A busy-spinner animation
   running on top of the blocking read can eat keystrokes before they reach
   it — `agent/console.py` tracks the active spinner and stops it before
   any approval prompt renders, for exactly this reason.
@@ -453,7 +545,8 @@ so they aren't re-litigated as gaps:
   model; closing it needs a signed or nonce-bound approval record, which
   is real, currently-unjustified work — revisit if Kratos ever becomes
   multi-user or exposes the self-writing loop as a remote/API surface.
-- **Terminal resize corruption in the classic REPL renderer**: the
+- **Terminal resize corruption in the plain-terminal renderer**
+  (`kratos investigate` and the retired REPL; the TUI redraws itself): the
   Rich-based renderer treats the terminal as an append-only stream and
   relies on terminal scrollback to remember what's already been printed.
   A mid-session resize can visibly corrupt already-printed bordered panels,
@@ -463,10 +556,9 @@ so they aren't re-litigated as gaps:
   variables in favor of a live terminal-size query; reserving one column
   of margin so a panel row can't be mistaken for terminal-wrapped text),
   but neither fully closes the gap for every terminal's reflow
-  implementation. The complete fix is a genuine full-screen TUI — an
-  alternate screen buffer with an in-memory render model and an explicit
-  redraw on resize — which is what the newer Textual-based TUI is for,
-  rather than a further patch on the classic renderer.
+  implementation. The complete fix is the full-screen TUI — an alternate
+  screen buffer with an in-memory render model and an explicit redraw on
+  resize — which is now the default interface.
 - **CLI-wide rich rendering**: only `investigate` and the shared approval
   gate render through the styled console layer; the other fixed-pipeline
   subcommands (`scan`, `chat`, `run`, etc.) keep plain-text output. An
@@ -482,3 +574,9 @@ so they aren't re-litigated as gaps:
   config-audit script) that maintaining a dispatcher whitelist would be an
   ongoing tax on every future tool that issues a new remote command, not a
   one-time add — deferred rather than built opportunistically.
+- **Sub-agent coverage**: a target reached only through its sub-agent gets
+  no network view (port or vulnerability scans need a direct path from
+  Kratos), and kept tools that issue their own SSH command can't run there.
+  Both are reported as gaps rather than silently skipped.
+- **One target per investigation**: a session can store several targets but
+  investigates the first; multi-target runs are not built.
