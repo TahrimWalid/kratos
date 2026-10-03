@@ -473,6 +473,18 @@ an old "X was just added to sudo" can't keep re-firing or leak into another
 machine's report; grants to accounts that have since lost the access are kept
 as history, never reported as current risk.
 
+`VULN-*` comes from `run_vuln_scan` snapshots under the same rule (newest scan
+of the active target by its own recorded time, under 24 h; another machine's
+scan never feeds this one's report). VULN-001 lists vulscan's CVE matches per
+service, newest first, as leads to verify rather than confirmed issues (the
+matching is textual and distributions backport fixes); VULN-002 carries Nuclei
+results at Nuclei's own severity (critical maps to high); VULN-003 states what
+the scan could not check (no CVE list, an old one, a failed version scan, no
+Nuclei, no reachable services), so a quiet scan is never reported as clean.
+These on-demand snapshots (`PRIV-*`, `VULN-*`) are considered even when the
+core inputs are passed explicitly, since each is already limited to a fresh
+scan of the active target.
+
 The agent loop enforces a few structural checks on any `final_answer`
 before accepting it, rather than trusting the model's own claim:
 

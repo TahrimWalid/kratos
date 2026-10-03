@@ -385,7 +385,10 @@ There are two styles, and you'll use both:
   based on what it finds. Flexible; good for "go look into this."
 - **`/run` — the standard audit.** A fixed, repeatable sweep: the same checks in
   the same order, every time, with no model deciding anything. Good for "give me
-  the regular once-over" and for comparing results over time.
+  the regular once-over" and for comparing results over time. Its report includes
+  the vulnerability scan: service versions that match known CVEs (to verify; see
+  the matching caveat above), problems the active checks found, and a note whenever
+  part of the scan couldn't run, so a quiet result is never mistaken for a clean one.
 
 Same read-only tools underneath; the difference is whether the model is steering.
 

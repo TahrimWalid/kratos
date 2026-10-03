@@ -334,3 +334,48 @@ def test_run_pipeline_failsafe_skips_consumer_when_producer_has_no_value():
     assert "ran" not in captured                    # consumer never dispatched with a bad value
     assert outcome.steps[1].status == "skipped"
     assert "no 'top_source_ip'" in (outcome.steps[1].detail or "")
+
+
+# ---- a tool that ran but reported failure (2026-10-03) ----------------------
+
+
+def test_a_tool_reporting_error_is_a_failed_step_not_a_pass():
+    dispatch, calls = _canned({
+        "read_journalctl": _ok({"status": "error", "observation": "journalctl over SSH failed: timeout"}),
+        "run_vuln_scan": _ok({"status": "error", "errors": ["vulscan: x", "nuclei: y"], "findings": []}),
+    })
+    steps = [PipelineStep("read_journalctl", required=False), PipelineStep("run_vuln_scan", required=False),
+             PipelineStep("correlate_findings", required=True)]
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert [s.status for s in outcome.steps] == ["error", "error", "ok"]
+    assert outcome.steps[0].detail == "journalctl over SSH failed: timeout"
+    assert outcome.steps[1].detail == "vulscan: x; nuclei: y"
+    assert outcome.status == "completed"
+
+
+def test_a_required_tool_reporting_error_aborts():
+    dispatch, calls = _canned({"run_nmap_scan": _ok({"status": "error", "observation": "nmap not found"})})
+    outcome = run_pipeline([PipelineStep("run_nmap_scan"), PipelineStep("correlate_findings")], DATA_DIR,
+                           dispatch=dispatch)
+    assert outcome.status == "aborted" and calls == ["run_nmap_scan"]
+
+
+def test_a_deliberate_coverage_refusal_is_skipped_and_the_audit_goes_on():
+    """A box reached only through its sub-agent can't be port-scanned: that step is
+    skipped with its reason, and the reads that do work still run."""
+    gap = {"status": "error", "observation": "network scan not available for edge-03",
+           "coverage_gap": "network exposure (open ports/services)"}
+    dispatch, calls = _canned({"run_nmap_scan": _ok(gap)})
+    outcome = run_pipeline(standard_audit_steps(), DATA_DIR, dispatch=dispatch)
+    assert outcome.steps[0].status == "skipped" and "network scan not available" in outcome.steps[0].detail
+    assert outcome.status == "completed" and calls[-1] == "correlate_findings"
+
+
+def test_raw_scan_rows_are_not_threaded_as_findings():
+    raw = [{"source": "vulscan", "port": 22, "cve_ids": ["CVE-2023-1"]}]
+    seen = {}
+    dispatch, _ = _canned({"run_vuln_scan": _ok({"status": "ok", "findings": raw})})
+    steps = [PipelineStep("run_vuln_scan"),
+             PipelineStep("check_ip_reputation", when=lambda ctx: seen.setdefault("f", list(ctx.findings)) or True)]
+    outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
+    assert seen["f"] == [] and outcome.findings == []

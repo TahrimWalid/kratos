@@ -141,7 +141,8 @@ class PipelineStep:
 @dataclass
 class StepResult:
     """The outcome of one step. ``status`` is one of:
-    ``ok`` (ran, tool returned ok), ``error`` (tool/dispatch error),
+    ``ok`` (ran, tool returned ok), ``error`` (dispatch error, or the tool's own
+    result said ``status: error``),
     ``not_approved`` (a gated tool the user declined), ``skipped`` (``when`` was
     falsey). ``result`` is the tool's own return dict on ``ok``; ``detail`` is
     the human-readable observation on any non-ok status.
@@ -264,15 +265,28 @@ def run_pipeline(
 
         raw = dispatch(step.tool, resolved_args, data_dir)
         status = raw.get("status")
-        if status == "ok":
-            result = raw.get("result")
-            result = result if isinstance(result, dict) else {"result": result}
+        result = raw.get("result") if status == "ok" else None
+        if status == "ok" and not isinstance(result, dict):
+            result = {"result": result}
+        if status == "ok" and result.get("status") == "error":
+            # The call went through but the tool itself reports failure (an SSH
+            # read that failed, a scan that could check nothing): not a pass. A
+            # deliberate refusal that names what wasn't checked (a network scan
+            # of a box reached only through its sub-agent) is a skip, so the
+            # rest of the audit still runs.
+            detail = result.get("observation") or "; ".join(str(e) for e in result.get("errors") or [])
+            sr = StepResult(step=step, status="skipped" if result.get("coverage_gap") else "error", result=result,
+                            detail=str(detail).strip() or "the tool reported an error")
+        elif status == "ok":
             sr = StepResult(step=step, status="ok", result=result)
             # Thread any findings a step produced (correlate_findings is the
             # synthesis; the last one to produce them wins, so a later
-            # correlate supersedes an earlier partial).
-            found = result.get("findings")
-            if isinstance(found, list) and found:
+            # correlate supersedes an earlier partial). Only report-shaped
+            # findings (id + severity): run_vuln_scan's raw matches also sit
+            # under a "findings" key and must not stand in for them.
+            found = [f for f in result.get("findings") or []
+                     if isinstance(f, dict) and f.get("id") and f.get("severity")]
+            if found:
                 ctx.findings = found
                 outcome.findings = found
         else:
@@ -284,7 +298,7 @@ def run_pipeline(
         if on_step is not None:
             on_step(sr)
 
-        if sr.status != "ok" and step.required:
+        if sr.status not in ("ok", "skipped") and step.required:
             outcome.status = "aborted"
             outcome.aborted_on = step.tool
             break

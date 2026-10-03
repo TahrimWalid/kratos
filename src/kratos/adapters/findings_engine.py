@@ -242,6 +242,135 @@ def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
     return out
 
 
+# ---------------------------
+# VULN-*: known vulnerabilities (from a run_vuln_scan snapshot)
+# ---------------------------
+_VULN_CVES_SHOWN = 8
+_VULN_ITEMS_SHOWN = 10
+# Nuclei's scale -> this report's (info | low | medium | high).
+_NUCLEI_SEVERITY = {"critical": "high", "high": "high", "medium": "medium", "low": "low", "info": "info"}
+
+
+def _cve_sort_key(cve: str) -> tuple[int, int]:
+    try:
+        _prefix, year, number = cve.split("-", 2)
+        return int(year), int(number)
+    except ValueError:
+        return 0, 0
+
+
+def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
+    """VULN-001..003 from one run_vuln_scan snapshot.
+
+    VULN-001 -- vulscan's CVE matches. vulscan matches nmap's product/version
+    text against CVE descriptions, so these are leads to verify (distributions
+    backport fixes without changing versions), never confirmed vulnerabilities.
+    VULN-002 -- Nuclei results, at Nuclei's own severity.
+    VULN-003 -- what the scan could NOT check, so a quiet result isn't read as clean.
+    """
+    findings: list[Finding] = []
+    target = scan.get("target") or "the target"
+    source = f"Source: run_vuln_scan on {target} at {scan.get('scanned_at') or 'an unknown time'}"
+    items = [x for x in scan.get("findings") or [] if isinstance(x, dict)]
+
+    matches: dict[tuple[str, str], dict[str, Any]] = {}
+    for x in items:
+        if x.get("source") != "vulscan":
+            continue
+        cves = [c for c in x.get("cve_ids") or [] if isinstance(c, str) and c.startswith("CVE-")]
+        if not cves:
+            continue
+        key = (str(x.get("host") or target), str(x.get("port") or "?"))
+        entry = matches.setdefault(key, {"product": x.get("product"), "version": x.get("version"), "cves": set()})
+        entry["cves"].update(cves)
+    if matches:
+        all_cves = set().union(*(m["cves"] for m in matches.values()))
+        evidence = [source,
+                    f"{len(matches)} service(s) match {len(all_cves)} known CVE description(s) by product/version"]
+        ordered = sorted(matches.items(), key=lambda kv: (kv[0][0], int(kv[0][1]) if kv[0][1].isdigit() else 1 << 20))
+        for (host, port), m in ordered[:_VULN_ITEMS_SHOWN]:
+            newest = sorted(m["cves"], key=_cve_sort_key, reverse=True)
+            name = " ".join(str(v) for v in (m["product"], m["version"]) if v) or "unidentified service"
+            more = f" (+{len(newest) - _VULN_CVES_SHOWN} older)" if len(newest) > _VULN_CVES_SHOWN else ""
+            evidence.append(f"{host} port {port} {name}: newest matches {', '.join(newest[:_VULN_CVES_SHOWN])}{more}")
+        if len(matches) > _VULN_ITEMS_SHOWN:
+            evidence.append(f"... and {len(matches) - _VULN_ITEMS_SHOWN} more service(s) (see the scan result)")
+        evidence.append("These are text matches, not confirmed vulnerabilities: some will already be fixed in this "
+                        "build, and an unlisted CVE can still apply.")
+        if scan.get("database_newest_cve_year"):
+            evidence.append(f"CVE list used for matching goes up to {scan['database_newest_cve_year']}")
+        findings.append(Finding(
+            id="VULN-001",
+            title="Service versions match known CVEs (verify which apply)",
+            severity="medium",
+            evidence=evidence,
+            recommendation=[
+                "Check each CVE against your distribution's security tracker for the installed package version: "
+                "distributions often patch without changing the version number, so many matches may already be fixed.",
+                "Apply pending security updates for the matched services; remove or firewall any that don't need "
+                "to be reachable.",
+            ],
+        ))
+
+    active = [x for x in items if x.get("source") == "nuclei"]
+    if active:
+        def sev(x: dict[str, Any]) -> str:
+            return _NUCLEI_SEVERITY.get(str(x.get("severity") or "").lower(), "info")
+
+        active.sort(key=lambda x: _severity_rank(sev(x)), reverse=True)
+        worst = sev(active[0])
+        real = [x for x in active if sev(x) != "info"]
+        evidence = [source, f"{len(active)} result(s) from active checks"
+                    + (f", {len(real)} above informational" if real else ", all informational")]
+        for x in active[:_VULN_ITEMS_SHOWN]:
+            cves = ", ".join(c for c in x.get("cve_ids") or [] if isinstance(c, str))
+            evidence.append(f"[{sev(x)}] {x.get('name') or x.get('template_id') or 'unnamed check'}"
+                            f" at {x.get('matched_at') or x.get('host') or target}" + (f" ({cves})" if cves else ""))
+        if len(active) > _VULN_ITEMS_SHOWN:
+            evidence.append(f"... and {len(active) - _VULN_ITEMS_SHOWN} more (see the scan result)")
+        findings.append(Finding(
+            id="VULN-002",
+            title=("Active checks found issues on the target's services" if real
+                   else "Active checks reported informational results"),
+            severity=worst,
+            evidence=evidence,
+            recommendation=[
+                "Confirm each result at the address shown, then fix it as its check describes (update, "
+                "reconfigure, or restrict access to the service).",
+                "Re-run the vulnerability scan afterwards to confirm the result is gone.",
+            ],
+        ))
+
+    limits: list[str] = []
+    cve_matching = scan.get("cve_matching")
+    if cve_matching == "not_installed":
+        limits.append("CVE matching was not done: the CVE list isn't installed (`kratos vulscan-install`).")
+    elif cve_matching == "failed":
+        limits.append("CVE matching was not done: the version scan it relies on failed.")
+    elif cve_matching == "done" and scan.get("database_note"):
+        limits.append(str(scan["database_note"]))
+    active_checks = scan.get("active_checks")
+    if active_checks == "not_installed":
+        limits.append("Active web checks were skipped: nuclei isn't installed on the Kratos machine.")
+    elif active_checks == "failed":
+        limits.append("Active web checks failed to run.")
+    if cve_matching == "done" and not scan.get("services_checked"):
+        limits.append("No open services were detected from the Kratos machine, so there was nothing to match "
+                      "(ports may be closed, or filtered between Kratos and the target).")
+    if limits:
+        found_any = any(f.id in ("VULN-001", "VULN-002") for f in findings)
+        findings.append(Finding(
+            id="VULN-003",
+            title="Vulnerability scan coverage was limited",
+            severity="info",
+            evidence=[source, *limits,
+                      "Issues may exist beyond those listed." if found_any
+                      else "A clean vulnerability result here is not evidence the services are up to date."],
+            recommendation=["Fix the limits above and re-run the vulnerability scan for full coverage."],
+        ))
+    return findings
+
+
 def _severity_rank(sev: str) -> int:
     return {"info": 0, "low": 1, "medium": 2, "high": 3}.get(sev, 0)
 
@@ -269,6 +398,9 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "INTEG-001": "One or more tracked files have changed since the last known-good baseline.",
     "ENV-001": "This looks like a development environment (WSL2), not a production system.",
     "COV-001": "Only part of the requested time window's login activity could be analyzed — the rest is unknown, not clean.",
+    "VULN-001": "Some network services' versions match known vulnerabilities (CVEs) — check whether they're patched.",
+    "VULN-002": "Active checks found issues on the system's network services.",
+    "VULN-003": "The vulnerability check couldn't cover everything — part of it was skipped or limited, so a clean result there isn't proof.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -418,6 +550,7 @@ def generate_findings(
     auth_trends: dict[str, Any] | None = None,
     file_integrity: dict[str, Any] | None = None,
     privileged_accounts: dict[str, Any] | None = None,
+    vuln_scan: dict[str, Any] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -905,6 +1038,10 @@ def generate_findings(
     if privileged_accounts:
         findings.extend(_privileged_account_findings(privileged_accounts))
 
+    # VULN-*: known vulnerabilities on the target's services (from run_vuln_scan)
+    if vuln_scan:
+        findings.extend(_vulnerability_findings(vuln_scan))
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -971,6 +1108,65 @@ STALENESS_SPREAD_THRESHOLD_HOURS = 24
 # it is produced on demand, and an old "X was just added to sudo" must not keep
 # re-firing in every later investigation.
 PRIVILEGED_SNAPSHOT_MAX_AGE_HOURS = 24
+
+
+# A vulnerability-scan snapshot feeds findings under the same rule: the newest
+# scan OF THE ACTIVE TARGET, and only while it's under a day old.
+VULN_SCAN_MAX_AGE_HOURS = 24
+_VULN_SCAN_GLOB = "vuln_scan_*.json"
+_VULN_SCAN_FILES_CONSIDERED = 200
+_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
+
+
+def _host_key(value: Any) -> str:
+    """A comparable host: lower-case, without user@ or [] around IPv6, loopback names unified."""
+    host = str(value or "").rpartition("@")[2].strip().strip("[]").lower()
+    return "loopback" if host in _LOOPBACK_NAMES else host
+
+
+def _snapshot_time(data: dict[str, Any], key: str, path: Path) -> float:
+    try:
+        return datetime.fromisoformat(str(data.get(key))).timestamp()
+    except ValueError:
+        return path.stat().st_mtime
+
+
+def _load_recent_vuln_scan(scans_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:
+    """The newest run_vuln_scan snapshot of the active target, if it's fresh.
+
+    Several targets can share one data folder, so only scans of THIS target
+    count, and the newest of those -- by the time it recorded, since copying
+    or restoring a data folder resets file times -- decides alone: if it's
+    stale, an even older scan is not used instead. Unreadable or malformed
+    files are skipped, a scan dated more than an hour in the future is
+    distrusted, and with no active target set the newest scan is used, as for
+    the privileged-accounts snapshot."""
+    try:
+        files = sorted(scans_dir.glob(_VULN_SCAN_GLOB), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return None, None
+    from kratos.kratos_config import get_active_target
+
+    active = _host_key(get_active_target())
+    best: tuple[float, dict[str, Any], Path] | None = None
+    for path in files[:_VULN_SCAN_FILES_CONSIDERED]:
+        try:
+            data = _read_json(path)
+            when = _snapshot_time(data, "scanned_at", path) if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            continue
+        if when is None or not data.get("target") or not isinstance(data.get("findings", []), list):
+            continue
+        if active and _host_key(data["target"]) != active:
+            continue
+        if best is None or when > best[0]:
+            best = (when, data, path)
+    if best is None:
+        return None, None
+    age = datetime.now().timestamp() - best[0]
+    if age > VULN_SCAN_MAX_AGE_HOURS * 3600 or age < -3600:
+        return None, None
+    return best[1], best[2]
 
 
 def _load_recent_privileged_snapshot(path: Path | None) -> dict[str, Any] | None:
@@ -1117,9 +1313,13 @@ def write_findings_report(
     missing = [k for k, v in inputs.items() if v is None and k not in input_errors]
     staleness_warning = _staleness_warning(inputs, auto_discovered_keys)
     # Optional and on-demand, so never "missing" and never part of the
-    # cross-input staleness spread -- age-limited on its own instead.
-    privileged = None if all_required_explicit else _load_recent_privileged_snapshot(auto.get("privileged_accounts"))
+    # cross-input staleness spread -- each is limited to a fresh snapshot of the
+    # active target on its own, so it's considered even when the core inputs
+    # were passed explicitly.
+    privileged = _load_recent_privileged_snapshot(auto.get("privileged_accounts"))
     inputs["privileged_accounts"] = auto.get("privileged_accounts") if privileged else None
+    vuln_scan, vuln_scan_path = _load_recent_vuln_scan(data_dir / "scans")
+    inputs["vuln_scan"] = vuln_scan_path
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -1129,7 +1329,8 @@ def write_findings_report(
     file_integrity = _read_json(inputs["file_integrity"]) if inputs["file_integrity"] else None
 
     findings = generate_findings(
-        nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged
+        nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged,
+        vuln_scan=vuln_scan,
     )
 
     # Environment detection

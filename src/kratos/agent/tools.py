@@ -60,6 +60,7 @@ from kratos.timewin.snapshots import (
     within as _snapshots_within,
 )
 from kratos.utils.time_window import resolve_time_bound as _resolve_time_bound
+from kratos.utils.timeutil import utc_now_iso
 from kratos.subagent import routing as _subagent_routing
 from kratos.adapters.ssh_remote import (
     target_label as _ssh_target_label,
@@ -1413,6 +1414,10 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     # resolved_target only if nmap found no HTTP-labeled port at all.
     nuclei_target = resolved_target
     cve_ready = _vulscan_installed()
+    # What each half actually did: "done", "not_installed" or "failed". Recorded so
+    # neither a missing tool nor a failed run can read as a clean result.
+    cve_matching = "done" if cve_ready else "not_installed"
+    services_checked: list[dict[str, Any]] = []
     if not cve_ready:
         errors.append(f"vulscan: CVE matching skipped -- the CVE database isn't installed; {_VULSCAN_INSTALL_HINT}")
     try:
@@ -1420,6 +1425,11 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
         if cve_ready:
             findings.extend(_parse_vulscan_xml(vulscan_xml))
         nmap_parsed = _parse_nmap_xml_to_dict(vulscan_xml)  # same -sV XML shape run_nmap_scan produces
+        services_checked = [
+            {"port": p.get("port"), "protocol": p.get("protocol"), "service": p.get("service"),
+             "product": p.get("product"), "version": p.get("version")}
+            for h in nmap_parsed.get("hosts", []) for p in h.get("open_ports", [])
+        ]
         for host_entry in nmap_parsed.get("hosts", []):
             for port_entry in host_entry.get("open_ports", []):
                 svc = (port_entry.get("service") or "").lower()
@@ -1433,12 +1443,15 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
                 break
     except RuntimeError as e:
         errors.append(f"vulscan: {e}")
+        cve_matching = "failed" if cve_ready else cve_matching
 
+    active_checks = "done"
     try:
         nuclei_path = _run_nuclei_scan(nuclei_target, data_dir, resolved_tags)
         findings.extend(_parse_nuclei_jsonl(nuclei_path))
     except RuntimeError as e:
         errors.append(f"nuclei: {e}")
+        active_checks = "not_installed" if "nuclei not found" in str(e) else "failed"
 
     nuclei_count = sum(1 for f in findings if f["source"] == "nuclei")
     vulscan_count = sum(1 for f in findings if f["source"] == "vulscan")
@@ -1447,15 +1460,21 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     # final answer say so instead of letting "no CVEs found" read as "up to date".
     if not cve_ready:
         cve_gap = "known CVEs on the target's services (the CVE database isn't installed)"
+    elif cve_matching == "failed":
+        cve_gap = "known CVEs on the target's services (the version scan that CVE matching needs failed)"
     elif staleness["note"] and staleness["newest_cve_year"]:
         cve_gap = (f"CVEs published after {staleness['newest_cve_year']} "
                    "(the local CVE list used for matching ends there)")
     else:
         cve_gap = None
 
-    return {
+    result: dict[str, Any] = {
         "status": "ok" if not errors else ("partial" if findings else "error"),
         "target": resolved_target,
+        "scanned_at": utc_now_iso(),
+        "cve_matching": cve_matching,
+        "active_checks": active_checks,
+        "services_checked": services_checked,
         "database_stale": staleness["stale"],
         "database_last_updated": staleness["last_updated"],
         "database_age_days": staleness["age_days"],
@@ -1468,6 +1487,17 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
         "errors": errors,
         **({"coverage_gap": cve_gap} if cve_gap else {}),
     }
+    # Persisted for correlate_findings (VULN-* findings), which only reads a scan of
+    # the active target from the last day. A failed write costs the findings, not the scan.
+    try:
+        snap_dir = data_dir / "scans"
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        snap = snap_dir / f"vuln_scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
+        snap.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+        result["snapshot_file"] = str(snap)
+    except OSError as e:
+        result["errors"] = [*errors, f"could not save the scan for the findings report: {e.__class__.__name__}"]
+    return result
 
 
 @register_tool(
