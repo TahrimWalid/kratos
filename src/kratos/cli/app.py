@@ -1225,7 +1225,7 @@ def build_parser() -> argparse.ArgumentParser:
     bundle.add_argument("--until", type=str, default=None, help="End date in YYYYMMDD format (e.g., 20260228)")
     bundle.set_defaults(func=cmd_prepare_bundle)
 
-    analyze = sub.add_parser("analyze", help="Analyze scan/log/context data (placeholder)")
+    analyze = sub.add_parser("analyze", help="Same as findings-generate (older name)")
     analyze.set_defaults(func=cmd_analyze)
 
 

@@ -312,7 +312,7 @@ def render_window_note(console: Console, result: Any) -> None:
         cov = f"PARTIAL (nothing before {window.get('oldest_returned')})" if window.get("truncated") else "complete"
     clock = f"; {window['clock']}" if window.get("clock") else ""
     style = ATTENTION if (window.get("truncated") or window.get("clock")) else TEXT_SECONDARY
-    console.print(f"    [dim {style}]⏱ {_truncate_note(text)} · {cov}{_truncate_note(clock)}[/]")
+    console.print(f"    [dim {style}]window {_truncate_note(text)} · {cov}{_truncate_note(clock)}[/]")
 
 
 def render_finding(console: Console, finding: dict[str, Any]) -> None:

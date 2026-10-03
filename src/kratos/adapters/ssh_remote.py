@@ -258,7 +258,7 @@ def _route(probe: str, params: dict[str, Any], ssh_call: Any, *, agent_call: Any
         return agent_result(_routing.agent_read(link, probe, params))
 
     if link.mode == _routing.MODE_SUBAGENT:
-        _routing.note(f"read through the sub-agent on {link.label} (this target is reached only that way)")
+        _routing.note(f"read through its sub-agent ({link.label})")
         return via_agent()
     down = _routing.ssh_down_reason(link.host)
     if down is None:
@@ -268,7 +268,7 @@ def _route(probe: str, params: dict[str, Any], ssh_call: Any, *, agent_call: Any
         down = _first_line(result.stderr)
         _routing.mark_ssh_down(link.host, down)
     out = via_agent()
-    _routing.note(f"SSH to {link.host} failed ({down}); read through the sub-agent on {link.label} instead")
+    _routing.note(f"SSH to {link.host} failed ({down}); read through its sub-agent ({link.label}) instead")
     if isinstance(out, SSHResult) and not out.ok and out.via == "subagent":
         out.stderr = f"SSH failed ({down}); {out.stderr}"
     return out

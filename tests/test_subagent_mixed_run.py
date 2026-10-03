@@ -68,7 +68,7 @@ def test_answer_that_skips_the_gap_is_tagged(subagent_only_target, monkeypatch):
     steps = {s.get("tool"): s for s in result["transcript"] if s.get("tool")}
     nmap = json.dumps(steps["run_nmap_scan"])
     assert "network scan not available" in nmap and "coverage_gap" in nmap
-    assert "through the sub-agent on edge" in json.dumps(steps["list_processes"])
+    assert "through its sub-agent (edge)" in json.dumps(steps["list_processes"])
 
 
 def test_answer_that_names_the_gap_is_left_alone(subagent_only_target, monkeypatch):

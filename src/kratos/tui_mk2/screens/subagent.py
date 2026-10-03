@@ -166,7 +166,8 @@ class SubAgentScreen(Screen):
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
-                Text("Sub-agents — paired targets streaming read-only telemetry", style=f"bold {T.ACCENT}"),
+                Text("Sub-agents — boxes Kratos reaches through a small agent (telemetry + investigations)",
+                     style=f"bold {T.ACCENT}"),
                 id="sa-banner",
             )
             yield Static(id="sa-listener")

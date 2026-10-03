@@ -486,8 +486,8 @@ class GuideModal(ModalScreen[None]):
                 "itself; acting on its advice is your call.", style=T.TEXT))
             yield Static(Text("\nFirst steps", style=f"bold {T.TEXT_BRIGHT}"))
             yield Static(self._steps([
-                ("1.  /target <host>", "point Kratos at a machine to watch. It checks the SSH "
-                 "connection and shows what the target still needs."),
+                ("1.  /target <host>", "point Kratos at a machine to watch. It checks the connection "
+                 "and shows what the target still needs (no SSH into it? see /subagent)."),
                 ("2.  ask in plain words", "e.g. “check this host for signs of an SSH "
                  "brute-force”. Kratos picks its own read-only tools and explains what it finds."),
                 ("3.  /doctor", "confirm your setup (model, target, tools) is healthy."),
@@ -496,7 +496,8 @@ class GuideModal(ModalScreen[None]):
             yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
             yield Static(self._steps([
                 ("observe-only", "by default Kratos reads and advises; it doesn't change the "
-                 "target itself. Acting on a target is a planned opt-in, not built yet."),
+                 "target itself. Running a fix is an experimental opt-in, off everywhere: it "
+                 "needs a sub-agent, an allowlist, your consent per box, and typing EXECUTE."),
                 ("/evolve", "builds a new tool when Kratos is missing one — you review the code first."),
                 ("/preset", "saves an investigation to re-run or schedule."),
                 ("y / n", "at a permission prompt, y means yes; anything else means no."),

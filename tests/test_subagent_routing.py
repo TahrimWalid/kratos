@@ -105,7 +105,7 @@ def test_subagent_only_target_never_tries_ssh(env):
         rows = ssh_remote.fetch_processes()
     assert env["calls"]["ssh"] == [] and env["calls"]["agent"] == [(env["target_id"], "processes", {})]
     assert rows[0]["command"] == "/sbin/init"
-    assert "through the sub-agent on web-01" in notes[0]
+    assert "through its sub-agent (web-01)" in notes[0]
 
 
 def test_ssh_first_falls_back_only_on_a_connection_failure(env):
@@ -119,7 +119,7 @@ def test_ssh_first_falls_back_only_on_a_connection_failure(env):
     with routing.collect_notes() as notes:
         rows = ssh_remote.fetch_processes()
     assert rows[0]["command"] == "/sbin/init" and len(env["calls"]["agent"]) == 1
-    assert "SSH to 203.0.113.10 failed (ssh: connect to host" in notes[0] and "sub-agent on web-01" in notes[0]
+    assert "SSH to 203.0.113.10 failed (ssh: connect to host" in notes[0] and "its sub-agent (web-01)" in notes[0]
 
     ssh_calls = len(env["calls"]["ssh"])
     ssh_remote.fetch_processes()  # remembered: no second SSH timeout in the same investigation
@@ -214,7 +214,7 @@ def test_tool_results_carry_the_transport(env, tmp_path):
 
     env["store"].set_link("203.0.113.10", env["target_id"], routing.MODE_SUBAGENT)
     out = execute_tool_call("list_processes", {}, tmp_path)
-    assert out["status"] == "ok" and "through the sub-agent on web-01" in out["result"]["transport"]
+    assert out["status"] == "ok" and "through its sub-agent (web-01)" in out["result"]["transport"]
     assert list(out["result"])[0] == "transport"
 
 
@@ -232,7 +232,7 @@ def test_the_transport_note_is_shown_and_a_fallback_stands_out():
     from kratos.tui_mk2 import theme as T
 
     assert R.transport_chip({"status": "ok"}) is None and R.transport_chip(None) is None
-    via = R.transport_chip({"transport": "read through the sub-agent on web-01 (this target is reached only that way)"})
-    assert "sub-agent on web-01" in via.plain and str(via.spans[-1].style) == T.TEXT_MUTED
-    fb = R.transport_chip({"transport": "SSH to web-01 failed (timed out); read through the sub-agent on web-01 instead"})
+    via = R.transport_chip({"transport": "read through its sub-agent (web-01)"})
+    assert "sub-agent (web-01)" in via.plain and str(via.spans[-1].style) == T.TEXT_MUTED
+    fb = R.transport_chip({"transport": "SSH to web-01 failed (timed out); read through its sub-agent (web-01) instead"})
     assert str(fb.spans[-1].style) == T.ATTENTION

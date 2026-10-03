@@ -523,8 +523,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._write(renderable)
 
     def _emit_from_worker(self, renderable: Any) -> None:
-        """Write to the transcript from a THREAD worker (on_step, etc.)."""
-        self.app.call_from_thread(self._log.write, renderable)
+        """Write to the transcript from a THREAD worker (on_step, etc.). Through
+        _write, so a panel from a worker (a recommended command, a result) gets
+        the same width as every other panel."""
+        self.app.call_from_thread(self._write, renderable)
 
     def _emit_bubble(self, renderable: Any, date_str: str) -> None:
         """Write a timed 'bubble' (a stamped header line, or a finding/result

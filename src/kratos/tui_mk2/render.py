@@ -166,7 +166,7 @@ def window_chip(window: dict[str, Any]) -> Text | None:
     warning -- so a misread window is visible at a glance, never buried."""
     if not isinstance(window, dict) or not (window.get("chip") or window.get("since_utc")):
         return None
-    t = Text("    ⏱ ", style=T.TEXT_FAINTER)
+    t = Text("    window ", style=T.TEXT_FAINTER)
     t.append(str(window.get("chip") or f"{window.get('since_utc')} → {window.get('until_utc')}"), style=T.TEXT_MUTED)
     pct = window.get("coverage_percent")
     if isinstance(pct, (int, float)):

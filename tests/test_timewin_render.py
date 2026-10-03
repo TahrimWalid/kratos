@@ -26,4 +26,4 @@ def test_cli_note_shows_window_and_coverage():
     C.render_window_note(con, {"window": PARTIAL})
     C.render_window_note(con, {"entries": []})  # no window -> nothing
     out = buf.getvalue()
-    assert "PARTIAL (42% of the window covered)" in out and out.count("⏱") == 1
+    assert "PARTIAL (42% of the window covered)" in out and out.count("    window ") == 1
