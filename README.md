@@ -3,7 +3,7 @@
 **Self-hostable, self-growing security analysis, with a terminal UI built for all.**
 
 <p align="center">
-  <img src="docs/images/investigation.gif" width="840" alt="Asking Kratos whether anyone tried to brute-force SSH: it measures the last 24 hours, scans, audits the config, correlates three findings and answers with a copyable fix">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/investigation.gif" width="840" alt="Asking Kratos whether anyone tried to brute-force SSH: it measures the last 24 hours, scans, audits the config, correlates three findings and answers with a copyable fix">
 </p>
 
 Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, risky configuration. It explains what it found and what it would do about it. By default it doesn't change the machine itself — acting on its advice is your call (see [Safe by default](#safe-by-default)).
@@ -35,19 +35,19 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 When a request could go several genuinely different ways, Kratos asks instead of guessing:
 
 <p align="center">
-  <img src="docs/images/clarify.svg" width="820" alt="Kratos asking how deep to go, with three labeled choices and one recommended">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/clarify.svg" width="820" alt="Kratos asking how deep to go, with three labeled choices and one recommended">
 </p>
 
 A machine reached only through its sub-agent: every read says how it was obtained, the network scan that needs a direct path is skipped, and the answer says what wasn't checked:
 
 <p align="center">
-  <img src="docs/images/subagent_investigation.svg" width="840" alt="An investigation of a box reached through its sub-agent: the port scan is refused, each read is marked as read through the sub-agent, and the answer notes that network exposure was not checked">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent_investigation.svg" width="840" alt="An investigation of a box reached through its sub-agent: the port scan is refused, each read is marked as read through the sub-agent, and the answer notes that network exposure was not checked">
 </p>
 
 And `/doctor` checks the model, the target and the tools in one go:
 
 <p align="center">
-  <img src="docs/images/doctor.svg" width="840" alt="The /doctor self-check: a verdict over a table of checks, with an inline fix for the warning">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/doctor.svg" width="840" alt="The /doctor self-check: a verdict over a table of checks, with an inline fix for the warning">
 </p>
 
 ---
@@ -123,22 +123,22 @@ kratos
 ## First steps
 
 <p align="center">
-  <img src="docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
 </p>
 
 1. **Connect a machine.** Start a new session (or `/target <host>`). Kratos asks how to reach it — direct SSH or a sub-agent — and walks you through the one-time setup on that box.
 2. **Ask a question.** Type what you want to know, in normal words. Kratos picks its own read-only tools and explains what it finds.
 3. **Check your setup** any time with `/doctor`, and see a session's findings with `/report`.
 
-Type `/guide` inside Kratos for the short version, `?` for every command, or read the full [user guide](docs/GUIDE.md).
+Type `/guide` inside Kratos for the short version, `?` for every command, or read the full [user guide](https://github.com/TahrimWalid/kratos/blob/main/docs/GUIDE.md).
 
 ---
 
 ## Machines you can't SSH into
 
 <p align="center">
-  <img src="docs/images/onboard.svg" width="410" alt="Choosing how Kratos should reach a new machine: direct SSH, a sub-agent, or later, with a panel explaining the highlighted option">
-  <img src="docs/images/subagent.svg" width="410" alt="The /subagent screen: paired boxes with their status, agent version and last contact, and the details of one linked to a target">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/onboard.svg" width="410" alt="Choosing how Kratos should reach a new machine: direct SSH, a sub-agent, or later, with a panel explaining the highlighted option">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent.svg" width="410" alt="The /subagent screen: paired boxes with their status, agent version and last contact, and the details of one linked to a target">
 </p>
 
 Pick **Sub-agent** when you add a machine and Kratos generates a one-command installer for it (and can copy and run it over SSH for you, once). The agent runs as a service, dials out to Kratos, and opens no port on the box. From then on:
@@ -154,7 +154,7 @@ Kratos never guesses which machine a target is: choosing Sub-agent links the box
 ## It grows with you
 
 <p align="center">
-  <img src="docs/images/evolve.svg" width="820" alt="The /evolve review: the tool's description, review flags, passing tests and source, and the keep decision">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/evolve.svg" width="820" alt="The /evolve review: the tool's description, review flags, passing tests and source, and the keep decision">
 </p>
 
 If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the idea; Kratos drafts a test that defines "correct" (you read and can edit it), writes the tool, runs the test in a container with no network, and shows you the code with review flags pointing at what's worth a second look — such as a failed read that would quietly come back as "nothing found". Nothing is kept until you say yes, and by default a kept tool still asks before each run. You can always run just one tool, directly, with `/use`.
@@ -166,8 +166,8 @@ If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the i
 Kratos ships in Kratos Red by default, with Slate Blue, Matrix Green, and Cyan built in (`Ctrl+T`, or Settings). Danger-red and safe-green stay constant in every theme, so the colors that mean something never move.
 
 <p align="center">
-  <img src="docs/images/theme-green.svg" width="410" alt="Matrix Green theme">
-  <img src="docs/images/theme-cyan.svg" width="410" alt="Cyan theme">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/theme-green.svg" width="410" alt="Matrix Green theme">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/theme-cyan.svg" width="410" alt="Cyan theme">
 </p>
 
 ---
@@ -185,42 +185,11 @@ Self-hosting is fully supported; it's just not the default, because most people 
 
 ## How it's built
 
-```mermaid
-flowchart TD
-    you([You]) --> entry
+<p align="center">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/architecture.svg" width="760" alt="How Kratos is built: the terminal UI, command line and MCP server feed the Kratos core (agentic loop, deterministic pipelines, self-writing loop, findings engine), which reads monitored machines over SSH or through a sub-agent, and an experimental, off-by-default fix channel gated by the agent's allowlist">
+</p>
 
-    subgraph entry [How you talk to Kratos]
-        tui[Terminal UI]
-        cli[Command line<br/>investigate / run / scheduled runs]
-        mcp[MCP server<br/>read/investigate only]
-    end
-
-    entry --> brain
-
-    subgraph brain [Kratos core]
-        loop[Agentic loop<br/>picks read-only tools, step by step]
-        pipeline[Deterministic pipelines<br/>fixed, repeatable audits]
-        evolve[Self-writing loop<br/>write, sandbox-test, your review, keep]
-        rules[Findings engine<br/>plain rules, no model]
-    end
-
-    llm[(Language model<br/>hosted by default, or self-hosted)]
-    loop <--> llm
-    evolve <--> llm
-
-    brain -->|read-only, over SSH| target[[Monitored machine]]
-    brain -->|signed, named reads only| agent[Sub-agent on a machine<br/>dials out to Kratos]
-    agent -->|status + read results| brain
-    rules --> out[Plain-language findings<br/>and recommended commands]
-
-    subgraph optin [Experimental, off by default]
-        allow{{Allowlist held by the agent<br/>the security boundary}}
-    end
-    out -.->|you opt in per box, type EXECUTE| allow
-    allow -.-> agent
-```
-
-The core reasons about a goal and picks its own read-only tools; a findings engine (plain rules, no model) correlates what was observed. The dashed path is the experimental, off-by-default fix channel described above. More detail in [docs/DESIGN.md](docs/DESIGN.md).
+The core reasons about a goal and picks its own read-only tools; a findings engine (plain rules, no model) correlates what was observed. The dashed path is the experimental, off-by-default fix channel described above. More detail in [docs/DESIGN.md](https://github.com/TahrimWalid/kratos/blob/main/docs/DESIGN.md).
 
 ---
 
@@ -238,10 +207,11 @@ Kratos began as a Bachelor's thesis (Tampere University of Applied Sciences, Sof
 
 ## License
 
-Kratos is released under the [MIT License](LICENSE) — use it, change it, build on
+Kratos is released under the [MIT License](https://github.com/TahrimWalid/kratos/blob/main/LICENSE) — use it, change it, build on
 it freely; just keep the copyright notice when you redistribute it.
 
 One exception for the bundled extras: the YARA rules under `src/kratos/yara_rules/` are
-third-party and stay under their own GPLv2 license (see
-[`src/kratos/yara_rules/README.md`](src/kratos/yara_rules/README.md)). They're included as separate data
-files the scanner reads, not part of Kratos's own code.
+third-party and stay under their own GPLv2 license (source in
+[`src/kratos/yara_rules/README.md`](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/yara_rules/README.md),
+full text in [`LICENSE`](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/yara_rules/LICENSE) next to them).
+They're included as separate data files the scanner reads, not part of Kratos's own code.

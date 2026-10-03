@@ -38,7 +38,7 @@ def test_generate_installer_embeds_all_bundle_files_roundtrip():
     # the starter YARA rules (scanned with rules from the box only -- D4).
     assert set(blobs) == {"__init__.py", *installer.read_bundle_files()}
     assert {*installer.BUNDLE_FILES, "measure.py", "privileged_accounts.py", "yara_rules/MALW_Eicar.yar",
-            "yara_rules/README.md"} <= set(blobs)
+            "yara_rules/README.md", "yara_rules/LICENSE"} <= set(blobs)
 
     real = installer.read_bundle_files()
     for name, real_text in real.items():

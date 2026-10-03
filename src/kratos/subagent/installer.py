@@ -93,9 +93,10 @@ def read_bundle_files() -> dict[str, str]:
             raise InstallerError(f"cannot read bundle file {name!r}: {exc}") from exc
     for rule in sorted(YARA_RULES_SOURCE.glob("*.yar")) if YARA_RULES_SOURCE.is_dir() else []:
         out[f"yara_rules/{rule.name}"] = rule.read_text(encoding="utf-8")
-    readme = YARA_RULES_SOURCE / "README.md"
-    if readme.is_file():  # source + license of the vendored rules travel with them
-        out["yara_rules/README.md"] = readme.read_text(encoding="utf-8")
+    for doc in ("README.md", "LICENSE"):  # source + GPL text of the vendored rules travel with them
+        path = YARA_RULES_SOURCE / doc
+        if path.is_file():
+            out[f"yara_rules/{doc}"] = path.read_text(encoding="utf-8")
     return out
 
 

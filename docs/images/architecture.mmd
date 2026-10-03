@@ -1,0 +1,35 @@
+%% Source of docs/images/architecture.svg (the README diagram; PyPI does not render Mermaid).
+%% Regenerate from docs/images/:
+%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture.svg -c architecture.mermaid.json -b white
+flowchart TD
+    you([You]) --> entry
+
+    subgraph entry [How you talk to Kratos]
+        tui[Terminal UI]
+        cli[Command line<br/>investigate / run / scheduled runs]
+        mcp[MCP server<br/>read/investigate only]
+    end
+
+    entry --> brain
+
+    subgraph brain [Kratos core]
+        loop[Agentic loop<br/>picks read-only tools, step by step]
+        pipeline[Deterministic pipelines<br/>fixed, repeatable audits]
+        evolve[Self-writing loop<br/>write, sandbox-test, your review, keep]
+        rules[Findings engine<br/>plain rules, no model]
+    end
+
+    llm[(Language model<br/>hosted by default, or self-hosted)]
+    loop <--> llm
+    evolve <--> llm
+
+    brain -->|read-only, over SSH| target[[Monitored machine]]
+    brain -->|signed, named reads only| agent[Sub-agent on a machine<br/>dials out to Kratos]
+    agent -->|status + read results| brain
+    rules --> out[Plain-language findings<br/>and recommended commands]
+
+    subgraph optin [Experimental, off by default]
+        allow{{Allowlist held by the agent<br/>the security boundary}}
+    end
+    out -.->|you opt in per box, type EXECUTE| allow
+    allow -.-> agent

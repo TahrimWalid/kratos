@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # SPDX license expressions
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,27 @@ version = "0.1.0"
 description = "Kratos — a self-hostable, self-growing security assistant"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+# Kratos itself is MIT; the starter YARA rules shipped as package data are
+# GPL-2.0 (Yara-Rules project), with their licence text alongside them.
+license = "MIT AND GPL-2.0-only"
+license-files = ["LICENSE", "src/kratos/yara_rules/LICENSE"]
+authors = [{ name = "Tahrim Walid" }]
+keywords = ["security", "intrusion detection", "incident response", "linux", "llm", "agent", "ssh", "yara", "nmap"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "requests",
     "python-dotenv",
@@ -25,6 +45,12 @@ dependencies = [
     # Presets, schedules and triggers are TOML; tomllib is stdlib from 3.11.
     "tomli>=1.1; python_version < '3.11'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/TahrimWalid/kratos"
+Documentation = "https://github.com/TahrimWalid/kratos/blob/main/docs/GUIDE.md"
+Repository = "https://github.com/TahrimWalid/kratos"
+Issues = "https://github.com/TahrimWalid/kratos/issues"
 
 [project.optional-dependencies]
 test = ["pytest"]
@@ -44,10 +70,11 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 # Non-Python files that must ship in the wheel: the starter YARA rules (third-
-# party, GPLv2 -- their README carries the source and license) are read by
-# run_yara_scan and bundled into every sub-agent installer.
+# party, GPLv2 -- their README carries the source, LICENSE the full text) are
+# read by run_yara_scan and bundled into every sub-agent installer; the settings
+# template is what `kratos init` writes.
 [tool.setuptools.package-data]
-kratos = ["yara_rules/*.yar", "yara_rules/README.md", "templates/env.example"]
+kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

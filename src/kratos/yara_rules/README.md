@@ -24,4 +24,5 @@ project — a long-running, widely-used, reputable public collection of open YAR
 The Yara-Rules project is licensed under GNU GPLv2. These two files are included as data
 (consumed by the separately GPL-licensed `yara` binary at scan time on the target, not compiled
 or linked into Kratos itself) with their original attribution/license headers preserved
-unmodified. See `https://github.com/Yara-Rules/rules/blob/master/LICENSE` for the full text.
+unmodified. The full GPLv2 text is in `LICENSE` in this directory (copied from
+`https://github.com/Yara-Rules/rules/blob/master/LICENSE`).
