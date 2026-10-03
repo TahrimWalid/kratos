@@ -47,10 +47,10 @@ def test_new_group_audit_plus_preset(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind, job1, job2, done, on_failure, name, cadence, min_sev
+            # kind, job1, job2, done, on_failure, cadence, min_sev, name (asked last)
             _answers(app, monkeypatch,
                      ["group", "audit", "preset:deep", "__done__", "abort",
-                      "nightly-suite", "daily", ""])
+                      "daily", "", "nightly-suite"])
             screen._dispatch_slash("/schedule new")
             for _ in range(200):
                 await pilot.pause()

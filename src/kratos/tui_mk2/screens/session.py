@@ -2403,6 +2403,31 @@ class SessionScreen(ResilientWorkerHost, Screen):
         ungraduated = [p for p in runnable if getattr(p, "generated", False)]
         return schedulable, ungraduated
 
+    async def _ask_new_name(self, title: str, base: str, slugify: Any, validate: Any,
+                            exists: Any, noun: str) -> str | None:
+        """Ask for a name last, pre-filled with one built from the answers so far
+        (unique, so Enter just accepts it). Typing an existing name asks before
+        replacing it. None = cancelled."""
+        suggested = slugify(base)[:60].strip("-_") or noun
+        candidate, n = suggested, 2
+        while exists(candidate):
+            candidate, n = f"{suggested}-{n}", n + 1
+        hint = "Press Enter to use this name, or type your own"
+        while True:
+            raw = await self.app.push_screen_wait(PromptModal(title, hint, initial=candidate))
+            if raw is None:
+                return None
+            ok, canonical, err = validate(raw.strip() or candidate)
+            if not ok:
+                hint, candidate = err or f"That {noun} name isn't valid — try another.", raw.strip()
+                continue
+            if exists(canonical) and not await self.app.push_screen_wait(ConfirmModal(
+                    f"Replace {noun} '{canonical}'?",
+                    f"A {noun} called '{canonical}' already exists. Replace it with this one?")):
+                hint, candidate = f"'{canonical}' is taken — pick another name.", canonical
+                continue
+            return canonical
+
     async def _schedule_new(self) -> None:
         from kratos.agent import schedules as _S
         from kratos.agent import schedule_units as _U
@@ -2484,10 +2509,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
             if on_failure is None:
                 return
 
-        name_raw = await self.app.push_screen_wait(PromptModal(
-            "Schedule name", "Short name (e.g. weekly-audit)"))
-        if name_raw is None:
-            return
         cadence = await self.app.push_screen_wait(ListPickerModal(
             "How often?",
             [(c, c) for c in ("hourly", "daily", "weekly", "monthly")],
@@ -2504,6 +2525,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if min_sev is None:
             return
 
+        base = {"audit": "audit", "preset": preset_name or "preset", "group": "group"}[kind]
+        name_raw = await self._ask_new_name(
+            "Schedule name", f"{cadence}-{base}", _S.slugify_schedule_name,
+            _S.validate_schedule_name, lambda n: _S.schedule_exists(self._data_dir, n), "schedule")
+        if name_raw is None:
+            return
         try:
             sch = _S.save_schedule(
                 self._data_dir, name=name_raw, kind=kind, preset=preset_name,
@@ -2766,8 +2793,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if cooldown is None:
             return
 
-        name_raw = await self.app.push_screen_wait(PromptModal(
-            "Trigger name", "Short name (e.g. high-severity-alert)"))
+        what = {"notify": "alert", "playbook": "playbook", "investigate": "investigate"}[action]
+        name_raw = await self._ask_new_name(
+            "Trigger name", f"{fid or sev}-{what}", _T.slugify_trigger_name,
+            _T.validate_trigger_name, lambda n: _T.trigger_exists(self._data_dir, n), "trigger")
         if name_raw is None:
             return
         try:

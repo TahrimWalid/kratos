@@ -76,6 +76,35 @@ def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch
     assert T.list_triggers(tmp_path)[0] == []  # aborted at the cost warning
 
 
+def test_trigger_name_is_pre_filled_from_the_condition_and_action(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import PromptModal
+
+    store, sid, screen = _make(tmp_path, monkeypatch)
+    seen: list = []
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            it = iter(["", "CORR-SSH-001", "playbook", "60", ""])   # blank name = Enter
+
+            async def _fn(modal):
+                seen.append(modal)
+                return next(it)
+
+            monkeypatch.setattr(app, "push_screen_wait", _fn)
+            screen._dispatch_slash("/trigger new")
+            for _ in range(200):
+                await pilot.pause()
+                if T.trigger_exists(tmp_path, "corr-ssh-001-playbook"):
+                    break
+
+    asyncio.run(_run())
+    assert isinstance(seen[-1], PromptModal) and seen[-1]._initial == "corr-ssh-001-playbook"
+    tg = T.load_trigger(tmp_path, "corr-ssh-001-playbook")
+    assert tg is not None and tg.finding_id == "CORR-SSH-001" and tg.action == "playbook"
+
+
 def test_trigger_test_shows_would_fire_without_side_effects(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
     T.save_trigger(tmp_path, name="pb", action="playbook", finding_id="CORR-SSH-001")

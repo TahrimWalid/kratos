@@ -51,8 +51,8 @@ def test_schedule_new_audit_writes_definition_and_units(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind, name, cadence, min_severity
-            _answers(app, monkeypatch, ["audit", "weekly-audit", "weekly", "high"])
+            # kind, cadence, min_severity, name (asked last)
+            _answers(app, monkeypatch, ["audit", "weekly", "high", "weekly-audit"])
             screen._dispatch_slash("/schedule new")
             for _ in range(200):
                 await pilot.pause()
@@ -157,3 +157,65 @@ def test_schedule_list_renders_without_error(tmp_path, monkeypatch):
                 await pilot.pause()
 
     asyncio.run(_run())  # must not raise
+
+
+def _recording_answers(app, monkeypatch, values, seen):
+    it = iter(values)
+
+    async def _fn(modal):
+        seen.append(modal)
+        return next(it)
+
+    monkeypatch.setattr(app, "push_screen_wait", _fn)
+
+
+def _drive(screen, monkeypatch, values, seen, done):
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _recording_answers(app, monkeypatch, values, seen)
+            screen._dispatch_slash("/schedule new")
+            for _ in range(200):
+                await pilot.pause()
+                if done():
+                    break
+
+    asyncio.run(_run())
+
+
+def test_schedule_name_is_asked_last_and_enter_accepts_the_suggestion(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import PromptModal
+
+    store, sid, screen = _make(tmp_path, monkeypatch)
+    seen: list = []
+    # kind, cadence, min_severity, then a blank name (= just pressing Enter)
+    _drive(screen, monkeypatch, ["audit", "daily", "", ""], seen,
+           lambda: S.schedule_exists(tmp_path, "daily-audit"))
+    assert isinstance(seen[-1], PromptModal)                 # the name comes last
+    assert seen[-1]._initial == "daily-audit"                # pre-filled from the answers
+    assert S.load_schedule(tmp_path, "daily-audit").cadence == "daily"
+
+
+def test_schedule_suggestion_skips_names_already_taken(tmp_path, monkeypatch):
+    store, sid, screen = _make(tmp_path, monkeypatch)
+    S.save_schedule(tmp_path, name="weekly-audit", kind="audit", cadence="weekly")
+    seen: list = []
+    _drive(screen, monkeypatch, ["audit", "weekly", "", ""], seen,
+           lambda: S.schedule_exists(tmp_path, "weekly-audit-2"))
+    assert seen[-1]._initial == "weekly-audit-2"
+    assert S.load_schedule(tmp_path, "weekly-audit").cadence == "weekly"   # untouched
+
+
+def test_typing_an_existing_schedule_name_asks_before_replacing(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import ConfirmModal
+
+    store, sid, screen = _make(tmp_path, monkeypatch)
+    S.save_schedule(tmp_path, name="nightly", kind="audit", cadence="daily")
+    seen: list = []
+    # name "nightly" -> decline replace -> name prompt again -> "other"
+    _drive(screen, monkeypatch, ["audit", "weekly", "", "nightly", False, "other"], seen,
+           lambda: S.schedule_exists(tmp_path, "other"))
+    assert any(isinstance(m, ConfirmModal) for m in seen)
+    assert S.load_schedule(tmp_path, "nightly").cadence == "daily"   # not replaced
+    assert S.load_schedule(tmp_path, "other").cadence == "weekly"
