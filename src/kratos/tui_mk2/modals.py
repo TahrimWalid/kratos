@@ -269,7 +269,9 @@ class PromptModal(ModalScreen[str | None]):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._hint:
                 yield Static(Text(self._hint, style=T.TEXT_DIM))
-            yield Input(value=self._initial, id="prompt-input")
+            # Pre-filled text is there to be edited: Textual selects it on focus by
+            # default, so the first keystroke would erase it.
+            yield Input(value=self._initial, id="prompt-input", select_on_focus=False)
             if self._quick_label:
                 yield Button(self._quick_label, id="prompt-quick", variant="primary")
                 yield Static(Text("Enter to use what you typed · Tab then Enter (or click) for the option · esc cancel", style=T.TEXT_DIM))
@@ -819,7 +821,9 @@ class CommandPaletteModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
             yield Static(Text("Commands", style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Input(value=self._initial, id="palette-input")
+            # Not select_on_focus: the first keystroke after "/" would replace it,
+            # and "/rename x" would arrive as "rename x" (sent to the model).
+            yield Input(value=self._initial, id="palette-input", select_on_focus=False)
             yield ListView(id="palette-list")
             yield Static(Text("↑↓ select · Enter run · esc dismiss", style=T.TEXT_DIM))
 
@@ -849,6 +853,8 @@ class CommandPaletteModal(ModalScreen[str | None]):
     @on(Input.Submitted, "#palette-input")
     def _submit(self, event: Input.Submitted) -> None:
         val = event.value.strip()
+        if val:
+            val = "/" + val.lstrip("/")  # the palette only ever submits commands: exactly one slash
         # If the user typed args (a space), pass the WHOLE command through so
         # inline usage (`/rename foo`, `/target 1.2.3.4`) still works from the
         # palette -- the caller dispatches it exactly like a typed command.

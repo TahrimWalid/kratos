@@ -42,6 +42,18 @@ Chat = Callable[[str, str], Optional[str]]
 _MAX_PREDICTED = 8
 
 
+def _main_action_gated(tool) -> bool:
+    """The same test unattended runs use to leave a step out (scheduled_run):
+    the tool's own requires_approval. An unknown tool fails safe to gated."""
+    return tool is None or bool(tool.requires_approval)
+
+
+def _optional_prompt_only(tool) -> bool:
+    """Can reach an approval prompt, but only for an optional extra (refreshing
+    the CVE list, a live IP lookup): the step itself runs either way."""
+    return tool is not None and not tool.requires_approval and tool_reaches_approval(tool)
+
+
 @dataclass
 class PlanItem:
     """One line of a plan preview: a pipeline step (exact) or a predicted
@@ -50,7 +62,8 @@ class PlanItem:
     ref: str                       # tool-registry key (or a name the model gave)
     label: str                     # human-readable one-liner
     required: bool = True          # exact pipelines: fail-fast step vs. optional
-    approval_gated: bool = False    # may pause to ask the human mid-run
+    approval_gated: bool = False    # its main action needs a human OK: pauses live, left out of unattended runs
+    may_ask: bool = False           # only an optional extra can prompt (declining doesn't stop the step)
     conditional: bool = False       # exact: has a `when` predicate (may skip)
     known: bool = True             # ref resolves to a real registered tool
     reason: Optional[str] = None    # predicted: why this capability is relevant
@@ -78,6 +91,10 @@ class PlanPreview:
     @property
     def approval_gated_any(self) -> bool:
         return any(i.approval_gated for i in self.items)
+
+    @property
+    def may_ask_any(self) -> bool:
+        return any(i.may_ask for i in self.items)
 
     @property
     def empty(self) -> bool:
@@ -108,7 +125,8 @@ def preview_pipeline(steps: list[Any], target: str, *, title: str = "Standard au
                 ref=s.tool,
                 label=getattr(s, "label", None) or s.tool,
                 required=bool(getattr(s, "required", True)),
-                approval_gated=tool_reaches_approval(tool),
+                approval_gated=_main_action_gated(tool),
+                may_ask=_optional_prompt_only(tool),
                 conditional=getattr(s, "when", None) is not None,
                 known=tool is not None,
                 reason=None if tool is not None else "unknown tool — this step will fail at run time",
@@ -239,7 +257,8 @@ def preview_agentic(goal: str, target: str, *, chat: Optional[Chat] = None) -> P
                 ref=name,
                 label=tool.description.splitlines()[0][:140],
                 required=False,
-                approval_gated=tool_reaches_approval(tool),
+                approval_gated=_main_action_gated(tool),
+                may_ask=_optional_prompt_only(tool),
                 conditional=False,
                 known=True,
                 reason=entry["reason"] or None,

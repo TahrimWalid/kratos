@@ -465,6 +465,8 @@ def plan_preview_panel(preview: Any) -> Panel:
             tags.append("tool not installed")
         if item.approval_gated:
             tags.append("approval: required")
+        elif item.may_ask:
+            tags.append("may ask (optional extra)")
         if tags:
             body.append("  [" + " · ".join(tags) + "]", style=T.TEXT_FAINT)
         if item.reason:
@@ -476,6 +478,13 @@ def plan_preview_panel(preview: Any) -> Panel:
             "live (and are skipped in unattended scheduled runs). Set a tool to 'auto' in "
             "Settings → Tools to run it without asking. Run anyway?",
             style=T.ATTENTION,
+        )
+    if preview.may_ask_any:
+        body.append(
+            "\n\nSteps marked 'may ask' only ask before an optional extra (like refreshing the CVE "
+            "list, or a live IP lookup). Declining doesn't stop the step, and unattended runs "
+            "decline it automatically.",
+            style=T.TEXT_FAINT,
         )
     for caveat in preview.caveats:
         body.append(f"\n\n{caveat}", style=T.TEXT_FAINT)

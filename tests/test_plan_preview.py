@@ -35,12 +35,18 @@ def test_exact_preview_lists_standard_audit_steps():
 
 
 def test_exact_preview_surfaces_approval_gated_step():
-    # run_vuln_scan can reach request_approval (vulscan staleness prompt), so the
-    # preview must warn a gate may fire mid-run (design doc §4).
+    # run_vuln_scan can reach request_approval, but only for an optional extra (the
+    # CVE-list refresh): the step runs either way, and unattended runs keep it. The
+    # preview used to call it "approval: required ... skipped in scheduled runs".
     p = preview_pipeline(standard_audit_steps(), "t")
     vuln = next(i for i in p.items if i.ref == "run_vuln_scan")
-    assert vuln.approval_gated is True
-    assert p.approval_gated_any is True
+    assert vuln.approval_gated is False and vuln.may_ask is True
+    assert p.approval_gated_any is False and p.may_ask_any is True
+
+
+def test_a_tool_whose_main_action_is_gated_is_marked_required():
+    p = preview_pipeline([PipelineStep("run_linux_command", args={"command": "ls"})], "t")
+    assert p.items[0].approval_gated is True and p.items[0].may_ask is False
 
 
 def test_exact_preview_flags_unknown_tool():

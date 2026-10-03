@@ -885,9 +885,24 @@ class SessionScreen(ResilientWorkerHost, Screen):
             # shadow a built-in command (built-in always wins). Handled inside
             # _run_named_preset, which returns True iff it matched a preset.
             pass
-        else:
-            # Unmatched /-prefix falls through to a goal (matches classic REPL).
+        elif "/" in cmd[1:] or "." in cmd:
+            # Path-like ("/etc/passwd changed?", "/var/log/auth.log ..."): a real
+            # question that happens to start with a slash -- treat it as a goal.
             self._run_goal(text)
+        else:
+            self._unknown_command(cmd)
+
+    def _unknown_command(self, cmd: str) -> None:
+        """A /word that isn't a command or a saved preset: almost always a typo.
+        Say so and suggest the closest commands, instead of spending a model call
+        on it as a goal (or silently doing nothing)."""
+        import difflib
+
+        names = [c for c, _ in self._palette_commands()]
+        close = difflib.get_close_matches(cmd, names, n=3, cutoff=0.6)
+        hint = f" Did you mean {' or '.join(close)}?" if close else ""
+        self._emit(R.error_line(f"Unknown command {cmd}.{hint} Type / to browse commands, "
+                                "or ask without a leading slash."))
 
     def _run_named_preset(self, bare: str) -> bool:
         """If `bare` (a /-stripped command word) names a saved preset,
@@ -4050,7 +4065,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 _kconfig.set_active_target(prior_active)
             return
         self._emit_from_worker(R.note_line(f"Starting investigation (up to {REPL_MAX_ITERS} steps)…"))
-        turn_id = self._store.start_turn(self.session_state["session_id"], goal)
+        # A run pinned to Kratos's own machine is stored the way it was asked for,
+        # so ↑ recall re-runs it on that machine (not the target) and a resumed
+        # session's history says which machine the turn was about.
+        stored = goal
+        if target_override:
+            stored = ("/investigate-host" if goal == self._HOST_GOAL_DEFAULT
+                      else f"/investigate-host {goal}")
+        turn_id = self._store.start_turn(self.session_state["session_id"], stored)
         started = time.monotonic()
         worker = get_current_worker()
 

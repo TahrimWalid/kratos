@@ -667,12 +667,17 @@ def test_slash_name_runs_preset_as_first_class_command(tmp_path, monkeypatch):
     assert recorded.get("goal") == "scan for open ports"
 
 
-def test_slash_name_unknown_falls_through_to_goal(tmp_path, monkeypatch):
+def test_slash_name_unknown_is_reported_not_run_as_a_goal(tmp_path, monkeypatch):
+    # Neither a built-in nor a saved preset: almost always a typo, so it's reported
+    # (with suggestions) instead of being spent on the model as a goal. Path-like
+    # text ("/etc/passwd ...") still goes to the model -- see test_tui_mk2_session.
     _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
-    fell = {}
+    fell, said = {}, []
     monkeypatch.setattr(screen, "_run_goal", lambda text: fell.__setitem__("text", text))
+    monkeypatch.setattr(screen, "_emit", lambda renderable: said.append(str(renderable)))
     screen._dispatch_slash("/not-a-preset do the thing")
-    assert fell.get("text") == "/not-a-preset do the thing"
+    assert "text" not in fell
+    assert any("Unknown command /not-a-preset" in s for s in said)
 
 
 def test_palette_includes_runnable_presets(tmp_path, monkeypatch):

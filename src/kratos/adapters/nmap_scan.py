@@ -32,23 +32,25 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     # does respond to discovery probes; -sV still probes exactly the same.
     cmd = ["nmap", "-sV", "-Pn", "-oX", str(out_xml), target]
 
-    # The status line AND nmap's own human-readable report both go to STDERR,
-    # never stdout. Under the MCP stdio server (`kratos mcp-serve`) the process's
-    # stdout (fd 1) IS the JSON-RPC channel to the client, and a subprocess with
-    # no `stdout=` inherits that fd directly -- so nmap's scan report (which is
-    # NOT captured by `-oX`; that only writes the XML file) would be flushed onto
-    # the protocol stream, interleaving with JSON-RPC responses (flooding the
-    # client with parse errors and, worst case, hanging it). Only the -oX XML is
-    # ever consumed downstream; the human-readable output is purely informational,
-    # so routing it to stderr keeps it visible in the CLI/REPL while leaving fd 1
-    # clean. stderr is safe -- it is never the protocol channel (FastMCP's own
-    # logs already go there).
+    # nmap's human-readable report is captured, then re-printed to sys.stderr from
+    # Python -- never left on an inherited file descriptor:
+    #  * under the MCP stdio server (`kratos mcp-serve`) fd 1 IS the JSON-RPC channel,
+    #    so an inherited stdout would interleave the report with protocol messages;
+    #  * inside the full-screen TUI, Textual replaces sys.stderr with a capture
+    #    object whose fileno() is -1, which subprocess reads as "don't redirect":
+    #    the report then went straight to the real terminal, over the interface.
+    # Printing through sys.stderr keeps it visible on the command line, on stderr
+    # for MCP, and swallowed by the TUI. Only the -oX XML is consumed downstream.
     print(f"[KRATOS] Running: {' '.join(cmd)}", file=sys.stderr)
     try:
-        subprocess.run(cmd, check=True, stdout=sys.stderr)
+        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, errors="replace")
     except FileNotFoundError as e:
         raise RuntimeError("nmap not found. Install with: sudo apt install nmap") from e
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"nmap failed with exit code {e.returncode}") from e
+        detail = (e.stderr or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"nmap failed with exit code {e.returncode}" + (f": {detail[0]}" if detail[0] else "")) from e
+    report = (proc.stdout or "") + (proc.stderr or "")
+    if report.strip():
+        print(report.rstrip(), file=sys.stderr)
 
     return out_xml

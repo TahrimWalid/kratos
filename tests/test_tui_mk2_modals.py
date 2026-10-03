@@ -145,6 +145,34 @@ def test_command_palette_prefers_exact_match():
     assert _type_and_enter("/tool") == "/tool"      # exact wins over /tools
     assert _type_and_enter("/tools") == "/tools"
     assert _type_and_enter("/tar") == "/target"     # substring fallback still works
+    # The palette opens holding "/": typing after it must keep it, so a command
+    # with arguments stays a command (it used to arrive as "rename x", for the model).
+    assert _type_and_enter("rename x") == "/rename x"
+    assert _type_and_enter("/rename x") == "/rename x"
+    assert _type_and_enter("nonsense") == "/nonsense"   # handed on, to be reported as unknown
+
+
+def test_prefilled_prompt_text_is_edited_not_replaced():
+    """Textual selects an Input's text on focus by default, so the first key
+    pressed in a prompt pre-filled with an existing value erased it."""
+    from kratos.tui_mk2.modals import PromptModal
+
+    class _H(App):
+        def on_mount(self):
+            self.result = "unset"
+            self.push_screen(PromptModal("Edit", "Goal", initial="check ssh"),
+                             lambda r: setattr(self, "result", r))
+
+    async def _run():
+        app = _H()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for ch in " now":
+                await pilot.press("space" if ch == " " else ch)
+            await pilot.press("enter")
+            await pilot.pause()
+            return app.result
+    assert asyncio.run(_run()) == "check ssh now"
 
 
 def test_multiselect_shows_ticked_and_unticked_by_shape_not_only_colour():

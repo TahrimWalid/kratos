@@ -248,7 +248,8 @@ class EditWindowModal(ModalScreen):
                               style=f"bold {T.ACCENT}"), classes="modal-title")
             yield Static(Text("Empty = auto (detected when you switch to this model; safe default if it "
                               "can't be detected).", style=T.TEXT_DIM))
-            yield Input(value=current, placeholder="tokens — Ctrl+D to detect, or empty for auto", id="edit-window")
+            yield Input(value=current, placeholder="tokens — Ctrl+D to detect, or empty for auto", id="edit-window",
+                        select_on_focus=False)
             yield Static("", id="edit-hint")
             yield Static(Text("Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="edit-keys")
 

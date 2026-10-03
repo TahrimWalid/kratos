@@ -582,6 +582,40 @@ def test_investigate_host_pins_loopback_and_restores(tmp_path, monkeypatch):
     assert after == "10.0.0.1"         # configured target restored afterwards
 
 
+def test_recalling_a_host_investigation_keeps_it_on_the_kratos_host(tmp_path, monkeypatch):
+    """↑ used to bring back only the question, so re-sending it investigated the
+    TARGET. The turn is stored as typed; the model still gets just the question."""
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from kratos import kratos_config as kc
+    from textual.widgets import Input
+
+    seen = {}
+
+    def _fake_run_agent(goal, data_dir, **kw):
+        seen["goal"] = goal
+        return {"status": "final_answer", "final_answer": "ok", "transcript": [], "recommended_commands": []}
+
+    monkeypatch.setattr("kratos.agent.loop.run_agent", _fake_run_agent)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            kc.set_active_target("10.0.0.1")
+            screen._dispatch_slash("/investigate-host is port 3000 expected?")
+            for _ in range(200):
+                await pilot.pause()
+                if "goal" in seen and not screen._busy:
+                    break
+            screen.action_history_prev()
+            return screen.query_one("#goal", Input).value
+
+    recalled = asyncio.run(_run())
+    assert recalled == "/investigate-host is port 3000 expected?"
+    assert "is port 3000 expected?" in seen["goal"] and "/investigate-host" not in seen["goal"]
+    assert store.get_goal_history(sid)[-1]["goal"] == "/investigate-host is port 3000 expected?"
+
+
 def _clarify_host_calls(tmp_path, monkeypatch, answer):
     store, sid, screen = _make_screen(tmp_path, monkeypatch)
     calls = {"host": 0, "target": 0}
@@ -1186,3 +1220,24 @@ def test_footer_keeps_the_meter_whole_even_with_the_build_note_at_80(tmp_path, m
     asyncio.run(_run())
     assert len(out["footer"]) <= out["w"], out
     assert "%" in out["footer"] and "restart" in out["footer"]
+
+
+def test_unknown_command_is_reported_with_suggestions_not_sent_to_the_model(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    goals: list[str] = []
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(screen, "_run_goal", lambda text: goals.append(text))
+            screen._dispatch_slash("/repot")
+            screen._dispatch_slash("/etc/passwd was changed, check it")
+            screen._dispatch_slash("/var/log/auth.log looks big")
+            await pilot.pause()
+            log = screen.query_one("#transcript")
+            return "\n".join("".join(seg.text for seg in s) for s in log.lines)
+
+    text = asyncio.run(_run())
+    assert "Unknown command /repot" in text and "/report" in text
+    assert goals == ["/etc/passwd was changed, check it", "/var/log/auth.log looks big"]

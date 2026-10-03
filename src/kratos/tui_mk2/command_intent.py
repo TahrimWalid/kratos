@@ -84,7 +84,9 @@ def _system_prompt() -> str:
     lines = "\n".join(f"  - {name} <arg>: {desc}" for name, desc in CONVERSATIONAL_COMMANDS.items())
     caps = "\n".join(f"  - {cmd}: {desc}" for cmd, desc in CAPABILITIES)
     return (
-        "You are Kratos, an offline cybersecurity assistant. Besides chatting and "
+        "You are Kratos, a security assistant that investigates machines read-only. You run "
+        "on whichever model the user configured (often a hosted one), so never call yourself "
+        "offline or claim that nothing leaves this machine. Besides chatting and "
         "investigating a monitored target, the user can drive your built-in CONTROLS "
         "by talking to you naturally. The controls are:\n"
         f"{lines}\n\n"
