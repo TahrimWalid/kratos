@@ -420,3 +420,84 @@ def test_c_while_choosing_picks_the_highlighted_option_not_skip(tmp_path, monkey
 
     out = _choose_screen(tmp_path, (80, 24), script)
     assert out["method"] == "ssh" and out["list_shown"] is False
+
+
+# ---- remembering machines that are already set up (2026-10-03) ----------------------
+
+
+def test_setup_state_remembers_each_machines_last_check(tmp_path):
+    from kratos.tui_mk2 import target_memory as TM
+
+    host = "203.0.113.5"
+    assert TM.setup_state(tmp_path, host)[0] == "new"
+    TM.record_check(tmp_path, f"ubuntu@{host}", "ssh", [{"check": "a", "status": "PASS"},
+                                                       {"check": "tz", "status": "INFO"}])
+    assert TM.setup_state(tmp_path, host.upper())[0] == "ready"          # same machine, any spelling
+    TM.record_check(tmp_path, host, "ssh", [{"check": "a", "status": "PASS"}, {"check": "b", "status": "FAIL"}])
+    state, info = TM.setup_state(tmp_path, host)
+    assert state == "issues" and "1 problem" in TM.setup_note(host, state, info)
+    TM.record_check(tmp_path, host, "ssh", None)                          # couldn't connect at all
+    assert TM.setup_state(tmp_path, host)[0] == "new"                     # -> walk through setup again
+    assert TM.setup_state(tmp_path, "localhost")[0] == "local"
+
+
+def test_a_machine_with_a_sub_agent_link_counts_as_set_up(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from kratos.tui_mk2 import target_memory as TM
+
+    monkeypatch.setattr("kratos.subagent.routing.link_for",
+                        lambda host, data_dir: SimpleNamespace(label="edge-03") if host == "203.0.113.7" else None)
+    state, info = TM.setup_state(tmp_path, "203.0.113.7")
+    assert state == "linked" and "edge-03" in TM.setup_note("203.0.113.7", state, info)
+
+
+def test_a_finished_setup_check_is_remembered_and_the_next_session_skips_the_screen(tmp_path, monkeypatch):
+    """Live finding: a box set up minutes earlier (every check passing) got the
+    whole "How should Kratos reach this box?" screen again for the next session."""
+    from kratos.storage.session_store import SessionStore
+    from kratos.tui_mk2.screens.launch import LaunchScreen
+
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks",
+                        lambda: [{"check": "ssh_reachable", "status": "PASS", "detail": "ok"}])
+
+    async def setup():
+        app = _Host()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
+            app.push_screen(screen)
+            await pilot.pause()
+            await _pick(pilot, "ssh")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(setup())
+
+    store = SessionStore(tmp_path / "kratos.db")
+    seen, notes = [], []
+
+    async def new_session():
+        app = _Host()
+        screen = LaunchScreen(store, tmp_path)
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            answers = iter(["203.0.113.5", ""])
+
+            async def canned(modal):
+                seen.append(type(modal).__name__)
+                return next(answers)
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            monkeypatch.setattr(app, "notify", lambda msg, **k: notes.append(msg))
+            monkeypatch.setattr(screen, "_open_session",
+                                lambda *a, **k: pending.__setitem__("note", getattr(app, "pending_session_note", "")))
+            screen.action_new_session()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    pending: dict = {}
+    asyncio.run(new_session())
+    assert "OnboardTargetScreen" not in seen
+    assert "already set up" in pending["note"] and "/target verify" in pending["note"]

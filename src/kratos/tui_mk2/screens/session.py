@@ -254,6 +254,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._render_idle()
         if self._full_replay:
             self._render_full_replay()
+        # A note left by whatever opened this session (e.g. "web-01 is already set
+        # up") -- shown here, where it stays, rather than as a toast a prompt hides.
+        note = getattr(self.app, "pending_session_note", None)
+        if note:
+            self.app.pending_session_note = None
+            self._emit(R.note_line(note))
         self.query_one("#goal", Input).focus()
         self._maybe_timezone_fallback()  # only fires if auto-detect failed
 
@@ -3116,6 +3122,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from rich.table import Table
 
         result = run_target_probe_checks()
+        from kratos.subagent import routing as _routing
+        from kratos.tui_mk2 import target_memory as TM
+
+        _host = _kconfig.get_active_target()
+        _via = "subagent" if _routing.link_for(_host, self._data_dir) is not None else "ssh"
+        TM.record_check(self._data_dir, _host, _via, None if isinstance(result, SSHResult) else result)
         if isinstance(result, SSHResult):
             how = "through its sub-agent" if result.via == "subagent" else "over SSH"
             self._emit_from_worker(R.error_line(

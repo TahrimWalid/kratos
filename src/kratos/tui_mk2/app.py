@@ -359,10 +359,15 @@ class KratosTUI(ResilientWorkerHost, App):
                 # Walk a first-time user through actually connecting a remote
                 # default target (SSH setup + probe, or a sub-agent), not just
                 # storing the string.
-                from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
+                from kratos.tui_mk2 import target_memory as TM
+                from kratos.tui_mk2.screens.onboard import OnboardTargetScreen
 
-                if needs_onboarding(cleaned[0]):
+                state, info = TM.setup_state(self.data_dir, cleaned[0])
+                if state == "new":
                     await self.push_screen_wait(OnboardTargetScreen(self.data_dir, cleaned[0]))
+                elif state != "local":
+                    self.notify(TM.setup_note(cleaned[0], state, info),
+                                severity="warning" if state == "issues" else "information", timeout=8)
                 break
         else:
             persisted = config.get("default_target")

@@ -335,6 +335,10 @@ class OnboardTargetScreen(Screen[str | None]):
             f"Checking what Kratos can read on {self._target_host} through its sub-agent…" if via_agent
             else f"Checking whether Kratos can log in to {self._target_host}…", style=T.TEXT_DIM))
         result = run_target_probe_checks()
+        from kratos.tui_mk2 import target_memory as TM
+
+        TM.record_check(self._data_dir, self._target_host, "subagent" if via_agent else "ssh",
+                        None if isinstance(result, SSHResult) else result)
         if isinstance(result, SSHResult) and via_agent:
             self.app.call_from_thread(self._log, Text(
                 f"Couldn't read {self._target_host} through its sub-agent yet: {(result.stderr or '').strip()} "

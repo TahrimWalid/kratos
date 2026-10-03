@@ -396,10 +396,18 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         # Onboard a remote target BEFORE opening the session, so a first-time
         # user is walked through actually connecting it (SSH setup + probe, or a
         # sub-agent) instead of landing in a session where every tool just fails.
-        from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
+        # A machine set up before (its last check is remembered) skips the setup
+        # screen and gets a one-line note instead.
+        from kratos.tui_mk2 import target_memory as TM
+        from kratos.tui_mk2.screens.onboard import OnboardTargetScreen
 
-        if needs_onboarding(targets[0]):
+        state, info = TM.setup_state(self._data_dir, targets[0])
+        if state == "new":
             await self.app.push_screen_wait(OnboardTargetScreen(self._data_dir, targets[0]))
+        elif state != "local":
+            # Shown as the new session's first line (a toast would sit behind the
+            # name prompt and vanish with this screen).
+            self.app.pending_session_note = TM.setup_note(targets[0], state, info)
         name = await self.app.push_screen_wait(
             PromptModal("New session", "Name (optional — Enter to leave unnamed)", initial="")
         )
