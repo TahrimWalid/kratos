@@ -79,7 +79,7 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
                    style=T.SAFE if model_is_local else T.ATTENTION)
     tools = Text()
     tools.append(f"{n_builtin} built-in", style=f"bold {T.TEXT_BRIGHT}")
-    tools.append(f" · {n_kept} kept", style=T.TEXT_MUTED)
+    tools.append(f" · {n_kept} built by you", style=T.TEXT_MUTED)
     cards = Align.center(Columns(
         [_home_card("TARGET", tgt), _home_card("MODEL", mdl), _home_card("TOOLS LOADED", tools)],
         padding=(0, 1), expand=False))
@@ -90,9 +90,16 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     tips = Text()
     # Every line stays under ~66 columns, so the block is whole (and centred) on
     # an 80-column terminal, where the transcript is about 71 wide.
-    tips.append("new here?  ", style=f"bold {T.TEXT_FAINTER}")
-    tips.append("/target <host>", style=T.ACCENT)
-    tips.append(" to connect, then ask in plain words\n", style=T.TEXT_DIM)
+    if target:
+        # A machine is already connected: say what to do next, not how to connect.
+        tips.append("ready  ", style=f"bold {T.TEXT_FAINTER}")
+        tips.append("ask about this machine in plain words  ·  ", style=T.TEXT_DIM)
+        tips.append("/target", style=T.ACCENT)
+        tips.append(" to switch\n", style=T.TEXT_DIM)
+    else:
+        tips.append("new here?  ", style=f"bold {T.TEXT_FAINTER}")
+        tips.append("/target <host>", style=T.ACCENT)
+        tips.append(" to connect, then ask in plain words\n", style=T.TEXT_DIM)
     tips.append("  ·  try  ", style=T.TEXT_FAINTER)
     tips.append("“check this host for signs of an SSH brute-force”\n", style=T.TEXT_MUTED)
     tips.append("  ·  ", style=T.TEXT_FAINTER)

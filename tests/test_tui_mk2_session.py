@@ -1197,7 +1197,8 @@ def test_home_block_is_centred_and_whole_at_80_columns(tmp_path, monkeypatch):
     left = len(guide) - len(guide.lstrip())
     assert abs(left - (width - len(guide))) <= 2, (left, width - len(guide))   # symmetric margins
     narrow, _ = lines[(80, 24)]
-    assert any("new here?" in t and "plain words" in t for t in narrow)        # not wrapped
+    assert any("ready" in t and "/target to switch" in t for t in narrow)     # not wrapped
+    assert not any("new here?" in t for t in narrow)   # a target is set: no "how to connect" tip
     assert any("/guide" in t and "all commands" in t for t in narrow)
 
 
