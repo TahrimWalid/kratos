@@ -199,13 +199,24 @@ class OnboardTargetScreen(Screen[str | None]):
 
     def on_resize(self, event) -> None:
         self._apply_width(event.size.width)
+        self.call_after_refresh(self._refresh_choose_hints)
 
     def _apply_width(self, width: int) -> None:
         self.query_one("#ob-choose").set_class(width >= _WIDE_AT, "-wide")
 
     @staticmethod
-    def _choose_hints() -> Text:
-        return Text("↑↓ choose · enter select · d full details · esc set up later", style=T.TEXT_DIM)
+    def _choose_hints(details_cut: bool = False) -> Text:
+        # "d full details" only when the panel can't show everything (a short or
+        # narrow terminal); on a big screen d would just repeat the panel.
+        middle = " · d full details" if details_cut else ""
+        return Text(f"↑↓ choose · enter select{middle} · esc set up later", style=T.TEXT_DIM)
+
+    def _refresh_choose_hints(self) -> None:
+        if not self._choosing():
+            return
+        panel = self.query_one("#ob-detail", VerticalScroll)
+        cut = panel.virtual_size.height > panel.scrollable_content_region.height
+        self.query_one("#ob-hints", Static).update(self._choose_hints(details_cut=cut))
 
     def _choosing(self) -> bool:
         return self._method is None and self.query_one("#ob-choose").display
@@ -220,6 +231,7 @@ class OnboardTargetScreen(Screen[str | None]):
         panel.border_title = self._labels.get(key, key)
         self.query_one("#ob-detail-body", Static).update(_detail_table(key, self._details))
         panel.scroll_home(animate=False)
+        self.call_after_refresh(self._refresh_choose_hints)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if event.option.id:

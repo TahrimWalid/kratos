@@ -501,3 +501,24 @@ def test_a_finished_setup_check_is_remembered_and_the_next_session_skips_the_scr
     asyncio.run(new_session())
     assert "OnboardTargetScreen" not in seen
     assert "already set up" in pending["note"] and "/target verify" in pending["note"]
+
+
+def test_full_details_key_is_offered_only_when_the_panel_is_cut_off(tmp_path):
+    """On a big screen the side panel already shows everything; `d` then just
+    repeated it. On a small one the panel is cut off and `d` is the way to read it."""
+    from textual.widgets import Static
+
+    def hints(size):
+        async def run():
+            app = _Host()
+            async with app.run_test(size=size) as pilot:
+                await pilot.pause()
+                screen = OnboardTargetScreen(tmp_path, "203.0.113.5")
+                app.push_screen(screen)
+                for _ in range(4):
+                    await pilot.pause()
+                return str(screen.query_one("#ob-hints", Static).render())
+        return asyncio.run(run())
+
+    assert "d full details" not in hints((160, 50))
+    assert "d full details" in hints((80, 16))
