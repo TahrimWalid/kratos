@@ -3360,11 +3360,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
         else:
             self._emit_from_worker(R.tool_call_line(name, status))
-            body = json.dumps(inner, indent=2, default=str) if isinstance(inner, (dict, list)) else str(inner)
-            if len(body) > 4000:
-                body = body[:4000] + "\n… (truncated)"
+            # Readable view on screen; Ctrl+Y copies the complete raw result.
+            self._last_commands = []
+            self._last_answer = json.dumps(inner, indent=2, default=str) if isinstance(inner, (dict, list)) \
+                else str(inner)
             t, d = self._stamp_now()
-            self._emit_bubble_from_worker(R.result_panel(f"{name} — result", body, T.ACCENT, time_str=t), d)
+            self._emit_bubble_from_worker(R.tool_result_panel(name, inner, time_str=t), d)
         self._set_busy(False)
 
     def _render_tools(self) -> None:

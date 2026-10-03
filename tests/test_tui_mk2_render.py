@@ -243,3 +243,45 @@ def test_error_detail_reads_common_keys_and_falls_back():
     # genuinely nothing -> empty (caller shows 'no error detail')
     assert error_detail({"status": "error"}) == ""
     assert error_detail("plain string") == "plain string"
+
+
+def _plain(renderable, width=120):
+    from rich.console import Console
+
+    console = Console(width=width, record=True, color_system=None)
+    console.print(renderable)
+    return console.export_text()
+
+
+def test_a_tool_result_reads_as_tables_and_labels_not_json():
+    """/use used to dump the raw JSON result."""
+    result = {
+        "status": "ok", "target": "ubuntu@203.0.113.5", "count": 30,
+        "entries": [{"user": "root", "pid": str(i), "cpu": "0.0", "command": f"/usr/sbin/daemon-{i}"}
+                    for i in range(30)],
+        "window": {"label": "2026-10-02T21:09:39+00:00 to 2026-10-03T21:09:39+00:00", "notes": []},
+        "events": [{"time": "2026-09-28T22:58:25+00:00", "action": "added_to_group", "user": "eve_admin"}],
+        "fetch_errors": [],
+    }
+    text = _plain(R.tool_result_panel("list_processes", result))
+    assert "{" not in text and '"' not in text                     # no JSON
+    assert "Entries (30)" in text and "PID" in text and "…and 5 more" in text
+    assert "2026-10-02 21:09:39 UTC to 2026-10-03 21:09:39 UTC" in text   # readable times, seconds kept
+    assert "eve_admin" in text and "added_to_group" in text        # data is never rewritten
+    assert "Fetch errors" in text and "none" in text
+    assert "notes" not in text                                       # empty sub-list hidden
+    assert "Ctrl+Y copies the full raw result" in text
+
+
+def test_long_text_and_the_kratos_host_stamp_get_their_own_lines():
+    result = {"kratos_host_note": "[THIS RAN ON KRATOS'S OWN HOST ...]", "status": "executed",
+              "command": "uptime", "stdout": "line one\nline two\n", "returncode": 0}
+    text = _plain(R.tool_result_panel("run_linux_command", result))
+    assert "Ran on this Kratos machine, not the target." in text
+    assert "Stdout" in text and "line one" in text and "line two" in text
+    assert "THIS RAN ON" not in text
+
+
+def test_any_shape_renders():
+    for data in ([{"a": 1}], [], "plain text", 42, None, {"nested": {"deep": {"deeper": [1, 2]}}}):
+        assert _plain(R.tool_result_panel("x", data))

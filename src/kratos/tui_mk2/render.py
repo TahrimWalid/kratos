@@ -13,6 +13,7 @@ is no reason to fork it.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from rich import box
@@ -266,6 +267,137 @@ def result_panel(title: str, body: str, color: str, time_str: str | None = None)
         subtitle_align="right",
         border_style=color,
     )
+
+
+# ---------------------------------------------------------------------------
+# A tool's result, readable (/use): tables for lists of records, "label: value"
+# for the rest, a block for long text -- instead of a raw JSON dump.
+# ---------------------------------------------------------------------------
+_RESULT_ROWS = 25          # rows shown per table before "…and N more"
+_RESULT_COLS = 6           # columns per table
+_RESULT_CELL = 80          # characters per cell
+_RESULT_SKIP = {"status", "kratos_host_note", "snapshot_file", "persisted"}
+_LONG_TEXT = 160
+
+
+_ACRONYMS = {"ip": "IP", "ips": "IPs", "pid": "PID", "uid": "UID", "gid": "GID", "cpu": "CPU",
+             "mem": "memory", "id": "ID", "ssh": "SSH", "tz": "time zone", "utc": "UTC", "url": "URL",
+             "cve": "CVE", "cves": "CVEs", "os": "OS", "nmap": "nmap", "yara": "YARA"}
+_ISO_TIME = re.compile(r"(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}(?::\d{2})?)(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?\b")
+
+
+def _words(key: str) -> str:
+    return " ".join(_ACRONYMS.get(w.lower(), w) for w in str(key).replace("_", " ").split())
+
+
+def _label(key: str) -> str:
+    words = _words(key)
+    return words[:1].upper() + words[1:]
+
+
+def _scalar(value: Any) -> str:
+    """A value as shown. Data is never rewritten (a username like eve_admin
+    stays exactly that); only timestamps get a readable layout, seconds kept."""
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = " ".join(str(value).split())
+
+    def _time(m: re.Match[str]) -> str:               # 2026-10-03T21:09:39+00:00 -> 2026-10-03 21:09:39 UTC
+        zone = m.group(3) or ""
+        return f"{m.group(1)} {m.group(2)}" + (" UTC" if zone in ("Z", "+00:00") else (f" {zone}" if zone else ""))
+
+    return _ISO_TIME.sub(_time, text)
+
+
+def _short(value: Any, limit: int = _RESULT_CELL) -> str:
+    if isinstance(value, (list, tuple)):
+        text = ", ".join(_short(v, limit) for v in value) if all(not isinstance(v, (dict, list)) for v in value) \
+            else f"{len(value)} items"
+    elif isinstance(value, dict):
+        text = ", ".join(f"{_words(k)}: {_short(v, limit)}" for k, v in value.items()
+                         if not isinstance(v, (dict, list)) and v not in (None, ""))
+        text = text or f"{len(value)} fields"
+    else:
+        text = _scalar(value)
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
+def _records_table(title: str, rows: list[dict[str, Any]]) -> Table:
+    columns: list[str] = []
+    for row in rows[:50]:
+        for key, value in row.items():
+            if key not in columns and not isinstance(value, (dict, list)) or (
+                    key not in columns and isinstance(value, list) and all(not isinstance(v, (dict, list)) for v in value)):
+                columns.append(key)
+    columns = columns[:_RESULT_COLS]
+    table = Table(title=f"{title} ({len(rows)})", title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
+                  show_header=True, header_style="bold", box=box.SIMPLE_HEAD, expand=False)
+    for col in columns:
+        table.add_column(_label(col), overflow="fold")
+    for row in rows[:_RESULT_ROWS]:
+        table.add_row(*[Text(_short(row.get(col)), style=T.TEXT_MUTED) for col in columns])
+    if len(rows) > _RESULT_ROWS:
+        table.caption = f"…and {len(rows) - _RESULT_ROWS} more"
+        table.caption_justify = "left"
+    return table
+
+
+def tool_result_view(name: str, data: Any) -> Group:
+    """A tool's result as a person would want to read it. Any shape works: a
+    record list becomes a table, short values become "label: value" lines, long
+    text gets its own block, and nested summaries are shown one level deep."""
+    parts: list[Any] = []
+    if isinstance(data, list):
+        data = {"results": data}
+    if not isinstance(data, dict):
+        return Group(Text(_short(data, 2000), style=T.TEXT))
+    if data.get("kratos_host_note"):
+        parts.append(Text("Ran on this Kratos machine, not the target.", style=T.ATTENTION))
+    pairs = Table.grid(padding=(0, 2))
+    pairs.add_column(style=f"bold {T.TEXT_BRIGHT}", no_wrap=True)
+    pairs.add_column(style=T.TEXT_MUTED, overflow="fold")
+    tables: list[Any] = []
+    blocks: list[Any] = []
+    for key, value in data.items():
+        if key in _RESULT_SKIP:
+            continue
+        if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+            tables.append(_records_table(_label(key), value))
+        elif isinstance(value, list) and not value:
+            pairs.add_row(_label(key), "none")
+        elif isinstance(value, str) and ("\n" in value.strip() or len(value) > _LONG_TEXT):
+            blocks.append(Panel(Text(value.rstrip(), style=T.TEXT), title=_label(key), title_align="left",
+                                border_style=T.BORDER))
+        elif isinstance(value, dict) and value:
+            simple = {k: v for k, v in value.items() if not isinstance(v, (dict, list))}
+            nested = {k: v for k, v in value.items() if isinstance(v, (dict, list))}
+            if simple:
+                pairs.add_row(_label(key), _short(simple, 140))
+            for sub, sub_value in nested.items():
+                if not sub_value:
+                    continue  # an empty sub-list is noise, not information
+                if isinstance(sub_value, list) and all(isinstance(v, dict) for v in sub_value):
+                    tables.append(_records_table(f"{_label(key)} — {_words(sub)}", sub_value))
+                else:
+                    pairs.add_row(f"{_label(key)} — {_words(sub)}" if not simple else f"  {_words(sub)}",
+                                  _short(sub_value, 140))
+        else:
+            pairs.add_row(_label(key), _short(value, 140))
+    if pairs.row_count:
+        parts.append(pairs)
+    for item in tables + blocks:
+        parts.append(Text(""))
+        parts.append(item)
+    parts.append(Text(""))
+    parts.append(Text("Ctrl+Y copies the full raw result.", style=T.TEXT_DIM))
+    return Group(*parts)
+
+
+def tool_result_panel(name: str, data: Any, time_str: str | None = None) -> Panel:
+    return Panel(tool_result_view(name, data), title=f"{name} — result", title_align="left",
+                 subtitle=_time_subtitle(time_str), subtitle_align="right", border_style=T.ACCENT)
 
 
 # Severity ordering + colors for the audit summary's finding tally (high→low).
