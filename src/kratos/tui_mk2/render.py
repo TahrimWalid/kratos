@@ -420,9 +420,11 @@ def audit_summary_panel(
     duration_s: float,
     aborted_on: str | None = None,
     time_str: str | None = None,
+    pipeline_name: str | None = None,
 ) -> Panel:
     """PreA2 run-summary: a first-class close-out panel for a deterministic
-    standard audit (agent/pipeline.py). Distinct from the agentic investigation's
+    run (agent/pipeline.py) -- the standard audit (/run), or a saved pipeline
+    when `pipeline_name` is given, which then names it instead. Distinct from the agentic investigation's
     conclusion panel -- this one has no LLM narrative; it reports, plainly, what
     the fixed pipeline did and what it found. Green when it completed clean, amber
     when it completed with findings or a required step aborted it."""
@@ -439,11 +441,12 @@ def audit_summary_panel(
     else:
         color = T.SAFE
 
+    what = "Pipeline" if pipeline_name else "Deterministic audit"
     body = Text()
     if completed:
-        body.append("Deterministic audit complete", style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"{what} complete", style=f"bold {T.TEXT_BRIGHT}")
     else:
-        body.append("Deterministic audit aborted", style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"{what} stopped", style=f"bold {T.TEXT_BRIGHT}")
         if aborted_on:
             body.append(f" — required step '{aborted_on}' did not succeed", style=T.CRITICAL)
     body.append(f"\n{ran} of {total} steps completed  ·  {duration_s:.0f}s", style=T.TEXT_MUTED)
@@ -464,7 +467,7 @@ def audit_summary_panel(
 
     return Panel(
         body,
-        title="Kratos — standard audit",
+        title=f"Kratos — pipeline '{pipeline_name}'" if pipeline_name else "Kratos — standard audit",
         title_align="left",
         subtitle=_time_subtitle(time_str),
         subtitle_align="right",

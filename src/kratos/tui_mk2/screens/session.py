@@ -1462,6 +1462,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             remember_label=f"/preset {preset.name}",
             remember_kind="pipeline preset",
             pin_target=preset.target or None,
+            pipeline_name=preset.name,
         )
 
     @work
@@ -3641,6 +3642,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         remember_label: str,
         remember_kind: str = "pipeline",
         pin_target: str | None = None,
+        pipeline_name: str | None = None,
     ) -> None:
         """Shared worker for any deterministic pipeline run (the built-in
         standard audit AND a user's kind='pipeline' preset). Renders mk2-first:
@@ -3740,6 +3742,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 duration_s=duration,
                 aborted_on=outcome.aborted_on,
                 time_str=t,
+                pipeline_name=pipeline_name,
             ),
             d,
         )

@@ -310,3 +310,15 @@ def test_key_hint_lines_fit_an_80_column_terminal():
                 too_long += [f"{f.name}:{node.lineno} ({len(line)}) {line}"
                              for line in node.value.split("\n") if len(line) > 78]
     assert not too_long, "\n".join(too_long)
+
+
+def test_a_saved_pipeline_summary_names_the_pipeline_not_the_standard_audit():
+    common = dict(status="completed", ran=3, total=3, severity_tally={"medium": 1}, duration_s=6)
+    audit = _plain(R.audit_summary_panel(**common))
+    assert "Kratos — standard audit" in audit and "Deterministic audit complete" in audit
+    pipe = _plain(R.audit_summary_panel(**common, pipeline_name="security-posture-audit"))
+    assert "Kratos — pipeline 'security-posture-audit'" in pipe and "Pipeline complete" in pipe
+    assert "standard audit" not in pipe
+    stopped = _plain(R.audit_summary_panel(**{**common, "status": "aborted"}, aborted_on="run_nmap_scan",
+                                           pipeline_name="p"))
+    assert "Pipeline stopped" in stopped and "run_nmap_scan" in stopped
