@@ -15,9 +15,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any
 
-# Matches DEFAULT_DATA_DIR in kratos.cli.app. Not imported from there directly:
-# adapters must not depend on cli (that would invert the module layering).
-_DEFAULT_DATA_DIR = Path("data")
+from kratos import paths as _paths
+
+# Same default as kratos.cli.app's DEFAULT_DATA_DIR (both come from kratos/paths.py).
+_DEFAULT_DATA_DIR = _paths.default_data_dir()
 
 
 def _parse_tcpdump_line(line: str) -> dict[str, Any] | None:

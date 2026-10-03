@@ -42,13 +42,15 @@ from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
+from kratos import paths as _paths
+
 # Exported (not just inline) so adapters/llm_profiles.py's /model
 # implementation reads/writes the exact same .env file this module loads
-# from, rather than independently recomputing the repo-root path and
-# risking drift if the directory layout ever changes.
-ENV_FILE_PATH = Path(__file__).parent.parent.parent / ".env"
+# from. Where that file lives (a checkout's root, ~/.config/kratos, or
+# $KRATOS_HOME) is decided in one place: kratos/paths.py.
+ENV_FILE_PATH = _paths.env_file()
 
-# Load .env (repo root) if present -- real secrets (e.g. LLM_API_KEY below)
+# Load .env if present -- real secrets (e.g. LLM_API_KEY below)
 # live there, gitignored, never in tracked config files. Safe to call even
 # if .env doesn't exist or the vars are already set in the real environment
 # (load_dotenv does not override existing env vars by default).
@@ -56,14 +58,14 @@ load_dotenv(ENV_FILE_PATH)
 
 # ---------------------------------------------------------------------------
 # Model path — portable, no hardcoded user/hostname
-# Priority: KRATOS_LLM_MODEL_PATH env var → relative path next to package root
+# Priority: KRATOS_LLM_MODEL_PATH env var → llm/models/ in Kratos's data home (kratos/paths.py)
 # ---------------------------------------------------------------------------
 MODEL_NAME = "qwen2.5-coder-7b-q4_k_m.gguf"
 _env_model = _os.environ.get("KRATOS_LLM_MODEL_PATH")
 MODEL_PATH = (
     Path(_env_model)
     if _env_model
-    else Path(__file__).parent.parent.parent / "llm" / "models" / MODEL_NAME
+    else _paths.llm_models_dir() / MODEL_NAME
 )
 
 LLM_BACKEND = _os.environ.get("KRATOS_LLM_BACKEND", "auto").strip().lower()

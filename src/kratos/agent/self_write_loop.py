@@ -87,6 +87,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.agent.self_write import write_candidate_tool, WriteRequest, WriteResult
 from kratos.agent.self_test import run_sandbox_test, SandboxTestResult
@@ -100,7 +101,7 @@ MAX_ATTEMPTS = 3  # 1 initial + 2 retries, per our earlier bounded-retry decisio
 # touched by this pipeline). agent/loop.py's build_system_prompt and
 # execute_tool_call only ever read TOOL_REGISTRY itself; "live" means
 # "imported into this process," not merely "written to disk somewhere."
-KEPT_TOOLS_DIR = Path(__file__).resolve().parents[3] / "kept_tools"
+KEPT_TOOLS_DIR = _paths.kept_tools_dir()
 KEPT_TOOLS_METADATA_FILENAME = "metadata.json"
 
 # Phase 3b.6 fix: a real 20-trial concurrent-process test (Phase 3b.5, case 2)

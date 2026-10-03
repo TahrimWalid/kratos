@@ -71,6 +71,43 @@ def _check_env_profile(out: list[Check]) -> None:
         out.append(_row(".env profile", "pass", f"{current.model} — no placeholder/empty values"))
 
 
+def _check_files(out: list[Check]) -> None:
+    from kratos import kratos_config as _kc
+    from kratos import paths as _paths
+    from kratos.llm_config import ENV_FILE_PATH
+
+    if ENV_FILE_PATH.exists():
+        mode = ENV_FILE_PATH.stat().st_mode & 0o777
+        if mode & 0o077:
+            out.append(_row("settings file", "warn",
+                            f"{ENV_FILE_PATH} can be read by other users (mode {mode:o}) and may hold API keys",
+                            fix=f"chmod 600 {ENV_FILE_PATH}"))
+        else:
+            out.append(_row("settings file", "info", str(ENV_FILE_PATH)))
+    else:
+        out.append(_row("settings file", "warn", f"not created yet ({ENV_FILE_PATH}) — built-in defaults apply",
+                        fix="run `kratos init` to create it, or add a model under Settings > Models."))
+    data_dir = _kc.get_active_data_dir() or _paths.default_data_dir()
+    out.append(_row("data folder", "info", f"{data_dir}  ({_paths.layout_note()})"))
+
+
+def _check_vulscan(out: list[Check]) -> None:
+    from kratos.adapters import vuln_scan
+
+    if not vuln_scan.vulscan_installed():
+        out.append(_row("CVE list (vulscan)", "warn",
+                        "not installed — the vulnerability scan skips CVE matching",
+                        fix="run `kratos vulscan-install` on this machine."))
+        return
+    status = vuln_scan.check_vulscan_db_staleness()
+    if status["note"]:
+        out.append(_row("CVE list (vulscan)", "warn", status["note"],
+                        fix=f"the up-to-date upstream copy can't be fetched by scripts (bot check); if you have "
+                            f"a newer cve.csv, put it at {vuln_scan.VULSCAN_DB_PATH}."))
+    else:
+        out.append(_row("CVE list (vulscan)", "pass", f"CVEs up to {status['newest_cve_year']}"))
+
+
 def _check_backend(out: list[Check]) -> None:
     from kratos.llm_config import get_active_llm_base_url
 
@@ -219,6 +256,8 @@ _SECTIONS = (
     ("backend", _check_backend),
     ("target", _check_target),
     ("kept tools", _check_kept_tools),
+    ("files", _check_files),
+    ("CVE list", _check_vulscan),
 )
 
 

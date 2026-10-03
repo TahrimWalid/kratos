@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.llm_interface import agent_chat
 from kratos.llm_config import MAX_TOKENS
@@ -42,7 +43,7 @@ from kratos.llm_config import MAX_TOKENS
 # TOOL_REGISTRY auto-loads from. Nothing written here is live or reachable
 # by the running agent until a LATER, separate step (Part B/C/D) explicitly
 # promotes one specific staged file after human approval.
-DEFAULT_STAGING_DIR = Path(__file__).resolve().parents[3] / "sandbox_staging"
+DEFAULT_STAGING_DIR = _paths.sandbox_staging_dir()
 
 # Bounded retry for SANITY-CHECK failures only (bad syntax / wrong
 # registration shape) -- NOT a retry-on-test-failure loop. That loop depends

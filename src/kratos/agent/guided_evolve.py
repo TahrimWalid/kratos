@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.llm_interface import agent_chat
 from kratos.llm_config import MAX_TOKENS
@@ -705,7 +706,7 @@ class GuidedBuildResult:
     message: str = ""
 
 
-_HARNESS_DIR = Path("tests") / "self_write_harnesses"
+_HARNESS_DIR = _paths.harness_dir()
 
 # Recovery guidance per non-kept loop outcome -- the concrete "what to try next"
 # a non-expert needs, not just a status word (brief: "recovery guidance").

@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from kratos import paths as _paths
+
 PROFILE_KEYS: tuple[str, ...] = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL", "KRATOS_LLM_BACKEND")
 
 _LINE_RE = re.compile(
@@ -208,7 +210,7 @@ def add_profile(env_path: Path, values: dict[str, str], make_active: bool = True
     if lines:
         lines.append("")
     lines.extend(block)
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    _paths.write_private_text(env_path, "\n".join(lines) + "\n")
 
 
 def set_profile_context_window(env_path: Path, model: str, window: int | None,
@@ -247,7 +249,7 @@ def set_profile_context_window(env_path: Path, model: str, window: int | None,
             after = target.line_indices["KRATOS_LLM_BACKEND"]
             lines[after + 1:after + 1] = new_lines
     text = "\n".join(lines)
-    env_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    _paths.write_private_text(env_path, text if text.endswith("\n") else text + "\n")
     return True
 
 
@@ -269,7 +271,7 @@ def delete_profile(env_path: Path, model: str) -> bool:
     for idx in sorted(target.line_indices.values(), reverse=True):
         del lines[idx]
     text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
-    env_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
+    _paths.write_private_text(env_path, text if text.endswith("\n") else text + "\n")
     return True
 
 
@@ -294,4 +296,4 @@ def switch_profile(env_path: Path, target: EnvProfile, current: EnvProfile | Non
         if m:
             lines[idx] = m.group(1)
 
-    env_path.write_text("\n".join(lines), encoding="utf-8")
+    _paths.write_private_text(env_path, "\n".join(lines))

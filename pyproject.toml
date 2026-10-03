@@ -47,7 +47,7 @@ where = ["src"]
 # party, GPLv2 -- their README carries the source and license) are read by
 # run_yara_scan and bundled into every sub-agent installer.
 [tool.setuptools.package-data]
-kratos = ["yara_rules/*.yar", "yara_rules/README.md"]
+kratos = ["yara_rules/*.yar", "yara_rules/README.md", "templates/env.example"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

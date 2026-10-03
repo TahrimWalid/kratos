@@ -14,13 +14,15 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from kratos import paths as _paths
+
 # Idempotent and safe to call even if .env doesn't exist or vars are already
 # set (see llm_config.py's identical call for the same reasoning) -- added
 # here too rather than relying on llm_config.py having already been
 # imported first in every real entry point. Without this, OTX_API_KEY/
 # ABUSEIPDB_API_KEY below would silently read as unset in any context that
 # imports kratos_config before anything touches llm_config.
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+load_dotenv(_paths.env_file())
 
 # ---------------------------------------------------------------------------
 # SSH target -- the remote device Kratos investigates over SSH.

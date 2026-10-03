@@ -145,6 +145,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from kratos import paths as _paths
 from kratos import kratos_config as _kconfig
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.notify import send_notification
@@ -162,7 +163,7 @@ _TRANSCRIPTS_DIRNAME = "sessions"
 
 _investigation_lock = threading.Lock()
 
-_data_dir: Path = Path("data")
+_data_dir: Path = _paths.default_data_dir()
 
 mcp = FastMCP(name="kratos")
 
@@ -405,12 +406,12 @@ def kratos_notify_findings(session_id: str) -> dict[str, Any]:
     return {"notified_message": message, "derived_severity": severity, **result}
 
 
-def run_stdio_server(data_dir: Path = Path("data")) -> None:
+def run_stdio_server(data_dir: Path | None = None) -> None:
     """Entry point for `kratos mcp-serve` (cli/app.py). Blocking -- runs until the client
     disconnects or the process is killed."""
     global _data_dir
-    _data_dir = data_dir
+    _data_dir = Path(data_dir) if data_dir is not None else _paths.default_data_dir()
     from kratos import kratos_config as _kc
 
-    _kc.set_active_data_dir(data_dir)
+    _kc.set_active_data_dir(_data_dir)
     mcp.run(transport="stdio")

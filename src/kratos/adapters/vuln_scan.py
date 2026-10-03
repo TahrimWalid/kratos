@@ -30,20 +30,35 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+from kratos import paths as _paths
 
 # ---------------------------------------------------------------------------
-# vulscan layout -- see vulscan/README.md for why this exact nested
-# scripts/vulscan/ structure is required. A flat directory lets nmap load
-# the SCRIPT fine but silently fail to find the DATABASE, since vulscan.nse
-# resolves it via nmap.fetchfile("scripts/vulscan/" .. db), a path relative
-# to an nmap data-directory root, not to --script.
+# vulscan layout -- the exact nested scripts/vulscan/ structure is required.
+# A flat directory lets nmap load the SCRIPT fine but silently fail to find
+# the DATABASE, since vulscan.nse resolves it via
+# nmap.fetchfile("scripts/vulscan/" .. db), a path relative to an nmap
+# data-directory root (NMAPDIR below), not to --script. Where the folder
+# lives (a checkout's root or the per-user data home) is kratos/paths.py's
+# call; `kratos vulscan-install` fills it.
 # ---------------------------------------------------------------------------
-VULSCAN_DIR = _REPO_ROOT / "vulscan"
+VULSCAN_DIR = _paths.vulscan_dir()
 VULSCAN_NSE_PATH = VULSCAN_DIR / "scripts" / "vulscan" / "vulscan.nse"
 VULSCAN_DB_PATH = VULSCAN_DIR / "scripts" / "vulscan" / "cve.csv"
 VULSCAN_DB_FILENAME = "cve.csv"
 VULSCAN_UPDATE_URL = "https://www.computec.ch/projekte/vulscan/download/cve.csv"
+
+# First install comes from the project's own repository: unlike the computec.ch
+# mirror above it isn't behind a bot challenge. Its cve.csv is an old snapshot
+# (see newest_cve_year below), which is why staleness is judged by content, not
+# by the file's date.
+VULSCAN_REPO_RAW = "https://raw.githubusercontent.com/scipag/vulscan/master"
+VULSCAN_INSTALL_FILES = ("vulscan.nse", "cve.csv", "COPYING.TXT")
+VULSCAN_INSTALL_MAX_BYTES = 200 * 1024 * 1024
+VULSCAN_INSTALL_HINT = "run `kratos vulscan-install` on the Kratos machine"
+
+# A CVE list whose newest entry is older than this many years misses most of
+# what a scan should find, however recently the file itself was copied.
+STALE_CVE_YEARS = 1
 
 # 30 days: vulscan's own upstream mirror isn't a real-time feed either (its
 # own update.sh just re-downloads a periodically-refreshed CSV snapshot), so
@@ -71,23 +86,117 @@ NUCLEI_TIMEOUT_SECONDS = 600
 NMAP_VULSCAN_TIMEOUT_SECONDS = 120
 
 
+_CVE_YEAR_RE = re.compile(rb"^CVE-(\d{4})-", re.MULTILINE)
+_newest_year_cache: dict[tuple[str, int, int], int | None] = {}
+
+
+def newest_cve_year(db_path: Path = VULSCAN_DB_PATH) -> int | None:
+    """The year of the newest CVE id in cve.csv (None if unreadable/empty).
+
+    The file's mtime only says when it was copied: a database fetched today can
+    still stop at CVEs from a decade ago, and the copy on the project's GitHub
+    does. Cached per (path, mtime, size) -- reading ~16 MB takes a fraction of a
+    second, but there is no reason to do it every scan."""
+    try:
+        st = db_path.stat()
+    except OSError:
+        return None
+    key = (str(db_path), st.st_mtime_ns, st.st_size)
+    if key not in _newest_year_cache:
+        try:
+            years = [int(y) for y in _CVE_YEAR_RE.findall(db_path.read_bytes())]
+        except OSError:
+            years = []
+        _newest_year_cache.clear()
+        _newest_year_cache[key] = max(years) if years else None
+    return _newest_year_cache[key]
+
+
 def check_vulscan_db_staleness(db_path: Path = VULSCAN_DB_PATH) -> dict[str, Any]:
     """
-    Returns {"exists", "last_updated", "age_days", "stale"}. mtime-based,
-    since cve.csv carries no embedded freshness field of its own -- the
-    file's mtime is the only signal available, which matches how vulscan's
-    own update.sh works (it just overwrites the file, no versioning).
+    Returns {"exists", "last_updated", "age_days", "newest_cve_year", "stale", "note"}.
+
+    Two signals: the file's mtime (when it was last refreshed -- cve.csv has no
+    embedded freshness field, and vulscan's own update.sh just overwrites it)
+    and the newest CVE id it actually contains. Either one being old makes it
+    stale; `note` says in plain words what that means for a scan.
     """
     if not db_path.exists():
-        return {"exists": False, "last_updated": None, "age_days": None, "stale": True}
+        return {"exists": False, "last_updated": None, "age_days": None, "newest_cve_year": None,
+                "stale": True,
+                "note": f"The CVE database is not installed, so no CVE matching was done -- {VULSCAN_INSTALL_HINT}."}
     mtime = datetime.fromtimestamp(db_path.stat().st_mtime)
     age_days = (datetime.now() - mtime).days
+    newest = newest_cve_year(db_path)
+    old_content = newest is None or newest < datetime.now().year - STALE_CVE_YEARS
+    note = None
+    if old_content:
+        note = (f"The local CVE list only goes up to {newest}: vulnerabilities published after that are "
+                "not matched, so a clean CVE result is not evidence the services are up to date."
+                if newest else "The local CVE list contains no recognisable CVE ids.")
+    elif age_days > STALENESS_THRESHOLD_DAYS:
+        note = f"The local CVE list was last refreshed {age_days} days ago."
     return {
         "exists": True,
         "last_updated": mtime.isoformat(timespec="seconds"),
         "age_days": age_days,
-        "stale": age_days > STALENESS_THRESHOLD_DAYS,
+        "newest_cve_year": newest,
+        "stale": old_content or age_days > STALENESS_THRESHOLD_DAYS,
+        "note": note,
     }
+
+
+def vulscan_installed(vulscan_dir: Path = VULSCAN_DIR) -> bool:
+    base = vulscan_dir / "scripts" / "vulscan"
+    return (base / "vulscan.nse").is_file() and (base / VULSCAN_DB_FILENAME).is_file()
+
+
+def install_vulscan(vulscan_dir: Path = VULSCAN_DIR, *, force: bool = False,
+                    base_url: str = VULSCAN_REPO_RAW, session: Any = None) -> tuple[bool, str]:
+    """Download vulscan.nse, cve.csv and its licence into `vulscan_dir` in the
+    nested layout nmap needs. Every file is downloaded to a temp name and
+    validated before anything in place is replaced; a failure leaves an
+    existing install untouched. Already installed -> no-op unless `force`."""
+    import requests
+
+    dest = vulscan_dir / "scripts" / "vulscan"
+    if vulscan_installed(vulscan_dir) and not force:
+        return True, f"Already installed in {dest} (use --force to download it again)."
+    http = session or requests
+    dest.mkdir(parents=True, exist_ok=True)
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for name in VULSCAN_INSTALL_FILES:
+            tmp = dest / f".{name}.download"
+            staged.append((tmp, dest / name))
+            try:
+                with http.get(f"{base_url}/{name}", stream=True, timeout=60) as resp:
+                    if resp.status_code != 200:
+                        return False, f"Download of {name} failed: HTTP {resp.status_code}. Nothing was changed."
+                    size = 0
+                    with tmp.open("wb") as fh:
+                        for chunk in resp.iter_content(chunk_size=1 << 16):
+                            size += len(chunk)
+                            if size > VULSCAN_INSTALL_MAX_BYTES:
+                                return False, f"{name} is larger than expected; download stopped. Nothing was changed."
+                            fh.write(chunk)
+            except requests.RequestException as e:
+                return False, f"Download of {name} failed: {e.__class__.__name__}. Nothing was changed."
+        nse_tmp = staged[0][0]
+        if b"vulscan" not in nse_tmp.read_bytes()[:4096] or nse_tmp.stat().st_size < 1024:
+            return False, "The downloaded vulscan.nse doesn't look like the vulscan script. Nothing was changed."
+        valid, reason = _looks_like_valid_cve_csv(staged[1][0])
+        if not valid:
+            return False, f"The downloaded cve.csv failed validation ({reason}). Nothing was changed."
+        for tmp, final in staged:
+            tmp.replace(final)
+        staged = []
+        newest = newest_cve_year(dest / VULSCAN_DB_FILENAME)
+        return True, (f"Installed vulscan into {dest} (CVE list up to {newest})." if newest
+                      else f"Installed vulscan into {dest}.")
+    finally:
+        for tmp, _final in staged:
+            tmp.unlink(missing_ok=True)
 
 
 def update_vulscan_db(db_path: Path = VULSCAN_DB_PATH) -> tuple[bool, str]:
@@ -176,7 +285,7 @@ def _looks_like_cloudflare_challenge(path: Path) -> bool:
     return any(marker in head for marker in _CLOUDFLARE_CHALLENGE_MARKERS)
 
 
-def run_nmap_vulscan(target: str, data_dir: Path) -> Path:
+def run_nmap_vulscan(target: str, data_dir: Path, *, use_vulscan: bool = True) -> Path:
     """
     Runs nmap -sV against target with vulscan's CVE-correlation NSE script
     attached -- the SAME -sV version-detection probe run_nmap_scan performs
@@ -189,7 +298,11 @@ def run_nmap_vulscan(target: str, data_dir: Path) -> Path:
 
     NMAPDIR is set so vulscan.nse's own nmap.fetchfile("scripts/vulscan/"
     .. db) call can find cve.csv -- required for the lookup to work at
-    all; see vulscan/README.md.
+    all.
+
+    use_vulscan=False runs the same -sV probe without the script: used when the
+    CVE data isn't installed, so the scan still learns which ports to point
+    Nuclei at instead of guessing.
     """
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
@@ -197,20 +310,13 @@ def run_nmap_vulscan(target: str, data_dir: Path) -> Path:
     safe_target = target.replace("/", "_").replace(":", "_")
     out_xml = scans_dir / f"vulscan_{safe_target}_{ts}.xml"
 
-    if not VULSCAN_NSE_PATH.exists():
-        raise RuntimeError(
-            f"vulscan.nse not found at {VULSCAN_NSE_PATH} -- see vulscan/README.md for the "
-            "install step (not bundled in the repo; a periodically-updated local database)."
-        )
+    if use_vulscan and not VULSCAN_NSE_PATH.exists():
+        raise RuntimeError(f"vulscan isn't installed ({VULSCAN_NSE_PATH} is missing) -- {VULSCAN_INSTALL_HINT}.")
 
-    env = {**os.environ, "NMAPDIR": str(VULSCAN_DIR)}
-    cmd = [
-        "nmap", "-sV", "-Pn",
-        "--script", str(VULSCAN_NSE_PATH),
-        "--script-args", f"vulscandb={VULSCAN_DB_FILENAME}",
-        "-oX", str(out_xml),
-        target,
-    ]
+    env = {**os.environ, "NMAPDIR": str(VULSCAN_DIR)} if use_vulscan else dict(os.environ)
+    script = (["--script", str(VULSCAN_NSE_PATH), "--script-args", f"vulscandb={VULSCAN_DB_FILENAME}"]
+              if use_vulscan else [])
+    cmd = ["nmap", "-sV", "-Pn", *script, "-oX", str(out_xml), target]
     try:
         subprocess.run(cmd, env=env, check=True, capture_output=True, text=True, timeout=NMAP_VULSCAN_TIMEOUT_SECONDS)
     except FileNotFoundError as e:
@@ -314,7 +420,10 @@ def run_nuclei_scan(target: str, data_dir: Path, tags: str = DEFAULT_NUCLEI_TAGS
         # whether real findings were produced.
         subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=NUCLEI_TIMEOUT_SECONDS)
     except FileNotFoundError as e:
-        raise RuntimeError("nuclei not found. See README.md Requirements for the install step.") from e
+        raise RuntimeError(
+            "nuclei not found (optional: it adds the active web checks). "
+            "Install guide: https://github.com/projectdiscovery/nuclei#install-nuclei"
+        ) from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"nuclei scan timed out after {NUCLEI_TIMEOUT_SECONDS}s") from e
     return out_jsonl

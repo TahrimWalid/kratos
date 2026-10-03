@@ -277,7 +277,12 @@ nmap's `vulners.nse` script queries a live external API per scan, which
 would reopen the same tension; `run_vuln_scan` uses `vulscan` against a
 locally-cached, offline CVE database instead, at the cost of that database
 needing its own periodic refresh and staleness reporting
-(`check_vulscan_db_staleness`).
+(`check_vulscan_db_staleness`). Staleness is judged by the newest CVE id the
+file contains, not by the file's date: the freely downloadable copy
+(`kratos vulscan-install`, from the vulscan repository) stops at 2013, and the
+up-to-date mirror rejects scripted downloads. An old or missing list is
+returned as a `coverage_gap`, so the final answer must say which CVEs weren't
+checked instead of calling a service up to date.
 
 ## Self-writing tool loop
 
@@ -391,6 +396,24 @@ harness's own AST rather than asking an LLM to summarize it — a summary
 could drift from what the test actually asserts, which would silently
 reopen exactly the rubber-stamp risk the review-flags mechanism exists to
 close.
+
+## Where settings and data live
+
+One module, `kratos/paths.py`, decides every location, and none of them depend
+on the working directory. A source checkout (including `pip install -e .`)
+keeps everything next to the code, as it always has: `.env`, `data/`,
+`kept_tools/`, `sandbox_staging/`, `vulscan/`, `llm/models/`. An installed copy
+lives in site-packages, which isn't writable or upgrade-safe, so it uses the
+XDG per-user folders: `~/.config/kratos/.env` for settings and
+`~/.local/share/kratos/` for everything else, laid out like a checkout.
+`KRATOS_HOME` (a real environment variable, since it decides where `.env` is)
+puts settings and data under one folder. An explicit `--data-dir` still wins
+for the data folder.
+
+Folders Kratos creates are owner-only (0700), and the settings file is written
+atomically and created 0600, since it holds API keys. `kratos init` creates it
+from the template shipped in the package, and `/doctor` warns when it's
+readable by other users.
 
 ## Session persistence
 
@@ -548,6 +571,10 @@ it any more. Two notes that still apply:
 
 ## Known limitations
 
+- **CVE list age**: the CVE list `run_vuln_scan` can download stops at 2013
+  (see "Threat-intel enrichment" above). Its matches are real, but newer
+  CVEs aren't checked; the result carries that as a coverage gap. A current
+  list would need a different source.
 - **OT/ICS coverage**: neither of `run_vuln_scan`'s two scanners
   meaningfully covers OT/ICS protocols (Modbus, DNP3, etc.) — Nuclei's
   templates are overwhelmingly HTTP/web-focused, and vulscan only

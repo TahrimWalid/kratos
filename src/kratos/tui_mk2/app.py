@@ -28,6 +28,7 @@ from textual.events import Resize
 from textual.screen import Screen
 from textual.widgets import Static
 
+from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.agent.tools import set_approval_prompt_provider
 from kratos.agent.loop import set_clarify_provider
@@ -461,13 +462,14 @@ def _restore_terminal_mouse() -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     parser = argparse.ArgumentParser(prog="kratos", description="Kratos — security assistant (Textual TUI).")
-    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--data-dir", type=Path, default=_paths.default_data_dir())
     parser.add_argument("--no-color", action="store_true")
     args = parser.parse_args(argv)
 
     no_color = args.no_color or bool(os.environ.get("NO_COLOR"))
     _console.configure(no_color)
-    args.data_dir.mkdir(parents=True, exist_ok=True)
+    _paths.ensure_private_dir(_paths.STATE_ROOT)  # kept tools, staging, vulscan live here too
+    _paths.ensure_private_dir(args.data_dir)
 
     # Layer previously-kept self-written tools on top of the built-ins, exactly
     # as cli/app.py::main does for every classic entry point.

@@ -34,6 +34,7 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
+from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.tools import request_approval
@@ -1275,7 +1276,7 @@ def _resolve_evolve_test_file(console, tool_name: str, goal: str) -> Path | None
     tool's registered name are separate concerns, and conflating them
     meant a custom save path could silently change what TOOL_NAME the
     draft used."""
-    suggested = Path("tests") / "self_write_harnesses" / f"test_{tool_name}.py"
+    suggested = _paths.harness_dir() / f"test_{tool_name}.py"
     console.print(
         f"\nEvo-loop needs a real, human-authored pytest harness file -- it's what defines "
         f"'correct' for this tool, and is never auto-generated. Suggested path: {suggested}"

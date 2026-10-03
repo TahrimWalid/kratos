@@ -91,6 +91,18 @@ without it and just skips those active checks). Two more tiny tools, `yara` and
 `lsof`, go on the machine you *watch*, not here — and Kratos's setup check will tell
 you if they're missing and hand you the command.
 
+The vulnerability scan can also match the versions of a machine's network services
+against a list of known CVEs. That list isn't bundled; to add it, run:
+
+```bash
+kratos vulscan-install
+```
+
+It downloads nmap's vulscan script and its CVE list. Know its limit before relying
+on it: the copy that can be downloaded freely stops at CVEs from **2013**. What it
+matches is real, but anything newer isn't checked — Kratos says that in its answer
+rather than calling a service up to date, and `/doctor` shows how far your copy goes.
+
 Only if you want Kratos to build new tools for itself (`/evolve`): install
 [Incus](https://linuxcontainers.org/incus/) on the Kratos machine. Every new tool is
 tested inside a throwaway container with no network; the first `/evolve` builds that
@@ -104,13 +116,14 @@ next step.
 ## Connecting it to a model
 
 Kratos needs an AI model to reason with. You tell it which one by editing a small
-settings file. Copy the example:
+settings file. Create it with:
 
 ```bash
-cp .env.example .env
+kratos init
 ```
 
-Open `.env` in any text editor. You're setting three values:
+It prints where the file is. Open that `.env` file in any text editor (only your
+user can read it, since it will hold your API key). You're setting three values:
 
 | Setting | What it is |
 | --- | --- |
@@ -134,6 +147,16 @@ private, free path.
 
 You can change this later at any time from inside Kratos with `/model` — you don't
 have to get it perfect now.
+
+**Where Kratos keeps things.** If you installed from a git checkout as above,
+everything stays in that folder: the settings file `.env`, your sessions and
+findings in `data/`, tools you've approved in `kept_tools/`, and the CVE list in
+`vulscan/`. If Kratos was installed as a package instead (`pip install` without
+`-e`), it uses your per-user folders: settings in `~/.config/kratos/.env`, the rest
+under `~/.local/share/kratos/`. To keep everything in one folder of your choice, set
+the environment variable `KRATOS_HOME` before starting Kratos. Either way, it
+doesn't matter which folder you start `kratos` from, and `/doctor` shows the exact
+paths.
 
 ---
 

@@ -24,17 +24,15 @@ from __future__ import annotations
 
 import json
 from kratos.utils.timeutil import utc_now_iso
-from pathlib import Path
 from typing import Any
 
+from kratos import paths as _paths
 from kratos.kratos_config import OTX_API_KEY, ABUSEIPDB_API_KEY
 from kratos.utils.redact import redact_secrets
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
-
 # Same class as vulscan/ and llm/models/ -- runtime-managed, locally-synced
-# data, not source, not committed. See .gitignore.
-CACHE_DIR = _REPO_ROOT / "data" / "threat_intel_cache"
+# data, not source, not committed. Location: kratos/paths.py.
+CACHE_DIR = _paths.threat_intel_cache_dir()
 CACHE_FILE = CACHE_DIR / "otx_pulses.json"
 
 OTX_BASE_URL = "https://otx.alienvault.com/api/v1"
@@ -55,7 +53,7 @@ def update_threat_intel_cache(max_pages: int = 5) -> tuple[bool, str]:
     existing, working cache.
     """
     if not OTX_API_KEY:
-        return False, "OTX_API_KEY not set -- see .env.example. Cached tier stays empty until configured."
+        return False, f"OTX_API_KEY not set -- add it to your settings file ({_paths.env_file()}). Cached tier stays empty until configured."
 
     import requests
 

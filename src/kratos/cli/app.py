@@ -24,6 +24,7 @@ import time
 from pathlib import Path
 from rich.panel import Panel
 from rich.table import Table
+from kratos import paths as _paths
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
 
@@ -56,7 +57,7 @@ from kratos.kratos_config import get_active_target
 from kratos.llm_config import LLM_OPENAI_MODEL
 
 PROJECT_NAME = "kratos"
-DEFAULT_DATA_DIR = Path("data")
+DEFAULT_DATA_DIR = _paths.default_data_dir()
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -215,6 +216,44 @@ def cmd_subagent_pair(args: argparse.Namespace) -> int:
     print(f"[KRATOS] The pairing code is single-use; the agent saves a persistent token after its first successful connect.")
     print(f"[KRATOS] Easier: `kratos subagent-install --core-host {args.core_host}` emits a one-command installer instead.")
     return 0
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    """Create the settings file from the bundled template if there isn't one, and
+    say where Kratos keeps everything. Never overwrites an existing file."""
+    from importlib.resources import files
+
+    env_path = _paths.env_file()
+    print(f"[KRATOS] {_paths.layout_note()}.")
+    if env_path.exists():
+        print(f"[KRATOS] Settings file already exists, left as it is: {env_path}")
+    else:
+        template = files("kratos").joinpath("templates/env.example").read_text(encoding="utf-8")
+        _paths.write_private_text(env_path, template)
+        print(f"[KRATOS] Created your settings file (readable only by you): {env_path}")
+        print("[KRATOS] Open it and set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL for your model --")
+        print("         or start `kratos` and add one under Settings > Models.")
+    for label, path in _paths.describe()[1:]:
+        print(f"         {label + ':':<18} {path}")
+    from kratos.adapters.vuln_scan import vulscan_installed
+
+    if not vulscan_installed():
+        print("[KRATOS] Optional: `kratos vulscan-install` downloads the CVE list the vulnerability scan matches against.")
+    return 0
+
+
+def cmd_vulscan_install(args: argparse.Namespace) -> int:
+    """Download nmap's vulscan script and CVE list into Kratos's data home."""
+    from kratos.adapters import vuln_scan
+
+    print(f"[KRATOS] Downloading vulscan from {vuln_scan.VULSCAN_REPO_RAW} ...")
+    ok, message = vuln_scan.install_vulscan(force=args.force)
+    print(f"[KRATOS] {message}")
+    if ok:
+        status = vuln_scan.check_vulscan_db_staleness()
+        if status.get("note"):
+            print(f"[KRATOS] Note: {status['note']}")
+    return 0 if ok else 1
 
 
 def cmd_subagent_install(args: argparse.Namespace) -> int:
@@ -1098,7 +1137,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--data-dir",
         type=Path,
         default=DEFAULT_DATA_DIR,
-        help="Directory for storing scans/logs/context/reports (default: ./data)",
+        help=f"Directory for storing sessions/scans/logs/reports (default: {DEFAULT_DATA_DIR})",
     )
     p.add_argument(
         "--no-color",
@@ -1277,6 +1316,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
+    init_p = sub.add_parser(
+        "init",
+        help="Create your settings file if missing; show where Kratos keeps its data",
+    )
+    init_p.set_defaults(func=cmd_init)
+
+    vulscan_p = sub.add_parser(
+        "vulscan-install",
+        help="Download the CVE list the vulnerability scan matches services against (nmap vulscan)",
+    )
+    vulscan_p.add_argument("--force", action="store_true", help="Download again even if already installed")
+    vulscan_p.set_defaults(func=cmd_vulscan_install)
+
     # ====== Sub-agent telemetry (capability 1 only -- docs/subagent_architecture.md) ======
     subagent_pair = sub.add_parser(
         "subagent-pair",
@@ -1363,7 +1415,7 @@ def _subcommand_help_text(parser: argparse.ArgumentParser) -> dict[str, str]:
 # migration for the other subcommands' own runtime output -- see
 # docs/DESIGN.md's "Known limitations" section for why that's a separate,
 # much larger, deliberately deferred item.
-PRIMARY_COMMANDS = ["investigate", "run", "chat", "findings-show", "scan"]
+PRIMARY_COMMANDS = ["init", "investigate", "run", "chat", "findings-show", "scan"]
 
 
 def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = False) -> None:
@@ -1425,7 +1477,7 @@ def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> Non
     table.add_column("Description")
     table.add_row("goal", "Natural-language investigation goal (required)")
     table.add_row("--max-iters N", f"Max agent steps before stopping (default: {DEFAULT_MAX_ITERS})")
-    table.add_row("--data-dir PATH", "Directory for storing scans/logs/context/reports (default: ./data)")
+    table.add_row("--data-dir PATH", f"Directory for storing sessions/scans/logs/reports (default: {DEFAULT_DATA_DIR})")
     table.add_row("--no-color", "Disable colored/styled output")
     console.print(table)
     console.print()
@@ -1504,7 +1556,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    args.data_dir.mkdir(parents=True, exist_ok=True)
+    _paths.ensure_private_dir(_paths.STATE_ROOT)  # kept tools, staging, vulscan live here too
+    _paths.ensure_private_dir(args.data_dir)
 
     # No built-in default target: use KRATOS_SSH_HOST, else the target saved
     # at first run, for every subcommand (investigate, run, a systemd-scheduled

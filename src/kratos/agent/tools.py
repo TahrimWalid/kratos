@@ -88,6 +88,8 @@ from kratos.adapters.baseline import (
 from kratos.adapters.vuln_scan import (
     check_vulscan_db_staleness as _check_vulscan_db_staleness,
     update_vulscan_db as _update_vulscan_db,
+    vulscan_installed as _vulscan_installed,
+    VULSCAN_INSTALL_HINT as _VULSCAN_INSTALL_HINT,
     run_nmap_vulscan as _run_nmap_vulscan,
     parse_vulscan_xml as _parse_vulscan_xml,
     run_nuclei_scan as _run_nuclei_scan,
@@ -1348,10 +1350,11 @@ def tool_run_yara_scan(scan_path: str | None = None, rules_path: str | Path | No
         "does not require a prior scan. KNOWN GAP: neither scanner meaningfully covers OT/ICS "
         "protocols (Modbus etc.) -- a clean result is NOT proof an OT/ICS device has no "
         "vulnerabilities, do not represent it that way. The vulscan half uses a local CVE "
-        "database that goes stale between manual updates -- if it's stale, the result includes a "
-        "database_stale warning; if a human is available to answer, a one-time approval prompt "
-        "offers to refresh it, but the scan itself always completes regardless of that answer -- "
-        "staleness is a visibility concern here, not a hard stop."
+        "database that can be old or missing: the result's database_newest_cve_year says how far "
+        "it goes, and when database_note is set your answer MUST state that limitation (e.g. that "
+        "CVEs newer than that year were not checked) rather than calling the services up to date. "
+        "The scan itself always completes regardless -- staleness is a visibility concern here, "
+        "not a hard stop."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
@@ -1378,7 +1381,7 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     # a modal the user can only decline, while the scan proceeds either way and
     # the upstream mirror is Cloudflare-blocked so the update usually fails. Opt
     # in to restore the prompt. See kratos_config.VULSCAN_UPDATE_PROMPT.
-    if staleness["stale"] and _VULSCAN_UPDATE_PROMPT:
+    if staleness["stale"] and staleness["exists"] and _VULSCAN_UPDATE_PROMPT:
         age_desc = f"{staleness['age_days']} days old" if staleness["exists"] else "missing"
         approved = request_approval(
             "UPDATE VULSCAN CVE DATABASE",
@@ -1409,9 +1412,13 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     # port 80 would silently miss it. Falls back to a bare http:// probe on
     # resolved_target only if nmap found no HTTP-labeled port at all.
     nuclei_target = resolved_target
+    cve_ready = _vulscan_installed()
+    if not cve_ready:
+        errors.append(f"vulscan: CVE matching skipped -- the CVE database isn't installed; {_VULSCAN_INSTALL_HINT}")
     try:
-        vulscan_xml = _run_nmap_vulscan(resolved_target, data_dir)
-        findings.extend(_parse_vulscan_xml(vulscan_xml))
+        vulscan_xml = _run_nmap_vulscan(resolved_target, data_dir, use_vulscan=cve_ready)
+        if cve_ready:
+            findings.extend(_parse_vulscan_xml(vulscan_xml))
         nmap_parsed = _parse_nmap_xml_to_dict(vulscan_xml)  # same -sV XML shape run_nmap_scan produces
         for host_entry in nmap_parsed.get("hosts", []):
             for port_entry in host_entry.get("open_ports", []):
@@ -1436,17 +1443,30 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
     nuclei_count = sum(1 for f in findings if f["source"] == "nuclei")
     vulscan_count = sum(1 for f in findings if f["source"] == "vulscan")
 
+    # A missing or old CVE list is a coverage gap like any other: the loop makes the
+    # final answer say so instead of letting "no CVEs found" read as "up to date".
+    if not cve_ready:
+        cve_gap = "known CVEs on the target's services (the CVE database isn't installed)"
+    elif staleness["note"] and staleness["newest_cve_year"]:
+        cve_gap = (f"CVEs published after {staleness['newest_cve_year']} "
+                   "(the local CVE list used for matching ends there)")
+    else:
+        cve_gap = None
+
     return {
         "status": "ok" if not errors else ("partial" if findings else "error"),
         "target": resolved_target,
         "database_stale": staleness["stale"],
         "database_last_updated": staleness["last_updated"],
         "database_age_days": staleness["age_days"],
+        "database_newest_cve_year": staleness["newest_cve_year"],
+        "database_note": staleness["note"],
         "nuclei_finding_count": nuclei_count,
         "vulscan_finding_count": vulscan_count,
         "finding_count": len(findings),
         "findings": findings,
         "errors": errors,
+        **({"coverage_gap": cve_gap} if cve_gap else {}),
     }
 
 

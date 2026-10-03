@@ -94,18 +94,23 @@ A few standard tools aren't Python packages — install them with your package m
 
 - **`nmap`** on the Kratos machine (required for the port scan and the standard audit) — e.g. `sudo apt install nmap`.
 - **`nuclei`** on the Kratos machine (optional, for deeper vulnerability scanning) — see the [nuclei install guide](https://github.com/projectdiscovery/nuclei#install-nuclei). Without it the vulnerability scan skips the active checks.
+- **The CVE list** the vulnerability scan matches service versions against (optional): run `kratos vulscan-install` once. It downloads nmap's [vulscan](https://github.com/scipag/vulscan) script and its CVE list. Be aware that the freely downloadable list stops at **2013**: matches are real, but anything newer isn't checked, and Kratos says so in its answer. `/doctor` shows how far your copy goes.
 - **[Incus](https://linuxcontainers.org/incus/)** on the Kratos machine (only for `/evolve`): new tools are tested inside a throwaway container with no network. The first `/evolve` builds the sandbox image once (a few minutes, needs internet).
 - **`yara`** and **`lsof`** on the **machine you watch** — Kratos's setup check tells you if they're missing and gives you the command.
 
-Then tell Kratos which model to use. Copy the example config and fill in three values:
+Then tell Kratos which model to use. Create your settings file and fill in three values:
 
 ```bash
-cp .env.example .env
-# edit .env:
+kratos init
+# then edit the .env file it names:
 #   LLM_BASE_URL   the model's OpenAI-compatible endpoint
 #   LLM_API_KEY    your key (or a placeholder for a local server)
 #   LLM_MODEL      the model name
 ```
+
+(You can also add a model from inside Kratos, under Settings → Models.)
+
+**Where your settings and data live.** In a git checkout like the one above, everything stays in the checkout folder: `.env`, `data/` (sessions, findings, the session database), `kept_tools/`, `vulscan/`. A copy installed as a package (`pip install` without `-e`) uses per-user folders instead: settings in `~/.config/kratos/.env`, everything else under `~/.local/share/kratos/`. Set `KRATOS_HOME` to keep it all under one folder of your choice. `kratos init` and `/doctor` show the exact paths, and it doesn't matter which folder you start `kratos` from.
 
 Start it:
 
