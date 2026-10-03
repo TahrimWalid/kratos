@@ -760,6 +760,80 @@ def _yara_via_agent(link: Any, scan_path: str, custom_rules: bool) -> SSHResult 
     return YaraMatches(data.get("matches") or [], info)
 
 
+# Where malware is usually dropped or served from. A bounded default for "scan
+# the system for malicious files" -- never '/' (a full recursive scan runs far
+# past any practical timeout, see YARA_SCAN_TIMEOUT_SECONDS).
+DEFAULT_YARA_SWEEP_PATHS: tuple[str, ...] = (
+    "/home", "/root", "/tmp", "/var/tmp", "/dev/shm", "/var/www", "/srv", "/usr/local/bin", "/usr/local/sbin",
+)
+_YARA_SCANNED_MARK = "KRATOS_SCANNED\t"
+_YARA_ERRORS_MARK = "KRATOS_ERRORS\t"
+_YARA_UNREADABLE_MARK = "KRATOS_UNREADABLE\t"
+_YARA_SKIPPED_MARK = "KRATOS_SKIPPED\t"
+
+
+def fetch_yara_sweep(paths: tuple[str, ...], rules_content: str) -> SSHResult | dict[str, Any]:
+    """Scan every path in `paths` that exists on the target, in one SSH call.
+    Returns {"matches", "scanned", "unreadable"} -- `scanned` lists the paths
+    that really existed and were scanned, `unreadable` counts files yara could
+    not open as the SSH user (e.g. /root), so a clean result is never
+    overstated. Same rule-file push/cleanup posture as fetch_yara_scan."""
+    delimiter = f"KRATOS_YARA_RULES_{uuid.uuid4().hex}"
+    quoted = " ".join(shlex.quote(p) for p in paths)
+    script = (
+        "command -v yara >/dev/null 2>&1 || { echo 'yara is not installed on the target' >&2; exit 4; }\n"
+        "RULES_FILE=$(mktemp /tmp/kratos_yara_rules.XXXXXX.yar)\n"
+        "ERR_FILE=$(mktemp /tmp/kratos_yara_err.XXXXXX)\n"
+        f"cat > \"$RULES_FILE\" << '{delimiter}'\n"
+        f"{rules_content}\n"
+        f"{delimiter}\n"
+        f"for p in {quoted}; do\n"
+        "  [ -e \"$p\" ] || continue\n"
+        # yara skips what it can't read SILENTLY (exit 0), so readability is
+        # measured here, not inferred from yara's output.
+        "  if [ ! -r \"$p\" ] || { [ -d \"$p\" ] && [ ! -x \"$p\" ]; }; then\n"
+        f"    printf '{_YARA_UNREADABLE_MARK}%s\\n' \"$p\"; continue\n"
+        "  fi\n"
+        f"  printf '{_YARA_SCANNED_MARK}%s\\n' \"$p\"\n"
+        "  yara -r -s \"$RULES_FILE\" \"$p\" 2>>\"$ERR_FILE\"\n"
+        "  n=$( { find \"$p\" -type d 2>&1 >/dev/null | grep -c 'ermission denied'; } 2>/dev/null )\n"
+        "  f=$( find \"$p\" -type f ! -readable 2>/dev/null | wc -l )\n"
+        f"  printf '{_YARA_SKIPPED_MARK}%s\\t%s\\t%s\\n' \"$p\" \"${{n:-0}}\" \"${{f:-0}}\"\n"
+        "done\n"
+        f"printf '{_YARA_ERRORS_MARK}%s\\n' \"$(grep -c . \"$ERR_FILE\")\"\n"
+        "rm -f \"$RULES_FILE\" \"$ERR_FILE\"\n"
+        "exit 0\n"
+    )
+    result = run_remote_script(script, timeout=YARA_SCAN_TIMEOUT_SECONDS)
+    if not result.ok:
+        if result.returncode == -1 and "timed out" in result.stderr:
+            return SSHResult(ok=False, returncode=-1, stdout="", stderr=(
+                f"YARA sweep did not complete within {YARA_SCAN_TIMEOUT_SECONDS}s -- retry with a specific "
+                "scan_path (one of the directories above) instead of the default sweep."))
+        return result
+    scanned, unreadable, body = [], 0, []
+    unreadable_paths: list[str] = []
+    skipped: dict[str, dict[str, int]] = {}
+    for line in result.stdout.splitlines():
+        if line.startswith(_YARA_SCANNED_MARK):
+            scanned.append(line[len(_YARA_SCANNED_MARK):])
+        elif line.startswith(_YARA_UNREADABLE_MARK):
+            unreadable_paths.append(line[len(_YARA_UNREADABLE_MARK):])
+        elif line.startswith(_YARA_SKIPPED_MARK):
+            parts = line[len(_YARA_SKIPPED_MARK):].split("\t")
+            if len(parts) == 3 and parts[1].strip().isdigit() and parts[2].strip().isdigit():
+                d, f = int(parts[1]), int(parts[2])
+                if d or f:
+                    skipped[parts[0]] = {"unreadable_dirs": d, "unreadable_files": f}
+        elif line.startswith(_YARA_ERRORS_MARK):
+            tail = line[len(_YARA_ERRORS_MARK):].strip()
+            unreadable = int(tail) if tail.isdigit() else 0
+        else:
+            body.append(line)
+    return {"matches": _parse_yara_output("\n".join(body)), "scanned": scanned, "unreadable": unreadable,
+            "unreadable_paths": unreadable_paths, "partially_unreadable": skipped}
+
+
 def fetch_yara_scan(scan_path: str, rules_content: str, custom_rules: bool = False) -> SSHResult | list[dict[str, Any]]:
     """
     Runs `yara` ON THE TARGET (must be installed there -- see docs/DESIGN.md's

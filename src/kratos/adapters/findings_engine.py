@@ -51,6 +51,7 @@ def find_latest_inputs(data_dir: Path) -> dict[str, Path | None]:
         "system_context": latest_file(ctx_dir, "system_context_*.json"),
         "auth_trends": latest_file(reports_dir, "auth_trends_*.json"),
         "file_integrity": latest_file(baseline_dir, "file_integrity_diff_*.json"),
+        "privileged_accounts": latest_file(ctx_dir, "privileged_accounts_*.json"),
     }
 
 
@@ -168,6 +169,77 @@ class Finding:
     # line, so consumers (A2 Piece C output-threading's `top_source_ip` field, an
     # answer that names the attacker) read a real field instead of parsing text.
     source_ips: list[str] = field(default_factory=list)
+
+
+def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
+    """PRIV-001..004 from one list_privileged_accounts snapshot."""
+    out: list[Finding] = []
+    accounts: dict[str, Any] = snap.get("accounts") or {}
+    source = f"Source: list_privileged_accounts on {snap.get('target', 'the target')} at {snap.get('checked_at', 'unknown')}"
+    gaps = [f"Evidence gap: {g}" for g in (snap.get("evidence_gaps") or [])]
+
+    # PRIV-001: an account that still holds privilege was granted it recently.
+    grants: dict[str, list[dict[str, Any]]] = {}
+    for g in snap.get("recent_privilege_grants") or []:
+        if isinstance(g, dict) and g.get("in_effect") and g.get("user"):
+            grants.setdefault(str(g["user"]), []).append(g)
+    if grants:
+        evidence = [source]
+        for user, gs in grants.items():
+            for g in gs:
+                what = f"added to group '{g['group']}'" if g.get("group") else f"given UID {g.get('uid')}"
+                evidence.append(f"{g.get('time')}: '{user}' {what} (logged by {g.get('source')})")
+            evidence.append(f"'{user}' currently holds: {', '.join((accounts.get(user) or {}).get('via') or [])}")
+        out.append(Finding(
+            id="PRIV-001",
+            title=f"Recently granted privileged access: {', '.join(sorted(grants))}",
+            severity="high",
+            evidence=evidence,
+            recommendation=[
+                "Confirm with the system's owner that each of these grants was authorized.",
+                "If not: remove the access (e.g. `gpasswd -d <user> sudo`), lock the account (`usermod -L <user>`), "
+                "and investigate how it was added (who ran the command, from which session).",
+                "Review what the account did since the grant (sudo activity, logins).",
+            ],
+        ))
+
+    # PRIV-002: UID 0 is root; any other UID-0 account is a classic backdoor.
+    uid0 = sorted(u for u, a in accounts.items() if isinstance(a, dict) and a.get("uid") == 0 and u != "root")
+    if uid0:
+        out.append(Finding(
+            id="PRIV-002",
+            title=f"Non-root account(s) with UID 0: {', '.join(uid0)}",
+            severity="high",
+            evidence=[source, *[f"'{u}' has UID 0 (full root privileges)" for u in uid0]],
+            recommendation=["A second UID-0 account is almost never legitimate -- verify immediately; if "
+                            "unauthorized, disable it and investigate how it was created."],
+        ))
+
+    # PRIV-003: newly privileged since the last check, with no log event explaining it.
+    changed = snap.get("changed_since_last_check") or {}
+    unexplained = sorted(u for u in (changed.get("added") or []) if u not in grants and u not in uid0)
+    if unexplained:
+        out.append(Finding(
+            id="PRIV-003",
+            title=f"Privileged since the last check: {', '.join(unexplained)}",
+            severity="medium",
+            evidence=[source, f"Previous check: {changed.get('previous_snapshot_at')}",
+                      *[f"'{u}' now holds: {', '.join((accounts.get(u) or {}).get('via') or [])}" for u in unexplained],
+                      *gaps],
+            recommendation=["No log entry explains this change -- confirm it was authorized."],
+        ))
+
+    # PRIV-004: the inventory itself, so an answer can name who has access.
+    if accounts:
+        out.append(Finding(
+            id="PRIV-004",
+            title=f"{len(accounts)} account(s) hold privileged access on the target",
+            severity="info",
+            evidence=[source, *[f"{u}: {', '.join(a.get('via') or [])}" for u, a in sorted(accounts.items())
+                                if isinstance(a, dict)], *gaps],
+            recommendation=["Keep this list minimal; remove access nobody needs."],
+        ))
+    return out
 
 
 def _severity_rank(sev: str) -> int:
@@ -345,6 +417,7 @@ def generate_findings(
     system_context: dict[str, Any] | None,
     auth_trends: dict[str, Any] | None = None,
     file_integrity: dict[str, Any] | None = None,
+    privileged_accounts: dict[str, Any] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
 
@@ -828,6 +901,10 @@ def generate_findings(
                 )
             )
 
+    # PRIV-*: privileged access on the target (from list_privileged_accounts)
+    if privileged_accounts:
+        findings.extend(_privileged_account_findings(privileged_accounts))
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -889,6 +966,36 @@ def generate_findings(
 # this, long enough that a single investigation collecting different
 # categories a few hours apart (normal, not a problem) doesn't get flagged.
 STALENESS_SPREAD_THRESHOLD_HOURS = 24
+
+# A privileged-accounts snapshot only feeds findings while it is this fresh:
+# it is produced on demand, and an old "X was just added to sudo" must not keep
+# re-firing in every later investigation.
+PRIVILEGED_SNAPSHOT_MAX_AGE_HOURS = 24
+
+
+def _load_recent_privileged_snapshot(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        captured = datetime.fromisoformat(str(data.get("checked_at"))).timestamp()
+    except ValueError:
+        captured = path.stat().st_mtime
+    if datetime.now().timestamp() - captured > PRIVILEGED_SNAPSHOT_MAX_AGE_HOURS * 3600:
+        return None
+    # A snapshot of a DIFFERENT machine must never feed this target's report.
+    from kratos.kratos_config import get_active_target
+
+    active = (get_active_target() or "").strip().lower()
+    snap_host = str(data.get("target") or "").rpartition("@")[2].strip().lower()
+    if active and snap_host and snap_host != active:
+        return None
+    return data
 
 
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
@@ -1009,6 +1116,10 @@ def write_findings_report(
 
     missing = [k for k, v in inputs.items() if v is None and k not in input_errors]
     staleness_warning = _staleness_warning(inputs, auto_discovered_keys)
+    # Optional and on-demand, so never "missing" and never part of the
+    # cross-input staleness spread -- age-limited on its own instead.
+    privileged = None if all_required_explicit else _load_recent_privileged_snapshot(auto.get("privileged_accounts"))
+    inputs["privileged_accounts"] = auto.get("privileged_accounts") if privileged else None
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -1017,7 +1128,9 @@ def write_findings_report(
     auth_trends = _read_json(inputs["auth_trends"]) if inputs["auth_trends"] else None
     file_integrity = _read_json(inputs["file_integrity"]) if inputs["file_integrity"] else None
 
-    findings = generate_findings(nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity)
+    findings = generate_findings(
+        nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged
+    )
 
     # Environment detection
     env_label = "linux"

@@ -677,3 +677,132 @@ def test_guard5_allows_negated_mentions_of_uncalled_tools(
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
     result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
     assert [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"] == []
+
+
+# ---------------------------------------------------------------------------
+# Guard 8 -- a capability gap stated in prose but never proposed (eval G1).
+# ---------------------------------------------------------------------------
+GAP_ANSWER = (CORRECTED_ANSWER + " A scan for SUID binaries was not performed because Kratos currently "
+              "lacks a remote-target file-listing tool.")
+
+
+def _proposal_json(name: str = "find_suid_binaries") -> str:
+    return json.dumps({"reasoning": "gap", "tool_proposal": {"name": name, "description": "Lists SUID binaries on the target."}})
+
+
+def test_guard8_asks_once_for_a_proposal_and_accepts_after_it(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(GAP_ANSWER), _proposal_json(),
+                         _final_json(GAP_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("find SUID binaries", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected) == 1 and rejected[0]["violations"] == ["unproposed_capability_gap"]
+    assert [s["tool_proposal"]["name"] for s in result["transcript"] if s.get("tool_proposal")] == ["find_suid_binaries"]  # no derived duplicate
+    assert result["status"] == "final_answer" and "[NOTE:" not in result["final_answer"]
+
+
+def test_guard8_asks_only_once_and_never_tags_the_answer(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([_tool_json("correlate_findings")] + [_final_json(GAP_ANSWER)] * 3)
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("find SUID binaries", data_dir, max_iters=10)
+    assert len([s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]) == 1
+    assert result["final_answer"] == GAP_ANSWER  # accepted as-is: advisory, not a correctness guard
+    # ...but the gap still reaches the human, as a suggestion derived from the answer's own sentence
+    [derived] = [s["tool_proposal"] for s in result["transcript"] if s.get("tool_proposal")]
+    assert derived["derived_from_answer"] is True and derived["name"] == ""
+    assert derived["description"].startswith("A scan for SUID binaries was not performed")
+
+
+def test_guard8_silent_when_a_proposal_was_already_made_or_no_gap_is_claimed(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([_proposal_json(), _tool_json("correlate_findings"), _final_json(GAP_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("find SUID binaries", data_dir, max_iters=10)
+    assert [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"] == []
+
+    chat = ScriptedChat([_tool_json("correlate_findings"),
+                         _final_json(CORRECTED_ANSWER + " The target lacks a firewall rule for port 22.")])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("check the firewall", data_dir, max_iters=10)
+    assert [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"] == []
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Kratos does not possess a tool to perform geographic mapping (GeoIP).", True),
+    ("Kratos currently lacks a remote-target file-listing tool.", True),
+    ("The scan was not performed because it requires local shell access that is not supported.", True),
+    ("There is no existing tool for listing cron jobs.", True),
+    ("However, there is no tool available in my registry that allows recursive scanning.", True),
+    ("A direct enumeration of SUID binaries is not possible with current tools.", True),
+    ("An exhaustive enumeration is not supported by current tools.", True),
+    ("Such a capability is currently unavailable.", True),
+    ("I do not have the capability to perform GeoIP mapping.", True),
+    ("I could not list them as no specific tool for this purpose is available.", True),
+    ("There are no tools in my suite to enumerate SUID binaries.", True),
+    ("While I could not enumerate SUID binaries due to the inability to execute arbitrary filesystem searches, the host is fine.", True),
+    ("I am unable to enumerate SUID binaries as that requires direct shell execution.", True),
+    ("Such tools are not part of my current toolkit.", True),
+    ("I could not determine the attacker's identity because the logs were rotated.", False),
+    ("The check could not be completed because the target was unreachable.", False),
+    ("No findings are available for this period.", False),
+    ("The firewall is not available on this host.", False),
+    ("No tool calls failed.", False),
+    ("No suspicious cron jobs were identified.", False),
+    ("The system does not have fail2ban installed.", False),
+    ("The target lacks a firewall.", False),
+    ("These private addresses cannot be mapped using GeoIP data.", False),
+    ("The investigation could not be completed because the target was unreachable.", False),
+])
+def test_guard8_gap_phrase_matching(text: str, expected: bool) -> None:
+    assert bool(agent_loop._CAPABILITY_GAP_RE.search(text)) is expected
+
+
+def test_derived_suggestion_panel_text() -> None:
+    from kratos.tui_mk2 import render as R
+
+    title, body = R.evolve_suggestion_text({"name": "", "description": "No tool lists SUID files.", "derived_from_answer": True})
+    assert title == "Missing capability noticed" and "No tool lists SUID files." in body and "/evolve" in body
+    title, body = R.evolve_suggestion_text({"name": "find_suid", "description": "Lists SUID files."})
+    assert title == "Evo-loop suggestion" and body.startswith("find_suid")
+
+
+# ---------------------------------------------------------------------------
+# Local-only tools are not offered to the model for a remote target (eval G1).
+# ---------------------------------------------------------------------------
+from kratos import kratos_config as _kcfg  # noqa: E402
+
+
+@pytest.fixture
+def remote_target():
+    prev = _kcfg.get_active_target()
+    _kcfg.set_active_target("10.136.28.168")
+    yield
+    _kcfg.set_active_target(prev)
+
+
+def test_run_linux_command_hidden_and_refused_for_a_remote_target(
+    data_dir: Path, mocked_tools, remote_target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prompt = agent_loop.build_system_prompt()
+    assert "- run_linux_command" not in prompt
+    assert "Not offered here: run_linux_command" in prompt and "respond with a tool_proposal for it" in prompt
+    assert "3 of the tools listed above are the exception" in prompt  # the local-tool note matches what is offered
+    calls = []
+    monkeypatch.setattr(TOOL_REGISTRY["run_linux_command"], "handler", lambda **kw: calls.append(kw) or {"status": "ok"})
+    chat = ScriptedChat([_tool_json("run_linux_command", {"command": "find / -perm -4000"}),
+                         _tool_json("correlate_findings"), _final_json(CORRECTED_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("find SUID binaries", data_dir, max_iters=10)
+    step = next(s for s in result["transcript"] if s.get("tool") == "run_linux_command")
+    assert calls == [] and "not available in this investigation" in json.dumps(step["observation"])
+
+
+def test_run_linux_command_still_offered_when_investigating_kratos_itself(remote_target) -> None:
+    _kcfg.set_active_target("127.0.0.1")
+    prompt = agent_loop.build_system_prompt()
+    assert "- run_linux_command" in prompt and "4 of the tools listed above are the exception" in prompt

@@ -691,11 +691,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             # turn. This is purely the historical record; only a live
             # suggestion arms /evolve's no-arg shortcut.
             proposal = step["tool_proposal"]
-            body = (
-                f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n"
-                'Run /evolve to have Kratos build this (needs a test harness).'
-            )
-            self._emit(R.result_panel("Evo-loop suggestion", body, T.ATTENTION))
+            self._emit(R.result_panel(*R.evolve_suggestion_text(proposal), T.ATTENTION))
         elif step.get("status") == "clarify":
             # Review finding #5: same gap as tool_proposal above -- without
             # this, a mid-investigation clarify Q&A vanishes from a full-tier
@@ -4247,11 +4243,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif step.get("tool_proposal"):
             proposal = step["tool_proposal"]
             self.session_state["pending_evolve_suggestion"] = proposal
-            body = (
-                f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n"
-                'Run /evolve to have Kratos build this (needs a test harness).'
-            )
-            self._emit_from_worker(R.result_panel("Evo-loop suggestion", body, T.ATTENTION))
+            self._emit_from_worker(R.result_panel(*R.evolve_suggestion_text(proposal), T.ATTENTION))
         elif step.get("status") == "context_compacted":
             # agent/loop.py folded the oldest turns to stay within
             # the model's context window. Informational only -- the record is

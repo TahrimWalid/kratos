@@ -382,6 +382,17 @@ def speaker_line(label: str, color: str) -> Text:
     return Text(label, style=f"bold {color}")
 
 
+def evolve_suggestion_text(proposal: dict[str, Any]) -> tuple[str, str]:
+    """(title, body) for an evo-loop suggestion panel. A suggestion derived from
+    the answer's own "Kratos can't do X" sentence has no name yet -- /evolve
+    proposes one."""
+    footer = "Run /evolve to have Kratos build this (needs a test harness)."
+    if proposal.get("derived_from_answer"):
+        return ("Missing capability noticed",
+                f"The answer says Kratos couldn't do this:\n{proposal.get('description', '')}\n\n{footer}")
+    return "Evo-loop suggestion", f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n{footer}"
+
+
 def recommended_fix_panel(title: str, command: str, footnote: str) -> Panel:
     """Turn 19b -- recommend-only remediation: the exact command shown for the
     human to run in their OWN session, explicitly NOT executed by Kratos."""
