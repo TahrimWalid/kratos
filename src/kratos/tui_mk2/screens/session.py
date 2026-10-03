@@ -1961,14 +1961,13 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _pipeline_tool_entries(self) -> list[tuple[str, str]]:
         """`(f"tool:<name>", label)` entries for every registry tool, host/target
         labeled — shared by the builder and the step editor's 'add'."""
+        from kratos.agent.tool_summaries import human_summary, where_it_runs
         from kratos.agent.tools import TOOL_REGISTRY
-        from kratos.agent.pipeline import is_local_host_tool
 
         out: list[tuple[str, str]] = []
         for n in sorted(TOOL_REGISTRY):
-            host = "host" if is_local_host_tool(n) else "target"
-            desc = (TOOL_REGISTRY[n].description or "").splitlines()[0][:40]
-            out.append((f"tool:{n}", f"+ {n}  [{host}]  {desc}"))
+            tool = TOOL_REGISTRY[n]
+            out.append((f"tool:{n}", f"+ {n} — {human_summary(n, tool)}  ({where_it_runs(n, tool)})"))
         return out
 
     async def _build_pipeline_steps(self) -> list[dict[str, Any]] | None:
@@ -3231,17 +3230,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
         table = Table(show_header=True, header_style="bold", title=f"Tools reachable by the agent ({len(TOOL_REGISTRY)})")
         table.add_column("Name")
         table.add_column("Kind")
-        table.add_column("Approval")
-        table.add_column("Description")
+        table.add_column("Asks first")
+        table.add_column("What it does")
         for name in sorted(TOOL_REGISTRY):
             tool = TOOL_REGISTRY[name]
             is_kept = name in metadata
-            desc = (tool.description.strip().splitlines() or [""])[0][:70]
             table.add_row(
                 name,
-                Text("kept" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
+                Text("yours" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
                 "yes" if tool.requires_approval else "no",
-                desc,
+                R.tool_description(tool, metadata.get(name)),
             )
         self._emit(table)
 
@@ -3250,10 +3248,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _tool_picker_entries(self) -> list[tuple[str, str]]:
         from kratos.agent.tools import TOOL_REGISTRY
 
+        from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
+        from kratos.agent.tool_summaries import human_summary, short_where
+
+        metadata = _read_metadata(KEPT_TOOLS_DIR)
         entries = []
         for n in sorted(TOOL_REGISTRY):
-            desc = (TOOL_REGISTRY[n].description or "").splitlines()[0]
-            entries.append((n, desc[:70]))
+            tool = TOOL_REGISTRY[n]
+            entries.append((n, f"{short_where(n, tool)}\t{human_summary(n, tool, metadata.get(n))}"))
         return entries
 
     @work
@@ -3391,15 +3393,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit(Text(""))
         self._emit(Text(f"Tools Kratos can use — {len(TOOL_REGISTRY)} total", style=f"bold {T.KRATOS_RED}"))
         self._emit(self._tools_table("Default Tools", "built into Kratos", default_names, metadata, kept=False))
-        self._emit(self._tools_table("Kept Tools", "written & approved via /evolve", kept_names, metadata, kept=True))
-        self._emit(self._tools_table(
-            "Installed Tools", "kept tools backed by a package installed via an approved command",
-            installed_names, metadata, kept=True))
-        if not installed_names:
-            self._emit(Text(
-                "  (none yet — this category is for tools that need a package installed first)",
-                style=T.TEXT_GHOST))
-        self._emit(Text("Review a kept tool's code or edit its description in /settings → Tools.", style=T.TEXT_FAINT))
+        if kept_names:
+            self._emit(self._tools_table("Your Tools", "built by you with /evolve", kept_names, metadata, kept=True))
+        if installed_names:
+            self._emit(self._tools_table(
+                "Installed Tools", "your tools that use a package you approved installing",
+                installed_names, metadata, kept=True))
+        self._emit(Text("Run one directly with /use <name>. Settings → Tools shows a tool's full details "
+                        "and lets you review your own tools' code.", style=T.TEXT_FAINT))
 
     def _tools_table(self, heading: str, subtitle: str, names: list[str], metadata: dict, kept: bool):
         from kratos.agent.tools import TOOL_REGISTRY
@@ -3409,19 +3410,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
             show_header=True, header_style="bold", title=f"{heading} — {len(names)}",
             title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
             caption=subtitle, caption_justify="left", caption_style=T.TEXT_GHOST)
+        from kratos.agent.tool_summaries import where_it_runs
+
         table.add_column("Name", no_wrap=True)
+        table.add_column("Looks at", no_wrap=True)
         if kept:
-            table.add_column("Approval")
+            table.add_column("Asks first")
             table.add_column("Kept at")
-        table.add_column("Description")
+        table.add_column("What it does")
         for name in names:
             tool = TOOL_REGISTRY[name]
             entry = metadata.get(name)
-            row: list[Any] = [Text(name, style=T.ACCENT)]
+            row: list[Any] = [Text(name, style=T.ACCENT), Text(where_it_runs(name, tool), style=T.TEXT_DIM)]
             if kept:
-                row.append(Text("required" if tool.requires_approval else "auto",
+                row.append(Text("yes" if tool.requires_approval else "no",
                                 style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM))
-                row.append(Text(str((entry or {}).get("kept_at", "")), style=T.TEXT_FAINTER))
+                row.append(Text(str((entry or {}).get("kept_at", ""))[:10], style=T.TEXT_FAINTER))
             row.append(Text(R.tool_description(tool, entry), style=T.TEXT_MUTED))
             table.add_row(*row)
         return table

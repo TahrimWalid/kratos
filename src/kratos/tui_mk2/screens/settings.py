@@ -353,14 +353,14 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                 yield Static("", id="ms-status")
             with TabPane("Tools", id="tab-approvals"):
                 yield Static(
-                    Text("Every tool the agent can use. Toggle whether a kept (self-written) tool "
-                         "needs a human OK; view a kept tool's code; edit its short description. "
-                         "Built-in tools' approval is fixed in code (read-only).", style=T.TEXT_DIM),
+                    Text("Every tool Kratos can use. For tools you built with /evolve you can choose "
+                         "whether they ask you before running, read their code, and edit their "
+                         "description. Built-in tools can't be changed here.", style=T.TEXT_DIM),
                     classes="set-placeholder")
                 yield DataTable(id="ap-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
-                    Text("↑↓ select · enter/space toggle approval (kept) · v view code · "
-                         "c edit description (kept) · ctrl+→ next tab · esc back", style=T.TEXT_DIM),
+                    Text("↑↓ select · enter/space ask first on/off (your tools) · v view code · "
+                         "c edit description (your tools) · ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
@@ -383,7 +383,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         table.add_columns(" ", "Model", "Where", "Context window")
         self._reload()
         ap = self.query_one("#ap-table", DataTable)
-        ap.add_columns("Tool", "Kind", "Approval", "Description")
+        ap.add_columns("Tool", "Kind", "Asks first", "What it does")
         self._reload_approvals()
         gen = self.query_one("#gen-table", DataTable)
         gen.add_columns("Setting", "Value")
@@ -522,8 +522,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             is_kept = name in meta
             ap.add_row(
                 Text(name, style=T.TEXT_MUTED),
-                Text("kept" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
-                Text("required" if tool.requires_approval else "auto",
+                Text("yours" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
+                Text("yes" if tool.requires_approval else "no",
                      style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM),
                 Text(R.tool_description(tool, meta.get(name)), style=T.TEXT_DIM),
             )
@@ -542,7 +542,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         name, is_kept = self._ap_names[idx]
         if not is_kept:
             self._set_ap_status(
-                f"{name} is a built-in tool — its approval is fixed in code, not editable here.", T.ATTENTION)
+                f"{name} is built into Kratos — whether it asks first is fixed, not changeable here.", T.ATTENTION)
             return
         from kratos.agent.tools import TOOL_REGISTRY
         from kratos.agent.self_write_loop import set_kept_tool_approval
@@ -556,7 +556,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._reload_approvals()
         ap.move_cursor(row=idx)
         self._set_ap_status(
-            f"{name}: approval {'required' if new_val else 'auto (runs without asking)'} — saved.", T.SAFE)
+            f"{name}: {'asks you before each run' if new_val else 'runs without asking'} — saved.", T.SAFE)
 
     @on(DataTable.RowSelected, "#ap-table")
     def _ap_row_selected(self, event: DataTable.RowSelected) -> None:

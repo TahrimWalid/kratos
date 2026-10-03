@@ -136,15 +136,11 @@ def day_divider(date_str: str) -> Rule:
 
 
 def tool_description(tool: Any, meta_entry: dict[str, Any] | None) -> str:
-    """The human-facing 'what it does' line for a tool, shared by /tools and the
-    Settings Tools tab. Prefers a human/AI-written description stored in the
-    kept-tool metadata (set from Settings), then falls back to the tool's own
-    registered @register_tool description (first line), then a placeholder."""
-    md = (meta_entry or {}).get("description")
-    if md and str(md).strip():
-        return str(md).strip()
-    registered = (getattr(tool, "description", "") or "").strip().splitlines()
-    return registered[0] if registered else "(no description)"
+    """The human-facing 'what it does' line for a tool (/tools, Settings → Tools):
+    one plain sentence, never the model-facing instructions (agent/tool_summaries)."""
+    from kratos.agent.tool_summaries import human_summary
+
+    return human_summary(getattr(tool, "name", "") or "", tool, meta_entry) or "(no description)"
 
 
 def tool_call_line(name: str, status: str) -> Text:

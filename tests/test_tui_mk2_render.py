@@ -51,6 +51,25 @@ def test_tool_description_prefers_metadata_then_registered_then_placeholder():
     assert R.tool_description(SimpleNamespace(description=""), None) == "(no description)"
 
 
+def test_tool_descriptions_are_plain_language_for_people():
+    """Screens used to show the model-facing text ("LOCAL KRATOS HOST -- not the
+    monitored target. Checks LIVE NETWORK ACTIVITY ... NON-NEGOTIABLE ...")."""
+    from kratos.agent.tool_summaries import human_summary, where_it_runs
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    for name, tool in TOOL_REGISTRY.items():
+        line = R.tool_description(tool, None)
+        assert len(line) <= 100, (name, line)
+        assert "NON-NEGOTIABLE" not in line and "--" not in line and "Do NOT" not in line, (name, line)
+        assert where_it_runs(name, tool) in ("the target", "this Kratos machine", "saved results", "—")
+    assert where_it_runs("run_linux_command", TOOL_REGISTRY["run_linux_command"]) == "this Kratos machine"
+    # a kept tool without a saved description: its first sentence, shortened, capitals calmed
+    kept = SimpleNamespace(name="x", description="Checks LISTENING SERVICES on the target using ss. More text.")
+    assert human_summary("x", kept) == "Checks listening services on the target using ss."
+    long = SimpleNamespace(name="y", description="word " * 60)
+    assert human_summary("y", long).endswith("…") and len(human_summary("y", long)) <= 97
+
+
 def test_render_step_routes_context_compacted_to_compaction_line():
     emitted: list = []
     fake = SimpleNamespace(_emit_from_worker=emitted.append)

@@ -31,6 +31,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from kratos.agent.tool_summaries import human_summary
 from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
 
 # A chat function has agent_chat's shape reduced to (system, user) -> text|None.
@@ -255,7 +256,7 @@ def preview_agentic(goal: str, target: str, *, chat: Optional[Chat] = None) -> P
         items.append(
             PlanItem(
                 ref=name,
-                label=tool.description.splitlines()[0][:140],
+                label=human_summary(name, tool),
                 required=False,
                 approval_gated=_main_action_gated(tool),
                 may_ask=_optional_prompt_only(tool),

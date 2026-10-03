@@ -756,6 +756,11 @@ class ToolPickerModal(ModalScreen[str | None]):
             yield Static(Text("↑↓ select · Enter run · esc cancel", style=T.TEXT_DIM))
 
     def on_mount(self) -> None:
+        # Wider than the standard card: each row is a tool name plus a plain
+        # sentence and where it looks, which an 84-column card cut off mid-sentence.
+        card = self.query_one(".modal-card")
+        card.styles.width = 124
+        card.styles.max_width = "96%"
         self.query_one("#tp-input", Input).focus()
         self._refresh("")
 
@@ -767,10 +772,15 @@ class ToolPickerModal(ModalScreen[str | None]):
         lst = self.query_one("#tp-list", ListView)
         lst.clear()
         for name, desc in self._matches(query):
+            # desc may lead with a short "where" tag, separated by a tab.
+            where, _, text = desc.partition("\t") if "\t" in desc else ("", "", desc)
             row = Text()
-            row.append(f"{name:<26}", style=T.ACCENT)
-            row.append(desc, style=T.TEXT_MUTED)
-            lst.append(ListItem(Label(row)))
+            row.append(f"{name:<27}", style=T.ACCENT)
+            row.append(f"{where:<12}", style=T.TEXT_DIM)
+            row.append(text, style=T.TEXT_MUTED)
+            cell = Static(row)
+            cell.styles.width = "1fr"   # wrap a long description instead of clipping it
+            lst.append(ListItem(cell))
         if len(lst):
             lst.index = 0
 
