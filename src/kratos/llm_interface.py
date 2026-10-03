@@ -8,7 +8,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import requests
@@ -93,6 +93,14 @@ class TokenUsage:
 
 _last_usage: Optional[TokenUsage] = None
 _session_usage = TokenUsage()
+# Called with (usage, model) after each model call that reports usage, so a UI
+# can keep a durable per-session total. Never allowed to break a query.
+_usage_listener: Optional[Callable[["TokenUsage", str], None]] = None
+
+
+def set_usage_listener(listener: Optional[Callable[["TokenUsage", str], None]]) -> None:
+    global _usage_listener
+    _usage_listener = listener
 
 
 def _record_usage(raw: Any) -> None:
@@ -114,6 +122,12 @@ def _record_usage(raw: Any) -> None:
     usage = TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
     _last_usage = usage
     _session_usage.add(usage)
+    listener = _usage_listener
+    if listener is not None:
+        try:
+            listener(usage.copy(), get_active_llm_model())
+        except Exception:  # noqa: BLE001 -- bookkeeping must never fail a model call
+            pass
 
 
 def get_last_token_usage() -> Optional[TokenUsage]:

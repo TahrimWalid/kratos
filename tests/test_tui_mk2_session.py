@@ -1266,3 +1266,50 @@ def test_command_blocks_are_copied_exactly_with_ctrl_y(tmp_path, monkeypatch):
     assert copied == [f"mkdir -p ~/.config/systemd/user\n{long_cmd}"]
     assert "nightly" in text   # far past 80 columns: visible only because the block wraps
     assert "Ctrl+Y copies these commands exactly" in text
+
+
+def test_usage_is_saved_with_the_session_and_survives_a_restart(tmp_path, monkeypatch):
+    """/usage counted only since Kratos started, so a resumed session showed $0."""
+    from kratos import llm_interface
+    from kratos.storage.session_store import SessionStore
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url", lambda: "https://api.example.test/v1")
+
+    async def _run(scr):
+        app = _Host(scr)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr("kratos.llm_interface.get_active_llm_model", lambda: "gemini-3.1-flash-lite")
+            llm_interface._record_usage({"prompt_tokens": 1000, "completion_tokens": 200})
+            llm_interface._record_usage({"prompt_tokens": 500, "completion_tokens": 100})
+            monkeypatch.setattr("kratos.llm_interface.get_active_llm_model", lambda: "other-model")
+            llm_interface._record_usage({"prompt_tokens": 10, "completion_tokens": 5})
+            await pilot.pause()
+        assert llm_interface._usage_listener is None          # closed session stops counting
+
+    asyncio.run(_run(screen))
+    llm_interface._record_usage({"prompt_tokens": 99, "completion_tokens": 99})   # no session open: not counted
+    rows = {r["model"]: r for r in SessionStore(tmp_path / "kratos.db").get_usage(sid)}   # "after a restart"
+    assert rows["gemini-3.1-flash-lite"]["calls"] == 2 and rows["gemini-3.1-flash-lite"]["prompt_tokens"] == 1500
+    assert rows["other-model"]["total_tokens"] == 15 and not rows["other-model"]["local"]
+
+    shown: list = []
+    monkeypatch.setattr(screen, "_emit", lambda r: shown.append(r))
+    screen._render_usage()
+    from rich.console import Console
+
+    console = Console(width=120, record=True, color_system=None)
+    for r in shown:
+        console.print(r)
+    text = console.export_text()
+    assert "1,500" in text and "All models" in text and "rate unknown" in text and "~$" in text
+
+
+def test_a_local_model_is_marked_free(tmp_path, monkeypatch):
+    from kratos.storage.session_store import SessionStore
+
+    store = SessionStore(tmp_path / "kratos.db")
+    sid = store.create_session(["10.0.0.1"], "m")
+    store.add_usage(sid, "qwen2.5:7b", 100, 10, 110, local=True)
+    assert store.get_usage(sid)[0]["local"] == 1

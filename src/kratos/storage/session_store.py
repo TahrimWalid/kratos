@@ -82,6 +82,23 @@ class SessionStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_goal_history_session ON goal_history(session_id, seq)"
             )
+            # Token usage per session and model, so /usage covers the whole
+            # session across restarts (it used to count only since startup).
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_usage (
+                    session_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    local INTEGER NOT NULL DEFAULT 0,
+                    calls INTEGER NOT NULL DEFAULT 0,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (session_id, model)
+                )
+                """
+            )
             # Migration for a pre-existing kratos.db created before
             # /reset and /delete existed -- CREATE TABLE IF NOT
             # EXISTS above doesn't add columns to an already-existing table.
@@ -434,6 +451,36 @@ class SessionStore:
         if started is None or completed is None:
             return None
         return (completed - started).total_seconds()
+
+    def add_usage(self, session_id: str, model: str, prompt_tokens: int, completion_tokens: int,
+                  total_tokens: int, local: bool = False) -> None:
+        """Add one model call's token counts to the session's running total."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO session_usage (session_id, model, local, calls, prompt_tokens, completion_tokens, "
+                "total_tokens, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?, ?) "
+                "ON CONFLICT(session_id, model) DO UPDATE SET calls = calls + 1, "
+                "prompt_tokens = prompt_tokens + excluded.prompt_tokens, "
+                "completion_tokens = completion_tokens + excluded.completion_tokens, "
+                "total_tokens = total_tokens + excluded.total_tokens, local = excluded.local, "
+                "updated_at = excluded.updated_at",
+                (session_id, model or "unknown", int(bool(local)), int(prompt_tokens), int(completion_tokens),
+                 int(total_tokens), utc_now_iso()),
+            )
+        finally:
+            conn.close()
+
+    def get_usage(self, session_id: str) -> list[dict[str, Any]]:
+        """The session's token totals, one row per model, most used first."""
+        conn = _connect(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT model, local, calls, prompt_tokens, completion_tokens, total_tokens, updated_at "
+                "FROM session_usage WHERE session_id = ? ORDER BY total_tokens DESC", (session_id,)).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
 
     def get_goal_history(self, session_id: str, include_archived: bool = False) -> list[dict[str, Any]]:
         """Defaults to non-archived rows only, so resume-context building

@@ -239,6 +239,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos import llm_interface
 
         llm_interface.reset_session_token_usage()  # fresh cumulative accounting for this session
+        llm_interface.set_usage_listener(self._record_usage)  # and a durable total per session
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         self._user_name = (_kconfig.load_local_config(self._data_dir).get("user_name") or "").strip()
         if self.session_state["targets"]:
@@ -262,6 +263,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit(R.note_line(note))
         self.query_one("#goal", Input).focus()
         self._maybe_timezone_fallback()  # only fires if auto-detect failed
+
+    def on_unmount(self) -> None:
+        from kratos import llm_interface
+
+        # Stop counting calls toward this session once it's closed (only if the
+        # listener is still ours -- another session may have replaced it).
+        if llm_interface._usage_listener == self._record_usage:
+            llm_interface.set_usage_listener(None)
 
     # --- one-time manual timezone entry when auto-detect fails ---
     @work
@@ -936,37 +945,58 @@ class SessionScreen(ResilientWorkerHost, Screen):
         "gemini-3.1-pro-preview": (1.25, 5.00),
     }
 
-    def _render_usage(self) -> None:
-        from kratos import llm_interface
-        from kratos.llm_config import get_active_llm_base_url, get_active_llm_model
+    @staticmethod
+    def _backend_is_local() -> bool:
+        from kratos.llm_config import get_active_llm_base_url
 
-        u = llm_interface.get_session_token_usage()
-        model = get_active_llm_model()
         base = (get_active_llm_base_url() or "").lower()
-        local = any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+        return any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
 
-        rows = [
-            ("model", model),
-            ("prompt tokens", f"{u.prompt_tokens:,}"),
-            ("completion tokens", f"{u.completion_tokens:,}"),
-            ("total tokens", f"{u.total_tokens:,}"),
-        ]
-        if local:
-            rows.append(("cost", "local model — free · private (nothing billed)", T.SAFE))
-        else:
-            rate = self._MODEL_RATES.get(model)
-            if rate:
-                cost = (u.prompt_tokens / 1e6) * rate[0] + (u.completion_tokens / 1e6) * rate[1]
-                rows.append(("cost (rough est.)", f"~${cost:.4f} this process — approximate, verify with your provider", T.ATTENTION))
+    def _record_usage(self, usage: Any, model: str) -> None:
+        """Usage listener (llm_interface): every model call adds to this session's
+        saved total, from whichever thread made the call."""
+        self._store.add_usage(self.session_state["session_id"], model, usage.prompt_tokens,
+                              usage.completion_tokens, usage.total_tokens, local=self._backend_is_local())
+
+    def _render_usage(self) -> None:
+        """The whole session's model usage (saved with the session, so it survives
+        restarts), per model, with an estimated cost."""
+        from rich.table import Table
+
+        rows = self._store.get_usage(self.session_state["session_id"])
+        if not rows:
+            self._emit(R.note_line("No model calls recorded for this session yet."))
+            return
+        table = Table(title="Model usage — this session", title_justify="left",
+                      title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
+        for col, justify in (("Model", "left"), ("Calls", "right"), ("Tokens sent", "right"),
+                             ("Tokens received", "right"), ("Estimated cost", "right")):
+            table.add_column(col, justify=justify)
+        total_cost, unknown = 0.0, []
+        for r in rows:
+            rate = self._MODEL_RATES.get(r["model"])
+            if r["local"]:
+                cost = Text("free (local)", style=T.SAFE)
+            elif rate:
+                value = (r["prompt_tokens"] / 1e6) * rate[0] + (r["completion_tokens"] / 1e6) * rate[1]
+                total_cost += value
+                cost = Text(f"~${value:.4f}", style=T.ATTENTION)
             else:
-                rows.append(("cost", f"cloud · usage-billed — no rate on file for {model}, see your provider's pricing", T.ATTENTION))
-        self._emit(R.kv_table("Token usage — this process", rows))
-        if u.total_tokens == 0:
-            self._emit(R.note_line(
-                "No measured LLM calls yet this run. Counting is per-process (resets on restart), so a "
-                "just-resumed session shows 0 until its next message — prior-run usage isn't tracked."))
-        else:
-            self._emit(R.note_line("Counts are for this process (reset on restart). Local models are always free."))
+                unknown.append(r["model"])
+                cost = Text("billed — rate unknown", style=T.TEXT_DIM)
+            table.add_row(r["model"], f"{r['calls']:,}", f"{r['prompt_tokens']:,}", f"{r['completion_tokens']:,}", cost)
+        if len(rows) > 1:
+            table.add_section()
+            table.add_row("All models", f"{sum(r['calls'] for r in rows):,}",
+                          f"{sum(r['prompt_tokens'] for r in rows):,}",
+                          f"{sum(r['completion_tokens'] for r in rows):,}",
+                          Text(f"~${total_cost:.4f}" + (" + unknown" if unknown else ""), style=T.ATTENTION))
+        self._emit(table)
+        note = ("Costs are estimates from list prices — your provider's bill is the real figure. "
+                "Usage is saved with this session, so it counts every run of it.")
+        if unknown:
+            note += f" No price on file for {', '.join(unknown)}: check your provider's pricing."
+        self._emit(R.note_line(note))
 
     # --- /context (what's in the window) --------------------
     def _render_context(self) -> None:
