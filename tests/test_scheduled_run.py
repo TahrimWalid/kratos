@@ -359,3 +359,21 @@ def test_headless_refuses_ungraduated_generated_pipeline_then_runs(tmp_path, mon
     rec2 = W.run_scheduled(sch, tmp_path, notifier=_Spy())
     assert rec2["status"] == "completed"
     assert calls == ["run_nmap_scan", "correlate_findings"]
+
+
+@pytest.mark.parametrize("outcome", ["not_configured", "refused", "failed"])
+def test_an_unsent_notification_is_not_reported_as_notified(tmp_path, monkeypatch, outcome):
+    """The run record said "notified: yes" whenever delivery was attempted, even
+    with no ntfy topic set up."""
+    from kratos.tui_mk2 import render as R
+
+    sch = S.save_schedule(tmp_path, name="wk", kind="audit", cadence="weekly", deliver=["ntfy"])
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _audit_dispatch(
+        [{"id": "NET-002", "severity": "medium", "title": "ports"}]))
+    rec = W.run_scheduled(sch, tmp_path, notifier=lambda msg, sev: {"status": outcome})
+    assert rec["notified"] is False
+    from rich.console import Console
+
+    console = Console(width=120, record=True)
+    console.print(R.scheduled_run_result_panel(rec))
+    assert "notified: no (" in console.export_text()

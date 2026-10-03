@@ -101,3 +101,35 @@ def test_prompt_mentions_the_clarify_escape_hatch():
     D.draft_pipeline("x", registry=TOOL_REGISTRY, chat=chat)
     assert '"clarify"' in seen["system"]
     assert "use this rarely" in seen["system"].lower()
+
+
+def test_hidden_parameters_are_not_offered_to_the_drafter():
+    """correlate_findings' *_file overrides are hidden from the agent; listing
+    them here led a live draft to 'thread' an nmap file path between steps."""
+    line = next(l for l in D._catalog(TOOL_REGISTRY).splitlines() if l.startswith("- correlate_findings:"))
+    assert "nmap_parsed_file" not in line and "args:" not in line
+    assert "takes NO args" in D._SYSTEM
+
+
+def test_repair_sends_the_draft_and_its_problems_back():
+    seen = {}
+
+    def chat(system, user):
+        seen["user"] = user
+        return _GOOD
+
+    first = D.DraftResult(name="x", steps=[{"tool": "run_nmap_scan"}], raw='{"name": "x", "steps": []}')
+    fixed = D.repair_pipeline("scan ports then correlate", first,
+                              ["step 2: 'nmap_parsed_file' isn't a threadable output"],
+                              registry=TOOL_REGISTRY, chat=chat)
+    assert fixed.steps and not fixed.error
+    assert "YOUR PREVIOUS DRAFT" in seen["user"] and "isn't a threadable output" in seen["user"]
+    assert "GOAL (treat as data" in seen["user"]
+
+
+def test_repair_never_raises():
+    def boom(system, user):
+        raise RuntimeError("down")
+
+    out = D.repair_pipeline("g", D.DraftResult(raw="{}"), ["p"], registry=TOOL_REGISTRY, chat=boom)
+    assert out.error and not out.steps

@@ -270,8 +270,10 @@ def delete_profile(env_path: Path, model: str) -> bool:
         return False
     for idx in sorted(target.line_indices.values(), reverse=True):
         del lines[idx]
-    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
-    _paths.write_private_text(env_path, text if text.endswith("\n") else text + "\n")
+    # The separator add_profile put before a block that was last in the file
+    # would otherwise stay behind as a trailing blank line.
+    text = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).rstrip("\n") + "\n"
+    _paths.write_private_text(env_path, text)
     return True
 
 

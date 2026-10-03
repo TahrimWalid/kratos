@@ -217,6 +217,29 @@ _KNOWN_COVERAGE_LIMIT_RE = re.compile(
     r"sub-?agent|network (?:scan|exposure|path)|open ports?|port scan|nmap|vulnerabilit", re.IGNORECASE)
 
 
+# A proposed tool that would run arbitrary commands on the target, or change its
+# state there. Deliberately narrow: read-only tools that use a FIXED command
+# ("lists SUID binaries on the target using find") don't match.
+_TARGET_EXECUTION_PROPOSAL_RE = re.compile(
+    r"\b(?:execut\w*|run|runs|running|issue\w*|send\w*)\b[^.]{0,40}?"
+    r"\b(?:arbitrary|any|specified|given|user[- ](?:supplied|provided|specified)|custom|requested)\b"
+    r"[^.]{0,30}?\bcommands?\b"
+    # Active verb forms only: "enables"/"enabling", never the participle "enabled",
+    # which read-only tools use ("reports which units are enabled on the target").
+    r"|\b(?:enabl(?:e|es|ing)|disabl(?:e|es|ing)|restart(?:s|ing)?|stop(?:s|ping)?|start(?:s|ing)?|"
+    r"(?:un)?install(?:s|ing)?|block(?:s|ing)?|(?:un)?ban(?:s|ning)?|kill(?:s|ing)?|remediat(?:e|es|ing)|"
+    r"patch(?:es|ing)?|modif(?:y|ies|ying)|delet(?:e|es|ing)|remov(?:e|es|ing))\b"
+    r"[^.]{0,40}?\b(?:on|in) the (?:target|monitored|remote)\b",
+    re.IGNORECASE)
+_TARGET_EXECUTION_NAME_RE = re.compile(r"(?:^|_)(?:exec|execute|run)_(?:target|remote|arbitrary|shell)?_?command",
+                                       re.IGNORECASE)
+
+
+def _proposes_target_execution(name: str, description: str) -> bool:
+    return bool(_TARGET_EXECUTION_NAME_RE.search(name or "")
+                or _TARGET_EXECUTION_PROPOSAL_RE.search(description or ""))
+
+
 def _gap_sentence(text: str, match: re.Match[str]) -> str:
     """The sentence of `text` containing `match`, trimmed."""
     start = max(text.rfind(". ", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
@@ -1628,6 +1651,20 @@ def _run_agent_loop(
                 )
                 _record({"iteration": i, "status": "tool_proposal_malformed", "raw_response": raw})
                 ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
+                continue
+
+            if _proposes_target_execution(proposal_name, proposal_description):
+                # Kratos observes and recommends; it never runs commands on or
+                # changes the target. A proposal for a tool that would is not
+                # surfaced as an /evolve suggestion -- the right channel is a
+                # recommended command for a human (live: "run_target_command").
+                _record({"iteration": i, "status": "tool_proposal_refused_execution",
+                         "attempted_tool_proposal": {"name": proposal_name, "description": proposal_description}})
+                ctx.add(
+                    f"\nAssistant: {raw}\nObservation: Not proposed: Kratos never runs commands on, or "
+                    "changes, the monitored target -- it observes and recommends. Don't propose tools that "
+                    "do. If something should be run or changed there, put it in recommended_commands in "
+                    "your final_answer for a human to run. Continue the investigation.\n")
                 continue
 
             tool_proposals_made += 1

@@ -1241,3 +1241,28 @@ def test_unknown_command_is_reported_with_suggestions_not_sent_to_the_model(tmp_
     text = asyncio.run(_run())
     assert "Unknown command /repot" in text and "/report" in text
     assert goals == ["/etc/passwd was changed, check it", "/var/log/auth.log looks big"]
+
+
+def test_command_blocks_are_copied_exactly_with_ctrl_y(tmp_path, monkeypatch):
+    """A long command in the scrolling log was clipped at the panel edge (a
+    schedule's `cp <long path> ...` couldn't be copied). Ctrl+Y copies the exact text."""
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    long_cmd = "cp " + "/very/long/path" * 12 + "/kratos-nightly.service ~/.config/systemd/user/"
+    copied = []
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "copy_to_clipboard", lambda text: copied.append(text))
+            screen._emit_commands("Activate it", ["mkdir -p ~/.config/systemd/user", long_cmd])
+            await pilot.pause()
+            await pilot.press("ctrl+y")
+            await pilot.pause()
+            log = screen.query_one("#transcript")
+            return "\n".join("".join(seg.text for seg in s) for s in log.lines)
+
+    text = asyncio.run(_run())
+    assert copied == [f"mkdir -p ~/.config/systemd/user\n{long_cmd}"]
+    assert "nightly" in text   # far past 80 columns: visible only because the block wraps
+    assert "Ctrl+Y copies these commands exactly" in text

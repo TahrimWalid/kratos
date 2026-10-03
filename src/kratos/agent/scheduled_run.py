@@ -384,6 +384,10 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
     }
 
 
+def _sent(delivered: Any) -> bool:
+    return isinstance(delivered, dict) and delivered.get("status") == "sent"
+
+
 def run_scheduled(
     schedule: "_sched.Schedule",
     data_dir: Path,
@@ -425,7 +429,7 @@ def run_scheduled(
         if deliver and "ntfy" in schedule.deliver:
             record["delivered"] = notifier(
                 f"Scheduled run '{schedule.name}' did not run — {_kconfig.NO_TARGET_MESSAGE}", "warning")
-            record["notified"] = record["delivered"] is not None
+            record["notified"] = _sent(record["delivered"])
         _sched.append_run_record(data_dir, schedule.name, record)
         return record
 
@@ -451,7 +455,7 @@ def run_scheduled(
             record["delivered"] = notifier(
                 f"Scheduled run '{schedule.name}' skipped — another run is active on "
                 f"{target}. It will run at the next scheduled time.", "info")
-            record["notified"] = record["delivered"] is not None
+            record["notified"] = _sent(record["delivered"])
         _sched.append_run_record(data_dir, schedule.name, record)
         return record
 
@@ -557,7 +561,9 @@ def run_scheduled(
         "report_json": report_json,
         "report_md": report_md,
         "delivered": delivered,
-        "notified": delivered is not None,
+        # Only an actual send counts: "not configured", a refused topic or a failed
+        # delivery all return a result too, and used to read as "notified: yes".
+        "notified": _sent(delivered),
         "triggers_fired": [t.get("trigger") for t in triggers_fired],
         "jobs": job_records,  # A6.5: per-job partial-failure reporting (empty for non-groups)
         "error": error,

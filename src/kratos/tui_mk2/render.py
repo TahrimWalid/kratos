@@ -579,15 +579,22 @@ def approval_panel(title: str, details: dict[str, Any]) -> Panel:
     return Panel(Group(*parts), title=f"Approval needed: {title}", title_align="left", border_style=T.ATTENTION)
 
 
-def command_block_panel(title: str, commands: list[str], note: str | None = None) -> Panel:
-    """A6.3 -- a copy-pasteable block of shell commands (systemd install steps).
-    word_wrap=False so a long line is never soft-wrapped into a broken copy
-    (the exact bug fixed for the target-onboarding checklist)."""
+def command_block_panel(title: str, commands: list[str], note: str | None = None,
+                        copy_hint: bool = False) -> Panel:
+    """A6.3 -- a block of shell commands (systemd install steps) to run elsewhere.
+
+    In the TUI's scrolling log an unwrapped long line is clipped at the edge, so
+    the command could be neither read nor selected whole. With `copy_hint` the
+    block wraps for reading and says that Ctrl+Y copies the exact text (the
+    caller makes it the copy target); without it, lines are left unwrapped."""
     body: list[Any] = []
     if note:
         body.append(Text(note, style=T.TEXT_MUTED))
         body.append(Text(""))
-    body.append(Syntax("\n".join(commands), "bash", word_wrap=False, background_color="default"))
+    body.append(Syntax("\n".join(commands), "bash", word_wrap=copy_hint, background_color="default"))
+    if copy_hint:
+        body.append(Text(""))
+        body.append(Text("Ctrl+Y copies these commands exactly (don't select wrapped text).", style=T.TEXT_DIM))
     return Panel(Group(*body), title=title, title_align="left", border_style=T.ACCENT)
 
 
@@ -694,7 +701,13 @@ def scheduled_run_result_panel(record: dict) -> Panel:
         body.append("\nfindings: none raised", style=T.TEXT_MUTED)
     if record.get("report_md"):
         body.append(f"\nreport: {record['report_md']}", style=T.TEXT_FAINT)
-    body.append(f"\nnotified: {'yes' if record.get('notified') else 'no'}", style=T.TEXT_FAINT)
+    delivered = record.get("delivered") if isinstance(record.get("delivered"), dict) else {}
+    why = "" if record.get("notified") else {
+        "not_configured": " (notifications aren't set up: KRATOS_NTFY_TOPIC)",
+        "refused": " (the ntfy topic was refused — see /doctor)",
+        "failed": " (delivery failed)",
+    }.get(str(delivered.get("status")), "")
+    body.append(f"\nnotified: {'yes' if record.get('notified') else 'no'}{why}", style=T.TEXT_FAINT)
     if record.get("error"):
         body.append(f"\nnote: {record['error']}", style=T.ATTENTION)
     return Panel(body, title="Kratos — scheduled run", title_align="left", border_style=color)

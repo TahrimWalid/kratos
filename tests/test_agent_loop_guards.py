@@ -806,3 +806,22 @@ def test_run_linux_command_still_offered_when_investigating_kratos_itself(remote
     _kcfg.set_active_target("127.0.0.1")
     prompt = agent_loop.build_system_prompt()
     assert "- run_linux_command" in prompt and "4 of the tools listed above are the exception" in prompt
+
+
+def test_a_proposal_to_run_commands_on_the_target_is_not_surfaced(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live finding: asked to run `uptime` on the target, the model proposed
+    `run_target_command` ("Executes a specified ... shell command on the target")
+    as an /evolve suggestion. Kratos observes and recommends; it never offers that."""
+    execute = json.dumps({"reasoning": "need it", "tool_proposal": {
+        "name": "run_target_command",
+        "description": "Executes a specified, non-interactive shell command on the target device via SSH."}})
+    chat = ScriptedChat([execute, _proposal_json(), _tool_json("correlate_findings"), _final_json(CORRECTED_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("run uptime on the target", data_dir, max_iters=10)
+    surfaced = [s["tool_proposal"]["name"] for s in result["transcript"] if s.get("tool_proposal")]
+    assert surfaced == ["find_suid_binaries"]           # the read-only one still goes through
+    refused = [s for s in result["transcript"] if s.get("status") == "tool_proposal_refused_execution"]
+    assert refused and refused[0]["attempted_tool_proposal"]["name"] == "run_target_command"
+    assert any("never runs commands on" in c for c in chat.calls)   # the model is told why

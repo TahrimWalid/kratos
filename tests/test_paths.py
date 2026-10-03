@@ -466,3 +466,21 @@ def test_doctor_warns_when_the_settings_file_is_readable_by_others(monkeypatch, 
     out = []
     doctor._check_files(out)
     assert out[0]["status"] == "info"
+
+
+@pytest.mark.parametrize("original", [
+    "LLM_BASE_URL=https://a.example/v1\nLLM_API_KEY=k\nLLM_MODEL=m1\nKRATOS_LLM_BACKEND=openai_compatible\n",
+    "# settings\nKRATOS_SSH_HOST=203.0.113.5\n",
+    "",
+])
+def test_adding_then_deleting_a_model_leaves_the_file_unchanged(tmp_path, original):
+    from kratos.adapters import llm_profiles
+
+    env = tmp_path / ".env"
+    env.write_text(original)
+    llm_profiles.add_profile(env, {"LLM_BASE_URL": "http://127.0.0.1:9/v1", "LLM_API_KEY": "x",
+                                   "LLM_MODEL": "temp-model", "KRATOS_LLM_BACKEND": "openai_compatible"},
+                             make_active=False)
+    assert "temp-model" in env.read_text()
+    assert llm_profiles.delete_profile(env, "temp-model")
+    assert env.read_text() == (original or "\n")

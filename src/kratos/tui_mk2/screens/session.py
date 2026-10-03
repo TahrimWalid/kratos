@@ -287,7 +287,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # commands, those are copied instead (joined one per line).
         if self._last_commands:
             self.app.copy_to_clipboard("\n".join(self._last_commands))
-            self.notify(f"Copied {len(self._last_commands)} recommended command(s) to the clipboard.", timeout=3)
+            self.notify(f"Copied {len(self._last_commands)} command(s) to the clipboard.", timeout=3)
             return
         if not self._last_answer.strip():
             self.notify("Nothing to copy yet — run a goal first.", timeout=3)
@@ -328,6 +328,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._hist_index = len(self._hist_turns)
             inp.value = self._pre_recall_draft
         inp.cursor_position = len(inp.value)
+
+    def _emit_commands(self, title: str, commands: list[str], note: str | None = None) -> None:
+        """Show commands to run elsewhere, wrapped for reading, and make them what
+        Ctrl+Y copies (a clipped or wrapped on-screen line can't be copied whole)."""
+        self._last_commands = [c for c in commands if c.strip()]
+        self._emit(R.command_block_panel(title, commands, note=note, copy_hint=True))
 
     def _reset_recall(self) -> None:
         self._hist_turns = None
@@ -802,15 +808,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif cmd in ("/preset-list", "/preset-ls"):
             self._preset_render_list()
         elif cmd == "/preset-run":
-            self._preset_guided("run")
+            self._preset_guided("run", rest)
         elif cmd == "/preset-edit":
-            self._preset_guided("edit")
+            self._preset_guided("edit", rest)
         elif cmd in ("/preset-delete", "/preset-del"):
-            self._preset_guided("delete")
+            self._preset_guided("delete", rest)
         elif cmd == "/preset-show":
-            self._preset_guided("show")
+            self._preset_guided("show", rest)
         elif cmd == "/preset-export":
-            self._preset_guided("export")
+            self._preset_guided("export", rest)
         elif cmd == "/preset-import":
             self._preset_flow("import " + rest if rest else "import")
         elif cmd in ("/doctor", "/health"):
@@ -1145,7 +1151,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit(R.preset_table(presets, errors, last_run=last_run, unavailable=unavailable))
 
     @work
-    async def _preset_guided(self, action: str) -> None:
+    async def _preset_guided(self, action: str, rest: str = "") -> None:
         """The guided (menu-friendly) path for run/edit/delete/show: pick a
         preset from a list instead of typing its name. `run` and `edit` only
         offer runnable (goal) presets; delete/show offer all. Then hands off to
@@ -1177,9 +1183,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 return f"({len(p.steps)}-step pipeline)"
             return f"({p.kind})"
 
-        entries = [(p.name, f"{p.name}   {_preview(p)}") for p in candidates]
-        name = await self.app.push_screen_wait(
-            ListPickerModal(f"Preset to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+        # A name typed after the command ("/preset-show weekly") is used directly;
+        # an unknown one is said out loud before falling back to the picker.
+        wanted = rest.strip().strip('"').strip("'")
+        name = next((p.name for p in candidates if wanted and p.name.lower() == wanted.lower()), None)
+        if wanted and name is None:
+            self._emit(R.note_line(f"No preset named '{wanted}' to {action} — pick one:"))
+        if name is None:
+            entries = [(p.name, f"{p.name}   {_preview(p)}") for p in candidates]
+            name = await self.app.push_screen_wait(
+                ListPickerModal(f"Preset to {action}", entries, subtitle="↑↓ pick · esc cancel"))
         if name is None:
             return
         if action == "run":
@@ -1531,7 +1544,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         import asyncio
 
         from kratos.agent import presets as _P
-        from kratos.agent.pipeline_draft import DraftResult, draft_pipeline
+        from kratos.agent.pipeline_draft import DraftResult, draft_pipeline, repair_pipeline
         from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
 
         goal = (goal or "").strip()
@@ -1595,6 +1608,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
             parsed = await self._offer_build_missing_tools(missing_tools, draft.steps)
             if parsed is None:
                 return  # declined / cancelled / still missing — reason already emitted
+        if parsed.errors:
+            # One repair round: the model gets its draft and the exact problems.
+            self._emit(R.note_line("The first draft had problems — asking the model to fix them (one try)…"))
+            fixed = await asyncio.to_thread(repair_pipeline, goal, draft, list(parsed.errors),
+                                            registry=TOOL_REGISTRY)
+            if not fixed.error and fixed.steps:
+                reparsed = _P.parse_pipeline(fixed.steps, registry=TOOL_REGISTRY)
+                if not reparsed.errors and all(s["tool"] in TOOL_REGISTRY for s in reparsed.steps):
+                    draft, parsed = fixed, reparsed
         if parsed.errors:
             # A drafted reference/field/shape that isn't valid — stop honestly.
             self._emit(R.error_line("I drafted a pipeline, but it isn't valid to save:"))
@@ -2185,10 +2207,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         except _P.PresetError as e:
             self._emit(R.error_line(str(e)))
             return
-        self._emit(R.command_block_panel(
+        self._emit_commands(
             "Pipeline template written — edit it, then run it", [str(path)],
             note="It's a valid starter pipeline (nmap → correlate). Edit the [[steps]], then "
-                 "run with /preset-run. Kratos validates it on load and shows any problems."))
+                 "run with /preset-run. Kratos validates it on load and shows any problems.")
 
     async def _preset_edit(self, args: list[str]) -> None:
         from kratos.agent import presets as _P
@@ -2464,10 +2486,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if notify_config_status()[0] in ("off", "bad"):
             self._emit(R.note_line("Notifications are off, so this schedule will only save reports on disk. "
                                    "To get alerts, set KRATOS_NTFY_TOPIC in .env (/doctor suggests one)."))
-        self._emit(R.command_block_panel(
+        self._emit_commands(
             "Activate it — run these once (Kratos never runs systemctl for you)", cmds,
             note="systemd then owns the timing, reboot-survival, and catch-up. "
-                 "Test it any time with /schedule run-now."))
+                 "Test it any time with /schedule run-now.")
 
     def _group_has_agentic_job(self, jobs: list[dict]) -> bool:
         """True if any group job runs the LLM (a goal preset) — the only kind
@@ -2531,8 +2553,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if sch is None:
             return
         service_path, timer_path = _U.write_units(sch, self._data_dir)
-        self._emit(R.command_block_panel(
-            f"Install {sch.unit_name}.timer", _U.install_commands(sch, service_path, timer_path)))
+        self._emit_commands(f"Install {sch.unit_name}.timer", _U.install_commands(sch, service_path, timer_path))
 
     async def _schedule_delete(self, args: list[str]) -> None:
         from kratos.agent import schedules as _S
@@ -2549,8 +2570,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         if _S.delete_schedule(self._data_dir, sch.name):
             self._emit(R.success_line(f"Deleted schedule {sch.name!r}."))
-            self._emit(R.command_block_panel(
-                "If you installed its timer, remove it too", _U.uninstall_commands(sch)))
+            self._emit_commands("If you installed its timer, remove it too", _U.uninstall_commands(sch))
         else:
             self._emit(R.error_line(f"Couldn't delete {sch.name!r}."))
 
@@ -3315,7 +3335,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._set_busy(False)
             return
         inner, status = R.unwrap_tool_result(result)
-        if status == "error":
+        if status == "not_approved" or (isinstance(inner, dict) and inner.get("status") == "not_approved"):
+            self._emit_from_worker(R.note_line(f"{name} — not approved, so it did not run."))
+        elif status == "error":
             self._emit_from_worker(R.error_line(f"{name} failed — {R.error_detail(inner) or 'no error detail'}"))
         elif name == "correlate_findings" and isinstance(inner, dict) and inner.get("findings"):
             self._emit_from_worker(R.tool_call_line(name, status))
