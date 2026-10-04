@@ -226,3 +226,15 @@ def test_naming_a_window_with_its_own_id_is_harmless():
     c = ctx()
     w = c.resolve({"kind": "rolling", "amount": 3, "unit": "day"}, name="w1")
     assert w.id == "w1" and "w1" not in c.named
+
+
+def test_an_offset_equal_to_the_users_zone_is_accepted_and_others_refused():
+    """Seen live (demo, zone UTC): start '2026-10-03T00:00:00Z' was refused and the model
+    spent two steps on it. 'Z' in a UTC zone can't shift anything; in New York it could."""
+    w = ctx(tz=UTC, now=datetime(2026, 3, 8, 10, 30, tzinfo=UTC)).resolve(
+        {"kind": "local_range", "start": "2026-03-07T15:00:00Z", "end": "2026-03-07T16:00:00+00:00"})
+    assert w.start_utc == datetime(2026, 3, 7, 15, 0, tzinfo=UTC).timestamp()
+    w2 = ctx().resolve({"kind": "local_since", "start": "2026-03-07T15:00:00-05:00"})  # NY's own offset
+    assert w2.start_utc == datetime(2026, 3, 7, 15, 0, tzinfo=NY).timestamp()
+    with pytest.raises(TimeIntentError):
+        ctx().resolve({"kind": "local_since", "start": "2026-03-07T15:00:00Z"})      # would shift 5 hours

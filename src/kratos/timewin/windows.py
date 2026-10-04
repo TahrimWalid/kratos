@@ -138,8 +138,12 @@ def _shift_months(naive: datetime, months: int) -> datetime:
     return naive.replace(year=y, month=m, day=min(naive.day, calendar.monthrange(y, m)[1]))
 
 
-def _parse_local(value: str, what: str) -> tuple[datetime, bool]:
-    """(naive local datetime, is_date_only) for an intent's local wall-clock bound."""
+def _parse_local(value: str, what: str, tz: tzinfo | None = None) -> tuple[datetime, bool]:
+    """(naive local datetime, is_date_only) for an intent's local wall-clock bound.
+    Offsets are the code's job: a model that writes '10:00Z' for the user's local 10am
+    would silently shift the window. The one exception is an offset EQUAL to the user's
+    own zone offset at that time (e.g. 'Z' when the user's zone is UTC) -- wall clock and
+    instant agree, nothing can shift (seen live: refusing that cost the model two steps)."""
     if not isinstance(value, str) or not value.strip():
         raise TimeIntentError(f"{what} must be a local date/time string like '2026-07-05' or '2026-07-05T14:00'")
     v = value.strip().replace(" ", "T", 1)
@@ -149,6 +153,10 @@ def _parse_local(value: str, what: str) -> tuple[datetime, bool]:
         parsed = datetime.fromisoformat(v)
     except ValueError:
         raise TimeIntentError(f"{what} {value!r} is not an ISO date/time (use YYYY-MM-DD or YYYY-MM-DDTHH:MM)") from None
+    if parsed.tzinfo is not None and tz is not None:
+        naive = parsed.replace(tzinfo=None)
+        if parsed.utcoffset() == naive.replace(tzinfo=tz).utcoffset():
+            return naive, False
     if parsed.tzinfo is not None:
         raise TimeIntentError(f"{what} {value!r}: give LOCAL wall-clock time without an offset; "
                               "Kratos applies the user's timezone itself")
@@ -253,14 +261,14 @@ def resolve_intent(intent: dict[str, Any], ctx: "TimeContext") -> tuple[float, f
         return start, end, label, notes
 
     if kind == "local_since":
-        naive, _ = _parse_local(intent.get("start"), "start")
+        naive, _ = _parse_local(intent.get("start"), "start", tz)
         start, n = localize(naive, tz)
         note(n)
         return start, now, f"since {naive:%Y-%m-%d %H:%M}", notes
 
     if kind == "local_range":
-        s_naive, _ = _parse_local(intent.get("start"), "start")
-        e_naive, e_date_only = _parse_local(intent.get("end"), "end")
+        s_naive, _ = _parse_local(intent.get("start"), "start", tz)
+        e_naive, e_date_only = _parse_local(intent.get("end"), "end", tz)
         if e_date_only:
             # Date-granularity end is INCLUSIVE of that whole day (design §2C default).
             e_naive = e_naive + timedelta(days=1)
