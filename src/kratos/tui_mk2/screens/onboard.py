@@ -247,10 +247,12 @@ class OnboardTargetScreen(Screen[str | None]):
             self.app.push_screen(InfoModal(self._labels[key], _detail_table(key, self._details)))
 
     # ------------------------------------------------------------------
-    def _log(self, renderable) -> None:
+    def _log(self, renderable) -> Static:
         log = self.query_one("#ob-log", VerticalScroll)
-        log.mount(Static(renderable))
+        line = Static(renderable)
+        log.mount(line)
         log.scroll_end(animate=False)
+        return line
 
     def _select_method(self, picked: str) -> None:
         if picked == "skip":
@@ -343,10 +345,16 @@ class OnboardTargetScreen(Screen[str | None]):
         from kratos.adapters.ssh_remote import SSHResult, run_target_probe_checks
 
         via_agent = self._method == "paired"
-        self.app.call_from_thread(self._log, Text(
+        # A progress line, removed once the result is shown (it read as still
+        # running next to the finished table).
+        checking = self.app.call_from_thread(self._log, Text(
             f"Checking what Kratos can read on {self._target_host} through its sub-agent…" if via_agent
             else f"Checking whether Kratos can log in to {self._target_host}…", style=T.TEXT_DIM))
-        result = run_target_probe_checks()
+        try:
+            result = run_target_probe_checks()
+        finally:
+            if checking is not None:
+                self.app.call_from_thread(checking.remove)
         from kratos.tui_mk2 import target_memory as TM
 
         TM.record_check(self._data_dir, self._target_host, "subagent" if via_agent else "ssh",
@@ -372,7 +380,7 @@ class OnboardTargetScreen(Screen[str | None]):
 
         from kratos.adapters.target_setup import check_label
 
-        table = Table(show_header=True, header_style="bold", title="Setup check")
+        table = Table(show_header=True, header_style="bold", title=f"Setup check — {self._target_host}")
         table.add_column("Check")
         table.add_column("Status")
         table.add_column("Detail")
