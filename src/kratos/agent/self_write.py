@@ -179,6 +179,9 @@ functions:
 
 `run_remote_command(command)` runs one command string on the target over SSH; `run_remote_script
 (script)` runs a multi-line script via `bash -s` (use this if you need more than one command).
+Read the target in ONE such call. When you need several files or commands, do them all in one
+script and print a marker line before each part, e.g. `echo "=== /etc/crontab ==="`, then split
+the output on those markers -- the test that judges your tool fakes that ONE call's output.
 Both return an SSHResult (`.ok`, `.returncode`, `.stdout`, `.stderr`) -- never raise on a failed
 command, so always check `.ok` before trusting `.stdout`. The command/script string itself MUST
 be fixed at write time (a literal you write, optionally with fixed flags) -- never build it from

@@ -213,8 +213,50 @@ RULES:
 - Prefer to attach a short, plain-English message to each assertion (e.g. `assert "users" in result, "Result must list each user with sudo access"`) -- a non-technical reviewer reads those messages to understand what the test is really checking, so make them a faithful description of the assertion, not a restatement of the code.
 - You do NOT know the real implementation yet -- you are proposing a REASONABLE interface (return dict shape) for it to be judged against. A human will review and adjust this before it's ever used, so make a concrete, defensible choice rather than a vague one.
 - If the goal is target-facing (see above), mock the SSH layer as shown -- do not write a harness that will hang or fail in a no-network sandbox regardless of whether the candidate is correct.
+- Fake the tool's ONE remote call with a fixed reply (`return_value=SSHResult(...)`). NEVER use a side_effect function that looks at the command or script text to decide what to return -- that ties the test to one way of writing the command and a correct tool fails it. When the tool needs several files, put them all in that one fake output, each after a marker line like `=== /etc/crontab ===` (the tool is told to print exactly such markers).
 - Output ONLY the Python source code -- no markdown fences, no commentary before or after.
 '''
+
+
+def fragile_ssh_fakes(code: str) -> list[str]:
+    """Fake SSH functions in a drafted test that decide their reply from the command
+    text (e.g. `if "ls" in script: ...; path = script.split("cat ")[-1]`). Such a fake
+    only accepts one particular way of writing the command, so a correct tool that
+    reads everything in one script fails every attempt (seen live). A fixed
+    return_value, or a list of replies, is fine."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    funcs = {n.name: n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    found: list[str] = []
+    for call in ast.walk(tree):
+        if not (isinstance(call, ast.Call) and call.args and isinstance(call.args[0], ast.Constant)
+                and "ssh_remote.run_remote" in str(call.args[0].value)):
+            continue
+        for kw in call.keywords:
+            if kw.arg != "side_effect":
+                continue
+            fn = kw.value
+            if isinstance(fn, ast.Lambda):
+                args, body, label = fn.args, fn.body, "a lambda"
+            elif isinstance(fn, ast.Name) and fn.id in funcs:
+                args, body, label = funcs[fn.id].args, funcs[fn.id], fn.id
+            else:
+                continue
+            params = {a.arg for a in args.posonlyargs + args.args + args.kwonlyargs}
+            params |= {a.arg for a in (args.vararg, args.kwarg) if a is not None}
+            if params & {n.id for n in ast.walk(body) if isinstance(n, ast.Name)}:
+                found.append(label)
+    return found
+
+
+_FRAGILE_FAKE_FEEDBACK = (
+    "\n\nYour previous draft faked SSH with a side_effect function ({names}) that reads the command "
+    "text to decide what to return. Rewrite it: fake the tool's ONE remote call with a fixed "
+    "return_value=SSHResult(...); if several files are needed, put them all in that one output, each "
+    "after a marker line like '=== /path ==='. Keep the same assertions."
+)
 
 
 def _draft_evolve_harness(console, slug: str, goal: str) -> str | None:
@@ -256,7 +298,35 @@ def _draft_evolve_harness(console, slug: str, goal: str) -> str | None:
         )
         return None
 
+    fragile = fragile_ssh_fakes(code)
+    if fragile:  # one redraft with the reason; a fake that reads the command fails correct tools
+        redraft = _redraft_without_fragile_fakes(_EVOLVE_HARNESS_DRAFT_SYSTEM_PROMPT, user_prompt, slug, fragile)
+        if redraft is not None:
+            return redraft
+        _console.render_note(
+            console, "Note: this test's fake SSH reply depends on the exact command the tool runs, so a "
+                     "correct tool may still fail it. Consider editing it to return one fixed output.")
     return code
+
+
+def _redraft_without_fragile_fakes(system_prompt: str, user_prompt: str, tool_name: str,
+                                   fragile: list[str]) -> str | None:
+    """Ask once more, saying why; return the new draft only if it passes every guard."""
+    from kratos.agent.self_write import _extract_code
+
+    raw = agent_chat(system_prompt=system_prompt,
+                     user_prompt=user_prompt + _FRAGILE_FAKE_FEEDBACK.format(names=", ".join(fragile)),
+                     max_tokens=MAX_TOKENS)
+    if raw is None:
+        return None
+    code = _extract_code(raw)
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return None
+    if f'TOOL_NAME = "{tool_name}"' not in code and f"TOOL_NAME = '{tool_name}'" not in code:
+        return None
+    return None if fragile_ssh_fakes(code) else code
 
 
 def _suggest_evolve_tool_name(goal: str) -> str | None:
@@ -570,6 +640,9 @@ def regenerate_harness_from_claims(tool_name: str, goal: str, corrected_claims: 
         return None
     if f'TOOL_NAME = "{tool_name}"' not in code and f"TOOL_NAME = '{tool_name}'" not in code:
         return None
+    fragile = fragile_ssh_fakes(code)
+    if fragile:
+        return _redraft_without_fragile_fakes(_REGEN_HARNESS_SYSTEM_PROMPT, user_prompt, tool_name, fragile) or code
     return code
 
 
