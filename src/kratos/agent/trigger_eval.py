@@ -165,7 +165,7 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     real fire and the side-effect-free preview."""
     matched_ids = sorted({str(f.get("id") or "") for f in matched if f.get("id")})
     worst = _worst(matched)
-    stamp = now.isoformat()
+    stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     header = (f"Trigger '{trigger.name}' fired on {target} — {trigger.condition_text}\n"
               f"matched: {', '.join(matched_ids) or '(finding)'}  ·  worst: {worst}\n"
               f"as of {stamp}")

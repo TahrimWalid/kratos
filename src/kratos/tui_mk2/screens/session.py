@@ -2848,17 +2848,19 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         # A synthetic finding that satisfies this trigger's condition, so the test
         # always demonstrates a fire (structured fields only — no evidence).
+        # A made-up EXAMPLE id (not a real finding id like CORR-SSH-001, which would
+        # read as "that real finding is only medium") unless the trigger names one.
         synthetic = {
-            "id": tg.finding_id or "CORR-SSH-001",
+            "id": tg.finding_id or "EXAMPLE",
             "severity": tg.min_severity or "high",
-            "title": "sample finding for a trigger test",
+            "title": "example finding for a trigger test",
         }
         target = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
         preview = preview_trigger(self._data_dir, tg, [synthetic], target)
         self._emit(R.note_line(
-            f"Test — if a {synthetic['severity']} finding "
-            f"{'(' + synthetic['id'] + ') ' if tg.finding_id else ''}appears on {target}, "
-            f"trigger {tg.name!r} would fire ({tg.action}). No notification was sent."))
+            f"Test with an example {synthetic['severity']} finding"
+            f"{' (' + synthetic['id'] + ')' if tg.finding_id else ''} on {target}: "
+            f"trigger {tg.name!r} would fire ({tg.action}). Nothing was sent."))
         if preview.get("body"):
             self._emit(R.result_panel(f"Would send — {tg.action}", preview["body"], T.ACCENT))
 
