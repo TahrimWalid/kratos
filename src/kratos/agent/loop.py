@@ -233,6 +233,40 @@ def _agent_hidden_tools() -> frozenset[str]:
         return frozenset()
     return frozenset(n for n in TOOL_REGISTRY if _reads_over_ssh(n))
 
+# A model sometimes writes its machine-checkable claims INTO the answer text
+# ("... unknown. Claims: [{"kind": "count", ...}]") instead of the "claims" field
+# -- seen live on gemini-3.1-flash-lite: the user saw raw JSON and Guard 7 noted
+# the answer as unverified. Such a list is pulled out and verified like any other.
+_INLINE_CLAIMS_LABEL_RE = re.compile(r"""(?:\*\*)?["'`]?\bclaims["'`]?(?:\*\*)?\s*[:=]\s*(?:```(?:json)?\s*)?""",
+                                     re.IGNORECASE)
+
+
+def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
+    """(answer without the inline claims list, the list) -- or (text, None) when the
+    answer carries no well-formed claims list. Only a JSON list of objects that each
+    have a "kind" counts, so prose that merely says "claims:" is left alone."""
+    decoder = json.JSONDecoder()
+    for m in reversed(list(_INLINE_CLAIMS_LABEL_RE.finditer(text))):
+        start = text.find("[", m.end())
+        if start < 0 or text[m.end():start].strip():
+            continue
+        try:
+            claims, end = decoder.raw_decode(text, start)
+        except ValueError:
+            continue
+        if not (isinstance(claims, list) and claims
+                and all(isinstance(c, dict) and c.get("kind") for c in claims)):
+            continue
+        rest = text[end:].lstrip()
+        if rest.startswith("```"):
+            rest = rest[3:]
+        if rest.strip(" \t\n.`"):
+            continue  # the list isn't the end of the answer -- leave the prose untouched
+        head = re.sub(r"```(?:json)?\s*$", "", text[: m.start()].rstrip())
+        return head.rstrip(" \t\n-—:(`"), claims
+    return text, None
+
+
 # Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
 # yesterday); an answer must say so instead of inferring that state from other data.
 # Live incident (2026-10-04): "was port 22 open yesterday?" -> state_as_of "no
@@ -1302,6 +1336,10 @@ def _run_agent_loop(
 
         if "final_answer" in parsed:
             final_answer_text = parsed["final_answer"]
+            if not parsed.get("claims") and isinstance(final_answer_text, str):
+                final_answer_text, inline_claims = _split_inline_claims(final_answer_text)
+                if inline_claims:
+                    parsed["claims"] = inline_claims
             # Optional structured remediation recommendations (feature 19b) --
             # sanitized here, carried through unchanged whether or not the
             # guards below NOTE-tag the prose answer. Recommendations only;

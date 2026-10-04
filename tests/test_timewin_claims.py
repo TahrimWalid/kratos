@@ -164,3 +164,39 @@ def test_untimed_goals_are_unaffected_by_guard7(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
     out = agent_loop.run_agent("is ssh configured well?", tmp_path, timezone="UTC", now=NOW)
     assert out["status"] == "final_answer" and "[NOTE:" not in out["final_answer"] and len(chat.calls) == 2
+
+
+def test_claims_written_inside_the_answer_are_pulled_out_and_verified(tmp_path, monkeypatch):
+    """Seen live (flash-lite): the claims list was written INTO the answer ('... Claims:
+    [{"kind": "count", ...}]'), so the user saw raw JSON and the answer got an
+    'unverified' note. It is now taken out of the text and verified like the field."""
+    def fake_measure(data_dir, window=None, since=None, until=None):
+        tw = resolve_tool_window(window=window, since=since, until=until, tool="measure_auth_activity")
+        m = _measurement(tw.window.start_utc, tw.window.end_utc, 5, {"10.136.28.52": 5})
+        current_context().measurements[tw.window.id] = measurement_summary(m)
+        return {"status": "ok", "counts": {"ssh_failed_login": 5}}
+
+    monkeypatch.setattr(TOOL_REGISTRY["measure_auth_activity"], "handler", fake_measure)
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler",
+                        lambda **k: {"findings": [], "count": 0, "staleness_warning": None})
+    prose = "There were 5 failed attempts in the last 30 minutes."
+    inline = prose + ' Claims: [{"kind": "count", "metric": "ssh_failed_logins", "window": "w1", "value": 5}]'
+    chat = ScriptedChat([
+        json.dumps({"reasoning": "r", "tool": "measure_auth_activity", "args": {"window": {"id": "w1"}}}),
+        json.dumps({"reasoning": "r", "tool": "correlate_findings", "args": {}}),
+        json.dumps({"reasoning": "d", "final_answer": inline}),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    out = agent_loop.run_agent("how many failed logins in the last 30 minutes?", tmp_path, timezone="UTC", now=NOW)
+    assert out["final_answer"] == prose                       # no JSON shown, no note
+    assert out["claims"] and out["claims"][0]["verified"]
+    assert not [s for s in out["transcript"] if s.get("status") == "final_answer_rejected"]
+
+
+@pytest.mark.parametrize("text", [
+    "The claims: [1, 2] in the old report were wrong.",              # not claim objects
+    'Claims: [{"kind": "count"}] -- and then more prose follows.',    # list isn't the end
+    "No structured claims here at all.",
+])
+def test_prose_that_only_mentions_claims_is_left_alone(text):
+    assert agent_loop._split_inline_claims(text) == (text, None)
