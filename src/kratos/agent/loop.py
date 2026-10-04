@@ -187,6 +187,19 @@ def _agent_hidden_tools() -> frozenset[str]:
     target = (get_active_target() or "").strip().lower()
     return frozenset() if target in _LOOPBACK_SELF_TARGETS else _LOCAL_ONLY_AGENT_TOOLS
 
+# Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
+# yesterday); an answer must say so instead of inferring that state from other data.
+# Live incident (2026-10-04): "was port 22 open yesterday?" -> state_as_of "no
+# record" -> answer "confirmed open" because sudo sessions were logged.
+_NO_RECORD_ACK_RE = re.compile(
+    r"\bno (?:saved |stored |earlier |prior |such )?(?:record|snapshot|scan|data|history)s?\b"
+    r"|\bnot (?:recorded|saved|captured)\b|\bhas no (?:record|snapshot)|\bhave no (?:record|snapshot)"
+    r"|\b(?:do|does)(?:n't| not) have (?:a |any )?(?:saved |stored )?(?:record|snapshot|scan)"
+    r"|\b(?:can(?:no|')t|could(?:n't| not)|unable to) (?:tell|say|confirm|determine|verify)\b"
+    r"|\bunknown\b",
+    re.IGNORECASE,
+)
+
 # Guard 8: the answer states Kratos lacks a capability. Deliberately narrow --
 # the subject must be Kratos/the agent (or a check that "was not performed
 # because" of a missing capability), and it must name a tool/capability, so an
@@ -1064,6 +1077,11 @@ def _run_agent_loop(
     # proposal (or a correction). Advisory only: never tags the answer.
     gap_claim_reject_count = 0
     MAX_GAP_CLAIM_REJECTIONS = 1
+    # Guard 9 (no-record honesty): category -> "open_ports at 2026-10-03 12:00" for
+    # each state_as_of that found no record (a later successful lookup clears it).
+    state_no_records: dict[str, str] = {}
+    no_record_reject_count = 0
+    MAX_NO_RECORD_REJECTIONS = 1
     tool_proposals_made = 0
     # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
     tool_claim_reject_count = 0
@@ -1368,6 +1386,14 @@ def _run_agent_loop(
                 and gap_claim_reject_count < MAX_GAP_CLAIM_REJECTIONS
             )
 
+            # --- Guard 9: a past state with no record must be said, not inferred ---
+            guard9_violated = bool(state_no_records) and not _NO_RECORD_ACK_RE.search(final_answer_text)
+            guard9_can_reject = (
+                guard9_violated
+                and not is_final_iteration
+                and no_record_reject_count < MAX_NO_RECORD_REJECTIONS
+            )
+
             corrections: list[str] = []
             violations: list[str] = []
 
@@ -1470,6 +1496,17 @@ def _run_agent_loop(
                     "measure_auth_activity for it first."
                 )
 
+            if guard9_can_reject:
+                no_record_reject_count += 1
+                violations.append("past_state_without_record")
+                corrections.append(
+                    "REJECTED (past state without a record): state_as_of found NO saved record of "
+                    + "; ".join(state_no_records.values())
+                    + ". Say plainly that Kratos has no record of that, and do not infer the past state "
+                    "from other data (login or sudo events say nothing about which ports were open). "
+                    "If useful, say what WOULD answer it next time (e.g. a scan saved at that time)."
+                )
+
             if guard8_can_reject:
                 gap_claim_reject_count += 1
                 violations.append("unproposed_capability_gap")
@@ -1553,6 +1590,13 @@ def _run_agent_loop(
                     "[NOTE: parts of this answer could not be verified against Kratos's own measurements: "
                     + "; ".join(claim_problems[:4]) + (" (and more)" if len(claim_problems) > 4 else "")
                     + " -- treat those statements as unverified.]\n\n" + final_answer_text
+                )
+
+            if guard9_violated:
+                final_answer_text = (
+                    "[NOTE: Kratos has no saved record of " + "; ".join(state_no_records.values())
+                    + " -- anything above about that past state is inferred from other data, not "
+                    "observed.]\n\n" + final_answer_text
                 )
 
             if guard6_violated:
@@ -1874,6 +1918,16 @@ def _run_agent_loop(
                     last_correlate_findings_error = inner_result.get("observation") or "correlate_findings failed with no error detail."
                 else:
                     last_correlate_findings_error = "correlate_findings call did not return a real findings result."
+
+        if tool_name == "state_as_of":
+            inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
+            if isinstance(inner_result, dict) and inner_result.get("status") == "ok":
+                category = str(inner_result.get("category") or "that")
+                if inner_result.get("snapshot") is None and str(inner_result.get("note") or "").startswith("no record"):
+                    when = str(inner_result.get("requested_at") or "that time").replace("T", " ")[:16]
+                    state_no_records[category] = f"{category.replace('_', ' ')} at {when} UTC"
+                else:
+                    state_no_records.pop(category, None)
 
         if tool_name == "check_file_integrity":
             # Only a real "ok" diff counts (not "baseline_established" --

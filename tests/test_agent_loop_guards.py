@@ -825,3 +825,78 @@ def test_a_proposal_to_run_commands_on_the_target_is_not_surfaced(
     refused = [s for s in result["transcript"] if s.get("status") == "tool_proposal_refused_execution"]
     assert refused and refused[0]["attempted_tool_proposal"]["name"] == "run_target_command"
     assert any("never runs commands on" in c for c in chat.calls)   # the model is told why
+
+
+# --- Guard 9: a past state Kratos has no record of -------------------------
+def _mock_state_no_record(**kwargs: Any) -> dict[str, Any]:
+    return {"status": "ok", "category": "open_ports", "requested_at": "2026-10-03T12:00:00+00:00",
+            "snapshot": None, "history": None,
+            "note": "no record: Kratos has no open_ports snapshot at or before that time"}
+
+
+def _mock_state_found(**kwargs: Any) -> dict[str, Any]:
+    return {"status": "ok", "category": "open_ports", "requested_at": "2026-10-03T12:00:00+00:00",
+            "snapshot": {"snapshot_id": "s1", "open_ports": [22]}, "note": "nearest snapshot 2h before"}
+
+
+def _mock_correlate_clean(**kwargs: Any) -> dict[str, Any]:
+    return {"findings_json_file": "f.json", "findings_md_file": "f.md", "inputs_used": {}, "missing_inputs": [],
+            "input_errors": {}, "staleness_warning": None, "findings": [], "count": 0}
+
+
+INFERRED_STATE_ANSWER = "Port 22 was confirmed open and functional throughout the whole period."
+HONEST_STATE_ANSWER = ("Kratos has no saved record of the open ports at that time, so it can't tell whether "
+                       "port 22 was open then. A port scan saved at that time would answer it next time.")
+
+
+@pytest.fixture
+def state_tools(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_clean)
+    monkeypatch.setattr(TOOL_REGISTRY["state_as_of"], "handler", _mock_state_no_record)
+
+
+def test_guard9_stubborn_inferred_state_is_rejected_once_then_noted(
+    data_dir: Path, state_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live incident (2026-10-04): state_as_of said 'no record', the answer said 'confirmed open'."""
+    chat = ScriptedChat([
+        _tool_json("state_as_of", {"category": "open_ports", "at": "2026-10-03 12:00"}),
+        _tool_json("correlate_findings"),
+        _final_json(INFERRED_STATE_ANSWER),
+        _final_json(INFERRED_STATE_ANSWER),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert [s["violations"] for s in rejected] == [["past_state_without_record"]]
+    assert result["final_answer"].startswith("[NOTE: Kratos has no saved record of open ports at 2026-10-03 12:00 UTC")
+    assert INFERRED_STATE_ANSWER in result["final_answer"]
+
+
+def test_guard9_honest_answer_after_one_correction_is_accepted_clean(
+    data_dir: Path, state_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([
+        _tool_json("state_as_of", {"category": "open_ports", "at": "2026-10-03 12:00"}),
+        _tool_json("correlate_findings"),
+        _final_json(INFERRED_STATE_ANSWER),
+        _final_json(HONEST_STATE_ANSWER),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    assert result["final_answer"] == HONEST_STATE_ANSWER
+
+
+def test_guard9_no_friction_when_a_record_exists(
+    data_dir: Path, state_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(TOOL_REGISTRY["state_as_of"], "handler", _mock_state_found)
+    chat = ScriptedChat([
+        _tool_json("state_as_of", {"category": "open_ports", "at": "2026-10-03 12:00"}),
+        _tool_json("correlate_findings"),
+        _final_json(INFERRED_STATE_ANSWER),
+    ])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
+    assert not [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert result["final_answer"] == INFERRED_STATE_ANSWER
