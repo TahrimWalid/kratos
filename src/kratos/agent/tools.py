@@ -1292,8 +1292,11 @@ def tool_run_yara_scan(scan_path: str | None = None, rules_path: str | Path | No
         if sweep["unreadable_paths"]:
             notes.append(f"NOT scanned (the SSH user cannot read them): {', '.join(sweep['unreadable_paths'])}.")
         for path, n in sweep["partially_unreadable"].items():
-            notes.append(f"Inside {path}, {n['unreadable_dirs']} director(ies) and {n['unreadable_files']} file(s) "
-                         "could not be read and were skipped.")
+            nd, nf = n["unreadable_dirs"], n["unreadable_files"]
+            parts = [f"{nd} folder{'s' if nd != 1 else ''}"] if nd else []
+            parts += [f"{nf} file{'s' if nf != 1 else ''}"] if nf else []
+            notes.append(f"Inside {path}, {' and '.join(parts) or 'some entries'} could not be read and "
+                         "were skipped.")
         if sweep["unreadable"]:
             notes.append(f"yara reported {sweep['unreadable']} error line(s) while scanning.")
         notes.extend(sweep.get("agent_notes") or [])

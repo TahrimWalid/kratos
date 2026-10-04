@@ -48,9 +48,13 @@ _MAX = 96
 _CAPS_RUN = re.compile(r"\b[A-Z][A-Z/'\-]{3,}(?:\s+[A-Z][A-Z/'\-]{1,})*\b")
 
 
+_ABBREV = re.compile(r"\b(?:e\.g|i\.e|etc|vs|approx|incl)\.$", re.IGNORECASE)
+
+
 def _first_sentence(text: str) -> str:
     text = " ".join((text or "").split())
-    match = re.search(r"(?<=[.!?])\s", text)
+    # The first sentence end that isn't an abbreviation ("e.g." used to end it).
+    match = next((m for m in re.finditer(r"(?<=[.!?])\s", text) if not _ABBREV.search(text[: m.start()])), None)
     sentence = text[: match.start()] if match else text
     if len(sentence) > _MAX:
         sentence = sentence[:_MAX].rsplit(" ", 1)[0].rstrip(",;:-") + "…"

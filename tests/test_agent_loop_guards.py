@@ -928,3 +928,15 @@ def test_guard9_no_friction_when_a_record_exists(
     result = agent_loop.run_agent("test goal", data_dir, max_iters=10)
     assert not [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert result["final_answer"] == INFERRED_STATE_ANSWER
+
+
+def test_coverage_gap_note_has_no_double_period(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seen live: '...could not be read and were skipped.. Nothing above covers it.]'"""
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_clean)
+    monkeypatch.setattr(TOOL_REGISTRY["run_yara_scan"], "handler", lambda **kw: {
+        "status": "ok", "matches": [], "coverage_gap": "YARA did not scan everything: /root was not readable."})
+    chat = ScriptedChat([_tool_json("run_yara_scan"), _tool_json("correlate_findings"),
+                         _final_json("No malware was found in the scanned places.")])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    answer = agent_loop.run_agent("test goal", data_dir, max_iters=10)["final_answer"]
+    assert "[NOTE: not checked in this investigation:" in answer and ".." not in answer

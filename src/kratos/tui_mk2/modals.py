@@ -777,10 +777,12 @@ class ToolPickerModal(ModalScreen[str | None]):
         for name, desc in self._matches(query):
             # desc may lead with a short "where" tag, separated by a tab.
             where, _, text = desc.partition("\t") if "\t" in desc else ("", "", desc)
-            row = Text()
-            row.append(f"{name:<27}", style=T.ACCENT)
-            row.append(f"{where:<12}", style=T.TEXT_DIM)
-            row.append(text, style=T.TEXT_MUTED)
+            # A grid, so a wrapped description stays in its own column.
+            row = Table.grid(expand=True)
+            row.add_column(width=27, no_wrap=True, overflow="ellipsis")
+            row.add_column(width=12, no_wrap=True)
+            row.add_column(ratio=1)
+            row.add_row(Text(name, style=T.ACCENT), Text(where, style=T.TEXT_DIM), Text(text, style=T.TEXT_MUTED))
             cell = Static(row)
             cell.styles.width = "1fr"   # wrap a long description instead of clipping it
             lst.append(ListItem(cell))

@@ -1674,7 +1674,8 @@ def _run_agent_loop(
             unstated_gaps = _unstated_coverage_gaps(coverage_gaps, final_answer_text)
             if unstated_gaps:
                 final_answer_text = (
-                    "[NOTE: not checked in this investigation: " + "; ".join(unstated_gaps)
+                    "[NOTE: not checked in this investigation: "
+                    + "; ".join(g.rstrip(" .") for g in unstated_gaps)
                     + ". Nothing above covers it.]\n\n" + final_answer_text
                 )
 

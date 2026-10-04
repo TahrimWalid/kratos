@@ -271,7 +271,9 @@ def _check_history(out: list[Check], data_dir: Path) -> None:
         out.append(_row("history", "info", "no saved scans/snapshots yet -- past-state questions can't be answered"))
         return
     for cat, h in sorted(hz.items()):
-        out.append(_row(f"history: {cat}", "info", f"back to {h['oldest'][:10]} ({h['count']} snapshots, newest {h['newest'][:10]})"))
+        n = h["count"]
+        out.append(_row(f"history: {cat}", "info",
+                        f"back to {h['oldest'][:10]} ({n} snapshot{'s' if n != 1 else ''}, newest {h['newest'][:10]})"))
     plan = plan_retention(data_dir)
     if plan["delete"]:
         out.append(_row("history: retention", "info",
