@@ -65,6 +65,15 @@ def _trend_word(value: Any) -> str | None:
     return _TREND_WORDS.get(str(value).strip().lower().replace("-", " "), str(value).strip().lower())
 
 
+# The answer itself says part of the window was not seen.
+_PARTIAL_ACK_RE = re.compile(
+    r"\bunknown\b|\bnot (?:been )?(?:covered|seen|visible|available)\b|\bunavailable\b|"
+    r"\bonly \d+(?:\.\d+)?\s?%|\b(?:partial|limited) (?:coverage|visibility)\b|\bno (?:logs?|records?|data) "
+    r"(?:before|prior to|for)\b",
+    re.IGNORECASE,
+)
+
+
 def measurement_summary(m: Any) -> dict[str, Any]:
     """What gets recorded per window for later verification (from a Measurement)."""
     counts = m.counts
@@ -188,9 +197,15 @@ def verify_claims(ctx: TimeContext, answer: str, claims: Any) -> tuple[list[str]
                 problems.append(f"{tag}: {metric} in {w.id} is {actual}, so 'none' is false")
                 continue
             if cov < 100.0:
-                problems.append(f"{tag}: only {cov:g}% of {w.id} was covered, so 'none' cannot be claimed for the whole "
-                                "window -- claim the covered part and mark the rest \"unknown\"")
-                continue
+                if _PARTIAL_ACK_RE.search(answer or ""):
+                    # The prose already says the rest is unknown (seen live: "no failed logins in
+                    # the observed period ... activity before 15:24 is unknown") -- the 'none' is
+                    # about the covered part, which is what was measured.
+                    rec["partial"] = True
+                else:
+                    problems.append(f"{tag}: only {cov:g}% of {w.id} was covered, so 'none' cannot be claimed for the "
+                                    "whole window -- claim the covered part and mark the rest \"unknown\"")
+                    continue
         elif kind == "presence" and actual <= 0:
             problems.append(f"{tag}: {metric} in {w.id} was measured as 0")
             continue

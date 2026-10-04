@@ -200,3 +200,18 @@ def test_claims_written_inside_the_answer_are_pulled_out_and_verified(tmp_path, 
 ])
 def test_prose_that_only_mentions_claims_is_left_alone(text):
     assert agent_loop._split_inline_claims(text) == (text, None)
+
+
+def test_none_over_a_partial_window_is_fine_when_the_answer_says_the_rest_is_unknown():
+    """Seen live: 'In the observed period ... no failed logins were detected ... activity prior
+    to 15:24 UTC is unknown.' with an absence claim on the whole window got an 'unverified'
+    note although the prose was exactly right."""
+    start_head = NOW - 3600
+    ctx, wid = _ctx_with({"kind": "rolling", "amount": 3, "unit": "hour"},
+                         lambda w: _measurement(w.start_utc, w.end_utc, 0, {}, head=start_head))
+    claim = [{"kind": "absence", "metric": "ssh_failed_logins", "window": wid}]
+    problems, claims = verify_claims(
+        ctx, "In the observed period no failed logins were detected; activity before that is unknown.", claim)
+    assert problems == [] and claims[0]["verified"] and claims[0]["partial"]
+    problems, _ = verify_claims(ctx, "No failed logins in the last 3 hours.", claim)   # still caught
+    assert any("only 33.3% of" in p for p in problems)
