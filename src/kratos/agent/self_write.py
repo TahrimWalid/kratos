@@ -296,6 +296,64 @@ def _build_retry_section(previous_code: str, previous_error: str, rejected_befor
     )
 
 
+_SSH_READ_FUNCS = ("run_remote_command", "run_remote_script")
+
+
+def _faked_ssh_calls(test_source: str) -> set[str]:
+    """The ssh_remote read functions a test harness replaces with a fake:
+    patch("kratos.adapters.ssh_remote.run_remote_command", ...) or
+    patch.object(ssh_remote, "run_remote_script", ...). Unparseable source -> empty."""
+    try:
+        tree = ast.parse(test_source)
+    except SyntaxError:
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            for fn in _SSH_READ_FUNCS:
+                if node.value == f"kratos.adapters.ssh_remote.{fn}":
+                    found.add(fn)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "object":
+            args = node.args
+            if (len(args) >= 2 and isinstance(args[0], ast.Name) and args[0].id == "ssh_remote"
+                    and isinstance(args[1], ast.Constant) and args[1].value in _SSH_READ_FUNCS):
+                found.add(args[1].value)
+    return found
+
+
+def _ssh_calls_in(code: str) -> set[str]:
+    """ssh_remote read functions a candidate calls (module-qualified, as the prompt requires)."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    return {
+        node.func.attr for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in _SSH_READ_FUNCS
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "ssh_remote"
+    }
+
+
+def _unfaked_ssh_problem(code: str, faked: set[str]) -> str | None:
+    """A candidate that reads the target through an ssh_remote function the test does NOT
+    fake can never pass: in the no-network sandbox that call tries a real SSH connection.
+    Seen live: the test faked run_remote_command, the tool called run_remote_script, and
+    the retry returned the same code (no reason in the failure pointed at the call)."""
+    if not faked:
+        return None
+    unfaked = sorted(_ssh_calls_in(code) - faked)
+    if not unfaked:
+        return None
+    want = " or ".join(f"ssh_remote.{fn}" for fn in sorted(faked))
+    return (
+        f"The test fakes only {want}, but your tool calls "
+        + ", ".join(f"ssh_remote.{fn}" for fn in unfaked)
+        + ", which the test does not fake -- in the sandbox (no network) that call tries a real "
+        f"SSH connection and the test fails. Read the target through {want} instead (one call)."
+    )
+
+
 def _build_user_prompt(
     request: WriteRequest,
     previous_code: str | None,
@@ -308,6 +366,12 @@ def _build_user_prompt(
         f"HUMAN-AUTHORED TEST FILE this tool must satisfy ({request.test_file.name}):\n"
         f"```python\n{test_source}\n```\n",
     ]
+    faked = _faked_ssh_calls(test_source)
+    if faked:
+        want = " or ".join(f"ssh_remote.{fn}" for fn in sorted(faked))
+        parts.append(
+            f"REMOTE CALL: the test above fakes {want}. Read the target through exactly that "
+            "function (one call); any other ssh_remote function is not faked and fails in the sandbox.\n")
     if request.extra_context:
         parts.append(f"ADDITIONAL CONTEXT:\n{request.extra_context}\n")
     if previous_code and previous_error:
@@ -366,7 +430,7 @@ def _resolve_literal_tool_name(call: ast.Call) -> str | None:
     return None
 
 
-def _validate_candidate(code: str) -> tuple[list[str], str | None]:
+def _validate_candidate(code: str, faked_ssh: set[str] | None = None) -> tuple[list[str], str | None]:
     """
     Sanity checks only (Part A's job) -- not correctness, not behavior.
     Returns (problems, tool_name): problems is empty and tool_name is a real
@@ -412,6 +476,11 @@ def _validate_candidate(code: str) -> tuple[list[str], str | None]:
             "tool in agent/tools.py -- use a plain string literal, e.g. name=\"my_tool_name\"."
         )
         return problems, None
+
+    unfaked = _unfaked_ssh_problem(code, faked_ssh or set())
+    if unfaked:
+        problems.append(unfaked)
+        return problems, tool_name
 
     return problems, tool_name
 
@@ -504,6 +573,7 @@ def write_candidate_tool(
     display_error = anchor_error
     rejected_before_testing = anchor_rejected_before_testing
     last_problems: list[str] = []
+    faked_ssh = _faked_ssh_calls(request.test_file.read_text(encoding="utf-8"))
 
     for attempt in range(1, max_attempts + 1):
         # See outer_attempt_label's own docstring note above for why this is
@@ -521,7 +591,7 @@ def write_candidate_tool(
             return WriteResult(status="failed", attempts=attempt, error="LLM backend unavailable (agent_chat returned None).")
 
         code = _extract_code(raw)
-        problems, tool_name = _validate_candidate(code)
+        problems, tool_name = _validate_candidate(code, faked_ssh)
         was_similarity_rejection = False
 
         # Exact-repeat guard: the OPPOSITE extreme from the similarity guard
