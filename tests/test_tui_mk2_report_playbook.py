@@ -82,3 +82,35 @@ def test_report_attaches_plan_for_high_not_info(tmp_path, monkeypatch):
     allcmds = " ".join(c.command for s in plan.steps for c in s.commands)
     assert "evil" not in allcmds
     assert plan.has_destructive is True  # ufw/systemctl remediation flagged
+
+
+def test_report_plan_commands_wrap_and_ctrl_y_copies_them(tmp_path, monkeypatch):
+    """A long plan command was cut off at the panel edge ('... | ta'); it now wraps,
+    so every character is on screen, and Ctrl+Y copies the plan's commands exactly."""
+    from rich.console import Console
+
+    import kratos.tui_mk2.render as R
+    from kratos.agent.ir_playbooks import build_response_plan
+
+    plan = build_response_plan({"id": "CORR-SSH-001", "severity": "high", "title": "SSH exposed",
+                                "evidence": []})
+    longest = max((c.command for s in plan.steps for c in s.commands), key=len)
+    con = Console(width=70, record=True, color_system=None)
+    con.print(R.response_plan_panel(plan))
+    text = con.export_text()
+    shown = "".join(line.strip("│ ") for line in text.splitlines())
+    assert "".join(longest.split()) in "".join(shown.split())  # nothing cut off
+    assert "Ctrl+Y copies this plan's commands" in text
+
+    store, sid, screen = _seed(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._render_report()
+            await pilot.pause()
+            return list(screen._last_commands)
+
+    copied = asyncio.run(_run())
+    assert copied == [c.command for s in plan.steps for c in s.commands]

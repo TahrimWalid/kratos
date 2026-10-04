@@ -1074,6 +1074,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit(Text(f"investigation summary — {len(findings)} finding(s), high → low severity", style=T.TEXT_MUTED))
         from kratos.agent.ir_playbooks import build_response_plan
 
+        plan_commands: list[str] = []
         for f, when_value in findings:
             # Each finding keeps the time it was ORIGINALLY found (its turn's
             # completion time, a stored UTC value), rendered in the display
@@ -1088,6 +1089,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 plan = build_response_plan(f, found_at=when_str)
                 if plan is not None:
                     self._emit(R.response_plan_panel(plan, time_str=when_str))
+                    plan_commands += [c.command for step in plan.steps for c in step.commands]
+        if plan_commands:
+            # What Ctrl+Y copies: the plans' commands, exactly (a wrapped line
+            # on screen can't be copied whole).
+            self._last_commands = plan_commands
 
     def _collect_session_findings(self) -> list[tuple[dict[str, Any], str | None]]:
         """Aggregate correlate_findings output across this session's turns'

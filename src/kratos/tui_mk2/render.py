@@ -667,7 +667,8 @@ def response_plan_panel(plan: Any, time_str: str | None = None) -> Panel:
             if cmd.destructive:
                 meta.append("   ! changes state — review before running", style=T.CRITICAL)
             body.append(meta)
-            body.append(Syntax(cmd.command, "bash", word_wrap=False, background_color="default"))
+            # Wrapped so a long command is readable in full; Ctrl+Y copies the exact text.
+            body.append(Syntax(cmd.command, "bash", word_wrap=True, background_color="default"))
             if cmd.explanation:
                 body.append(Text(f"   {cmd.explanation}", style=T.TEXT_FAINT))
 
@@ -685,6 +686,10 @@ def response_plan_panel(plan: Any, time_str: str | None = None) -> Panel:
 
     for caveat in plan.caveats:
         body.append(Text(f"\n{caveat}", style=T.TEXT_FAINT))
+
+    if any(step.commands for step in plan.steps):
+        body.append(Text("\nCtrl+Y copies this plan's commands exactly (don't select wrapped text).",
+                         style=T.TEXT_DIM))
 
     return Panel(
         Group(*body),
