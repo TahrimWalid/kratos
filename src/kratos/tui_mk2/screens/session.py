@@ -4183,7 +4183,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._apply_target(targets)
 
     def _run_investigation(self, goal: str, target_override: str | None = None) -> None:
-        from kratos.agent.loop import run_agent
+        from kratos.agent.loop import InvestigationStopped, run_agent
 
         # /investigate-host (and its NL trigger) pin the active target to
         # loopback for THIS run only, so Kratos investigates its own machine on
@@ -4249,8 +4249,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 prior_context=self.session_state.get("resume_context") or None,
                 # named time windows ("the incident window") persist per session
                 session_id=self.session_state.get("session_id"),
+                should_stop=lambda: worker.is_cancelled,
             )
-        except _CancelInvestigation:
+        except (_CancelInvestigation, InvestigationStopped):
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Press Ctrl+R to re-run this goal, or type a new one."))
             self._remember_turn(goal, "(investigation interrupted before it concluded)")
@@ -4588,8 +4589,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.workers.cancel_group(self, "turn")
             if not getattr(self, "_stopping", False):  # say it once, however many presses
                 self._stopping = True
-                self._emit(R.note_line("Stopping after the current step (a model reply already "
-                                       "in progress has to finish first)…"))
+                self._emit(R.note_line("Stopping — nothing new will start; a step already "
+                                       "running finishes first…"))
 
     def action_help(self) -> None:
         self.app.push_screen(HelpModal())

@@ -284,8 +284,10 @@ def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
 # Guard 10: an /investigate-host answer calls Kratos's own machine "the target"
 # (seen live despite the prompt saying not to) -- the user then can't tell which
 # machine it's about. Asked once to reword; never rewritten silently.
-_HOST_AS_TARGET_RE = re.compile(r"\bthe (?:monitored )?target(?: device| system| machine| host)?\b|\btarget device\b",
-                                re.IGNORECASE)
+_HOST_AS_TARGET_RE = re.compile(
+    r"\bthe (?:monitored )?target(?: device| system| machine| host)?\b|\btarget device\b"
+    r"|\bmonitored (?:device|system|machine|host|server)\b",
+    re.IGNORECASE)
 
 # Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
 # yesterday); an answer must say so instead of inferring that state from other data.
@@ -1035,6 +1037,10 @@ class _Conversation:
         return True
 
 
+class InvestigationStopped(Exception):
+    """Raised out of run_agent when its should_stop callback says the user asked to stop."""
+
+
 def run_agent(
     goal: str,
     data_dir: Path,
@@ -1046,6 +1052,7 @@ def run_agent(
     session_id: str | None = None,
     now: float | None = None,
     named_windows: dict[str, tuple[float, float, str]] | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Runs one investigation. Time handling (docs/time_window_design.md) wraps the loop:
     the goal's time expressions are resolved by code BEFORE the model starts, exposed as
@@ -1053,6 +1060,9 @@ def run_agent(
     per-run context. `timezone` (IANA name) overrides the configured display zone;
     `session_id` persists named windows across turns; `named_windows` injects windows such
     as the scheduler's "since last run" watermark; `now` (epoch) is for tests.
+    `should_stop` is polled before every model call and every tool dispatch; once it
+    returns True the run raises InvestigationStopped, so a stop never lets one more
+    tool reach the target.
     The result gains a `time` block (windows, queried ids, anything left unresolved)."""
     try:
         time_ctx, clarify_log = _prepare_time_context(
@@ -1066,6 +1076,7 @@ def run_agent(
         result = _run_agent_loop(
             goal, data_dir, max_iters, on_step, prior_context,
             time_ctx=time_ctx, time_block=_render_time_block(time_ctx),
+            should_stop=should_stop,
         )
     finally:
         _reset_time_context(token)
@@ -1082,6 +1093,7 @@ def _run_agent_loop(
     *,
     time_ctx: Any = None,
     time_block: str | None = None,
+    should_stop: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """
     Runs the ReAct loop for `goal`, returns a dict with the outcome and the
@@ -1303,6 +1315,10 @@ def _run_agent_loop(
         if on_step is not None:
             on_step(entry)
 
+    def _check_stop() -> None:
+        if should_stop is not None and should_stop():
+            raise InvestigationStopped()
+
     for i in range(1, max_iters + 1):
         is_final_iteration = i == max_iters
         # Compact BEFORE building this call's prompt, keyed off the PREVIOUS
@@ -1320,6 +1336,7 @@ def _run_agent_loop(
                 "context_tokens": last_context_tokens,
                 "context_window": _window,
             })
+        _check_stop()
         prompt_for_call = ctx.render()
         if is_final_iteration:
             prompt_for_call += FINAL_ITERATION_NUDGE
@@ -2007,6 +2024,9 @@ def _run_agent_loop(
                 "and the target is a separate device. Use a target-facing tool; if none provides what you "
                 "need, respond with a tool_proposal describing the missing capability.")}
         else:
+            # The model's reply may have arrived after the user asked to stop:
+            # never send its tool call to the target in that case.
+            _check_stop()
             exec_result = execute_tool_call(tool_name, args, data_dir)
         tools_called.add(tool_name)
         _inner = exec_result.get("result") if isinstance(exec_result, dict) else None

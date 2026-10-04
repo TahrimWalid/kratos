@@ -1361,7 +1361,7 @@ def test_interrupt_says_so_once_and_spinner_reads_stopping(tmp_path, monkeypatch
             return spinner, text
 
     spinner, text = asyncio.run(_run())
-    assert text.count("Stopping after the current step") == 1
+    assert text.count("Stopping — nothing new will start") == 1
     assert "stopping…" in spinner
 
 

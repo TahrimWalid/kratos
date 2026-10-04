@@ -968,3 +968,52 @@ def test_target_wording_is_fine_for_a_remote_target(data_dir: Path, remote_targe
 
 def test_an_empty_inline_claims_list_is_removed_from_the_answer() -> None:
     assert agent_loop._split_inline_claims("Five ports are open. Claims: []") == ("Five ports are open.", [])
+
+
+def test_stop_requested_during_model_reply_never_dispatches_its_tool(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stop pressed while the model is still thinking must not let the tool
+    call in that reply reach the target (pass 3 of the demo recording showed a
+    7-day SSH measurement running after the user had pressed stop)."""
+    stop = {"now": False}
+
+    def chat(system_prompt: str, user_prompt: str, max_tokens: int | None = None) -> str:
+        stop["now"] = True  # the user presses stop while this reply is in flight
+        return _tool_json("check_file_integrity")
+
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    monkeypatch.setattr(agent_loop, "execute_tool_call",
+                        lambda name, args, d: calls.append({"tool": name}) or {"status": "ok"})
+
+    with pytest.raises(agent_loop.InvestigationStopped):
+        agent_loop.run_agent("test goal", data_dir, max_iters=5, should_stop=lambda: stop["now"])
+    assert calls == []
+
+
+def test_stop_requested_before_start_makes_no_model_call(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    with pytest.raises(agent_loop.InvestigationStopped):
+        agent_loop.run_agent("test goal", data_dir, max_iters=5, should_stop=lambda: True)
+    assert chat.calls == []
+
+
+def test_host_mode_answer_calling_this_machine_the_monitored_device_is_reworded(
+    data_dir: Path, remote_target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live (demo pass 3): '/investigate-host' answered 'On the monitored device, I found five open ports'."""
+    _kcfg.set_active_target("127.0.0.1")
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_clean)
+    fixed = "This Kratos machine has five open ports."
+    chat = ScriptedChat([_tool_json("correlate_findings"),
+                         _final_json("On the monitored device, I found five open ports."),
+                         _final_json(fixed)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("is anything unusual listening?", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert [s["violations"] for s in rejected] == [["host_called_target"]]
+    assert result["final_answer"] == fixed
