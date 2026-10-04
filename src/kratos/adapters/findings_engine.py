@@ -278,6 +278,44 @@ class Finding:
     # (see _merge_overlapping). Triggers / pipeline conditions naming one of them
     # still match (finding_ids).
     also_matched: list[str] = field(default_factory=list)
+    # When the data this finding was built from was collected (UTC ISO, the newest
+    # of its inputs). Lets a view tell "found in this investigation" from "still on
+    # record from an earlier check" without guessing.
+    collected_at: str | None = None
+
+
+# Which inputs each rule reads (longest prefix wins) -- for collected_at.
+_FINDING_INPUTS: dict[str, tuple[str, ...]] = {
+    "CORR-SSH-001": ("nmap_parsed", "auth_patterns", "system_context"),
+    "CORR-001": ("nmap_parsed", "auth_patterns"),
+    "CORR-002": ("auth_patterns", "system_context"),
+    "AUTH-TREND-": ("auth_trends",),
+    "AUTH-004": ("auth_patterns",),
+    "AUTH-": ("auth_stats",),
+    "COV-": ("auth_stats",),
+    "OBS-": ("auth_stats", "system_context"),
+    "NET-": ("nmap_parsed",),
+    "CTX-": ("system_context",),
+    "ENV-": ("system_context",),
+    "INTEG-": ("file_integrity",),
+    "PRIV-": ("privileged_accounts",),
+    "VULN-": ("vuln_scan",),
+}
+
+
+def _stamp_collected_at(findings: list["Finding"], inputs: dict[str, Path | None]) -> None:
+    times: dict[str, float] = {}
+    for key, path in inputs.items():
+        try:
+            if path is not None:
+                times[key] = Path(path).stat().st_mtime
+        except OSError:
+            pass
+    for f in findings:
+        prefix = max((p for p in _FINDING_INPUTS if f.id.startswith(p)), key=len, default=None)
+        used = [times[k] for k in _FINDING_INPUTS.get(prefix, ()) if k in times] if prefix else []
+        if used:
+            f.collected_at = datetime.fromtimestamp(max(used), timezone.utc).isoformat(timespec="seconds")
 
 
 def finding_ids(finding: Any) -> set[str]:
@@ -1498,6 +1536,7 @@ def write_findings_report(
         nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged,
         vuln_scan=vuln_scan,
     )
+    _stamp_collected_at(findings, inputs)
 
     # Environment detection
     env_label = "linux"

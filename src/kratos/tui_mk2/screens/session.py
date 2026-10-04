@@ -36,6 +36,7 @@ from kratos import kratos_config as _kconfig
 from kratos.agent import target_lock as _target_lock
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
+from kratos.tui_mk2 import finding_view as FV
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.workers import ResilientWorkerHost
@@ -205,6 +206,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy
         self._last_commands: list[str] = []  # recommended commands from the last turn, for ctrl+y
+        # Findings already shown in full on screen (id -> fingerprint) and when the
+        # current turn started: background findings are folded (finding_view).
+        self._shown_findings: dict[str, str] = {}
+        self._turn_started_wall: float | None = None
         # Recommended commands from the last turn that match an ENABLED
         # allowlist entry on the target's paired sub-agent -- what /run-fix offers.
         self._runnable_fixes: list[dict[str, Any]] = []
@@ -694,8 +699,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 line.append(tool_name, style=f"bold {T.ACCENT}")
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit(line)
-                for f in findings:
+                full, folded = FV.plan(findings, self._shown_findings, None)
+                for f, _why in full:
                     self._emit_bubble(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)), self._fmt_stored_date(when_value))
+                if (summary := FV.folded_summary(folded)) is not None:
+                    self._emit(Text(summary, style=T.TEXT_DIM))
             else:
                 self._emit(R.tool_call_line(tool_name, effective_status))
             via = R.transport_chip(result)
@@ -2919,6 +2927,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         turn starts fresh, and re-renders the idle banner so the screen isn't
         left blank. When `archive`, the stored goal history is also archived
         (soft-deleted, recoverable) so a later resume won't bring it back."""
+        self._shown_findings = {}  # nothing is on screen any more
         from kratos import llm_interface
 
         if archive:
@@ -3857,6 +3866,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
     # --- goal handling: chat vs investigate ------------------------------
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        if busy:
+            self._turn_started_wall = time.time()
         self._stopping = False  # a new turn (or its end) clears a pending stop
         # Stamp the start so the activity spinner can show elapsed time. Safe to
         # set from a worker thread (plain assignment); the spinner tick reads it
@@ -4391,9 +4402,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 line.append(tool_name, style=f"bold {T.ACCENT}")
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit_from_worker(line)
-                for f in findings:
+                full, folded = FV.plan(findings, self._shown_findings, self._turn_started_wall)
+                for f, why in full:
                     t, d = self._stamp_now()
+                    if why == "earlier":
+                        self._emit_from_worker(R.note_line(
+                            f"From an earlier check (data collected {self._fmt_stored_time(f.get('collected_at'))})"
+                            " — not re-checked in this investigation:"))
                     self._emit_bubble_from_worker(R.finding_panel(f, time_str=t), d)
+                if (summary := FV.folded_summary(folded)) is not None:
+                    self._emit_from_worker(Text(summary, style=T.TEXT_DIM))
             else:
                 self._emit_from_worker(R.tool_call_line(tool_name, effective_status))
             chip = R.window_chip(result.get("window")) if isinstance(result, dict) else None
