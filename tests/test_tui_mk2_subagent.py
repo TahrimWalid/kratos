@@ -427,3 +427,61 @@ def test_reusing_a_waiting_code_makes_sure_something_is_listening(tmp_path, monk
     asyncio.run(run())
     assert out["result"] is None and out["calls"] == 1
     assert any("still valid" in t for t in out["texts"])
+
+
+def test_a_new_box_that_matches_the_session_target_is_offered_as_its_link(tmp_path, monkeypatch):
+    """Seen live: a box added from a session whose target WAS that box checked in, but
+    nothing offered to link them, so investigations kept going over SSH."""
+    from kratos.tui_mk2 import target_link as TL
+
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    screen = SubAgentScreen(tmp_path, offer_link_for="10.0.0.9")
+    offered: list = []
+
+    async def _offer(app, data_dir, host):
+        offered.append(host)
+        return "subagent"
+
+    monkeypatch.setattr(TL, "offer_link", _offer)
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            code = sa.create_pairing_code(name="db-01", core_host="10.0.0.1")["code"]
+            screen._watched_codes[code] = {"name": "db-01", "host": "10.0.0.1"}
+            tid = sa.redeem_pairing_code(code, agent_id="a", hostname="db-01", agent_version="0.3.1")["target_id"]
+            sa.record_connection_open(tid, listener_id="L1", peer="10.0.0.9")
+            screen._refresh()
+            for _ in range(5):
+                await pilot.pause()
+
+    asyncio.run(run())
+    assert offered == ["10.0.0.9"]
+
+
+def test_no_link_offer_without_a_session_target(tmp_path, monkeypatch):
+    from kratos.tui_mk2 import target_link as TL
+
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    screen = SubAgentScreen(tmp_path)
+    offered: list = []
+
+    async def _offer(app, data_dir, host):
+        offered.append(host)
+
+    monkeypatch.setattr(TL, "offer_link", _offer)
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            code = sa.create_pairing_code(name="db-01", core_host="10.0.0.1")["code"]
+            screen._watched_codes[code] = {"name": "db-01", "host": "10.0.0.1"}
+            sa.redeem_pairing_code(code, agent_id="a", hostname="db-01", agent_version="0.3.1")
+            screen._refresh()
+            for _ in range(5):
+                await pilot.pause()
+
+    asyncio.run(run())
+    assert offered == []

@@ -131,6 +131,7 @@ class SubAgentScreen(Screen):
         auto_add: bool = False,
         default_name: str | None = None,
         link_host: str | None = None,
+        offer_link_for: str | None = None,
     ) -> None:
         super().__init__()
         self._data_dir = Path(data_dir)
@@ -156,6 +157,9 @@ class SubAgentScreen(Screen):
         # in, investigations of this target read through it (the user already
         # chose that -- docs/subagent_read_routing.md D3).
         self._link_host = link_host
+        # Opened from a session: when a box added here checks in and looks like
+        # the session's target, ASK whether to read that target through it.
+        self._offer_link_for = offer_link_for
         # Per Kratos address: may investigation reads run over a plain (not
         # loopback/Tailscale) network? Asked once, only for such an address.
         self._allow_untrusted: dict[str, bool] = {}
@@ -321,6 +325,8 @@ class SubAgentScreen(Screen):
                                f" -- telemetry is live.{replaced} It is recommend-only; turn on direct execution "
                                "from /whitelist only if you want it.", style=f"bold {T.SAFE}"))
                 self._link_new_agent(row["used_by_target_id"])
+                if not self._link_host and self._offer_link_for:
+                    self._offer_link_after_checkin(self._offer_link_for)
                 continue
             expires = ST.parse_stored_instant(row["expires_at"])
             if expires is not None and expires < now:
@@ -627,6 +633,15 @@ class SubAgentScreen(Screen):
             for e in events:
                 hist.add_row(ST.human_age(ST._age(e["at"], ST.utc_now())), e["event"], e.get("detail") or "")
             self._log(hist)
+
+    @work(group="offer-link")
+    async def _offer_link_after_checkin(self, host: str) -> None:
+        from kratos.tui_mk2 import target_link as TL
+
+        mode = await TL.offer_link(self.app, self._data_dir, host)
+        if mode:
+            self._log(Text(f"Investigations of {host} now go through this sub-agent "
+                           f"({mode.replace('_', ' ')}). /target link changes it later.", style=T.TEXT_MUTED))
 
     def _link_new_agent(self, target_id: str) -> None:
         if not self._link_host:

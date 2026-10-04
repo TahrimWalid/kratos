@@ -882,7 +882,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif cmd in ("/subagent", "/subagents", "/agents", "/connect"):
             from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
-            self.app.push_screen(SubAgentScreen(self._data_dir))
+            target = _kconfig.get_active_target()
+            self.app.push_screen(SubAgentScreen(self._data_dir, offer_link_for=target if target and target.lower()
+                                                not in ("127.0.0.1", "localhost", "::1") else None))
         elif cmd == "/whitelist":
             from kratos.tui_mk2.screens.whitelist import WhitelistScreen
 
