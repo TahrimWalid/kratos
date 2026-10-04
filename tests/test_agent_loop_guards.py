@@ -1079,3 +1079,13 @@ def test_guard3_still_fires_when_the_high_finding_is_not_named(
     result = agent_loop.run_agent("is there any malware?", data_dir, max_iters=10)
     assert any("dismissive_verdict_contradiction" in s.get("violations", [])
                for s in result["transcript"] if s.get("status") == "final_answer_rejected")
+
+
+def test_bracketed_claims_at_the_end_are_removed_from_the_answer() -> None:
+    """Seen live (demo pass 6): '... operations. [claims: {"kind": "count", ...}, {...}]'."""
+    text = ('Only ubuntu used sudo. [claims: {"kind": "count", "metric": "sudo_sessions", "window": "w1", '
+            '"value": 1478}, {"kind": "absence", "metric": "sudo_failures", "window": "w1"}]')
+    head, claims = agent_loop._split_inline_claims(text)
+    assert head == "Only ubuntu used sudo." and [c["kind"] for c in claims] == ["count", "absence"]
+    for untouched in ("See [claims: not json] here.", 'A [claims: {"kind": "count"}] then more prose.'):
+        assert agent_loop._split_inline_claims(untouched) == (untouched, None)

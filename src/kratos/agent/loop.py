@@ -288,10 +288,41 @@ def _window_phrase(window: Any) -> str:
     return chip or "that period"
 
 
+_BRACKETED_CLAIMS_RE = re.compile(r"\[\s*claims\s*:\s*(?=\{)", re.IGNORECASE)
+
+
+def _split_bracketed_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
+    """'... [claims: {"kind": ...}, {"kind": ...}]' at the very end of the answer: the
+    bracket before the label and bare objects instead of a list (seen live, demo pass 6)."""
+    decoder = json.JSONDecoder()
+    for m in reversed(list(_BRACKETED_CLAIMS_RE.finditer(text))):
+        pos, claims = m.end(), []
+        try:
+            while True:
+                obj, pos = decoder.raw_decode(text, pos)
+                if not (isinstance(obj, dict) and obj.get("kind")):
+                    raise ValueError
+                claims.append(obj)
+                pos = len(text) - len(text[pos:].lstrip())
+                if text[pos:pos + 1] == ",":
+                    pos = len(text) - len(text[pos + 1:].lstrip())
+                    continue
+                break
+        except ValueError:
+            continue
+        if text[pos:pos + 1] != "]" or text[pos + 1:].strip(" \t\n."):
+            continue
+        return text[: m.start()].rstrip(" \t\n-—:("), claims
+    return text, None
+
+
 def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
     """(answer without the inline claims list, the list) -- or (text, None) when the
     answer carries no well-formed claims list. Only a JSON list of objects that each
     have a "kind" counts, so prose that merely says "claims:" is left alone."""
+    head, bracketed = _split_bracketed_claims(text)
+    if bracketed is not None:
+        return head, bracketed
     decoder = json.JSONDecoder()
     for m in reversed(list(_INLINE_CLAIMS_LABEL_RE.finditer(text))):
         start = text.find("[", m.end())
