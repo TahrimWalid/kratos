@@ -495,3 +495,36 @@ def test_x(registered_handler):
     assert not any("not parsed" in x or "Missing" in x for x in c.claims)
     assert "the first item of the result's 'root' includes '/usr/bin/backup.sh'" in c.claims
     assert "the result equals {}" in c.claims
+
+
+_PYTEST_FAIL = """
+    def test_x(registered_handler):
+>       assert "www-data" in result, "The result must capture crontabs for non-root users"
+E       AssertionError: The result must capture crontabs for non-root users
+E       assert 'www-data' in {'/var/spool/cron/crontabs/www-data': 'x'}
+"""
+
+
+def test_failing_checks_reads_message_and_values():
+    assert G.failing_checks(_PYTEST_FAIL) == [
+        "The result must capture crontabs for non-root users — assert 'www-data' in "
+        "{'/var/spool/cron/crontabs/www-data': 'x'}"]
+    assert G.failing_checks("E       assert 3 == 4\n") == ["assert 3 == 4"]       # no message
+    assert G.failing_checks("all good\n") == []
+
+
+def test_a_stalled_build_names_the_failing_check(tmp_path, monkeypatch, no_collision):
+    """Seen live (demo pass 5): the drafted test could never pass, and the user was only
+    told 'a test check may be impossible' -- not which one."""
+    hpath = tmp_path / "test_list_sudo.py"
+    hpath.write_text(_TARGET_HARNESS, encoding="utf-8")
+    monkeypatch.setattr(G, "_HARNESS_DIR", tmp_path)
+    tr = types.SimpleNamespace(passed=False, infra_error=None, stdout=_PYTEST_FAIL, stderr="")
+    outcome = types.SimpleNamespace(status="stalled_no_variation", keep_decision=None, kept_path=None,
+                                    attempt_history=[types.SimpleNamespace(test_result=tr)])
+    prompter = FakePrompter(confirms=[True])
+    with patch("kratos.agent.self_write_loop.run_self_write_loop", return_value=outcome):
+        res = run_guided_build("list sudo", prompter, suggested_name="list_sudo")
+    assert res.status == "stalled"
+    assert "The check that kept failing: “The result must capture crontabs for non-root users" in prompter.all_text()
+    assert str(hpath) in prompter.all_text()

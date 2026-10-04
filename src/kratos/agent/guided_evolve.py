@@ -1062,6 +1062,45 @@ def _draft_or_template_harness(
     return GuidedBuildResult(status="cancelled", message="Discarded the drafted test.")
 
 
+def failing_checks(pytest_output: str, limit: int = 2) -> list[str]:
+    """The test checks that failed, from pytest's own output: each failing assert's
+    message, else its expression. A stalled build otherwise only says 'a check may be
+    impossible' -- seen live (demo pass 5): the drafted test keyed results by file path
+    AND asserted a bare username key, and nothing told the user which line to fix."""
+    found: list[str] = []
+    pending: str | None = None          # a message waiting for the expression line under it
+    for line in (pytest_output or "").splitlines():
+        msg = re.match(r"E\s+AssertionError:\s*(.+)", line)
+        expr = re.match(r"E\s+(assert .+)", line)
+        if msg:
+            if pending is not None and pending not in found:
+                found.append(pending)
+            pending = msg.group(1).strip()
+        elif expr:
+            shown = expr.group(1).strip()
+            shown = shown if len(shown) <= 120 else shown[:117] + "..."
+            text = f"{pending} — {shown}" if pending is not None else shown
+            pending = None
+            if text not in found:
+                found.append(text)
+        if len(found) >= limit:
+            return found
+    if pending is not None and pending not in found and len(found) < limit:
+        found.append(pending)
+    return found
+
+
+def _failing_check_hint(outcome: Any, harness_path: Path) -> str | None:
+    for rec in reversed(getattr(outcome, "attempt_history", None) or []):
+        tr = getattr(rec, "test_result", None)
+        if tr is not None and not tr.passed and not tr.infra_error:
+            checks = failing_checks(f"{tr.stdout}\n{tr.stderr}")
+            if checks:
+                return ("The check that kept failing: " + "; ".join(f"“{c}”" for c in checks)
+                        + f". If that check is wrong, edit it in {harness_path} and run /evolve again.")
+    return None
+
+
 def _run_loop_and_report(goal: str, harness_path: Path, prompter: GuidedPrompter) -> GuidedBuildResult:
     from kratos.agent.self_write import WriteRequest
     from kratos.agent.self_write_loop import run_self_write_loop
@@ -1088,4 +1127,7 @@ def _run_loop_and_report(goal: str, harness_path: Path, prompter: GuidedPrompter
 
     prompter.say(_RECOVERY.get(status, f"Evo-loop did not produce a tool (status: {outcome.status})."),
                  kind="error" if status not in ("declined",) else "note")
+    hint = _failing_check_hint(outcome, harness_path) if status in ("stalled", "exhausted") else None
+    if hint:
+        prompter.say(hint)
     return GuidedBuildResult(status=status, message=_RECOVERY.get(status, outcome.status))
