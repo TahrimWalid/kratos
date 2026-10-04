@@ -759,6 +759,11 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
     table = Table(show_header=True, header_style="bold", expand=False)
     for col in ("name", "runs", "cadence", "target", "deliver", "last run"):
         table.add_column(col)
+    from kratos.agent.notify import notify_config_status
+
+    # A schedule set to deliver by ntfy delivers nothing until a topic is set:
+    # say so in the row, not only when it runs.
+    ntfy_off = notify_config_status()[0] in ("off", "bad")
     for s in schedules:
         if s.kind == "group":
             unit = f"group: {len(s.jobs)} jobs"
@@ -777,7 +782,8 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
             Text(unit, style=T.TEXT if healthy else T.ATTENTION),
             s.cadence,
             s.target or "active",
-            ", ".join(s.deliver),
+            Text(", ".join(f"{d} (not set up)" if d == "ntfy" and ntfy_off else d for d in s.deliver),
+                 style=T.ATTENTION if ntfy_off and "ntfy" in s.deliver else T.TEXT),
             Text(last_status.get(s.name, "—"), style=T.TEXT_MUTED),
         )
     parts: list[Any] = [table]

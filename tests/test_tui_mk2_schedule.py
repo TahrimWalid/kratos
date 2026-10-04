@@ -219,3 +219,19 @@ def test_typing_an_existing_schedule_name_asks_before_replacing(tmp_path, monkey
     assert any(isinstance(m, ConfirmModal) for m in seen)
     assert S.load_schedule(tmp_path, "nightly").cadence == "daily"   # not replaced
     assert S.load_schedule(tmp_path, "other").cadence == "weekly"
+
+
+def test_schedule_list_says_when_ntfy_delivery_is_not_set_up(tmp_path, monkeypatch):
+    from rich.console import Console
+
+    from kratos.tui_mk2 import render as R
+
+    sch = S.save_schedule(tmp_path, name="nightly", kind="audit", cadence="daily", deliver=["ntfy"])
+    con = Console(width=120, record=True, color_system=None)
+    monkeypatch.setattr("kratos.agent.notify.notify_config_status", lambda: ("off", ""))
+    con.print(R.schedule_table([sch], []))
+    assert "ntfy (not set up)" in con.export_text()
+    monkeypatch.setattr("kratos.agent.notify.notify_config_status", lambda: ("ok", ""))
+    con.print(R.schedule_table([sch], []))
+    out = con.export_text()
+    assert "ntfy" in out and "not set up" not in out
