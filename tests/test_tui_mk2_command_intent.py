@@ -134,3 +134,13 @@ def test_parse_pipeline_describe_nudge():
 def test_pipeline_describe_capability_in_prompt():
     sys = ci._system_prompt()
     assert "PIPELINE_DESCRIBE" in sys and "/preset-describe" in sys
+
+
+def test_host_routing_needs_an_explicit_self_reference(monkeypatch):
+    """Seen live: 'check this machine for problems' was routed to Kratos's OWN host. 'This
+    machine' could mean either, so without an explicit self-reference Kratos asks."""
+    monkeypatch.setattr(ci, "agent_chat", lambda *a, **k: "INVESTIGATE_HOST")
+    assert ci.route_message("check this machine for problems").kind == "clarify_host"
+    for msg in ("check your own host", "scan yourself", "how is this machine you run on",
+                "is the Kratos host itself okay"):
+        assert ci.route_message(msg).kind == "investigate_host", msg

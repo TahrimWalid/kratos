@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 from dataclasses import dataclass
 
 from kratos.llm_interface import agent_chat
@@ -159,6 +160,22 @@ class RouteResult:
     preset_goal: str | None = None  # for kind == "preset_new"
 
 
+# The Kratos machine is investigated only when the message SAYS so. Seen live: "check
+# this machine for problems" (meaning the machine the session watches) was routed to
+# Kratos's own host. Without an explicit self-reference, ask instead of guessing.
+_SELF_REFERENCE_RE = re.compile(
+    r"\b(?:your(?:self| own\b| host\b| machine\b| box\b| server\b| system\b)"
+    r"|you(?:'re| are)? (?:running|run) on|you(?:'re| are) on"
+    r"|(?:the )?kratos(?:'s)?\s+(?:own\s+)?(?:host|machine|box|server|computer|system)"
+    r"|itself|self[- ]?(?:check|scan|investigat\w*|monitor\w*))",
+    re.IGNORECASE,
+)
+
+
+def explicit_self_reference(message: str) -> bool:
+    return bool(_SELF_REFERENCE_RE.search(message or ""))
+
+
 def _parse(response: str) -> RouteResult:
     text = response.strip()
     bare = text.rstrip(".").strip().upper()
@@ -220,4 +237,7 @@ def route_message(message: str, resume_context: str = "") -> RouteResult:
         detail = captured.getvalue().strip().splitlines()
         reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
         return RouteResult(kind="failed", reason=reason)
-    return _parse(response)
+    result = _parse(response)
+    if result.kind == "investigate_host" and not explicit_self_reference(message):
+        return RouteResult(kind="clarify_host")  # "this machine" could be either: ask
+    return result
