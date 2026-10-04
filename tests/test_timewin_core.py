@@ -217,3 +217,12 @@ def test_window_names_cannot_impersonate_ids():
     w = c.resolve({"kind": "rolling", "amount": 1, "unit": "hour"})
     with pytest.raises(TimeIntentError, match="looks like a window id"):
         c.name(w.id, "w2")
+
+
+def test_naming_a_window_with_its_own_id_is_harmless():
+    """Seen live: measure_auth_activity got window {..., "name": "w1"} for window w1 and
+    failed with a red error; that name is simply ignored now (another window's id is
+    still refused, above)."""
+    c = ctx()
+    w = c.resolve({"kind": "rolling", "amount": 3, "unit": "day"}, name="w1")
+    assert w.id == "w1" and "w1" not in c.named

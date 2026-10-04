@@ -365,6 +365,10 @@ class TimeContext:
         if not _NAME_RE.fullmatch(key):
             raise TimeIntentError(f"window name {name!r} must be a short lowercase label")
         if re.fullmatch(r"w\d+", key):
+            if key == wid:
+                # A model "naming" window w1 as "w1" (seen live): harmless, nothing to save --
+                # failing the tool call for it only showed the user a red error.
+                return self.get(wid)
             # live run: a model saved a window as "w2", colliding with Kratos's own ids
             raise TimeIntentError(f"window name {name!r} looks like a window id; pick a descriptive "
                                   "name such as 'incident' or 'baseline'")
