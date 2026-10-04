@@ -1314,3 +1314,52 @@ def test_a_local_model_is_marked_free(tmp_path, monkeypatch):
     sid = store.create_session(["10.0.0.1"], "m")
     store.add_usage(sid, "qwen2.5:7b", 100, 10, 110, local=True)
     assert store.get_usage(sid)[0]["local"] == 1
+
+
+def test_text_typed_while_a_turn_runs_is_kept_not_lost(tmp_path, monkeypatch):
+    """Pressing Enter while a turn was still running cleared the box and dropped the text."""
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    sent: list = []
+    monkeypatch.setattr(screen, "_dispatch_slash", lambda t: sent.append(t))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._set_busy(True)
+            inp = screen.query_one("#goal")
+            inp.focus()
+            inp.value = "/report"
+            await pilot.press("enter")
+            await pilot.pause()
+            kept = inp.value
+            screen._set_busy(False)
+            await pilot.press("enter")
+            await pilot.pause()
+            return kept, inp.value
+
+    kept, after = asyncio.run(_run())
+    assert kept == "/report" and sent == ["/report"] and after == ""
+
+
+def test_interrupt_says_so_once_and_spinner_reads_stopping(tmp_path, monkeypatch):
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    from textual.widgets import Static
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._set_busy(True)
+            screen.action_interrupt()
+            screen.action_interrupt()
+            screen._tick_activity()
+            await pilot.pause()
+            spinner = str(screen.query_one("#activity", Static).render())
+            log = screen.query_one("#transcript")
+            text = "\n".join("".join(seg.text for seg in strip) for strip in log.lines)
+            return spinner, text
+
+    spinner, text = asyncio.run(_run())
+    assert text.count("Stopping after the current step") == 1
+    assert "stopping…" in spinner

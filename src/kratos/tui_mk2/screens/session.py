@@ -744,12 +744,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
+        if text and self._busy:
+            # Keep what was typed (it used to be cleared and lost) -- send it once
+            # the current turn is done.
+            self.notify("A turn is still running — your text is kept; press Enter again when it's "
+                        "done (esc stops it).", timeout=4)
+            return
         event.input.value = ""
         self._reset_recall()  # sending clears any ↑/↓ history navigation
         if not text:
-            return
-        if self._busy:
-            self.notify("A turn is already running — press esc or Ctrl+C to stop it first.", timeout=3)
             return
         # echo the user's line (with a trailing timestamp / date divider)
         t, d = self._stamp_now()
@@ -3830,6 +3833,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
     # --- goal handling: chat vs investigate ------------------------------
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
+        self._stopping = False  # a new turn (or its end) clears a pending stop
         # Stamp the start so the activity spinner can show elapsed time. Safe to
         # set from a worker thread (plain assignment); the spinner tick reads it
         # on the event loop.
@@ -3846,7 +3850,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if self._busy and self._busy_since is not None:
             self._spin_i = (self._spin_i + 1) % len(_SPINNER)
             elapsed = time.monotonic() - self._busy_since
-            act.update(Text(f"{_SPINNER[self._spin_i]} hacking… {elapsed:.0f}s", style=T.ACCENT))
+            doing = "stopping…" if getattr(self, "_stopping", False) else "hacking…"
+            act.update(Text(f"{_SPINNER[self._spin_i]} {doing} {elapsed:.0f}s", style=T.ACCENT))
             self._activity_active = True
         elif self._activity_active:
             act.update("")
@@ -4536,7 +4541,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def action_interrupt(self) -> None:
         if self._busy:
             self.workers.cancel_group(self, "turn")
-            self._emit(R.note_line("Interrupting at the next step boundary…"))
+            if not getattr(self, "_stopping", False):  # say it once, however many presses
+                self._stopping = True
+                self._emit(R.note_line("Stopping after the current step (a model reply already "
+                                       "in progress has to finish first)…"))
 
     def action_help(self) -> None:
         self.app.push_screen(HelpModal())
