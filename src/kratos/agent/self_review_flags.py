@@ -614,9 +614,15 @@ def format_review_flags_plain(flags: list[ReviewFlag]) -> str:
             "look over what the tool does below.)"
         )
     lines = ["Kratos noticed a few things worth checking before you keep this tool:"]
+    # One bullet per kind of warning: the same advice three times in a row (one per
+    # line it applies to) reads as noise to a reviewer and hides the other warnings.
+    groups: dict[tuple[str, str], list[ReviewFlag]] = {}
     for f in flags:
-        gloss = _PLAIN_GLOSS.get(f.category, "Worth a look.")
-        loc = f" (line {f.line})" if f.line is not None else ""
+        groups.setdefault((f.category, f.message), []).append(f)
+    for (category, message), same in groups.items():
+        gloss = _PLAIN_GLOSS.get(category, "Worth a look.")
+        nums = [str(f.line) for f in same if f.line is not None]
+        loc = f" (line{'s' if len(nums) > 1 else ''} {', '.join(nums)})" if nums else ""
         lines.append(f"\n• {gloss}{loc}")
-        lines.append(f"    ↳ technical detail: {f.message}")
+        lines.append(f"    ↳ technical detail: {message}")
     return "\n".join(lines)

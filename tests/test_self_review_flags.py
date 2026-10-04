@@ -188,3 +188,14 @@ def test_every_flag_category_has_a_plain_explanation():
     from kratos.agent import self_review_flags as R
     used = set(__import__("re").findall(r'ReviewFlag\(\s*"([a-z-]+)"', inspect.getsource(R)))
     assert used and used <= set(R._PLAIN_GLOSS)
+
+
+def test_plain_display_groups_repeated_warnings():
+    from kratos.agent.self_review_flags import ReviewFlag, format_review_flags_plain
+
+    msg = "This branch affects which data is included"
+    flags = [ReviewFlag("inclusion-affecting-branch", msg, n) for n in (39, 43, 46)]
+    flags.append(ReviewFlag("description-coverage", "3 branches", None))
+    text = format_review_flags_plain(flags)
+    assert text.count("A decision inside a loop") == 1 and "(lines 39, 43, 46)" in text
+    assert text.count("technical detail") == 2
