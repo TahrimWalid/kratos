@@ -241,6 +241,20 @@ _INLINE_CLAIMS_LABEL_RE = re.compile(r"""(?:\*\*)?["'`]?\bclaims["'`]?(?:\*\*)?\
                                      re.IGNORECASE)
 
 
+def _plain_claim_problem(problem: str, time_ctx: Any) -> str:
+    """A Guard 7 problem as the USER reads it: without the instruction meant for the
+    model (after ' -- ') or the 'claim #N:' tag, and with window ids as their period
+    ('w1' -> 'the last 24 hours')."""
+    text = re.sub(r"^claim #\d+:\s*", "", problem.split(" -- ")[0]).strip()
+    windows = getattr(time_ctx, "windows", None) or {}
+
+    def label(m: re.Match) -> str:
+        w = windows.get(m.group(0))
+        return f"the {w.label}" if w is not None and getattr(w, "label", "") else m.group(0)
+
+    return re.sub(r"\bw\d+\b", label, text)
+
+
 def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
     """(answer without the inline claims list, the list) -- or (text, None) when the
     answer carries no well-formed claims list. Only a JSON list of objects that each
@@ -1705,9 +1719,10 @@ def _run_agent_loop(
                 )
 
             if guard7_violated:
+                plain = [_plain_claim_problem(p, time_ctx) for p in claim_problems[:4]]
                 final_answer_text = (
                     "[NOTE: parts of this answer could not be verified against Kratos's own measurements: "
-                    + "; ".join(claim_problems[:4]) + (" (and more)" if len(claim_problems) > 4 else "")
+                    + "; ".join(plain) + (" (and more)" if len(claim_problems) > 4 else "")
                     + " -- treat those statements as unverified.]\n\n" + final_answer_text
                 )
 

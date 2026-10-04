@@ -215,3 +215,13 @@ def test_none_over_a_partial_window_is_fine_when_the_answer_says_the_rest_is_unk
     assert problems == [] and claims[0]["verified"] and claims[0]["partial"]
     problems, _ = verify_claims(ctx, "No failed logins in the last 3 hours.", claim)   # still caught
     assert any("only 33.3% of" in p for p in problems)
+
+
+def test_the_unverified_note_reads_plainly():
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(windows={"w1": SimpleNamespace(label="last 24 hours")})
+    raw = ("claim #2: only 1.3% of w1 was covered, so 'none' cannot be claimed for the whole window -- "
+           'claim the covered part and mark the rest "unknown"')
+    assert agent_loop._plain_claim_problem(raw, ctx) == \
+        "only 1.3% of the last 24 hours was covered, so 'none' cannot be claimed for the whole window"
