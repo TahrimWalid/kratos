@@ -210,7 +210,7 @@ RULES:
 - Keep the CANDIDATE_MODULE_PATH/_load_candidate/registered_handler fixture EXACTLY as shown -- that machinery is fixed, not yours to redesign.
 - TOOL_NAME must be exactly the tool name given to you, nothing else.
 - Write 1-3 test functions with REAL, SPECIFIC assertions reasoning about what this tool's return value should actually contain, based on the goal -- e.g. if the goal is about listing users, assert on a real, named key you'd expect (like checking for a "sudo_members" key and that it's a list), not just "assert isinstance(result, dict)".
-- Prefer to attach a short, plain-English message to each assertion (e.g. `assert "users" in result, "Result must list each user with sudo access"`) -- a non-technical reviewer reads those messages to understand what the test is really checking, so make them a faithful description of the assertion, not a restatement of the code.
+- Prefer to attach a short, plain-English message to each assertion (e.g. `assert "users" in result, "Result must list each user with sudo access"`) -- a non-technical reviewer reads those messages to understand what the test is really checking, so make them a faithful description of the assertion, not a restatement of the code. Phrase each message as what MUST be true ("The cron command for root is parsed"), never as the failure ("... was not parsed correctly").
 - You do NOT know the real implementation yet -- you are proposing a REASONABLE interface (return dict shape) for it to be judged against. A human will review and adjust this before it's ever used, so make a concrete, defensible choice rather than a vague one.
 - If the goal is target-facing (see above), mock the SSH layer as shown -- do not write a harness that will hang or fail in a no-network sandbox regardless of whether the candidate is correct.
 - Fake the tool's ONE remote call with a fixed reply (`return_value=SSHResult(...)`). NEVER use a side_effect function that looks at the command or script text to decide what to return -- that ties the test to one way of writing the command and a correct tool fails it. When the tool needs several files, put them all in that one fake output, each after a marker line like `=== /etc/crontab ===` (the tool is told to print exactly such markers).
@@ -440,6 +440,27 @@ def _unparse(node: ast.AST) -> str:
         return "<expression>"
 
 
+_ORDINALS = {0: "the first item of", 1: "the second item of", 2: "the third item of", -1: "the last item of"}
+
+
+def _subject(node: ast.AST) -> str:
+    """`result['users'][0]` -> "the first item of the result's 'users'". Exact (every
+    key and index is kept), just read left to right; anything else is shown as code."""
+    if isinstance(node, ast.Name) and node.id == "result":
+        return "the result"
+    if isinstance(node, ast.Subscript):
+        key = node.slice
+        if isinstance(key, ast.UnaryOp) and isinstance(key.op, ast.USub) and isinstance(key.operand, ast.Constant):
+            key = ast.Constant(-key.operand.value)
+        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+            inner = _subject(node.value)
+            return f"{inner}'s {key.value!r}" if inner.startswith("the ") else _unparse(node)
+        if isinstance(key, ast.Constant) and isinstance(key.value, int) and key.value in _ORDINALS:
+            inner = _subject(node.value)
+            return f"{_ORDINALS[key.value]} {inner}" if inner.startswith("the ") else _unparse(node)
+    return _unparse(node)
+
+
 def _gloss_compare(node: ast.Compare) -> str | None:
     """Gloss a single-op comparison (len(x) >= 1, result['k'] == 3, 'k' in d)."""
     if len(node.ops) != 1 or len(node.comparators) != 1:
@@ -449,13 +470,11 @@ def _gloss_compare(node: ast.Compare) -> str | None:
     # membership: "key" in result  /  "root" in result["users"]  /  x not in y
     if isinstance(op, (ast.In, ast.NotIn)):
         verb = "includes" if isinstance(op, ast.In) else "does NOT include"
-        rhs = _unparse(right)
-        subject = "the result" if rhs == "result" else rhs
-        return f"{subject} {verb} {_unparse(left)}"
+        return f"{_subject(right)} {verb} {_unparse(left)}"
 
     # len(x) <op> N
     if isinstance(left, ast.Call) and isinstance(left.func, ast.Name) and left.func.id == "len" and left.args:
-        subject = _unparse(left.args[0])
+        subject = _subject(left.args[0])
         n = _unparse(right)
         phrase = {
             ast.GtE: f"has at least {n} item(s)",
@@ -479,7 +498,7 @@ def _gloss_compare(node: ast.Compare) -> str | None:
         ast.Lt: "is less than",
     }.get(type(op))
     if phrase and _is_simple(left) and _is_simple(right):
-        return f"{_unparse(left)} {phrase} {_unparse(right)}"
+        return f"{_subject(left)} {phrase} {_unparse(right)}"
     return None
 
 
@@ -487,6 +506,12 @@ def _is_simple(node: ast.AST) -> bool:
     """A leaf-ish expression a reader can take at face value: a name, literal,
     attribute/subscript access, or a plain call. A BinOp/BoolOp/comparison
     operand is NOT simple -- those get shown verbatim instead of glossed."""
+    if isinstance(node, (ast.Dict, ast.List, ast.Tuple, ast.Set)):
+        try:  # a literal like {} or ["a", "b"] reads fine as-is
+            ast.literal_eval(node)
+            return True
+        except (ValueError, TypeError, SyntaxError):
+            return False
     return isinstance(node, (ast.Name, ast.Constant, ast.Attribute, ast.Subscript, ast.Call))
 
 
@@ -549,6 +574,20 @@ def _collect_ssh_mock_outputs(tree: ast.AST) -> tuple[bool, list[str]]:
     return is_target_facing, outputs
 
 
+# An assert message phrased as the FAILURE ("The cron command was not parsed correctly",
+# "Missing key") reads backwards in a list headed "It checks that:". Seen live (demo
+# pass 3). Such a message is replaced by the assertion's own meaning, read from the code.
+_FAILURE_MESSAGE_RE = re.compile(
+    r"\b(?:was|were|is|are|did|does|do|has|have|could|can)(?:n't| not)\b|\bnot (?:found|parsed|returned|present)\b"
+    r"|\b(?:missing|failed|wrong|incorrect(?:ly)?|unexpected|mismatch)\b",
+    re.IGNORECASE)
+
+
+def _claim_from_message(text: str) -> bool:
+    """True when an assert message states what must hold (usable as a claim)."""
+    return not _FAILURE_MESSAGE_RE.search(text)
+
+
 def describe_harness_claims(source: str) -> HarnessClaims:
     """Extract plain-English claims from a pytest harness's own AST. Faithful by
     construction -- never an LLM gloss (see module docstring)."""
@@ -577,9 +616,10 @@ def describe_harness_claims(source: str) -> HarnessClaims:
         msg = node.msg
         if isinstance(msg, ast.Constant) and isinstance(msg.value, str) and msg.value.strip():
             text = msg.value.strip()
-            if text not in result.claims:
-                result.claims.append(text)
-            continue
+            if _claim_from_message(text):
+                if text not in result.claims:
+                    result.claims.append(text)
+                continue
         gloss = _gloss_test(node.test)
         if gloss:
             if gloss not in result.claims:

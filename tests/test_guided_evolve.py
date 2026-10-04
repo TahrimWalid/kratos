@@ -109,7 +109,7 @@ def test_claims_gloss_structural_asserts():
     assert any("is a dict" in x for x in c.claims)
     assert any("at least" in x and "item" in x for x in c.claims)
     # membership on a subscript renders faithfully (not "the result includes")
-    assert any("result['users'] includes 'root'" == x for x in c.claims)
+    assert any("the result's 'users' includes 'root'" == x for x in c.claims)
 
 
 def test_claims_detect_target_facing_and_assumed_output():
@@ -478,3 +478,20 @@ def test_claims_roundtrip_none_on_empty_input():
     p = FakePrompter(texts=[""])
     claims = G.describe_harness_claims(_DISC_HARNESS)
     assert G._claims_roundtrip("g", "rt_demo", _DISC_HARNESS, claims, p) is None
+
+
+def test_failure_phrased_messages_become_the_assertions_own_meaning():
+    """Seen live (demo pass 3): 'It checks that: • The cron command for root was not
+    parsed correctly' -- a failure message listed as a claim."""
+    src = '''
+def test_x(registered_handler):
+    result = registered_handler()
+    assert "root" in result, "Result must contain cron jobs for the root user"
+    assert "/usr/bin/backup.sh" in result["root"][0], "The cron command for root was not parsed correctly"
+    assert result == {}, "Missing key"
+'''
+    c = describe_harness_claims(src)
+    assert "Result must contain cron jobs for the root user" in c.claims
+    assert not any("not parsed" in x or "Missing" in x for x in c.claims)
+    assert "the first item of the result's 'root' includes '/usr/bin/backup.sh'" in c.claims
+    assert "the result equals {}" in c.claims
