@@ -118,6 +118,7 @@ def _check_backend(out: list[Check]) -> None:
 
 def _check_target(out: list[Check]) -> None:
     from kratos.adapters.ssh_remote import run_target_probe_checks
+    from kratos.adapters.target_setup import check_label
     from kratos.kratos_config import get_active_target
 
     target = get_active_target()
@@ -140,7 +141,7 @@ def _check_target(out: list[Check]) -> None:
             # INFO is a fact (e.g. the target's timezone), not something to fix.
             status = ("pass" if raw in ("PASS", "OK") else "fail" if raw == "FAIL"
                       else "info" if raw == "INFO" else "warn")
-            out.append(_row(f"target · {c.get('check', '?')}", status, c.get("detail", "")))
+            out.append(_row(f"target · {check_label(c.get('check', '?'))}", status, c.get("detail", "")))
     elif getattr(probe, "via", "ssh") == "subagent":
         detail = (getattr(probe, "stderr", "") or "read failed").strip()
         out.append(_row("target reachable", "fail", f"{target}: {detail[:200]}",

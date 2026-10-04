@@ -34,6 +34,28 @@ import socket
 from kratos.kratos_config import SSH_TARGET_USER, SSH_TARGET_KEY_PATH
 
 
+# What each setup-probe row checks, in words (the probe itself reports short ids).
+CHECK_LABELS: dict[str, str] = {
+    "ssh_reachable": "Log in over SSH",
+    "subagent_reachable": "Reach it through its sub-agent",
+    "agent_privilege": "Sub-agent's access level",
+    "journalctl_access": "Read the system logs",
+    "sudo_sshd_config": "Read the SSH server settings",
+    "sshd_config": "Read the SSH server settings",
+    "sudo_firewall_status": "Read the firewall status",
+    "firewall_status": "Read the firewall status",
+    "sudo_fail2ban": "Read fail2ban's status",
+    "yara_installed": "YARA installed (malware scans)",
+    "lsof_installed": "lsof installed (open files)",
+    "target_timezone": "Clock and timezone",
+}
+
+
+def check_label(check_id: str) -> str:
+    """A setup check's plain name; unknown ids are shown readably, not hidden."""
+    return CHECK_LABELS.get(check_id, str(check_id).replace("_", " ").capitalize())
+
+
 def _detect_local_ip(target_host: str) -> str | None:
     """Best-effort: which local IP would the OS route through to reach
     target_host? A UDP socket's connect() never actually sends a packet (UDP

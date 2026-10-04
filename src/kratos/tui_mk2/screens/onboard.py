@@ -370,6 +370,8 @@ class OnboardTargetScreen(Screen[str | None]):
                 self.app.call_from_thread(self._show_fix, diag)
             return
 
+        from kratos.adapters.target_setup import check_label
+
         table = Table(show_header=True, header_style="bold", title="Setup check")
         table.add_column("Check")
         table.add_column("Status")
@@ -382,7 +384,7 @@ class OnboardTargetScreen(Screen[str | None]):
             if status not in ("PASS", "INFO"):  # INFO is a fact (e.g. the timezone), not a check
                 n_fail += 1
             table.add_row(
-                c.get("check", "?"),
+                check_label(c.get("check", "?")),
                 Text(status, style=colors.get(status, T.TEXT_DIM)),
                 Text(c.get("detail", ""), style=T.TEXT_DIM),
             )

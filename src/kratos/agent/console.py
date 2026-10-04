@@ -432,6 +432,8 @@ def render_target_probe_results(console: Console, checks: list[dict[str, str]]) 
     """adapters/ssh_remote.py::run_target_probe_checks's output. Same
     PASS/FAIL/UNKNOWN vocabulary and status-to-color mapping as
     _test_summary_table below (SAFE/FAILURE/ATTENTION), not a new one."""
+    from kratos.adapters.target_setup import check_label
+
     status_style = {"PASS": SAFE, "FAIL": FAILURE, "UNKNOWN": ATTENTION, "INFO": TEXT_SECONDARY}
     table = Table(show_header=True, header_style="bold", title="Target setup check")
     table.add_column("Check")
@@ -439,7 +441,7 @@ def render_target_probe_results(console: Console, checks: list[dict[str, str]]) 
     table.add_column("Detail")
     for c in checks:
         style = status_style.get(c["status"], TEXT_PRIMARY)
-        table.add_row(c["check"], f"[{style}]{c['status']}[/{style}]", c["detail"])
+        table.add_row(check_label(c["check"]), f"[{style}]{c['status']}[/{style}]", c["detail"])
     console.print(table)
 
 

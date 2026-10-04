@@ -3192,13 +3192,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.error_line(
                 f"Could not reach the target {how} to verify setup: {(result.stderr or result.stdout).strip()}"))
             return
+        from kratos.adapters.target_setup import check_label
+
         table = Table(show_header=True, header_style="bold", title="Target setup check")
         table.add_column("Check")
         table.add_column("Status")
         table.add_column("Detail")
         colors = {"PASS": T.SAFE, "FAIL": T.CRITICAL, "UNKNOWN": T.ATTENTION, "WARN": T.ATTENTION}
         for c in result:
-            table.add_row(c["check"], Text(c["status"], style=colors.get(c["status"], T.TEXT)), c["detail"])
+            table.add_row(check_label(c["check"]), Text(c["status"], style=colors.get(c["status"], T.TEXT)), c["detail"])
         self._emit_from_worker(table)
 
     # --- model cost/privacy blurb (used by the Settings Models tab) ------

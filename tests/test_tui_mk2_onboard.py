@@ -119,7 +119,7 @@ def test_ssh_path_shows_checklist_and_passing_probe(tmp_path, monkeypatch):
     asyncio.run(run())
     texts = captured["texts"]
     assert not any("setup for 203.0.113.5" in t for t in texts)  # nothing left to set up -> no checklist
-    assert any("ssh_reachable" in t for t in texts)  # probe table shown
+    assert any("Log in over SSH" in t for t in texts)  # probe table shown, in words
     assert any("you're ready" in t for t in texts)  # all-pass summary
 
 

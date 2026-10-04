@@ -141,8 +141,8 @@ def test_target_info_rows_are_facts_not_warnings(monkeypatch):
     rows: list = []
     doctor._check_target(rows)
     by = {r["check"]: r["status"] for r in rows}
-    assert by["target · target_timezone"] == "info"
-    assert by["target · ssh_reachable"] == "pass" and by["target · lsof_installed"] == "warn"
+    assert by["target · Clock and timezone"] == "info"
+    assert by["target · Log in over SSH"] == "pass" and by["target · lsof installed (open files)"] == "warn"
 
 
 def test_doctor_details_are_folded_not_cut_off():

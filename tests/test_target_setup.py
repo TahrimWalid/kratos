@@ -182,3 +182,15 @@ def test_fetch_journalctl_auth_entries_omits_sudo_when_disabled(monkeypatch):
     assert len(captured) == 2  # sshd + sudo identifiers
     assert all(not cmd.startswith("sudo") for cmd in captured)
     assert all(cmd.startswith("journalctl") for cmd in captured)
+
+
+def test_every_probe_check_has_a_plain_label():
+    """Setup-check rows are shown with words (\"Read the system logs\"), not the probe's
+    internal ids (journalctl_access); an unknown id still reads as words."""
+    from kratos.adapters.target_setup import CHECK_LABELS, check_label
+
+    for check_id in ("ssh_reachable", "journalctl_access", "sudo_sshd_config", "sudo_firewall_status",
+                     "sudo_fail2ban", "yara_installed", "lsof_installed", "target_timezone",
+                     "subagent_reachable", "agent_privilege", "sshd_config", "firewall_status"):
+        assert check_id in CHECK_LABELS and "_" not in check_label(check_id)
+    assert check_label("some_new_check") == "Some new check"
