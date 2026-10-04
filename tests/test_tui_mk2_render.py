@@ -339,3 +339,20 @@ def test_home_wordmark_overhangs_the_subtitle_equally_at_any_width():
         left = sub.index("s") - mark.index("K")
         right = mark.rindex("S") - (sub.index("assistant") + len("assistant") - 1)
         assert left == right > 0, (width, left, right)
+
+
+def test_a_long_evidence_line_wraps_under_its_own_text():
+    """Seen in the demo: a wrapped 'Coverage: partial -- ...' line continued at the panel
+    edge, reading like a new unlabelled line."""
+    from rich.console import Console
+
+    long = "Coverage: partial -- SSH log: only the newest 500 entries were read, nothing before 2026-10-04 19:27:04 UTC"
+    panel = R.finding_panel({"id": "COV-001", "severity": "info", "title": "t", "evidence": [long, "short one"]})
+    con = Console(width=60, record=True, color_system=None)
+    con.print(panel)
+    raw = con.export_text().splitlines()      # (export_text clears the record: read it once)
+    lines = [ln.strip("│ ").rstrip() for ln in raw]
+    first = next(i for i, ln in enumerate(raw) if "• Coverage" in ln)
+    bullet_col = raw[first].index("Coverage")
+    assert raw[first + 1][bullet_col - 1:bullet_col] == " " and raw[first + 1][bullet_col] != " "
+    assert any("• short one" in ln for ln in lines)

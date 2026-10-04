@@ -225,15 +225,23 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     body.append(f"\n[{fid}] {finding.get('title', '')}", style=T.TEXT_DIM)
 
     evidence = finding.get("evidence") or []
+    content: Any = body
     if evidence:
         body.append("\n\nDetails:", style=T.TEXT_DIM)
+        # bullet | text columns: a long line wraps under its own text, not back to the
+        # panel edge where it looked like a new, unlabelled line
+        details = Table.grid(padding=0)
+        details.add_column(width=4, no_wrap=True)
+        details.add_column(ratio=1)
         for e in evidence[:5]:
-            body.append(f"\n  • {e}", style=T.TEXT_MUTED)
+            details.add_row(Text("  • ", style=T.TEXT_MUTED), Text(str(e), style=T.TEXT_MUTED))
         if len(evidence) > 5:
-            body.append(f"\n  … {len(evidence) - 5} more (see /report)", style=T.TEXT_FAINT)
+            details.add_row(Text("  … ", style=T.TEXT_FAINT),
+                            Text(f"{len(evidence) - 5} more (see /report)", style=T.TEXT_FAINT))
+        content = Group(body, details)
 
     return Panel(
-        body,
+        content,
         title=f"Finding — {severity.upper()}",
         title_align="left",
         subtitle=_time_subtitle(time_str),
