@@ -188,7 +188,9 @@ class SubAgentScreen(Screen):
         # stream telemetry without a second terminal. Defensive getattr: a bare
         # test host App without this method is simply skipped.
         ensure = getattr(self.app, "ensure_core_listener", None)
-        if ensure is not None and self._targets:
+        # Also when a server is still waiting to check in with its code: without
+        # a listener its installer has nothing to dial.
+        if ensure is not None and (self._targets or self._sa_store.list_pending_pairing_codes()):
             ensure()
         # Live status: re-derive connected/stale/unreachable and surface a target
         # that checks in ANY way (this add flow, a reconnect, an out-of-band
@@ -430,6 +432,7 @@ class SubAgentScreen(Screen):
             self._watched_codes.setdefault(code["code"], {"name": name, "host": code.get("core_host")})
             self._log(Text(f"Code {code['code']} for {name} is still valid — use its installer, or press n on its "
                            "row for a fresh one.", style=T.TEXT_MUTED))
+            self._announce_listener()  # it can only check in if something is listening
         return None
 
     async def _start_pairing(self, name: str | None, *, replaces_target_id: str | None = None,

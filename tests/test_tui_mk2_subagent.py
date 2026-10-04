@@ -374,3 +374,56 @@ def test_shown_commands_are_the_ones_c_copies(tmp_path, monkeypatch):
     for line in out["copied"].splitlines():
         assert line in out["texts"]
     assert "&& rm -f" in out["copied"]
+
+
+class _ListenerHost(_Host):
+    def __init__(self, screen):
+        super().__init__(screen)
+        self.listener_calls = 0
+
+    def ensure_core_listener(self):
+        self.listener_calls += 1
+        return "in_process"
+
+
+def test_opening_with_a_server_waiting_to_check_in_starts_the_listener(tmp_path):
+    """Seen live: a code was waiting for its server, but the screen showed 'Not listening'
+    -- the listener only started when a server was already paired, so the waiting
+    server's installer had nothing to dial."""
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    sa.create_pairing_code(name="db-01", core_host="10.0.0.1")
+    app_box: dict = {}
+
+    async def run():
+        app = _ListenerHost(SubAgentScreen(tmp_path))
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            app_box["calls"] = app.listener_calls
+
+    asyncio.run(run())
+    assert app_box["calls"] >= 1
+
+
+def test_reusing_a_waiting_code_makes_sure_something_is_listening(tmp_path, monkeypatch):
+    sa = SubAgentStore(tmp_path / "kratos.db")
+    sa.create_pairing_code(name="db-01", core_host="10.0.0.1")
+    screen = SubAgentScreen(tmp_path)
+    out: dict = {}
+
+    async def run():
+        app = _ListenerHost(screen)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            before = app.listener_calls
+
+            async def _pick(modal):
+                return "reuse"
+
+            monkeypatch.setattr(app, "push_screen_wait", _pick)
+            out["result"] = await screen._resolve_duplicate_name("db-01")
+            out["calls"] = app.listener_calls - before
+            out["texts"] = _log_texts(screen)
+
+    asyncio.run(run())
+    assert out["result"] is None and out["calls"] == 1
+    assert any("still valid" in t for t in out["texts"])
