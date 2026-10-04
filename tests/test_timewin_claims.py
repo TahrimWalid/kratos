@@ -237,3 +237,14 @@ def test_the_unverified_note_names_periods_naturally():
         "ssh successful logins for yesterday was measured as 0"
     assert agent_loop._plain_claim_problem("claim #1: sudo_failures in w2 was measured as 3, not 5", ctx) == \
         "sudo failures since Monday was measured as 3, not 5"
+
+
+def test_an_answer_with_no_count_and_no_none_needs_no_claims_list():
+    """Seen live (demo): 'I cannot confirm whether port 22 was open yesterday' was
+    stamped 'carries no claims list -- treat as unverified'."""
+    from kratos.timewin.claims import _states_a_measurement
+
+    assert not _states_a_measurement("I cannot confirm whether port 22 was open yesterday; Kratos has no snapshot.")
+    assert not _states_a_measurement("The scan took 5 minutes and port 22 is open now.")
+    assert _states_a_measurement("There were 24 failed logins.")
+    assert _states_a_measurement("No failed login attempts were recorded.")

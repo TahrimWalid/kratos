@@ -95,6 +95,21 @@ def measurement_summary(m: Any) -> dict[str, Any]:
     return {"metrics": metrics, "coverage_percent": m.coverage()["percent"], "values": values}
 
 
+_ABSENCE_NEAR_WORD = re.compile(rf"\b(?:no|zero|none of the|not a single|not any)\s+(?:\w+\s+){{0,3}}{_COUNT_WORD}\b",
+                                re.IGNORECASE)
+
+
+def _states_a_measurement(answer: str) -> bool:
+    """Does the prose state a count or a 'none'? Only those need a claims list. Seen live
+    (demo): 'I cannot confirm whether port 22 was open yesterday' -- no number, no
+    'none' -- was stamped 'carries no claims list, treat as unverified'."""
+    for m in _NUM_NEAR_WORD.finditer(answer or ""):
+        end = m.end(1) if m.group(1) else m.end(2)
+        if not _NOT_A_COUNT.match(answer[end:]):
+            return True
+    return bool(_ABSENCE_NEAR_WORD.search(answer or ""))
+
+
 def is_time_scoped(ctx: TimeContext | None) -> bool:
     return bool(ctx and (ctx.goal_ids or ctx.measurements))
 
@@ -117,7 +132,7 @@ def verify_claims(ctx: TimeContext, answer: str, claims: Any) -> tuple[list[str]
     for rec in ctx.measurements.values():
         measured_values |= rec.get("values", set())
 
-    if not claims and ctx.measurements:
+    if not claims and ctx.measurements and _states_a_measurement(answer):
         problems.append("this answer is about a time period but carries no \"claims\" list -- add one claim per "
                         "number or 'none' statement, each tied to a window id")
 
