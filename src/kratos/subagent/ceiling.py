@@ -186,9 +186,11 @@ DEFAULT_CEILING = Ceiling(
         Shape(
             id="systemctl.enable_now",
             binary="systemctl",
+            # No deny list here: _NEVER_DISABLE_UNITS guards against turning things
+            # OFF, and it used to make rsyslog/chrony/auditd/systemd-timesyncd
+            # impossible to turn ON (security review 2026-10-05, finding 6).
             args=(Lit("enable"), Lit("--now"),
-                  Var(wl.Slot(kind="enum", values=ENABLE_UNITS), deny=_NEVER_DISABLE_UNITS,
-                      reachability_values=_FIREWALL_UNITS)),
+                  Var(wl.Slot(kind="enum", values=ENABLE_UNITS), reachability_values=_FIREWALL_UNITS)),
             description="Enable and start one security service from a vetted list.",
             reversible=True,
             disrupts_running_service=False,
@@ -494,6 +496,15 @@ def check_spec(spec: wl.ActionSpec, ceiling: Ceiling = DEFAULT_CEILING) -> list[
     anything matched by a shipped shape; it is skipped only for an exact
     command the target's admin allowlisted locally (their explicit choice on
     their own box)."""
+    # A token slot can only ever fit a ceiling position with exactly the same
+    # pattern (_slot_within), so refuse any other pattern BEFORE validate_spec
+    # compiles it and runs it against the adversarial probes: a pattern from
+    # core is never compiled or run (security review 2026-10-05, finding 4).
+    known = {a.slot.pattern for sh in ceiling.shapes for a in sh.args
+             if isinstance(a, Var) and a.slot.kind == "token"} | {wl.Slot(kind="token").pattern}
+    for name, slot in (spec.slots or {}).items():
+        if getattr(slot, "kind", None) == "token" and slot.pattern not in known:
+            raise CeilingError(f"{spec.id}: slot {name!r} uses a free-form pattern this agent's ceiling doesn't have")
     wl.validate_spec(spec, hard_exclusions=False)
     fits, reasons = [], []
     for shape in ceiling.shapes:

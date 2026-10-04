@@ -278,3 +278,37 @@ def test_an_empty_argument_is_a_valid_exact_command(tmp_path):
     assert not C.matching_shapes(["adduser", "--disabled-password", "--gecos", "x", "alice"], reported)
     with pytest.raises(W.ActionSpecError):
         W.validate_spec(_spec(("", "x")))  # the program itself must still be named
+
+
+def test_an_unknown_token_pattern_is_refused_before_it_is_compiled(monkeypatch):
+    """Security review 2026-10-05, finding 4: a pattern sent by core used to be
+    compiled and run against probe strings before the ceiling's own
+    equal-pattern rule rejected it."""
+    import pytest
+
+    from kratos.subagent import ceiling as cl, whitelist as wl
+
+    compiled = []
+    real_compile = wl.re.compile
+    monkeypatch.setattr(wl.re, "compile", lambda p, *a: compiled.append(p) or real_compile(p, *a))
+    spec = wl.ActionSpec(
+        id="user.x", layer="user", argv_template=("fail2ban-client", "set", "{jail}", "banip", "{ip}"),
+        slots={"jail": wl.Slot(kind="token", pattern=r"^(x+)+y$", max_length=32),
+               "ip": wl.Slot(kind="ip", ip_deny_private=True)},
+        effect="e", reversibility="r", blast_radius="b", reversible=True,
+        disrupts_running_service=False, reachability_adjacent=False, source_recommendation=("CORR-SSH-001",),
+    )
+    with pytest.raises(cl.CeilingError, match="free-form pattern"):
+        cl.check_spec(spec)
+    assert r"^(x+)+y$" not in compiled
+
+
+def test_logging_clock_and_audit_services_can_be_enabled_but_never_disabled():
+    """Security review 2026-10-05, finding 6: the never-disable list was also
+    applied to 'enable', so these could never be turned on."""
+    for unit in ("rsyslog", "chrony", "auditd", "systemd-timesyncd"):
+        assert C.match_argv(["systemctl", "enable", "--now", unit])
+        with pytest.raises(C.CeilingError):
+            C.match_argv(["systemctl", "disable", "--now", unit])
+    with pytest.raises(C.CeilingError):
+        C.match_argv(["systemctl", "enable", "--now", "debug-shell"])    # still only the vetted list
