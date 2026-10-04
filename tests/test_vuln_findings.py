@@ -346,3 +346,15 @@ def test_a_refused_scan_saves_nothing(monkeypatch, tmp_path):
                                                                "coverage_gap": "network exposure (open ports/services)"})
     tools.tool_run_vuln_scan(tmp_path, target=TARGET)
     assert not list(tmp_path.glob("scans/vuln_scan_*.json"))
+
+
+def test_every_finding_id_has_a_plain_headline():
+    """A rule without a template falls back to the generic 'A security-relevant pattern
+    was detected' -- seen live on PRIV-004. Every id the engine can emit has its own."""
+    import re
+    from pathlib import Path
+
+    src = Path(FE.__file__).read_text(encoding="utf-8")
+    ids = set(re.findall(r'id="([A-Z]+(?:-[A-Z]+)*-\d+)"', src))
+    assert ids, "no finding ids found"
+    assert sorted(i for i in ids if i not in FE.FINDING_SUMMARY_TEMPLATES) == []

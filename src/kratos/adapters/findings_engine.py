@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -239,11 +239,34 @@ class Finding:
     source_ips: list[str] = field(default_factory=list)
 
 
+_EVENT_WORDS = {
+    "ssh_failed_login": "failed SSH logins",
+    "sudo_pam_auth_failure": "sudo password failures",
+    "sudo_auth_failure": "sudo authentication failures",
+}
+
+
+def _when(value: Any) -> str:
+    """An ISO timestamp as '2026-10-04 08:55:24 UTC' (evidence is read by people)."""
+    try:
+        dt = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return str(value)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _burst_line(b: dict[str, Any]) -> str:
+    what = _EVENT_WORDS.get(str(b.get("event_type")), str(b.get("event_type") or "events").replace("_", " "))
+    return f"burst of {what}: {b.get('count')} between {_when(b.get('start'))} and {_when(b.get('end'))}"
+
+
 def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
     """PRIV-001..004 from one list_privileged_accounts snapshot."""
     out: list[Finding] = []
     accounts: dict[str, Any] = snap.get("accounts") or {}
-    source = f"Source: list_privileged_accounts on {snap.get('target', 'the target')} at {snap.get('checked_at', 'unknown')}"
+    source = f"From the privileged-accounts check of {snap.get('target', 'the target')} at {_when(snap.get('checked_at', 'unknown'))}"
     gaps = [f"Evidence gap: {g}" for g in (snap.get("evidence_gaps") or [])]
 
     # PRIV-001: an account that still holds privilege was granted it recently.
@@ -338,7 +361,7 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
     """
     findings: list[Finding] = []
     target = scan.get("target") or "the target"
-    source = f"Source: run_vuln_scan on {target} at {scan.get('scanned_at') or 'an unknown time'}"
+    source = f"From the vulnerability scan of {target} at {_when(scan.get('scanned_at')) if scan.get('scanned_at') else 'an unknown time'}"
     items = [x for x in scan.get("findings") or [] if isinstance(x, dict)]
 
     matches: dict[tuple[str, str], dict[str, Any]] = {}
@@ -469,6 +492,10 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "VULN-001": "Some network services' versions match known vulnerabilities (CVEs) — check whether they're patched.",
     "VULN-002": "Active checks found issues on the system's network services.",
     "VULN-003": "The vulnerability check couldn't cover everything — part of it was skipped or limited, so a clean result there isn't proof.",
+    "PRIV-001": "An account was recently given admin or root-level access — check that this was intended.",
+    "PRIV-002": "An account other than root has user ID 0, which gives it full root powers.",
+    "PRIV-003": "An account gained admin or root-level access since Kratos last checked.",
+    "PRIV-004": "These accounts can act as root or admin on this machine.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -634,8 +661,8 @@ def generate_findings(
                     title="No open TCP ports detected in latest scan",
                     severity="info",
                     evidence=[
-                        f"Source: {nmap_parsed.get('source_file', 'n/a')}",
-                        "Nmap open_ports count = 0",
+                        "From the latest port scan",
+                        "Open ports found: 0",
                     ],
                     recommendation=[
                         "If this is expected (local dev machine), no action needed.",
@@ -662,8 +689,8 @@ def generate_findings(
                     title="Open ports detected (attack surface present)",
                     severity=sev,
                     evidence=[
-                        f"Source: {nmap_parsed.get('source_file', 'n/a')}",
-                        f"Open ports total = {open_ports_total}",
+                        "From the latest port scan",
+                        f"Open ports found: {open_ports_total}",
                         "Exposed endpoints:",
                         *exposed[:10],
                     ],
@@ -744,9 +771,9 @@ def generate_findings(
                     title="Sudo authentication failures observed",
                     severity="low",
                     evidence=[
-                        f"sudo_pam_auth_failure events = {sudo_pam_fail_count}",
-                        f"sudo_auth_failure events = {sudo_fail_count}",
-                        "Source: latest auth_stats",
+                        f"sudo password failures: {sudo_pam_fail_count}",
+                        f"sudo authentication failures: {sudo_fail_count}",
+                        "From the latest read of the login logs",
                         time_window_note,
                     ],
                     recommendation=[
@@ -779,9 +806,9 @@ def generate_findings(
                     title="Sudo session activity observed",
                     severity="info",
                     evidence=[
-                        f"sudo_session_open events = {sudo_open}",
-                        f"sudo_session_close events = {sudo_close}",
-                        "Source: latest auth_stats",
+                        f"sudo sessions opened: {sudo_open}",
+                        f"sudo sessions closed: {sudo_close}",
+                        "From the latest read of the login logs",
                         time_window_note,
                     ],
                     recommendation=[
@@ -861,12 +888,9 @@ def generate_findings(
                     title="Burst activity detected in authentication failures",
                     severity="info",
                     evidence=[
-                        f"Source: {auth_patterns.get('source_events_file', 'n/a')}",
-                        f"Bursts detected = {len(relevant)}",
-                        *[
-                            f"{b.get('event_type')} burst: {b.get('count')} events between {b.get('start')} and {b.get('end')}"
-                            for b in relevant[:5]
-                        ],
+                        *(["From the latest read of the login logs"] if auth_patterns.get("source_events_file") else []),
+                        f"Bursts found: {len(relevant)}",
+                        *[_burst_line(b) for b in relevant[:5]],
                     ],
                     recommendation=[
                         "Investigate the time window(s) shown in the evidence.",
@@ -892,11 +916,8 @@ def generate_findings(
                 severity="medium",
                 evidence=[
                     "SSH appears exposed in latest scan (port 22 and/or ssh service detected).",
-                    f"SSH failed-login bursts detected = {len(ssh_bursts)}",
-                    *[
-                        f"ssh_failed_login burst: {b.get('count')} events between {b.get('start')} and {b.get('end')}"
-                        for b in ssh_bursts[:3]
-                    ],
+                    f"Bursts of failed SSH logins: {len(ssh_bursts)}",
+                    *[_burst_line(b) for b in ssh_bursts[:3]],
                 ],
                 recommendation=[
                     "If SSH must remain exposed: disable password authentication, use key-based auth, and restrict by IP if possible.",
@@ -923,11 +944,8 @@ def generate_findings(
                 evidence=[
                     _system_context_scope_note(system_context),
                     f"sudo group members = {', '.join(sudo_members)}",
-                    f"Sudo failure bursts detected = {len(sudo_fail_bursts)}",
-                    *[
-                        f"{b.get('event_type')} burst: {b.get('count')} events between {b.get('start')} and {b.get('end')}"
-                        for b in sudo_fail_bursts[:3]
-                    ],
+                    f"Bursts of sudo failures: {len(sudo_fail_bursts)}",
+                    *[_burst_line(b) for b in sudo_fail_bursts[:3]],
                 ],
                 recommendation=[
                     "Verify whether these failures match expected admin activity (mistyped password) in the shown time window.",
@@ -994,11 +1012,11 @@ def generate_findings(
             scope_note = _system_context_scope_note(system_context)
             if scope_note:
                 evidence.append(f"NOTE: the 'context' exposure signal above is from {scope_note}")
-        evidence.append(f"ssh_failed_login bursts detected = {len(ssh_failed_bursts)}")
+        evidence.append(f"Bursts of failed SSH logins: {len(ssh_failed_bursts)}")
         
         # Summarize burst evidence (keep it minimal)
         b0 = ssh_failed_bursts[0]
-        evidence.append(f"example burst: {b0.get('count', 0)} events between {b0.get('start')} and {b0.get('end')}")
+        evidence.append("for example, " + _burst_line({**b0, "count": b0.get("count", 0)}))
         
         findings.append(
             Finding(
@@ -1077,15 +1095,16 @@ def generate_findings(
         removed = diff.get("removed") or []
 
         if changed or added or removed:
-            evidence = [f"Source: {file_integrity.get('checked_at', 'unknown')} (baseline: {file_integrity.get('baseline_name', 'default')})"]
+            evidence = [f"Checked {_when(file_integrity.get('checked_at', 'unknown'))} against the saved baseline "
+                        f"'{file_integrity.get('baseline_name', 'default')}'"]
             if changed:
-                evidence.append(f"Changed = {len(changed)}")
+                evidence.append(f"Files changed: {len(changed)}")
                 evidence.extend(f"  changed: {c.get('path')}" for c in changed[:10])
             if added:
-                evidence.append(f"Added = {len(added)}")
+                evidence.append(f"Files added: {len(added)}")
                 evidence.extend(f"  added: {a.get('path')}" for a in added[:10])
             if removed:
-                evidence.append(f"Removed = {len(removed)}")
+                evidence.append(f"Files removed: {len(removed)}")
                 evidence.extend(f"  removed: {r.get('path')}" for r in removed[:10])
 
             findings.append(
