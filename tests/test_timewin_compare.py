@@ -100,3 +100,24 @@ def test_this_week_versus_last_week_means_two_calendar_weeks():
                                          {"kind": "calendar", "unit": "week", "offset": -1}]
     alone = find_time_phrases("any failed logins last week?", datetime(2026, 10, 4, 9, 0))
     assert alone[0].intent == {"kind": "rolling", "amount": 7, "unit": "day"}  # the documented default
+
+
+@pytest.mark.parametrize("claim", [
+    {"verdict": "decrease"},           # the key compare_periods itself uses (seen live)
+    {"direction": "decreased"},
+    {"trend": "Fewer"},
+])
+def test_a_trend_claim_in_the_tools_own_words_is_verified(claim):
+    ctx = TimeContext(ZoneInfo("UTC"), now=1_790_000_000)
+    ctx.measurements["compare:c1"] = {"metric": "ssh_failed_logins", "values": {257, 124},
+                                      "pairs": [{"from": "w2", "to": "w1", "verdict": "decrease"}]}
+    problems, claims = verify_claims(ctx, "Fewer failed logins than before.", [{"kind": "trend", "comparison": "c1", **claim}])
+    assert problems == [] and claims[0]["verified"]
+
+
+def test_a_trend_claim_with_no_direction_says_what_is_missing():
+    ctx = TimeContext(ZoneInfo("UTC"), now=1_790_000_000)
+    ctx.measurements["compare:c1"] = {"metric": "m", "values": set(),
+                                      "pairs": [{"from": "w2", "to": "w1", "verdict": "decrease"}]}
+    problems, _ = verify_claims(ctx, "x", [{"kind": "trend", "comparison": "c1"}])
+    assert any('give it as "direction"' in p for p in problems)

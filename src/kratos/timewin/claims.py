@@ -48,6 +48,23 @@ _NUM_NEAR_WORD = re.compile(rf"{_NUM}\s+(?:\w+\s+){{0,3}}{_COUNT_WORD}\b|\b{_COU
 _NOT_A_COUNT = re.compile(r"^\s*(?:%|percent|hours?|minutes?|mins?|seconds?|secs?|days?|weeks?|months?|years?|h\b|m\b|s\b|am\b|pm\b)", re.IGNORECASE)
 
 
+_TREND_WORDS = {
+    "increase": "increase", "increased": "increase", "up": "increase", "higher": "increase", "more": "increase",
+    "decrease": "decrease", "decreased": "decrease", "down": "decrease", "lower": "decrease", "fewer": "decrease",
+    "no_meaningful_change": "no_meaningful_change", "no meaningful change": "no_meaningful_change",
+    "no change": "no_meaningful_change", "unchanged": "no_meaningful_change", "same": "no_meaningful_change",
+    "not_comparable": "not_comparable", "not comparable": "not_comparable",
+}
+
+
+def _trend_word(value: Any) -> str | None:
+    """A trend claim's direction in compare_periods' own words. Models copy the tool's
+    'verdict' key or write 'decreased' -- the same claim, not an unverifiable one."""
+    if value is None:
+        return None
+    return _TREND_WORDS.get(str(value).strip().lower().replace("-", " "), str(value).strip().lower())
+
+
 def measurement_summary(m: Any) -> dict[str, Any]:
     """What gets recorded per window for later verification (from a Measurement)."""
     counts = m.counts
@@ -127,8 +144,10 @@ def verify_claims(ctx: TimeContext, answer: str, claims: Any) -> tuple[list[str]
                 problems.append(f"{tag}: comparison {c.get('comparison')} has {len(comp['pairs'])} pairs -- "
                                 "say which with \"from\"/\"to\" window ids")
                 continue
-            if str(c.get("direction")) != pairs[0]["verdict"]:
-                problems.append(f"{tag}: compare_periods concluded {pairs[0]['verdict']!r}, not {c.get('direction')!r}")
+            claimed = _trend_word(c.get("direction", c.get("verdict", c.get("trend"))))
+            if claimed != pairs[0]["verdict"]:
+                problems.append(f"{tag}: compare_periods concluded {pairs[0]['verdict']!r}, not {claimed!r}"
+                                + ("" if claimed else " (give it as \"direction\")"))
                 continue
             rec["verified"] = True
             claimed_windows.update({pairs[0]["from"], pairs[0]["to"]})
