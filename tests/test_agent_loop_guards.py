@@ -1053,3 +1053,29 @@ def test_guard9_arms_on_state_as_of_window_form(data_dir: Path, monkeypatch: pyt
     rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert any("past_state_without_record" in s["violations"] for s in rejected)
     assert "[NOTE: Kratos has no saved record of open ports during yesterday (2026-10-03 00:00" in result["final_answer"]
+
+
+def test_guard3_accepts_an_answer_that_names_the_high_finding(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live (demo): 'No current evidence of malware ... no signs of compromise. However
+    the machine is actively targeted ... (finding CORR-SSH-001)' was tagged as dismissing
+    CORR-SSH-001."""
+    answer = ("There is no current evidence of malware; the scans show no signs of compromise. However, "
+              "SSH is exposed and under a brute-force burst (finding CORR-SSH-001) -- address that first.")
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(answer)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("is there any malware?", data_dir, max_iters=10)
+    assert not [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert result["final_answer"] == answer
+
+
+def test_guard3_still_fires_when_the_high_finding_is_not_named(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answer = "There is no current evidence of malware; the scans show no signs of compromise."
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(answer), _final_json(answer), _final_json(answer)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("is there any malware?", data_dir, max_iters=10)
+    assert any("dismissive_verdict_contradiction" in s.get("violations", [])
+               for s in result["transcript"] if s.get("status") == "final_answer_rejected")

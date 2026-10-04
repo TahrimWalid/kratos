@@ -270,6 +270,14 @@ def _plain_claim_problem(problem: str, time_ctx: Any) -> str:
     return re.sub(r"\b([a-z]+(?:_[a-z]+)+)\b", lambda m: m.group(1).replace("_", " "), text)
 
 
+def _names_finding(answer: str, finding: dict[str, Any]) -> bool:
+    ids = [str(finding.get("id") or "")] + [str(x) for x in finding.get("also_matched") or []]
+    if any(i and re.search(rf"\b{re.escape(i)}\b", answer) for i in ids):
+        return True
+    title = str(finding.get("title") or "").strip().lower()
+    return bool(title) and title in answer.lower()
+
+
 def _window_phrase(window: Any) -> str:
     """'yesterday (2026-10-03 00:00 → 2026-10-04 00:00 UTC)' from a tool's window chip
     ('w1 yesterday: 2026-10-03 00:00 → 2026-10-04 00:00 (UTC)')."""
@@ -1485,7 +1493,12 @@ def _run_agent_loop(
                 f for f in (last_correlate_findings or [])
                 if isinstance(f, dict) and str(f.get("severity", "")).lower() in ("high", "critical")
             ]
-            guard3_violated = bool(high_severity_findings) and bool(
+            # A finding the answer names (id, an absorbed rule id, or its title) is
+            # acknowledged, not dismissed. Seen live: "no current evidence of malware ...
+            # however the machine is actively targeted ... (finding CORR-SSH-001)" was
+            # tagged as conflicting with CORR-SSH-001 because of "no signs of compromise".
+            unacknowledged_high = [f for f in high_severity_findings if not _names_finding(final_answer_text, f)]
+            guard3_violated = bool(unacknowledged_high) and bool(
                 _NO_SUSPICIOUS_ACTIVITY_CLAIM_RE.search(final_answer_text)
             )
             guard3_can_reject = (
@@ -1635,7 +1648,7 @@ def _run_agent_loop(
             if guard3_can_reject:
                 dismissive_contradiction_reject_count += 1
                 violations.append("dismissive_verdict_contradiction")
-                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in high_severity_findings)
+                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in unacknowledged_high)
                 corrections.append(
                     "REJECTED (dismissive-verdict contradiction): this final_answer's overall "
                     "verdict (e.g. 'no suspicious activity') contradicts real HIGH/CRITICAL "
@@ -1773,7 +1786,7 @@ def _run_agent_loop(
                 )
 
             if guard3_violated:
-                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in high_severity_findings)
+                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in unacknowledged_high)
                 final_answer_text = (
                     "[NOTE: this answer's overall verdict conflicts with real HIGH/CRITICAL "
                     f"finding(s) from this investigation: {finding_summary}. Treat the dismissive "
