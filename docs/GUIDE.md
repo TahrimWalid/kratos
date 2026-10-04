@@ -146,15 +146,49 @@ Be aware: with a hosted model, the things Kratos looks at (log lines, scan
 results) are sent to that provider to be analyzed. That's normal for a cloud
 service, but it's worth knowing. It also costs a small amount per investigation.
 
+A worked example with Google Gemini (any other provider works the same way):
+
+1. Go to [Google AI Studio](https://aistudio.google.com/apikey), sign in, and press
+   **Create API key**. Copy the key (a long string of letters and numbers).
+2. Open the `.env` file `kratos init` created and find the block that starts with
+   `# --- PROFILE: Hosted model`. Under it are four lines that each start with `#`.
+3. Delete the `#` and the space at the start of each of those four lines, and paste
+   your key in place of `your-real-api-key-here`. It should end up looking like this:
+
+   ```bash
+   LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+   LLM_API_KEY=AIza...your key...
+   LLM_MODEL=gemini-2.5-flash
+   KRATOS_LLM_BACKEND=openai_compatible
+   ```
+
+4. Save the file. Never share it or paste it anywhere: the key is like a password.
+
+A line starting with `#` is a comment, which Kratos ignores. Only one profile
+should have its `#`s removed at a time.
+
 **Option B — a model you run yourself (fully private).** If you install something
 like [Ollama](https://ollama.com) and pull a model, you can point Kratos at it on
 your own machine. Then nothing leaves your hardware, and there's no per-use cost.
 If you leave every profile in `.env` commented out, Kratos uses a local Ollama at
 `127.0.0.1:11434`, so if you're running one, you may not need to change anything. This is a bit more setup, but it's the
-private, free path.
+private, free path. For example, after installing Ollama:
+
+```bash
+ollama pull qwen2.5:7b
+```
+
+then remove the `#` from the four lines under `# --- PROFILE: Local model` in
+`.env`. A small local model is slower and less sharp than a hosted one (an
+investigation can take several minutes on an ordinary CPU), but it costs nothing.
 
 You can change this later at any time from inside Kratos with `/model` — you don't
-have to get it perfect now.
+have to get it perfect now. To check it worked, start Kratos and run `/doctor`: the
+first line says whether the model answered.
+
+<p align="center">
+  <img src="images/model.svg" width="820" alt="The models list: each model in your .env with where it runs (cloud and billed, or local and free) and its context window; the active one is marked">
+</p>
 
 **Where Kratos keeps things.** If you installed from a git checkout as above,
 everything stays in that folder: the settings file `.env`, your sessions and
@@ -170,11 +204,15 @@ paths.
 
 ## The first launch
 
-Start Kratos:
+Start Kratos (in the same terminal, with the `.venv` from the install step active —
+if you opened a new terminal, run `source .venv/bin/activate` in the `kratos` folder
+first):
 
 ```bash
 kratos
 ```
+
+To leave at any time, type `/exit` or press `Ctrl+Q`.
 
 > The first time, Kratos says what it does (reads machines without changing
 > them, where what it reads is sent for analysis, where it keeps its data) and
@@ -264,6 +302,22 @@ Point Kratos at a host:
 use `/target` and pick the "this host" option, or just ask it to "investigate your
 own host".)
 
+**Don't know the machine's address?** Log into that machine (or sit at it), open a
+terminal there and run:
+
+```bash
+hostname -I
+```
+
+It prints one or more addresses; the first one, something like `192.168.1.50`, is
+usually the one to use. Kratos logs in as the user `ubuntu` unless you tell it
+otherwise; if your account on that machine has a different name, add a line like
+`KRATOS_SSH_USER=alice` to `.env`.
+
+**Want to try Kratos before setting up another machine?** Skip the target question
+and type `/investigate-host is anything unusual listening on this machine?`. That
+checks the computer Kratos runs on, and needs no SSH setup at all.
+
 If Kratos hasn't set this machine up before, it asks how to reach it (above), then
 checks the connection and shows you a short checklist of anything the target still
 needs. A machine it has already set up just gets a one-line "already set up" note.
@@ -352,7 +406,7 @@ Two things keep answers readable:
   shown above: …"* — and `/report` shows them all.
 
 <p align="center">
-  <img src="images/report.svg" width="840" alt="A report showing a high-severity SSH brute-force finding and an informational all-clear">
+  <img src="images/report.svg" width="840" alt="/report: the session&#39;s findings, each with a plain-language summary and its evidence — here who can act as root, sudo activity, and how much of the logs was covered">
 </p>
 
 ---
@@ -365,7 +419,7 @@ Kratos machine itself). Instead of guessing, Kratos asks, and lays out the choic
 with one recommended:
 
 <p align="center">
-  <img src="images/clarify.svg" width="820" alt="Kratos asking how deep to take an investigation, with labeled choices">
+  <img src="images/clarify.svg" width="820" alt="Kratos asking whether &quot;check this machine&quot; means the monitored target (recommended) or the Kratos machine itself">
 </p>
 
 Use the arrow keys and Enter to pick one, type your own answer instead, or press
@@ -409,6 +463,10 @@ There are two styles, and you'll use both:
   part of the scan couldn't run, so a quiet result is never mistaken for a clean one.
 
 Same read-only tools underneath; the difference is whether the model is steering.
+
+<p align="center">
+  <img src="images/run.svg" width="840" alt="The standard audit (/run): five fixed steps — port scan, vulnerability scan, config audit, log read, correlation — then the findings">
+</p>
 
 ---
 
@@ -492,6 +550,10 @@ machine that was off). If the target's clock is wrong, Kratos measures the offse
 and corrects for it. Comparisons ("is this more than usual?") are worked out by
 Kratos from the counts, not by the model.
 
+<p align="center">
+  <img src="images/compare.svg" width="840" alt="Comparing this week's failed logins with last week's: both windows are shown with their exact dates and coverage, and the answer quotes Kratos's verdict">
+</p>
+
 You can also ask what a machine looked like at a past time — *"was port 8080 open
 last week?"*, *"who had sudo on Monday?"* — and Kratos answers from its own saved
 scans, baselines and snapshots, telling you how close in time the nearest one is,
@@ -510,7 +572,7 @@ Kratos, so the machine opens no port, and it runs as a service so it survives
 reboots.
 
 <p align="center">
-  <img src="images/subagent.svg" width="840" alt="The /subagent screen: paired machines with their status, agent version and last contact, and the details of one linked to a target">
+  <img src="images/subagent.svg" width="840" alt="The /subagent screen right after adding a machine: db-01 connected with its agent version and last contact, and Kratos asking how to read it — through the sub-agent only, or SSH first">
 </p>
 
 **Adding one.** Choose **Sub-agent** when you add a machine, or open `/subagent`
@@ -539,7 +601,7 @@ row turns **connected**.
   never the matched text.
 
 <p align="center">
-  <img src="images/subagent_investigation.svg" width="840" alt="An investigation of a machine reached through its sub-agent: the port scan is skipped, each read is marked as read through the sub-agent, and the answer notes what wasn't checked">
+  <img src="images/subagent_investigation.svg" width="840" alt="An investigation of a machine reached only through its sub-agent: each read is marked as read through the sub-agent, and the answer says how far back that machine&#39;s logs go">
 </p>
 
 **Which machine is which.** Kratos never guesses. Choosing Sub-agent links the
@@ -588,7 +650,7 @@ Here's the whole flow:
    you say yes. If you say no, nothing is saved.
 
 <p align="center">
-  <img src="images/evolve.svg" width="820" alt="The /evolve review: the tool's source, its passing tests, review flags, and the keep decision">
+  <img src="images/evolve.svg" width="820" alt="The /evolve keep decision: what the new tool returned when run once, read-only, on the real machine, and the warnings worth checking before you keep it">
 </p>
 
 A kept tool becomes part of Kratos and runs on the real machine from then on —
@@ -610,7 +672,7 @@ If you find yourself running the same investigation often, save it.
   saved preset also gets its own `/<name>` command.
 
   <p align="center">
-    <img src="images/preset_list.svg" width="840" alt="A list of saved presets — a goal preset and a pipeline preset">
+    <img src="images/preset_list.svg" width="840" alt="The saved presets list: each preset&#39;s name, kind, target and goal">
   </p>
 
 - **Pipelines** are a fixed sequence of read-only tools you build once and re-run
@@ -625,7 +687,12 @@ If you find yourself running the same investigation often, save it.
   </p>
 
 - **Triggers** watch for a kind of finding and react — for example, send a
-  notification when anything high-severity turns up.
+  notification when anything high-severity turns up. `/trigger test <name>` shows
+  what a trigger would do, using an example finding, without sending anything.
+
+  <p align="center">
+    <img src="images/trigger_list.svg" width="840" alt="A list of triggers: what each one watches for and what it does">
+  </p>
 
 ### Getting alerts on your phone
 
@@ -654,7 +721,7 @@ don't send them anywhere.
   anything that's wrong.
 
   <p align="center">
-    <img src="images/doctor.svg" width="840" alt="The /doctor self-check with a verdict and an inline fix">
+    <img src="images/doctor.svg" width="840" alt="The /doctor self-check: every part of the setup marked with a tick, a warning or a cross, with the fix next to each problem">
   </p>
 
 - **`/usage`** shows how many tokens this session has used and a rough cost, per
@@ -776,9 +843,18 @@ keeps your session — an error in one step never loses your work. Try rephrasin
 or run `/doctor` if it keeps happening.
 
 **"A tool I built with /evolve keeps failing its test."** That's the safety net
-working — a tool that can't pass its own test isn't kept. Either the idea needs to
-be narrower, or the test itself needs adjusting. You can edit the test and try
-again; nothing is saved until it passes and you approve it.
+working — a tool that can't pass its own test isn't kept. Kratos shows the exact
+check that kept failing, with the values it saw, for example:
+
+```
+The check that kept failing: “The result must capture crontabs for non-root users —
+assert 'www-data' in {'/var/spool/cron/crontabs/www-data': '...'}”
+```
+
+Here the test itself is wrong (the results are keyed by file path, so the key
+`'www-data'` can never exist). Open the test file Kratos names, fix or delete that
+check, and run `/evolve` again. If the check looks right, the idea may need to be
+narrower. Nothing is saved until a tool passes and you approve it.
 
 **"It's asking me something and I don't know what to pick."** For a question, the
 recommended option (or just letting it decide with `Esc`) is a safe choice. For a
@@ -788,6 +864,16 @@ permission prompt, pressing Enter is always the safe "no."
 
 ## Words you'll see
 
+- **Terminal** — the text window where you type commands (on Ubuntu: press
+  `Ctrl+Alt+T`).
+- **IP address** — a machine's number on the network, like `192.168.1.50`.
+  `hostname -I` on a machine shows its own.
+- **SSH** — the standard, encrypted way to log into another Linux machine. Kratos
+  uses it to read a machine; an **SSH key** is a pair of files that lets it log in
+  without a password.
+- **API key** — a password-like string a model provider gives you so Kratos can use
+  their model. Keep it secret.
+- **`.env`** — Kratos's settings file. `kratos init` creates it and tells you where.
 - **Target** — the machine Kratos is watching.
 - **Finding** — a titled result Kratos reached, with evidence and a severity.
 - **Investigation** — one run where Kratos looks into a question.

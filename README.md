@@ -3,7 +3,7 @@
 **Self-hostable, self-growing security analysis, with a terminal UI built for all.**
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/investigation.gif" width="840" alt="Asking Kratos whether anyone tried to brute-force SSH: it measures the last 24 hours, scans, audits the config, correlates three findings and answers with a copyable fix">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/investigation.gif" width="840" alt="Asking Kratos whether anyone tried to brute-force SSH in the last day: it counts every login in that window, checks the attacking IP, correlates the findings, names the attacker and offers a fix for you to run">
 </p>
 
 Kratos looks over a machine and tells you, in plain English, what's going on with it: failed logins, exposed ports, changed files, risky configuration. It explains what it found and what it would do about it. By default it doesn't change the machine itself — acting on its advice is your call (see [Safe by default](#safe-by-default)).
@@ -32,22 +32,28 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 ## What it looks like in use
 
+`/run` shows the exact steps first, then runs the same fixed audit every time, with no model in the loop:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/run.gif" width="840" alt="Running /run: Kratos lists the five fixed audit steps and asks first, then scans ports, checks known vulnerabilities, audits the configuration, reads the login journal and correlates the findings">
+</p>
+
 When a request could go several genuinely different ways, Kratos asks instead of guessing:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/clarify.svg" width="820" alt="Kratos asking how deep to go, with three labeled choices and one recommended">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/clarify.svg" width="820" alt="Kratos asking whether &quot;check this machine&quot; means the monitored target (recommended) or the Kratos host itself">
 </p>
 
-A machine reached only through its sub-agent: every read says how it was obtained, the network scan that needs a direct path is skipped, and the answer says what wasn't checked:
+A machine reached only through its sub-agent: every read says how it was obtained, and the answer says what the data couldn't cover (here, the box's logs only go back a few minutes):
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent_investigation.svg" width="840" alt="An investigation of a box reached through its sub-agent: the port scan is refused, each read is marked as read through the sub-agent, and the answer notes that network exposure was not checked">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent_investigation.svg" width="840" alt="An investigation of a box reached only through its sub-agent: each read is marked as read through the sub-agent, and the answer says how far back that box&#39;s logs go">
 </p>
 
-And `/doctor` checks the model, the target and the tools in one go:
+And `/doctor` checks the model, the target and the tools in one go, with the fix next to anything that's wrong:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/doctor.svg" width="840" alt="The /doctor self-check: a verdict over a table of checks, with an inline fix for the warning">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/doctor.svg" width="840" alt="The /doctor self-check for a box reached through its sub-agent: every part of the setup marked with a tick, a warning or a cross, and the fix next to each problem (here yara and lsof are not installed on that box)">
 </p>
 
 ---
@@ -137,8 +143,7 @@ Type `/guide` inside Kratos for the short version, `?` for every command, or rea
 ## Machines you can't SSH into
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/onboard.svg" width="410" alt="Choosing how Kratos should reach a new machine: direct SSH, a sub-agent, or later, with a panel explaining the highlighted option">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent.svg" width="410" alt="The /subagent screen: paired boxes with their status, agent version and last contact, and the details of one linked to a target">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/subagent_connect.gif" width="840" alt="Adding a machine through a sub-agent: naming it, choosing the address it dials back to, deploying the one-command installer over SSH, and the machine showing as connected">
 </p>
 
 Pick **Sub-agent** when you add a machine and Kratos generates a one-command installer for it (and can copy and run it over SSH for you, once). The agent runs as a service, dials out to Kratos, and opens no port on the box. From then on:
@@ -154,10 +159,10 @@ Kratos never guesses which machine a target is: choosing Sub-agent links the box
 ## It grows with you
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/evolve.svg" width="820" alt="The /evolve review: the tool's description, review flags, passing tests and source, and the keep decision">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/evolve.gif" width="840" alt="Building a tool with /evolve: naming it, reviewing the drafted test in plain English, the sandbox build, an optional read-only live check against the real machine, and the keep decision with review flags">
 </p>
 
-If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the idea; Kratos drafts a test that defines "correct" (you read and can edit it), writes the tool, runs the test in a container with no network, and shows you the code with review flags pointing at what's worth a second look — such as a failed read that would quietly come back as "nothing found". Nothing is kept until you say yes, and by default a kept tool still asks before each run. You can always run just one tool, directly, with `/use`.
+If Kratos needs a check it doesn't have, `/evolve` builds one. You give it the idea; Kratos drafts a test that defines "correct" (you read and can edit it), writes the tool, runs the test in a container with no network, can run it once read-only against the real machine so you see its real output, and shows you the code with review flags pointing at what's worth a second look — such as a failed read that would quietly come back as "nothing found". Nothing is kept until you say yes, and by default a kept tool still asks before each run. You can always run just one tool, directly, with `/use`.
 
 ---
 
