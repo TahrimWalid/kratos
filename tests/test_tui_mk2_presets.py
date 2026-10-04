@@ -1254,3 +1254,34 @@ def test_pipeline_step_list_says_where_each_step_looks():
     assert "run_nmap_scan  [target, required]" in text
     assert "correlate_findings  [saved data, required]" in text
     assert "parse_auth_log  [Kratos host, optional]" in text
+
+
+def test_scaffold_suggests_a_name_so_enter_just_works(tmp_path, monkeypatch):
+    """/preset-scaffold asked for a name in an empty box; Enter was an error."""
+    import asyncio
+
+    from kratos.agent import presets as P
+    from kratos.tui_mk2.modals import PromptModal
+
+    P.save_preset(tmp_path, name="my-pipeline", goal="x")        # the plain suggestion is taken
+    made = _make_screen(tmp_path, monkeypatch)
+    screen = made[-1] if isinstance(made, tuple) else made
+    seen: list = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _answer(modal):
+                seen.append(modal)
+                return ""                                          # just Enter
+
+            monkeypatch.setattr(app, "push_screen_wait", _answer)
+            screen._preset_scaffold("")
+            for _ in range(10):
+                await pilot.pause()
+
+    asyncio.run(run())
+    assert isinstance(seen[0], PromptModal) and seen[0]._initial == "my-pipeline-2"
+    assert P.preset_exists(tmp_path, "my-pipeline-2")

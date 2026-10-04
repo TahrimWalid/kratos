@@ -2244,16 +2244,19 @@ class SessionScreen(ResilientWorkerHost, Screen):
         for power users who prefer their own editor."""
         from kratos.agent import presets as _P
 
-        if not name_raw.strip():
-            name_raw = await self.app.push_screen_wait(
-                PromptModal("Scaffold a pipeline preset", "Short name (e.g. nightly-audit)"))
+        asked = not name_raw.strip()
+        if asked:
+            # Pre-filled and unique, so Enter just works (an empty name used to be an error).
+            name_raw = await self._ask_new_name(
+                "Scaffold a pipeline preset", "my-pipeline", _P.slugify_preset_name, _P.validate_preset_name,
+                lambda n: _P.preset_exists(self._data_dir, n), "preset")
             if name_raw is None:
                 return
         ok, canonical, err = _P.validate_preset_name(name_raw)
         if not ok:
             self._emit(R.error_line(err or "Invalid preset name."))
             return
-        if _P.preset_exists(self._data_dir, canonical):
+        if not asked and _P.preset_exists(self._data_dir, canonical):  # (asked: already confirmed)
             overwrite = await self.app.push_screen_wait(ConfirmModal(
                 "Overwrite preset?",
                 f"A preset named {canonical!r} already exists. Replace it with a fresh template?"))
