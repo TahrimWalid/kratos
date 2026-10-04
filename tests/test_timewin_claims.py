@@ -225,3 +225,15 @@ def test_the_unverified_note_reads_plainly():
            'claim the covered part and mark the rest "unknown"')
     assert agent_loop._plain_claim_problem(raw, ctx) == \
         "only 1.3% of the last 24 hours was covered, so 'none' cannot be claimed for the whole window"
+
+
+def test_the_unverified_note_names_periods_naturally():
+    """Seen live (demo pass 5): 'ssh_successful_logins in the yesterday was measured as 0'."""
+    from types import SimpleNamespace
+
+    ctx = SimpleNamespace(windows={"w1": SimpleNamespace(label="yesterday"),
+                                   "w2": SimpleNamespace(label="since Monday")})
+    assert agent_loop._plain_claim_problem("claim #1: ssh_successful_logins in w1 was measured as 0", ctx) == \
+        "ssh successful logins for yesterday was measured as 0"
+    assert agent_loop._plain_claim_problem("claim #1: sudo_failures in w2 was measured as 3, not 5", ctx) == \
+        "sudo failures since Monday was measured as 3, not 5"

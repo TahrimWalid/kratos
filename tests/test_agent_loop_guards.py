@@ -1033,3 +1033,23 @@ def test_inline_claims_are_stripped_even_when_a_claims_field_is_also_given(
     answer = agent_loop.run_agent("any sudo failures?", data_dir, max_iters=10)["final_answer"]
     assert '"kind"' not in answer and "claims:" not in answer
     assert answer.startswith("No sudo failures were seen.")
+
+
+def test_guard9_arms_on_state_as_of_window_form(data_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seen live (demo pass 5): 'was port 22 open yesterday?' -> state_as_of answered in its
+    window form (count_in_window 0) and the answer said 'Port 22 was open yesterday',
+    inferred from login activity. Guard 9 only knew the point-in-time form."""
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_clean)
+    monkeypatch.setattr(TOOL_REGISTRY["state_as_of"], "handler", lambda **kw: {
+        "status": "ok", "category": "open_ports",
+        "window": {"id": "w1", "chip": "w1 yesterday: 2026-10-03 00:00 → 2026-10-04 00:00 (UTC)"},
+        "snapshots_in_window": [], "count_in_window": 0, "last_before_window": None,
+        "note": "no snapshot inside this window -- Kratos did not observe this during that period"})
+    inferred = "Port 22 was open yesterday, since logins kept arriving."
+    chat = ScriptedChat([_tool_json("state_as_of", {"category": "open_ports", "window": "w1"}),
+                         _tool_json("correlate_findings"), _final_json(inferred), _final_json(inferred)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("was port 22 open?", data_dir, max_iters=10)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert any("past_state_without_record" in s["violations"] for s in rejected)
+    assert "[NOTE: Kratos has no saved record of open ports during yesterday (2026-10-03 00:00" in result["final_answer"]

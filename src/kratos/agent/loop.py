@@ -249,11 +249,35 @@ def _plain_claim_problem(problem: str, time_ctx: Any) -> str:
     text = re.sub(r"^claim #\d+:\s*", "", problem.split(" -- ")[0]).strip()
     windows = getattr(time_ctx, "windows", None) or {}
 
-    def label(m: re.Match) -> str:
-        w = windows.get(m.group(0))
-        return f"the {w.label}" if w is not None and getattr(w, "label", "") else m.group(0)
+    def period(wid: str) -> str | None:
+        w = windows.get(wid)
+        lab = str(getattr(w, "label", "") or "") if w is not None else ""
+        if not lab:
+            return None
+        return f"the {lab}" if re.match(r"(last|past|previous|first)\b", lab) else lab
 
-    return re.sub(r"\bw\d+\b", label, text)
+    def with_preposition(m: re.Match) -> str:
+        p = period(m.group(1))
+        if p is None:
+            return m.group(0)
+        return p if p.startswith("since ") else f"for {p}"     # "in yesterday" -> "for yesterday"
+
+    def bare(m: re.Match) -> str:
+        return period(m.group(0)) or m.group(0)
+
+    text = re.sub(r"\bin (w\d+)\b", with_preposition, text)
+    text = re.sub(r"\bw\d+\b", bare, text)
+    return re.sub(r"\b([a-z]+(?:_[a-z]+)+)\b", lambda m: m.group(1).replace("_", " "), text)
+
+
+def _window_phrase(window: Any) -> str:
+    """'yesterday (2026-10-03 00:00 → 2026-10-04 00:00 UTC)' from a tool's window chip
+    ('w1 yesterday: 2026-10-03 00:00 → 2026-10-04 00:00 (UTC)')."""
+    chip = str((window or {}).get("chip") or "") if isinstance(window, dict) else ""
+    m = re.match(r"w\d+\s+(.*?):\s*(.*?)\s*\((\S+)\)\s*$", chip)
+    if m:
+        return f"{m.group(1)} ({m.group(2)} {m.group(3)})"
+    return chip or "that period"
 
 
 def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
@@ -2117,9 +2141,18 @@ def _run_agent_loop(
             inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
             if isinstance(inner_result, dict) and inner_result.get("status") == "ok":
                 category = str(inner_result.get("category") or "that")
-                if inner_result.get("snapshot") is None and str(inner_result.get("note") or "").startswith("no record"):
+                what = category.replace("_", " ")
+                if "count_in_window" in inner_result:
+                    # window form ("was port 22 open yesterday?"): no snapshot inside the
+                    # window means the state during it was not observed (seen live: only
+                    # the point-in-time form was recognized, so the guard never armed)
+                    if not inner_result.get("count_in_window"):
+                        state_no_records[category] = f"{what} during {_window_phrase(inner_result.get('window'))}"
+                    else:
+                        state_no_records.pop(category, None)
+                elif inner_result.get("snapshot") is None and str(inner_result.get("note") or "").startswith("no record"):
                     when = str(inner_result.get("requested_at") or "that time").replace("T", " ")[:16]
-                    state_no_records[category] = f"{category.replace('_', ' ')} at {when} UTC"
+                    state_no_records[category] = f"{what} at {when} UTC"
                 else:
                     state_no_records.pop(category, None)
 
