@@ -66,3 +66,24 @@ def test_a_failure_carries_nmaps_own_reason(fake_nmap, monkeypatch, capfd):
         _scan(fake_nmap / "data")
     raw = capfd.readouterr()
     assert "boom" not in raw.out and "boom" not in raw.err
+
+
+def test_port_number_guesses_are_not_reported_as_services(tmp_path):
+    """nmap names a service it couldn't identify after its port number (method="table"):
+    a web API on 8001 was reported as 'vcom-tunnel'. A guess with an HTTP reply in the
+    fingerprint is 'http' (server header as the product); otherwise 'unknown'. The guess
+    is kept, labelled."""
+    from kratos.adapters.nmap_parse import parse_nmap_xml_to_dict
+
+    xml = tmp_path / "nmap.xml"
+    fp_http = r"SF-Port8001-TCP:V=7.94%r(GetRequest,4F1,&quot;HTTP/1\.1\x20200\x20OK\r\ndate:\x20Sun\r\nserver:\x20uvicorn\r\n&quot;);"
+    xml.write_text(f'''<?xml version="1.0"?><nmaprun><host><address addr="203.0.113.5"/><status state="up"/><ports>
+<port protocol="tcp" portid="22"><state state="open"/><service name="ssh" product="OpenSSH" method="probed" conf="10"/></port>
+<port protocol="tcp" portid="8001"><state state="open"/><service name="vcom-tunnel" servicefp="{fp_http}" method="table" conf="3"/></port>
+<port protocol="tcp" portid="9999"><state state="open"/><service name="abyss" method="table" conf="3"/></port>
+</ports></host></nmaprun>''', encoding="utf-8")
+    ports = {p["port"]: p for p in parse_nmap_xml_to_dict(xml)["hosts"][0]["open_ports"]}
+    assert ports[22]["service"] == "ssh" and "port_usually_used_by" not in ports[22]
+    assert (ports[8001]["service"], ports[8001]["product"], ports[8001]["port_usually_used_by"]) == \
+        ("http", "uvicorn", "vcom-tunnel")
+    assert (ports[9999]["service"], ports[9999]["port_usually_used_by"]) == ("unknown", "abyss")

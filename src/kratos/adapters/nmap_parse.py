@@ -8,6 +8,7 @@ the XML handling here means nothing downstream has to know nmap's schema.
 from __future__ import annotations
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from kratos.utils.timeutil import utc_now_iso
@@ -21,6 +22,24 @@ def find_latest_nmap_xml(data_dir: Path) -> Path | None:
     # 'nmap_10.136..._<new>' and scan-summary silently reported an August scan (regression check §2.2)
     xml_files = sorted(scans_dir.glob("nmap_*.xml"), key=lambda p: p.stat().st_mtime, reverse=True)
     return xml_files[0] if xml_files else None
+
+
+_HTTP_REPLY = re.compile(r"HTTP/[12](?:\\?\.\d)?\\x20\d{3}")  # nmap escapes the dot: HTTP/1\.1\x20200
+_SERVER_HEADER = re.compile(r"server:\\x20([^\\\r\n]{1,60})", re.IGNORECASE)
+
+
+def _identify(svc_name: str, method: str | None, fingerprint: str) -> tuple[str, str | None, str | None]:
+    """(service, product-from-fingerprint, port-table guess). nmap names a service it
+    could NOT identify after the port number ('3000 -> ppp', method="table"); that
+    guess was reported as fact ('8001 (vcom-tunnel)' for a web API). A table guess
+    becomes 'http' when nmap's fingerprint shows an HTTP reply (with the Server
+    header as the product), else 'unknown'; the guess is kept, labelled as one."""
+    if method != "table":
+        return svc_name, None, None
+    if _HTTP_REPLY.search(fingerprint):
+        m = _SERVER_HEADER.search(fingerprint)
+        return "http", (m.group(1).strip() if m else None), svc_name
+    return "unknown", None, svc_name
 
 
 def parse_nmap_xml_to_dict(xml_path: Path) -> dict[str, Any]:
@@ -71,19 +90,23 @@ def parse_nmap_xml_to_dict(xml_path: Path) -> dict[str, Any]:
                 extrainfo = service.get("extrainfo") if service is not None else None
                 ostype = service.get("ostype") if service is not None else None
                 tunnel = service.get("tunnel") if service is not None else None
+                method = service.get("method") if service is not None else None
+                svc_name, fp_product, guess = _identify(
+                    svc_name or "unknown", method, (service.get("servicefp") or "") if service is not None else "")
 
-                host_obj["open_ports"].append(
-                    {
-                        "protocol": proto,
-                        "port": portid,
-                        "service": svc_name,
-                        "product": product,
-                        "version": version,
-                        "extrainfo": extrainfo,
-                        "ostype": ostype,
-                        "tunnel": tunnel,
-                    }
-                )
+                entry = {
+                    "protocol": proto,
+                    "port": portid,
+                    "service": svc_name,
+                    "product": product or fp_product,
+                    "version": version,
+                    "extrainfo": extrainfo,
+                    "ostype": ostype,
+                    "tunnel": tunnel,
+                }
+                if guess:
+                    entry["port_usually_used_by"] = guess  # nmap's port-number guess, not a detection
+                host_obj["open_ports"].append(entry)
 
         parsed["hosts"].append(host_obj)
 
