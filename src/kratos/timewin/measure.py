@@ -343,7 +343,7 @@ if [ -n "${{HEADINT:-}}" ]; then
   STOP=$(( HEADINT + TZSEC ))
   printf 'META\\tclassic_stop_offset\\t%s\\n' "$TZSEC"
 fi
-FL=$(mktemp 2>/dev/null || echo "/tmp/kratos_fl.$$"); FFC=$(mktemp 2>/dev/null || echo "/tmp/kratos_ffc.$$"); : > "$FFC"
+FL="$KT/fl"; FFC="$KT/ffc"; : > "$FFC"
 for f in {globs}; do [ -f "$f" ] || continue
   printf '%s %s\\n' "$(stat -c %Y "$f" 2>/dev/null || date -r "$f" +%s)" "$f"; done | sort -rn > "$FL"
 while read -r MT F; do
@@ -393,6 +393,12 @@ def build_script(
     kip_line = (shlex.quote(kratos_ip) if kratos_ip
                 else "$(echo \"${SSH_CONNECTION:-}\" | awk '{print $1}')")
     return f"""set -u
+# One private temp folder for every scratch file, removed on any exit -- including
+# when a timed-out read is stopped (TERM). No predictable /tmp name: without mktemp
+# the folder is created with mkdir, which fails rather than follow an existing path.
+KT=$(mktemp -d 2>/dev/null) || {{ KT="/tmp/kratos.$$.$(date +%s)"; mkdir -m 700 "$KT" 2>/dev/null || {{ printf 'META\\ttmp\\tunavailable\\n'; exit 1; }}; }}
+trap 'rm -rf "$KT"' EXIT
+trap 'rm -rf "$KT"; exit 143' TERM INT HUP
 kratos_classic() {{
 {classic_fn}
 }}
@@ -413,11 +419,11 @@ $J --no-pager -q --list-boots 2>/dev/null | tail -n 50 | while read -r idx rest;
   b1=$($J --no-pager -q -o short-unix -b "$idx" -r -n 1 2>/dev/null | cut -d' ' -f1)
   printf 'BOOT\\t%s\\t%s\\t%s\\n' "$idx" "$b0" "$b1"
 done
-FF=$(mktemp 2>/dev/null || echo "/tmp/kratos_measure.$$")
+FF="$KT/ff"
 : > "$FF"
 TO=""
 if command -v timeout >/dev/null 2>&1; then TO="timeout {int(time_budget)}"; else printf 'META\\tbudget\\tunavailable\\n'; fi
-JOUT=$(mktemp 2>/dev/null || echo "/tmp/kratos_jout.$$")
+JOUT="$KT/jout"
 jscan() {{
   # $1 = extra journalctl args (time seek); the awk filters every event by time itself
   $TO $J --no-pager -q -o short-unix _COMM=sshd _COMM=sshd-session _COMM=sudo $1 2>/dev/null \

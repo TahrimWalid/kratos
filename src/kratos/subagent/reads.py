@@ -596,18 +596,25 @@ def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | N
     return {"returncode": rc, "stdout": text, "stderr": err.decode("utf-8", "replace"), "truncated": truncated}
 
 
+KILL_GRACE_SECONDS = 2.0
+
+
 def _kill(proc: subprocess.Popen) -> None:
-    try:
-        os.killpg(proc.pid, 9)
-    except (ProcessLookupError, PermissionError, OSError):
+    """Stop the probe's whole process group: TERM first, so a probe script's
+    cleanup trap removes its temp files, then KILL whatever is left."""
+    for sig, wait in ((15, KILL_GRACE_SECONDS), (9, 5.0)):
         try:
-            proc.kill()
-        except OSError:
-            pass
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill() if sig == 9 else proc.terminate()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def _is_root() -> bool:
@@ -882,10 +889,29 @@ def _rule_files_in(directory: str, trusted_only: bool) -> tuple[list[str], list[
     return files, problems
 
 
+_YARA_IMPORT_RE = re.compile(r'^\s*import\s+"', re.MULTILINE)
+
+
+def _uses_yara_modules(path: str) -> bool:
+    """Whether a rule file loads a YARA module (pe, elf, macho, dotnet, ...).
+    Unreadable counts as yes: it is skipped rather than guessed safe."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return bool(_YARA_IMPORT_RE.search(f.read(1024 * 1024)))
+    except OSError:
+        return True
+
+
 def yara_rule_files(ruleset: str) -> tuple[list[str], list[str]]:
     """Rules come ONLY from this box: the set shipped with the agent and/or
     the admin's own directory. Never from core (D4: core-supplied rules would
-    be an oracle for file contents)."""
+    be an oracle for file contents).
+
+    A root agent scans files any local user can write (/tmp, /var/tmp, ...). YARA's
+    modules parse file formats in depth, and most of YARA's past security bugs were
+    in those parsers, so as root only module-free rules (plain string/byte
+    matching) are used; the others are skipped and named (security review
+    2026-10-05, finding 2)."""
     files: list[str] = []
     problems: list[str] = []
     if ruleset in ("all", "bundled"):
@@ -896,6 +922,15 @@ def yara_rule_files(ruleset: str) -> tuple[list[str], list[str]]:
         f, pr = _rule_files_in(LOCAL_YARA_DIR, trusted_only=True)
         files += f
         problems += pr
+    if _is_root():
+        kept = []
+        for path in files:
+            if _uses_yara_modules(path):
+                problems.append(f"{path}: uses a YARA module (import ...) -- skipped, because this agent runs as "
+                                "root and modules parse untrusted files in depth")
+            else:
+                kept.append(path)
+        files = kept
     return files, problems
 
 

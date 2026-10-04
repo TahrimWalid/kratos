@@ -213,3 +213,34 @@ def test_run_capped_never_uses_path(monkeypatch):
 def test_journal_output_is_trimmed_to_parsed_fields():
     raw = '{"__REALTIME_TIMESTAMP":"1","MESSAGE":"m","_HOSTNAME":"h","_CMDLINE":"secret --token x","_PID":"9"}\n'
     assert R._trim_journal(raw) == '{"__REALTIME_TIMESTAMP":"1","MESSAGE":"m"}\n'
+
+
+def test_a_root_agent_skips_rules_that_load_yara_modules(tmp_path, monkeypatch):
+    """Security review 2026-10-05, finding 2: as root, YARA scans files any local
+    user can write; module parsers (pe, elf, ...) are where YARA's past security
+    bugs were, so a root agent uses only module-free rules and names the rest."""
+    d = tmp_path / "yara"
+    d.mkdir(mode=0o755)
+    (d / "plain.yar").write_text('rule a { strings: $x = "evil" condition: $x }\n')
+    (d / "mod.yar").write_text('import "pe"\nrule b { condition: pe.number_of_sections > 0 }\n')
+    for f in d.iterdir():
+        f.chmod(0o644)
+    monkeypatch.setattr(R, "LOCAL_YARA_DIR", str(d))
+    monkeypatch.setattr(R.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(R, "_rule_files_in", lambda directory, trusted_only: (
+        sorted(str(p) for p in d.glob("*.yar")), []) if directory == str(d) else ([], []))
+    files, problems = R.yara_rule_files("local")
+    assert [f.rsplit("/", 1)[1] for f in files] == ["plain.yar"]
+    assert any("mod.yar" in p and "module" in p for p in problems)
+    monkeypatch.setattr(R.os, "geteuid", lambda: 1000)        # not root: both used
+    assert len(R.yara_rule_files("local")[0]) == 2
+
+
+def test_the_shipped_rules_load_no_yara_modules():
+    from pathlib import Path
+
+    import kratos
+
+    shipped = Path(kratos.__file__).parent / "yara_rules"      # what the installer bundles
+    files, _ = R._rule_files_in(str(shipped), trusted_only=False)
+    assert files and not any(R._uses_yara_modules(f) for f in files)

@@ -67,7 +67,8 @@ def _bin_dir(tmp_path: Path, awk: str, with_timeout=True, with_mktemp=True) -> P
     fj.chmod(fj.stat().st_mode | stat.S_IEXEC)
     for tool, real in (("awk", shutil.which(awk)), ("sort", shutil.which("sort")), ("cut", shutil.which("cut")),
                        ("head", shutil.which("head")), ("tail", shutil.which("tail")), ("date", shutil.which("date")),
-                       ("rm", shutil.which("rm")), ("cat", shutil.which("cat")), ("grep", shutil.which("grep")),
+                       ("rm", shutil.which("rm")), ("mkdir", shutil.which("mkdir")), ("cat", shutil.which("cat")),
+                       ("grep", shutil.which("grep")),
                        ("sed", shutil.which("sed")), ("readlink", shutil.which("readlink")),
                        ("timeout", shutil.which("timeout") if with_timeout else None),
                        ("mktemp", shutil.which("mktemp") if with_mktemp else None)):
@@ -317,3 +318,15 @@ def test_time_travelled_journal_counts_exactly_and_rescans(tmp_path):
     assert m.counts.get("ssh_failed_login") == 4
     assert m.journal_rescanned and m.clock_jumps
     assert m.journal_head == pytest.approx(base)  # the true earliest, not the first line
+
+
+def test_without_mktemp_the_scratch_folder_is_private_and_removed(tmp_path):
+    """The no-mktemp path makes its own folder with mkdir -m 700 (never a
+    predictable file name an attacker could pre-create as a symlink)."""
+    edge = [FIX / "auth_edge_cases.short_unix.txt"]
+    script = build_script(0, None, journalctl_prefix="")
+    _run(tmp_path, AWKS[0] if AWKS else "awk", script, edge, with_timeout=False, with_mktemp=False)
+    import glob
+
+    assert not [p for p in glob.glob("/tmp/kratos.*") if p.startswith("/tmp/kratos.")
+                and os.stat(p).st_uid == os.getuid() and os.path.isdir(p)]

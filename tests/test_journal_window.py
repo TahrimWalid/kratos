@@ -318,3 +318,35 @@ def test_offset_measured_once_per_target_then_cached(monkeypatch):
         ssh_remote.measure_target_clock_offset()
         ssh_remote.measure_target_clock_offset()
     assert len(calls) == 1
+
+
+def test_measure_script_leaves_no_temp_files_finished_or_stopped(tmp_path):
+    """Security review 2026-10-05, finding 5: scratch files used a predictable /tmp
+    name when mktemp was missing and stayed behind when a timed-out read was
+    killed. Now one private folder (mktemp -d, else mkdir that won't follow an
+    existing path) is removed on exit and on TERM, which the probe sends first."""
+    import os
+    import subprocess
+    import time
+
+    from kratos.subagent import reads as R
+    from kratos.timewin import measure
+
+    script = measure.build_script(time.time() - 3600, None, journalctl_prefix="")
+    assert "/tmp/kratos_" not in script and "trap 'rm -rf \"$KT\"; exit 143' TERM" in script
+    env = {**os.environ, "TMPDIR": str(tmp_path)}
+    subprocess.run(["sh", "-s"], input=script, text=True, capture_output=True, env=env, timeout=120)
+    assert list(tmp_path.iterdir()) == []
+
+    slow = script.replace("set -u\n", "set -u\n", 1).replace("kratos_classic() {", "sleep 30 &\nwait\nkratos_classic() {", 1)
+    proc = subprocess.Popen(["sh", "-s"], stdin=subprocess.PIPE, text=True, env=env, start_new_session=True,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    proc.stdin.write(slow)
+    proc.stdin.close()
+    for _ in range(50):
+        if any(tmp_path.iterdir()):
+            break
+        time.sleep(0.1)
+    assert any(tmp_path.iterdir())                 # the private folder exists while it runs
+    R._kill(proc)                                  # what a timed-out read does
+    assert list(tmp_path.iterdir()) == []
