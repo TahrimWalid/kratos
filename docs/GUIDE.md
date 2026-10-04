@@ -178,7 +178,9 @@ kratos
 
 > The first time, Kratos says what it does (reads machines without changing
 > them, where what it reads is sent for analysis, where it keeps its data) and
-> asks you to continue, then offers to remember a default target. It only asks once. Kratos has no built-in
+> asks you to continue, then offers to remember a default target. It only asks once. If you
+> give it one, Kratos sets that machine up with you (see the next section) and opens a
+> session on it. Kratos has no built-in
 > target: if you skip that question, the first machine you point it at (with
 > `/target` or a new session) becomes the default, which is what command-line and
 > scheduled runs use. `KRATOS_SSH_HOST` overrides it for a single command.
@@ -262,8 +264,10 @@ Point Kratos at a host:
 use `/target` and pick the "this host" option, or just ask it to "investigate your
 own host".)
 
-Kratos then checks the connection and shows you a short checklist of anything the
-target still needs. Typically that's:
+If Kratos hasn't set this machine up before, it asks how to reach it (above), then
+checks the connection and shows you a short checklist of anything the target still
+needs. A machine it has already set up just gets a one-line "already set up" note.
+Typically the checklist covers:
 
 - an SSH key Kratos can log in with,
 - permission to read the system logs (either through a group membership or a
@@ -336,6 +340,17 @@ Type `/report` at any time to see all of a session's findings again, most severe
 first. A finding is Kratos's *conclusion*, not an action — it doesn't act on a
 finding on its own.
 
+Two things keep answers readable:
+
+- **One problem, one finding.** When several rules spot the same thing (an SSH
+  brute-force burst is both "exposed SSH with failed logins" and "a burst of failed
+  logins"), Kratos shows one finding at the highest severity and notes which rules
+  also matched.
+- **No re-listing.** Each answer shows in full the findings that are new or changed,
+  from data this investigation collected. Findings already shown, or still on record
+  from an earlier check, are folded into one line — *"Also on record — unchanged since
+  shown above: …"* — and `/report` shows them all.
+
 <p align="center">
   <img src="images/report.svg" width="840" alt="A report showing a high-severity SSH brute-force finding and an informational all-clear">
 </p>
@@ -344,8 +359,9 @@ finding on its own.
 
 ## When Kratos asks you a question
 
-Sometimes a request genuinely could go several ways — how deep to look, which of
-two hosts you meant. Instead of guessing, Kratos asks, and lays out the choices
+Sometimes a request genuinely could go several ways — how deep to look, or which
+machine you meant (*"check this machine"* could be the one you're watching or the
+Kratos machine itself). Instead of guessing, Kratos asks, and lays out the choices
 with one recommended:
 
 <p align="center">
