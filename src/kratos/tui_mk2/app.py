@@ -354,6 +354,7 @@ class KratosTUI(ResilientWorkerHost, App):
 
     async def _boot_flow(self) -> None:
         config = _kconfig.load_local_config(self.data_dir)
+        first_target = None  # set when first run ends with a machine connected
         if not config.get("trusted"):
             trusted = await self.push_screen_wait(
                 ConfirmModal("Welcome to Kratos", self._first_run_text(), yes_label="continue", no_label="quit"))
@@ -379,6 +380,7 @@ class KratosTUI(ResilientWorkerHost, App):
                     continue
                 _kconfig.save_local_config(self.data_dir, default_target=cleaned[0])
                 _kconfig.set_active_target(cleaned[0])
+                first_target = cleaned[0]
                 # Walk a first-time user through actually connecting a remote
                 # default target (SSH setup + probe, or a sub-agent), not just
                 # storing the string.
@@ -398,6 +400,13 @@ class KratosTUI(ResilientWorkerHost, App):
                 _kconfig.set_active_target(persisted)
 
         self.push_screen(LaunchScreen(self.store, self.data_dir))
+        if first_target:
+            # First run just connected a machine: start there, not on an empty
+            # session list (it stays underneath -- Ctrl+B goes back to it).
+            from kratos.tui_mk2.screens.session import SessionScreen
+
+            sid = self.store.create_session([first_target], self.model_label())
+            self.push_screen(SessionScreen(self.store, self.data_dir, sid, [first_target], ""))
         # Now that a real screen exists, enable the resize guard and apply it
         # once for the current size (covers launching into an already-small
         # terminal, which the pre-boot on_resize deliberately skipped).

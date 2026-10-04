@@ -265,3 +265,48 @@ def test_confirm_modal_can_name_its_keys():
             return app.export_screenshot()
     svg = asyncio.run(_run())
     assert "continue" in svg and "quit" in svg
+
+
+def _first_run(tmp_path, monkeypatch, target_keys):
+    import asyncio
+
+    from kratos import kratos_config as kc
+    from kratos.tui_mk2.app import KratosTUI
+
+    monkeypatch.setattr("kratos.llm_config.ENV_FILE_PATH", tmp_path / ".env")
+    (tmp_path / ".env").write_text("LLM_MODEL=m\n", encoding="utf-8")
+    prev = kc.get_active_target()
+
+    async def _run():
+        app = KratosTUI(tmp_path)
+        async with app.run_test(size=(110, 34)) as pilot:
+            await pilot.pause(0.5)
+            await pilot.press("y")                      # welcome: continue
+            await pilot.pause(0.5)
+            for k in target_keys:
+                await pilot.press(k)
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause(0.1)
+            return type(app.screen).__name__, [type(s).__name__ for s in app.screen_stack]
+
+    try:
+        return asyncio.run(_run())
+    finally:
+        kc.set_active_target(prev)
+
+
+def test_first_run_with_a_machine_opens_a_session_on_it(tmp_path, monkeypatch):
+    """First run used to end on an EMPTY session list right after connecting a machine,
+    asking for the target again. It now opens a session on it (the list stays under it)."""
+    from kratos.storage.session_store import SessionStore
+
+    screen, stack = _first_run(tmp_path, monkeypatch, list("127.0.0.1"))
+    assert screen == "SessionScreen" and "LaunchScreen" in stack
+    sessions = SessionStore(tmp_path / "kratos.db").list_recent_sessions(limit=5)
+    assert [s["targets"] for s in sessions] == [["127.0.0.1"]]
+
+
+def test_first_run_without_a_machine_lands_on_the_session_list(tmp_path, monkeypatch):
+    screen, _stack = _first_run(tmp_path, monkeypatch, [])
+    assert screen == "LaunchScreen"
