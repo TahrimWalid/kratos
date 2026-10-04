@@ -334,3 +334,28 @@ def test_evolve_intro_starts_with_y_as_well_as_enter():
 
     asyncio.run(run())
     assert results == [True]
+
+
+def test_highlighted_option_drops_theme_colours_and_others_keep_them():
+    """Seen in the demo screenshots: on the highlighted row the green '(recommended)' and
+    the muted explanation were near-invisible on the highlight bar."""
+    from textual.widgets import Label, ListView
+
+    def colours(label: Label) -> set[str]:
+        text = label.content
+        return {str(sp.style) for sp in text.spans if "#" in str(sp.style)}
+
+    async def _run():
+        app = _Host(ClarifyModal("Which host?", _OPTS))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            items = list(app.screen.query_one("#clarify-list", ListView).children)
+            highlighted = colours(items[1].query_one(Label))     # recommended row is highlighted
+            other = colours(items[0].query_one(Label))
+            await pilot.press("up")
+            await pilot.pause()
+            moved = colours(items[1].query_one(Label))
+            return highlighted, other, moved
+
+    highlighted, other, moved = asyncio.run(_run())
+    assert highlighted == set() and other and moved

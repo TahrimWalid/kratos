@@ -689,13 +689,7 @@ class ClarifyModal(ModalScreen[str | None]):
                 yield Static(Text(self._subtitle, style=T.TEXT_DIM))
             items: list[ListItem] = []
             for o in self._options:
-                row = Text()
-                row.append(str(o.get("label", "")), style=f"bold {T.TEXT_BRIGHT}")
-                if o.get("recommended"):
-                    row.append("  (recommended)", style=T.SAFE)
-                if o.get("explanation"):
-                    row.append(f"\n    {o['explanation']}", style=T.TEXT_MUTED)
-                items.append(ListItem(Label(row)))
+                items.append(ListItem(Label(self._row(o, selected=False))))
             if items:
                 yield ListView(*items, id="clarify-list")
             yield Static(Text("or type your own answer:", style=T.TEXT_DIM))
@@ -709,6 +703,25 @@ class ClarifyModal(ModalScreen[str | None]):
             lst.focus()  # recommended choice is one keypress away
         else:
             self.query_one("#clarify-input", Input).focus()
+
+    @staticmethod
+    def _row(o: dict[str, Any], *, selected: bool) -> Text:
+        """The highlighted row takes the highlight bar's own text colour: the theme's
+        green/muted colours were near-invisible on it (seen in the demo screenshots)."""
+        row = Text()
+        row.append(str(o.get("label", "")), style="bold" if selected else f"bold {T.TEXT_BRIGHT}")
+        if o.get("recommended"):
+            row.append("  (recommended)", style="italic" if selected else T.SAFE)
+        if o.get("explanation"):
+            row.append(f"\n    {o['explanation']}", style="" if selected else T.TEXT_MUTED)
+        return row
+
+    @on(ListView.Highlighted, "#clarify-list")
+    def _restyle(self, event: ListView.Highlighted) -> None:
+        current = event.list_view.index
+        for idx, item in enumerate(event.list_view.children):
+            if idx < len(self._options):
+                item.query_one(Label).update(self._row(self._options[idx], selected=idx == current))
 
     def _recommended_index(self) -> int:
         for idx, o in enumerate(self._options):
