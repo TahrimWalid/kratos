@@ -1029,8 +1029,8 @@ def generate_findings(
                     evidence=[
                         *(["From the latest read of the login logs"] if auth_patterns.get("source_events_file") else []),
                         f"Bursts found: {len(relevant)}",
-                        *[_burst_line(b) for b in relevant[:5]],
                         burst_window_note,
+                        *[_burst_line(b) for b in relevant[:5]],
                     ],
                     recommendation=[
                         "Investigate the time window(s) shown in the evidence.",
@@ -1057,8 +1057,8 @@ def generate_findings(
                 evidence=[
                     "SSH appears exposed in latest scan (port 22 and/or ssh service detected).",
                     f"Bursts of failed SSH logins: {len(ssh_bursts)}",
-                    *[_burst_line(b) for b in ssh_bursts[:3]],
                     burst_window_note,
+                    *[_burst_line(b) for b in ssh_bursts[:3]],
                 ],
                 recommendation=[
                     "If SSH must remain exposed: disable password authentication, use key-based auth, and restrict by IP if possible.",
@@ -1086,8 +1086,8 @@ def generate_findings(
                     _system_context_scope_note(system_context),
                     f"sudo group members = {', '.join(sudo_members)}",
                     f"Bursts of sudo failures: {len(sudo_fail_bursts)}",
-                    *[_burst_line(b) for b in sudo_fail_bursts[:3]],
                     burst_window_note,
+                    *[_burst_line(b) for b in sudo_fail_bursts[:3]],
                 ],
                 recommendation=[
                     "Verify whether these failures match expected admin activity (mistyped password) in the shown time window.",
@@ -1155,11 +1155,12 @@ def generate_findings(
             if scope_note:
                 evidence.append(f"NOTE: the 'context' exposure signal above is from {scope_note}")
         evidence.append(f"Bursts of failed SSH logins: {len(ssh_failed_bursts)}")
+        # right under the count: the live view shows only the first few evidence lines
+        evidence.append(burst_window_note)
         
         # Summarize burst evidence (keep it minimal)
         b0 = ssh_failed_bursts[0]
         evidence.append("for example, " + _burst_line({**b0, "count": b0.get("count", 0)}))
-        evidence.append(burst_window_note)
         
         findings.append(
             Finding(

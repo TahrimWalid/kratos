@@ -60,3 +60,16 @@ def test_bursts_without_a_saved_read_say_the_window_is_unknown():
                                auth_patterns_window={})
     auth4 = next(f for f in out if f.id == "AUTH-004")
     assert "Time window: not recorded for these logs" in auth4.evidence
+
+
+def test_window_line_is_within_what_the_live_view_shows():
+    """The live view shows the first 5 evidence lines; seen in the demo, the window line
+    came last and was hidden behind '… 3 more (see /report)'."""
+    many = [{**_BURST, "start": f"2026-10-04T0{i}:00:00+00:00", "end": f"2026-10-04T0{i}:00:30+00:00"}
+            for i in range(7)]
+    nmap = {"hosts": [{"ip": "203.0.113.5", "open_ports": [{"port": 22, "protocol": "tcp", "service": "ssh"}]}]}
+    for out in (FE.generate_findings(None, _WEEK, {"bursts": many}, None),
+                FE.generate_findings(nmap, _WEEK, {"bursts": many}, None)):
+        for f in out:
+            if f.id in ("AUTH-004", "CORR-SSH-001"):
+                assert any(e.startswith("Time window: last 7 days") for e in f.evidence[:5]), f.id
