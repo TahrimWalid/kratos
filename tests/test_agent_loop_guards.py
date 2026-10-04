@@ -802,10 +802,38 @@ def test_run_linux_command_hidden_and_refused_for_a_remote_target(
     assert calls == [] and "not available in this investigation" in json.dumps(step["observation"])
 
 
-def test_run_linux_command_still_offered_when_investigating_kratos_itself(remote_target) -> None:
+def test_run_linux_command_still_offered_when_investigating_kratos_itself(
+    remote_target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(agent_loop, "_loopback_ssh_ok", lambda: True)
     _kcfg.set_active_target("127.0.0.1")
     prompt = agent_loop.build_system_prompt()
     assert "- run_linux_command" in prompt and "4 of the tools listed above are the exception" in prompt
+
+
+def test_host_mode_without_self_ssh_hides_ssh_tools_and_says_whose_machine(
+    remote_target, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live: /investigate-host ran a kept tool that SSHed to ubuntu@127.0.0.1 (refused) and the
+    answer called this machine 'the target'."""
+    monkeypatch.setattr(agent_loop, "_loopback_ssh_ok", lambda: False)
+    _kcfg.set_active_target("127.0.0.1")
+    hidden = agent_loop._agent_hidden_tools()
+    assert {"read_journalctl", "list_processes", "run_config_audit"} <= hidden
+    assert not {"run_linux_command", "collect_system_context", "run_nmap_scan", "parse_auth_log"} & hidden
+    prompt = agent_loop.build_system_prompt()
+    assert "THIS RUN IS ABOUT KRATOS'S OWN MACHINE" in prompt and "never \"the target\"" in prompt
+    assert "- read_journalctl" not in prompt and "SSH into this Kratos machine isn't set up" in prompt
+
+
+def test_host_mode_keeps_ssh_tools_when_self_ssh_works(remote_target, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_loop, "_loopback_ssh_ok", lambda: True)
+    _kcfg.set_active_target("127.0.0.1")
+    assert agent_loop._agent_hidden_tools() == frozenset()
+
+
+def test_remote_target_prompt_has_no_host_mode_note(remote_target) -> None:
+    assert "THIS RUN IS ABOUT KRATOS'S OWN MACHINE" not in agent_loop.build_system_prompt()
 
 
 def test_a_proposal_to_run_commands_on_the_target_is_not_surfaced(

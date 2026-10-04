@@ -20,6 +20,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -183,9 +184,54 @@ _LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 _LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
 
 
+# Built-in tools that read the investigated machine over SSH (or its sub-agent).
+# Kept tools that call ssh_remote are detected from their source.
+_SSH_READ_TOOLS = frozenset({
+    "read_journalctl", "measure_auth_activity", "compare_periods", "list_processes", "list_open_files",
+    "list_privileged_accounts", "check_file_integrity", "run_yara_scan", "run_config_audit",
+})
+_loopback_ssh_cache: dict[str, Any] = {}
+_LOOPBACK_SSH_TTL = 600.0
+
+
+def _is_host_mode() -> bool:
+    """The investigation is about Kratos's own machine (/investigate-host)."""
+    return (get_active_target() or "").strip().lower() in _LOOPBACK_SELF_TARGETS
+
+
+def _loopback_ssh_ok() -> bool:
+    """Can Kratos SSH into its own machine (as the configured target user)? Usually
+    not -- then every SSH-based tool would fail in /investigate-host. Probed once,
+    cached for a while."""
+    now = time.monotonic()
+    if now - _loopback_ssh_cache.get("at", -1e9) < _LOOPBACK_SSH_TTL:
+        return bool(_loopback_ssh_cache.get("ok"))
+    try:
+        from kratos.adapters.ssh_remote import run_remote_command
+
+        ok = bool(run_remote_command("true", timeout=8).ok)
+    except Exception:  # noqa: BLE001 -- a failed probe just means "not available"
+        ok = False
+    _loopback_ssh_cache.update(at=now, ok=ok)
+    return ok
+
+
+def _reads_over_ssh(name: str) -> bool:
+    if name in _SSH_READ_TOOLS:
+        return True
+    tool = TOOL_REGISTRY.get(name)
+    try:
+        return tool is not None and "ssh_remote" in inspect.getsource(tool.handler)
+    except (OSError, TypeError):
+        return False
+
+
 def _agent_hidden_tools() -> frozenset[str]:
-    target = (get_active_target() or "").strip().lower()
-    return frozenset() if target in _LOOPBACK_SELF_TARGETS else _LOCAL_ONLY_AGENT_TOOLS
+    if not _is_host_mode():
+        return _LOCAL_ONLY_AGENT_TOOLS
+    if _loopback_ssh_ok():
+        return frozenset()
+    return frozenset(n for n in TOOL_REGISTRY if _reads_over_ssh(n))
 
 # Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
 # yesterday); an answer must say so instead of inferring that state from other data.
@@ -355,19 +401,31 @@ def build_system_prompt() -> str:
                    if t not in hidden]
     local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "
                   f"instead, never the target: {', '.join(local_tools)}.")
-    if hidden:
+    host_mode = _is_host_mode()
+    if hidden and host_mode:
+        tools_desc += (
+            f"\n(Not offered here: {', '.join(sorted(hidden))} -- they read a machine over SSH, and SSH "
+            "into this Kratos machine isn't set up. Use the local tools instead.)"
+        )
+    elif hidden:
         tools_desc += (
             f"\n(Not offered here: {', '.join(sorted(hidden))}, which only runs on Kratos's own host and "
             "cannot inspect the target. If this goal needs something on the target that no tool above "
             "provides, respond with a tool_proposal for it.)"
         )
+    host_note = (
+        "\n\nTHIS RUN IS ABOUT KRATOS'S OWN MACHINE: the user asked to investigate the host Kratos itself "
+        "runs on, not a separate target. Call it \"this Kratos machine\" (never \"the target\"). Use the "
+        "local tools (collect_system_context, parse_auth_log, run_nmap_scan on 127.0.0.1, run_linux_command "
+        "for read-only checks -- the user is asked before it runs). nmap's service names are guesses from "
+        "port numbers; say which program really listens only if a tool showed it.") if host_mode else ""
     clarify_guidance = _clarify_guidance()
     return f"""You are Kratos, a security investigation agent that monitors a separate target device (read over SSH, or through a small agent running on it).
 
 You investigate step by step by calling ONE tool at a time and reading its result before deciding the next step.
 
 AVAILABLE TOOLS:
-{tools_desc}
+{tools_desc}{host_note}
 
 LOCAL HOST VS. MONITORED TARGET (read this before choosing tools):
 Kratos runs on its own host, but the system you are investigating is a SEPARATE target device, reached over SSH. Tools that mention "target" or use SSH to a remote host inspect the protected system -- that is almost always what an investigation goal is actually asking about. {local_note} Every other tool in the registry inspects the monitored target. The local-host tools are relevant only when a goal specifically concerns Kratos's own security (self-monitoring), never as the default way to check "the system" being protected. When a goal says "check for suspicious activity on this system", "is SSH exposed", "who has privileged access", or asks about logins/break-ins/running processes without saying otherwise, default to target-facing tools (e.g. read_journalctl for authentication activity, list_privileged_accounts for who has sudo/root access, list_processes/list_open_files for running state, run_config_audit for hardening) -- not parse_auth_log, collect_system_context, capture_traffic, or run_linux_command.
@@ -1865,6 +1923,9 @@ def _run_agent_loop(
 
         if tool_name in _agent_hidden_tools():
             exec_result = {"status": "error", "observation": (
+                f"{tool_name} is not available here: it reads a machine over SSH, and SSH into this Kratos "
+                "machine isn't set up. Use a local tool (collect_system_context, parse_auth_log, "
+                "run_nmap_scan, run_linux_command)." if _is_host_mode() else
                 f"{tool_name} is not available in this investigation: it only runs on Kratos's own host, "
                 "and the target is a separate device. Use a target-facing tool; if none provides what you "
                 "need, respond with a tool_proposal describing the missing capability.")}
