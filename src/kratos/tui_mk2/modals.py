@@ -559,7 +559,7 @@ class EvolveIntroModal(ModalScreen[bool]):
     first_time=False (help): esc/Enter just close."""
 
     BINDINGS = [
-        Binding("enter", "go", "start", show=False),
+        Binding("enter,y", "go", "start", show=False),  # y too: every other yes/no screen takes y
         Binding("escape,q", "not_now", "close", show=True),
     ]
 
@@ -605,7 +605,7 @@ class EvolveIntroModal(ModalScreen[bool]):
                  "differently."),
                 ("you said no", "nothing is saved. Run /evolve again any time."),
             ]))
-            hint = ("\nenter start building · esc not now · /evolve help shows this again"
+            hint = ("\nenter or y start building · esc not now · /evolve help shows this again"
                     if self._first_time else "\nesc close")
             yield Static(Text(hint, style=T.TEXT_DIM))
 

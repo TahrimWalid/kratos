@@ -310,3 +310,27 @@ def test_first_run_with_a_machine_opens_a_session_on_it(tmp_path, monkeypatch):
 def test_first_run_without_a_machine_lands_on_the_session_list(tmp_path, monkeypatch):
     screen, _stack = _first_run(tmp_path, monkeypatch, [])
     assert screen == "LaunchScreen"
+
+
+def test_evolve_intro_starts_with_y_as_well_as_enter():
+    """Every other yes/no screen takes y; the /evolve intro only took Enter."""
+    import asyncio
+
+    from textual.app import App
+
+    from kratos.tui_mk2.modals import EvolveIntroModal
+
+    results = []
+
+    class H(App):
+        def on_mount(self):
+            self.push_screen(EvolveIntroModal(first_time=True), results.append)
+
+    async def run():
+        async with H().run_test() as pilot:
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert results == [True]
