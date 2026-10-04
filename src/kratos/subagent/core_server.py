@@ -143,6 +143,9 @@ class CoreServer:
         # target_id -> the live connection's session nonce (absent for an
         # agent too old to send one -- such an agent gets telemetry only).
         self._session_nonce: dict[str, str] = {}
+        # target_id -> the `ts` of the agent's latest ping on the live connection;
+        # every dispatch names it so the agent can refuse one held back in transit.
+        self._last_ping_ts: dict[str, Any] = {}
         # Why a connection is being closed from THIS side (recorded on close).
         self._close_reason: dict[str, str] = {}
         # Investigation reads: what each live agent says it can read, one read
@@ -378,6 +381,9 @@ class CoreServer:
             raise RuntimeError(
                 f"target {target_id!r} runs a sub-agent too old for execution (no session nonce) -- update it"
             )
+        heartbeat_ts = self._last_ping_ts.get(target_id)
+        if heartbeat_ts is None:
+            raise RuntimeError(f"target {target_id!r} hasn't sent a heartbeat on this connection yet -- try again")
         dispatch_id = uuid.uuid4().hex
         key = signing.derive_signing_key(token)
         envelope: dict[str, Any] = {
@@ -387,6 +393,7 @@ class CoreServer:
             "slot_values": slot_values,
             "whitelist_version": whitelist_version,
             "session_nonce": session_nonce,
+            "heartbeat_ts": heartbeat_ts,
         }
         envelope["sig"] = signing.sign_envelope(key, envelope)
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
@@ -487,6 +494,7 @@ class CoreServer:
                     del self._live[target_id]
                     self._pushed_version.pop(target_id, None)
                     self._session_nonce.pop(target_id, None)
+                    self._last_ping_ts.pop(target_id, None)
                     self._last_frame.pop(target_id, None)
                     self._agent_reads.pop(target_id, None)
                     self._disconnected_at[target_id] = time.monotonic()
@@ -697,6 +705,9 @@ class CoreServer:
                 await proto.write_frame(writer, proto.build_telemetry_ack(msg.get("seq")))
             elif mtype == proto.MSG_PING:
                 self.store.touch_last_seen(target_id)
+                ts = msg.get("ts")
+                if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                    self._last_ping_ts[target_id] = ts
                 await proto.write_frame(writer, self._pong(target_id, token, msg.get("ts")))
             elif mtype == proto.MSG_WHITELIST_PUSH_ACK:
                 fut = self._pending_whitelist_ack.get(target_id)

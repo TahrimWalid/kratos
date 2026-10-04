@@ -50,6 +50,7 @@ def _agent(tmp_path, **kw) -> SubAgent:
     a._session_nonce = "ab" * 16
     a._peer_ip = "127.0.0.1"
     a._last_core_message_ts = time.time()
+    a._sent_pings.append(a._last_core_message_ts)   # the ping that heartbeat answered
     return a
 
 
@@ -66,7 +67,8 @@ def _push(version, actions) -> dict:
 def _dispatch(agent, **over) -> dict:
     msg = {"type": proto.MSG_EXEC_DISPATCH, "dispatch_id": over.pop("dispatch_id", "d1"),
            "action_id": "test.echo", "slot_values": {"msg": "hi"},
-           "whitelist_version": agent._whitelist_version, "session_nonce": agent._session_nonce}
+           "whitelist_version": agent._whitelist_version, "session_nonce": agent._session_nonce,
+           "heartbeat_ts": agent._sent_pings[-1] if agent._sent_pings else None}
     msg.update(over)
     return _signed(msg)
 
@@ -179,7 +181,8 @@ def test_version_floor_persists_across_restart(tmp_path):
 def test_only_signed_pong_arms_execution(tmp_path):
     a = _agent(tmp_path)
     a._last_core_message_ts = None
-    plain = {"type": proto.MSG_PONG, "ts": 1.0}
+    sent = a._sent_pings[-1]                       # a ping this connection really sent
+    plain = {"type": proto.MSG_PONG, "ts": sent}
     assert not a._pong_is_authentic(plain)
     assert not a._pong_is_authentic(_signed({**plain, "session_nonce": "cd" * 16}))
     assert not a._pong_is_authentic(_signed({**plain, "session_nonce": a._session_nonce}, token="x" * 43))

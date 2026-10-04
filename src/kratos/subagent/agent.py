@@ -33,8 +33,11 @@ single dispatch, fail-closed on any failure:
      and it carries this connection's `session_nonce` and a dispatch_id not
      already seen on it (F4: no replay across or within connections).
   4. The dead-man's switch is armed: a SIGNED pong carrying the current
-     session nonce arrived within `DEAD_MANS_SWITCH_SECONDS` (design doc §9
-     #5, F6) -- a severed, silent, or impersonated core disarms execution.
+     session nonce echoed one of THIS connection's own pings sent within
+     `DEAD_MANS_SWITCH_SECONDS` (design doc §9 #5, F6) -- a severed, silent, or
+     impersonated core disarms execution, and a replayed pong can't extend it.
+     The dispatch itself must name such a recent ping (`heartbeat_ts`), so one
+     held back in transit expires with the window.
   5. The dispatch's `whitelist_version` matches this agent's CURRENTLY
      applied whitelist version exactly -- an old version can never be
      replayed to roll back a revocation (fail-closed on stale, §9 #5).
@@ -107,7 +110,7 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.3.1"
+AGENT_VERSION = "0.3.2"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -132,6 +135,9 @@ EXEC_TIMEOUT_SECONDS = 30.0
 OUTPUT_TAIL_MAX_CHARS = 4000
 # Bound on dispatch ids remembered per connection for replay de-duplication.
 SEEN_DISPATCH_IDS_MAX = 4096
+# Pings remembered per connection: a signed pong (and a dispatch) must name one of
+# them. Comfortably more than DEAD_MANS_SWITCH_SECONDS / the shortest ping interval.
+SENT_PINGS_MAX = 64
 # Read probes run one at a time; at most this many may wait behind the running
 # one before further requests are answered "busy" (core sends one at a time,
 # so this only ever trips on a misbehaving peer).
@@ -243,6 +249,11 @@ class SubAgent:
         self._session_nonce: str | None = None
         self._seen_dispatch_ids: set[str] = set()
         self._peer_ip: str | None = None
+        # Send times of this connection's own pings. A signed pong arms execution
+        # only by echoing one of them, and only from THAT ping's send time, so a
+        # replayed pong can't extend the dead-man's switch; every dispatch must
+        # name a recent one, so a dispatch held back in transit expires.
+        self._sent_pings: deque[float] = deque(maxlen=SENT_PINGS_MAX)
         # Read probes (docs/subagent_read_routing.md): per-connection replay
         # floor, a one-at-a-time lock (made per connection, on the running
         # loop), and the tasks to cancel when the connection ends.
@@ -393,6 +404,7 @@ class SubAgent:
             raise proto.ProtocolError("no saved token and no pairing code -- pair this agent first (--pair CODE)")
         self._session_nonce = secrets.token_hex(16)
         self._seen_dispatch_ids = set()
+        self._sent_pings = deque(maxlen=SENT_PINGS_MAX)
         self._last_read_seq = 0
         self._read_lock = asyncio.Lock()
         self._last_core_message_ts = None  # only a signed pong on THIS connection re-arms execution
@@ -440,7 +452,9 @@ class SubAgent:
         # First ping immediately, so a fresh connection earns its signed pong
         # (and an armed dead-man's switch) without waiting a full interval.
         while True:
-            await proto.write_frame(writer, proto.build_ping(time.time()))
+            ts = time.time()
+            self._sent_pings.append(ts)
+            await proto.write_frame(writer, proto.build_ping(ts))
             await asyncio.sleep(self.ping_interval)
 
     async def _receive_loop(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -465,7 +479,9 @@ class SubAgent:
                 # a dispatch's own arrival must never be the heartbeat that
                 # justifies running it.
                 if self._pong_is_authentic(msg):
-                    self._last_core_message_ts = time.time()
+                    # armed from when OUR ping left, not when the pong arrived:
+                    # a delayed or replayed pong can't stretch the window
+                    self._last_core_message_ts = max(self._last_core_message_ts or 0.0, float(msg["ts"]))
                 continue
             try:
                 if mtype == proto.MSG_WHITELIST_PUSH:
@@ -486,7 +502,16 @@ class SubAgent:
     def _pong_is_authentic(self, msg: dict[str, Any]) -> bool:
         if not self.token or msg.get("session_nonce") != self._session_nonce:
             return False
+        if not self._is_own_recent_ping(msg.get("ts")):
+            return False
         return signing.verify_envelope(signing.derive_signing_key(self.token), msg)
+
+    def _is_own_recent_ping(self, ts: Any) -> bool:
+        """`ts` is the send time of a ping THIS connection sent, within the
+        dead-man's window."""
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts not in self._sent_pings:
+            return False
+        return 0 <= time.time() - ts <= DEAD_MANS_SWITCH_SECONDS
 
     async def _handle_whitelist_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
         """Apply (or reject) a signed whitelist push.
@@ -590,6 +615,10 @@ class SubAgent:
         self._seen_dispatch_ids.add(dispatch_id)
         if not self._execution_armed():
             return {"status": "refused", "reason": "dead-man's switch: no fresh authenticated heartbeat from core"}
+        if not self._is_own_recent_ping(msg.get("heartbeat_ts")):
+            # The dispatch names the latest ping core had seen when it was sent;
+            # one held back in transit longer than the window is refused.
+            return {"status": "refused", "reason": "dispatch is not tied to a recent heartbeat (delayed or replayed?)"}
         if version != self._whitelist_version:
             return {
                 "status": "refused",
