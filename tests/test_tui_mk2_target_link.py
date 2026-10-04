@@ -102,10 +102,11 @@ def test_target_command_offers_the_link_and_never_applies_it_silently(tmp_path, 
     async def act(screen, pilot):
         screen._apply_target(["web-01"])
 
-    # Declined: stays on SSH, the SSH setup runs, no link.
-    seen = _run_with_answers(make, ["no"], monkeypatch, action=act)
-    assert "looks like a box you've paired" in seen[0]
-    assert store.get_link("web-01") is None and ssh_setup == ["web-01"] and probes == []
+    # Declined: stays on SSH, no link; a machine not set up yet gets the guided
+    # setup screen (the same one a new session uses).
+    seen = _run_with_answers(make, ["no", None], monkeypatch, action=act)
+    assert "looks like a box you've paired" in seen[0] and seen[1] == "OnboardTargetScreen"
+    assert store.get_link("web-01") is None and ssh_setup == [] and probes == []
 
     # Accepted: asked which box AND how; linked; probed through the agent, not SSH setup.
     ssh_setup.clear()
