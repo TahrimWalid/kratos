@@ -354,6 +354,27 @@ def _unfaked_ssh_problem(code: str, faked: set[str]) -> str | None:
     )
 
 
+_STDERR_SUPPRESSED_RE = re.compile(r"2>\s*/dev/null|&>\s*/dev/null")
+
+
+def _suppressed_stderr_problem(code: str) -> str | None:
+    """A target-facing candidate whose remote command throws stderr away (`2>/dev/null`)
+    turns 'permission denied' into an empty, normal-looking result. The prompt forbids
+    it, and a live candidate still did it (demo pass 4: `sudo -n cat "$f" 2>/dev/null`)."""
+    if not _ssh_calls_in(code):
+        return None
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and _STDERR_SUPPRESSED_RE.search(node.value):
+            return ("Your remote command throws error messages away (2>/dev/null). On the real target that "
+                    "turns 'permission denied' into an empty, normal-looking result. Remove it, let the "
+                    "error reach result.stderr, and report it (or mark that item as unreadable) instead.")
+    return None
+
+
 def _build_user_prompt(
     request: WriteRequest,
     previous_code: str | None,
@@ -477,10 +498,10 @@ def _validate_candidate(code: str, faked_ssh: set[str] | None = None) -> tuple[l
         )
         return problems, None
 
-    unfaked = _unfaked_ssh_problem(code, faked_ssh or set())
-    if unfaked:
-        problems.append(unfaked)
-        return problems, tool_name
+    for problem in (_unfaked_ssh_problem(code, faked_ssh or set()), _suppressed_stderr_problem(code)):
+        if problem:
+            problems.append(problem)
+    return problems, tool_name
 
     return problems, tool_name
 

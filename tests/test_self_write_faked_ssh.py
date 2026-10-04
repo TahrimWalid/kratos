@@ -58,3 +58,13 @@ def test_write_step_rejects_the_unfaked_call_then_stages_the_fixed_one(tmp_path,
     assert "REMOTE CALL: the test above fakes ssh_remote.run_remote_command" in prompts[0]
     assert "which the test does not fake" in prompts[1]
     assert "run_remote_command(" in result.staging_path.read_text()
+
+
+def test_a_remote_command_that_hides_errors_is_rejected():
+    hides = _TOOL.format(fn="run_remote_command").replace('"cat /etc/crontab"', '"sudo -n cat /etc/crontab 2>/dev/null"')
+    problems, name = SW._validate_candidate(hides, {"run_remote_command"})
+    assert name == "list_cron" and any("2>/dev/null" in p for p in problems)
+    assert SW._validate_candidate(_TOOL.format(fn="run_remote_command"), {"run_remote_command"}) == ([], "list_cron")
+    local = 'from kratos.agent.tools import register_tool\n@register_tool(name="x", description="d", parameters={})\n' \
+            'def t():\n    return {"note": "ran with 2>/dev/null"}\n'
+    assert SW._validate_candidate(local)[0] == []          # not target-facing: no opinion
