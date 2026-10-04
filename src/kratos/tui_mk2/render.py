@@ -68,7 +68,10 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     The MODEL card shows the active model and whether it's local (free, private)
     or cloud (billed, sees your data) -- a value that actually varies (via
     /model) and carries the pivot's cost/privacy signal, unlike a fixed 'mode'."""
-    wordmark = Align.center(Text("   ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
+    # Four spaces between letters: 26 cells over the subtitle's 18, an even
+    # difference, so the wordmark overhangs by exactly 4 cells on each side at
+    # any terminal width (an odd difference can't centre on a character grid).
+    wordmark = Align.center(Text("    ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
     subtitle = Align.center(Text("security assistant", style=T.TEXT_FAINT))
 
     tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)

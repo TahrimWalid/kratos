@@ -322,3 +322,20 @@ def test_a_saved_pipeline_summary_names_the_pipeline_not_the_standard_audit():
     stopped = _plain(R.audit_summary_panel(**{**common, "status": "aborted"}, aborted_on="run_nmap_scan",
                                            pipeline_name="p"))
     assert "Pipeline stopped" in stopped and "run_nmap_scan" in stopped
+
+
+def test_home_wordmark_overhangs_the_subtitle_equally_at_any_width():
+    """The spaced KRATOS wordmark sticks out past 'security assistant' by the
+    same number of cells on both sides, whether the terminal width is odd or
+    even (an odd width difference can't centre on a character grid)."""
+    from rich.console import Console
+
+    for width in (100, 101, 110, 111, 120):
+        con = Console(width=width, record=True, color_system=None)
+        con.print(R.home_banner("web-01", 19, 0, model="m"))
+        lines = con.export_text().splitlines()
+        mark = next(line for line in lines if line.strip().startswith("K "))
+        sub = next(line for line in lines if "security assistant" in line)
+        left = sub.index("s") - mark.index("K")
+        right = mark.rindex("S") - (sub.index("assistant") + len("assistant") - 1)
+        assert left == right > 0, (width, left, right)
