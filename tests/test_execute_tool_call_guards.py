@@ -68,6 +68,20 @@ def test_data_dir_override_ignores_hallucinated_value(tmp_path):
     assert captured["data_dir"] == tmp_path  # the REAL data_dir, not "/data"
 
 
+def test_data_dir_is_dropped_for_a_tool_that_takes_none(tmp_path):
+    """Seen live (demo): run_config_audit(data_dir='.') failed with a TypeError and cost a step."""
+    assert "data_dir" not in TOOL_REGISTRY["run_config_audit"].parameters
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {"status": "ok"}
+
+    with patch.object(TOOL_REGISTRY["run_config_audit"], "handler", side_effect=_capture):
+        result = execute_tool_call("run_config_audit", {"data_dir": "."}, tmp_path)
+    assert "data_dir" not in captured and result.get("status") == "ok"
+
+
 # ---------------------------------------------------------------------------
 # Implausible placeholder target ("THE_TARGET_IP")
 # ---------------------------------------------------------------------------

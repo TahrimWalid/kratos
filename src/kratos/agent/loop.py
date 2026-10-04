@@ -613,6 +613,10 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
         # real override use case), so this is a structural override, not
         # just a fill-in-if-missing default.
         call_args["data_dir"] = data_dir
+    else:
+        # Kratos owns data_dir; a model that adds it to a tool without one (seen live:
+        # run_config_audit(data_dir='.')) would otherwise burn a step on a TypeError.
+        call_args.pop("data_dir", None)
 
     if "target" in tool.parameters and call_args.get("target") is not None:
         # The model can also invent a placeholder target (e.g.
