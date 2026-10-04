@@ -1238,3 +1238,19 @@ def test_preset_describe_clarify_twice_reports_error_not_infinite_loop(tmp_path,
     asyncio.run(_run())
     assert any("more detail" in e or "more specifics" in e for e in errors)
     assert not P.preset_exists(tmp_path, "described")
+
+
+def test_pipeline_step_list_says_where_each_step_looks():
+    """The drafted-pipeline review labelled correlate_findings '[target, required]'; it
+    works on results already collected."""
+    from types import SimpleNamespace
+
+    from kratos.tui_mk2.screens.session import SessionScreen
+
+    note = SessionScreen._pipeline_steps_note(
+        SimpleNamespace(_format_step_args=lambda a: ""),
+        [{"tool": "run_nmap_scan"}, {"tool": "correlate_findings"}, {"tool": "parse_auth_log", "required": False}])
+    text = note.plain
+    assert "run_nmap_scan  [target, required]" in text
+    assert "correlate_findings  [saved data, required]" in text
+    assert "parse_auth_log  [Kratos host, optional]" in text

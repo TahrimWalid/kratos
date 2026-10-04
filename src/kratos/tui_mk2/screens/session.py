@@ -1885,17 +1885,20 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _pipeline_steps_note(self, steps: list[dict[str, Any]]) -> Any:
         """A compact, host/required/condition-labeled listing of a pipeline's
         steps (used by the in-place editor between actions)."""
-        from kratos.agent.pipeline import is_local_host_tool
+        from kratos.agent.tool_summaries import short_where
+        from kratos.agent.tools import TOOL_REGISTRY
 
         if not steps:
             return R.note_line("(no steps yet)")
         body = Text()
         for i, s in enumerate(steps, 1):
-            host = "Kratos host" if is_local_host_tool(s["tool"]) else "target"
+            # Where the step looks: the target, Kratos's own host, or results already
+            # collected (correlate_findings used to be labelled "target").
+            where = short_where(s["tool"], TOOL_REGISTRY.get(s["tool"]))
             flags = "required" if s.get("required", True) else "optional"
             body.append(f"  {i}. ", style=T.TEXT_DIM)
             body.append(s["tool"], style=f"bold {T.ACCENT}")
-            body.append(f"  [{host}, {flags}]", style=T.TEXT_MUTED)
+            body.append(f"  [{where + ', ' if where else ''}{flags}]", style=T.TEXT_MUTED)
             if s.get("args"):
                 body.append(f"  {self._format_step_args(s['args'])}", style=T.TEXT_FAINT)
             if s.get("when"):
