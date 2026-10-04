@@ -274,6 +274,20 @@ class Finding:
     # line, so consumers (A2 Piece C output-threading's `top_source_ip` field, an
     # answer that names the attacker) read a real field instead of parsing text.
     source_ips: list[str] = field(default_factory=list)
+    # Other rules that matched the SAME evidence and were folded into this finding
+    # (see _merge_overlapping). Triggers / pipeline conditions naming one of them
+    # still match (finding_ids).
+    also_matched: list[str] = field(default_factory=list)
+
+
+def finding_ids(finding: Any) -> set[str]:
+    """Every rule id a finding stands for: its own plus any it absorbed. Accepts a
+    Finding or its dict form; an old report without also_matched just has its id."""
+    get = finding.get if isinstance(finding, dict) else (lambda k, d=None: getattr(finding, k, d))
+    ids = {str(get("id") or "")}
+    ids.update(str(x) for x in (get("also_matched") or []))
+    ids.discard("")
+    return ids
 
 
 _EVENT_WORDS = {
@@ -653,6 +667,40 @@ def _coverage_phrase(ident: str, cov: dict[str, Any]) -> str:
         return f"the target's logs only go back to {oldest}, so nothing earlier could be counted"
     return (f"{_COVERAGE_SOURCES.get(ident, ident)}: only the newest {cov.get('returned')} entries were read, "
             f"nothing before {oldest}")
+
+
+_MERGE_LABELS = {"CORR-001": "exposed SSH with a burst", "AUTH-004": "the burst itself"}
+
+
+def _merge_overlapping(findings: list[Finding], auth_patterns: dict[str, Any] | None) -> None:
+    """One SSH brute-force burst used to read as three problems: CORR-SSH-001 (high),
+    CORR-001 (medium) and AUTH-004 (info) all describe the same failed-login burst on an
+    exposed SSH. CORR-001's conditions are a subset of CORR-SSH-001's, and AUTH-004 is
+    the burst itself; both fold into CORR-SSH-001 (highest severity kept, rule ids kept
+    in also_matched). AUTH-004 stays separate when it also covers sudo bursts, which
+    CORR-SSH-001 does not."""
+    main = next((f for f in findings if f.id == "CORR-SSH-001"), None)
+    if main is None:
+        return
+    absorb = ["CORR-001"]
+    if not _bursts_of(auth_patterns, ("sudo_pam_auth_failure", "sudo_auth_failure")):
+        absorb.append("AUTH-004")
+    merged = [f for rule in absorb for f in findings if f.id == rule]  # stable: absorb order
+    if not merged:
+        return
+    for f in merged:
+        findings.remove(f)
+        if _severity_rank(f.severity) > _severity_rank(main.severity):
+            main.severity = f.severity
+        for ip in f.source_ips:
+            if ip not in main.source_ips:
+                main.source_ips.append(ip)
+        for line in f.evidence:  # e.g. a threat-intel corroboration only the absorbed one had
+            if "reputation" in line.lower() and line not in main.evidence:
+                main.evidence.append(line)
+        main.also_matched.append(f.id)
+    main.evidence.append("One finding for this burst -- also matched: " + ", ".join(
+        f"{i} ({_MERGE_LABELS.get(i, 'same evidence')})" for i in main.also_matched))
 
 
 def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[str, Any] | None) -> None:
@@ -1190,6 +1238,7 @@ def generate_findings(
     # the agent chose to call check_ip_reputation.
     _surface_source_ips_in_evidence(findings, auth_patterns)
     _enrich_findings_with_offline_reputation(findings, auth_patterns)
+    _merge_overlapping(findings, auth_patterns)
     _disclose_partial_auth_coverage(findings, auth_stats)
 
     # Sort by severity (high -> info)

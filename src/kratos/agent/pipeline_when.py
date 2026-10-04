@@ -156,7 +156,9 @@ def _compile_compare(node: ast.Compare) -> Predicate:
     wanted = _literal_str(literal_node, "finding_id")
 
     def _exists(ctx: Any) -> bool:
-        return any(str(f.get("id")) == wanted for f in ctx.findings)
+        from kratos.adapters.findings_engine import finding_ids
+
+        return any(wanted in finding_ids(f) for f in ctx.findings)
 
     if isinstance(op, ast.Eq):
         return _exists

@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from kratos.adapters.findings_engine import finding_ids
 from kratos.agent import triggers as _triggers
 from kratos.agent.scheduled_run import Notifier, _NTFY_BUCKET, _SEVERITY_RANK
 from kratos.utils.timeutil import utc_now_iso
@@ -39,8 +40,8 @@ def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> li
     floor = _SEVERITY_RANK.get(trigger.min_severity or "", -1) if trigger.min_severity else None
     out = []
     for f in findings:
-        if trigger.finding_id and str(f.get("id") or "").upper() != trigger.finding_id.upper():
-            continue
+        if trigger.finding_id and trigger.finding_id.upper() not in {i.upper() for i in finding_ids(f)}:
+            continue  # its own id, or one it absorbed (e.g. CORR-001 folded into CORR-SSH-001)
         if floor is not None and _SEVERITY_RANK.get(str(f.get("severity") or "info").lower(), 0) < floor:
             continue
         out.append(f)
