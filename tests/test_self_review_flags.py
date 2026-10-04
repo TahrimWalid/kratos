@@ -155,3 +155,36 @@ def test_failed_read_falling_through_is_flagged():
 def test_an_explicit_error_return_is_not_flagged():
     # "no output" (a successful read that found nothing) may legitimately be empty
     assert _failed_read_flags(_HANDLES_FAILURE) == []
+
+
+_CRON = '''
+from kratos.adapters import ssh_remote
+def tool_x():
+    script = """
+    for f in /var/spool/cron/crontabs/*; do
+        sudo -n cat "$f" || echo "[UNREADABLE]"
+    done
+    """
+    return ssh_remote.run_remote_script(script)
+'''
+
+
+def test_flags_a_folder_listed_without_sudo_when_files_need_it():
+    """Seen live (demo pass 5): the glob over a root-only folder came back empty."""
+    flags = [f for f in scan_review_flags(_CRON) if f.category == "folder-listed-without-sudo"]
+    assert len(flags) == 1 and "/var/spool/cron/crontabs" in flags[0].message
+
+
+def test_no_listing_flag_when_the_listing_uses_sudo_or_nothing_needs_it():
+    with_sudo = _CRON.replace("for f in /var/spool/cron/crontabs/*;",
+                              "for f in $(sudo -n find /var/spool/cron/crontabs -type f);")
+    assert not [f for f in scan_review_flags(with_sudo) if f.category == "folder-listed-without-sudo"]
+    plain = _CRON.replace('sudo -n cat "$f"', 'cat "$f"')
+    assert not [f for f in scan_review_flags(plain) if f.category == "folder-listed-without-sudo"]
+
+
+def test_every_flag_category_has_a_plain_explanation():
+    import inspect
+    from kratos.agent import self_review_flags as R
+    used = set(__import__("re").findall(r'ReviewFlag\(\s*"([a-z-]+)"', inspect.getsource(R)))
+    assert used and used <= set(R._PLAIN_GLOSS)

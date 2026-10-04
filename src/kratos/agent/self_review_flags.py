@@ -495,6 +495,33 @@ def _check_d_description_coverage(tree: ast.AST, description, docstring) -> list
     )]
 
 
+# `for f in /some/dir/*` (or `ls /some/dir`) with no sudo, in a script that reads with
+# sudo elsewhere. Seen live (demo pass 5): `for f in /var/spool/cron/crontabs/*; do sudo -n
+# cat "$f"` -- the folder is root-only, the pattern silently expands to nothing, and the
+# tool reports "no crontabs" on a box that may have some. Advisory: some folders ARE
+# listable while their files are root-only, so this is a flag, not a rejection.
+_UNPRIVILEGED_LISTING_RE = re.compile(
+    r"^(?!.*\bsudo\b).*?(?:\bfor\s+\w+\s+in\s+(/[^\s;*\"']+)/\*|\bls\s+(?:-\w+\s+)*(/[^\s;|\"']+))",
+    re.MULTILINE)
+
+
+def _check_g_unprivileged_listing(tree: ast.AST) -> list[ReviewFlag]:
+    flags: list[ReviewFlag] = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Constant) and isinstance(node.value, str) and "sudo" in node.value):
+            continue
+        for m in _UNPRIVILEGED_LISTING_RE.finditer(node.value):
+            folder = m.group(1) or m.group(2)
+            flags.append(ReviewFlag(
+                "folder-listed-without-sudo",
+                f"{folder} is listed without sudo, but the script needs sudo to read files. If that folder is "
+                "readable only by root, the list silently comes back empty and the tool reports \"nothing found\". "
+                f"List it with sudo too (e.g. sudo -n find {folder} -type f).",
+                getattr(node, "lineno", None),
+            ))
+    return flags
+
+
 def scan_review_flags(source_code: str) -> list[ReviewFlag]:
     """
     Public entry point. Parses source_code ONCE and runs every check
@@ -518,6 +545,7 @@ def scan_review_flags(source_code: str) -> list[ReviewFlag]:
     flags.extend(_check_c_invented_filter_criteria(tree, name_map, description, docstring))
     flags.extend(_check_e_silent_drop_on_subfetch_failure(tree))
     flags.extend(_check_f_failed_read_reported_as_empty(tree))
+    flags.extend(_check_g_unprivileged_listing(tree))
     flags.extend(_check_d_description_coverage(tree, description, docstring))
     return flags
 
@@ -556,6 +584,18 @@ _PLAIN_GLOSS: dict[str, str] = {
     "invented-filter-criterion": (
         "The tool filters or excludes things using a specific value it chose on its own. Check that "
         "filter really matches what the tool's description promises."
+    ),
+    "failed-read-returned-as-empty": (
+        "If reading the machine fails, the tool reports \"nothing found\" instead of an error. Check "
+        "it says the read failed, so a failure is never mistaken for a clean result."
+    ),
+    "failed-read-falls-through-as-empty": (
+        "Only the successful read is handled; a failed read quietly becomes \"nothing found\". Check "
+        "there is an error for the failed case."
+    ),
+    "folder-listed-without-sudo": (
+        "A folder is listed without admin rights while its files are read with them. If only root can "
+        "list that folder, the tool will find nothing and say so. Check how the folder is listed."
     ),
     "description-coverage": (
         "The tool's description may not mention everything its code actually does. Check the "

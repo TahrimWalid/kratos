@@ -227,6 +227,10 @@ candidate from passing the test yet breaking live:
    `-n` means "never prompt for a password" -- it either works via passwordless sudo or fails fast
    and cleanly, instead of hanging waiting for a password that will never come). Never assume the
    SSH user is root; never assume interactive sudo is available.
+   If the FILES need sudo, the FOLDER usually does too: list a root-only folder (e.g.
+   /var/spool/cron/crontabs, /root) with `sudo -n find <dir> -type f`, never a bare shell glob
+   like `for f in <dir>/*` -- on a folder you can't read, the glob silently expands to nothing and
+   the tool reports "none found".
 
 2. NEVER suppress stderr in a way that hides the real error. Do NOT append a blanket `2>/dev/null`
    to a command whose failure you then report -- when that command fails on the live target, the
