@@ -1017,3 +1017,19 @@ def test_host_mode_answer_calling_this_machine_the_monitored_device_is_reworded(
     rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert [s["violations"] for s in rejected] == [["host_called_target"]]
     assert result["final_answer"] == fixed
+
+
+def test_inline_claims_are_stripped_even_when_a_claims_field_is_also_given(
+    data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Seen live (demo pass 4): the reply had a claims field AND ended its prose with
+    'claims: [{"kind": "count", ...}]', which was shown to the reader as raw JSON."""
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", _mock_correlate_clean)
+    claim = {"kind": "count", "metric": "sudo_failures", "window": "w1", "value": 0}
+    reply = json.dumps({"reasoning": "done", "claims": [claim],
+                        "final_answer": "No sudo failures were seen. claims: " + json.dumps([claim])})
+    chat = ScriptedChat([_tool_json("correlate_findings"), reply, reply, reply])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    answer = agent_loop.run_agent("any sudo failures?", data_dir, max_iters=10)["final_answer"]
+    assert '"kind"' not in answer and "claims:" not in answer
+    assert answer.startswith("No sudo failures were seen.")

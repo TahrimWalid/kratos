@@ -67,6 +67,7 @@ from kratos.timewin.agentwin import (
     unqueried_goal_windows as _unqueried_goal_windows,
 )
 from kratos.timewin.claims import is_time_scoped as _is_time_scoped, verify_claims as _verify_claims
+from kratos.timewin.yes_no import yes_no_problem as _yes_no_problem
 from kratos.timewin.windows import (
     TimeIntentError as _TimeIntentError,
     reset_current_context as _reset_time_context,
@@ -1208,6 +1209,10 @@ def _run_agent_loop(
     MAX_NO_RECORD_REJECTIONS = 1
     host_wording_reject_count = 0
     MAX_HOST_WORDING_REJECTIONS = 1
+    # Guard 11 (yes/no vs comparison): every compare_periods verdict pair this run.
+    comparison_pairs: list[dict[str, Any]] = []
+    yes_no_reject_count = 0
+    MAX_YES_NO_REJECTIONS = 1
     tool_proposals_made = 0
     # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
     tool_claim_reject_count = 0
@@ -1375,10 +1380,13 @@ def _run_agent_loop(
 
         if "final_answer" in parsed:
             final_answer_text = parsed["final_answer"]
-            if not parsed.get("claims") and isinstance(final_answer_text, str):
+            if isinstance(final_answer_text, str):
+                # A claims list written into the prose never reaches the reader, even
+                # when the reply also has a claims field (seen live: both at once).
                 final_answer_text, inline_claims = _split_inline_claims(final_answer_text)
                 if inline_claims:
-                    parsed["claims"] = inline_claims
+                    given = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
+                    parsed["claims"] = given + [c for c in inline_claims if c not in given]
             # Optional structured remediation recommendations (feature 19b) --
             # sanitized here, carried through unchanged whether or not the
             # guards below NOTE-tag the prose answer. Recommendations only;
@@ -1535,8 +1543,25 @@ def _run_agent_loop(
                 and not is_final_iteration and host_wording_reject_count < MAX_HOST_WORDING_REJECTIONS
             )
 
+            # --- Guard 11: a Yes/No to "more/fewer ... than ...?" must match the verdict ---
+            yes_no = (_yes_no_problem(goal, final_answer_text, comparison_pairs,
+                                      getattr(time_ctx, "windows", {}) or {})
+                      if comparison_pairs else None)
+            guard11_can_reject = (
+                yes_no is not None and not is_final_iteration and yes_no_reject_count < MAX_YES_NO_REJECTIONS
+            )
+
             corrections: list[str] = []
             violations: list[str] = []
+
+            if guard11_can_reject:
+                yes_no_reject_count += 1
+                violations.append("yes_no_contradicts_comparison")
+                corrections.append(
+                    f"REJECTED (yes/no contradicts the comparison): {yes_no['why']}, so the answer to the "
+                    f"question as asked is \"{yes_no['expected']}\", but your answer starts with "
+                    f"\"{yes_no['got']}\". Start the answer with \"{yes_no['expected']}\" and keep the same numbers."
+                )
 
             if guard1_can_reject:
                 correlate_findings_reject_count += 1
@@ -1741,6 +1766,12 @@ def _run_agent_loop(
                     "[NOTE: parts of this answer could not be verified against Kratos's own measurements: "
                     + "; ".join(plain) + (" (and more)" if len(claim_problems) > 4 else "")
                     + " -- treat those statements as unverified.]\n\n" + final_answer_text
+                )
+
+            if yes_no is not None:
+                final_answer_text = (
+                    f"[NOTE: {yes_no['why']}, so the answer to the question is {yes_no['expected']}.]\n\n"
+                    + final_answer_text
                 )
 
             if guard9_violated:
@@ -2076,6 +2107,11 @@ def _run_agent_loop(
                     last_correlate_findings_error = inner_result.get("observation") or "correlate_findings failed with no error detail."
                 else:
                     last_correlate_findings_error = "correlate_findings call did not return a real findings result."
+
+        if tool_name == "compare_periods":
+            inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
+            if isinstance(inner_result, dict) and inner_result.get("status") == "ok":
+                comparison_pairs.extend(p for p in inner_result.get("pairs") or [] if isinstance(p, dict))
 
         if tool_name == "state_as_of":
             inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
