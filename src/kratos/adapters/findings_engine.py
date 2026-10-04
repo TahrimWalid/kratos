@@ -772,6 +772,22 @@ def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[st
     )
 
 
+def _time_window_note(window: dict[str, Any] | None) -> str:
+    """The log window a count or burst list covers, said once in plain words.
+    `window` is the auth_stats data of that read (its since/since_utc/until_utc)."""
+    if not window:
+        return "Time window: not recorded for these logs"
+    since_value = window.get("since")
+    note = (
+        f"Time window: {since_value}" if since_value
+        else "Time window: none asked for (the newest log entries were read)"
+    )
+    if window.get("since_utc"):
+        note += f" ({_when(window['since_utc'])}"
+        note += f" to {_when(window['until_utc'])})" if window.get("until_utc") else " to now)"
+    return note
+
+
 def generate_findings(
     nmap_parsed: dict[str, Any] | None,
     auth_stats: dict[str, Any] | None,
@@ -781,8 +797,14 @@ def generate_findings(
     file_integrity: dict[str, Any] | None = None,
     privileged_accounts: dict[str, Any] | None = None,
     vuln_scan: dict[str, Any] | None = None,
+    auth_patterns_window: dict[str, Any] | None = None,
 ) -> list[Finding]:
+    """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
+    read), so a burst finding states the window its count covers. Without it the
+    auth_stats argument is assumed to be that read."""
     findings: list[Finding] = []
+    burst_window_note = _time_window_note(
+        auth_patterns_window if auth_patterns_window is not None else auth_stats)
 
     # 1) Network exposure (Nmap)
     if nmap_parsed and isinstance(nmap_parsed.get("hosts"), list):
@@ -877,14 +899,7 @@ def generate_findings(
         # investigation goal asked about -- without this, a final answer
         # can confidently claim "in the last 24 hours" about a count that
         # was actually an unscoped snapshot.
-        since_value = auth_stats.get("since")
-        time_window_note = (
-            f"Time window: {since_value}" if since_value
-            else "Time window: none asked for (the newest log entries were read)"
-        )
-        if auth_stats.get("since_utc"):
-            time_window_note += f" ({_when(auth_stats['since_utc'])}"
-            time_window_note += f" to {_when(auth_stats['until_utc'])})" if auth_stats.get("until_utc") else " to now)"
+        time_window_note = _time_window_note(auth_stats)
         # Partial coverage is stated once per finding by _disclose_partial_auth_coverage
         # ("Coverage: partial -- ..."), not repeated in this line.
 
@@ -1015,6 +1030,7 @@ def generate_findings(
                         *(["From the latest read of the login logs"] if auth_patterns.get("source_events_file") else []),
                         f"Bursts found: {len(relevant)}",
                         *[_burst_line(b) for b in relevant[:5]],
+                        burst_window_note,
                     ],
                     recommendation=[
                         "Investigate the time window(s) shown in the evidence.",
@@ -1042,6 +1058,7 @@ def generate_findings(
                     "SSH appears exposed in latest scan (port 22 and/or ssh service detected).",
                     f"Bursts of failed SSH logins: {len(ssh_bursts)}",
                     *[_burst_line(b) for b in ssh_bursts[:3]],
+                    burst_window_note,
                 ],
                 recommendation=[
                     "If SSH must remain exposed: disable password authentication, use key-based auth, and restrict by IP if possible.",
@@ -1070,6 +1087,7 @@ def generate_findings(
                     f"sudo group members = {', '.join(sudo_members)}",
                     f"Bursts of sudo failures: {len(sudo_fail_bursts)}",
                     *[_burst_line(b) for b in sudo_fail_bursts[:3]],
+                    burst_window_note,
                 ],
                 recommendation=[
                     "Verify whether these failures match expected admin activity (mistyped password) in the shown time window.",
@@ -1141,6 +1159,7 @@ def generate_findings(
         # Summarize burst evidence (keep it minimal)
         b0 = ssh_failed_bursts[0]
         evidence.append("for example, " + _burst_line({**b0, "count": b0.get("count", 0)}))
+        evidence.append(burst_window_note)
         
         findings.append(
             Finding(
@@ -1437,6 +1456,25 @@ def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set
 # ---------------------------
 # Report writing
 # ---------------------------
+def _paired_auth_stats(patterns_path: Path | None, stats_path: Path | None,
+                       stats: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The auth_stats saved by the same read as `patterns_path` (auth_patterns_X.json
+    pairs with auth_stats_X.json). The burst list and the stats can come from different
+    reads (each kind is picked by recency on its own), so the window a burst count
+    covers is taken from its own pair, never assumed from the other file."""
+    if patterns_path is None:
+        return None
+    pair = patterns_path.with_name(patterns_path.name.replace("auth_patterns_", "auth_stats_", 1))
+    if stats_path is not None and pair == stats_path:
+        return stats or {}
+    if not pair.exists():
+        return {}
+    try:
+        return _read_json(pair)
+    except (OSError, ValueError):
+        return {}
+
+
 def write_findings_report(
     data_dir: Path,
     nmap_parsed_file: Path | None = None,
@@ -1535,6 +1573,7 @@ def write_findings_report(
     findings = generate_findings(
         nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged,
         vuln_scan=vuln_scan,
+        auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
     )
     _stamp_collected_at(findings, inputs)
 
