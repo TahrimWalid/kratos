@@ -527,6 +527,8 @@ def tool_correlate_findings(
         system_context_file=Path(system_context_file) if system_context_file else None,
         auth_trends_file=Path(auth_trends_file) if auth_trends_file else None,
         file_integrity_file=Path(file_integrity_file) if file_integrity_file else None,
+        # Inside an investigation: prefer what it MEASURED over a later sampled read.
+        prefer_measured_since=(run_ctx.now - 5) if (run_ctx := _current_time_context()) is not None else None,
     )
     report = json.loads(out_json.read_text(encoding="utf-8", errors="replace"))
     findings = report.get("findings") or []

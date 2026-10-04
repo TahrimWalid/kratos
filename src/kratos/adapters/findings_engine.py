@@ -94,9 +94,40 @@ def _latest_input_for(dir_path: Path, pattern: str, category: str, active: str) 
     return None
 
 
-def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE) -> dict[str, Path | None]:
+def _measured_auth_since(logs_dir: Path, active: str, since_epoch: float) -> tuple[Path, Path | None] | None:
+    """The newest EXHAUSTIVE login measurement (measure_auth_activity) for `active`
+    saved since `since_epoch`, with its matching patterns file."""
+    try:
+        files = sorted(logs_dir.glob("auth_stats_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    except OSError:
+        return None
+    for path in files[:_INPUT_FILES_CONSIDERED]:
+        try:
+            if path.stat().st_mtime < since_epoch:
+                break
+            data = _read_json(path)
+        except (OSError, ValueError):
+            continue
+        if not str(data.get("source") or "").startswith("ssh_target_measurement"):
+            continue
+        hosts = input_hosts("auth_stats", data)
+        if active and not (hosts and active in hosts):
+            continue
+        patterns = path.with_name(path.name.replace("auth_stats_", "auth_patterns_", 1))
+        return path, patterns if patterns.exists() else None
+    return None
+
+
+def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
+                       prefer_measured_since: float | None = None) -> dict[str, Path | None]:
     """The newest input file of each kind describing `target` (default: the active
-    target; None: any machine)."""
+    target; None: any machine).
+
+    `prefer_measured_since` (an investigation's start time): if login activity was
+    MEASURED exhaustively during the investigation, correlate that measurement even
+    when a sampled journal read was saved after it. Picking purely by recency let a
+    later 500-line sample override the exhaustive count, so one answer said both
+    'counted in full' and 'only the newest 500 events analyzed'."""
     scans_dir = data_dir / "scans"
     logs_dir = data_dir / "logs"
     ctx_dir = data_dir / "context"
@@ -111,10 +142,16 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE) -> dict[str, Path 
     def pick(dir_path: Path, pattern: str, category: str) -> Path | None:
         return _latest_input_for(dir_path, pattern, category, active)
 
+    auth_stats = pick(logs_dir, "auth_stats_*.json", "auth_stats")
+    auth_patterns = pick(logs_dir, "auth_patterns_*.json", "auth_patterns")
+    if prefer_measured_since is not None:
+        measured = _measured_auth_since(logs_dir, active, prefer_measured_since)
+        if measured is not None:
+            auth_stats, auth_patterns = measured[0], measured[1] or auth_patterns
     return {
         "nmap_parsed": pick(scans_dir, "parsed_*.json", "nmap_parsed"),
-        "auth_stats": pick(logs_dir, "auth_stats_*.json", "auth_stats"),
-        "auth_patterns": pick(logs_dir, "auth_patterns_*.json", "auth_patterns"),
+        "auth_stats": auth_stats,
+        "auth_patterns": auth_patterns,
         "system_context": pick(ctx_dir, "system_context_*.json", "system_context"),
         "auth_trends": pick(reports_dir, "auth_trends_*.json", "auth_trends"),
         "file_integrity": pick(baseline_dir, "file_integrity_diff_*.json", "file_integrity"),
@@ -604,6 +641,20 @@ def _enrich_findings_with_offline_reputation(
 _AUTH_DERIVED_PREFIXES = ("AUTH-", "CORR-", "OBS-")
 
 
+_COVERAGE_SOURCES = {"sshd": "SSH log", "sudo": "sudo log"}
+
+
+def _coverage_phrase(ident: str, cov: dict[str, Any]) -> str:
+    """One partial-coverage fact in words. A measurement counts EVERYTHING the logs
+    hold, so its gap is that the logs don't reach back far enough -- not that only
+    the newest events were read (which is what a sampled journal read means)."""
+    oldest = _when(cov.get("oldest_returned")) if cov.get("oldest_returned") else "an unknown point"
+    if ident == "measurement":
+        return f"the target's logs only go back to {oldest}, so nothing earlier could be counted"
+    return (f"{_COVERAGE_SOURCES.get(ident, ident)}: only the newest {cov.get('returned')} entries were read, "
+            f"nothing before {oldest}")
+
+
 def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[str, Any] | None) -> None:
     """If the target auth fetch was truncated (the requested window held more
     entries than were fetched -- docs/time_window_design.md step 1), say so on
@@ -614,15 +665,13 @@ def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[st
     partial = {ident: cov for ident, cov in coverage.items() if isinstance(cov, dict) and cov.get("truncated")}
     if not partial:
         return
-    detail = "; ".join(
-        f"{ident}: only the newest {cov.get('returned')} events analyzed, nothing before {cov.get('oldest_returned')}"
-        for ident, cov in sorted(partial.items())
-    )
-    note = f"Coverage: PARTIAL -- {detail}"
+    detail = "; ".join(_coverage_phrase(ident, cov) for ident, cov in sorted(partial.items()))
+    note = f"Coverage: partial -- {detail}"
     for f in findings:
         if f.id.startswith(_AUTH_DERIVED_PREFIXES) and note not in f.evidence:
             f.evidence.append(note)
-    requested = auth_stats.get("since_utc") or auth_stats.get("since") or "the start of the journal"
+    requested = (_when(auth_stats["since_utc"]) if auth_stats.get("since_utc")
+                 else auth_stats.get("since") or "the start of the logs")
     findings.append(
         Finding(
             id="COV-001",
@@ -744,25 +793,14 @@ def generate_findings(
         # was actually an unscoped snapshot.
         since_value = auth_stats.get("since")
         time_window_note = (
-            f"Time window: since {since_value!r}" if since_value
-            else "Time window: unscoped (no time window was requested/applied to this data)"
+            f"Time window: {since_value}" if since_value
+            else "Time window: none asked for (the newest log entries were read)"
         )
         if auth_stats.get("since_utc"):
-            time_window_note += f" (from {auth_stats['since_utc']}"
-            time_window_note += f" to {auth_stats['until_utc']})" if auth_stats.get("until_utc") else " to now)"
-        # Coverage (docs/time_window_design.md step 1): a truncated identifier means
-        # only its newest events were analyzed -- say exactly which part was not seen,
-        # so neither a reader nor the model can present a partial window as complete.
-        truncated = {
-            ident: cov for ident, cov in (auth_stats.get("coverage") or {}).items()
-            if isinstance(cov, dict) and cov.get("truncated")
-        }
-        if truncated:
-            time_window_note += "; PARTIAL coverage -- " + "; ".join(
-                f"{ident}: only the newest {cov.get('returned')} events analyzed, "
-                f"nothing before {cov.get('oldest_returned')}"
-                for ident, cov in sorted(truncated.items())
-            )
+            time_window_note += f" ({_when(auth_stats['since_utc'])}"
+            time_window_note += f" to {_when(auth_stats['until_utc'])})" if auth_stats.get("until_utc") else " to now)"
+        # Partial coverage is stated once per finding by _disclose_partial_auth_coverage
+        # ("Coverage: partial -- ..."), not repeated in this line.
 
         if (sudo_fail_count + sudo_pam_fail_count) > 0:
             findings.append(
@@ -1320,9 +1358,10 @@ def write_findings_report(
     system_context_file: Path | None = None,
     auth_trends_file: Path | None = None,
     file_integrity_file: Path | None = None,
+    prefer_measured_since: float | None = None,
 ) -> tuple[Path, Path]:
     """
-    Generate findings report.
+    Generate findings report. `prefer_measured_since`: see find_latest_inputs.
 
     Input resolution is PER-ARGUMENT, not all-or-nothing: for each of
     nmap_parsed_file, auth_stats_file, auth_patterns_file, system_context_file
@@ -1350,7 +1389,7 @@ def write_findings_report(
         "auth_patterns": auth_patterns_file,
         "system_context": system_context_file,
     }
-    auto = find_latest_inputs(data_dir)
+    auto = find_latest_inputs(data_dir, prefer_measured_since=prefer_measured_since)
 
     inputs: dict[str, Path | None] = {}
     input_errors: dict[str, str] = {}

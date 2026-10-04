@@ -245,7 +245,7 @@ def test_findings_evidence_states_partial_coverage(tmp_path, monkeypatch):
         tools.tool_read_journalctl(tmp_path, since="@1789990000", lines=50)
     report = tools.tool_correlate_findings(tmp_path)
     evidence = " ".join(" ".join(f.get("evidence") or []) for f in report["findings"])
-    assert "Coverage: PARTIAL" in evidence and "sshd: only the newest 500 events analyzed" in evidence
+    assert "Coverage: partial" in evidence and "SSH log: only the newest 500 entries were read" in evidence
     assert any(f["id"] == "COV-001" for f in report["findings"])
     # and the burst itself still produced the attributed burst finding
     assert any(f["id"] == "AUTH-004" and "10.66.66.66" in " ".join(f["evidence"]) for f in report["findings"])
