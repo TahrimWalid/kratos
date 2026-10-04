@@ -590,3 +590,32 @@ def test_this_session_tab_target_row_dispatches(tmp_path, monkeypatch):
             return fake.calls
 
     assert asyncio.run(_run()) == [("target", "")]
+
+
+def test_models_table_fits_the_window_and_starts_on_the_active_model(tmp_path, monkeypatch):
+    """Seen live at 110 columns: long model names and the cost/privacy label pushed the
+    context-window column off-screen, and the cursor started on the first row, not the
+    model in use."""
+    env = tmp_path / ".env"
+    blocks = []
+    for name, active in (("nvidia/nemotron-3.5-lightning-30b-a3b", False), ("gemini-3.1-pro", True),
+                         ("deepseek-ai/deepseek-v4.1-flash", False)):
+        lines = ["LLM_BASE_URL=https://api.example/v1", "LLM_API_KEY=k", f"LLM_MODEL={name}",
+                 "KRATOS_LLM_BACKEND=openai_compatible", "LLM_CONTEXT_WINDOW=1048576"]
+        blocks.append("\n".join(lines if active else ["# " + ln for ln in lines]))
+    env.write_text("\n\n".join(blocks) + "\n", encoding="utf-8")
+    monkeypatch.setattr("kratos.llm_config.ENV_FILE_PATH", env)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(_FakeSession()))
+        async with app.run_test(size=(110, 34)) as pilot:
+            await pilot.pause()
+            t = app.screen.query_one("#ms-table", DataTable)
+            cells = [[str(t.get_cell_at((r, c))) for c in range(4)] for r in range(t.row_count)]
+            widths = sum(col.get_render_width(t) for col in t.columns.values())
+            return cells, t.cursor_row, widths, t.size.width
+
+    cells, cursor, widths, table_width = asyncio.run(_run())
+    assert widths <= table_width, (widths, table_width)       # nothing hidden off to the side
+    assert all("…" not in r[3] for r in cells)                 # context window shown in full
+    assert cells[cursor][1] == "gemini-3.1-pro"                 # cursor on the model in use

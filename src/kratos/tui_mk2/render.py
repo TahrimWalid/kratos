@@ -939,14 +939,17 @@ def _subtest_table(value: str) -> Table:
     return table
 
 
-def profile_blurb(values: dict[str, Any]) -> str:
+def profile_blurb(values: dict[str, Any], short: bool = False) -> str:
     """Honest per-backend cost/privacy line, derived from the profile's own
     endpoint (not a hardcoded list): a loopback base URL is a local model (free,
     private); anything else is a remote/cloud endpoint that sees the prompts and
     is usually billed. Shared by the session's /model confirm and the Settings
     Models tab, so both read the same with or without a live session."""
     url = (values.get("LLM_BASE_URL") or "").lower()
-    if any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0")):
+    local = any(h in url for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+    if short:  # for a table column
+        return "local · free · private" if local else "cloud · billed · data leaves"
+    if local:
         return "local · free · private (nothing leaves this host)"
     return "cloud API · sends prompts to a third party · usage-billed"
 

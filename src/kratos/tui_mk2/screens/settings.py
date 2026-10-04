@@ -25,6 +25,7 @@ from textual.widgets import DataTable, Input, Select, Static, TabbedContent, Tab
 
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.table_fit import fit_columns
 from kratos.tui_mk2.workers import ResilientWorkerHost
 
 # Provider presets: label -> (base_url, backend). "" base_url = fill it yourself.
@@ -405,6 +406,14 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         if self._session is not None:
             self._reload_session()
 
+    def _table_width(self, table: DataTable) -> int:
+        return table.size.width or max(self.app.size.width - 6, 40)
+
+    def on_resize(self, event) -> None:
+        # The tables fit their width; refit when it changes.
+        self.call_after_refresh(self._reload)
+        self.call_after_refresh(self._reload_approvals)
+
     def _active_tab(self) -> str:
         return self.query_one(TabbedContent).active
 
@@ -429,18 +438,29 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 
         self._candidates, self._current = _p.list_candidate_profiles(ENV_FILE_PATH)
         table = self.query_one("#ms-table", DataTable)
+        keep = table.cursor_row if table.row_count else None
         table.clear()
         if not self._candidates:
             self._set_status("No models configured yet — press 'a' to add one.", T.ATTENTION)
-        for c in self._candidates:
+        rows, active_row = [], None
+        for i, c in enumerate(self._candidates):
             active = self._current is not None and c.model == self._current.model
-            win_txt = _window_label(c.values)
-            table.add_row(
+            if active:
+                active_row = i
+            rows.append([
                 Text("●", style=T.SAFE) if active else Text(" "),
                 Text(c.model, style=T.TEXT_BRIGHT if active else T.TEXT_MUTED),
-                Text(R.profile_blurb(c.values), style=T.TEXT_DIM),
-                Text(win_txt, style=T.TEXT_MUTED),
-            )
+                Text(R.profile_blurb(c.values, short=True), style=T.TEXT_DIM),
+                Text(_window_label(c.values), style=T.TEXT_MUTED),
+            ])
+        # Fit the width the table has: a long model name or label used to push the
+        # context-window column off-screen behind a sideways scroll.
+        for row in fit_columns(rows, self._table_width(table), shrink=[(2, 14), (1, 18)],
+                               headers=(" ", "Model", "Where", "Context window")):
+            table.add_row(*row)
+        row = keep if keep is not None and 0 <= keep < len(rows) else active_row
+        if row is not None:
+            table.move_cursor(row=row)  # start on the model in use
 
     def _selected_profile(self):
         if not self._candidates:
@@ -515,19 +535,26 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 
         meta = _read_metadata(KEPT_TOOLS_DIR)
         ap = self.query_one("#ap-table", DataTable)
+        keep = ap.cursor_row if ap.row_count else None
         ap.clear()
         self._ap_names = []
+        rows = []
         for name in sorted(TOOL_REGISTRY):
             tool = TOOL_REGISTRY[name]
             is_kept = name in meta
-            ap.add_row(
+            rows.append([
                 Text(name, style=T.TEXT_MUTED),
                 Text("yours" if is_kept else "built-in", style=T.ACCENT if is_kept else T.TEXT_FAINTER),
                 Text("yes" if tool.requires_approval else "no",
                      style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM),
                 Text(R.tool_description(tool, meta.get(name)), style=T.TEXT_DIM),
-            )
+            ])
             self._ap_names.append((name, is_kept))
+        for row in fit_columns(rows, self._table_width(ap), shrink=[(3, 20), (0, 18)],
+                               headers=("Tool", "Kind", "Asks first", "What it does")):
+            ap.add_row(*row)
+        if keep is not None and 0 <= keep < len(rows):
+            ap.move_cursor(row=keep)
 
     def _set_ap_status(self, msg: str, style: str | None = None) -> None:
         self.query_one("#ap-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
