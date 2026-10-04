@@ -23,7 +23,7 @@ def _s(value, days, cov=100.0):
 
 
 def _verdict(a, b, da=1.0, db=1.0, cova=100.0, covb=100.0):
-    out = compare_measurements("ssh_failed_logins", [(_w("wB", 10 * DAY, db), _s(b, db, covb)),
+    out = compare_measurements("ssh_failed_logins", [(_w("wB", max(10.0, da) * DAY, db), _s(b, db, covb)),
                                                      (_w("wA", 0.0, da), _s(a, da, cova))])
     return out["pairs"][0], out
 
@@ -72,3 +72,31 @@ def test_trend_claims_must_match_the_compare_verdict():
     assert ok == [] and claims[0]["verified"]
     none, _ = verify_claims(ctx, "x", [{"kind": "trend", "comparison": "c9", "direction": "increase"}])
     assert any("must cite a compare_periods result" in p for p in none)
+
+
+def test_overlapping_periods_are_not_compared():
+    """Seen live: 'this week so far' (Mon -> now) vs 'the last 7 days' overlap; the same
+    events were counted in both and reported as 'a real difference'."""
+    out = compare_measurements("ssh_failed_logins", [(_w("w1", 2 * DAY, 6.4, "this week so far"), _s(120, 6.4)),
+                                                     (_w("w2", 1.4 * DAY, 7, "last 7 days"), _s(377, 7))])
+    pair = out["pairs"][0]
+    assert pair["verdict"] == "not_comparable"
+    assert "overlap" in pair["reasons"][0] and "counted in both" in pair["reasons"][0]
+
+
+def test_adjacent_periods_are_still_compared():
+    out = compare_measurements("ssh_failed_logins", [(_w("w1", 7 * DAY, 7), _s(100, 7)),
+                                                     (_w("w2", 0.0, 7), _s(10, 7))])
+    assert out["pairs"][0]["verdict"] == "increase"
+
+
+def test_this_week_versus_last_week_means_two_calendar_weeks():
+    from datetime import datetime
+
+    from kratos.timewin.phrases import find_time_phrases
+
+    found = find_time_phrases("more failed logins this week than last week?", datetime(2026, 10, 4, 9, 0))
+    assert [p.intent for p in found] == [{"kind": "calendar", "unit": "week", "offset": 0, "to_now": True},
+                                         {"kind": "calendar", "unit": "week", "offset": -1}]
+    alone = find_time_phrases("any failed logins last week?", datetime(2026, 10, 4, 9, 0))
+    assert alone[0].intent == {"kind": "rolling", "amount": 7, "unit": "day"}  # the documented default

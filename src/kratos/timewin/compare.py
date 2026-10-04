@@ -80,7 +80,10 @@ def compare_measurements(metric: str, windows: list[tuple[Any, dict[str, Any]]])
     """`windows`: [(TimeWindow, measurement_summary + coverage info)] in any order.
     Each summary needs metrics[metric], coverage_percent and covered_seconds."""
     rows = []
+    spans: list[tuple[float, float]] = []
     for w, summ in sorted(windows, key=lambda x: x[0].start_utc):
+        end = getattr(w, "end_utc", None)
+        spans.append((float(w.start_utc), float(end if end is not None else w.start_utc + getattr(w, "seconds", 0.0))))
         value = int(summ["metrics"][metric])
         covered = float(summ["covered_seconds"])
         rows.append({
@@ -88,5 +91,14 @@ def compare_measurements(metric: str, windows: list[tuple[Any, dict[str, Any]]])
             "coverage_percent": float(summ["coverage_percent"]), "covered_seconds": covered,
             "rate_per_day": round(value / (covered / 86400.0), 3) if covered > 0 else None,
         })
-    pairs = [pair_verdict(a, b) for a, b in zip(rows, rows[1:])]
+    pairs = []
+    for i, (a, b) in enumerate(zip(rows, rows[1:])):
+        # Overlapping periods count the same events twice, so their difference means
+        # nothing (seen live: 'this week so far' vs 'the last 7 days', a '65% decrease').
+        overlap = min(spans[i][1], spans[i + 1][1]) - max(spans[i][0], spans[i + 1][0])
+        if overlap > 60:
+            pairs.append({"from": a["window"], "to": b["window"], "verdict": "not_comparable", "reasons": [
+                f"the periods overlap by {overlap / 86400:.1f} days, so the same events are counted in both"]})
+        else:
+            pairs.append(pair_verdict(a, b))
     return {"metric": metric, "windows": rows, "pairs": pairs}

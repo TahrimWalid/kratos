@@ -230,7 +230,27 @@ def find_time_phrases(text: str, now_local: datetime, date_order: str | None = N
         pm.text, pm.start, pm.end, pm.pattern = m.group(0).strip(), m.start(), m.end(), kind
         taken.append((m.start(), m.end()))
         found.append(pm)
+    _pair_calendar_weeks(found)
     return sorted(found, key=lambda p: p.start)
+
+
+_LAST_7_DAYS = {"kind": "rolling", "amount": 7, "unit": "day"}
+
+
+def _pair_calendar_weeks(found: list[PhraseMatch]) -> None:
+    """'this week ... last week' compares two calendar weeks. Alone, 'last week' means
+    the last 7 days, but next to 'this week' (Monday to now) that rolling window would
+    OVERLAP it and make the comparison meaningless (seen live: a '65% decrease'
+    between overlapping periods). So, paired with 'this week', 'last week' is the
+    previous calendar week."""
+    has_this_week = any(p.pattern == "this_period" and (p.intent or {}).get("unit") == "week"
+                        and (p.intent or {}).get("offset") == 0 for p in found)
+    if not has_this_week:
+        return
+    for p in found:
+        if p.pattern == "rolling_1" and p.intent == _LAST_7_DAYS and "week" in p.text.lower():
+            p.intent = {"kind": "calendar", "unit": "week", "offset": -1}
+            p.note = "'last week' taken as the previous calendar week (Mon-Sun), to compare with 'this week'"
 
 
 def _interpret(kind: str, m: re.Match[str], now: datetime, date_order: str | None) -> PhraseMatch | None:
