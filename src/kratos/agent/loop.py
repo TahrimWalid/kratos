@@ -254,9 +254,9 @@ def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
             claims, end = decoder.raw_decode(text, start)
         except ValueError:
             continue
-        if not (isinstance(claims, list) and claims
+        if not (isinstance(claims, list)
                 and all(isinstance(c, dict) and c.get("kind") for c in claims)):
-            continue
+            continue  # an empty list ("Claims: []") is stripped too -- it's still JSON in the prose
         rest = text[end:].lstrip()
         if rest.startswith("```"):
             rest = rest[3:]
@@ -266,6 +266,12 @@ def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
         return head.rstrip(" \t\n-—:(`"), claims
     return text, None
 
+
+# Guard 10: an /investigate-host answer calls Kratos's own machine "the target"
+# (seen live despite the prompt saying not to) -- the user then can't tell which
+# machine it's about. Asked once to reword; never rewritten silently.
+_HOST_AS_TARGET_RE = re.compile(r"\bthe (?:monitored )?target(?: device| system| machine| host)?\b|\btarget device\b",
+                                re.IGNORECASE)
 
 # Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
 # yesterday); an answer must say so instead of inferring that state from other data.
@@ -1174,6 +1180,8 @@ def _run_agent_loop(
     state_no_records: dict[str, str] = {}
     no_record_reject_count = 0
     MAX_NO_RECORD_REJECTIONS = 1
+    host_wording_reject_count = 0
+    MAX_HOST_WORDING_REJECTIONS = 1
     tool_proposals_made = 0
     # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
     tool_claim_reject_count = 0
@@ -1490,6 +1498,12 @@ def _run_agent_loop(
                 and no_record_reject_count < MAX_NO_RECORD_REJECTIONS
             )
 
+            # --- Guard 10: in host mode, Kratos's own machine is not "the target" ---
+            guard10_can_reject = (
+                _is_host_mode() and bool(_HOST_AS_TARGET_RE.search(final_answer_text))
+                and not is_final_iteration and host_wording_reject_count < MAX_HOST_WORDING_REJECTIONS
+            )
+
             corrections: list[str] = []
             violations: list[str] = []
 
@@ -1590,6 +1604,15 @@ def _run_agent_loop(
                     "'none' needs 100% coverage of that window (otherwise say which part is unknown), and every "
                     "period you mention must be a window you queried. If a period was not measured, run "
                     "measure_auth_activity for it first."
+                )
+
+            if guard10_can_reject:
+                host_wording_reject_count += 1
+                violations.append("host_called_target")
+                corrections.append(
+                    "CHECK (wording): this investigation is about KRATOS'S OWN MACHINE, not a monitored "
+                    "target. Reword the answer to say \"this Kratos machine\" instead of \"the target\", "
+                    "and send it again (same facts)."
                 )
 
             if guard9_can_reject:
