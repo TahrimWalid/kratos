@@ -3125,6 +3125,25 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._ensure_listener_for_reads()
             self._probe_target_worker()
             return
+        # The same path a new session takes: a machine Kratos hasn't set up gets
+        # the guided setup screen (it used to get a long checklist dumped into the
+        # conversation and a raw SSH error); a known one gets the one-line note.
+        from kratos.tui_mk2 import target_memory as TM
+        from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
+
+        state, info = TM.setup_state(self._data_dir, host)
+        if state == "new" and needs_onboarding(host):
+            await self.app.push_screen_wait(OnboardTargetScreen(self._data_dir, host))
+            state, info = TM.setup_state(self._data_dir, host)
+            if state in ("ready", "issues", "linked"):
+                self._emit(R.note_line(TM.setup_note(host, state, info)))
+            else:
+                self._emit(R.note_line(f"{host} isn't set up yet — /target verify checks it again, "
+                                       "or /target to try another machine."))
+            return
+        if state in ("ready", "issues"):
+            self._emit(R.note_line(TM.setup_note(host, state, info)))
+            return
         self._setup_target_worker(host)
 
     async def _target_link_flow(self, unlink: bool = False) -> None:

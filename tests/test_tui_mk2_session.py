@@ -1363,3 +1363,50 @@ def test_interrupt_says_so_once_and_spinner_reads_stopping(tmp_path, monkeypatch
     spinner, text = asyncio.run(_run())
     assert text.count("Stopping after the current step") == 1
     assert "stopping…" in spinner
+
+
+def _target_flow_screens(tmp_path, monkeypatch, host, known: bool):
+    from kratos.tui_mk2 import target_memory as TM
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    if known:
+        TM.record_check(tmp_path, host, "ssh", [{"check": "ssh_reachable", "status": "PASS", "detail": ""}])
+    pushed: list = []
+    checklist: list = []
+    monkeypatch.setattr(screen, "_setup_target_worker", lambda h: checklist.append(h))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            async def _wait(scr):
+                pushed.append(type(scr).__name__)
+                return None
+
+            monkeypatch.setattr(app, "push_screen_wait", _wait)
+            screen._apply_target([host])
+            for _ in range(15):
+                await pilot.pause()
+            log = screen.query_one("#transcript")
+            return "\n".join("".join(seg.text for seg in strip) for strip in log.lines)
+
+    try:
+        text = asyncio.run(_run())
+    finally:
+        from kratos import kratos_config as kc
+        kc.set_active_target(None)
+    return pushed, checklist, text
+
+
+def test_target_a_new_machine_opens_the_guided_setup(tmp_path, monkeypatch):
+    """/target <new host> dumped a 40-line checklist into the conversation and a raw SSH
+    error; it now opens the same setup screen a new session uses."""
+    pushed, checklist, _text = _target_flow_screens(tmp_path, monkeypatch, "203.0.113.77", known=False)
+    assert "OnboardTargetScreen" in pushed and checklist == []
+
+
+def test_target_a_known_machine_just_says_it_is_set_up(tmp_path, monkeypatch):
+    pushed, checklist, text = _target_flow_screens(tmp_path, monkeypatch, "203.0.113.78", known=True)
+    assert "OnboardTargetScreen" not in pushed and checklist == []
+    assert "already set up" in text
