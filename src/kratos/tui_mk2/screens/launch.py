@@ -267,7 +267,12 @@ class LaunchScreen(ResilientWorkerHost, Screen):
 
     @on(Input.Submitted, "#filter")
     def _filter_submitted(self, event: Input.Submitted) -> None:
-        # Enter in the filter jumps into the results so ↑↓ + Enter can pick one.
+        # One match: Enter opens it. Several: Enter jumps into the results so
+        # ↑↓ + Enter can pick one.
+        sessions = [d["session"] for d in self._display if d["kind"] == "session"]
+        if self._filter.strip() and len(sessions) == 1:
+            self._resume_flow(sessions[0])
+            return
         self.query_one("#sessions", DataTable).focus()
 
     # --- actions ---------------------------------------------------------

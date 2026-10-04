@@ -184,7 +184,8 @@ kratos
 > scheduled runs use. `KRATOS_SSH_HOST` overrides it for a single command.
 
 Every later launch opens on your past sessions, newest first and grouped by
-day. Type to filter them, press Enter to resume one, or `n` for a new session:
+day. Press Enter to resume the highlighted one, `n` for a new session, or `/` to
+filter them by name, machine or last question:
 
 <p align="center">
   <img src="images/picker.svg" width="840" alt="The session picker: past sessions grouped by day, with a filter box">

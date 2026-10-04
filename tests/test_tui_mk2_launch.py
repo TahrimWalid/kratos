@@ -210,3 +210,34 @@ def test_id_column_is_dropped_on_a_narrow_terminal_and_returns_when_wide(tmp_pat
     assert seen["name_cell"].startswith("a fairly descriptive session")  # ~12 chars with the id column
     assert "id" in seen["wide"]
     assert seen["resume_title"] == sid
+
+
+def test_enter_in_filter_opens_a_single_match_and_lists_several(tmp_path, monkeypatch):
+    """Typing a filter and pressing Enter opens the session when exactly one matches;
+    with several it moves into the list so ↑↓ + Enter picks one."""
+    store = SessionStore(tmp_path / "kratos.db")
+    for name in ("alpha", "beta one", "beta two"):
+        store.rename_session(store.create_session(["10.0.0.1"], "m"), name)
+    screen = LaunchScreen(store, tmp_path)
+    opened: list = []
+    monkeypatch.setattr(screen, "_resume_flow", lambda s: opened.append(s["name"]))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for q, expect_open in (("alpha", True), ("beta", False)):
+                await pilot.press("slash")
+                inp = screen.query_one("#filter")
+                inp.value = ""
+                for ch in q:
+                    await pilot.press(ch)
+                await pilot.press("enter")
+                await pilot.pause()
+                if expect_open:
+                    assert opened == ["alpha"]
+                else:
+                    assert opened == ["alpha"]  # nothing new opened
+                    assert app.focused is screen.query_one("#sessions")
+
+    asyncio.run(_run())
