@@ -45,8 +45,10 @@ CHECK_LABELS: dict[str, str] = {
     "sudo_firewall_status": "Read the firewall status",
     "firewall_status": "Read the firewall status",
     "sudo_fail2ban": "Read fail2ban's status",
+    "fail2ban_status": "Read fail2ban's status",
     "yara_installed": "YARA installed (malware scans)",
     "lsof_installed": "lsof installed (open files)",
+    "yara_rules": "YARA rules on the box",
     "target_timezone": "Clock and timezone",
 }
 

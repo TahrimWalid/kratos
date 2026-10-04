@@ -191,6 +191,23 @@ def test_every_probe_check_has_a_plain_label():
 
     for check_id in ("ssh_reachable", "journalctl_access", "sudo_sshd_config", "sudo_firewall_status",
                      "sudo_fail2ban", "yara_installed", "lsof_installed", "target_timezone",
-                     "subagent_reachable", "agent_privilege", "sshd_config", "firewall_status"):
+                     "subagent_reachable", "agent_privilege", "sshd_config", "firewall_status", "fail2ban_status"):
         assert check_id in CHECK_LABELS and "_" not in check_label(check_id)
     assert check_label("some_new_check") == "Some new check"
+
+
+def test_every_check_the_probes_can_report_has_a_label():
+    """Read the ids straight from the SSH probe script and the sub-agent's capabilities
+    read, so a new check can't appear on screen as a raw id."""
+    import re
+    from pathlib import Path
+
+    import kratos.adapters.ssh_remote as ssh_remote
+    import kratos.subagent.reads as reads
+    from kratos.adapters.target_setup import CHECK_LABELS
+
+    agent_ids = set(re.findall(r'add\(\s*"([a-z0-9_]+)"', Path(reads.__file__).read_text()))
+    ssh_ids = set(re.findall(r"printf '([a-z0-9_]+)\\t", Path(ssh_remote.__file__).read_text()))
+    assert {"fail2ban_status", "agent_privilege"} <= agent_ids and {"ssh_reachable", "sudo_fail2ban"} <= ssh_ids
+    ids = agent_ids | ssh_ids | {"subagent_reachable"}
+    assert sorted(i for i in ids if i not in CHECK_LABELS) == []
