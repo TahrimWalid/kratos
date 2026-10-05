@@ -97,6 +97,9 @@ def _sanitize_ceiling_report(report: dict[str, Any]) -> dict[str, Any]:
         "fingerprint": str(report.get("fingerprint") or "")[:64],
         "local_commands": _strs(report.get("local_commands"), C.MAX_LOCAL_COMMANDS),
         "local_problems": _strs(report.get("local_problems"), 50),
+        # None when the agent is too old to say
+        "execution_enabled": report.get("execution_enabled") if isinstance(report.get("execution_enabled"), bool) else None,
+        "transport_trusted": report.get("transport_trusted") if isinstance(report.get("transport_trusted"), bool) else None,
     }
 
 

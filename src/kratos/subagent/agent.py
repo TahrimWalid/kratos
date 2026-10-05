@@ -110,7 +110,7 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.3.3"
+AGENT_VERSION = "0.3.4"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -307,6 +307,10 @@ class SubAgent:
             "fingerprint": ceiling.fingerprint(),
             "local_commands": [s.description for s in ceiling.shapes if s.local],
             "local_problems": problems,
+            # So Kratos can say up front that a run will be refused, instead of
+            # asking for typed EXECUTE first (seen in the fix-channel recording).
+            "execution_enabled": bool(self.execution_enabled),
+            "transport_trusted": self._transport_trusted(),
         }
 
     def _transport_trusted(self) -> bool:

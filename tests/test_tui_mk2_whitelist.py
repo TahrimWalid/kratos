@@ -837,3 +837,52 @@ def test_a_fast_machine_clock_cannot_make_an_old_snapshot_look_new():
     assert "from before your last run" in " ".join(t.plain for t in telemetry_lines(early, no_agent_times))
     late = dict(early, received_at=datetime.fromtimestamp(kratos_now + 45, timezone.utc).isoformat())
     assert "ufw is now active" in " ".join(t.plain for t in telemetry_lines(late, no_agent_times))
+
+
+def test_an_agent_with_execution_off_is_called_out_before_any_execute(tmp_path, monkeypatch):
+    """Seen in the fix-channel recording: consent given, banner said DIRECT EXECUTION
+    ON, the user typed EXECUTE -- and only then did the machine's agent refuse,
+    because it was started with execution off. The agent now reports that, so the
+    screen says it up front and shows the copy-it-yourself approval instead."""
+    monkeypatch.setattr(wl_mod, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(wl_mod, "_POLL_TIMEOUT_SECONDS", 0.05)
+    from kratos.tui_mk2.modals import TypedExecuteModal
+
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.set_execution_opt_in(tid, True)
+    sa.touch_last_seen(tid)
+    wl.record_agent_hello(tid, agent_version="0.3.4", ceiling={"execution_enabled": False, "transport_trusted": True})
+    screen = WhitelistScreen(tmp_path)
+    shown = []
+
+    async def fake_push_screen_wait(modal):
+        shown.append(modal)
+        return "sshd" if len(shown) == 1 else ("8.8.8.8" if len(shown) == 2 else True)
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            banner = str(screen.query_one("#wl-banner").render())
+            app.push_screen_wait = fake_push_screen_wait
+            screen.action_activate_selected()
+            for _ in range(10):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+            return banner
+
+    banner = asyncio.run(run())
+    assert "started with execution off" in banner
+    gate = next(m for m in shown if isinstance(m, TypedExecuteModal))
+    assert gate._can_execute is False and "started with execution off" in gate._why_not
+    assert wl.list_pending_dispatch_requests(tid) == []
+
+
+def test_agent_switch_report_is_stored_as_booleans_only(tmp_path):
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.record_agent_hello(tid, agent_version="0.3.4",
+                          ceiling={"execution_enabled": "yes", "transport_trusted": False})
+    report = wl.get_agent_state(tid)["ceiling"]
+    assert report["execution_enabled"] is None and report["transport_trusted"] is False

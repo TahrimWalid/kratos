@@ -795,12 +795,9 @@ What has to be true before anything runs:
 
 1. The agent on that machine was started with execution switched on. That's a
    setting on the machine itself; the installer never sets it. The machine has
-   the last word: if its agent wasn't started with execution on, it refuses the
-   dispatch even after you've consented and typed `EXECUTE` in Kratos.
-
-<p align="center">
-  <img src="images/fix_exec_off.svg" width="820" alt="A dispatch refused by the machine's own agent: consent was given in Kratos and EXECUTE typed, but the agent reports 'execution is not enabled on this agent (local opt-in required)', so nothing ran">
-</p>
+   the last word: its agent refuses every run unless it was started with
+   execution on. It tells Kratos which way it's set, so `/whitelist` warns you up
+   front and its approval screen only shows the command to run yourself.
 
 2. You've given consent for that machine in `/whitelist` (it explains the risk
    first, in plain language, and is reversible any time).

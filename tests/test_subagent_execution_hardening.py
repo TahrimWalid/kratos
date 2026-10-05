@@ -366,3 +366,12 @@ def test_stop_ends_a_live_connection_promptly(tmp_path):
             await server.close()
 
     asyncio.run(run())
+
+
+def test_the_agent_reports_its_execution_switch_and_transport(tmp_path):
+    on = _agent(tmp_path, execution_enabled=True).ceiling_report()
+    assert on["execution_enabled"] is True and on["transport_trusted"] is True     # loopback core
+    off = _agent(tmp_path / "b", execution_enabled=False)
+    off._peer_ip = "192.0.2.10"                                                     # plain network
+    report = off.ceiling_report()
+    assert report["execution_enabled"] is False and report["transport_trusted"] is False

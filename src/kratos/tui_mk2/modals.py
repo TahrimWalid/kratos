@@ -352,7 +352,7 @@ class TypedExecuteModal(ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
 
     def __init__(self, action_id: str, effect: str, reversibility: str, blast_radius: str,
-                 tier: str, argv_preview: str, can_execute: bool) -> None:
+                 tier: str, argv_preview: str, can_execute: bool, why_not: str | None = None) -> None:
         super().__init__()
         self._action_id = action_id
         self._effect = effect
@@ -361,6 +361,7 @@ class TypedExecuteModal(ModalScreen[bool]):
         self._tier = tier
         self._argv_preview = argv_preview
         self._can_execute = can_execute
+        self._why_not = why_not
 
     def compose(self) -> ComposeResult:
         tier_color = {"low": T.SAFE, "medium": T.ATTENTION, "high": T.CRITICAL}.get(self._tier, T.TEXT)
@@ -388,8 +389,9 @@ class TypedExecuteModal(ModalScreen[bool]):
                 yield Static(Text("anything else, or esc, cancels", style=T.TEXT_DIM))
             else:
                 yield Static(Text(
-                    "This target hasn't opted into direct execution (or isn't reachable right now) -- "
-                    "copy the command above and run it yourself.", style=T.ATTENTION))
+                    (self._why_not or "This target hasn't opted into direct execution (or isn't reachable "
+                                       "right now)") + " -- copy the command above and run it yourself.",
+                    style=T.ATTENTION))
                 yield Static(Text("esc close", style=T.TEXT_DIM))
 
     def on_mount(self) -> None:

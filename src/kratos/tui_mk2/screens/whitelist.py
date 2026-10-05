@@ -256,6 +256,10 @@ class WhitelistScreen(Screen):
         if version and _version_tuple(version) < _MIN_EXEC_AGENT_VERSION:
             banner.append(f"\n⚠ this target runs sub-agent {version}, which is too old to execute anything -- "
                           "reinstall it from /subagent.", style=f"bold {T.ATTENTION}")
+        refusal = self._agent_refusal() if opted_in else None
+        if refusal:
+            banner.append(f"\n⚠ {refusal} -- approving a fix only shows you the command to run yourself.",
+                          style=f"bold {T.ATTENTION}")
         if agent.get("rejected"):
             banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action(s) -- press c for why.",
                           style=T.ATTENTION)
@@ -265,8 +269,23 @@ class WhitelistScreen(Screen):
                           "select one and press i.", style=T.ATTENTION)
         self.query_one("#wl-banner", Static).update(banner)
 
+    def _agent_refusal(self) -> str | None:
+        """Why this machine's own agent will refuse every run, from what it last
+        reported -- or None when it will accept (or is too old to say)."""
+        if self._target_id is None:
+            return None
+        report = (self._wl_store.get_agent_state(self._target_id) or {}).get("ceiling") or {}
+        if report.get("execution_enabled") is False:
+            return "This machine's agent was started with execution off, so it refuses every run"
+        if report.get("transport_trusted") is False:
+            return ("This machine's agent won't run fixes over this network path (not loopback or "
+                    "Tailscale; the link has no encryption of its own)")
+        return None
+
     def _can_execute(self) -> bool:
         if self._target_id is None:
+            return False
+        if self._agent_refusal():
             return False
         if not self._wl_store.get_execution_opt_in(self._target_id):
             return False
@@ -359,7 +378,7 @@ class WhitelistScreen(Screen):
         can_execute = self._can_execute()
         confirmed = await self.app.push_screen_wait(
             TypedExecuteModal(spec.id, spec.effect, spec.reversibility, spec.blast_radius, tier,
-                               " ".join(argv), can_execute)
+                               " ".join(argv), can_execute, why_not=self._agent_refusal())
         )
         if not can_execute:
             return  # informational gate only -- nothing to dispatch
@@ -523,7 +542,7 @@ class WhitelistScreen(Screen):
         can_execute = self._can_execute()
         confirmed = await self.app.push_screen_wait(
             TypedExecuteModal(spec.id, spec.effect, spec.reversibility, spec.blast_radius, tier,
-                               " ".join(argv), can_execute)
+                               " ".join(argv), can_execute, why_not=self._agent_refusal())
         )
         if not can_execute or not confirmed:
             return
