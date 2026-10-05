@@ -30,6 +30,8 @@ before it is saved -- the agent checks it again regardless.
 from __future__ import annotations
 
 import asyncio
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -448,13 +450,13 @@ class WhitelistScreen(Screen):
         )
         self._log(Text(f"{icon} {spec.id}: {status}  {detail}", style=f"bold {color}"))
         if status == "ok" and result.get("stdout_tail"):
-            self._log(Text(result["stdout_tail"][-2000:], style=T.TEXT_DIM))
+            self._log(Text("output: " + result["stdout_tail"][-2000:].strip(), style=T.TEXT_DIM))
 
         if status == "ok" and tier in ("medium", "high"):
-            self._last_dispatch = {"spec": spec, "values": values, "tier": tier}
+            self._last_dispatch = {"spec": spec, "values": values, "tier": tier, "at": time.time()}
             note = Text(
-                "The next capability-1 telemetry cycle will reflect this change -- press "
-                "t to check the latest observed state now", style=T.TEXT_FAINT)
+                "The machine's next telemetry (about every 30 seconds) will show this change -- "
+                "press t to check", style=T.TEXT_FAINT)
             if spec.inverse_id:
                 note.append(f", or r to roll back via {spec.inverse_id}.", style=T.TEXT_FAINT)
             else:
@@ -471,16 +473,8 @@ class WhitelistScreen(Screen):
         if latest is None:
             self._log(Text("No telemetry received from this target yet.", style=T.TEXT_DIM))
             return
-        body = Table(show_header=False, box=None)
-        body.add_column(style=T.TEXT_DIM, justify="right")
-        body.add_column(style=T.TEXT)
-        body.add_row("collected_at", str(latest.get("collected_at")))
-        host = (latest["payload"].get("host") or {})
-        services = (latest["payload"].get("services") or {})
-        body.add_row("uptime_seconds", str(host.get("uptime_seconds")))
-        body.add_row("services", str(services)[:300])
-        self._log(Text("Latest observed state (real telemetry, not inferred):", style=f"bold {T.ACCENT}"))
-        self._log(body)
+        for line in telemetry_lines(latest, self._last_dispatch):
+            self._log(line)
 
     def action_rollback(self) -> None:
         if self._last_dispatch is None:
@@ -878,3 +872,49 @@ class WhitelistScreen(Screen):
             return
         self._log(Text(f"✓ Updated {row['label']}.", style=T.SAFE))
         self._refresh()
+
+
+def _epoch(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def telemetry_lines(latest: dict[str, Any], last_dispatch: dict[str, Any] | None) -> list[Text]:
+    """What `t` shows, saying plainly what the snapshot can and can't confirm.
+    Seen in the fix-channel recording: the snapshot shown after 'enable ufw' was
+    taken BEFORE that run and didn't include ufw at all, yet was labelled the
+    latest observed state."""
+    payload = latest.get("payload") or {}
+    services = payload.get("services") or {}
+    if isinstance(services.get("services"), dict):  # the agent nests it
+        services = services["services"]
+    collected = latest.get("collected_at")
+    lines = [Text(f"Latest telemetry from this machine (collected {collected}):", style=f"bold {T.ACCENT}")]
+    uptime = (payload.get("host") or {}).get("uptime_seconds")
+    if uptime is not None:
+        lines.append(Text(f"  uptime: {uptime} seconds", style=T.TEXT))
+    installed = {k: v for k, v in services.items() if v != "not-installed"}
+    if installed:
+        lines.append(Text("  services: " + ", ".join(f"{k} {v}" for k, v in sorted(installed.items())),
+                          style=T.TEXT))
+    if not last_dispatch:
+        return lines
+    at, snap = last_dispatch.get("at"), _epoch(collected)
+    if at is not None and snap is not None and snap < at:
+        lines.append(Text("  ⚠ This snapshot is from before your last run, so it can't show its effect yet. "
+                          "The machine sends a new one about every 30 seconds -- press t again shortly.",
+                          style=T.ATTENTION))
+        return lines
+    unit = (last_dispatch.get("values") or {}).get("unit")
+    if unit:
+        state = services.get(unit)
+        if state is None:
+            lines.append(Text(f"  ⚠ This machine's telemetry doesn't report {unit}, so it can't confirm the change. "
+                              "Update its agent (g in /subagent) to include it.", style=T.ATTENTION))
+        else:
+            lines.append(Text(f"  {unit} is now {state} (observed after your run).", style=f"bold {T.SAFE}"))
+    return lines

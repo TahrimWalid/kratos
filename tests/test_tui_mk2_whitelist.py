@@ -451,7 +451,7 @@ def test_check_telemetry_shows_the_real_latest_snapshot(tmp_path):
             await pilot.pause()
             texts = " ".join(_log_texts(screen))
             assert "4242" in texts
-            assert "Latest observed state" in texts
+            assert "Latest telemetry from this machine" in texts and "fail2ban active" in texts
 
     asyncio.run(run())
 
@@ -791,3 +791,26 @@ def test_consent_names_the_target_not_its_internal_id(tmp_path, monkeypatch):
     asyncio.run(run())
     assert isinstance(seen[0], ExecutionConsentModal)
     assert seen[0]._target_label == "web-01" and tid not in seen[0]._target_label
+
+
+def test_telemetry_says_when_a_snapshot_predates_the_run_or_misses_the_unit():
+    """Seen in the fix-channel recording: after 'enable ufw', `t` showed a snapshot
+    taken BEFORE the run, without ufw in it, as the latest observed state."""
+    from kratos.tui_mk2.screens.whitelist import telemetry_lines
+
+    run_at = 1_791_000_000.0
+    dispatch = {"values": {"unit": "ufw"}, "at": run_at}
+    before = {"collected_at": "2026-10-05T01:13:43+00:00",
+              "payload": {"services": {"services": {"ssh": "active", "fail2ban": "active"}}}}
+    before["collected_at"] = run_at - 9
+    text = " ".join(t.plain for t in telemetry_lines(before, dispatch))
+    assert "from before your last run" in text and "ufw is now" not in text
+
+    after_missing = {"collected_at": run_at + 20, "payload": {"services": {"services": {"ssh": "active"}}}}
+    text = " ".join(t.plain for t in telemetry_lines(after_missing, dispatch))
+    assert "doesn't report ufw" in text
+
+    after = {"collected_at": run_at + 20,
+             "payload": {"services": {"services": {"ssh": "active", "ufw": "active", "cups": "not-installed"}}}}
+    text = " ".join(t.plain for t in telemetry_lines(after, dispatch))
+    assert "ufw is now active" in text and "cups" not in text

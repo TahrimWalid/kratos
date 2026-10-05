@@ -69,7 +69,7 @@ Everywhere a decision has real consequences — running a command on the Kratos 
 The whole flow, off by default throughout — with execution off, `EXECUTE` only shows you the command to run yourself; once consented, an approved fix runs through the sub-agent, reports its result, and a reversible change can be rolled back with one keypress:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/fix_channel.gif" width="840" alt="The experimental fix channel on one box: with execution off the approval screen only shows the command to copy; after consenting, a fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, telemetry confirms it, one keypress rolls it back, and a private IP is rejected">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/fix_channel.gif" width="840" alt="The experimental fix channel on one box: with execution off the approval screen only shows the command to copy; after consenting, a fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, one keypress rolls it back, and a private IP is rejected">
 </p>
 
 ---

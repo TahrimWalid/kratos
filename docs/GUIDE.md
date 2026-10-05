@@ -788,7 +788,7 @@ Here is the whole thing on one machine — turning it on, running a fix, and und
 it. Until it's turned on, `EXECUTE` only shows you the command to run yourself:
 
 <p align="center">
-  <img src="images/fix_channel.gif" width="840" alt="The fix channel end to end: with execution off, the approval screen only shows the command to copy; after consenting, a real fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, telemetry confirms it, and one keypress rolls it back; a private IP is rejected">
+  <img src="images/fix_channel.gif" width="840" alt="The fix channel end to end: with execution off, the approval screen only shows the command to copy; after consenting, a real fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, and one keypress rolls it back; a private IP is rejected">
 </p>
 
 What has to be true before anything runs:
@@ -811,15 +811,19 @@ What has to be true before anything runs:
    Every field on that screen — what it does, how it's undone, what it can affect —
    is read from the trusted action definition, never written by the model. After an
    investigation recommends a fix that matches an allowlisted action, `/run-fix`
-   opens that same confirmation, pre-filled:
+   opens that same confirmation, pre-filled. (In this picture the recommended ban was
+   supplied for the demo: the lab's attacker has a private address, which the
+   allowlist rightly refuses to ban.)
 
 <p align="center">
   <img src="images/fix_runfix.svg" width="820" alt="/run-fix opening the typed-EXECUTE approval for a recommended fail2ban ban that matches an allowlisted action, with the exact command shown and EXECUTE still required">
 </p>
 
-After a reversible change runs, `t` shows the machine's latest real telemetry and —
-for a medium- or high-risk action — `r` rolls it back through the matching inverse
-action, behind the same typed-`EXECUTE` gate.
+After a reversible change runs, `t` shows the machine's latest telemetry and whether
+it confirms the change: the machine sends a new snapshot about every 30 seconds, and
+Kratos tells you when the one it has is from before your run. For a medium- or
+high-risk action, `r` rolls the change back through the matching inverse action,
+behind the same typed-`EXECUTE` gate.
 
 **This channel has not yet had its independent security review. Don't turn it on
 for a machine you care about.** Leaving it off costs you nothing: every

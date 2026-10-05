@@ -37,8 +37,9 @@ import time
 from typing import Any
 
 try:  # bundle layout (sibling module)
-    from . import reads
+    from . import ceiling, reads
 except ImportError:  # pragma: no cover -- `python3 subagent/agent.py` run directly
+    import ceiling  # type: ignore[no-redef]
     import reads  # type: ignore[no-redef]
 
 DEFAULT_WATCH_FILES = [
@@ -48,6 +49,17 @@ DEFAULT_WATCH_FILES = [
     "/etc/sudoers",
 ]
 DEFAULT_SERVICE_WATCHLIST = ["ssh", "sshd", "fail2ban", "cron"]
+
+
+def default_service_watchlist() -> list[str]:
+    """The base services plus every unit the shipped execution ceiling may turn on
+    or off, so telemetry can show the state of a unit after a fix changed it.
+    (Before, `ufw` was never watched, so a `ufw` change could not be confirmed.)"""
+    units = list(DEFAULT_SERVICE_WATCHLIST)
+    for unit in (*ceiling.ENABLE_UNITS, *ceiling.DISABLE_UNITS):
+        if unit not in units:
+            units.append(unit)
+    return units
 _CMD_TIMEOUT_SECONDS = 8
 _CMD_OUTPUT_CAP = 1024 * 1024
 
@@ -128,10 +140,30 @@ def collect_process_count() -> dict[str, Any]:
     return {"ok": True, "process_count": len(lines)}
 
 
-def collect_service_states(services: list[str] | None = None) -> dict[str, Any]:
-    services = DEFAULT_SERVICE_WATCHLIST if services is None else services
+def _parse_systemctl_show(stdout: str, names: list[str]) -> dict[str, str] | None:
+    """`systemctl show -p LoadState -p ActiveState a b c` prints one block per unit,
+    in argument order, separated by blank lines. None if the shape doesn't match."""
+    blocks = [b for b in stdout.strip().split("\n\n")] if stdout.strip() else []
+    if len(blocks) != len(names):
+        return None
     states: dict[str, str] = {}
-    for name in services:
+    for name, block in zip(names, blocks):
+        props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if "ActiveState" not in props:
+            return None
+        states[name] = "not-installed" if props.get("LoadState") == "not-found" else props["ActiveState"]
+    return states
+
+
+def collect_service_states(services: list[str] | None = None) -> dict[str, Any]:
+    services = default_service_watchlist() if services is None else services
+    if services:
+        r = _run(["systemctl", "show", "-p", "LoadState", "-p", "ActiveState", *services])
+        parsed = _parse_systemctl_show(r.get("stdout") or "", services) if r.get("ok") else None
+        if parsed is not None:
+            return {"services": parsed}
+    states: dict[str, str] = {}
+    for name in services:  # no systemd show (or an odd reply): one check per unit, as before
         r = _run(["systemctl", "is-active", name])
         states[name] = (r.get("stdout") or r.get("error") or "unknown").strip()
     return {"services": states}

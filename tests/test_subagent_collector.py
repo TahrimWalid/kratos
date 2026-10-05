@@ -74,3 +74,34 @@ def test_run_fixed_command_missing_binary_soft_fails():
     result = collector._run(["definitely-not-a-real-binary-xyz-12345"])
     assert result["ok"] is False
     assert "not installed" in result["error"]
+
+
+def test_watchlist_covers_every_unit_a_fix_can_change():
+    """Seen in the fix-channel recording: after 'enable ufw', telemetry could never
+    show ufw -- only ssh/sshd/fail2ban/cron were watched."""
+    from kratos.subagent import ceiling
+
+    watched = set(collector.default_service_watchlist())
+    assert set(collector.DEFAULT_SERVICE_WATCHLIST) <= watched
+    assert set(ceiling.ENABLE_UNITS) | set(ceiling.DISABLE_UNITS) <= watched
+
+
+def test_one_systemctl_show_call_parsed_in_order_with_not_installed():
+    out = ("LoadState=loaded\nActiveState=active\n\n"
+           "LoadState=not-found\nActiveState=inactive\n\n"
+           "LoadState=loaded\nActiveState=inactive")
+    assert collector._parse_systemctl_show(out, ["ufw", "crowdsec", "cups"]) == {
+        "ufw": "active", "crowdsec": "not-installed", "cups": "inactive"}
+    assert collector._parse_systemctl_show(out, ["only-two", "names"]) is None   # shape mismatch -> fallback
+
+
+def test_falls_back_to_one_check_per_unit_without_systemctl_show(monkeypatch):
+    calls = []
+
+    def fake_run(argv):
+        calls.append(argv)
+        return {"ok": False, "error": "systemctl not installed"} if argv[1] == "show" else {"ok": True, "stdout": "active"}
+
+    monkeypatch.setattr(collector, "_run", fake_run)
+    assert collector.collect_service_states(["a", "b"]) == {"services": {"a": "active", "b": "active"}}
+    assert [c[1] for c in calls] == ["show", "is-active", "is-active"]
