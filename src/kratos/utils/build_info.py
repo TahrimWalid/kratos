@@ -4,15 +4,17 @@ Which build of Kratos is running, and whether a newer one is on disk
 always-on listener service -- keeps running the code it started with, so a
 user can be looking at an old build without knowing it.
 
-The build id is `<version>+<git short hash>.<newest source mtime>` (the hash
-read from .git directly, no subprocess; `src` outside a checkout). The mtime part
-makes an uncommitted edit, a checkout or a reinstall count as a different build,
-which the commit hash alone would miss. Compare ids for equality only; show
-them with `display_build`. `RUNNING_BUILD` is captured once at import;
+The build id is `<version>+<git short hash>.<source fingerprint>` (the hash read
+from .git directly, no subprocess; `src` outside a checkout). The fingerprint is a
+hash of the source files' contents, so an uncommitted edit counts as a different
+build while a docs-only commit, or a checkout that leaves the code unchanged, does
+not. Compare ids with `same_code` (the commit is shown, never compared); show them
+with `display_build`. `RUNNING_BUILD` is captured once at import;
 `current_disk_build()` re-reads the disk (cached for a few seconds).
 """
 from __future__ import annotations
 
+import hashlib
 import time
 from pathlib import Path
 
@@ -60,11 +62,39 @@ def _git_head(start: Path) -> str | None:
     return None
 
 
-def _newest_source_mtime() -> str:
+_digest_cache: tuple[tuple, str] | None = None
+
+
+def _source_fingerprint() -> str:
+    """Hash of every source file's path and contents. Files are only re-read when
+    their size or modification time changed since the last call."""
+    global _digest_cache
     try:
-        return str(int(max(p.stat().st_mtime for p in _PKG_DIR.rglob("*.py"))))
+        files = sorted(_PKG_DIR.rglob("*.py"))
+        signature = tuple((str(p.relative_to(_PKG_DIR)), p.stat().st_mtime_ns, p.stat().st_size) for p in files)
+        if _digest_cache is not None and _digest_cache[0] == signature:
+            return _digest_cache[1]
+        h = hashlib.sha256()
+        for p in files:
+            h.update(str(p.relative_to(_PKG_DIR)).encode() + b"\0" + p.read_bytes() + b"\0")
+        digest = h.hexdigest()[:16]
     except (OSError, ValueError):
         return "unknown"
+    _digest_cache = (signature, digest)
+    return digest
+
+
+def same_code(a: str | None, b: str | None) -> bool:
+    """Whether two build ids run the same code: same version and source
+    fingerprint; the commit part is ignored (a docs-only commit changes it)."""
+    if not a or not b:
+        return a == b
+
+    def key(build_id: str) -> tuple[str, str]:
+        version, _, rest = build_id.partition("+")
+        return version, rest.split(".", 1)[1] if "." in rest else rest
+
+    return key(a) == key(b)
 
 
 _CACHE_SECONDS = 5.0
@@ -75,7 +105,7 @@ def current_disk_build() -> str:
     global _cache
     now = time.monotonic()
     if _cache is None or now - _cache[0] > _CACHE_SECONDS:
-        _cache = (now, f"{__version__}+{_git_head(_PKG_DIR) or 'src'}.{_newest_source_mtime()}")
+        _cache = (now, f"{__version__}+{_git_head(_PKG_DIR) or 'src'}.{_source_fingerprint()}")
     return _cache[1]
 
 
@@ -95,7 +125,7 @@ def newer_build_on_disk() -> str | None:
     """The on-disk build id if the code on disk differs from what this process
     loaded (newer or not -- a checkout of an older branch counts too), else None."""
     disk = current_disk_build()
-    return disk if disk != RUNNING_BUILD else None
+    return None if same_code(disk, RUNNING_BUILD) else disk
 
 
 def restart_hint() -> str | None:

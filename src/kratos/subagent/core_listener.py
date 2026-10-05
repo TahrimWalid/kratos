@@ -212,8 +212,9 @@ def describe_listener(
     extra = ""
     if len(listeners) > 1:
         extra = f" ({len(listeners)} listeners registered -- only one can hold the port; the others are retrying)"
-    older = lst.get("build") and lst["build"] != disk_build
-    from kratos.utils.build_info import display_build
+    from kratos.utils.build_info import display_build, same_code
+
+    older = lst.get("build") and not same_code(lst["build"], disk_build)
 
     stale = (f" It runs an older build ({display_build(lst['build'])}); press L to restart it on the current one."
              if older else "")

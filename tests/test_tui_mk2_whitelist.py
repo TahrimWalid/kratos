@@ -874,6 +874,7 @@ def test_an_agent_with_execution_off_is_called_out_before_any_execute(tmp_path, 
 
     banner = asyncio.run(run())
     assert "started with execution off" in banner
+    assert "CONSENT GIVEN · THIS MACHINE REFUSES RUNS" in banner and "DIRECT EXECUTION ON" not in banner
     gate = next(m for m in shown if isinstance(m, TypedExecuteModal))
     assert gate._can_execute is False and "started with execution off" in gate._why_not
     assert wl.list_pending_dispatch_requests(tid) == []

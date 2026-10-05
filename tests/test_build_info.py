@@ -128,3 +128,33 @@ def test_subagent_screen_shows_this_windows_staleness(tmp_path, monkeypatch):
 
     asyncio.run(run())
     assert "changed since this window opened" in out["line"]
+
+
+def test_a_docs_only_commit_is_not_a_code_change(tmp_path, monkeypatch):
+    """Seen live: the always-on listener said it 'runs older code than is on disk'
+    after a commit that only touched docs -- the id included the commit hash."""
+    git, pkg = _repo(tmp_path)
+    head = git / "refs" / "heads" / "main"
+    head.write_text("abcdef1234567890\n")
+    (pkg / "mod.py").write_text("x = 1\n")
+    monkeypatch.setattr(B, "_PKG_DIR", pkg)
+    monkeypatch.setattr(B, "_cache", None)
+    monkeypatch.setattr(B, "_digest_cache", None)
+    monkeypatch.setattr(B, "RUNNING_BUILD", B.current_disk_build())
+    head.write_text("fedcba9876543210\n")             # a new commit, code untouched
+    monkeypatch.setattr(B, "_cache", None)
+    assert B.newer_build_on_disk() is None
+    (pkg / "mod.py").write_text("x = 3\n")            # the code itself changes
+    monkeypatch.setattr(B, "_cache", None)
+    assert B.newer_build_on_disk() is not None
+
+
+@pytest.mark.parametrize("a,b,same", [
+    ("0.1.0+aaaa.f1", "0.1.0+bbbb.f1", True),         # different commit, same code
+    ("0.1.0+aaaa.f1", "0.1.0+aaaa.f2", False),        # same commit, edited code
+    ("0.1.0+aaaa.f1", "0.2.0+aaaa.f1", False),        # different version
+    ("0.1.0+src.f1", "0.1.0+aaaa.f1", True),          # installed vs checkout, same code
+    (None, "0.1.0+a.f", False),
+])
+def test_same_code(a, b, same):
+    assert B.same_code(a, b) is same

@@ -392,12 +392,12 @@ def cmd_subagent_status(args: argparse.Namespace) -> int:
         return 0
     listeners = store.live_listeners(LISTENER_STALE_AFTER_SECONDS)
     if listeners:
-        from kratos.utils.build_info import current_disk_build, display_build
+        from kratos.utils.build_info import current_disk_build, display_build, same_code
 
         lst = listeners[0]
         print(f"[KRATOS] listener: {lst['mode']} (pid {lst['pid']}, port {lst['port']}, "
               f"build {display_build(lst['build'])})")
-        if lst.get("build") and lst["build"] != current_disk_build():
+        if lst.get("build") and not same_code(lst["build"], current_disk_build()):
             how = ("restart its service (or press L in /subagent)" if lst["mode"] == "service"
                    else "restart it")
             print(f"[KRATOS]   it runs older code than is on disk ({display_build(current_disk_build())}); {how}")

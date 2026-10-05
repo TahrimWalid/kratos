@@ -246,7 +246,13 @@ class WhitelistScreen(Screen):
 
         enabled = sum(1 for r in self._rows if r["state"] == "on")
         banner = Text()
-        banner.append("DIRECT EXECUTION ON" if opted_in else "recommend-only", style=f"bold {T.CRITICAL if opted_in else T.TEXT_MUTED}")
+        refusal = self._agent_refusal() if opted_in else None
+        if refusal:
+            # consent given, but the machine refuses: never headline it as "ON"
+            banner.append("CONSENT GIVEN · THIS MACHINE REFUSES RUNS", style=f"bold {T.ATTENTION}")
+        else:
+            banner.append("DIRECT EXECUTION ON" if opted_in else "recommend-only",
+                          style=f"bold {T.CRITICAL if opted_in else T.TEXT_MUTED}")
         name = (target or {}).get("name") or self._target_id
         host = (target or {}).get("hostname")
         where = f"{name} ({host})" if host and host != name else name
@@ -256,7 +262,6 @@ class WhitelistScreen(Screen):
         if version and _version_tuple(version) < _MIN_EXEC_AGENT_VERSION:
             banner.append(f"\n⚠ this target runs sub-agent {version}, which is too old to execute anything -- "
                           "reinstall it from /subagent.", style=f"bold {T.ATTENTION}")
-        refusal = self._agent_refusal() if opted_in else None
         if refusal:
             banner.append(f"\n⚠ {refusal} -- approving a fix only shows you the command to run yourself.",
                           style=f"bold {T.ATTENTION}")
