@@ -532,6 +532,16 @@ class WhitelistScreen(Screen):
         )
         if not can_execute or not confirmed:
             return
+        # Rolling back a high-tier action is itself a high-tier dispatch -- it
+        # gets the SAME second confirmation a direct high-tier run does, not a
+        # shortcut around it (matching _run_action_flow).
+        if tier == "high":
+            second = await self.app.push_screen_wait(ConfirmModal(
+                "Second confirmation required (HIGH sensitivity)",
+                f"Really dispatch {spec.id} to {self._target_label()} now?"))
+            if not second:
+                self._log(Text("Cancelled at the second confirmation.", style=T.TEXT_DIM))
+                return
         await self._dispatch_and_poll(spec, values, tier)
 
     # ------------------------------------------------------------------

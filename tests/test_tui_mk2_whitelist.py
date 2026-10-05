@@ -328,6 +328,82 @@ def test_high_tier_action_requires_a_second_confirmation(tmp_path, monkeypatch):
     assert wl.list_pending_dispatch_requests(tid) == []
 
 
+def test_rollback_of_a_high_tier_action_also_requires_a_second_confirmation(tmp_path, monkeypatch):
+    """Rolling back a HIGH-tier action is itself a HIGH-tier dispatch, so it must
+    ask for the same second confirmation a direct high-tier run does -- not just
+    the typed EXECUTE. Declining that second confirm creates no request."""
+    monkeypatch.setattr(wl_mod, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(wl_mod, "_POLL_TIMEOUT_SECONDS", 0.05)
+
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.set_execution_opt_in(tid, True)
+    wl.set_maintainer_override(tid, "service.enable_now", True)
+    wl.set_maintainer_override(tid, "service.disable_now", True)  # the inverse must be enabled to roll back
+    screen = WhitelistScreen(tmp_path)
+
+    # The inverse (service.disable_now) carries unit from the prior dispatch, so
+    # the only prompts are the typed-EXECUTE gate (accept) then the second
+    # confirmation (decline). A missing second confirmation would consume only
+    # the first answer and dispatch anyway -- which this asserts it must not.
+    answers = iter([True, False])
+
+    async def fake_push_screen_wait(_modal):
+        return next(answers)
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen_wait = fake_push_screen_wait
+            enable_spec = next(r["spec"] for r in screen._rows if r["spec"].id == "service.enable_now")
+            screen._last_dispatch = {"spec": enable_spec, "values": {"unit": "ufw"}, "tier": "high"}
+            screen.action_rollback()
+            for _ in range(10):
+                await pilot.pause()
+                await asyncio.sleep(0.01)
+
+    asyncio.run(run())
+    assert wl.list_pending_dispatch_requests(tid) == []
+
+
+def test_rollback_of_a_high_tier_action_dispatches_after_both_confirmations(tmp_path, monkeypatch):
+    """The positive path: typed EXECUTE accepted AND the second confirmation
+    accepted -> the inverse action is genuinely dispatched."""
+    monkeypatch.setattr(wl_mod, "_POLL_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(wl_mod, "_POLL_TIMEOUT_SECONDS", 0.05)
+
+    sa, wl = _make_stores(tmp_path)
+    tid = _pair(sa)
+    wl.set_execution_opt_in(tid, True)
+    wl.set_maintainer_override(tid, "service.enable_now", True)
+    wl.set_maintainer_override(tid, "service.disable_now", True)
+    screen = WhitelistScreen(tmp_path)
+
+    answers = iter([True, True])  # typed EXECUTE, then the HIGH second confirmation
+
+    async def fake_push_screen_wait(_modal):
+        return next(answers)
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.push_screen_wait = fake_push_screen_wait
+            enable_spec = next(r["spec"] for r in screen._rows if r["spec"].id == "service.enable_now")
+            screen._last_dispatch = {"spec": enable_spec, "values": {"unit": "ufw"}, "tier": "high"}
+            screen.action_rollback()
+            for _ in range(60):
+                await pilot.pause()
+                await asyncio.sleep(0.02)
+
+    asyncio.run(run())
+    pending = wl.list_pending_dispatch_requests(tid)
+    assert len(pending) == 1
+    assert pending[0]["action_id"] == "service.disable_now"
+    assert pending[0]["slot_values"] == {"unit": "ufw"}
+
+
 def test_rollback_with_no_prior_dispatch_is_a_clean_noop(tmp_path):
     sa, wl = _make_stores(tmp_path)
     tid = _pair(sa)

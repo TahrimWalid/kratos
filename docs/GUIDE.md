@@ -784,19 +784,42 @@ risky each is, and what the machine's own agent will accept.
   <img src="images/whitelist.svg" width="840" alt="The /whitelist screen: a machine's allowlisted actions with the command each runs, its source, risk tier and on/off state">
 </p>
 
+Here is the whole thing on one machine — turning it on, running a fix, and undoing
+it. Until it's turned on, `EXECUTE` only shows you the command to run yourself:
+
+<p align="center">
+  <img src="images/fix_channel.gif" width="840" alt="The fix channel end to end: with execution off, the approval screen only shows the command to copy; after consenting, a real fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, telemetry confirms it, and one keypress rolls it back; a private IP is rejected">
+</p>
+
 What has to be true before anything runs:
 
 1. The agent on that machine was started with execution switched on. That's a
    setting on the machine itself; the installer never sets it.
 2. You've given consent for that machine in `/whitelist` (it explains the risk
-   first).
+   first, in plain language, and is reversible any time).
+
+<p align="center">
+  <img src="images/fix_consent.svg" width="820" alt="The consent screen: plain-language warning that Kratos can be manipulated by data it reads into proposing a harmful action, that an approved action would then run through the sub-agent, and that the typed-EXECUTE gate stays required either way">
+</p>
+
 3. The action is on in that machine's allowlist. The agent carries its own fixed
    list of exactly which programs and arguments it will ever run; Kratos can
    narrow that list, never widen it. Exact commands beyond it can only be added by
-   the machine's own administrator, in a root-owned file on the machine.
-4. You type `EXECUTE` for that run (high-risk actions ask a second time). After an
+   the machine's own administrator, in a root-owned file on the machine. Press `c`
+   to see exactly what that machine's agent will accept.
+4. You type `EXECUTE` for that run, and a high-risk action asks a second time.
+   Every field on that screen — what it does, how it's undone, what it can affect —
+   is read from the trusted action definition, never written by the model. After an
    investigation recommends a fix that matches an allowlisted action, `/run-fix`
-   opens that same confirmation.
+   opens that same confirmation, pre-filled:
+
+<p align="center">
+  <img src="images/fix_runfix.svg" width="820" alt="/run-fix opening the typed-EXECUTE approval for a recommended fail2ban ban that matches an allowlisted action, with the exact command shown and EXECUTE still required">
+</p>
+
+After a reversible change runs, `t` shows the machine's latest real telemetry and —
+for a medium- or high-risk action — `r` rolls it back through the matching inverse
+action, behind the same typed-`EXECUTE` gate.
 
 **This channel has not yet had its independent security review. Don't turn it on
 for a machine you care about.** Leaving it off costs you nothing: every

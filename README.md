@@ -66,6 +66,12 @@ Everywhere a decision has real consequences — running a command on the Kratos 
 
 **One experimental, off-by-default exception.** Kratos contains a path to carry out a small set of allowlisted fixes (for example, ban an IP in fail2ban) through a box's sub-agent. It is off for every box, and turning it on takes all of: a switch set on the box itself when the agent is started (the installer never sets it), your consent for that box in Kratos, the action being in that box's allowlist, and typing `EXECUTE` for each run. The allowlist is the safety boundary: the agent carries its own list of exactly which programs and arguments it will ever run, and Kratos can narrow that list but never widen it. **This path has not yet had its independent security review — don't enable it on a machine you care about.**
 
+The whole flow, off by default throughout — with execution off, `EXECUTE` only shows you the command to run yourself; once consented, an approved fix runs through the sub-agent, reports its result, and a reversible change can be rolled back with one keypress:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/fix_channel.gif" width="840" alt="The experimental fix channel on one box: with execution off the approval screen only shows the command to copy; after consenting, a fail2ban ban runs through the sub-agent and reports its result, a high-risk service change asks a second time, telemetry confirms it, one keypress rolls it back, and a private IP is rejected">
+</p>
+
 ---
 
 ## Your data and your bill
