@@ -297,22 +297,27 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
 
 def cmd_subagent_serve(args: argparse.Namespace) -> int:
     """
-    Run the Kratos-core-side sub-agent telemetry listener (capability 1).
-    Blocking -- accepts OUTBOUND connections from paired sub-agents and
-    never dials out to one itself (see core_server.py's module docstring).
-    Read-only: this process cannot send a command to any agent.
+    Run the Kratos-core-side sub-agent listener. Blocking -- accepts OUTBOUND
+    connections from paired sub-agents and never dials out to one itself (see
+    core_server.py's module docstring). It receives telemetry, serves
+    investigation reads, and delivers a /whitelist action only after a person
+    approved it there (typed EXECUTE) for a target that opted in -- and the
+    agent still refuses it unless its own execution switch and ceiling allow it.
     """
     import asyncio
 
-    from kratos.storage.subagent_store import SubAgentStore
-    from kratos.subagent.core_server import CoreServer, DEFAULT_PORT
-
     import signal
 
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.storage.whitelist_store import WhitelistStore
+    from kratos.subagent.core_server import CoreServer, DEFAULT_PORT
     from kratos.subagent.local_reads import socket_path
 
     store = SubAgentStore(args.data_dir / "kratos.db")
-    server = CoreServer(store, host=args.host, port=args.port, read_socket_path=socket_path(args.data_dir))
+    # The whitelist store is what lets core push allowlists, record what each agent
+    # allows, and deliver /whitelist runs (they wait in its queue for this process).
+    server = CoreServer(store, host=args.host, port=args.port, whitelist_store=WhitelistStore(args.data_dir / "kratos.db"),
+                        read_socket_path=socket_path(args.data_dir))
     print(f"[KRATOS] Sub-agent telemetry server listening on {args.host}:{args.port} (Ctrl+C to stop)")
 
     async def _main() -> None:

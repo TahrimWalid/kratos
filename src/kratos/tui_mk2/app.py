@@ -426,6 +426,7 @@ class KratosTUI(ResilientWorkerHost, App):
             return "external" if not self._core_listener_inproc else "in_process"
         try:
             from kratos.storage.subagent_store import SubAgentStore
+            from kratos.storage.whitelist_store import WhitelistStore
             from kratos.subagent.core_server import CoreServer
             from kratos.subagent.local_reads import socket_path
 
@@ -433,6 +434,9 @@ class KratosTUI(ResilientWorkerHost, App):
                 SubAgentStore(self.data_dir / "kratos.db"),
                 host=_cl.DEFAULT_BIND_HOST,
                 port=_cl.DEFAULT_PORT,
+                # Without it core never pushes allowlists, never records what an
+                # agent allows, and never delivers a /whitelist run.
+                whitelist_store=WhitelistStore(self.data_dir / "kratos.db"),
                 mode="in_process",
                 read_socket_path=socket_path(self.data_dir),
             )
