@@ -798,19 +798,42 @@ def test_telemetry_says_when_a_snapshot_predates_the_run_or_misses_the_unit():
     taken BEFORE the run, without ufw in it, as the latest observed state."""
     from kratos.tui_mk2.screens.whitelist import telemetry_lines
 
-    run_at = 1_791_000_000.0
-    dispatch = {"values": {"unit": "ufw"}, "at": run_at}
-    before = {"collected_at": "2026-10-05T01:13:43+00:00",
-              "payload": {"services": {"services": {"ssh": "active", "fail2ban": "active"}}}}
-    before["collected_at"] = run_at - 9
-    text = " ".join(t.plain for t in telemetry_lines(before, dispatch))
+    agent_ts = 1_791_000_000.0                       # the agent's clock when the run finished
+    dispatch = {"values": {"unit": "ufw"}, "at": agent_ts + 3600, "agent_ts": agent_ts}
+
+    def snap(started, services):
+        return {"collected_at": "x", "received_at": "2099-01-01T00:00:00+00:00",
+                "payload": {"collected_at_epoch": started, "services": {"services": services}}}
+
+    text = " ".join(t.plain for t in telemetry_lines(snap(agent_ts - 9, {"ssh": "active"}), dispatch))
+    assert "from before your last run" in text and "ufw is now" not in text
+    text = " ".join(t.plain for t in telemetry_lines(snap(agent_ts + 20, {"ssh": "active"}), dispatch))
+    assert "doesn't report ufw" in text
+    text = " ".join(t.plain for t in telemetry_lines(
+        snap(agent_ts + 20, {"ssh": "active", "ufw": "active", "cups": "not-installed"}), dispatch))
+    assert "ufw is now active" in text and "cups" not in text
+
+
+def test_a_fast_machine_clock_cannot_make_an_old_snapshot_look_new():
+    """Comparing the agent's snapshot time with KRATOS's clock let a machine whose
+    clock runs ahead pass a pre-run snapshot as post-run. Both times now come from
+    the agent; without them, only a snapshot received well after the run counts."""
+    from datetime import datetime, timezone
+
+    from kratos.tui_mk2.screens.whitelist import telemetry_lines
+
+    kratos_now = 1_791_000_000.0
+    # machine clock 10 minutes fast: its pre-run snapshot carries a "later" time
+    dispatch = {"values": {"unit": "ufw"}, "at": kratos_now, "agent_ts": kratos_now + 600}
+    old = {"collected_at": datetime.fromtimestamp(kratos_now + 590, timezone.utc).isoformat(),
+           "received_at": datetime.fromtimestamp(kratos_now + 2, timezone.utc).isoformat(),
+           "payload": {"collected_at_epoch": kratos_now + 590, "services": {"services": {"ufw": "inactive"}}}}
+    text = " ".join(t.plain for t in telemetry_lines(old, dispatch))
     assert "from before your last run" in text and "ufw is now" not in text
 
-    after_missing = {"collected_at": run_at + 20, "payload": {"services": {"services": {"ssh": "active"}}}}
-    text = " ".join(t.plain for t in telemetry_lines(after_missing, dispatch))
-    assert "doesn't report ufw" in text
-
-    after = {"collected_at": run_at + 20,
-             "payload": {"services": {"services": {"ssh": "active", "ufw": "active", "cups": "not-installed"}}}}
-    text = " ".join(t.plain for t in telemetry_lines(after, dispatch))
-    assert "ufw is now active" in text and "cups" not in text
+    no_agent_times = {"values": {"unit": "ufw"}, "at": kratos_now}
+    early = {"collected_at": "x", "received_at": datetime.fromtimestamp(kratos_now + 5, timezone.utc).isoformat(),
+             "payload": {"services": {"services": {"ufw": "active"}}}}
+    assert "from before your last run" in " ".join(t.plain for t in telemetry_lines(early, no_agent_times))
+    late = dict(early, received_at=datetime.fromtimestamp(kratos_now + 45, timezone.utc).isoformat())
+    assert "ufw is now active" in " ".join(t.plain for t in telemetry_lines(late, no_agent_times))

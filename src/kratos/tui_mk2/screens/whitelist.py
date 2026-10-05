@@ -453,7 +453,8 @@ class WhitelistScreen(Screen):
             self._log(Text("output: " + result["stdout_tail"][-2000:].strip(), style=T.TEXT_DIM))
 
         if status == "ok" and tier in ("medium", "high"):
-            self._last_dispatch = {"spec": spec, "values": values, "tier": tier, "at": time.time()}
+            self._last_dispatch = {"spec": spec, "values": values, "tier": tier, "at": time.time(),
+                                   "agent_ts": result.get("ts")}
             note = Text(
                 "The machine's next telemetry (about every 30 seconds) will show this change -- "
                 "press t to check", style=T.TEXT_FAINT)
@@ -883,6 +884,23 @@ def _epoch(value: Any) -> float | None:
         return None
 
 
+# Without the agent's own timestamps, a snapshot counts as after the run only if
+# Kratos received it this long after the result: a snapshot already being
+# collected when the run happened can still arrive shortly after it.
+_AFTER_RUN_SLACK_SECONDS = 30.0
+
+
+def _snapshot_is_after_run(latest: dict[str, Any], payload: dict[str, Any], last_dispatch: dict[str, Any]) -> bool:
+    """Did this snapshot START after the run finished? Compared on the agent's own
+    clock (the result's `ts` and the snapshot's `collected_at_epoch`), so a machine
+    whose clock is off can't make an older snapshot pass as newer. Unknown -> False."""
+    agent_ts, started = _epoch(last_dispatch.get("agent_ts")), _epoch(payload.get("collected_at_epoch"))
+    if agent_ts is not None and started is not None:
+        return started >= agent_ts
+    at, received = last_dispatch.get("at"), _epoch(latest.get("received_at"))
+    return at is not None and received is not None and received >= at + _AFTER_RUN_SLACK_SECONDS
+
+
 def telemetry_lines(latest: dict[str, Any], last_dispatch: dict[str, Any] | None) -> list[Text]:
     """What `t` shows, saying plainly what the snapshot can and can't confirm.
     Seen in the fix-channel recording: the snapshot shown after 'enable ufw' was
@@ -903,8 +921,7 @@ def telemetry_lines(latest: dict[str, Any], last_dispatch: dict[str, Any] | None
                           style=T.TEXT))
     if not last_dispatch:
         return lines
-    at, snap = last_dispatch.get("at"), _epoch(collected)
-    if at is not None and snap is not None and snap < at:
+    if not _snapshot_is_after_run(latest, payload, last_dispatch):
         lines.append(Text("  ⚠ This snapshot is from before your last run, so it can't show its effect yet. "
                           "The machine sends a new one about every 30 seconds -- press t again shortly.",
                           style=T.ATTENTION))
