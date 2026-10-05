@@ -799,6 +799,10 @@ What has to be true before anything runs:
    execution on. It tells Kratos which way it's set, so `/whitelist` warns you up
    front and its approval screen only shows the command to run yourself.
 
+<p align="center">
+  <img src="images/fix_exec_off.svg" width="820" alt="A machine whose agent was started with execution off: /whitelist warns in its banner that the agent refuses every run, and the approval screen shows the command to copy and run yourself instead of asking you to type EXECUTE">
+</p>
+
 2. You've given consent for that machine in `/whitelist` (it explains the risk
    first, in plain language, and is reversible any time).
 
