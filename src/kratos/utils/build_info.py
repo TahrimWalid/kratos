@@ -62,26 +62,21 @@ def _git_head(start: Path) -> str | None:
     return None
 
 
-_digest_cache: tuple[tuple, str] | None = None
-
-
 def _source_fingerprint() -> str:
-    """Hash of every source file's path and contents. Files are only re-read when
-    their size or modification time changed since the last call."""
-    global _digest_cache
+    """Hash of every source file's path and contents, read fresh each time.
+
+    No stat-based shortcut: a same-size edit within one filesystem timestamp
+    tick keeps size and mtime identical, which made the "code on disk changed"
+    check miss real edits. A full hash is ~25 ms, and current_disk_build()
+    already caches its answer for a few seconds."""
     try:
         files = sorted(_PKG_DIR.rglob("*.py"))
-        signature = tuple((str(p.relative_to(_PKG_DIR)), p.stat().st_mtime_ns, p.stat().st_size) for p in files)
-        if _digest_cache is not None and _digest_cache[0] == signature:
-            return _digest_cache[1]
         h = hashlib.sha256()
         for p in files:
             h.update(str(p.relative_to(_PKG_DIR)).encode() + b"\0" + p.read_bytes() + b"\0")
-        digest = h.hexdigest()[:16]
+        return h.hexdigest()[:16]
     except (OSError, ValueError):
         return "unknown"
-    _digest_cache = (signature, digest)
-    return digest
 
 
 def same_code(a: str | None, b: str | None) -> bool:

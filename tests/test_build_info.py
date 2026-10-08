@@ -139,7 +139,6 @@ def test_a_docs_only_commit_is_not_a_code_change(tmp_path, monkeypatch):
     (pkg / "mod.py").write_text("x = 1\n")
     monkeypatch.setattr(B, "_PKG_DIR", pkg)
     monkeypatch.setattr(B, "_cache", None)
-    monkeypatch.setattr(B, "_digest_cache", None)
     monkeypatch.setattr(B, "RUNNING_BUILD", B.current_disk_build())
     head.write_text("fedcba9876543210\n")             # a new commit, code untouched
     monkeypatch.setattr(B, "_cache", None)
@@ -147,6 +146,25 @@ def test_a_docs_only_commit_is_not_a_code_change(tmp_path, monkeypatch):
     (pkg / "mod.py").write_text("x = 3\n")            # the code itself changes
     monkeypatch.setattr(B, "_cache", None)
     assert B.newer_build_on_disk() is not None
+
+
+def test_a_same_size_edit_with_an_unchanged_mtime_is_still_seen(tmp_path, monkeypatch):
+    """Was flaky: the fingerprint skipped re-reading files whose size and mtime
+    hadn't changed, and two same-size writes within one filesystem timestamp
+    tick keep both. Restoring the mtime makes that case deterministic."""
+    import os
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    mod = pkg / "mod.py"
+    mod.write_text("x = 1\n")
+    monkeypatch.setattr(B, "_PKG_DIR", pkg)
+    before = B._source_fingerprint()
+    st = mod.stat()
+    mod.write_text("x = 3\n")
+    os.utime(mod, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert mod.stat().st_size == st.st_size and mod.stat().st_mtime_ns == st.st_mtime_ns
+    assert B._source_fingerprint() != before
 
 
 @pytest.mark.parametrize("a,b,same", [
