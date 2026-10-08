@@ -223,16 +223,32 @@ _MAX_LOCAL_LINE = 512
 _SHELL_META = (";", "|", "&", "<", ">", "`", "$(", "${", "\n")
 
 # A local line may name any program in the trusted dirs EXCEPT one that would
-# turn the line back into a string to re-parse -- that is a shell, not an
-# exact command.
-_LOCAL_BANNED_BINARIES = frozenset(wl._BANNED_SHELL_INTERPRETERS | {"sudo", "su", "doas", "pkexec", "nohup", "setsid", "timeout", "nice", "ionice", "chroot", "busybox", "toybox", "script", "watch", "strace", "gdb"})
+# turn the line back into a string to re-parse (a shell or interpreter, under
+# any versioned name -- wl.is_shell_or_interpreter), or whose purpose is to run
+# the REST of the line as another command: that is a wrapper, not an exact
+# command, and the command it runs is what the admin should list.
+_LOCAL_BANNED_BINARIES = frozenset({
+    "sudo", "su", "doas", "pkexec", "runuser", "sg", "newgrp",
+    "nohup", "setsid", "timeout", "nice", "ionice", "chrt", "taskset", "stdbuf", "time", "command",
+    "chroot", "unshare", "nsenter", "systemd-run", "flock", "parallel", "cgexec", "firejail",
+    "start-stop-daemon", "daemonize", "busybox", "toybox", "script", "watch", "strace", "ltrace", "gdb",
+})
+
+
+def runs_other_commands(program: str) -> bool:
+    base = program.rpartition("/")[2].lower()
+    return base in _LOCAL_BANNED_BINARIES or wl.is_shell_or_interpreter(base)
 
 
 def normalize_command(tokens: list[str]) -> list[str]:
     """Drop a leading `sudo`: the agent itself runs as the service user (root
     for a normal install), so `sudo` would only add a second, password-less
     privilege hop."""
-    return tokens[1:] if tokens and tokens[0] == "sudo" else tokens
+    # Only a bare `sudo` prefix: with options (`sudo -u bob ...`) sudo is doing
+    # something itself, so the line stays as written and is refused as sudo.
+    if len(tokens) > 1 and tokens[0] == "sudo" and not tokens[1].startswith("-"):
+        return tokens[1:]
+    return tokens
 
 
 def parse_command_line(line: str) -> list[str]:
@@ -258,12 +274,14 @@ def parse_command_line(line: str) -> list[str]:
             raise CeilingError(f"shell syntax ({bad!r}) is not allowed -- list one plain command per line")
     binary = tokens[0]
     base = binary.rpartition("/")[2]
+    if not base or base.startswith("-"):
+        raise CeilingError(f"{binary!r} is not a program name")
     if binary.startswith("/"):
         if binary.rpartition("/")[0] not in TRUSTED_BIN_DIRS:
             raise CeilingError(f"{binary!r} is not inside a trusted system directory {TRUSTED_BIN_DIRS}")
     elif "/" in binary:
         raise CeilingError(f"{binary!r}: use a bare program name or an absolute path")
-    if base.lower() in _LOCAL_BANNED_BINARIES:
+    if runs_other_commands(base):
         raise CeilingError(f"{base!r} runs other commands -- list the actual command instead")
     return tokens
 

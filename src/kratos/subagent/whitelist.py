@@ -179,6 +179,23 @@ _BANNED_SHELL_INTERPRETERS = frozenset({
     "python", "python2", "python3", "perl", "ruby", "node", "php", "lua",
     "eval", "exec", "env", "xargs", "find", "awk",
 })
+# The same families under their versioned names, which distributions install
+# side by side (python3.12, php8.2, perl5.36.0, lua5.4, tclsh8.6, pypy3,
+# python3.12-dbg). An exact-name list let those through (review v2 F-8).
+_INTERPRETER_FAMILY_RE = re.compile(
+    r"(?:sh|ash|bash|rbash|zsh|dash|ksh|ksh93|mksh|pdksh|yash|csh|tcsh|fish"
+    r"|python|pypy|perl|ruby|irb|node|nodejs|deno|bun|php|php-cgi|lua|luajit|tclsh|wish|expect"
+    r"|awk|gawk|mawk|nawk|busybox|toybox|pwsh|guile|julia|jshell|groovy|rscript|ruby-mri)"
+    r"(?:[0-9][0-9.]*)?(?:-(?:[0-9][0-9.]*|dbg))?"
+)
+
+
+def is_shell_or_interpreter(program: str) -> bool:
+    """True for a shell or script interpreter, by basename, under its plain or
+    versioned name (case-insensitive). Shared by the maintainer rules here and
+    the target's own allowed-commands file (ceiling.py)."""
+    base = _basename(program).lower()
+    return base in _BANNED_SHELL_INTERPRETERS or _INTERPRETER_FAMILY_RE.fullmatch(base) is not None
 
 # Arbitrary package installation -- excluded per §5 ("no apt/dnf/pip install
 # {name} with a slot"). A fixed, specific package as a reviewed maintainer
@@ -337,7 +354,7 @@ def _check_hard_exclusions(spec: ActionSpec, literal_tokens: list[str]) -> None:
     enum_values = [v for slot in spec.slots.values() if slot.kind == "enum" for v in (slot.values or ())]
     for tok in (*literal_tokens, *enum_values):
         base = _basename(tok).lower()
-        if base in _BANNED_SHELL_INTERPRETERS:
+        if is_shell_or_interpreter(base):
             raise HardExclusionError(
                 f"{spec.id}: {tok!r} is a shell/interpreter binary -- an action must be a fixed command, "
                 "never one that re-parses a string (design doc §2/§5)"
