@@ -89,15 +89,31 @@ def iso_utc(epoch: float) -> str:
 
 
 def _zone(name: str) -> tzinfo:
+    """A window's zone from its stored name: an IANA key, "UTC", or a fixed
+    offset written as "UTC+03:00" (what zone_name gives a host whose zone
+    can't be named). Raises ValueError for anything else."""
     if name in ("UTC", "Etc/UTC"):
         return UTC
-    from zoneinfo import ZoneInfo
+    from kratos.utils.timeutil import zone_from_name
 
-    return ZoneInfo(name)
+    tz = zone_from_name(name)
+    if tz is None:
+        raise ValueError(f"unknown time zone {name!r}")
+    return tz
 
 
 def zone_name(tz: tzinfo) -> str:
-    return getattr(tz, "key", None) or ("UTC" if tz in (UTC,) else str(tz))
+    """A name _zone() can read back: the IANA key, "UTC", or "UTC±HH:MM" for a
+    fixed offset -- never an abbreviation like "EEST"."""
+    key = getattr(tz, "key", None)
+    if key:
+        return key
+    if tz in (UTC,):
+        return "UTC"
+    from kratos.utils.timeutil import fixed_offset_zone
+
+    offset = tz.utcoffset(None)
+    return str(fixed_offset_zone(offset)) if offset is not None else "UTC"
 
 
 # ---------------------------------------------------------------------------

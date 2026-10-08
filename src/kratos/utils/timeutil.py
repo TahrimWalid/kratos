@@ -32,6 +32,7 @@ legacy data can drift, which is unrecoverable regardless.
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
@@ -103,6 +104,7 @@ def parse_stored_instant(value: Any) -> datetime | None:
 # Display side -- cosmetic only, never touches stored data.
 # ---------------------------------------------------------------------------
 _OVERRIDE_CONFIG_KEY = "display_timezone"
+_FIXED_OFFSET_RE = re.compile(r"UTC([+-])(\d{1,2})(?::?(\d{2}))?", re.IGNORECASE)
 
 
 def zone_from_name(name: str | None) -> tzinfo | None:
@@ -113,6 +115,15 @@ def zone_from_name(name: str | None) -> tzinfo | None:
         return None
     if name.upper() == "UTC":
         return timezone.utc
+    m = _FIXED_OFFSET_RE.fullmatch(name.strip())
+    if m:
+        from datetime import timedelta
+
+        sign = -1 if m.group(1) == "-" else 1
+        hours, minutes = int(m.group(2)), int(m.group(3) or 0)
+        if hours > 23 or minutes > 59:
+            return None
+        return fixed_offset_zone(timedelta(seconds=sign * (hours * 3600 + minutes * 60)))
     if ZoneInfo is None:
         return None
     try:
@@ -121,16 +132,77 @@ def zone_from_name(name: str | None) -> tzinfo | None:
         return None
 
 
+def _key_from_zoneinfo_path(path: str) -> str | None:
+    marker = "zoneinfo/"
+    i = path.find(marker)
+    return path[i + len(marker):] if i >= 0 else None
+
+
+def system_zone_key() -> str | None:
+    """The host's IANA zone name (e.g. "Europe/Helsinki"), the way the C
+    library finds it: the TZ variable if set, else /etc/timezone, else the
+    /etc/localtime link. None if none of those names a zone Python knows --
+    e.g. a POSIX TZ rule string, or a copied (not linked) /etc/localtime."""
+    import os
+
+    candidates: list[str] = []
+    env = os.environ.get("TZ")
+    if env is not None:
+        name = env.lstrip(":")
+        if name.startswith("/"):
+            name = _key_from_zoneinfo_path(os.path.realpath(name)) or ""
+        candidates.append(name)  # when TZ is set, the system files don't apply
+    else:
+        try:
+            with open("/etc/timezone", encoding="utf-8") as f:
+                candidates.append(f.readline().strip())
+        except OSError:
+            pass
+        try:
+            candidates.append(_key_from_zoneinfo_path(os.path.realpath("/etc/localtime")) or "")
+        except OSError:
+            pass
+    for name in candidates:
+        if name and zone_from_name(name) is not None:
+            return name
+    return None
+
+
 def detect_local_tz() -> tzinfo | None:
-    """The OS's own local timezone, read with zero network access. Returns
-    None only if even the system-local zone can't be determined (a genuinely
-    misconfigured/minimal environment -- rare), which is what gates the
-    one-time manual-entry fallback in the REPL."""
+    """The OS's own local timezone, read with zero network access: the real
+    IANA zone when it can be named (so DST changes inside a time window are
+    handled), else the current fixed offset (named like "UTC+03:00", never an
+    abbreviation such as "EEST", which isn't a zone name -- using it as one
+    crashed time-window handling on such hosts). Returns None only if even
+    the system-local offset can't be determined (rare), which is what gates
+    the one-time manual-entry fallback in the REPL."""
     try:
-        local = datetime.now().astimezone().tzinfo
+        now_local = datetime.now().astimezone()
     except (ValueError, OSError):  # pragma: no cover - defensive only
         return None
-    return local
+    key = system_zone_key()
+    if key is not None:
+        tz = zone_from_name(key)
+        # Trust the name only if it agrees with what the C library applies now.
+        if tz is not None and datetime.now(tz).utcoffset() == now_local.utcoffset():
+            return tz
+    offset = now_local.utcoffset()
+    if offset is None:  # pragma: no cover - defensive only
+        return None
+    return fixed_offset_zone(offset)
+
+
+def fixed_offset_zone(offset: Any) -> tzinfo:
+    """A fixed-offset zone named "UTC" or "UTC±HH:MM" -- a name that
+    zone_from_name() (and timewin) can turn back into the same zone."""
+    from datetime import timedelta
+
+    if not offset:
+        return timezone.utc
+    total = int(offset.total_seconds())
+    sign = "+" if total >= 0 else "-"
+    hours, rem = divmod(abs(total), 3600)
+    return timezone(timedelta(seconds=total), f"UTC{sign}{hours:02d}:{rem // 60:02d}")
 
 
 def local_tz_name() -> str | None:
