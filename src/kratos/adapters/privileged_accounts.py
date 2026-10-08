@@ -60,8 +60,19 @@ for f in /etc/passwd /etc/group /etc/sudoers /etc/sudoers.d; do
   m=$(stat -c %Y "$f" 2>/dev/null) && printf 'MTIME\\t%s\\t%s\\n' "$f" "$m"
 done
 if $SUDO true 2>/dev/null; then
-  $SUDO grep -rH -v -E '^[[:space:]]*(#|$)' /etc/sudoers /etc/sudoers.d 2>/dev/null | while IFS= read -r l; do
-    printf 'SUDOERS\\t%s\\n' "$l"
+  # Only GRANT lines leave the box: continuation lines are joined first, and
+  # comments, Defaults (which can carry mail addresses, paths, env settings),
+  # @include directives and alias definitions are dropped. sudoers.d files are
+  # the ones sudo itself loads (no '.' in the name, not ending in '~').
+  {{ echo /etc/sudoers; $SUDO find /etc/sudoers.d -maxdepth 1 -type f ! -name '*.*' ! -name '*~' 2>/dev/null | sort; }} \\
+  | while IFS= read -r f; do
+    $SUDO awk '
+      {{ if (sub(/\\\\$/, "")) {{ buf = buf $0 " "; next }} line = buf $0; buf = "" }}
+      line ~ /^[[:space:]]*(#|$)/ {{ next }}
+      line ~ /^[[:space:]]*(Defaults|@include|@includedir)/ {{ next }}
+      line ~ /^[[:space:]]*(User|Runas|Host|Cmnd|Cmd)_Alias[[:space:]]/ {{ next }}
+      {{ printf "SUDOERS\\t%s:%s\\n", FILENAME, line }}
+    ' "$f" 2>/dev/null
   done
   printf 'SUDOERS_OK\\n'
   # Groups granted sudo IN sudoers (e.g. %devops) beyond the well-known ones:

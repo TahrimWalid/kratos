@@ -470,27 +470,48 @@ SCAN_ROOTS: tuple[str, ...] = (
     "/var/spool/cron", "/etc/systemd/system", "/etc/init.d", "/etc/profile.d",
 )
 # Never walked into (directory names) / never scanned (file names, suffixes).
+# Never scanned, at any depth (review v2 F-9 widened the lists). Directory
+# names match any path component; file names match the last component.
 _CREDENTIAL_DIRS = frozenset({
     ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".password-store", ".docker", ".gcloud",
-    "gcloud", ".vault-token", "keyrings", ".local/share/keyrings",
+    "gcloud", ".vault-token", "keyrings", ".oci", ".terraform.d", ".config/gh", "secrets",
 })
 _CREDENTIAL_FILES = frozenset({
     "shadow", "gshadow", "shadow-", "gshadow-", "sudoers", ".netrc", ".pgpass", ".git-credentials",
-    ".my.cnf", "authorized_keys", "known_hosts", "credentials", ".env", ".vault-token",
+    ".my.cnf", "authorized_keys", "authorized_keys2", "known_hosts", "credentials", ".env", ".vault-token",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "id_ecdsa_sk", "id_ed25519_sk",
+    ".npmrc", ".pypirc", ".yarnrc", ".gem/credentials", ".dockercfg", ".boto", ".s3cfg", "kubeconfig",
+    "secrets.yaml", "secrets.yml", "secrets.json", "secrets.toml", "credentials.json", "credentials.yml",
+    "credentials.yaml", "credentials.xml", "client_secret.json", "service-account.json",
+    "wp-config.php", "settings.local.php", "database.yml", "master.key", "credentials.yml.enc",
+    ".htpasswd", "htpasswd", ".vault_pass", ".vault-password", "vault_pass.txt",
+    "terraform.tfstate", "terraform.tfstate.backup", ".terraformrc",
+    "logins.json", "key4.db", "key3.db", "login.keyring",
 })
-_CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".kdbx", ".keystore", ".asc", ".gpg")
+_CREDENTIAL_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".kdbx", ".kdb", ".keystore", ".asc", ".gpg",
+                        ".ovpn", ".ppk", ".keytab", ".jceks", ".tfstate", ".tfvars")
+# A dotenv file in any of its usual variants (.env.local, .env.production, ...).
+_CREDENTIAL_PREFIXES = ("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa", ".env.")
 LOCAL_YARA_DIR = "/etc/kratos-subagent/yara"
 
 
 def is_credential_path(path: str) -> bool:
+    """True for a path that is, or is inside, a credential/secret location --
+    by name only (never reads the file). Multi-part names (".config/gh",
+    ".gem/credentials") match consecutive components."""
     parts = [p for p in path.split("/") if p]
+    joined = "/" + "/".join(parts).lower() + "/"
+    for entry in _CREDENTIAL_DIRS:
+        if "/" in entry and f"/{entry.lower()}/" in joined:
+            return True
     if any(p in _CREDENTIAL_DIRS for p in parts[:-1]):
         return True
     name = parts[-1] if parts else ""
     low = name.lower()
+    if any("/" in f and joined.endswith(f"/{f}/") for f in _CREDENTIAL_FILES):
+        return True
     return (name in _CREDENTIAL_DIRS or low in _CREDENTIAL_FILES or low.endswith(_CREDENTIAL_SUFFIXES)
-            or low.startswith(("id_rsa", "id_ed25519", "id_ecdsa", "id_dsa")))
+            or low.startswith(_CREDENTIAL_PREFIXES))
 
 
 def _resolve_scan_path(path: str) -> str:
