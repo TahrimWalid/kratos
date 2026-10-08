@@ -226,3 +226,20 @@ def test_installer_can_allow_an_untrusted_transport_for_reads_only():
     assert "--allow-untrusted-transport" not in plain
     assert "--state-file $STATE_FILE --allow-untrusted-transport\"" in lan
     assert "--enable-execution" not in lan
+
+
+def test_trusted_interfaces_reach_the_agent_command_line_and_are_validated():
+    script = installer.generate_installer("10.0.0.5", "1A2B-3C4D", trusted_interfaces=["wg0", "tun.vpn-1"])
+    assert "--trusted-interface wg0 --trusted-interface tun.vpn-1" in script
+    assert "--trusted-interface" not in installer.generate_installer("10.0.0.5", "1A2B-3C4D")
+    for bad in ("wg0; id", "-x", "a" * 16, "", "wg 0"):
+        with pytest.raises(installer.InstallerError):
+            installer.generate_installer("10.0.0.5", "1A2B-3C4D", trusted_interfaces=[bad])
+
+
+def test_agent_accepts_the_trusted_interface_flag():
+    from kratos.subagent import agent as agent_mod
+
+    args = agent_mod.build_arg_parser().parse_args(
+        ["--core-host", "h", "--trusted-interface", "wg0", "--trusted-interface", "wg1"])
+    assert args.trusted_interfaces == ["wg0", "wg1"]

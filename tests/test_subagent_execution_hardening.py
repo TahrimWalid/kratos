@@ -317,17 +317,67 @@ def test_garbage_actions_in_a_push_are_reported_not_fatal(tmp_path):
 # ---------------------------------------------------------------------------
 # F9 -- trusted transport
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("peer,trusted", [
-    ("127.0.0.1", True), ("::1", True), ("100.64.0.10", True), ("fd7a:115c:a1e0::5", True),
-    ("::ffff:127.0.0.1", True), ("10.136.28.1", False), ("192.168.1.10", False), ("203.0.113.9", False),
-    (None, False), ("not-an-ip", False),
+@pytest.mark.parametrize("peer,local_iface,trusted", [
+    ("127.0.0.1", None, True), ("::1", None, True), ("::ffff:127.0.0.1", None, True),
+    ("100.64.0.10", "tailscale0", True), ("fd7a:115c:a1e0::5", "tailscale0", True),
+    # review v2 F-7: a tailnet-range peer NOT over a Tailscale interface is CGNAT, not encrypted
+    ("100.64.0.10", "eth0", False), ("100.101.102.103", None, False), ("fd7a:115c:a1e0::5", "ens3", False),
+    # a Tailscale interface doesn't make a non-tailnet peer trusted
+    ("203.0.113.9", "tailscale0", False),
+    ("10.136.28.1", "incusbr0", False), ("192.168.1.10", "eth0", False), ("203.0.113.9", None, False),
+    (None, None, False), ("not-an-ip", None, False),
 ])
-def test_transport_trust(tmp_path, peer, trusted):
+def test_transport_trust(tmp_path, monkeypatch, peer, local_iface, trusted):
+    from kratos.subagent import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda _addr: local_iface)
     a = _agent(tmp_path)
-    a._peer_ip = peer
+    a._peer_ip, a._local_ip = peer, "100.100.1.1"
     assert a._transport_trusted() is trusted
     a.allow_untrusted_transport = True
     assert a._transport_trusted() is True
+
+
+def test_an_operator_named_interface_is_trusted_for_any_peer(tmp_path, monkeypatch):
+    from kratos.subagent import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda _addr: "wg0")
+    a = _agent(tmp_path)
+    a._peer_ip, a._local_ip = "10.8.0.1", "10.8.0.2"
+    assert a._transport_trusted() is False
+    b = _agent(tmp_path, trusted_interfaces=["wg0"])
+    b._peer_ip, b._local_ip = "10.8.0.1", "10.8.0.2"
+    assert b._transport_trusted() is True
+
+
+def test_a_cgnat_peer_is_refused_with_a_reason_that_says_why(tmp_path, monkeypatch):
+    from kratos.subagent import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda _addr: "eth0")
+
+    async def go():
+        a = _agent(tmp_path, execution_enabled=True)
+        await _apply(a)
+        a._peer_ip, a._local_ip = "100.72.1.1", "100.72.9.9"
+        return await a._process_exec_dispatch(_dispatch(a)), a._check_read_request({})
+
+    r, read_reason = _run(go())
+    assert r["status"] == "refused" and "carrier-grade NAT" in r["reason"] and "eth0" in r["reason"]
+    assert "carrier-grade NAT" in read_reason and "reads are refused" in read_reason
+
+
+def test_local_interface_lookup_finds_loopback_for_real():
+    """The real (stdlib, Linux) lookup -- no mocks: 127.0.0.1 is on lo."""
+    import ipaddress
+    import sys
+
+    from kratos.subagent import agent as agent_mod
+
+    if not sys.platform.startswith("linux"):
+        pytest.skip("Linux interface lookup")
+    assert agent_mod.local_interface_of(ipaddress.ip_address("127.0.0.1")) == "lo"
+    assert agent_mod.local_interface_of(ipaddress.ip_address("192.0.2.123")) is None
+    assert agent_mod.local_interface_of(None) is None
 
 
 def test_dispatch_over_untrusted_transport_is_refused(tmp_path):

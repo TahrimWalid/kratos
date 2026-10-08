@@ -62,6 +62,7 @@ YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so
 DEFAULT_SERVICE_NAME = "kratos-subagent"
 PAIRING_CODE_RE = re.compile(r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}")
 _SERVICE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_IFACE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,14}")  # Linux IFNAMSIZ - 1
 DEFAULT_CORE_PORT = 8765
 
 # A minimal package ``__init__`` for the on-target bundle. Deliberately NOT the
@@ -124,6 +125,7 @@ def generate_installer(
     service_name: str = DEFAULT_SERVICE_NAME,
     upgrade: bool = False,
     allow_untrusted_transport: bool = False,
+    trusted_interfaces: tuple[str, ...] | list[str] = (),
 ) -> str:
     """Return a self-contained POSIX-``sh`` installer for the sub-agent.
 
@@ -146,6 +148,10 @@ def generate_installer(
     reaches Kratos over a plain network (not loopback/Tailscale) -- the channel
     has no encryption of its own, so only for a network the operator trusts.
     It never enables execution.
+
+    ``trusted_interfaces`` names interfaces on the box that encrypt by
+    themselves (e.g. the operator's own WireGuard ``wg0``); core reached over
+    one counts as trusted. Interfaces named ``tailscale*`` need no entry.
     """
     if not core_host or not str(core_host).strip():
         raise InstallerError("core_host is required")
@@ -164,6 +170,10 @@ def generate_installer(
         raise InstallerError("pairing_code is required (or use upgrade=True to keep the existing pairing)")
     elif not PAIRING_CODE_RE.fullmatch(str(pairing_code).strip()):
         raise InstallerError(f"{pairing_code!r} is not a pairing code (Kratos's codes look like 1A2B-3C4D)")
+    ifaces = tuple(trusted_interfaces or ())
+    for iface in ifaces:
+        if not isinstance(iface, str) or not _IFACE_NAME_RE.fullmatch(iface):
+            raise InstallerError(f"invalid interface name {iface!r} (up to 15 letters, digits, . _ -)")
     try:
         port = int(core_port)
     except (TypeError, ValueError) as exc:
@@ -196,7 +206,8 @@ def generate_installer(
         code_q=code_q,
         svc_q=svc_q,
         upgrade="1" if upgrade else "0",
-        extra_flags=" --allow-untrusted-transport" if allow_untrusted_transport else "",
+        extra_flags=("".join(f" --trusted-interface {i}" for i in ifaces)
+                     + (" --allow-untrusted-transport" if allow_untrusted_transport else "")),
         blob_section=blob_section,
         eof=_EOF,
     )

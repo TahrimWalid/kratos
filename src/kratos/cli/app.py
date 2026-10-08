@@ -279,7 +279,8 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
         ttl_note = f"  (pairing code expires in {result['ttl_seconds'] // 60} min)"
 
     try:
-        script = _installer.generate_installer(args.core_host, code, core_port=args.core_port)
+        script = _installer.generate_installer(args.core_host, code, core_port=args.core_port,
+                                               trusted_interfaces=args.trusted_interfaces)
     except _installer.InstallerError as exc:
         print(f"[KRATOS] Could not generate installer: {exc}", file=sys.stderr)
         return 1
@@ -1362,6 +1363,10 @@ def build_parser() -> argparse.ArgumentParser:
     subagent_install.add_argument("--name", default=None, help="Optional human-readable label for this target")
     subagent_install.add_argument("--code", default=None, help="Reuse an existing pairing code instead of creating one")
     subagent_install.add_argument("-o", "--output", default=None, help="Write the script to a file instead of stdout")
+    subagent_install.add_argument(
+        "--trusted-interface", dest="trusted_interfaces", action="append", default=[], metavar="NAME",
+        help="An interface on the target that encrypts by itself (e.g. your WireGuard wg0); Tailscale needs none",
+    )
     subagent_install.set_defaults(func=cmd_subagent_install)
 
     subagent_status = sub.add_parser(

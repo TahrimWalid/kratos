@@ -114,13 +114,18 @@ def candidate_hub_addresses() -> list[HubAddressCandidate]:
 
 
 def is_trusted_transport_address(host: str) -> bool:
-    """Would an agent dialing `host` count the link as trusted (loopback or a
-    Tailscale/WireGuard tailnet address)? The same networks the agent itself
-    checks (subagent/agent.py). A hostname is resolved; unresolvable = no."""
+    """Would an agent dialing `host` (this core's own address) count the link as
+    trusted? Yes for loopback, and for an address assigned to one of THIS
+    machine's Tailscale interfaces. A tailnet-range address that isn't --
+    100.64.0.0/10 is also carrier-grade NAT space -- is not (review v2 F-7);
+    the agent applies the same rule from its end. A hostname is resolved;
+    unresolvable = no."""
     import ipaddress
     import socket
 
-    from kratos.subagent.agent import _TRUSTED_TRANSPORT_NETWORKS
+    from kratos.subagent.agent import (
+        _LOOPBACK_NETWORKS, _TAILNET_NETWORKS, TAILSCALE_INTERFACE_PREFIX, local_interface_of,
+    )
 
     try:
         addrs = [ipaddress.ip_address(host.strip().strip("[]"))]
@@ -135,4 +140,12 @@ def is_trusted_transport_address(host: str) -> bool:
                 addrs.append(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
             except ValueError:
                 continue
-    return bool(addrs) and all(any(a in net for net in _TRUSTED_TRANSPORT_NETWORKS) for a in addrs)
+
+    def trusted(a) -> bool:
+        if any(a in net for net in _LOOPBACK_NETWORKS):
+            return True
+        iface = local_interface_of(a)
+        return (iface is not None and iface.startswith(TAILSCALE_INTERFACE_PREFIX)
+                and any(a in net for net in _TAILNET_NETWORKS))
+
+    return bool(addrs) and all(trusted(a) for a in addrs)

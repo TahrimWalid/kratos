@@ -152,11 +152,59 @@ SENT_PINGS_MAX = 64
 # so this only ever trips on a misbehaving peer).
 READ_QUEUE_MAX = 4
 
-# Transport check for execution (F9): core must be reached over loopback or a
-# Tailscale/WireGuard tailnet address, since this channel has no TLS itself.
-_TRUSTED_TRANSPORT_NETWORKS = tuple(
-    ipaddress.ip_network(n) for n in ("127.0.0.0/8", "::1/128", "100.64.0.0/10", "fd7a:115c:a1e0::/48")
-)
+# Transport check for execution and reads (F9): this channel has no
+# encryption of its own, so core must be reached over loopback or over an
+# interface that encrypts by itself. A tailnet-range address alone is not
+# enough -- 100.64.0.0/10 is also carrier-grade NAT space, which ISPs use for
+# plain internet (review v2 F-7) -- so this agent's own end of the connection
+# must sit on a Tailscale interface (or one the operator names with
+# --trusted-interface, e.g. their own WireGuard tunnel).
+_LOOPBACK_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("127.0.0.0/8", "::1/128"))
+_TAILNET_NETWORKS = tuple(ipaddress.ip_network(n) for n in ("100.64.0.0/10", "fd7a:115c:a1e0::/48"))
+TAILSCALE_INTERFACE_PREFIX = "tailscale"  # tailscaled's TUN is tailscale0 unless --tun says otherwise
+_SIOCGIFADDR = 0x8915
+
+
+def _as_ip(text: Any) -> "ipaddress.IPv4Address | ipaddress.IPv6Address | None":
+    try:
+        addr = ipaddress.ip_address(str(text or "").split("%", 1)[0])
+    except ValueError:
+        return None
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return mapped if mapped is not None else addr
+
+
+def local_interface_of(addr: "ipaddress.IPv4Address | ipaddress.IPv6Address | None") -> str | None:
+    """Name of the network interface this machine's address `addr` is assigned
+    to, or None if it can't be told (non-Linux, an IPv4 alias, any error) --
+    callers treat None as untrusted. Stdlib only: /proc/net/if_inet6 for IPv6,
+    the SIOCGIFADDR ioctl (each interface's primary IPv4 address) for IPv4."""
+    if addr is None:
+        return None
+    try:
+        if addr.version == 6:
+            want = addr.packed.hex()
+            with open("/proc/net/if_inet6", encoding="ascii") as f:
+                for line in f:
+                    fields = line.split()
+                    if len(fields) >= 6 and fields[0].lower() == want:
+                        return fields[5]
+            return None
+        if fcntl is None:
+            return None
+        import socket
+        import struct
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            for _index, name in socket.if_nameindex():
+                try:
+                    raw = fcntl.ioctl(s.fileno(), _SIOCGIFADDR, struct.pack("256s", name.encode()[:15]))
+                except OSError:
+                    continue  # no IPv4 address on this interface
+                if raw[20:24] == addr.packed:
+                    return name
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 # The state file holds the pairing token, from which the channel's signing key
@@ -202,6 +250,7 @@ class SubAgent:
         services: list[str] | None = None,
         execution_enabled: bool = False,
         allow_untrusted_transport: bool = False,
+        trusted_interfaces: "tuple[str, ...] | list[str]" = (),
         ceiling: "cl.Ceiling" = cl.DEFAULT_CEILING,
         local_allow_file: str | None = cl.LOCAL_ALLOW_FILE,
     ) -> None:
@@ -217,6 +266,9 @@ class SubAgent:
         # Defaults OFF; nothing in this codebase flips it on for a real target.
         self.execution_enabled = execution_enabled
         self.allow_untrusted_transport = allow_untrusted_transport
+        # Interfaces the operator says encrypt by themselves (their own
+        # WireGuard tunnel, or a Tailscale TUN with a custom name).
+        self.trusted_interfaces = frozenset(str(n) for n in trusted_interfaces)
         # The shipped ceiling is code; tests may pass a different one. Nothing
         # received over the wire can ever replace it.
         self._base_ceiling = ceiling
@@ -258,6 +310,7 @@ class SubAgent:
         self._session_nonce: str | None = None
         self._seen_dispatch_ids: set[str] = set()
         self._peer_ip: str | None = None
+        self._local_ip: str | None = None  # this agent's own end of the connection (F-7)
         # Send times of this connection's own pings. A signed pong arms execution
         # only by echoing one of them, and only from THAT ping's send time, so a
         # replayed pong can't extend the dead-man's switch; every dispatch must
@@ -326,15 +379,29 @@ class SubAgent:
         }
 
     def _transport_trusted(self) -> bool:
+        return self._transport_why_not() is None
+
+    def _transport_why_not(self) -> str | None:
+        """None when this connection to core may carry execution and reads;
+        otherwise a plain reason, used in refusals."""
         if self.allow_untrusted_transport:
-            return True
-        try:
-            addr = ipaddress.ip_address((self._peer_ip or "").split("%", 1)[0])
-        except ValueError:
-            return False
-        if getattr(addr, "ipv4_mapped", None):
-            addr = addr.ipv4_mapped
-        return any(addr in net for net in _TRUSTED_TRANSPORT_NETWORKS)
+            return None
+        peer = _as_ip(self._peer_ip)
+        if peer is None:
+            return "core's address on this connection is unknown"
+        if any(peer in net for net in _LOOPBACK_NETWORKS):
+            return None
+        iface = local_interface_of(_as_ip(self._local_ip))
+        if iface is not None and iface in self.trusted_interfaces:
+            return None
+        if iface is not None and iface.startswith(TAILSCALE_INTERFACE_PREFIX) \
+                and any(peer in net for net in _TAILNET_NETWORKS):
+            return None
+        if any(peer in net for net in _TAILNET_NETWORKS):
+            return (f"core is reached at {self._peer_ip!r}, a tailnet-range address, but not over a Tailscale "
+                    f"interface (this end is on {iface or 'an unknown interface'}) -- 100.64.0.0/10 is also "
+                    "carrier-grade NAT space, so it isn't treated as encrypted")
+        return f"core is reached at {self._peer_ip!r}, which is not loopback or over a Tailscale interface"
 
     def stop(self) -> None:
         self._stop_requested = True
@@ -426,6 +493,8 @@ class SubAgent:
         self._last_core_message_ts = None  # only a signed pong on THIS connection re-arms execution
         peer = writer.get_extra_info("peername")
         self._peer_ip = peer[0] if isinstance(peer, tuple) and peer else None
+        local = writer.get_extra_info("sockname")
+        self._local_ip = local[0] if isinstance(local, tuple) and local else None
         await proto.write_frame(writer, proto.build_hello(
             self.agent_id, auth, _hostname(), AGENT_VERSION,
             session_nonce=self._session_nonce, ceiling=self.ceiling_report(),
@@ -631,10 +700,10 @@ class SubAgent:
             return {"status": "refused", "reason": "execution is not enabled on this agent (local opt-in required)"}
         if not self.token:
             return {"status": "refused", "reason": "not paired"}
-        if not self._transport_trusted():
+        why_not = self._transport_why_not()
+        if why_not is not None:
             return {"status": "refused", "reason": (
-                f"core is reached at {self._peer_ip!r}, which is not loopback or a Tailscale address -- "
-                "this channel has no encryption of its own; use Tailscale/WireGuard "
+                f"{why_not} -- this channel has no encryption of its own; use Tailscale/WireGuard "
                 "(or start the agent with --allow-untrusted-transport to accept the risk)")}
         dispatch_id, action_id = msg.get("dispatch_id"), msg.get("action_id")
         slot_values, version = msg.get("slot_values"), msg.get("whitelist_version")
@@ -687,9 +756,10 @@ class SubAgent:
         unsigned message can't move the replay floor."""
         if not self.token:
             return "not paired"
-        if not self._transport_trusted():
-            return (f"core is reached at {self._peer_ip!r}, which is not loopback or a Tailscale address -- "
-                    "this channel has no encryption of its own, so investigation reads are refused on it. "
+        why_not = self._transport_why_not()
+        if why_not is not None:
+            return (f"{why_not} -- this channel has no encryption of its own, so investigation reads are "
+                    "refused on it. "
                     "Reach Kratos over Tailscale/WireGuard, or reinstall the agent with "
                     "--allow-untrusted-transport if this network is trusted")
         request_id, probe, params, seq = msg.get("request_id"), msg.get("probe"), msg.get("params"), msg.get("seq")
@@ -816,6 +886,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--trusted-interface", dest="trusted_interfaces", action="append", default=[], metavar="NAME",
+        help=("A network interface that encrypts traffic by itself (e.g. your own WireGuard tunnel wg0, or a "
+              "Tailscale TUN with a custom name). Core reached over it counts as a trusted transport. "
+              "Repeatable. Interfaces named tailscale* are recognised without this."),
+    )
+    p.add_argument(
         "--local-allow-file", default=cl.LOCAL_ALLOW_FILE,
         help="Exact commands this target's admin allows Kratos to run, one per line (default: %(default)s).",
     )
@@ -906,6 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         ping_interval=args.ping_interval,
         execution_enabled=args.execution_enabled,
         allow_untrusted_transport=args.allow_untrusted_transport,
+        trusted_interfaces=args.trusted_interfaces,
         local_allow_file=args.local_allow_file,
     )
     if args.execution_enabled:

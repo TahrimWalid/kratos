@@ -257,7 +257,7 @@ def test_agent_refuses_unsigned_replayed_and_foreign_requests(tmp_path):
             forged["probe"] = "processes"                           # tampered after signing
             assert forged["sig"] and a._check_read_request(forged) == "invalid signature"
             a._peer_ip = "192.168.1.20"                              # plain LAN, no flag
-            assert "not loopback or a Tailscale" in a._check_read_request(req(1002))
+            assert "not loopback or over a Tailscale interface" in a._check_read_request(req(1002))
             a.allow_untrusted_transport = True
             assert a._check_read_request(req(1003)) is None
             # the live channel still works after all that (core's own seq is independent)

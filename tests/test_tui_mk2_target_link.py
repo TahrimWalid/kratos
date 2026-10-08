@@ -199,9 +199,22 @@ def test_plain_network_hub_asks_before_allowing_reads(tmp_path, monkeypatch):
     from kratos.subagent import hub_address
     from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
-    assert hub_address.is_trusted_transport_address("100.64.0.10")
+    from kratos.subagent import agent as agent_mod
+
     assert hub_address.is_trusted_transport_address("127.0.0.1")
     assert not hub_address.is_trusted_transport_address("192.168.1.20")
+    # review v2 F-7: a tailnet-range address counts only if it is on one of this
+    # machine's Tailscale interfaces -- otherwise it may be carrier-grade NAT.
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda a: None)
+    assert not hub_address.is_trusted_transport_address("100.64.0.10")
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda a: "eth0")
+    assert not hub_address.is_trusted_transport_address("100.64.0.10")
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda a: "tailscale0")
+    assert hub_address.is_trusted_transport_address("100.64.0.10")
+    assert not hub_address.is_trusted_transport_address("192.168.1.20")  # interface alone isn't enough
+    monkeypatch.undo()
+    # From here on, pretend 100.64.0.10 is this machine's own tailscale0 address.
+    monkeypatch.setattr(agent_mod, "local_interface_of", lambda a: "tailscale0" if str(a) == "100.64.0.10" else None)
     screen = SubAgentScreen(tmp_path)
     out: dict = {}
 
