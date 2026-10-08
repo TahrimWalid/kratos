@@ -239,6 +239,15 @@ class SubAgentScreen(Screen):
         hint = restart_hint()
         if hint:  # this screen's own code may be older than what's described above
             line.append(f"\n◐ {hint}", style=T.ATTENTION)
+        from kratos.subagent.agent import AGENT_VERSION
+
+        outdated = [t.get("name") or t.get("hostname") or t["target_id"]
+                    for t in self._sa_store.list_targets(include_revoked=False)
+                    if ST.agent_outdated(t.get("agent_version"))]
+        if outdated:
+            names = ", ".join(outdated[:3]) + (f" and {len(outdated) - 3} more" if len(outdated) > 3 else "")
+            line.append(f"\n◐ An agent update ({AGENT_VERSION}) is ready for {names}: select it and press g. "
+                        "It keeps its pairing.", style=T.ATTENTION)
         self.query_one("#sa-listener", Static).update(line)
 
     def _refresh(self) -> None:
@@ -293,7 +302,9 @@ class SubAgentScreen(Screen):
                 Text(f"{glyph} {st.label}", style=color),
                 Text(t.get("name") or "—", style=T.TEXT_DIM if dim else ""),
                 Text(t.get("hostname") or "—", style=T.TEXT_DIM if dim else ""),
-                Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else ""),
+                (Text(f"{t.get('agent_version')} → g", style=T.ATTENTION)
+                 if not dim and ST.agent_outdated(t.get("agent_version"))
+                 else Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else "")),
                 Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
                 Text(st.reason, style=T.TEXT_DIM),
             ])

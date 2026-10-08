@@ -96,6 +96,18 @@ SILENT_SESSION_REPLACE_SECONDS = 15.0
 # guesses over many addresses doesn't help: at 60 a minute, a code's 15-minute
 # life allows ~900 guesses against 2**32 possible codes. Token logins aren't
 # globally capped, so a flood of bad codes never locks out paired agents.
+# An always-on listener (a systemd service) restarts itself to load newer
+# Kratos code once the code on disk has stopped changing for CODE_SETTLE_SECONDS
+# (so a git pull or pip install mid-way doesn't trigger it) and the listener has
+# been idle -- no read, run or allowlist push -- for IDLE_BEFORE_RESTART_SECONDS
+# (an investigation makes many reads in a row; a restart between two of them
+# would fail the next). systemd starts it again (Restart=always); the exit code
+# is EX_TEMPFAIL so a unit with Restart=on-failure restarts it too. Agents
+# reconnect on their own within seconds. KRATOS_LISTENER_AUTO_RESTART=0 turns
+# this off.
+CODE_SETTLE_SECONDS = 30.0
+IDLE_BEFORE_RESTART_SECONDS = 60.0
+RESTART_EXIT_CODE = 75
 AUTH_FAILURE_LIMIT = 10
 AUTH_FAILURE_WINDOW_SECONDS = 60.0
 AUTH_TRACKED_SOURCES_MAX = 4096
@@ -239,6 +251,10 @@ class CoreServer:
         # naturally (not force-resolved) if the connection drops mid-flight,
         # which is exactly the real "outcome unknown" case.
         self._pending_whitelist_ack: dict[str, asyncio.Future] = {}
+        self._last_activity = time.monotonic()
+        self._update_seen: tuple[str, float] | None = None  # (disk build, first seen)
+        self._servicing_dispatch = False
+        self.restart_for_update: str | None = None  # the build it stopped to load
         # Version of the last push each agent refused as a whole (review v2 F-3).
         self._push_refused: dict[str, int] = {}
         self._pending_exec: dict[str, asyncio.Future] = {}
@@ -346,6 +362,44 @@ class CoreServer:
                         writer.close()
             except Exception as e:  # noqa: BLE001 -- one bad beat must not kill the loop
                 logger.warning("listener heartbeat failed: %s", e)
+            try:
+                if await self._ready_to_restart_for_update():
+                    return
+            except Exception as e:  # noqa: BLE001 -- never let the update check stop the listener
+                logger.warning("update check failed: %s", e)
+
+    def _busy(self) -> bool:
+        return bool(self._pending_reads or self._pending_exec or self._pending_whitelist_ack
+                    or self._servicing_dispatch)
+
+    def note_activity(self) -> None:
+        self._last_activity = time.monotonic()
+
+    async def _ready_to_restart_for_update(self) -> bool:
+        """See CODE_SETTLE_SECONDS. True (after stopping the listener) when it
+        should exit so systemd starts it on the newer code."""
+        if self.mode != "service" or os.environ.get("KRATOS_LISTENER_AUTO_RESTART", "1") == "0":
+            return False
+        from kratos.utils.build_info import display_build, newer_build_on_disk
+
+        disk = await asyncio.to_thread(newer_build_on_disk)
+        now = time.monotonic()
+        if disk is None:
+            self._update_seen = None
+            return False
+        if self._update_seen is None or self._update_seen[0] != disk:
+            self._update_seen = (disk, now)  # code changed (again): wait for it to settle
+            return False
+        if now - self._update_seen[1] < CODE_SETTLE_SECONDS:
+            return False
+        if self._busy() or now - self._last_activity < IDLE_BEFORE_RESTART_SECONDS:
+            return False
+        logger.warning("newer Kratos code on disk (%s) -- restarting to load it", display_build(disk))
+        self.restart_for_update = disk
+        for target_id in list(self._live):
+            self._close_reason[target_id] = "the listener restarted to load newer Kratos code"
+        self.stop()
+        return True
 
     def _auth_blocked(self, peer_ip: str) -> bool:
         return self._auth_limiter.source_blocked(peer_ip)
@@ -403,6 +457,14 @@ class CoreServer:
         target = self.store.get_target(target_id)
         if target is None:
             return
+        self._servicing_dispatch = True
+        try:
+            await self._service_queued(target_id, pending, target)
+        finally:
+            self._servicing_dispatch = False
+            self.note_activity()
+
+    async def _service_queued(self, target_id: str, pending: list, target: dict) -> None:
         for queued in pending:
             # Atomic, at-most-once: re-checks the machine's execution consent
             # and the request's age at the moment of sending (review v2 F-6).
@@ -451,6 +513,7 @@ class CoreServer:
         envelope: dict[str, Any] = {"type": proto.MSG_WHITELIST_PUSH, "version": version, "actions": actions}
         envelope["sig"] = signing.sign_envelope(key, envelope)
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self.note_activity()
         self._pending_whitelist_ack[target_id] = fut
         try:
             await proto.write_frame(writer, envelope)
@@ -750,6 +813,7 @@ class CoreServer:
             envelope = proto.build_read_request(request_id, probe, params, seq, nonce)
             envelope["sig"] = signing.sign_envelope(signing.derive_signing_key(target["token"]), envelope)
             fut: asyncio.Future = asyncio.get_event_loop().create_future()
+            self.note_activity()
             self._pending_reads[request_id] = (target_id, fut)
             await proto.write_frame(writer, envelope)
             reply = await asyncio.wait_for(fut, timeout=budget)
@@ -759,6 +823,7 @@ class CoreServer:
             return {"status": "offline", "reason": f"the connection to the sub-agent failed mid-read ({type(e).__name__})"}
         finally:
             self._pending_reads.pop(request_id, None)
+            self.note_activity()
             lock.release()
         out: dict[str, Any] = {"status": reply.get("status") if isinstance(reply.get("status"), str) else "error"}
         for key in ("reason", "data", "available"):

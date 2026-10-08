@@ -288,3 +288,19 @@ def mark_superseded(assessed: list[tuple[dict[str, Any], ConnectionState]],
                     "attention", st.last_contact, st.flaky)
         out.append((t, st))
     return out
+
+
+def _version_tuple(v: str | None) -> tuple[int, ...]:
+    try:
+        return tuple(int(x) for x in (v or "").strip().split(".")[:3])
+    except ValueError:
+        return ()
+
+
+def agent_outdated(version: str | None) -> bool:
+    """True when a machine's agent is older than the agent this Kratos ships
+    (so `g` in /subagent would update it). Unknown versions aren't flagged."""
+    from kratos.subagent.agent import AGENT_VERSION
+
+    have = _version_tuple(version)
+    return bool(have) and have < _version_tuple(AGENT_VERSION)

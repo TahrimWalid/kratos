@@ -195,6 +195,16 @@ def _check_transport(out: list[Check], target: str) -> bool | None:
                         f"{link.label} runs agent {live.get('agent_version') or '?'}, too old for investigations",
                         fix="in /subagent select it and press g to update it (it keeps its pairing); it needs 0.3.0+."))
         return False if link.mode == routing.MODE_SUBAGENT else None
+    from kratos.subagent.status import agent_outdated
+
+    if agent_outdated(live.get("agent_version")):
+        from kratos.subagent.agent import AGENT_VERSION
+
+        out.append(_row("sub-agent reads", "warn",
+                        f"{link.label} connected, but runs agent {live.get('agent_version')}; this Kratos ships "
+                        f"{AGENT_VERSION}",
+                        fix="in /subagent select it and press g to update it (it keeps its pairing)."))
+        return True
     out.append(_row("sub-agent reads", "pass",
                     f"{link.label} connected (agent {live.get('agent_version')}, {len(live.get('read_probes') or [])} "
                     f"reads; listener: {status.get('mode')})"))

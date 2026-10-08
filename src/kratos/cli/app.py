@@ -311,7 +311,7 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
 
     from kratos.storage.subagent_store import SubAgentStore
     from kratos.storage.whitelist_store import WhitelistStore
-    from kratos.subagent.core_server import CoreServer, DEFAULT_PORT
+    from kratos.subagent.core_server import RESTART_EXIT_CODE, CoreServer, DEFAULT_PORT
     from kratos.subagent.local_reads import socket_path
 
     store = SubAgentStore(args.data_dir / "kratos.db")
@@ -348,6 +348,11 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+    if server.restart_for_update:
+        # A service restarting itself to load newer code: systemd starts it
+        # again (EX_TEMPFAIL also counts as a failure for Restart=on-failure).
+        print("\n[KRATOS] Restarting to load newer Kratos code.")
+        return RESTART_EXIT_CODE
     print("\n[KRATOS] Sub-agent telemetry server stopped.")
     return 0
 

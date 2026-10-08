@@ -23,7 +23,7 @@ def test_help_fits_one_screen_and_cuts_nothing_off(tmp_path):
 
 def test_help_all_wraps_instead_of_cutting(tmp_path):
     out = _kratos(tmp_path, "--help", "--all").stdout
-    assert "read-only checks" in out.replace("\n", " ").replace("│", " ").replace("  ", " ") or "read-only" in out
+    assert "read-only" in out
     assert not any(line.rstrip("│ ").endswith("...") for line in out.splitlines())
 
 

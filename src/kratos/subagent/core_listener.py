@@ -172,6 +172,10 @@ def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str |
         f"ExecStart={exec_start}\n"
         "Restart=always\n"
         "RestartSec=5\n"
+        # It exits with 75 to restart itself onto newer Kratos code (see
+        # core_server.CODE_SETTLE_SECONDS): a deliberate restart, not a failure.
+        "SuccessExitStatus=75\n"
+        "RestartForceExitStatus=75\n"
         "\n"
         "[Install]\n"
         f"WantedBy={wanted_by}\n"
@@ -298,8 +302,12 @@ def describe_listener(
 
     older = lst.get("build") and not same_code(lst["build"], disk_build)
 
-    stale = (f" It runs an older build ({display_build(lst['build'])}); press L to restart it on the current one."
-             if older else "")
+    stale = ""
+    if older and lst.get("mode") == "service":
+        stale = (f" It runs an older build ({display_build(lst['build'])}) and restarts itself onto the new one "
+                 "within about a minute of being idle; press L to do it now.")
+    elif older:
+        stale = f" It runs an older build ({display_build(lst['build'])}); press L to restart it on the current one."
     mode = lst.get("mode")
     if mode == "service":
         where = f"{scope} service" if scope else "systemd service"
