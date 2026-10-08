@@ -193,7 +193,10 @@ Self-hosting is fully supported; it's just not the default, because most people 
 ## How it's built
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/architecture.svg" width="760" alt="How Kratos is built: the terminal UI, command line and MCP server feed the Kratos core (agentic loop, deterministic pipelines, self-writing loop, findings engine), which reads monitored machines over SSH or through a sub-agent, and an experimental, off-by-default fix channel gated by the agent's allowlist">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/architecture-dark.svg">
+    <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/architecture.svg" width="760" alt="How Kratos is built: the terminal UI, command line and MCP server feed the Kratos core (agentic loop, deterministic pipelines, self-writing loop, findings engine), which reads monitored machines over SSH or through a sub-agent, and an experimental, off-by-default fix channel gated by the agent's allowlist">
+  </picture>
 </p>
 
 The core reasons about a goal and picks its own read-only tools; a findings engine (plain rules, no model) correlates what was observed. The dashed path is the experimental, off-by-default fix channel described above. More detail in [docs/DESIGN.md](https://github.com/TahrimWalid/kratos/blob/main/docs/DESIGN.md).

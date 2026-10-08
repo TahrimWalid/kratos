@@ -1,6 +1,8 @@
-%% Source of docs/images/architecture.svg (the README diagram; PyPI does not render Mermaid).
-%% Regenerate from docs/images/:
-%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture.svg -c architecture.mermaid.json -b white
+%% Source of docs/images/architecture.svg (light) and architecture-dark.svg (dark):
+%% the README shows the one matching the reader's GitHub theme (PyPI does not render
+%% Mermaid, and gets the light one). Regenerate both from docs/images/:
+%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture.svg -c architecture.mermaid.json -b transparent
+%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture-dark.svg -c architecture-dark.mermaid.json -b transparent
 flowchart TD
     you([You]) --> entry
 

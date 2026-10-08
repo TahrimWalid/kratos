@@ -1,0 +1,10 @@
+{"theme": "base", "htmlLabels": false, "flowchart": {"htmlLabels": false, "curve": "basis"},
+ "themeVariables": {
+   "fontFamily": "DejaVu Sans, Arial, sans-serif",
+   "darkMode": true,
+   "background": "#0d1117",
+   "primaryColor": "#161b22", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#3d444d",
+   "secondaryColor": "#161b22", "tertiaryColor": "#161b22",
+   "lineColor": "#8b949e", "textColor": "#e6edf3",
+   "clusterBkg": "#0f141b", "clusterBorder": "#3d444d", "titleColor": "#9198a1",
+   "edgeLabelBackground": "#0d1117", "nodeBorder": "#3d444d", "mainBkg": "#161b22"}}
