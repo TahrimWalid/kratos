@@ -39,12 +39,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import os
 import re
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from typing import Any
 
 from kratos.storage.subagent_store import SubAgentStore
@@ -88,10 +89,17 @@ _SESSION_NONCE_RE = re.compile(r"^[0-9a-f]{16,128}$")
 # agent already gave up on (NAT timeout, suspended laptop). An existing session
 # that is still talking is kept, and the newcomer refused.
 SILENT_SESSION_REPLACE_SECONDS = 15.0
-# Failed pairing/auth attempts from one address within the window before
-# further attempts are refused without a lookup (slows code guessing).
+# Failed pairing/auth attempts from one source within the window before
+# further attempts are refused without a lookup (slows code guessing). A
+# source is one IPv4 address or one IPv6 /64 (a single host can hold a whole
+# /64). Across ALL sources, wrong pairing codes are capped too, so spreading
+# guesses over many addresses doesn't help: at 60 a minute, a code's 15-minute
+# life allows ~900 guesses against 2**32 possible codes. Token logins aren't
+# globally capped, so a flood of bad codes never locks out paired agents.
 AUTH_FAILURE_LIMIT = 10
 AUTH_FAILURE_WINDOW_SECONDS = 60.0
+AUTH_TRACKED_SOURCES_MAX = 4096
+PAIRING_GUESS_LIMIT = 60
 
 # Investigation reads (docs/subagent_read_routing.md): the first agent version
 # that serves them, how long past a probe's own on-box timeout to wait for its
@@ -101,6 +109,97 @@ READ_MIN_AGENT_VERSION = (0, 3, 0)
 READ_REPLY_MARGIN_SECONDS = 15.0
 RECONNECT_EXPECTED_SECONDS = 90.0
 _MAX_ADVERTISED_PROBES = 64
+
+
+def parse_bind_hosts(value: Any) -> list[str]:
+    """`--host` for the listener: one address, a comma-separated list, or a
+    list. Each must be an IP address or hostname (it ends up in a service
+    unit's command line)."""
+    from kratos.utils.hostnames import is_ip_or_hostname
+
+    items = value if isinstance(value, (list, tuple)) else str(value or "").split(",")
+    hosts = list(dict.fromkeys(str(h).strip() for h in items if str(h).strip()))
+    if not hosts:
+        raise ValueError("no address to listen on")
+    for h in hosts:
+        if not is_ip_or_hostname(h):
+            raise ValueError(f"{h!r} is not an IP address or hostname")
+    return hosts
+
+
+class AuthFailureLimiter:
+    """Counts failed logins (review v2 F-10).
+
+    Per source (an IPv4 address, or an IPv6 /64): AUTH_FAILURE_LIMIT failures
+    in AUTH_FAILURE_WINDOW_SECONDS block that source. At most
+    AUTH_TRACKED_SOURCES_MAX sources are remembered; past that, expired ones
+    are dropped first, then the oldest source that isn't blocked -- never
+    everyone at once (4096 failing addresses used to reset every counter), and
+    a spray of fresh addresses can't push a blocked source out.
+    Globally: PAIRING_GUESS_LIMIT wrong pairing codes per window pause pairing
+    for everyone (tokens are unaffected)."""
+
+    def __init__(self, clock: Any = time.monotonic) -> None:
+        self._clock = clock
+        self._sources: "OrderedDict[str, deque]" = OrderedDict()
+        self._pairing_failures: deque = deque()
+
+    @staticmethod
+    def source_key(peer_ip: str) -> str:
+        try:
+            addr = ipaddress.ip_address(str(peer_ip).split("%", 1)[0])
+        except ValueError:
+            return str(peer_ip)
+        mapped = getattr(addr, "ipv4_mapped", None)
+        if mapped is not None:
+            return str(mapped)
+        if addr.version == 6:
+            return str(ipaddress.ip_network(f"{addr}/64", strict=False))
+        return str(addr)
+
+    def _expire(self, q: deque, now: float) -> None:
+        while q and now - q[0] > AUTH_FAILURE_WINDOW_SECONDS:
+            q.popleft()
+
+    def source_blocked(self, peer_ip: str) -> bool:
+        q = self._sources.get(self.source_key(peer_ip))
+        if not q:
+            return False
+        self._expire(q, self._clock())
+        return len(q) >= AUTH_FAILURE_LIMIT
+
+    def pairing_paused(self) -> bool:
+        self._expire(self._pairing_failures, self._clock())
+        return len(self._pairing_failures) >= PAIRING_GUESS_LIMIT
+
+    def note_failure(self, peer_ip: str, *, pairing_code: bool = False) -> None:
+        now = self._clock()
+        key = self.source_key(peer_ip)
+        q = self._sources.pop(key, None) or deque(maxlen=AUTH_FAILURE_LIMIT)
+        q.append(now)
+        self._sources[key] = q  # most recently failing goes last
+        if len(self._sources) > AUTH_TRACKED_SOURCES_MAX:
+            self._evict(now, keep=key)
+        if pairing_code:
+            self._expire(self._pairing_failures, now)
+            self._pairing_failures.append(now)
+            while len(self._pairing_failures) > PAIRING_GUESS_LIMIT:
+                self._pairing_failures.popleft()
+
+    def _evict(self, now: float, keep: str) -> None:
+        # 1. sources whose window has passed; 2. the oldest source that isn't
+        # blocked (a spray of fresh addresses can't push a blocked one out);
+        # 3. only if every remembered source is blocked, the oldest of those.
+        for k in [k for k, v in self._sources.items() if not v or now - v[-1] > AUTH_FAILURE_WINDOW_SECONDS]:
+            del self._sources[k]
+        while len(self._sources) > AUTH_TRACKED_SOURCES_MAX:
+            victim = next((k for k, v in self._sources.items() if k != keep and len(v) < AUTH_FAILURE_LIMIT), None)
+            if victim is None:
+                victim = next(k for k in self._sources if k != keep)
+            del self._sources[victim]
+
+    def tracked_sources(self) -> int:
+        return len(self._sources)
 
 
 class CoreServer:
@@ -114,7 +213,10 @@ class CoreServer:
         read_socket_path: Any | None = None,
     ) -> None:
         self.store = store
-        self.host = host
+        # One address, or several ("127.0.0.1,100.64.1.2" or a list): the
+        # always-on listener can bind only the addresses agents dial.
+        self.bind_hosts = parse_bind_hosts(host)
+        self.host = ",".join(self.bind_hosts)
         self.port = port
         self.whitelist_store = whitelist_store
         # How this listener runs, recorded so the UI can say whether telemetry
@@ -125,7 +227,7 @@ class CoreServer:
         self._heartbeat_task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._last_frame: dict[str, float] = {}
-        self._auth_failures: dict[str, deque] = {}
+        self._auth_limiter = AuthFailureLimiter()
         # target_id -> writer, for real live-connection status -- ground
         # truth ONLY within this running process (a separate CLI query has
         # no visibility into this and falls back to last_seen recency, see
@@ -182,7 +284,8 @@ class CoreServer:
         return out
 
     async def serve_forever(self) -> None:
-        self._server = await asyncio.start_server(self._handle_connection, self.host, self.port)
+        hosts = self.bind_hosts if len(self.bind_hosts) > 1 else self.bind_hosts[0]
+        self._server = await asyncio.start_server(self._handle_connection, hosts, self.port)
         sockets = self._server.sockets or []
         addrs = ", ".join(str(sock.getsockname()) for sock in sockets)
         logger.info("kratos subagent core server listening on %s", addrs)
@@ -245,16 +348,10 @@ class CoreServer:
                 logger.warning("listener heartbeat failed: %s", e)
 
     def _auth_blocked(self, peer_ip: str) -> bool:
-        q = self._auth_failures.get(peer_ip)
-        now = time.monotonic()
-        while q and now - q[0] > AUTH_FAILURE_WINDOW_SECONDS:
-            q.popleft()
-        return bool(q) and len(q) >= AUTH_FAILURE_LIMIT
+        return self._auth_limiter.source_blocked(peer_ip)
 
-    def _note_auth_failure(self, peer_ip: str) -> None:
-        if len(self._auth_failures) > 4096:  # bound memory under a spray from many addresses
-            self._auth_failures.clear()
-        self._auth_failures.setdefault(peer_ip, deque(maxlen=AUTH_FAILURE_LIMIT)).append(time.monotonic())
+    def _note_auth_failure(self, peer_ip: str, *, pairing_code: bool = False) -> None:
+        self._auth_limiter.note_failure(peer_ip, pairing_code=pairing_code)
 
     async def close(self) -> None:
         if self._heartbeat_task is not None:
@@ -443,10 +540,18 @@ class CoreServer:
             if hello is None or hello.get("type") != proto.MSG_HELLO:
                 await proto.write_frame(writer, proto.build_hello_reject("expected a hello message first"))
                 return
+            uses_code = not (hello.get("auth") or {}).get("token") and bool((hello.get("auth") or {}).get("pairing_code"))
+            if uses_code and self._auth_limiter.pairing_paused():
+                # Too many wrong codes from everywhere: refuse without looking
+                # the code up, so the cap really bounds guessing.
+                reason = "too many wrong pairing codes recently -- pairing is paused for a minute; try again"
+                self._record_rejection(hello, peer_ip, reason)
+                await proto.write_frame(writer, proto.build_hello_reject(reason))
+                return
             target_id, token, reject_reason = self._authenticate(hello)
             if reject_reason:
                 logger.info("rejected connection from %s: %s", peer, reject_reason)
-                self._note_auth_failure(peer_ip)
+                self._note_auth_failure(peer_ip, pairing_code=uses_code)
                 self._record_rejection(hello, peer_ip, reject_reason)
                 target_id = None
                 await proto.write_frame(writer, proto.build_hello_reject(reject_reason))
@@ -478,7 +583,12 @@ class CoreServer:
             if isinstance(nonce, str) and _SESSION_NONCE_RE.fullmatch(nonce):
                 self._session_nonce[target_id] = nonce
             self._note_read_capability(target_id, hello)
-            self.store.record_connected(target_id, hostname=hello.get("hostname"), agent_version=hello.get("agent_version"))
+            local = writer.get_extra_info("sockname")
+            core_addr = str(local[0]).split("%", 1)[0] if isinstance(local, tuple) and local else None
+            if core_addr and core_addr.startswith("::ffff:"):
+                core_addr = core_addr[len("::ffff:"):]
+            self.store.record_connected(target_id, hostname=hello.get("hostname"),
+                                        agent_version=hello.get("agent_version"), core_addr=core_addr)
             self._safe(self.store.record_connection_open, target_id, listener_id=self.listener_id, peer=peer_ip,
                        collect_interval=_interval(hello.get("collect_interval")),
                        ping_interval=_interval(hello.get("ping_interval")))

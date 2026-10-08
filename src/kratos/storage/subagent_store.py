@@ -199,6 +199,11 @@ class SubAgentStore:
             for col in ("replaces_target_id", "last_attempt_at", "last_attempt_host", "last_attempt_reason", "core_host"):
                 if col not in have:
                     conn.execute(f"ALTER TABLE subagent_pairing_codes ADD COLUMN {col} TEXT")
+            # The address of THIS machine the agent's connection last arrived
+            # on -- what the always-on listener must keep listening on.
+            have = {r["name"] for r in conn.execute("PRAGMA table_info(subagent_targets)")}
+            if "core_addr" not in have:
+                conn.execute("ALTER TABLE subagent_targets ADD COLUMN core_addr TEXT")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -383,13 +388,15 @@ class SubAgentStore:
             conn.close()
         return [dict(r) for r in rows]
 
-    def record_connected(self, target_id: str, hostname: str | None, agent_version: str | None) -> None:
+    def record_connected(self, target_id: str, hostname: str | None, agent_version: str | None,
+                         core_addr: str | None = None) -> None:
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "UPDATE subagent_targets SET last_seen = ?, hostname = COALESCE(?, hostname), agent_version = COALESCE(?, agent_version) WHERE target_id = ?",
-                (utc_now_iso(), hostname, agent_version, target_id),
+                "UPDATE subagent_targets SET last_seen = ?, hostname = COALESCE(?, hostname), "
+                "agent_version = COALESCE(?, agent_version), core_addr = COALESCE(?, core_addr) WHERE target_id = ?",
+                (utc_now_iso(), hostname, agent_version, core_addr, target_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -506,6 +513,33 @@ class SubAgentStore:
         finally:
             conn.close()
         return dict(row) if row else None
+
+    def dial_addresses(self) -> list[str] | None:
+        """The addresses of this machine that paired agents (and pending
+        pairing codes) reach the listener on: where each active agent's last
+        connection arrived, else the address its pairing told it to dial.
+        None when any active agent's address is unknown (paired before Kratos
+        recorded it and not connected since)."""
+        conn = _connect(self.db_path)
+        try:
+            targets = conn.execute(
+                "SELECT t.core_addr, (SELECT p.core_host FROM subagent_pairing_codes p "
+                "  WHERE p.used_by_target_id = t.target_id AND p.core_host IS NOT NULL "
+                "  ORDER BY p.used_at DESC LIMIT 1) AS paired_host "
+                "FROM subagent_targets t WHERE t.revoked_at IS NULL").fetchall()
+            pending = conn.execute(
+                "SELECT core_host FROM subagent_pairing_codes WHERE used_at IS NULL AND expires_at >= ? "
+                "AND core_host IS NOT NULL", (utc_now_iso(),)).fetchall()
+        finally:
+            conn.close()
+        out: set[str] = set()
+        for row in targets:
+            addr = row["core_addr"] or row["paired_host"]
+            if not addr:
+                return None
+            out.add(addr)
+        out.update(r["core_host"] for r in pending)
+        return sorted(out)
 
     def core_host_for_target(self, target_id: str) -> str | None:
         """The Kratos address this box was told to dial when it paired (from

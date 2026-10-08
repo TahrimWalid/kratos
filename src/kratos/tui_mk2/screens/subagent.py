@@ -442,6 +442,17 @@ class SubAgentScreen(Screen):
             self._announce_listener()  # it can only check in if something is listening
         return None
 
+    def _warn_if_listener_not_on(self, host: str) -> None:
+        """The always-on listener may listen only on the addresses machines
+        dialed when it was installed; a new address needs it updated (L)."""
+        from kratos.subagent import core_listener as _cl
+
+        bound = _cl.installed_bind_hosts(_cl.service_scope())
+        if bound is not None and not _cl.bind_covers(bound, host):
+            self._log(Text(
+                f"⚠ The always-on listener only listens on {', '.join(bound)}, not {host} -- this machine can't "
+                "check in until you press L to update it.", style=f"bold {T.ATTENTION}"))
+
     async def _start_pairing(self, name: str | None, *, replaces_target_id: str | None = None,
                              host: str | None = None) -> None:
         host = host or await self._pick_hub_address()
@@ -459,6 +470,7 @@ class SubAgentScreen(Screen):
         # Make sure a listener is accepting connections, so the target can
         # actually check in -- no second terminal needed.
         self._announce_listener()
+        self._warn_if_listener_not_on(host)
         self._render_pairing_instructions(name, host, code, result["ttl_seconds"] // 60, out_path)
         # Offer to copy+run the installer on the target over SSH (one keypress
         # instead of manual scp/ssh). Falls back cleanly to the manual steps.
@@ -992,10 +1004,28 @@ class SubAgentScreen(Screen):
         linger = _cl.linger_enabled()
         user_mode, explanation = _cl.service_plan(
             passwordless_sudo=_cl.passwordless_sudo_available(), linger=linger, scope_now=scope_now)
-        title = "Restart the always-on listener?" if scope_now else "Install the always-on listener?"
+        # Listen only where paired machines dial, when that's known and on this
+        # machine; otherwise on all interfaces (review v2 F-10).
+        want = _cl.recommended_bind_hosts(self._sa_store.dial_addresses())
+        have = _cl.installed_bind_hosts(scope_now)
+        rewrite = scope_now is None or have != want
+        where = ("all network interfaces (some machine dials an address Kratos can't pin to this computer)"
+                 if want == [_cl.DEFAULT_BIND_HOST] else ", ".join(want) + " -- only the addresses your machines dial")
+        if scope_now and rewrite:
+            explanation += (f"\n\nIt currently listens on {', '.join(have or ['an unknown address'])}; this "
+                            f"updates it to listen on {where}.")
+        else:
+            explanation += f"\n\nIt listens on {where}."
+        title = ("Update the always-on listener?" if scope_now and rewrite else
+                 "Restart the always-on listener?" if scope_now else "Install the always-on listener?")
         ok = await self.app.push_screen_wait(ConfirmModal(title, explanation + "\n\nPress y to go ahead."))
-        cmds = (_cl.core_service_restart_commands(user_mode=user_mode) if scope_now else
-                _cl.core_service_install_commands(self._data_dir, port=self._core_port, user_mode=user_mode))
+        if not rewrite:
+            cmds = _cl.core_service_restart_commands(user_mode=user_mode)
+        else:
+            cmds = _cl.core_service_install_commands(self._data_dir, port=self._core_port, bind_host=want,
+                                                     user_mode=user_mode)
+            if scope_now:  # `enable --now` doesn't restart a service that's already running
+                cmds += _cl.core_service_restart_commands(user_mode=user_mode)[1:]
         if not ok:
             self._log(Text("Nothing changed. To do it yourself later, run:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
             return

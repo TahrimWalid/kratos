@@ -317,9 +317,14 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
     store = SubAgentStore(args.data_dir / "kratos.db")
     # The whitelist store is what lets core push allowlists, record what each agent
     # allows, and deliver /whitelist runs (they wait in its queue for this process).
-    server = CoreServer(store, host=args.host, port=args.port, whitelist_store=WhitelistStore(args.data_dir / "kratos.db"),
-                        read_socket_path=socket_path(args.data_dir))
-    print(f"[KRATOS] Sub-agent telemetry server listening on {args.host}:{args.port} (Ctrl+C to stop)")
+    try:
+        server = CoreServer(store, host=args.host, port=args.port,
+                            whitelist_store=WhitelistStore(args.data_dir / "kratos.db"),
+                            read_socket_path=socket_path(args.data_dir))
+    except ValueError as exc:
+        print(f"[KRATOS] --host: {exc}", file=sys.stderr)
+        return 2
+    print(f"[KRATOS] Sub-agent telemetry server listening on {server.host} port {args.port} (Ctrl+C to stop)")
 
     async def _main() -> None:
         # SIGTERM (systemctl stop/restart) and Ctrl+C both shut down cleanly,
@@ -1350,7 +1355,8 @@ def build_parser() -> argparse.ArgumentParser:
         "subagent-serve",
         help="Run the core-side sub-agent telemetry listener (accepts paired agents' read-only telemetry)",
     )
-    subagent_serve.add_argument("--host", default="0.0.0.0", help="Interface to listen on (default: all)")
+    subagent_serve.add_argument("--host", default="0.0.0.0",
+                                help="Address(es) to listen on, comma-separated (default: all interfaces)")
     subagent_serve.add_argument("--port", type=int, default=8765)
     subagent_serve.set_defaults(func=cmd_subagent_serve)
 

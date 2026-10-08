@@ -59,13 +59,95 @@ def _kratos_executable() -> str:
     return f"{sys.executable} -m kratos.cli.app"
 
 
-def core_service_exec_start(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST) -> str:
+_ALL_INTERFACES = ("0.0.0.0", "::")
+
+
+def recommended_bind_hosts(dial_addresses: list[str] | None) -> list[str]:
+    """Where the always-on listener should listen (review v2 F-10): loopback
+    plus the addresses paired agents dial, when every one of those is an
+    address of THIS machine. Otherwise -- an address is unknown, a hostname,
+    or not on this machine (e.g. a public IP forwarded by a router) -- all
+    interfaces, so no agent is cut off. Loopback is always included: Kratos
+    itself checks the listener there."""
+    import ipaddress
+
+    from kratos.subagent.agent import local_interface_of
+
+    if not dial_addresses:
+        return [DEFAULT_BIND_HOST]
+    hosts: list[str] = ["127.0.0.1"]
+    for addr in dial_addresses:
+        try:
+            ip = ipaddress.ip_address(addr.strip().strip("[]"))
+        except ValueError:
+            return [DEFAULT_BIND_HOST]
+        if ip.is_loopback:
+            continue
+        if local_interface_of(ip) is None:
+            return [DEFAULT_BIND_HOST]
+        hosts.append(str(ip))
+    return list(dict.fromkeys(hosts))
+
+
+def bind_covers(bind_hosts: list[str], address: str) -> bool:
+    """Would a listener bound to `bind_hosts` accept a connection to `address`?
+    A hostname can't be judged here, so it counts as covered only by an
+    all-interfaces bind."""
+    import ipaddress
+
+    if any(h in _ALL_INTERFACES for h in bind_hosts):
+        return True
+    try:
+        ip = ipaddress.ip_address(address.strip().strip("[]"))
+    except ValueError:
+        return False
+    return any(_same_ip(h, ip) for h in bind_hosts)
+
+
+def _same_ip(host: str, ip) -> bool:
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(host) == ip
+    except ValueError:
+        return False
+
+
+def installed_bind_hosts(scope: str | None, service_name: str = CORE_SERVICE_NAME) -> list[str] | None:
+    """The addresses an INSTALLED always-on listener service binds, read from
+    its unit file -- None when there's no service or it can't be read."""
+    import shlex
+
+    if scope is None:
+        return None
+    path = (Path.home() / ".config/systemd/user" / f"{service_name}.service" if scope == "user"
+            else Path("/etc/systemd/system") / f"{service_name}.service")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            try:
+                argv = shlex.split(line[len("ExecStart="):])
+            except ValueError:
+                return None
+            if "--host" in argv and argv.index("--host") + 1 < len(argv):
+                return [h for h in argv[argv.index("--host") + 1].split(",") if h]
+            return [DEFAULT_BIND_HOST]  # subagent-serve's own default
+    return None
+
+
+def core_service_exec_start(data_dir: Path, port: int = DEFAULT_PORT,
+                            bind_host: str | list[str] = DEFAULT_BIND_HOST) -> str:
     exe = _kratos_executable()
     data_dir = Path(data_dir).resolve()
-    return f"{exe} --data-dir {data_dir} subagent-serve --host {bind_host} --port {port}"
+    host = ",".join(bind_host) if isinstance(bind_host, (list, tuple)) else bind_host
+    return f"{exe} --data-dir {data_dir} subagent-serve --host {host} --port {port}"
 
 
-def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str = DEFAULT_BIND_HOST, user_mode: bool = False) -> str:
+def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str | list[str] = DEFAULT_BIND_HOST,
+                      user_mode: bool = False) -> str:
     """A systemd unit that runs the core telemetry listener always-on."""
     exec_start = core_service_exec_start(data_dir, port=port, bind_host=bind_host)
     wanted_by = "default.target" if user_mode else "multi-user.target"
@@ -99,7 +181,7 @@ def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str =
 def core_service_install_commands(
     data_dir: Path,
     port: int = DEFAULT_PORT,
-    bind_host: str = DEFAULT_BIND_HOST,
+    bind_host: str | list[str] = DEFAULT_BIND_HOST,
     user_mode: bool = False,
     service_name: str = CORE_SERVICE_NAME,
 ) -> list[str]:

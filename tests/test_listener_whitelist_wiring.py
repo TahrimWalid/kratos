@@ -18,6 +18,7 @@ class _FakeServer:
 
     def __init__(self, store, **kwargs):
         _FakeServer.seen = kwargs
+        self.host = kwargs.get("host")
 
     async def serve_forever(self):
         return None
