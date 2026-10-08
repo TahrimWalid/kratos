@@ -1,8 +1,12 @@
+%%{init: {"theme": "base", "flowchart": {"curve": "basis"}, "themeVariables": {"fontFamily": "DejaVu Sans, Arial, sans-serif", "primaryColor": "#21262d", "primaryTextColor": "#e6edf3", "primaryBorderColor": "#6e7681", "secondaryColor": "#21262d", "tertiaryColor": "#21262d", "lineColor": "#8b949e", "textColor": "#e6edf3", "clusterBkg": "#161b22", "clusterBorder": "#6e7681", "titleColor": "#e6edf3", "edgeLabelBackground": "#21262d", "mainBkg": "#21262d", "nodeBorder": "#6e7681"}}}%%
 %% Source of docs/images/architecture.svg (light) and architecture-dark.svg (dark):
 %% the README shows the one matching the reader's GitHub theme (PyPI does not render
-%% Mermaid, and gets the light one). Regenerate both from docs/images/:
-%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture.svg -c architecture.mermaid.json -b transparent
-%%   npx -y @mermaid-js/mermaid-cli@11 -i architecture.mmd -o architecture-dark.svg -c architecture-dark.mermaid.json -b transparent
+%% Mermaid, and gets the light one). The init line above only styles GitHub's own
+%% preview of this file (dark cards, readable on light and dark pages); the render
+%% commands drop it so each JSON config decides. From docs/images/:
+%%   sed 1d architecture.mmd > /tmp/arch.mmd
+%%   npx -y @mermaid-js/mermaid-cli@11 -i /tmp/arch.mmd -o architecture.svg -c architecture.mermaid.json -b transparent
+%%   npx -y @mermaid-js/mermaid-cli@11 -i /tmp/arch.mmd -o architecture-dark.svg -c architecture-dark.mermaid.json -b transparent
 flowchart TD
     you([You]) --> entry
 
