@@ -137,6 +137,8 @@ class CoreServer:
         # naturally (not force-resolved) if the connection drops mid-flight,
         # which is exactly the real "outcome unknown" case.
         self._pending_whitelist_ack: dict[str, asyncio.Future] = {}
+        # Version of the last push each agent refused as a whole (review v2 F-3).
+        self._push_refused: dict[str, int] = {}
         self._pending_exec: dict[str, asyncio.Future] = {}
         self._pushed_version: dict[str, int] = {}
         self._watch_task: asyncio.Task | None = None
@@ -328,7 +330,10 @@ class CoreServer:
         version = self.whitelist_store.get_whitelist_version(target_id)
         actions = [wl.spec_to_wire(row["spec"]) for row in self.whitelist_store.effective_action_set(target_id)]
         ok = await self.push_whitelist(target_id, target["token"], actions, version)
-        if ok:
+        if ok or self._push_refused.get(target_id) == version:
+            # A push the agent refused as a whole is not retried until the
+            # version changes (an edit, a re-sync or a catch-up from /whitelist):
+            # resending the same thing every tick would only be refused again.
             self._pushed_version[target_id] = version
         return ok
 
@@ -348,8 +353,18 @@ class CoreServer:
         try:
             await proto.write_frame(writer, envelope)
             ack = await asyncio.wait_for(fut, timeout=WHITELIST_PUSH_ACK_TIMEOUT_SECONDS)
+            if ack.get("type") == proto.MSG_WHITELIST_PUSH_REFUSED:
+                floor = ack.get("floor")
+                floor = floor if type(floor) is int and floor >= 0 else None
+                reason = str(ack.get("reason") or "refused")[:500]
+                logger.warning("target %s refused whitelist push v%s: %s", target_id, version, reason)
+                self._push_refused[target_id] = version
+                if self.whitelist_store is not None and hasattr(self.whitelist_store, "record_push_refused"):
+                    self.whitelist_store.record_push_refused(target_id, version, floor, reason)
+                return False
             if ack.get("version") != version:
                 return False
+            self._push_refused.pop(target_id, None)
             rejected = ack.get("rejected") if isinstance(ack.get("rejected"), list) else []
             if rejected:
                 logger.warning("target %s refused %d pushed action(s) as outside its ceiling: %s",
@@ -493,6 +508,7 @@ class CoreServer:
                 if self._live.get(target_id) is writer:
                     del self._live[target_id]
                     self._pushed_version.pop(target_id, None)
+                    self._push_refused.pop(target_id, None)
                     self._session_nonce.pop(target_id, None)
                     self._last_ping_ts.pop(target_id, None)
                     self._last_frame.pop(target_id, None)
@@ -709,7 +725,7 @@ class CoreServer:
                 if isinstance(ts, (int, float)) and not isinstance(ts, bool):
                     self._last_ping_ts[target_id] = ts
                 await proto.write_frame(writer, self._pong(target_id, token, msg.get("ts")))
-            elif mtype == proto.MSG_WHITELIST_PUSH_ACK:
+            elif mtype in (proto.MSG_WHITELIST_PUSH_ACK, proto.MSG_WHITELIST_PUSH_REFUSED):
                 fut = self._pending_whitelist_ack.get(target_id)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)

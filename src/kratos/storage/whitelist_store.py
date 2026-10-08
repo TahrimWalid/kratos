@@ -67,6 +67,7 @@ from typing import Any
 from kratos.subagent import ceiling as C
 from kratos.subagent import whitelist as W
 from kratos.subagent import whitelist_templates as T
+from kratos.subagent.protocol import MAX_WHITELIST_VERSION
 from kratos.utils.timeutil import utc_now_iso
 
 _BUSY_TIMEOUT_MS = 5000
@@ -228,6 +229,20 @@ class WhitelistStore:
                 )
                 """
             )
+            # The last push an agent refused AS A WHOLE (too old for its
+            # anti-rollback floor, out of range, malformed), with the newest
+            # version it says it has applied. Cleared by the next accepted push.
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS whitelist_push_refusals (
+                    target_id TEXT PRIMARY KEY,
+                    refused_version INTEGER,
+                    agent_floor INTEGER,
+                    reason TEXT NOT NULL,
+                    refused_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -252,14 +267,17 @@ class WhitelistStore:
             conn.close()
         return row["version"] if row else 0
 
-    def _bump_whitelist_version(self, target_id: str) -> int:
+    def _bump_whitelist_version(self, target_id: str, *, at_least: int = 0) -> int:
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
                 "SELECT version FROM whitelist_versions WHERE target_id = ?", (target_id,)
             ).fetchone()
-            new_version = (row["version"] if row else 0) + 1
+            new_version = max(row["version"] if row else 0, at_least) + 1
+            if new_version > MAX_WHITELIST_VERSION:
+                raise ValueError(
+                    f"whitelist version would pass {MAX_WHITELIST_VERSION}, the most a sub-agent accepts")
             conn.execute(
                 """
                 INSERT INTO whitelist_versions (target_id, version, updated_at) VALUES (?, ?, ?)
@@ -645,6 +663,59 @@ class WhitelistStore:
             conn.close()
         self._bump_whitelist_version(row["target_id"])
 
+    def record_push_refused(self, target_id: str, version: int | None, agent_floor: int | None,
+                            reason: str) -> None:
+        conn = _connect(self.db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO whitelist_push_refusals (target_id, refused_version, agent_floor, reason, refused_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(target_id) DO UPDATE SET refused_version = excluded.refused_version,
+                    agent_floor = excluded.agent_floor, reason = excluded.reason, refused_at = excluded.refused_at
+                """,
+                (target_id, version, agent_floor, str(reason)[:500], utc_now_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_push_refusal(self, target_id: str) -> dict[str, Any] | None:
+        """The last whole-push refusal this target's agent reported and that no
+        accepted push has cleared since -- or None."""
+        conn = _connect(self.db_path)
+        try:
+            row = conn.execute("SELECT * FROM whitelist_push_refusals WHERE target_id = ?", (target_id,)).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def push_refusal_needs_catch_up(self, target_id: str) -> bool:
+        """True when the agent has applied a NEWER version than Kratos's own
+        count -- every push from here would be refused as too old. Happens when
+        Kratos's database is restored from an older copy, or when something
+        else holding this pairing pushed to the machine."""
+        refusal = self.get_push_refusal(target_id)
+        if not refusal or refusal["agent_floor"] is None:
+            return False
+        return refusal["agent_floor"] > self.get_whitelist_version(target_id)
+
+    def catch_up_whitelist_version(self, target_id: str) -> int:
+        """Move Kratos's count past the version the agent reported, so the next
+        push is accepted (review v2 F-3 recovery). Only forward: it can't make
+        the agent accept anything older. Raises ValueError when there is
+        nothing to catch up to, or when the agent's version is already at the
+        top of the range -- then only the target's admin can reset it
+        (`--reset-whitelist-floor`, see installer.reset_whitelist_floor_command)."""
+        refusal = self.get_push_refusal(target_id)
+        floor = refusal["agent_floor"] if refusal else None
+        if floor is None:
+            raise ValueError("this machine hasn't reported a newer whitelist version -- nothing to catch up to")
+        if floor >= MAX_WHITELIST_VERSION:
+            raise ValueError("this machine's recorded whitelist version is at the top of the range; "
+                             "its admin has to reset it on the machine")
+        return self._bump_whitelist_version(target_id, at_least=floor)
+
     def request_resync(self, target_id: str) -> int:
         """Ask core to re-push this target's whitelist on its next watch-loop
         tick; the agent's ack reports its current allow file back. Pushing an
@@ -713,6 +784,12 @@ class WhitelistStore:
             for r in rejected if isinstance(r, dict)
         ][:500]
         self._upsert_agent_state(target_id, ceiling=ceiling, acked_version=version, rejected=clean)
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("DELETE FROM whitelist_push_refusals WHERE target_id = ?", (target_id,))
+            conn.commit()
+        finally:
+            conn.close()
 
     def _upsert_agent_state(self, target_id: str, *, agent_version: str | None = None, ceiling: Any = None,
                             acked_version: int | None = None, rejected: list[dict[str, str]] | None = None) -> None:

@@ -49,7 +49,9 @@ from kratos.storage.whitelist_store import WhitelistStore
 from kratos.subagent import ceiling as C
 from kratos.subagent import entry_builder as EB
 from kratos.subagent import whitelist as W
+from kratos.subagent import installer
 from kratos.subagent import whitelist_templates as TPL
+from kratos.subagent.protocol import MAX_WHITELIST_VERSION
 from kratos.subagent.status import derive_status
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import (
@@ -265,6 +267,16 @@ class WhitelistScreen(Screen):
         if refusal:
             banner.append(f"\n⚠ {refusal} -- approving a fix only shows you the command to run yourself.",
                           style=f"bold {T.ATTENTION}")
+        push_refusal = self._wl_store.get_push_refusal(self._target_id)
+        if push_refusal:
+            if self._wl_store.push_refusal_needs_catch_up(self._target_id):
+                banner.append(
+                    f"\n⚠ this machine already applied allowlist version {push_refusal['agent_floor']}, newer than "
+                    f"Kratos's own ({self._wl_store.get_whitelist_version(self._target_id)}), so it refuses every "
+                    "change from here -- press s to catch up.", style=f"bold {T.ATTENTION}")
+            else:
+                banner.append(f"\n⚠ the agent refused the last allowlist update: {push_refusal['reason']}",
+                              style=f"bold {T.ATTENTION}")
         if agent.get("rejected"):
             banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action(s) -- press c for why.",
                           style=T.ATTENTION)
@@ -677,12 +689,52 @@ class WhitelistScreen(Screen):
             self._log(Text(f"agent version {state['agent_version']} · last report {state.get('updated_at')}",
                            style=T.TEXT_FAINT))
 
-    def action_resync(self) -> None:
+    @work
+    async def action_resync(self) -> None:
         if self._target_id is None:
+            return
+        if self._wl_store.push_refusal_needs_catch_up(self._target_id):
+            await self._catch_up_whitelist_version()
             return
         self._wl_store.request_resync(self._target_id)
         self._log(Text("Asked the agent to report again -- if `kratos subagent-serve` is running and the target is "
                        "connected, press c in a few seconds to see its answer.", style=T.TEXT_DIM))
+        self.set_timer(4.0, self._refresh)
+
+    async def _catch_up_whitelist_version(self) -> None:
+        """Review v2 F-3 recovery: the machine has applied a newer allowlist
+        version than Kratos's own count (Kratos's data was restored from an
+        older copy, or something else holding this pairing pushed to it). Move
+        Kratos's count forward -- never the machine's back -- after saying so."""
+        refusal = self._wl_store.get_push_refusal(self._target_id) or {}
+        floor = refusal.get("agent_floor")
+        ours = self._wl_store.get_whitelist_version(self._target_id)
+        if floor is not None and floor >= MAX_WHITELIST_VERSION:
+            self.app.push_screen(CommandModal(
+                installer.reset_whitelist_floor_command(),
+                title="Reset the allowlist version on the target",
+                note=("This machine recorded the highest allowlist version there is, so Kratos can't count past "
+                      "it. Run this ON THE TARGET as its admin: it stops the agent, forgets that version and "
+                      "starts it again. Then press s here.")))
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Catch up with this machine?",
+            Text(f"This machine has already applied allowlist version {floor}; Kratos's own count is {ours}. "
+                 "That happens when Kratos's database was restored from an older copy, or when something else "
+                 "that holds this machine's pairing sent it an allowlist.\n\n"
+                 f"Catching up moves Kratos's count to {max(ours, floor or 0) + 1} and sends the allowlist you see "
+                 "here, replacing what the machine has. If you didn't restore Kratos's data, check who else could "
+                 "hold this pairing (re-pair the machine from /subagent to cut them off).")))
+        if not ok:
+            return
+        try:
+            version = self._wl_store.catch_up_whitelist_version(self._target_id)
+        except ValueError as e:
+            self._log(Text(f"✗ {e}", style=T.CRITICAL))
+            return
+        self._log(Text(f"Kratos's allowlist count is now {version}; it is sent the next time the listener checks "
+                       "(a few seconds, if `kratos subagent-serve` is running and the machine is connected).",
+                       style=T.TEXT_DIM))
         self.set_timer(4.0, self._refresh)
 
     # --- add -------------------------------------------------------------

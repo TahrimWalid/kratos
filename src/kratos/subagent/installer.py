@@ -422,6 +422,32 @@ log "Done. The sub-agent is starting and will check in with Kratos shortly."
 """
 
 
+def reset_whitelist_floor_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
+    """One command, run ON the target by its admin, that stops the agent,
+    forgets the newest whitelist version it has applied, and starts it again
+    (review v2 F-3 recovery, for when Kratos can't catch up by itself). Works
+    whichever way the agent was installed; the agent always comes back up."""
+    if not _SERVICE_NAME_RE.fullmatch(service_name or ""):
+        raise InstallerError(f"invalid service name {service_name!r}")
+    svc = service_name
+
+    def reset(prefix: str, d: str) -> str:
+        return f"(cd {d} && {prefix}python3 -m subagent.agent --state-file {d}/state.json --reset-whitelist-floor)"
+
+    return (
+        'S=sudo; [ "$(id -u)" = 0 ] && S=; '
+        f"if [ -f /etc/systemd/system/{svc}.service ]; then $S systemctl stop {svc} && "
+        f"{reset('$S ', '/opt/kratos-subagent')}; $S systemctl start {svc}; "
+        f"elif [ -f ~/.config/systemd/user/{svc}.service ]; then systemctl --user stop {svc} && "
+        f"{reset('', '~/.kratos-subagent')}; systemctl --user start {svc}; "
+        "elif [ -f /opt/kratos-subagent/start.sh ]; then $S kill $(cat /opt/kratos-subagent/agent.pid) 2>/dev/null; "
+        f"sleep 2; {reset('$S ', '/opt/kratos-subagent')}; $S sh /opt/kratos-subagent/start.sh; "
+        "elif [ -f ~/.kratos-subagent/start.sh ]; then kill $(cat ~/.kratos-subagent/agent.pid) 2>/dev/null; "
+        f"sleep 2; {reset('', '~/.kratos-subagent')}; sh ~/.kratos-subagent/start.sh; "
+        "else echo 'No Kratos sub-agent install found on this machine.'; fi"
+    )
+
+
 def uninstall_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
     """One command, run ON the target, that stops and removes the agent
     whichever way it was installed (system service, user service, or a

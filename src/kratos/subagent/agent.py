@@ -92,8 +92,14 @@ import os
 import secrets
 import signal
 import subprocess
+import sys
 import time
 import uuid
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover -- non-POSIX; the agent targets Linux
+    fcntl = None  # type: ignore[assignment]
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -110,7 +116,7 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.3.4"
+AGENT_VERSION = "0.3.5"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -124,6 +130,9 @@ BUFFER_MAX = 50
 BACKOFF_INITIAL_SECONDS = 2.0
 BACKOFF_MAX_SECONDS = 60.0
 HANDSHAKE_TIMEOUT_SECONDS = 10.0
+# How long a starting agent waits for a previous one on the same state file
+# to exit (a restart can briefly overlap the old process).
+INSTANCE_LOCK_WAIT_SECONDS = 20.0
 
 # Capability 2 -- design doc §9 #5: "the agent disarms execution if it hasn't
 # had a fresh authenticated heartbeat within a bounded window." Comfortably
@@ -539,16 +548,20 @@ class SubAgent:
             logger.warning("rejected whitelist_push: invalid signature")
             return
         version = msg.get("version")
-        if type(version) is not int or version < 0:  # F8: no bools, no floats
-            logger.warning("rejected whitelist_push: version %r is not a non-negative integer", version)
-            return
         floor = max((v for v in (self._whitelist_version, self._version_floor()) if v is not None), default=None)
+        # F8: no bools, no floats. Review v2 F-3: bounded above, so one push
+        # can't raise the persisted floor beyond anything core will ever send.
+        if type(version) is not int or not 0 <= version <= proto.MAX_WHITELIST_VERSION:
+            await self._refuse_push(writer, None, f"version {version!r} is not an integer from 0 to "
+                                                  f"{proto.MAX_WHITELIST_VERSION}", floor)
+            return
         if floor is not None and version < floor:
-            logger.warning("rejected whitelist_push: version %r is older than %r (anti-rollback)", version, floor)
+            await self._refuse_push(writer, version, f"version {version} is older than {floor}, the newest this "
+                                                     "machine has applied (anti-rollback)", floor)
             return
         actions = msg.get("actions")
         if not isinstance(actions, list):
-            logger.warning("rejected whitelist_push: actions is not a list")
+            await self._refuse_push(writer, version, "actions is not a list", floor)
             return
 
         ceiling, _ = self._effective_ceiling()
@@ -576,6 +589,14 @@ class SubAgent:
         self._record_version_floor(version)
         logger.info("applied whitelist_push: version=%s, %d action(s)", version, len(new_specs))
         await proto.write_frame(writer, proto.build_whitelist_push_ack(version, rejected, self.ceiling_report()))
+
+    async def _refuse_push(self, writer: asyncio.StreamWriter, version: int | None, reason: str,
+                           floor: int | None) -> None:
+        """Answer a signed push that is refused as a whole, instead of staying
+        silent: core would otherwise wait out its ack timeout and push the
+        same thing again every few seconds, never learning why."""
+        logger.warning("rejected whitelist_push: %s", reason)
+        await proto.write_frame(writer, proto.build_whitelist_push_refused(version, reason, floor))
 
     async def _handle_exec_dispatch(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
         dispatch_id = msg.get("dispatch_id") if isinstance(msg.get("dispatch_id"), str) else ""
@@ -756,7 +777,7 @@ def _iso_now() -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Kratos sub-agent -- telemetry (capability 1) + gated direct execution (capability 2)")
-    p.add_argument("--core-host", required=True, help="Kratos core's reachable address")
+    p.add_argument("--core-host", default=None, help="Kratos core's reachable address (required to run)")
     p.add_argument("--core-port", type=int, default=DEFAULT_CORE_PORT)
     p.add_argument("--pair", dest="pairing_code", default=None, help="One-time pairing code (only needed on first run)")
     p.add_argument("--state-file", type=Path, default=DEFAULT_STATE_FILE)
@@ -784,12 +805,83 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--local-allow-file", default=cl.LOCAL_ALLOW_FILE,
         help="Exact commands this target's admin allows Kratos to run, one per line (default: %(default)s).",
     )
+    p.add_argument(
+        "--reset-whitelist-floor", action="store_true", default=False,
+        help=("Forget the newest whitelist version this machine has applied, then exit. Use when Kratos "
+              "reports this machine refuses its pushes as too old; stop the agent first."),
+    )
     return p
 
 
+def _instance_lock_path(state_file: Path) -> Path:
+    return state_file.with_name(state_file.name + ".lock")
+
+
+def _try_instance_lock(state_file: Path) -> Any | None:
+    """Take the one-agent-per-state-file lock without waiting. Returns the
+    open lock file (keep it open to hold the lock), or None if another agent
+    holds it. Two agents on one state file would share an identity and
+    overwrite each other's state; the reset below must not race a live one."""
+    if fcntl is None:
+        return open(os.devnull)  # nothing to lock with; behave as before
+    path = _instance_lock_path(state_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, _STATE_MODE), "r+")
+    try:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
+
+
+def _acquire_instance_lock(state_file: Path, wait_seconds: float) -> Any | None:
+    # A restart (or the installer's stop-then-start) can briefly overlap the
+    # old process's exit, so wait a little before giving up.
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        lock = _try_instance_lock(state_file)
+        if lock is not None or time.monotonic() >= deadline:
+            return lock
+        time.sleep(0.5)
+
+
+def reset_whitelist_floor(state_file: Path) -> int:
+    """Forget the newest whitelist version this machine has applied, so Kratos
+    can push from its own count again. For when Kratos's database was restored
+    from an older copy, or something holding this pairing pushed a version
+    Kratos will never reach. Run by the target's admin with the agent stopped;
+    refuses while it runs (it would write the old value straight back)."""
+    lock = _try_instance_lock(state_file)
+    if lock is None:
+        print("The agent is running with this state file -- stop it first, then run this again.", file=sys.stderr)
+        return 2
+    try:
+        state = _load_state(state_file)
+        floors = state.pop("whitelist_version_floor", None)
+        if not floors:
+            print(f"Nothing to reset: {state_file} has no whitelist version recorded.")
+            return 0
+        _save_state(state_file, state)
+        print(f"Cleared the recorded whitelist version in {state_file}. Start the agent again; "
+              "Kratos will push its current allowlist when it reconnects.")
+        return 0
+    finally:
+        lock.close()
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if args.reset_whitelist_floor:
+        return reset_whitelist_floor(args.state_file)
+    if not args.core_host:
+        parser.error("--core-host is required")
+    instance_lock = _acquire_instance_lock(args.state_file, INSTANCE_LOCK_WAIT_SECONDS)
+    if instance_lock is None:
+        logger.error("another agent is already running with %s -- not starting a second one", args.state_file)
+        return 1
 
     agent = SubAgent(
         core_host=args.core_host,
@@ -823,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
         pass
     finally:
         loop.close()
+        instance_lock.close()
     return 0
 
 

@@ -163,7 +163,10 @@ def test_version_floor_persists_across_restart(tmp_path):
         b = _agent(tmp_path)  # fresh process, same state file and token
         assert b._whitelist_version is None and b._version_floor() == 5
         w = await _apply(b, version=3)
-        assert b._whitelist_version is None and w.frames == []  # refused, not acked
+        # refused, not acked -- and core is told why and what this machine has
+        assert b._whitelist_version is None
+        assert [f["type"] for f in w.frames] == [proto.MSG_WHITELIST_PUSH_REFUSED]
+        assert w.frames[0]["floor"] == 5 and "anti-rollback" in w.frames[0]["reason"]
         w = await _apply(b, version=5)
         assert b._whitelist_version == 5 and w.frames[0]["version"] == 5
         c = _agent(tmp_path)
@@ -235,7 +238,7 @@ def test_malformed_dispatch_fields_are_refused(tmp_path, override, needle):
     assert frame["status"] == "refused" and needle in frame["reason"]
 
 
-@pytest.mark.parametrize("version", [1.0, True, "1", -1, None])
+@pytest.mark.parametrize("version", [1.0, True, "1", -1, None, 2**31, 2**70])
 def test_malformed_push_versions_are_refused(tmp_path, version):
     async def go():
         a = _agent(tmp_path)
@@ -244,7 +247,62 @@ def test_malformed_push_versions_are_refused(tmp_path, version):
         return a, w
 
     a, w = _run(go())
-    assert a._whitelist_version is None and w.frames == []
+    assert a._whitelist_version is None and a._version_floor() is None  # nothing persisted
+    assert [f["type"] for f in w.frames] == [proto.MSG_WHITELIST_PUSH_REFUSED]
+    assert w.frames[0]["version"] is None
+
+
+def test_a_huge_version_cannot_lock_out_later_pushes(tmp_path):
+    """Review v2 F-3: a push with version 2**70 used to be applied and written to
+    the persisted floor, so every later push (core counts from 1) was refused
+    forever. Now the largest accepted version is the protocol bound."""
+    async def go():
+        a = _agent(tmp_path)
+        await _apply(a, version=2**70)
+        assert a._version_floor() is None
+        w = await _apply(a, version=1)
+        assert a._whitelist_version == 1 and w.frames[0]["type"] == proto.MSG_WHITELIST_PUSH_ACK
+        w = await _apply(a, version=proto.MAX_WHITELIST_VERSION)
+        assert a._version_floor() == proto.MAX_WHITELIST_VERSION
+
+    _run(go())
+
+
+def test_reset_whitelist_floor_clears_it_and_refuses_while_running(tmp_path, capsys):
+    from kratos.subagent import agent as agent_mod
+
+    async def go():
+        a = _agent(tmp_path)
+        await _apply(a, version=7)
+        return a
+
+    a = _run(go())
+    state_file = a.state_file
+    assert a._version_floor() == 7
+    held = agent_mod._try_instance_lock(state_file)  # a running agent holds this
+    try:
+        assert agent_mod.main(["--state-file", str(state_file), "--reset-whitelist-floor"]) == 2
+        assert "stop it first" in capsys.readouterr().err
+    finally:
+        held.close()
+    assert agent_mod.main(["--state-file", str(state_file), "--reset-whitelist-floor"]) == 0
+    saved = json.loads(state_file.read_text())
+    assert "whitelist_version_floor" not in saved and saved["token"] == TOKEN  # identity kept
+    assert _agent(tmp_path)._version_floor() is None
+    assert agent_mod.main(["--state-file", str(state_file), "--reset-whitelist-floor"]) == 0
+    assert "Nothing to reset" in capsys.readouterr().out
+
+
+def test_a_second_agent_on_the_same_state_file_does_not_start(tmp_path, monkeypatch):
+    from kratos.subagent import agent as agent_mod
+
+    state_file = tmp_path / "state.json"
+    held = agent_mod._try_instance_lock(state_file)
+    monkeypatch.setattr(agent_mod, "INSTANCE_LOCK_WAIT_SECONDS", 0.6)
+    try:
+        assert agent_mod.main(["--core-host", "127.0.0.1", "--state-file", str(state_file)]) == 1
+    finally:
+        held.close()
 
 
 def test_garbage_actions_in_a_push_are_reported_not_fatal(tmp_path):

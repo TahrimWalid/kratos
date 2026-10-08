@@ -92,10 +92,16 @@ MSG_PONG = "pong"
 
 MSG_WHITELIST_PUSH = "whitelist_push"
 MSG_WHITELIST_PUSH_ACK = "whitelist_push_ack"
+MSG_WHITELIST_PUSH_REFUSED = "whitelist_push_refused"
 MSG_EXEC_DISPATCH = "exec_dispatch"
 MSG_EXEC_RESULT = "exec_result"
 MSG_READ_REQUEST = "read_request"
 MSG_READ_RESULT = "read_result"
+
+# Whitelist versions are counted up by core from 1. Bounded so that one push
+# can't set the agent's persisted anti-rollback floor to a number core never
+# reaches (review v2 F-3); far above any real count of edits.
+MAX_WHITELIST_VERSION = 2**31 - 1
 
 
 class ProtocolError(ValueError):
@@ -215,6 +221,13 @@ def build_whitelist_push_ack(
     version: int, rejected: list[dict[str, str]] | None = None, ceiling: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     return {"type": MSG_WHITELIST_PUSH_ACK, "version": version, "rejected": rejected or [], "ceiling": ceiling}
+
+
+def build_whitelist_push_refused(version: int | None, reason: str, floor: int | None) -> dict[str, Any]:
+    """The agent refused a whole push (too old, out of range, malformed). Sent
+    instead of silence so core stops re-pushing and can show why; `floor` is
+    the newest version the agent has already applied under this pairing."""
+    return {"type": MSG_WHITELIST_PUSH_REFUSED, "version": version, "reason": reason, "floor": floor}
 
 
 def build_exec_dispatch(
