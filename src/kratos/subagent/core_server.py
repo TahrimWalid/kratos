@@ -306,7 +306,12 @@ class CoreServer:
         target = self.store.get_target(target_id)
         if target is None:
             return
-        for req in pending:
+        for queued in pending:
+            # Atomic, at-most-once: re-checks the machine's execution consent
+            # and the request's age at the moment of sending (review v2 F-6).
+            req = self.whitelist_store.claim_dispatch_request(queued["request_id"])
+            if req is None:
+                continue
             try:
                 result = await self.dispatch_action(
                     target_id, target["token"], req["action_id"], req["slot_values"], req["whitelist_version"]

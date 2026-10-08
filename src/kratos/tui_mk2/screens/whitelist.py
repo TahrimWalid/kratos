@@ -61,7 +61,12 @@ from kratos.tui_mk2.table_fit import fit_columns
 
 _WL_COLUMNS = ("action", "runs", "source", "tier", "state")
 _POLL_INTERVAL_SECONDS = 0.5
+# Longer than the store's DISPATCH_REQUEST_TTL_SECONDS (a listener never
+# sends a request older than that), so cancelling after this is definitive.
 _POLL_TIMEOUT_SECONDS = 40.0
+# Once sent: core's own wait for the machine's answer (35s) plus margin --
+# core always records an "unknown" result by then.
+_ANSWER_TIMEOUT_SECONDS = 50.0
 
 _TIER_COLOR = {"low": T.SAFE, "medium": T.ATTENTION, "high": T.CRITICAL}
 _STATE_COLOR = {"on": T.SAFE, "off": T.TEXT_MUTED, "waiting": T.ATTENTION, "invalid": T.CRITICAL}
@@ -463,19 +468,38 @@ class WhitelistScreen(Screen):
         self._log(Text(f"→ dispatch requested: {spec.id} (request {request_id[:8]}…) -- waiting for a result…",
                         style=T.ACCENT))
 
+        # Waits for the listener to send it (it does so within the store's
+        # DISPATCH_REQUEST_TTL_SECONDS, or never). If nobody has by our
+        # deadline, the request is cancelled -- so "nothing ran" is certain
+        # and it can't run later. Once sent, waits for the machine's answer.
         elapsed = 0.0
+        sent_at: float | None = None
         row = None
-        while elapsed < _POLL_TIMEOUT_SECONDS:
+        while True:
             row = self._wl_store.get_dispatch_request(request_id)
             if row and row["status"] == "done":
                 break
+            if row and row["status"] == "claimed" and sent_at is None:
+                sent_at = elapsed
+                self._log(Text("  sent to the machine -- waiting for its answer…", style=T.TEXT_DIM))
+            if sent_at is None and elapsed >= _POLL_TIMEOUT_SECONDS:
+                outcome = self._wl_store.cancel_dispatch_request(
+                    request_id, f"no listener sent it within {_POLL_TIMEOUT_SECONDS:.0f}s")
+                if outcome == "cancelled":
+                    self._log(Text(
+                        f"✗ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
+                        "so it was cancelled. Is `kratos subagent-serve` running and the machine connected?",
+                        style=f"bold {T.CRITICAL}"))
+                    return
+                continue  # sent (or answered) at the last moment: follow it
+            if sent_at is not None and elapsed - sent_at >= _ANSWER_TIMEOUT_SECONDS:
+                self._log(Text(
+                    "⚠ the request was sent to the machine, but no answer came back -- the outcome is unknown. "
+                    "Check the machine (t shows its latest telemetry) before trying again.",
+                    style=f"bold {T.CRITICAL}"))
+                return
             await asyncio.sleep(_POLL_INTERVAL_SECONDS)
             elapsed += _POLL_INTERVAL_SECONDS
-        else:
-            self._log(Text(
-                f"⚠ no result within {_POLL_TIMEOUT_SECONDS:.0f}s -- is `kratos subagent-serve` running "
-                "for this target? Outcome unknown, nothing confirmed either way.", style=f"bold {T.CRITICAL}"))
-            return
 
         result = row["result"] or {}
         status = result.get("status", "unknown")

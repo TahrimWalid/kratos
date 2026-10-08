@@ -17,6 +17,8 @@ exercised deliberately, with the poll constants shrunk so the test stays fast.
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 
 import io
 
@@ -46,6 +48,19 @@ def _pair(sa: SubAgentStore, name: str = "web-01") -> str:
     code = sa.create_pairing_code(name=name)["code"]
     result = sa.redeem_pairing_code(code, agent_id="a1", hostname=name, agent_version="0.1.0")
     return result["target_id"]
+
+
+def _all_requests(tmp_path) -> list[dict]:
+    """Every dispatch request ever created, whatever its status -- a request the
+    screen cancelled after its wait is not "pending" any more, but it was made."""
+    conn = sqlite3.connect(tmp_path / "kratos.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute("SELECT * FROM whitelist_dispatch_requests ORDER BY requested_at").fetchall()
+    except sqlite3.OperationalError:  # table not created yet
+        rows = []
+    conn.close()
+    return [dict(r, slot_values=json.loads(r["slot_values_json"])) for r in rows]
 
 
 def _log_texts(screen: WhitelistScreen) -> list[str]:
@@ -221,15 +236,18 @@ def test_activate_selected_creates_a_real_dispatch_request(tmp_path, monkeypatch
 
     asyncio.run(run())
 
-    # The screen's own poll gave up (nothing services the queue in this
-    # test), but the request itself was genuinely created and is still
-    # sitting there as real, durable state -- proving the whole chain
-    # (slot collection -> render_argv -> create_dispatch_request) ran.
-    pending = wl.list_pending_dispatch_requests(tid)
-    assert len(pending) == 1
-    assert pending[0]["action_id"] == "fail2ban.ban_ip"
-    assert pending[0]["slot_values"] == {"jail": "sshd", "ip": "8.8.8.8"}
-    assert any("no result within" in t for t in texts)
+    # The request was genuinely created (slot collection -> render_argv ->
+    # create_dispatch_request ran) -- and since nothing serviced it while the
+    # screen waited, the screen cancelled it: it can never run later
+    # (review v2 F-6 follow-up), and the screen says nothing ran.
+    assert wl.list_pending_dispatch_requests(tid) == []
+    conn = sqlite3.connect(tmp_path / "kratos.db")
+    (row,) = conn.execute("SELECT action_id, slot_values_json, status, result_json "
+                          "FROM whitelist_dispatch_requests").fetchall()
+    conn.close()
+    assert row[0] == "fail2ban.ban_ip" and json.loads(row[1]) == {"jail": "sshd", "ip": "8.8.8.8"}
+    assert row[2] == "done" and json.loads(row[3])["reason"].startswith("cancelled:")
+    assert any("nothing ran" in t for t in texts)
 
 
 def test_activate_selected_cancelled_at_typed_execute_creates_nothing(tmp_path, monkeypatch):
@@ -257,7 +275,7 @@ def test_activate_selected_cancelled_at_typed_execute_creates_nothing(tmp_path, 
                 await asyncio.sleep(0.01)
 
     asyncio.run(run())
-    assert wl.list_pending_dispatch_requests(tid) == []
+    assert _all_requests(tmp_path) == []
 
 
 def test_activate_selected_without_execution_opt_in_never_dispatches(tmp_path, monkeypatch):
@@ -288,7 +306,7 @@ def test_activate_selected_without_execution_opt_in_never_dispatches(tmp_path, m
                 await asyncio.sleep(0.01)
 
     asyncio.run(run())
-    assert wl.list_pending_dispatch_requests(tid) == []
+    assert _all_requests(tmp_path) == []
 
 
 def test_high_tier_action_requires_a_second_confirmation(tmp_path, monkeypatch):
@@ -325,7 +343,7 @@ def test_high_tier_action_requires_a_second_confirmation(tmp_path, monkeypatch):
                 await asyncio.sleep(0.01)
 
     asyncio.run(run())
-    assert wl.list_pending_dispatch_requests(tid) == []
+    assert _all_requests(tmp_path) == []
 
 
 def test_rollback_of_a_high_tier_action_also_requires_a_second_confirmation(tmp_path, monkeypatch):
@@ -364,7 +382,7 @@ def test_rollback_of_a_high_tier_action_also_requires_a_second_confirmation(tmp_
                 await asyncio.sleep(0.01)
 
     asyncio.run(run())
-    assert wl.list_pending_dispatch_requests(tid) == []
+    assert _all_requests(tmp_path) == []
 
 
 def test_rollback_of_a_high_tier_action_dispatches_after_both_confirmations(tmp_path, monkeypatch):
@@ -398,7 +416,7 @@ def test_rollback_of_a_high_tier_action_dispatches_after_both_confirmations(tmp_
                 await asyncio.sleep(0.02)
 
     asyncio.run(run())
-    pending = wl.list_pending_dispatch_requests(tid)
+    pending = _all_requests(tmp_path)
     assert len(pending) == 1
     assert pending[0]["action_id"] == "service.disable_now"
     assert pending[0]["slot_values"] == {"unit": "ufw"}
@@ -627,7 +645,7 @@ def test_preselected_recommendation_opens_the_same_gate_prefilled(tmp_path, monk
                              preselect={"action_id": "fail2ban.ban_ip", "values": {"jail": "sshd", "ip": "8.8.8.8"}})
     out = _drive(screen, [True], lambda: None, ticks=60, early=True)
     assert out["seen"] == ["TypedExecuteModal"]  # no slot prompts -- only the approval gate
-    [req] = wl.list_pending_dispatch_requests(tid)
+    [req] = _all_requests(tmp_path)
     assert req["slot_values"] == {"jail": "sshd", "ip": "8.8.8.8"}
 
 
@@ -877,7 +895,7 @@ def test_an_agent_with_execution_off_is_called_out_before_any_execute(tmp_path, 
     assert "CONSENT GIVEN · THIS MACHINE REFUSES RUNS" in banner and "DIRECT EXECUTION ON" not in banner
     gate = next(m for m in shown if isinstance(m, TypedExecuteModal))
     assert gate._can_execute is False and "started with execution off" in gate._why_not
-    assert wl.list_pending_dispatch_requests(tid) == []
+    assert _all_requests(tmp_path) == []
 
 
 def test_agent_switch_report_is_stored_as_booleans_only(tmp_path):

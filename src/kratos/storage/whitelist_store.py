@@ -69,7 +69,7 @@ from kratos.subagent import ceiling as C
 from kratos.subagent import whitelist as W
 from kratos.subagent import whitelist_templates as T
 from kratos.subagent.protocol import MAX_WHITELIST_VERSION
-from kratos.utils.timeutil import utc_now_iso
+from kratos.utils.timeutil import parse_stored_instant, utc_now, utc_now_iso
 
 _BUSY_TIMEOUT_MS = 5000
 
@@ -126,6 +126,13 @@ class WhitelistEntryStatus:
     # reports that line.
     pending: bool = False
     stored_spec: W.ActionSpec | None = None
+
+
+# A queued dispatch request is only sent within this many seconds of being
+# made. The approval screen waits longer than this before it gives up and
+# cancels, so "nothing ran" is always a definite answer there, and a request
+# can never run hours later when a listener next starts.
+DISPATCH_REQUEST_TTL_SECONDS = 30.0
 
 
 class WhitelistStore:
@@ -915,11 +922,10 @@ class WhitelistStore:
     def create_dispatch_request(
         self, target_id: str, action_id: str, slot_values: dict[str, Any], whitelist_version: int
     ) -> str:
-        """Enqueues a dispatch request. Does NOT check execution opt-in or
-        re-validate the action -- that's the caller's (the consent/approval
-        UI's) job before it ever calls this, and CoreServer's own dispatch
-        path re-validates independently regardless (defense in depth, same
-        as everywhere else in this mechanism)."""
+        """Enqueues a dispatch request for a machine that has opted into
+        execution. It is sent only if `claim_dispatch_request` still finds
+        that consent (and the request fresh) at the moment of sending; the
+        action itself is re-validated by core and again by the agent."""
         if not self.get_execution_opt_in(target_id):
             raise ValueError(f"target {target_id!r} has not opted into direct execution (control 6)")
         request_id = secrets.token_hex(8)
@@ -977,6 +983,88 @@ class WhitelistStore:
             d["result"] = None
             out.append(d)
         return out
+
+    def claim_dispatch_request(self, request_id: str) -> dict[str, Any] | None:
+        """Atomically take a pending request for sending -- at most once.
+
+        In one transaction: a request that is no longer pending (already
+        claimed, completed or cancelled) is skipped; one whose machine has had
+        execution turned off in Kratos since it was made (review v2 F-6), or
+        that is older than DISPATCH_REQUEST_TTL_SECONDS (nobody serviced it
+        while the person was watching), is completed as refused; otherwise it
+        is marked 'claimed' and returned. A claimed request is never sent
+        again, even if this process dies before recording the result."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM whitelist_dispatch_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if row is None or row["status"] != "pending":
+                conn.execute("COMMIT")
+                return None
+            opt_in = conn.execute(
+                "SELECT enabled FROM whitelist_execution_opt_in WHERE target_id = ?", (row["target_id"],)
+            ).fetchone()
+            requested = parse_stored_instant(row["requested_at"])
+            age = (utc_now() - requested).total_seconds() if requested is not None else None
+            reason = None
+            if not (opt_in and opt_in["enabled"]):
+                reason = "execution was turned off for this machine in Kratos after the request was made"
+            elif age is None or age > DISPATCH_REQUEST_TTL_SECONDS or age < -60:
+                reason = (f"expired: not sent within {DISPATCH_REQUEST_TTL_SECONDS:.0f}s of the request "
+                          "(was the listener running?)")
+            if reason is not None:
+                conn.execute(
+                    "UPDATE whitelist_dispatch_requests SET status = 'done', result_json = ?, completed_at = ? "
+                    "WHERE request_id = ?",
+                    (json.dumps({"status": "refused", "reason": reason}), utc_now_iso(), request_id),
+                )
+                conn.execute("COMMIT")
+                return None
+            conn.execute("UPDATE whitelist_dispatch_requests SET status = 'claimed' WHERE request_id = ?",
+                         (request_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        d = dict(row)
+        d["status"] = "claimed"
+        d["slot_values"] = json.loads(d.pop("slot_values_json"))
+        d["result"] = None
+        return d
+
+    def cancel_dispatch_request(self, request_id: str, reason: str) -> str:
+        """Cancel a request that hasn't been sent yet. Returns the status it
+        ends in: 'cancelled' (it was still pending, so nothing ran),
+        'claimed' (already sent -- the outcome is unknown until a result
+        arrives), 'done', or 'missing'."""
+        conn = _connect(self.db_path)
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status FROM whitelist_dispatch_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if row is None:
+                conn.execute("COMMIT")
+                return "missing"
+            if row["status"] != "pending":
+                conn.execute("COMMIT")
+                return row["status"]
+            conn.execute(
+                "UPDATE whitelist_dispatch_requests SET status = 'done', result_json = ?, completed_at = ? "
+                "WHERE request_id = ?",
+                (json.dumps({"status": "refused", "reason": f"cancelled: {reason}"}), utc_now_iso(), request_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+        return "cancelled"
 
     def complete_dispatch_request(self, request_id: str, result: dict[str, Any]) -> None:
         conn = _connect(self.db_path)
