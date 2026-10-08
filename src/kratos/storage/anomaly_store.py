@@ -19,6 +19,7 @@ from typing import Any, Optional
 # local timezone (see utils/timeutil.py for the rationale). Both the stored
 # values AND the cutoffs use utc_now(); mixing the two would silently skew
 # every windowed query.
+from kratos.storage.sqlite_files import connect_private
 from kratos.utils.timeutil import utc_now
 
 
@@ -32,7 +33,7 @@ class AnomalyStore:
     
     def _init_schema(self):
         """Create tables if they don't exist."""
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS anomalies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,7 +81,7 @@ class AnomalyStore:
     def store_anomalies(self, anomalies: list[dict[str, Any]]) -> int:
         """Store list of anomalies. Returns count stored."""
         count = 0
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             for anom in anomalies:
                 try:
                     conn.execute("""
@@ -110,7 +111,7 @@ class AnomalyStore:
     ) -> list[dict[str, Any]]:
         """Get anomalies of specific severity from last N days."""
         cutoff = (utc_now() - timedelta(days=days)).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT * FROM anomalies
@@ -126,7 +127,7 @@ class AnomalyStore:
     def get_trend(self, device_ip: str, days: int = 7) -> dict[str, Any]:
         """Get anomaly trend for a specific device."""
         cutoff = (utc_now() - timedelta(days=days)).isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             rows = conn.execute("""
                 SELECT
                     DATE(timestamp) as date,
@@ -147,7 +148,7 @@ class AnomalyStore:
     def update_daily_summary(self) -> None:
         """Recalculate daily summaries."""
         today = utc_now().date().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             stats = conn.execute("""
                 SELECT
                     COUNT(CASE WHEN severity = 'HIGH' THEN 1 END) as high_count,
@@ -170,7 +171,7 @@ class AnomalyStore:
     def get_weekly_summary(self, weeks: int = 1) -> list[dict[str, Any]]:
         """Get daily summaries for last N weeks."""
         cutoff = (utc_now() - timedelta(weeks=weeks)).date().isoformat()
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT * FROM daily_summary
@@ -182,7 +183,7 @@ class AnomalyStore:
     def store_finding(self, finding: dict[str, Any]) -> bool:
         """Store a single finding."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with connect_private(self.db_path) as conn:
                 conn.execute("""
                     INSERT OR IGNORE INTO findings
                     (timestamp, finding_id, title, severity, category, description, evidence, recommendation)
@@ -204,7 +205,7 @@ class AnomalyStore:
     
     def get_findings_by_category(self, category: str) -> list[dict[str, Any]]:
         """Get all findings in a category."""
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_private(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("""
                 SELECT * FROM findings

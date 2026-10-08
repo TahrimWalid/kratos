@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
+from kratos.storage.sqlite_files import prepare_private_db
 from kratos import kratos_config as _kconfig
 
 MODE_SUBAGENT = "subagent"
@@ -99,6 +100,7 @@ def _read_link(db: Path, host: str) -> Link | None:
     if not db.exists():
         return None
     try:
+        prepare_private_db(db, create=False)
         conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
     except sqlite3.Error:
         return None

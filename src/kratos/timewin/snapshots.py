@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from kratos.storage.sqlite_files import connect_private
 from kratos.utils.timeutil import detect_local_tz
 
 UTC = timezone.utc
@@ -145,7 +146,7 @@ def _json_target(d: dict[str, Any]) -> str | None:
 # index (SQLite, in the data dir's kratos.db)
 # ---------------------------------------------------------------------------
 def _db(data_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(Path(data_dir) / "kratos.db"), timeout=10)
+    conn = connect_private(Path(data_dir) / "kratos.db", timeout=10)
     conn.execute("""CREATE TABLE IF NOT EXISTS snapshots (
         path TEXT PRIMARY KEY, category TEXT NOT NULL, target TEXT, captured_at REAL NOT NULL,
         captured_source TEXT NOT NULL, bytes INTEGER NOT NULL, mtime REAL NOT NULL)""")

@@ -26,14 +26,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from kratos.storage.sqlite_files import connect_private
 from kratos.utils.timeutil import parse_stored_instant, utc_now_iso
 
 _BUSY_TIMEOUT_MS = 5000
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    conn = connect_private(db_path, timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
