@@ -187,7 +187,11 @@ IPv4 address or an IPv6 /64) and capped across all sources (60 a minute, so
 a code's 15-minute life allows ~900 guesses against 2³²); token logins are
 only limited per source, so a flood of bad codes can't lock paired agents
 out. The always-on listener can bind only the addresses agents actually
-dial. `kratos.db` (it holds the pairing tokens) and its WAL files are
+dial, and restarts itself onto newer Kratos code once that code has settled
+(30 s unchanged) and the listener has been idle for 60 s (no read, run or
+allowlist push in flight or recent), exiting 75 so systemd starts it again.
+Agents are never updated automatically: that installs new root-level code on
+a machine, so `/subagent` points out an outdated agent and waits for `g`. `kratos.db` (it holds the pairing tokens) and its WAL files are
 created owner-only.
 
 **Process boundary.** The investigation usually runs in a different process

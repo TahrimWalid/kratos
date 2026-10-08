@@ -131,13 +131,17 @@ kratos init
 ```
 
 It prints where the file is. Open that `.env` file in any text editor (only your
-user can read it, since it will hold your API key). You're setting three values:
+user can read it, since it will hold your API key). Its first section has a
+ready-made block for each kind of model; you switch on **one** block by removing
+the `# ` in front of its four lines. Three of those lines are the ones that matter:
 
 | Setting | What it is |
 | --- | --- |
 | `LLM_BASE_URL` | the web address of the model's API |
 | `LLM_API_KEY` | your key for that model (or a placeholder for a local one) |
 | `LLM_MODEL` | the name of the model to use |
+
+(The fourth, `KRATOS_LLM_BACKEND=openai_compatible`, stays as it is.)
 
 **Option A — a hosted model (the quick start).** Sign up with any provider that
 offers an OpenAI-compatible API, get an API key, and put its address, your key,
@@ -310,9 +314,13 @@ hostname -I
 ```
 
 It prints one or more addresses; the first one, something like `192.168.1.50`, is
-usually the one to use. Kratos logs in as the user `ubuntu` unless you tell it
-otherwise; if your account on that machine has a different name, add a line like
-`KRATOS_SSH_USER=alice` to `.env`.
+usually the one to use.
+
+**Which account Kratos logs in as.** When you set up a machine over SSH, Kratos
+asks — the name you'd use in `ssh NAME@address` (often `ubuntu`, `debian`, `root`,
+`ec2-user`, or your own name) — and remembers it for that machine. You can also
+type it with the address, as in `/target alice@192.168.1.50`. If a login fails,
+Kratos says which account it tried; press `u` on the setup screen to change it.
 
 **Want to try Kratos before setting up another machine?** Skip the target question
 and type `/investigate-host is anything unusual listening on this machine?`. That
@@ -621,12 +629,17 @@ connect**; `/target verify` and `/doctor` show which way it's reached right now.
 an always-on service instead, so status keeps arriving after you close Kratos. When
 every paired machine reaches Kratos at an address of this computer, the service
 listens only on those addresses (and on loopback); press `l` again after adding a
-machine on a new address — `/subagent` reminds you.
+machine on a new address — `/subagent` reminds you. After you update Kratos, the
+always-on listener restarts itself onto the new version once it's idle (within
+about a minute; never in the middle of an investigation), so there's nothing to
+restart by hand.
 
-**Updating, unpairing.** Select a machine and press `g` to update its agent in
-place (it keeps its pairing), `u` to unpair it, `k` to link it to a target, `i`
-for details. An agent installed before investigations-through-the-agent existed
-needs one `g` update.
+**Updating, unpairing.** When a newer Kratos ships a newer agent, `/subagent` marks
+each machine still running the old one (its version shows `→ g`) and `/doctor` says
+so too. Select it and press `g` to update its agent in place (it keeps its pairing).
+Kratos never updates an agent on its own: that installs new code that runs as root
+on the machine, so it waits for your keypress. `u` unpairs a machine, `k` links it
+to a target, `i` shows details.
 
 **On a plain network.** The link between agent and Kratos has no encryption of its
 own — that's why Tailscale is recommended. The agent counts the link as safe only
@@ -861,8 +874,9 @@ Kratos tells you when the one it has is from before your run. For a medium- or
 high-risk action, `r` rolls the change back through the matching inverse action,
 behind the same typed-`EXECUTE` gate.
 
-**This channel has not yet had its independent security review. Don't turn it on
-for a machine you care about.** Leaving it off costs you nothing: every
+**An independent security review (October 2026) found no way past the agent's
+allowlist; the issues it did find are fixed, and a follow-up review of those fixes
+is planned. Until then, don't turn it on for a machine you care about.** Leaving it off costs you nothing: every
 recommendation still comes with the exact command for you to run.
 
 ---
@@ -889,8 +903,9 @@ ask before running, and set your timezone.
 **"A sub-agent machine shows as not connected."** Open `/subagent` and select it
 (`i`) — it says why it dropped. If Kratos says *"No Kratos listener is running"*,
 open `/subagent` (which starts one) or install the always-on listener there (`l`).
-If it says the listener *"can't serve investigation reads"*, restart it with the
-command shown, so it runs the same version as the rest of Kratos.
+If it says the listener *"can't serve investigation reads"*, it is still running
+an older Kratos: the always-on service restarts itself onto the new version within
+about a minute of being idle, or restart it now with the command shown.
 
 **"It can't connect to the target."** Run `/doctor`. It will point at the exact
 problem — the host is wrong, the SSH port is closed, the key isn't accepted, or a

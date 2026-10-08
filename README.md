@@ -64,7 +64,7 @@ Kratos observes and recommends. Every tool it can point at a target is read-only
 
 Everywhere a decision has real consequences — running a command on the Kratos machine, keeping a self-written tool — Kratos asks, and a non-answer means no. There is no "force yes."
 
-**One experimental, off-by-default exception.** Kratos contains a path to carry out a small set of allowlisted fixes (for example, ban an IP in fail2ban) through a box's sub-agent. It is off for every box, and turning it on takes all of: a switch set on the box itself when the agent is started (the installer never sets it), your consent for that box in Kratos, the action being in that box's allowlist, and typing `EXECUTE` for each run. The allowlist is the safety boundary: the agent carries its own list of exactly which programs and arguments it will ever run, and Kratos can narrow that list but never widen it. **This path has not yet had its independent security review — don't enable it on a machine you care about.**
+**One experimental, off-by-default exception.** Kratos contains a path to carry out a small set of allowlisted fixes (for example, ban an IP in fail2ban) through a box's sub-agent. It is off for every box, and turning it on takes all of: a switch set on the box itself when the agent is started (the installer never sets it), your consent for that box in Kratos, the action being in that box's allowlist, and typing `EXECUTE` for each run. The allowlist is the safety boundary: the agent carries its own list of exactly which programs and arguments it will ever run, and Kratos can narrow that list but never widen it. **An independent security review (October 2026) found no way past the agent's allowlist; the issues it did find are fixed, and a follow-up review of those fixes is planned. Until then, don't enable this on a machine you care about.**
 
 The whole flow, off by default throughout — with execution off, `EXECUTE` only shows you the command to run yourself; once consented, an approved fix runs through the sub-agent, reports its result, and a reversible change can be rolled back with one keypress:
 
@@ -110,17 +110,13 @@ A few standard tools aren't Python packages — install them with your package m
 - **[Incus](https://linuxcontainers.org/incus/)** on the Kratos machine (only for `/evolve`): new tools are tested inside a throwaway container with no network. The first `/evolve` builds the sandbox image once (a few minutes, needs internet).
 - **`yara`** and **`lsof`** on the **machine you watch** — Kratos's setup check tells you if they're missing and gives you the command.
 
-Then tell Kratos which model to use. Create your settings file and fill in three values:
+Then tell Kratos which model to use. Create your settings file:
 
 ```bash
 kratos init
-# then edit the .env file it names:
-#   LLM_BASE_URL   the model's OpenAI-compatible endpoint
-#   LLM_API_KEY    your key (or a placeholder for a local server)
-#   LLM_MODEL      the model name
 ```
 
-(You can also add a model from inside Kratos, under Settings → Models.)
+Open the `.env` file it names. Its first section has ready-made blocks for a hosted model (Gemini as the example), a local model (Ollama) and any other OpenAI-compatible endpoint: remove the `# ` in front of the four lines of **one** block and fill in your key. The [user guide](https://github.com/TahrimWalid/kratos/blob/main/docs/GUIDE.md#connecting-it-to-a-model) walks through it step by step. Or skip the file and add a model inside Kratos, under Settings → Models.
 
 **Where your settings and data live.** In a git checkout like the one above, everything stays in the checkout folder: `.env`, `data/` (sessions, findings, the session database), `kept_tools/`, `vulscan/`. A copy installed as a package (`pip install` without `-e`) uses per-user folders instead: settings in `~/.config/kratos/.env`, everything else under `~/.local/share/kratos/`. Set `KRATOS_HOME` to keep it all under one folder of your choice. `kratos init` and `/doctor` show the exact paths, and it doesn't matter which folder you start `kratos` from.
 
@@ -138,7 +134,7 @@ kratos
   <img src="https://raw.githubusercontent.com/TahrimWalid/kratos/main/docs/images/home.svg" width="840" alt="Kratos home screen — the KRATOS wordmark, target/model/tools cards, and starter tips">
 </p>
 
-1. **Connect a machine.** Start a new session (or `/target <host>`). Kratos asks how to reach it — direct SSH or a sub-agent — and walks you through the one-time setup on that box.
+1. **Connect a machine.** Start a new session (or `/target <host>`). Kratos asks how to reach it — direct SSH or a sub-agent — and, for SSH, which account to log in as (or type it as `name@host`), then walks you through the one-time setup on that box.
 2. **Ask a question.** Type what you want to know, in normal words. Kratos picks its own read-only tools and explains what it finds.
 3. **Check your setup** any time with `/doctor`, and see a session's findings with `/report`.
 
@@ -208,7 +204,7 @@ The core reasons about a goal and picks its own read-only tools; a findings engi
 
 Kratos is under active development. Working today: investigations and fixed audits, over SSH or a sub-agent; exact time windows and period comparisons; the findings engine and its checks on the model's conclusions; presets, pipelines, schedules and triggers; the self-writing loop; the MCP server; and the terminal UI. Its 1,800+ automated tests pass on Python 3.10 and 3.12.
 
-Not yet: an independent security review of the experimental fix channel (required before it should be enabled anywhere real), running one investigation across several machines at once, and email delivery for scheduled reports.
+Not yet: a follow-up security review of the experimental fix channel's fixes (needed before it should be enabled anywhere real), running one investigation across several machines at once, and email delivery for scheduled reports.
 
 ---
 
