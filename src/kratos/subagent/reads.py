@@ -525,7 +525,8 @@ class ProbeMissing(Exception):
     pass
 
 
-def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | None = None) -> dict[str, Any]:
+def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | None = None,
+               pass_fds: tuple[int, ...] = ()) -> dict[str, Any]:
     """Run a fixed argv (binary resolved inside the trusted dirs, never $PATH),
     reading at most `cap` bytes of stdout. Past the cap the process is killed
     and the output cut at the last full line (`truncated: True`); past
@@ -536,7 +537,7 @@ def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | N
     proc = subprocess.Popen(
         [exe, *argv[1:]], stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(READ_ENV), cwd="/",
-        start_new_session=True, close_fds=True,
+        start_new_session=True, close_fds=True, pass_fds=pass_fds,
     )
     if stdin_text is not None:
         def feed() -> None:
@@ -934,92 +935,212 @@ def yara_rule_files(ruleset: str) -> tuple[list[str], list[str]]:
     return files, problems
 
 
-def _walk_scan_files(top: str) -> tuple[list[str], dict[str, int], bool]:
-    counts = {"skipped_credential": 0, "skipped_unreadable": 0, "skipped_large": 0}
-    files: list[str] = []
+YARA_BATCH_FILES = 200      # open files handed to one yara run (well under the usual 1024-fd limit)
+_OPEN_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_nofollow(canonical: str) -> int:
+    """Open an absolute, already-canonical path one component at a time, never
+    following a symlink. A component that is (or has just become) a symlink makes
+    the open fail, so the caller holds exactly the object it checked -- a swap
+    after `_resolve_scan_path` can't redirect the scan (review v2, F-1)."""
+    parts = [x for x in canonical.split("/") if x]
+    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
     try:
-        top_dev = os.stat(top).st_dev
-    except OSError:
-        return [], counts, False
-    if os.path.isfile(top):
-        return [top], counts, False
+        for i, part in enumerate(parts):
+            flags = _OPEN_FLAGS | (os.O_DIRECTORY if i < len(parts) - 1 else 0)
+            nxt = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
 
-    def onerror(_e: OSError) -> None:
-        counts["skipped_unreadable"] += 1
 
-    for dirpath, dirnames, filenames in os.walk(top, onerror=onerror, followlinks=False):
-        keep = []
-        for d in dirnames:
-            full = os.path.join(dirpath, d)
-            if is_credential_path(full + "/x"):
-                counts["skipped_credential"] += 1
-                continue
+class _YaraBatchError(Exception):
+    pass
+
+
+class _YaraScan:
+    """One yara_scan: walk the scan path by file descriptor and hand yara files
+    it already holds open, as /proc/self/fd/N, a batch at a time.
+
+    Every step is race-free against a local user who controls the scanned tree:
+    the top is opened without following links (`_open_nofollow`); `os.fwalk`
+    descends through directory descriptors and never follows a symlink; each file
+    is opened with O_NOFOLLOW relative to its directory's descriptor and checked
+    with fstat. yara then opens /proc/self/fd/N -- the very file that was
+    checked -- so swapping a path component later redirects nothing, and a file
+    name can't inject a path into yara's list (they never reach it)."""
+
+    def __init__(self, logical_top: str, rules: list[str], deadline: float):
+        self.top = logical_top.rstrip("/") or "/"
+        self.rules = rules
+        self.deadline = deadline
+        self.counts = {"skipped_credential": 0, "skipped_unreadable": 0, "skipped_large": 0}
+        self.files_scanned = 0
+        self.file_cap = False
+        self.truncated = False
+        self.stopped: str | None = None
+        self.matches: list[dict[str, Any]] = []
+        self._batch: list[tuple[int, str]] = []
+
+    # -- collecting -------------------------------------------------------
+    def _add_open_file(self, fd: int, logical: str) -> bool:
+        self._batch.append((fd, logical))
+        self.files_scanned += 1
+        if len(self._batch) >= YARA_BATCH_FILES:
+            self._flush()
+        if self.files_scanned >= MAX_YARA_FILES:
+            self.file_cap = True
+        return not (self.file_cap or self.stopped)
+
+    def _add_entry(self, dir_fd: int, name: str, logical: str, top_dev: int) -> bool:
+        if is_credential_path(logical):
+            self.counts["skipped_credential"] += 1
+            return True
+        try:
+            st = os.lstat(name, dir_fd=dir_fd)
+        except OSError:
+            self.counts["skipped_unreadable"] += 1
+            return True
+        if not stat.S_ISREG(st.st_mode) or st.st_dev != top_dev:
+            return True  # links, devices, fifos, sockets, other filesystems: never scanned
+        if st.st_size > MAX_YARA_FILE_BYTES:
+            self.counts["skipped_large"] += 1
+            return True
+        try:
+            fd = os.open(name, _OPEN_FLAGS, dir_fd=dir_fd)
+        except OSError:  # unreadable, or swapped for a symlink (ELOOP) since the lstat
+            self.counts["skipped_unreadable"] += 1
+            return True
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode) or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+            os.close(fd)  # replaced between lstat and open
+            self.counts["skipped_unreadable"] += 1
+            return True
+        return self._add_open_file(fd, logical)
+
+    def run(self, top_fd: int) -> None:
+        try:
+            top_st = os.fstat(top_fd)
+            if stat.S_ISREG(top_st.st_mode):
+                if top_st.st_size > MAX_YARA_FILE_BYTES:
+                    self.counts["skipped_large"] += 1
+                    os.close(top_fd)
+                else:
+                    self._add_open_file(top_fd, self.top)
+                top_fd = -1
+            elif stat.S_ISDIR(top_st.st_mode):
+                self._walk(top_fd, top_st.st_dev)
+            self._flush()
+        finally:
+            if top_fd >= 0:
+                os.close(top_fd)
+            self._close_batch()
+
+    def _walk(self, top_fd: int, top_dev: int) -> None:
+        def onerror(_e: OSError) -> None:
+            self.counts["skipped_unreadable"] += 1
+
+        for dirpath, dirnames, filenames, dir_fd in os.fwalk(".", dir_fd=top_fd, follow_symlinks=False,
+                                                            onerror=onerror):
+            here = self.top if dirpath == "." else f"{self.top}/{dirpath[2:]}"
+            keep = []
+            for d in dirnames:
+                logical = f"{here}/{d}"
+                if is_credential_path(logical + "/x"):
+                    self.counts["skipped_credential"] += 1
+                    continue
+                try:
+                    if os.lstat(d, dir_fd=dir_fd).st_dev != top_dev:
+                        continue  # stay on one filesystem
+                except OSError:
+                    self.counts["skipped_unreadable"] += 1
+                    continue
+                keep.append(d)
+            dirnames[:] = keep
+            for name in filenames:
+                if not self._add_entry(dir_fd, name, f"{here}/{name}", top_dev):
+                    return
+            if time.monotonic() >= self.deadline:
+                self.stopped = "time limit"
+                return
+
+    # -- scanning ---------------------------------------------------------
+    def _close_batch(self) -> None:
+        for fd, _ in self._batch:
             try:
-                if os.lstat(full).st_dev != top_dev:
-                    continue  # stay on one filesystem
+                os.close(fd)
             except OSError:
-                counts["skipped_unreadable"] += 1
-                continue
-            keep.append(d)
-        dirnames[:] = keep
-        for name in filenames:
-            full = os.path.join(dirpath, name)
-            if is_credential_path(full):
-                counts["skipped_credential"] += 1
-                continue
-            try:
-                st = os.lstat(full)
-            except OSError:
-                counts["skipped_unreadable"] += 1
-                continue
-            if not stat.S_ISREG(st.st_mode):
-                continue
-            if st.st_size > MAX_YARA_FILE_BYTES:
-                counts["skipped_large"] += 1
-                continue
-            if not os.access(full, os.R_OK):
-                counts["skipped_unreadable"] += 1
-                continue
-            files.append(full)
-            if len(files) >= MAX_YARA_FILES:
-                return files, counts, True
-    return files, counts, False
+                pass
+        self._batch = []
+
+    def _flush(self) -> None:
+        if not self._batch or self.stopped:
+            self._close_batch()
+            return
+        left = self.deadline - time.monotonic()
+        by_name = {f"/proc/self/fd/{fd}": logical for fd, logical in self._batch}
+        try:
+            if left <= 0:
+                raise ProbeTimeout("time limit")
+            r = run_capped(["yara", "-w", "-s", *self.rules, "--scan-list", "/dev/stdin"],
+                           timeout=left, cap=8 * 1024 * 1024, stdin_text="\n".join(by_name) + "\n",
+                           pass_fds=tuple(fd for fd, _ in self._batch))
+        except ProbeTimeout:
+            if not self.matches and self.files_scanned <= len(self._batch):
+                raise  # not even the first batch finished: report a timeout
+            self.stopped = "time limit"
+            self.truncated = True
+            return
+        finally:
+            self._close_batch()
+        if r["returncode"] not in (0, 1) and not r["stdout"].strip():
+            detail = r["stderr"].strip().splitlines()
+            msg = detail[0] if detail else f"yara exited {r['returncode']}"
+            if "scan-list" in r["stderr"]:
+                msg = "this box's yara is too old for list scanning (needs yara 4.0 or newer)"
+            raise _YaraBatchError(msg)
+        self.truncated = self.truncated or r["truncated"]
+        for m in parse_yara_output(r["stdout"], include_content=False):
+            m["file"] = by_name.get(m["file"], m["file"])
+            m["strings"] = m["strings"][:20]
+            self.matches.append(m)
+        if len(self.matches) > MAX_YARA_MATCHES:
+            self.truncated = True
+            self.stopped = "match limit"
 
 
 def _p_yara_scan(p: dict[str, Any]) -> dict[str, Any]:
     path = _resolve_scan_path(p["path"])  # refuse an out-of-scope path whether or not yara exists
     if resolve_binary("yara") is None:
         raise ProbeMissing("yara is not installed on this box")
+    if not os.path.isdir("/proc/self/fd"):
+        return {"status": "error", "reason": "yara_scan needs /proc to hand yara the exact files it checked"}
     rules, problems = yara_rule_files(p["ruleset"])
     if not rules:
         return {"status": "error", "reason": "no YARA rules on this box"
                 + (f" ({'; '.join(problems)})" if problems else "")
                 + f" -- the agent ships a starter set; add your own .yar files to {LOCAL_YARA_DIR} (root-owned)"}
-    files, counts, file_cap = _walk_scan_files(path)
-    if not files:
-        return {"matches": [], "files_scanned": 0, "scan_path": path, "rule_files": [os.path.basename(r) for r in rules],
-                "rule_problems": problems, "truncated": False, **counts}
-    # The file list goes to yara on stdin (--scan-list /dev/stdin): nothing is
-    # written to disk. -s gives offsets; the matched bytes are dropped below
-    # and never leave this box.
-    r = run_capped(["yara", "-w", "-s", *rules, "--scan-list", "/dev/stdin"],
-                   timeout=PROBE_TIMEOUT_SECONDS["yara_scan"], cap=8 * 1024 * 1024,
-                   stdin_text="\n".join(files) + "\n")
-    if r["returncode"] not in (0, 1) and not r["stdout"].strip():
-        detail = r["stderr"].strip().splitlines()
-        msg = detail[0] if detail else f"yara exited {r['returncode']}"
-        if "scan-list" in r["stderr"]:
-            msg = "this box's yara is too old for list scanning (needs yara 4.0 or newer)"
-        return {"status": "error", "reason": f"yara failed: {msg}"}
-    matches = parse_yara_output(r["stdout"], include_content=False)
-    truncated = r["truncated"] or file_cap or len(matches) > MAX_YARA_MATCHES
-    for m in matches:
-        m["strings"] = m["strings"][:20]
-    return {
-        "matches": matches[:MAX_YARA_MATCHES], "files_scanned": len(files), "scan_path": path,
+    try:
+        top_fd = _open_nofollow(path)
+    except OSError as e:
+        raise ReadParamError(f"yara_scan: {path} changed while it was being checked ({e.strerror}) -- not scanned")
+    scan = _YaraScan(path, rules, time.monotonic() + PROBE_TIMEOUT_SECONDS["yara_scan"])
+    try:
+        scan.run(top_fd)
+    except _YaraBatchError as e:
+        return {"status": "error", "reason": f"yara failed: {e}"}
+    out = {
+        "matches": scan.matches[:MAX_YARA_MATCHES], "files_scanned": scan.files_scanned, "scan_path": path,
         "rule_files": [os.path.basename(x) for x in rules], "rule_problems": problems,
-        "truncated": truncated, "file_limit_hit": file_cap, **counts,
+        "truncated": scan.truncated or scan.file_cap, "file_limit_hit": scan.file_cap, **scan.counts,
     }
+    if scan.stopped:
+        out["stopped_early"] = scan.stopped
+    return out
 
 
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {

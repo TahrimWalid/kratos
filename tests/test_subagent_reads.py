@@ -2,6 +2,7 @@
 refusals, scope limits, and parity with the SSH path's commands/output."""
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -99,15 +100,16 @@ def test_symlink_out_of_a_root_is_refused(tmp_path, monkeypatch):
         link.unlink()
 
 
-def test_walk_skips_credential_dirs_and_files(tmp_path, monkeypatch):
-    (tmp_path / ".ssh").mkdir()
-    (tmp_path / ".ssh" / "id_ed25519").write_text("k")
-    (tmp_path / "web").mkdir()
-    (tmp_path / "web" / "index.php").write_text("<?php")
-    (tmp_path / "web" / "server.key").write_text("k")
-    files, counts, capped = R._walk_scan_files(str(tmp_path))
-    assert files == [str(tmp_path / "web" / "index.php")]
-    assert counts["skipped_credential"] == 2 and not capped
+def test_walk_skips_credential_dirs_and_files(yara_box):
+    root, outside, scan = yara_box
+    (root / ".ssh").mkdir()
+    (root / ".ssh" / "id_ed25519").write_text("evil")
+    (root / "web").mkdir()
+    (root / "web" / "index.php").write_text("<?php evil")
+    (root / "web" / "server.key").write_text("evil")
+    out = scan(str(root))
+    assert [m["file"] for m in out["matches"]] == [str(root / "web" / "index.php")]
+    assert out["skipped_credential"] == 2 and out["files_scanned"] == 1 and not out["truncated"]
 
 
 def test_local_rules_must_be_root_owned(tmp_path, monkeypatch):
@@ -244,3 +246,122 @@ def test_the_shipped_rules_load_no_yara_modules():
     shipped = Path(kratos.__file__).parent / "yara_rules"      # what the installer bundles
     files, _ = R._rule_files_in(str(shipped), trusted_only=False)
     assert files and not any(R._uses_yara_modules(f) for f in files)
+
+
+
+# ---------------------------------------------------------------------------
+# Review v2 F-1: the scan can't be redirected outside the scan roots
+# ---------------------------------------------------------------------------
+_FAKE_YARA = """#!/usr/bin/env python3
+# Stand-in for yara: reads its --scan-list, really opens each path, and reports
+# a match for files containing "evil" -- so tests see exactly what yara would open.
+import sys
+log = open(sys.argv[0] + ".calls", "a")
+paths = [l for l in sys.stdin.read().split("\\n") if l]
+log.write("%d\\n" % len(paths)); log.close()
+open(sys.argv[0] + ".paths", "a").write("".join(p + "\\n" for p in paths))
+for path in paths:
+    try:
+        data = open(path, "rb").read()
+    except OSError:
+        continue
+    if b"evil" in data:
+        print("Evil " + path)
+        print("0x%x:$a: evil" % data.index(b"evil"))
+"""
+
+
+@pytest.fixture
+def yara_box(tmp_path, monkeypatch):
+    """A scan root, a directory OUTSIDE every root holding a secret, and a scan()
+    that runs the real yara_scan probe with the stand-in scanner."""
+    root, outside = tmp_path / "root", tmp_path / "outside"
+    root.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("evil secret")
+    fake = tmp_path / "yara"
+    fake.write_text(_FAKE_YARA)
+    fake.chmod(0o755)
+    rules = tmp_path / "rules.yar"
+    rules.write_text('rule Evil { strings: $a = "evil" condition: $a }\n')
+    real_resolve = R.resolve_binary
+    monkeypatch.setattr(R, "resolve_binary", lambda name: str(fake) if name == "yara" else real_resolve(name))
+    monkeypatch.setattr(R, "SCAN_ROOTS", (str(root),))
+    monkeypatch.setattr(R, "yara_rule_files", lambda ruleset: ([str(rules)], []))
+
+    def scan(path):
+        out = R.run_probe("yara_scan", {"path": path})
+        assert out["status"] in ("ok", "refused"), out
+        return out["data"] if out["status"] == "ok" else out
+
+    scan.calls = fake.with_name("yara.calls")
+    scan.paths = fake.with_name("yara.paths")
+    return root, outside, scan
+
+
+def _outside(out, outside):
+    return [m["file"] for m in out.get("matches", []) if "outside" in m["file"] or "secret" in m["file"]]
+
+
+def test_a_directory_swapped_for_a_symlink_after_the_check_is_not_scanned(yara_box, monkeypatch):
+    """The reviewer's PoC: the path passes the scan-root check, then a local user
+    replaces it with a symlink to a directory outside every root."""
+    root, outside, scan = yara_box
+    sus = root / "suspicious"
+    sus.mkdir()
+    real_resolve = R._resolve_scan_path
+
+    def resolve_then_swap(path):
+        canonical = real_resolve(path)
+        sus.rmdir()
+        sus.symlink_to(outside)
+        return canonical
+
+    monkeypatch.setattr(R, "_resolve_scan_path", resolve_then_swap)
+    out = scan(str(sus))
+    assert out.get("status") == "refused" and "changed while it was being checked" in out["reason"]
+
+
+def test_symlinked_files_and_directories_inside_a_root_are_never_followed(yara_box):
+    root, outside, scan = yara_box
+    (root / "link_dir").symlink_to(outside)
+    (root / "link_file").symlink_to(outside / "secret.txt")
+    (root / "plain.txt").write_text("evil")
+    out = scan(str(root))
+    assert _outside(out, outside) == [] and [m["file"] for m in out["matches"]] == [str(root / "plain.txt")]
+
+
+def test_a_file_name_cannot_inject_a_path_into_the_scan_list(yara_box):
+    """yara's --scan-list is newline-separated; a name containing a newline used to
+    add any path to it. yara now only ever sees /proc/self/fd/N."""
+    root, outside, scan = yara_box
+    (root / "a\netc").write_text("harmless")       # used to add 'etc' (= /etc, yara runs in /) to the list
+    out = scan(str(root))
+    listed = scan.paths.read_text().splitlines()
+    assert out["files_scanned"] == 1 and len(listed) == 1 and listed[0].startswith("/proc/self/fd/")
+
+
+def test_large_trees_are_scanned_in_batches_and_matches_map_back(yara_box):
+    root, outside, scan = yara_box
+    for i in range(R.YARA_BATCH_FILES * 2 + 50):
+        (root / f"f{i:04d}.txt").write_text("evil" if i % 200 == 7 else "ok")
+    out = scan(str(root))
+    assert out["files_scanned"] == R.YARA_BATCH_FILES * 2 + 50
+    assert sorted(m["file"] for m in out["matches"]) == [str(root / f"f{i:04d}.txt") for i in (7, 207, 407)]
+    assert [int(x) for x in scan.calls.read_text().split()] == [200, 200, 50]
+
+
+def test_a_single_file_can_be_scanned(yara_box):
+    root, outside, scan = yara_box
+    (root / "drop.php").write_text("evil")
+    out = scan(str(root / "drop.php"))
+    assert [m["file"] for m in out["matches"]] == [str(root / "drop.php")] and out["files_scanned"] == 1
+
+
+def test_open_nofollow_refuses_a_symlinked_component(tmp_path):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    fd = R._open_nofollow(str(tmp_path / "real"))
+    os.close(fd)
+    with pytest.raises(OSError):
+        R._open_nofollow(str(tmp_path / "link"))
