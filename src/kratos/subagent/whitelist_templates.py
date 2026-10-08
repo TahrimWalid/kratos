@@ -152,6 +152,19 @@ def build_effective_spec(
     if unknown_slots:
         raise TemplateInstanceError(f"{template.base.id}: unknown slot(s) referenced: {sorted(unknown_slots)}")
 
+    # Review v2 F-11: a value list given as one string would be read as its
+    # characters, and values for a non-enum slot used to be dropped silently.
+    for given in (selected_values, extra_values):
+        for name, values in given.items():
+            if isinstance(values, (str, bytes)) or not all(isinstance(v, str) for v in values):
+                raise TemplateInstanceError(
+                    f"{template.base.id}: slot {name!r} values must be a list of strings, not {values!r}")
+            kind = template.base.slots[name].kind
+            if kind != "enum":
+                raise TemplateInstanceError(
+                    f"{template.base.id}: slot {name!r} is a {kind} slot -- its value is checked when the action "
+                    "runs and can't be narrowed or extended here")
+
     effective_slots: dict[str, W.Slot] = {}
     for name, base_slot in template.base.slots.items():
         if base_slot.kind != "enum":

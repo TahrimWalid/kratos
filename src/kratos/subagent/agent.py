@@ -291,12 +291,15 @@ class SubAgent:
         return v if type(v) is int else None
 
     def _record_version_floor(self, version: int) -> None:
-        floors = self._state.get("whitelist_version_floor")
-        if not isinstance(floors, dict):
-            floors = {}
+        previous = self._state.get("whitelist_version_floor")
+        floors = dict(previous) if isinstance(previous, dict) else {}
         floors[self._token_key()] = version
         self._state["whitelist_version_floor"] = floors
-        self._persist_state()
+        try:
+            self._persist_state()
+        except OSError:
+            self._state["whitelist_version_floor"] = previous  # memory never runs ahead of the file
+            raise
 
     # ------------------------------------------------------------------
     # Ceiling
@@ -580,13 +583,24 @@ class SubAgent:
             except (wl.ActionSpecError, cl.CeilingError, TypeError, ValueError) as e:
                 rejected.append({"id": label, "reason": str(e)})
                 continue
+            except Exception as e:  # noqa: BLE001 -- review v2 F-4: one odd action is refused, never the whole push
+                logger.exception("whitelist_push v%s: unexpected error checking action %r", version, label)
+                rejected.append({"id": label, "reason": f"could not be checked ({type(e).__name__})"})
+                continue
             new_specs[spec.id] = spec
         if rejected:
             logger.warning("whitelist_push v%s: refused %d action(s) outside this agent's ceiling: %s",
                            version, len(rejected), "; ".join(r["reason"] for r in rejected))
+        try:
+            # Recorded BEFORE applying: a version this machine can't remember
+            # across a restart would weaken anti-rollback, so it isn't used.
+            self._record_version_floor(version)
+        except OSError as e:
+            await self._refuse_push(writer, version, f"could not save the version on this machine ({e.strerror or e}); "
+                                                     "is its disk full or read-only?", floor)
+            return
         self._whitelist_specs = new_specs
         self._whitelist_version = version
-        self._record_version_floor(version)
         logger.info("applied whitelist_push: version=%s, %d action(s)", version, len(new_specs))
         await proto.write_frame(writer, proto.build_whitelist_push_ack(version, rejected, self.ceiling_report()))
 

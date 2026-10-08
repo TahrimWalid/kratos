@@ -453,8 +453,11 @@ class WhitelistStore:
 
         out: list[WhitelistEntryStatus] = []
         for row in rows:
-            selected = {k: tuple(v) for k, v in json.loads(row["selected_values_json"]).items()}
-            extra = {k: tuple(v) for k, v in json.loads(row["extra_values_json"]).items()}
+            # Lists become tuples; anything else is passed through so
+            # build_effective_spec reports it instead of splitting a string.
+            selected = {k: tuple(v) if isinstance(v, list) else v
+                        for k, v in json.loads(row["selected_values_json"]).items()}
+            extra = {k: tuple(v) if isinstance(v, list) else v for k, v in json.loads(row["extra_values_json"]).items()}
             effective_spec: W.ActionSpec | None = None
             tier: W.Sensitivity | None = None
             error: str | None = None

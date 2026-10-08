@@ -43,7 +43,7 @@ import ipaddress
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 SlotKind = Literal["enum", "ip", "int_range", "token"]
 _VALID_SLOT_KINDS = ("enum", "ip", "int_range", "token")
@@ -684,42 +684,86 @@ def spec_to_wire(spec: ActionSpec) -> dict:
     }
 
 
-def spec_from_wire(data: dict) -> ActionSpec:
-    """Inverse of `spec_to_wire`. Raises ActionSpecError on a structurally
-    malformed dict (missing/wrong-typed field) rather than a raw KeyError/
-    TypeError -- a receiver (the agent, re-validating a pushed whitelist from
-    core) should get the same exception family `validate_spec` itself
-    raises, not an unrelated crash, from a malformed wire message."""
-    try:
-        slots = {
-            name: Slot(
-                kind=s["kind"],
-                values=tuple(s["values"]) if s.get("values") is not None else None,
-                ip_deny_private=bool(s.get("ip_deny_private", False)),
-                min_value=s.get("min_value"),
-                max_value=s.get("max_value"),
-                pattern=s.get("pattern", _DEFAULT_TOKEN_PATTERN),
-                max_length=s.get("max_length", _DEFAULT_TOKEN_MAX_LENGTH),
-            )
-            for name, s in data["slots"].items()
-        }
-        return ActionSpec(
-            id=data["id"],
-            layer=data["layer"],
-            argv_template=tuple(data["argv_template"]),
-            slots=slots,
-            effect=data.get("effect", ""),
-            reversibility=data.get("reversibility", ""),
-            blast_radius=data.get("blast_radius", ""),
-            reversible=bool(data.get("reversible", False)),
-            disrupts_running_service=bool(data.get("disrupts_running_service", False)),
-            reachability_adjacent=bool(data.get("reachability_adjacent", False)),
-            inverse_id=data.get("inverse_id"),
-            source_recommendation=tuple(data.get("source_recommendation", ())),
-            requires_typed_execute=bool(data.get("requires_typed_execute", True)),
-        )
-    except (KeyError, TypeError) as e:
-        raise ActionSpecError(f"malformed ActionSpec wire payload: {e}") from e
+_MISSING = object()
+
+
+def _wire_field(obj: dict, key: str, kinds: tuple[type, ...], where: str, default: Any = _MISSING,
+                *, nullable: bool = False) -> Any:
+    """One field of a wire dict, with its exact JSON type. bool is never
+    accepted as an int (JSON true is not 1 here), and nothing is coerced:
+    a string where a list belongs is refused, not split into characters."""
+    if key not in obj:
+        if default is _MISSING:
+            raise ActionSpecError(f"malformed ActionSpec wire payload: {where} is missing {key!r}")
+        return default
+    value = obj[key]
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) and bool not in kinds:
+        ok = False
+    else:
+        ok = isinstance(value, kinds)
+    if not ok:
+        names = "/".join(k.__name__ for k in kinds) + (" or null" if nullable else "")
+        raise ActionSpecError(f"malformed ActionSpec wire payload: {where}.{key} must be {names}, "
+                              f"not {type(value).__name__}")
+    return value
+
+
+def _wire_str_list(obj: dict, key: str, where: str, default: Any = _MISSING, *, nullable: bool = False) -> Any:
+    items = _wire_field(obj, key, (list,), where, default, nullable=nullable)
+    if items is None or items is default:
+        return items
+    if not all(isinstance(i, str) for i in items):
+        raise ActionSpecError(f"malformed ActionSpec wire payload: {where}.{key} must be a list of strings")
+    return tuple(items)
+
+
+def _slot_from_wire(name: Any, raw: Any) -> Slot:
+    if not isinstance(name, str):
+        raise ActionSpecError("malformed ActionSpec wire payload: a slot name is not a string")
+    where = f"slots[{name!r}]"
+    if not isinstance(raw, dict):
+        raise ActionSpecError(f"malformed ActionSpec wire payload: {where} must be an object")
+    return Slot(
+        kind=_wire_field(raw, "kind", (str,), where),
+        values=_wire_str_list(raw, "values", where, None, nullable=True),
+        ip_deny_private=_wire_field(raw, "ip_deny_private", (bool,), where, False),
+        min_value=_wire_field(raw, "min_value", (int,), where, None, nullable=True),
+        max_value=_wire_field(raw, "max_value", (int,), where, None, nullable=True),
+        pattern=_wire_field(raw, "pattern", (str,), where, _DEFAULT_TOKEN_PATTERN),
+        max_length=_wire_field(raw, "max_length", (int,), where, _DEFAULT_TOKEN_MAX_LENGTH),
+    )
+
+
+def spec_from_wire(data: Any) -> ActionSpec:
+    """Inverse of `spec_to_wire`. Every field is checked for its exact JSON
+    type; anything structurally wrong raises ActionSpecError -- the same
+    family `validate_spec` raises -- never a stray KeyError/TypeError/
+    AttributeError (review v2 F-4: `"slots": null` escaped as AttributeError
+    and dropped the whole push without an answer), and nothing is coerced
+    (F-11: a string `values` used to become a tuple of its characters).
+    Unknown keys are ignored, so an older agent still reads a newer core's
+    push. Callers still run `validate_spec` on the result."""
+    if not isinstance(data, dict):
+        raise ActionSpecError("malformed ActionSpec wire payload: not an object")
+    where = "action"
+    raw_slots = _wire_field(data, "slots", (dict,), where, {})
+    return ActionSpec(
+        id=_wire_field(data, "id", (str,), where),
+        layer=_wire_field(data, "layer", (str,), where),
+        argv_template=_wire_str_list(data, "argv_template", where),
+        slots={name: _slot_from_wire(name, raw) for name, raw in raw_slots.items()},
+        effect=_wire_field(data, "effect", (str,), where, ""),
+        reversibility=_wire_field(data, "reversibility", (str,), where, ""),
+        blast_radius=_wire_field(data, "blast_radius", (str,), where, ""),
+        reversible=_wire_field(data, "reversible", (bool,), where, False),
+        disrupts_running_service=_wire_field(data, "disrupts_running_service", (bool,), where, False),
+        reachability_adjacent=_wire_field(data, "reachability_adjacent", (bool,), where, False),
+        inverse_id=_wire_field(data, "inverse_id", (str,), where, None, nullable=True),
+        source_recommendation=_wire_str_list(data, "source_recommendation", where, ()),
+        requires_typed_execute=_wire_field(data, "requires_typed_execute", (bool,), where, True),
+    )
 
 
 def list_builtin_action_specs() -> tuple[ActionSpec, ...]:
