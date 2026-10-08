@@ -26,17 +26,7 @@ from __future__ import annotations
 import ipaddress
 import re
 
-# A syntactically valid DNS hostname: dot-separated labels, each 1-63 chars of
-# letters/digits/hyphen, no leading/trailing hyphen. Rejects a token that leads
-# or trails with punctuation, embeds a slash / @ / space / quote / underscore --
-# exactly what the fragments of a pasted command line or a sentence look like.
-_HOSTNAME_LABEL = r"(?!-)[A-Za-z0-9-]{1,63}(?<!-)"
-_VALID_HOSTNAME = re.compile(rf"^{_HOSTNAME_LABEL}(\.{_HOSTNAME_LABEL})*$")
-# "Only digits and dots" -> the user clearly MEANT an IPv4; if ipaddress then
-# rejects it, it's a malformed address (10.0.0.999, 1.2.3.4.5) and must NOT slip
-# through the hostname rule.
-_IPV4_ISH = re.compile(r"^[0-9.]+$")
-_MAX_TARGET_LEN = 253  # DNS name length ceiling; also caps a pasted blob
+from kratos.utils.hostnames import MAX_LEN as _MAX_TARGET_LEN, is_ip_or_hostname
 
 # "Monitor the Kratos host itself" as a first-class TARGET (distinct from the
 # per-turn /investigate-host override): a session whose target IS the local
@@ -71,19 +61,7 @@ def _is_plausible_target(tok: str) -> bool:
     the host exists or is reachable -- that's the target-probe's job. It exists
     to reject 'random bs' (malformed IPs, pasted commands, sentences) before it
     becomes the active target."""
-    if not tok or len(tok) > _MAX_TARGET_LEN:
-        return False
-    # Proper IP validation via the stdlib -- rejects malformed octets like
-    # 10.0.0.999 / 1.2.3.4.5 / 999.1.1.1 that a loose regex waved through.
-    try:
-        ipaddress.ip_address(tok)
-        return True
-    except ValueError:
-        pass
-    # Digits-and-dots that failed the IP parse = a malformed IPv4 attempt.
-    if _IPV4_ISH.match(tok):
-        return False
-    return bool(_VALID_HOSTNAME.match(tok))
+    return is_ip_or_hostname(tok)
 
 
 def validate_targets(tokens: list[str]) -> tuple[list[str], str | None]:

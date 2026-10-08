@@ -31,7 +31,7 @@ def _extract_blobs(script: str) -> dict[str, str]:
 
 
 def test_generate_installer_embeds_all_bundle_files_roundtrip():
-    script = installer.generate_installer("100.64.0.10", "CODE-1234", core_port=8765)
+    script = installer.generate_installer("100.64.0.10", "1A2B-3C4D", core_port=8765)
     blobs = _extract_blobs(script)
 
     # __init__.py, the agent's own files, the shared measurement builder and
@@ -52,35 +52,94 @@ def test_generate_installer_embeds_all_bundle_files_roundtrip():
 
 
 def test_generate_installer_substitutes_address_port_code():
-    script = installer.generate_installer("host.example", "CODE-ABCD", core_port=9999)
+    script = installer.generate_installer("host.example", "ABCD-ABCD", core_port=9999)
     assert "CORE_HOST='host.example'" in script
     assert "CORE_PORT=9999" in script
-    assert "PAIR_CODE='CODE-ABCD'" in script
+    assert "PAIR_CODE='ABCD-ABCD'" in script
     assert "--core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE" in script
     assert 'EXEC_CMD="$EXEC_CMD --pair $PAIR_CODE"' in script  # only added when a code is given
 
 
 def test_generate_installer_never_enables_execution():
-    script = installer.generate_installer("10.0.0.1", "CODE-1")
+    script = installer.generate_installer("10.0.0.1", "0000-0001")
     # Capability 2 must never be turned on by the onboarding installer.
     assert "--enable-execution" not in script
     assert "execution_enabled" not in script
 
 
 def test_generate_installer_has_systemd_unit_and_fallbacks():
-    script = installer.generate_installer("10.0.0.1", "CODE-1")
+    script = installer.generate_installer("10.0.0.1", "0000-0001")
     assert "[Unit]" in script and "[Service]" in script and "[Install]" in script
     assert "Restart=always" in script
     assert "systemctl --user" in script  # user fallback
     assert "start_plain" in script  # no-systemd fallback
 
 
-def test_single_quote_escaping_is_injection_safe():
-    # A pairing code / host can never break out of the sh single-quote.
-    script = installer.generate_installer("h'; rm -rf /; '", "c'code", core_port=8765)
-    assert "rm -rf /" in script  # present only as inert quoted data...
-    # ...and the quoting is the escaped form, not a live command break-out.
-    assert installer._sh_squote("h'; rm -rf /; '") in script
+def test_single_quote_helper_never_lets_a_value_break_out():
+    # Defence in depth behind the validation below: the quoting used for every
+    # assignment keeps even a hostile value as inert data.
+    hostile = "h'; touch /tmp/kratos_pwn; '"
+    proc = subprocess.run(["sh", "-c", f"printf %s {installer._sh_squote(hostile)}"],
+                          capture_output=True, text=True, timeout=10)
+    assert proc.stdout == hostile
+
+
+@pytest.mark.parametrize("host", [
+    "1.2.3.4 --enable-execution",   # review v2 F-2: would have switched execution on
+    "1.2.3.4;id", "$(id)", "`id`", "h'; rm -rf /; '", "-x", "a b", "10.0.0.999", "a\nb",
+])
+def test_an_address_that_is_not_an_ip_or_hostname_is_refused(host):
+    with pytest.raises(installer.InstallerError):
+        installer.generate_installer(host, "1A2B-3C4D")
+
+
+@pytest.mark.parametrize("code", ["c'code", "1A2B-3C4D --enable-execution", "1A2B3C4D", "ZZZZ-ZZZZ"])
+def test_a_code_not_in_kratoss_format_is_refused(code):
+    with pytest.raises(installer.InstallerError):
+        installer.generate_installer("10.0.0.5", code)
+
+
+@pytest.mark.parametrize("name", ["kratos; touch /tmp/x; echo x", "Kratos", "-x", "a/b", "a b", "", "x" * 65])
+def test_a_service_name_that_is_not_plain_is_refused(name):
+    # Review v2 F-2: the name used to reach `sudo sh -c "cat > $UNIT"`.
+    with pytest.raises(installer.InstallerError):
+        installer.generate_installer("10.0.0.5", "1A2B-3C4D", service_name=name)
+    with pytest.raises(installer.InstallerError):
+        installer.uninstall_command(name)
+
+
+def test_good_values_are_accepted_and_the_unit_is_not_written_through_sh_c():
+    script = installer.generate_installer(
+        "fd7a:115c:a1e0::5", " 1a2b-3c4d ", service_name="kratos-agent.v2")
+    assert "CORE_HOST='fd7a:115c:a1e0::5'" in script
+    assert "PAIR_CODE='1a2b-3c4d'" in script
+    assert "--enable-execution" not in script
+    assert 'sh -c "cat > $UNIT"' not in script
+    assert '$SUDO tee "$UNIT"' in script
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
+@pytest.mark.parametrize("line, edited", [
+    ("CORE_HOST='10.0.0.5'", "CORE_HOST='10.0.0.5 --enable-execution'"),
+    ("PAIR_CODE='1A2B-3C4D'", "PAIR_CODE='1A2B-3C4D;id'"),
+    ("SERVICE_NAME='kratos-subagent'", "SERVICE_NAME='x; id'"),
+])
+def test_the_script_itself_refuses_a_value_edited_after_generation(tmp_path, line, edited):
+    """The generated script re-checks its values, so an installer edited after
+    Kratos produced it still refuses to build a bad command or unit."""
+    script = installer.generate_installer("10.0.0.5", "1A2B-3C4D")
+    assert line in script
+    # Only the preamble (checks) -- never let the test reach the install steps.
+    preamble = script.replace(line, edited, 1).split("# Decide where to install")[0]
+    path = tmp_path / "pre.sh"
+    path.write_text(preamble, encoding="utf-8")
+    proc = subprocess.run(["sh", str(path)], capture_output=True, text=True, timeout=20, cwd=tmp_path)
+    assert proc.returncode != 0
+    assert "KRATOS_INSTALL_ERROR: bad_input" in proc.stderr
+    # The unedited preamble passes its own checks.
+    clean = tmp_path / "clean.sh"
+    clean.write_text(script.split("# Decide where to install")[0], encoding="utf-8")
+    assert subprocess.run(["sh", str(clean)], capture_output=True, timeout=20, cwd=tmp_path).returncode == 0
 
 
 @pytest.mark.parametrize("bad", [("", "code"), ("host", ""), ("host", "  ")])
@@ -92,14 +151,14 @@ def test_generate_installer_rejects_empty(bad):
 
 def test_generate_installer_rejects_bad_port():
     with pytest.raises(installer.InstallerError):
-        installer.generate_installer("host", "code", core_port=0)
+        installer.generate_installer("host", "1A2B-3C4D", core_port=0)
     with pytest.raises(installer.InstallerError):
-        installer.generate_installer("host", "code", core_port=70000)
+        installer.generate_installer("host", "1A2B-3C4D", core_port=70000)
 
 
 @pytest.mark.skipif(shutil.which("sh") is None, reason="no POSIX sh available")
 def test_generated_script_is_valid_posix_sh(tmp_path):
-    script = installer.generate_installer("100.64.0.10", "CODE-9", core_port=8765)
+    script = installer.generate_installer("100.64.0.10", "0000-0009", core_port=8765)
     path = tmp_path / "install.sh"
     path.write_text(script, encoding="utf-8")
     # `sh -n` parses without executing -- catches quoting/heredoc/syntax errors.
@@ -137,7 +196,7 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
     system python3 -- no kratos package on the path."""
     import subprocess
 
-    script = installer.generate_installer("100.64.0.10", "CODE-1234", core_port=8765)
+    script = installer.generate_installer("100.64.0.10", "1A2B-3C4D", core_port=8765)
     pkg = tmp_path / "subagent"
     (pkg / "yara_rules").mkdir(parents=True)
     for name, body in _extract_blobs(script).items():
@@ -162,8 +221,8 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
 
 
 def test_installer_can_allow_an_untrusted_transport_for_reads_only():
-    plain = installer.generate_installer("192.168.1.20", "CODE-1234")
-    lan = installer.generate_installer("192.168.1.20", "CODE-1234", allow_untrusted_transport=True)
+    plain = installer.generate_installer("192.168.1.20", "1A2B-3C4D")
+    lan = installer.generate_installer("192.168.1.20", "1A2B-3C4D", allow_untrusted_transport=True)
     assert "--allow-untrusted-transport" not in plain
     assert "--state-file $STATE_FILE --allow-untrusted-transport\"" in lan
     assert "--enable-execution" not in lan

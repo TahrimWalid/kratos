@@ -28,9 +28,12 @@ about the UI flow around it changes.
 from __future__ import annotations
 
 import base64
+import re
 import textwrap
 from datetime import datetime, timezone
 from pathlib import Path
+
+from kratos.utils.hostnames import is_ip_or_hostname
 
 # The stdlib-only files that make up the deployable agent bundle. They must
 # stay siblings in a ``subagent/`` package directory on the target (see
@@ -57,6 +60,8 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
 YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 
 DEFAULT_SERVICE_NAME = "kratos-subagent"
+PAIRING_CODE_RE = re.compile(r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}")
+_SERVICE_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
 DEFAULT_CORE_PORT = 8765
 
 # A minimal package ``__init__`` for the on-target bundle. Deliberately NOT the
@@ -144,10 +149,21 @@ def generate_installer(
     """
     if not core_host or not str(core_host).strip():
         raise InstallerError("core_host is required")
+    core_host = str(core_host).strip()
+    # Every value below ends up inside a shell script that runs as root on the
+    # target, and inside the agent's command line. Only a plain address, a code
+    # in Kratos's own format and a plain service name are accepted -- e.g.
+    # "1.2.3.4 --enable-execution" would otherwise switch execution on (review v2 F-2).
+    if not is_ip_or_hostname(core_host):
+        raise InstallerError(f"{core_host!r} is not an IP address or hostname")
+    if not _SERVICE_NAME_RE.fullmatch(service_name or ""):
+        raise InstallerError(f"invalid service name {service_name!r} (lowercase letters, digits, . _ - only)")
     if upgrade:
         pairing_code = ""
     elif not pairing_code or not str(pairing_code).strip():
         raise InstallerError("pairing_code is required (or use upgrade=True to keep the existing pairing)")
+    elif not PAIRING_CODE_RE.fullmatch(str(pairing_code).strip()):
+        raise InstallerError(f"{pairing_code!r} is not a pairing code (Kratos's codes look like 1A2B-3C4D)")
     try:
         port = int(core_port)
     except (TypeError, ValueError) as exc:
@@ -167,7 +183,7 @@ def generate_installer(
 
     generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    host_q = _sh_squote(str(core_host).strip())
+    host_q = _sh_squote(core_host)
     code_q = _sh_squote(str(pairing_code or "").strip())
     svc_q = _sh_squote(service_name)
 
@@ -218,6 +234,14 @@ PY=$(command -v python3 || true)
     || die python_too_old "python3 is too old ($("$PY" -V 2>&1)); the agent needs Python 3.8 or newer"
 command -v base64 >/dev/null 2>&1 || die no_base64 "base64 is required on the target but was not found"
 
+# The values above go into a command line and a root-run script: refuse anything
+# but plain values even if this file was edited after Kratos generated it.
+case "$CORE_HOST" in ""|-*|*[!A-Za-z0-9.:-]*) die bad_input "core address '$CORE_HOST' is not a plain IP or hostname";; esac
+case "$CORE_PORT" in ""|*[!0-9]*) die bad_input "core port '$CORE_PORT' is not a number";; esac
+case "$PAIR_CODE" in *[!A-Fa-f0-9-]*) die bad_input "pairing code '$PAIR_CODE' is not a Kratos pairing code";; esac
+case "$SERVICE_NAME" in ""|[!a-z0-9]*|*[!a-z0-9_.-]*) die bad_input "service name '$SERVICE_NAME' is not a plain name";; esac
+case "$PY" in *[!A-Za-z0-9/._+-]*) die bad_input "python3 is at an unusual path ('$PY'); install from a plain path";; esac
+
 # Decide where to install and whether we can manage a system service.
 # Priority: real root -> passwordless sudo -> unprivileged user install.
 SUDO=""
@@ -232,6 +256,7 @@ else
     INSTALL_DIR="$HOME/.kratos-subagent"
     MODE=user
 fi
+case "$INSTALL_DIR" in *[!A-Za-z0-9/._+-]*) die bad_path "the install folder '$INSTALL_DIR' has spaces or special characters";; esac
 STATE_FILE="$INSTALL_DIR/state.json"
 
 if [ "$UPGRADE" = "1" ]; then
@@ -299,8 +324,8 @@ start_plain() {{
     # OpenRC (Alpine etc.) runs /etc/local.d/*.start at boot.
     BOOT=no
     if [ "$MODE" = "system" ] && [ -d /etc/local.d ] && command -v rc-update >/dev/null 2>&1; then
-        printf '#!/bin/sh\\nexec sh %s\\n' "'$START'" | $SUDO tee /etc/local.d/$SERVICE_NAME.start >/dev/null \\
-            && $SUDO chmod 755 /etc/local.d/$SERVICE_NAME.start \\
+        printf '#!/bin/sh\\nexec sh %s\\n' "'$START'" | $SUDO tee "/etc/local.d/$SERVICE_NAME.start" >/dev/null \\
+            && $SUDO chmod 755 "/etc/local.d/$SERVICE_NAME.start" \\
             && $SUDO rc-update add local default >/dev/null 2>&1 && BOOT=yes
     fi
     if [ "$BOOT" = "yes" ]; then
@@ -325,7 +350,7 @@ if [ "$MODE" = "system" ]; then
         exit 0
     fi
     UNIT=/etc/systemd/system/$SERVICE_NAME.service
-    $SUDO sh -c "cat > $UNIT" <<UNIT_EOF
+    $SUDO tee "$UNIT" >/dev/null <<UNIT_EOF
 [Unit]
 Description=Kratos sub-agent (read-only telemetry)
 After=network-online.target
@@ -401,6 +426,8 @@ def uninstall_command(service_name: str = DEFAULT_SERVICE_NAME) -> str:
     """One command, run ON the target, that stops and removes the agent
     whichever way it was installed (system service, user service, or a
     background process). Safe to run when parts are already gone."""
+    if not _SERVICE_NAME_RE.fullmatch(service_name or ""):
+        raise InstallerError(f"invalid service name {service_name!r}")
     svc = service_name
     # $S is sudo unless already root (a root shell may have no sudo at all).
     # Every privileged step is guarded by an existence check, so a user

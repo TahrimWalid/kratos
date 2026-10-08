@@ -41,6 +41,7 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils import ssh_keys
+from kratos.utils.hostnames import is_ip_or_hostname
 
 
 def _cl_default_bind() -> str:
@@ -1095,11 +1096,18 @@ class SubAgentScreen(Screen):
         if picked is None:
             return None
         if picked == "__manual__":
-            typed = await self.app.push_screen_wait(
-                PromptModal("Core address", hint="Public IP or hostname the target can reach (e.g. vpn.example.com).")
-            )
-            typed = (typed or "").strip()
-            return typed or None
+            hint = "Public IP or hostname the target can reach (e.g. vpn.example.com)."
+            while True:
+                typed = await self.app.push_screen_wait(PromptModal("Core address", hint=hint))
+                typed = (typed or "").strip()
+                if not typed:
+                    return None
+                # Checked here, before any pairing code exists: the address goes
+                # into a root-run installer and the agent's command line.
+                if is_ip_or_hostname(typed):
+                    return typed
+                hint = (f"'{typed}' isn't an IP address or hostname — type just the address "
+                        "(e.g. 203.0.113.7 or vpn.example.com), or leave it empty to cancel.")
         return picked
 
     def _render_pairing_instructions(self, name: str | None, host: str, code: str, ttl_min: int, out_path: Path) -> None:

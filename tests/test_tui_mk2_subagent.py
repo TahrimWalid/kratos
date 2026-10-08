@@ -248,6 +248,40 @@ def test_manual_hub_address_prompt(tmp_path, monkeypatch):
     assert "vpn.example.com" in scripts[0].read_text()
 
 
+def test_manual_hub_address_that_is_not_an_address_is_asked_again(tmp_path, monkeypatch):
+    """Review v2 F-2: a typed core address carrying extra words (here, an agent
+    flag) is refused at the prompt -- before any pairing code is created -- and
+    the prompt is shown again with the reason."""
+    from kratos.tui_mk2.modals import PromptModal
+
+    screen = SubAgentScreen(tmp_path)
+    prompts: list = []
+
+    async def run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            answers = iter(["srv", "__manual__", "10.0.0.5 --enable-execution", "10.0.0.5", False])
+
+            async def canned(modal):
+                prompts.append(modal)
+                return next(answers)
+
+            monkeypatch.setattr(app, "push_screen_wait", canned)
+            screen.action_add_server()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(run())
+    assert isinstance(prompts[3], PromptModal)
+    assert "isn't an IP address or hostname" in prompts[3]._hint
+    scripts = list(tmp_path.glob("kratos-subagent-install-*.sh"))
+    assert len(scripts) == 1
+    text = scripts[0].read_text()
+    assert "CORE_HOST='10.0.0.5'" in text and "--enable-execution" not in text
+    assert len(SubAgentStore(tmp_path / "kratos.db").list_pending_pairing_codes()) == 1
+
+
 def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
     """WS1: with no listener running, a recently-seen target reads "not watched"
     (its state is unknown), not "connected"; with a listener and a stalled
