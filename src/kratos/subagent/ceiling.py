@@ -405,7 +405,13 @@ def _value_ok(var: Var, value: str) -> bool:
         return False
     if slot.kind == "ip" and var.deny_networks:
         addr = ipaddress.ip_address(value)
-        if any(addr in ipaddress.ip_network(n) for n in var.deny_networks):
+        # An IPv4-mapped IPv6 address (::ffff:100.64.0.1) is the IPv4 address
+        # for this check; an IPv6 address never matches an IPv4 network
+        # otherwise (review v2 H-3).
+        mapped = getattr(addr, "ipv4_mapped", None)
+        candidates = [addr] if mapped is None else [addr, mapped]
+        if any(a in net for a in candidates for net in map(ipaddress.ip_network, var.deny_networks)
+               if a.version == net.version):
             return False
     return True
 

@@ -26,6 +26,7 @@ sshd lines on every host it inspects). Failures from that IP are NEVER excluded.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
@@ -319,9 +320,31 @@ FAIL2BAN_GLOB = "/var/log/fail2ban.log*"
 _PSEUDO_MARGIN_SECONDS = 3 * 86400
 
 
+# Values that land in the script verbatim are checked here rather than
+# trusted from callers (review v2 H-5): a privilege prefix from a fixed set,
+# and log globs that may contain '*' but nothing else the shell would act on.
+_ALLOWED_PREFIXES = frozenset({"", "sudo -n"})
+_GLOB_RE = re.compile(r"/[A-Za-z0-9/._*-]+")
+
+
+def _checked_prefix(prefix: str) -> str:
+    if str(prefix).strip() not in _ALLOWED_PREFIXES:
+        raise ValueError(f"journalctl prefix must be one of {sorted(_ALLOWED_PREFIXES)}, not {prefix!r}")
+    return str(prefix).strip()
+
+
+def _checked_glob(glob: str) -> str:
+    if not _GLOB_RE.fullmatch(str(glob)):
+        raise ValueError(f"log glob {glob!r} must be an absolute path of plain characters and '*'")
+    return glob
+
+
 def _classic_section(since_epoch: float, until_epoch: float | None, sudo: str, gran: int,
                      globs: tuple[str, ...] = CLASSIC_GLOBS, f2b_glob: str = FAIL2BAN_GLOB) -> str:
     """sh fragment: parse classic syslog files + fail2ban.log (see _CLASSIC_MAIN)."""
+    globs = tuple(_checked_glob(g) for g in globs)
+    f2b_glob = _checked_glob(f2b_glob)
+    gran = int(gran)
     lo = int(since_epoch) - _PSEUDO_MARGIN_SECONDS
     hi = int(until_epoch if until_epoch is not None else 4102444800) + _PSEUDO_MARGIN_SECONDS
     lib_main = shlex.quote(_AWK_LIB + _CLASSIC_MAIN)
@@ -386,6 +409,7 @@ def build_script(
     can't say) -- its sessions are then excluded exactly as over SSH."""
     s = int(since_epoch)
     until_arg = f" --until @{int(until_epoch) + 1}" if until_epoch is not None else ""
+    journalctl_prefix = _checked_prefix(journalctl_prefix)
     jc = f"{journalctl_prefix} journalctl".strip()
     classic_fn = _classic_section(since_epoch, until_epoch, journalctl_prefix, classic_granularity,
                                   classic_globs, fail2ban_glob)

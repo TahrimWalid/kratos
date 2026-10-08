@@ -46,9 +46,25 @@ MAX_EVENTS = 500
 _NOLOGIN_SHELLS = ("nologin", "false", "sync", "halt", "shutdown")
 
 
+# The only privilege prefixes a script may be built with. Checked here, not
+# trusted from callers: these land in a shell script verbatim (review v2 H-5).
+_ALLOWED_PREFIXES = frozenset({"", "sudo -n"})
+
+
+def _checked_prefix(prefix: str, what: str) -> str:
+    if str(prefix).strip() not in _ALLOWED_PREFIXES:
+        raise ValueError(f"{what} must be one of {sorted(_ALLOWED_PREFIXES)}, not {prefix!r}")
+    return str(prefix).strip()
+
+
 def build_script(since_epoch: int, journalctl_prefix: str, sudo: str = "sudo -n") -> str:
     """The read-only probe. Every record is one tab-separated line. `sudo` is
-    how sudoers is read: "sudo -n" over SSH, empty for an agent running as root."""
+    how sudoers is read: "sudo -n" over SSH, empty for an agent running as root.
+    Every interpolated value is a fixed constant, an int, or checked here."""
+    since_epoch = int(since_epoch)
+    jp = _checked_prefix(journalctl_prefix, "journalctl_prefix")
+    journalctl_prefix = jp + " " if jp else ""
+    sudo = _checked_prefix(sudo, "sudo")
     groups = " ".join(PRIVILEGED_GROUPS)
     idents = " ".join(f"SYSLOG_IDENTIFIER={i}" for i in ACCOUNT_CHANGE_IDENTIFIERS)
     return f"""SUDO={shlex.quote(sudo)}
