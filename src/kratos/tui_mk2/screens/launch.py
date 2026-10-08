@@ -362,12 +362,13 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             KRATOS_HOST_SENTINEL,
             KRATOS_HOST_VALUE,
             expand_host_aliases,
+            remember_logins,
             validate_targets,
         )
 
         default_target = _kconfig.get_active_target()
-        hint = (f"Target(s), space-separated [default: {default_target}]" if default_target
-                else "Target(s), space-separated — the machine(s) to investigate")
+        hint = (f"Target(s), space-separated [default: {default_target}] — add a login as name@host" if default_target
+                else "Target(s), space-separated — the machine(s) to investigate (name@host to say who to log in as)")
         while True:
             answer = await self.app.push_screen_wait(PromptModal(
                 "New session",
@@ -388,12 +389,14 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                     continue
                 targets = [default_target]
                 break
-            targets, err = validate_targets(expand_host_aliases(answer.split()))
+            typed = expand_host_aliases(answer.split())
+            targets, err = validate_targets(typed, allow_login=True)
             if err:
                 # Reject garbage (a pasted command / quoted goal) and re-ask,
                 # rather than letting it become an unresolvable active target.
                 self.app.notify(err, severity="error", timeout=6)
                 continue
+            remember_logins(self._data_dir, typed)
             if _kconfig.remember_first_target(self._data_dir, targets[0]):
                 self.app.notify(f"Saved {targets[0]} as your default target for command-line and "
                                 "scheduled runs.", timeout=6)

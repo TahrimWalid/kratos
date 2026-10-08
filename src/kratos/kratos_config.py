@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ SSH_TARGET_HOST = os.environ.get("KRATOS_SSH_HOST", "").strip()
 SSH_TARGET_USER = os.environ.get("KRATOS_SSH_USER", "ubuntu")
 SSH_TARGET_KEY_PATH = Path(
     os.environ.get("KRATOS_SSH_KEY_PATH", str(Path.home() / ".ssh" / "id_ed25519"))
-)
+).expanduser()
 SSH_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_CONNECT_TIMEOUT", "10"))
 SSH_COMMAND_TIMEOUT_SECONDS = int(os.environ.get("KRATOS_SSH_COMMAND_TIMEOUT", "30"))
 
@@ -229,6 +230,49 @@ def save_local_config(data_dir: Path, **updates: Any) -> None:
     config = load_local_config(data_dir)
     config.update(updates)
     _local_config_path(data_dir).write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+# ---------------------------------------------------------------------------
+# The login name Kratos uses on each machine. Machines differ (ubuntu, root,
+# debian, ec2-user, a person's own name), so it is remembered per host -- set
+# when a machine is onboarded or typed as user@host. KRATOS_SSH_USER (default
+# "ubuntu") is only the fallback for a host with nothing remembered.
+# ---------------------------------------------------------------------------
+_SSH_USERS_KEY = "ssh_users"
+_SSH_USER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,31}")
+
+
+def valid_ssh_user(name: Any) -> bool:
+    """A plain login name: what goes before the @ in user@host. Nothing that
+    could be read as an ssh option (a leading '-') or carry shell syntax."""
+    return isinstance(name, str) and _SSH_USER_RE.fullmatch(name) is not None
+
+
+def remembered_ssh_user(data_dir: Path | None, host: str) -> str | None:
+    if data_dir is None or not host:
+        return None
+    users = load_local_config(data_dir).get(_SSH_USERS_KEY)
+    user = users.get(host.strip()) if isinstance(users, dict) else None
+    return user if valid_ssh_user(user) else None
+
+
+def ssh_user_for(host: str | None = None, data_dir: Path | None = None) -> str:
+    """Who Kratos logs in as on `host` (default: the active target): the name
+    remembered for that host, else KRATOS_SSH_USER, else "ubuntu"."""
+    host = (host if host is not None else get_active_target()) or ""
+    return remembered_ssh_user(data_dir or get_active_data_dir(), host) or SSH_TARGET_USER
+
+
+def remember_ssh_user(data_dir: Path, host: str, user: str) -> None:
+    host, user = (host or "").strip(), (user or "").strip()
+    if not host:
+        raise ValueError("no host")
+    if not valid_ssh_user(user):
+        raise ValueError(f"{user!r} isn't a login name (letters, digits, '_', '.', '-'; not starting with '-')")
+    users = load_local_config(data_dir).get(_SSH_USERS_KEY)
+    users = dict(users) if isinstance(users, dict) else {}
+    users[host] = user
+    save_local_config(data_dir, **{_SSH_USERS_KEY: users})
+
 
 # ---------------------------------------------------------------------------
 # Notifications (ntfy) -- OFF until KRATOS_NTFY_TOPIC is set. There is no

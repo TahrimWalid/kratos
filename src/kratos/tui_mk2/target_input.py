@@ -12,7 +12,8 @@ every subsequent investigation.
 A token is accepted only if it is a well-formed IP address (v4/v6, validated by
 the stdlib `ipaddress` -- so 10.0.0.999 / 1.2.3.4.5 are rejected, not waved
 through) OR a syntactically valid DNS hostname (RFC-1123 labels). Everything else
--- embedded quotes/spaces/slashes/@, malformed IPs, sentences -- is rejected.
+-- embedded quotes/spaces/slashes, malformed IPs, sentences -- is rejected. Where a
+login is useful (`/target`, a new session, first run) `user@host` is accepted too.
 
 This validates FORMAT, not existence: a syntactically valid but non-existent
 host (a typo'd hostname) still passes here and fails later at the reachability
@@ -64,25 +65,68 @@ def _is_plausible_target(tok: str) -> bool:
     return is_ip_or_hostname(tok)
 
 
-def validate_targets(tokens: list[str]) -> tuple[list[str], str | None]:
+def split_login(token: str) -> tuple[str | None, str]:
+    """`alice@10.0.0.5` -> ("alice", "10.0.0.5"); a bare host -> (None, host)."""
+    if "@" in token:
+        user, _, host = token.partition("@")
+        return user, host
+    return None, token
+
+
+def validate_targets(tokens: list[str], *, allow_login: bool = False) -> tuple[list[str], str | None]:
     """Return (clean_targets, error_message).
 
     error_message is None when every token is a plausible IP/hostname, and
     clean_targets is the whitespace-stripped list. Otherwise clean_targets is
     empty and error_message names the first offending token, so the caller can
     reject-and-reprompt (never silently coerce garbage into the active target).
+
+    With `allow_login`, a token may be `user@host` (the SSH login for that
+    machine): the user is checked as a plain login name and only the host is
+    returned -- read the logins with `logins_from`.
     """
+    from kratos.kratos_config import valid_ssh_user
+
     cleaned = [t.strip() for t in tokens if t.strip()]
     if not cleaned:
         return [], "No target given — enter an IP or hostname."
+    hosts: list[str] = []
     for tok in cleaned:
-        if not _is_plausible_target(tok):
+        user, host = split_login(tok) if allow_login else (None, tok)
+        if user is not None and not valid_ssh_user(user):
+            return [], (f"{user!r} isn't a login name — write it as name@host, e.g. ubuntu@10.0.0.5 "
+                        "(letters, digits, '_', '.', '-').")
+        if not _is_plausible_target(host):
             return [], (
                 f"{tok!r} doesn't look like an IP or hostname. Enter one or more "
-                "space-separated IPs/hostnames (e.g. 10.0.0.5 or host.local) — "
-                "not a command or a sentence."
+                "space-separated IPs/hostnames (e.g. 10.0.0.5, host.local"
+                + (", or ubuntu@10.0.0.5 to say who to log in as" if allow_login else "")
+                + ") — not a command or a sentence."
             )
-    return cleaned, None
+        hosts.append(host)
+    return hosts, None
+
+
+def logins_from(tokens: list[str]) -> dict[str, str]:
+    """{host: user} for every `user@host` token (call after validate_targets
+    accepted them)."""
+    out: dict[str, str] = {}
+    for tok in tokens:
+        user, host = split_login(tok.strip())
+        if user:
+            out[host] = user
+    return out
+
+
+def remember_logins(data_dir, tokens: list[str]) -> list[str]:
+    """Save the login typed with each host; returns 'user@host' strings saved."""
+    from kratos.kratos_config import remember_ssh_user
+
+    saved = []
+    for host, user in logins_from(tokens).items():
+        remember_ssh_user(data_dir, host, user)
+        saved.append(f"{user}@{host}")
+    return saved
 
 
 def looks_like_word_salad(tokens: list[str]) -> bool:

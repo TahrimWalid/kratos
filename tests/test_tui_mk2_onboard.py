@@ -39,6 +39,20 @@ def _kratos_key(tmp_path, monkeypatch):
     return key
 
 
+_REAL_ASK_LOGIN = OnboardTargetScreen._ask_login
+
+
+@pytest.fixture(autouse=True)
+def _login_already_given(monkeypatch):
+    """Most tests here are about what happens after the login name is chosen;
+    the tests at the end restore the real prompt."""
+    async def given(self):
+        self._login_confirmed = True
+        return True
+
+    monkeypatch.setattr(OnboardTargetScreen, "_ask_login", given)
+
+
 def _log_texts(screen: OnboardTargetScreen) -> list[str]:
     out = []
     for st in screen.query("#ob-log Static"):
@@ -151,7 +165,8 @@ def test_ssh_path_reports_unreachable(tmp_path, monkeypatch):
             captured["texts"] = _log_texts(screen)
 
     asyncio.run(run())
-    assert any("can't SSH into 203.0.113.9 yet" in t for t in captured["texts"])
+    assert any("can't SSH into ubuntu@203.0.113.9 yet" in t for t in captured["texts"])
+    assert any("press u" in t for t in captured["texts"])  # a wrong login name looks like a missing key
     assert any("Permission denied" in t for t in captured["texts"])
 
 
@@ -523,3 +538,36 @@ def test_full_details_key_is_offered_only_when_the_panel_is_cut_off(tmp_path):
 
     assert "d full details" not in hints((160, 50))
     assert "d full details" in hints((80, 16))
+
+
+# --- the SSH login name ----------------------------------------------------
+def test_ssh_setup_asks_who_to_log_in_as_and_remembers_it(tmp_path, monkeypatch):
+    from kratos import kratos_config as kc
+    from kratos.tui_mk2.modals import PromptModal
+
+    monkeypatch.setattr(OnboardTargetScreen, "_ask_login", _REAL_ASK_LOGIN)
+    seen = []
+    out = _onboard(tmp_path, monkeypatch, ["ssh", "-x", "debian", "login"], _denied("debian@203.0.113.5: Permission denied (publickey)."))
+    prompts = [m for m in out["awaited"] if isinstance(m, PromptModal)]
+    assert len(prompts) == 2                                   # '-x' refused, asked again
+    assert prompts[0]._initial == "ubuntu"                      # prefilled with the fallback
+    assert "isn't a login name" in prompts[1]._hint
+    assert kc.remembered_ssh_user(tmp_path, "203.0.113.5") == "debian"
+    assert "log in as debian@203.0.113.5" in out["texts"]
+    assert "press u" in out["texts"]
+    assert "logged in as debian" in out["top"]._title           # the key-install step uses it too
+    seen.append(out)
+
+
+def test_a_remembered_login_is_the_prefill_and_cancel_stops_cleanly(tmp_path, monkeypatch):
+    from kratos import kratos_config as kc
+    from kratos.tui_mk2.modals import PromptModal
+
+    kc.remember_ssh_user(tmp_path, "203.0.113.5", "alice")
+    monkeypatch.setattr(OnboardTargetScreen, "_ask_login", _REAL_ASK_LOGIN)
+    probes = []
+    out = _onboard(tmp_path, monkeypatch, ["ssh", None], lambda: probes.append(1) or [])
+    (prompt,) = [m for m in out["awaited"] if isinstance(m, PromptModal)]
+    assert prompt._initial == "alice"
+    assert probes == []                                        # never tried SSH without a name
+    assert "Press u to enter one" in out["texts"]

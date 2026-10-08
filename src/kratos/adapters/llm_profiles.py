@@ -50,6 +50,7 @@ _PLACEHOLDER_VALUES = {
     "your-model-name",
     "dummy-or-real-key",
     "your-real-gemini-key-here",
+    "your-real-api-key-here",
     "your-otx-api-key-here",
     "your-abuseipdb-api-key-here",
 }

@@ -793,7 +793,7 @@ class SubAgentScreen(Screen):
         # Default to the login user Kratos is configured to SSH as (the same one
         # the investigation tools use), never a guessed root.
         previous = (self._watched_codes.get(code) or {}).get("ssh_addr") if code else None
-        initial = previous or (f"{_kc.SSH_TARGET_USER}@{self._default_name}" if self._default_name else "")
+        initial = previous or (f"{_kc.ssh_user_for(self._default_name)}@{self._default_name}" if self._default_name else "")
         while True:
             ssh_addr = await self.app.push_screen_wait(PromptModal(
                 "Target SSH address",

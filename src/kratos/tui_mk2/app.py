@@ -362,22 +362,23 @@ class KratosTUI(ResilientWorkerHost, App):
                 self.exit()
                 return
             _kconfig.save_local_config(self.data_dir, trusted=True)
-            from kratos.tui_mk2.target_input import validate_targets
+            from kratos.tui_mk2.target_input import remember_logins, validate_targets
 
             while True:
                 target = await self.push_screen_wait(
                     PromptModal(
                         "Default target (optional)",
-                        "IP/hostname of the machine to investigate — Enter to skip "
+                        "IP/hostname of the machine to investigate (or name@host) — Enter to skip "
                         f"(currently {_kconfig.get_active_target() or 'none set'})",
                     )
                 )
                 if not target:  # None (esc) or '' (skip) — set one later with /target or a new session
                     break
-                cleaned, err = validate_targets([target])
+                cleaned, err = validate_targets([target], allow_login=True)
                 if err:
                     self.notify(err, severity="error", timeout=6)
                     continue
+                remember_logins(self.data_dir, [target])
                 _kconfig.save_local_config(self.data_dir, default_target=cleaned[0])
                 _kconfig.set_active_target(cleaned[0])
                 first_target = cleaned[0]

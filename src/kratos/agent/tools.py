@@ -33,12 +33,12 @@ from kratos.adapters.auth_log_parse import (
 from kratos.adapters.auth_log_patterns import analyze_auth_patterns as _analyze_auth_patterns
 from kratos.adapters.findings_engine import write_findings_report as _write_findings_report
 from kratos.kratos_config import (
-    SSH_TARGET_USER,
     THREAT_INTEL_ENABLED as _THREAT_INTEL_ENABLED,
     VULSCAN_UPDATE_PROMPT as _VULSCAN_UPDATE_PROMPT,
     NO_TARGET_MESSAGE,
     get_active_target,
 )
+from kratos import kratos_config as _kconfig
 from kratos.agent import console as _console
 from kratos.utils.time_window import (
     TimeBoundError as _TimeBoundError,
@@ -806,7 +806,7 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
     gran = 60 if w.seconds <= 2 * 86400 else 3600  # classic-log bucket size (see measure.py)
     result = _run_auth_measurement(
         w.start_utc + shift, None if tw.open_ended else w.end_utc + shift,
-        granularity=gran, kratos_user=SSH_TARGET_USER, timeout=_MEASURE_BUDGET + 60,
+        granularity=gran, kratos_user=_kconfig.ssh_user_for(), timeout=_MEASURE_BUDGET + 60,
     )
     if not result.ok and not result.stdout.strip():
         return None, None, {"status": "error", "observation": f"measurement {_remote_failure(result)}"}

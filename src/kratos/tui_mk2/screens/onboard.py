@@ -55,7 +55,7 @@ from textual.widgets.option_list import Option
 from kratos import kratos_config as _kconfig
 from kratos.subagent import deploy_diagnosis as DD
 from kratos.tui_mk2 import theme as T
-from kratos.tui_mk2.modals import CommandModal, ConfirmModal, InfoModal, ListPickerModal
+from kratos.tui_mk2.modals import CommandModal, ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.utils import ssh_keys
 
 # Targets that need no setup -- the Kratos host itself, monitored over loopback.
@@ -131,6 +131,7 @@ class OnboardTargetScreen(Screen[str | None]):
     BINDINGS = [
         Binding("escape,q", "skip", "skip / set up later", show=True),
         Binding("p", "reprobe", "re-check", show=True),
+        Binding("u", "change_login", "login name", show=False),
         Binding("d", "details", "full details", show=True),
         Binding("c,enter", "continue", "continue", show=True),
     ]
@@ -153,6 +154,7 @@ class OnboardTargetScreen(Screen[str | None]):
         self._target_host = target_host
         self._core_port = core_port
         self._method: str | None = None
+        self._login_confirmed = False
         # A box this target looks like (by name/hostname/address) that is
         # already paired: offered as its own choice, never linked silently.
         from kratos.tui_mk2 import target_link as TL
@@ -263,7 +265,8 @@ class OnboardTargetScreen(Screen[str | None]):
         self.query_one("#ob-choose").display = False
         self.query_one("#ob-log").display = True
         self.query_one("#ob-hints", Static).update(
-            Text("p re-check · c/enter continue · esc set up later", style=T.TEXT_DIM))
+            Text("p re-check · u login name · c/enter continue · esc set up later" if picked == "ssh"
+                 else "p re-check · c/enter continue · esc set up later", style=T.TEXT_DIM))
         if picked == "ssh":
             _kconfig.set_active_target(self._target_host)
             self._start_ssh()
@@ -302,6 +305,8 @@ class OnboardTargetScreen(Screen[str | None]):
     # --- direct SSH ------------------------------------------------------
     @work
     async def _start_ssh(self) -> None:
+        if not self._login_confirmed and not await self._ask_login():
+            return
         if ssh_keys.read_local_pubkey() is None and not await self._ensure_local_key():
             self._log(Text(
                 "Without an SSH key Kratos can't log in to the target. Press p to try again, or esc to set up later.",
@@ -309,6 +314,38 @@ class OnboardTargetScreen(Screen[str | None]):
             ))
             return
         self._reprobe_worker()
+
+    async def _ask_login(self) -> bool:
+        """Which account Kratos logs in as on this machine. Machines differ
+        (ubuntu, root, debian, ec2-user, your own name); a wrong one fails just
+        like a missing key, so it is asked rather than assumed."""
+        host = self._target_host
+        hint = (f"The account Kratos logs in to {host} as — the name you'd use in `ssh NAME@{host}` "
+                "(often ubuntu, debian, root, ec2-user, or your own).")
+        current = _kconfig.ssh_user_for(host, self._data_dir)
+        while True:
+            answer = await self.app.push_screen_wait(PromptModal("Log in as", hint, initial=current))
+            if answer is None:
+                self._log(Text("Kratos needs a login name for SSH. Press u to enter one, or esc to set up later.",
+                               style=T.ATTENTION))
+                return False
+            answer = answer.strip() or current
+            if _kconfig.valid_ssh_user(answer):
+                break
+            hint = (f"{answer!r} isn't a login name — letters, digits, '_', '.' and '-' only, not starting "
+                    "with '-'. Try again, or esc to cancel.")
+        _kconfig.remember_ssh_user(self._data_dir, host, answer)
+        self._login_confirmed = True
+        self._log(Text(f"Kratos will log in as {answer}@{host} (press u to change it).", style=T.TEXT_MUTED))
+        return True
+
+    @work
+    async def action_change_login(self) -> None:
+        if self._method != "ssh":
+            return
+        self._login_confirmed = False
+        if await self._ask_login():
+            self._reprobe_worker()
 
     async def _ensure_local_key(self) -> bool:
         """Create (or repair the public half of) this machine's key -- only on
@@ -365,11 +402,14 @@ class OnboardTargetScreen(Screen[str | None]):
                 "— press p to re-check.", style=T.ATTENTION))
             return
         if isinstance(result, SSHResult):
-            addr = f"{_kconfig.SSH_TARGET_USER}@{self._target_host}"
+            addr = f"{_kconfig.ssh_user_for(self._target_host, self._data_dir)}@{self._target_host}"
             raw = (result.stderr or result.stdout or "").strip()
             diag = DD.diagnose(raw, ssh_addr=addr, authorize_command=ssh_keys.authorize_key_command())
             self.app.call_from_thread(self._log, Text(
-                f"Kratos can't SSH into {self._target_host} yet: {diag.summary}", style=T.CRITICAL))
+                f"Kratos can't SSH into {addr} yet: {diag.summary}", style=T.CRITICAL))
+            self.app.call_from_thread(self._log, Text(
+                f"Logging in as {addr.split('@', 1)[0]} — if that isn't an account on {self._target_host}, press u "
+                "to change it.", style=T.TEXT_MUTED))
             if raw:
                 self.app.call_from_thread(self._log, Text(raw[-600:], style=T.TEXT_DIM))
             if diag.kind in _BOOTSTRAP_KINDS:
@@ -437,7 +477,7 @@ class OnboardTargetScreen(Screen[str | None]):
         authorize = ssh_keys.authorize_key_command()
         if authorize is None:
             return
-        user, host = _kconfig.SSH_TARGET_USER, self._target_host
+        user, host = _kconfig.ssh_user_for(self._target_host, self._data_dir), self._target_host
         picked = await self.app.push_screen_wait(ListPickerModal(
             f"How can you reach {host} today?",
             [

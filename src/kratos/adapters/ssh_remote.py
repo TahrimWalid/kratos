@@ -43,7 +43,6 @@ from kratos.subagent import reads as _reads
 from kratos.subagent import routing as _routing
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
-    SSH_TARGET_USER,
     SSH_TARGET_KEY_PATH,
     SSH_CONNECT_TIMEOUT_SECONDS,
     SSH_COMMAND_TIMEOUT_SECONDS,
@@ -77,7 +76,7 @@ class SSHResult:
 
 
 def target_label() -> str:
-    return f"{SSH_TARGET_USER}@{get_active_target()}"
+    return f"{_kconfig.ssh_user_for()}@{get_active_target()}"
 
 
 def _host_key_opts() -> list[str]:
@@ -105,7 +104,7 @@ def _base_ssh_argv() -> list[str]:
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
         *_host_key_opts(),
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
-        f"{SSH_TARGET_USER}@{get_active_target()}",
+        f"{_kconfig.ssh_user_for()}@{get_active_target()}",
     ]
 
 

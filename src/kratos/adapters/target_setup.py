@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import socket
 
-from kratos.kratos_config import SSH_TARGET_USER, SSH_TARGET_KEY_PATH
+from kratos import kratos_config as _kconfig
+from kratos.kratos_config import SSH_TARGET_KEY_PATH
 
 
 # What each setup-probe row checks, in words (the probe itself reports short ids).
@@ -89,18 +90,19 @@ def generate_target_setup_checklist(target_host: str) -> str:
         f"echo '<could not read {pubkey_path} -- paste your real public key here>' >> ~/.ssh/authorized_keys\n"
         "chmod 600 ~/.ssh/authorized_keys")
 
+    login = _kconfig.ssh_user_for(target_host)
     kratos_ip = _detect_local_ip(target_host)
     kratos_ip_display = kratos_ip or "<KRATOS_HOST_IP -- could not auto-detect, fill in manually>"
 
     return f"""\
 # Kratos target setup -- run these ON THE TARGET ({target_host}), never on
 # the Kratos host, and never something Kratos runs for you. Requires an
-# existing account ("{SSH_TARGET_USER}" is who Kratos connects as --
-# KRATOS_SSH_USER env var to change it) reachable by some other means first
+# existing account ("{login}" is who Kratos logs in as on this machine -- change
+# it with `/target <user>@{target_host}`) reachable by some other means first
 # (console access, your cloud provider's own SSH, etc.) -- Kratos never
 # provisions its own initial access, by design.
 
-# 1. SSH key access (as {SSH_TARGET_USER})
+# 1. SSH key access (as {login})
 {authorize}
 
 # 2. journalctl access (read logs) -- group membership, no sudo needed.
@@ -108,20 +110,20 @@ def generate_target_setup_checklist(target_host: str) -> str:
 #    command already, so nothing else to do -- no reboot/relogin required
 #    for Kratos itself, though your own shell session won't see it until
 #    you reconnect too).
-sudo usermod -aG systemd-journal {SSH_TARGET_USER}
+sudo usermod -aG systemd-journal {login}
 
 # 3. Passwordless sudo for 3 read-only status checks (used by
 #    run_config_audit). Adjust binary paths below if `which sshd` / `which
 #    ufw` etc. differ on your distro. All 3 are status/read-only commands,
 #    never state-changing.
 sudo tee /etc/sudoers.d/kratos > /dev/null << 'EOF'
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/sbin/sshd -T
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/sbin/ufw status
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/sbin/nft list ruleset
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/sbin/iptables -L -n
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client status
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * maxretry
-{SSH_TARGET_USER} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * bantime
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/sshd -T
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/ufw status
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/nft list ruleset
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/iptables -L -n
+{login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client status
+{login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * maxretry
+{login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * bantime
 EOF
 sudo chmod 440 /etc/sudoers.d/kratos
 

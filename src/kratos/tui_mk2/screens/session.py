@@ -3094,12 +3094,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
         'change target' control (after its approval). Validates first — the one
         choke point that stops a pasted command line / quoted goal from becoming
         an unresolvable active target (Sprint-4 gap)."""
-        from kratos.tui_mk2.target_input import expand_host_aliases, validate_targets
+        from kratos.tui_mk2.target_input import expand_host_aliases, remember_logins, validate_targets
 
-        targets, err = validate_targets(expand_host_aliases(targets))
+        typed = expand_host_aliases(targets)
+        targets, err = validate_targets(typed, allow_login=True)
         if err:
             self._emit(R.error_line(err))
             return
+        for login in remember_logins(self._data_dir, typed):
+            self._emit(R.note_line(f"Kratos will log in to that machine as {login}."))
         self.session_state["targets"] = targets
         self._store.set_targets(self.session_state["session_id"], targets)
         _kconfig.set_active_target(targets[0])
@@ -4166,7 +4169,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         from kratos.tui_mk2.target_input import validate_targets
 
-        targets, err = validate_targets(args.split())
+        typed = args.split()
+        targets, err = validate_targets(typed, allow_login=True)
         if err:
             # Reject before the approval modal — don't ask the user to confirm
             # switching to something that isn't a host in the first place.
@@ -4180,7 +4184,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if not ok:
             self._emit(R.note_line("Target change cancelled — nothing changed."))
             return
-        self._apply_target(targets)
+        self._apply_target(typed)  # as typed, so a user@host login is kept
 
     def _run_investigation(self, goal: str, target_override: str | None = None) -> None:
         from kratos.agent.loop import InvestigationStopped, run_agent

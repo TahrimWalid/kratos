@@ -148,7 +148,17 @@ def test_init_creates_settings_from_the_bundled_template_once(monkeypatch, tmp_p
     monkeypatch.setattr(paths, "env_file", lambda: env)
     assert app.main(["--data-dir", str(tmp_path / "data"), "init"]) == 0
     text = env.read_text()
-    assert "LLM_BASE_URL" in text and "kratos init" in text
+    assert "LLM_BASE_URL" in text and "Settings -> Models" in text
+    # The model profiles parse as three choices, none switched on, and the
+    # hosted one's unfilled key counts as a placeholder (so /model won't use it).
+    from kratos.adapters import llm_profiles as LP
+
+    profiles = LP._parse_profiles(text.splitlines())
+    assert len(profiles) == 3 and not any(p.active for p in profiles)
+    assert "your-real-api-key-here" in LP._PLACEHOLDER_VALUES
+    active = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    # A thinking model needs the code's generous default; the template must not cut it.
+    assert not any(line.startswith("KRATOS_LLM_MAX_TOKENS=") for line in active)
     assert _mode(env) == 0o600
     env.write_text("MINE=1\n")
     assert app.main(["--data-dir", str(tmp_path / "data"), "init"]) == 0
