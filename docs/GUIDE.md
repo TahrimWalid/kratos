@@ -599,6 +599,12 @@ row turns **connected**.
   `/tmp`, `/home`, `/var/www` and `/opt`, never scans credential files (SSH keys,
   `.env`, shadow…), and reports which rule matched which file at which offset —
   never the matched text.
+- **What that sends to Kratos.** A normal install runs the agent as root, so its
+  reads see what root sees — more than an SSH login without `sudo` would: every
+  process's open files, the whole system journal, and the sudo grant lines in
+  `/etc/sudoers` (only the grants: settings lines and includes stay on the machine).
+  Like everything an investigation reads, those results also go to your model
+  provider. Choose sub-agent investigations for a machine knowing that.
 
 <p align="center">
   <img src="images/subagent_investigation.svg" width="840" alt="An investigation of a machine reached only through its sub-agent: each read is marked as read through the sub-agent, and the answer says how far back that machine&#39;s logs go">
@@ -612,7 +618,10 @@ connect**; `/target verify` and `/doctor` show which way it's reached right now.
 
 **Keeping it running.** The agents connect to a *listener* in Kratos. Opening
 `/subagent` starts one inside the running Kratos; press `l` there to install it as
-an always-on service instead, so status keeps arriving after you close Kratos.
+an always-on service instead, so status keeps arriving after you close Kratos. When
+every paired machine reaches Kratos at an address of this computer, the service
+listens only on those addresses (and on loopback); press `l` again after adding a
+machine on a new address — `/subagent` reminds you.
 
 **Updating, unpairing.** Select a machine and press `g` to update its agent in
 place (it keeps its pairing), `u` to unpair it, `k` to link it to a target, `i`
@@ -620,7 +629,12 @@ for details. An agent installed before investigations-through-the-agent existed
 needs one `g` update.
 
 **On a plain network.** The link between agent and Kratos has no encryption of its
-own — that's why Tailscale is recommended. If you pick a non-Tailscale address,
+own — that's why Tailscale is recommended. The agent counts the link as safe only
+over loopback or through a Tailscale interface on its own machine: an address in
+Tailscale's range alone isn't enough, because some internet providers use the same
+range for ordinary connections. If you run your own WireGuard tunnel instead, add
+`--trusted-interface wg0` when you generate the installer
+(`kratos subagent-install`). If you pick a non-Tailscale address,
 Kratos asks whether to allow investigation reads over it; if you don't, the agent
 still sends status but refuses reads.
 
@@ -813,8 +827,12 @@ What has to be true before anything runs:
 3. The action is on in that machine's allowlist. The agent carries its own fixed
    list of exactly which programs and arguments it will ever run; Kratos can
    narrow that list, never widen it. Exact commands beyond it can only be added by
-   the machine's own administrator, in a root-owned file on the machine. Press `c`
-   to see exactly what that machine's agent will accept.
+   the machine's own administrator, in a root-owned file on the machine
+   (`/etc/kratos-subagent/allowed-commands`). A line there is trusted exactly as
+   written: it can do whatever that program can do, including touching files the
+   built-in actions never may — only shells, script interpreters and programs that
+   run another command are refused. Treat that file like `sudoers`. Press `c` to see
+   exactly what that machine's agent will accept.
 4. You type `EXECUTE` for that run, and a high-risk action asks a second time.
    Every field on that screen — what it does, how it's undone, what it can affect —
    is read from the trusted action definition, never written by the model. After an
@@ -826,6 +844,16 @@ What has to be true before anything runs:
 <p align="center">
   <img src="images/fix_runfix.svg" width="820" alt="/run-fix opening the typed-EXECUTE approval for a recommended fail2ban ban that matches an allowlisted action, with the exact command shown and EXECUTE still required">
 </p>
+
+A run is sent at most once, only if consent is still on at that moment, and only
+within 30 seconds of your `EXECUTE`. If no listener picks it up in that time, Kratos
+cancels it and tells you nothing ran — it can never run later, when a listener
+happens to start. "Outcome unknown" means the run was sent but no answer came back:
+check the machine before trying again.
+
+If a machine has already applied a newer allowlist than Kratos's own copy (for
+example after you restored Kratos's data from a backup), it refuses Kratos's updates
+and `/whitelist` says so; press `s` there to catch up.
 
 After a reversible change runs, `t` shows the machine's latest telemetry and whether
 it confirms the change: the machine sends a new snapshot about every 30 seconds, and

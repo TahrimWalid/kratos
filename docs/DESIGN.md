@@ -122,9 +122,12 @@ separate:
   cap. No command text, path list or rule text is ever accepted from Kratos.
   Each request is signed for the connection's session nonce with a strictly
   increasing sequence number, so a captured request can't be replayed; reads
-  are refused on a plain (non-loopback, non-Tailscale) network unless the
-  operator allowed it at install, because the channel has no encryption of
-  its own. The SSH path builds its commands with the *same* builders and both
+  are refused on a plain network unless the operator allowed it at install,
+  because the channel has no encryption of its own. "Not plain" means
+  loopback, or the agent's own end of the connection sits on a Tailscale
+  interface (or one the operator names with `--trusted-interface`): an
+  address in 100.64.0.0/10 alone doesn't count, since that is also
+  carrier-grade NAT space. The SSH path builds its commands with the *same* builders and both
   transports' output goes through the same parsers, so results can't drift —
   verified on real hosts (identical journal reads, config verdicts and
   exhaustive auth counts over SSH and through the agent). YARA over the agent
@@ -132,17 +135,37 @@ separate:
   by its administrator) and returns rule/file/offset, never matched bytes,
   over a closed set of scan roots with credential paths skipped: with rules
   supplied by Kratos, even match/no-match per rule would be an oracle for
-  file contents.
+  file contents. The scan never follows a symlink: each directory and file is
+  opened one component at a time with `O_NOFOLLOW`, re-checked after opening,
+  and handed to `yara` as an open descriptor, so swapping a path for a link
+  mid-scan can't redirect it outside the scan roots.
+  **Read surface.** A normal install runs the agent as root, so these reads
+  see more than an SSH login without `sudo` does: every process's open files,
+  the whole journal, and sudoers grant lines (the collector sends grants only
+  — Defaults, includes and alias definitions stay on the machine). Results
+  reach Kratos and, during an investigation, the model provider. This is a
+  deliberate trade (an incident needs root's view), stated here so it is
+  made knowingly.
 - **Execution (experimental, off by default)** — the agent carries its own
   ceiling (`subagent/ceiling.py`): exactly which binaries and argument shapes
   it will ever run. Kratos can push a narrower allowlist, never a wider one;
   each pushed action and the final argv are re-checked on the agent. A
   dispatch also needs the agent's local `--enable-execution` switch, a
   trusted transport, a signed heartbeat within the dead-man's window, the
-  current allowlist version (anti-rollback), per-target consent in Kratos and
-  a typed `EXECUTE`. The machine's administrator can add exact commands in a
-  root-owned local file Kratos cannot write. None of this has had its
-  independent review yet.
+  current allowlist version (anti-rollback, bounded to 2³¹−1; a push the
+  agent refuses is answered, and `/whitelist` can move Kratos's count past a
+  newer version the agent already holds, never the agent's back), per-target
+  consent in Kratos and a typed `EXECUTE`. A queued run is claimed at most
+  once, in one transaction that re-checks consent and that the request is
+  under 30 s old; the approval screen cancels a request nobody sent, so it
+  can't run later. Pushed actions are parsed with exact JSON types. The
+  machine's administrator can add exact commands in a root-owned local file
+  Kratos cannot write; those lines are deliberately exempt from the
+  maintainer exclusions (sensitive paths, account changes, firewall
+  binaries), so that file is a root-level escape hatch to be treated like
+  `sudoers` — only shells, interpreters (under any versioned name) and
+  command wrappers are refused there. None of this has had its independent
+  review yet.
 
 **Routing.** A session target (an IP or hostname) is read through a sub-agent
 only after an explicit link (`subagent_links`), made when the user picks
@@ -158,6 +181,14 @@ services" on a box running sshd). Network scans refuse for a sub-agent-only
 target and record a coverage gap; if the final answer doesn't say what wasn't
 checked, the loop adds a note. Every routed result carries a transport note,
 shown on screen (amber when SSH failed and the read fell back).
+
+**Listener and pairing.** Wrong pairing codes are limited per source (an
+IPv4 address or an IPv6 /64) and capped across all sources (60 a minute, so
+a code's 15-minute life allows ~900 guesses against 2³²); token logins are
+only limited per source, so a flood of bad codes can't lock paired agents
+out. The always-on listener can bind only the addresses agents actually
+dial. `kratos.db` (it holds the pairing tokens) and its WAL files are
+created owner-only.
 
 **Process boundary.** The investigation usually runs in a different process
 from the listener holding the agents' connections, so they talk over an
