@@ -50,7 +50,7 @@ def test_only_grant_lines_leave_the_box(tmp_path):
     (etc / "sudoers.d" / "90-ops").write_text("dave ALL=(ALL) ALL\nDefaults:dave !lecture\n")
     (etc / "sudoers.d" / "old.bak").write_text("mallory ALL=(ALL) ALL\n")   # sudo skips names with '.'
     (etc / "sudoers.d" / "90-ops~").write_text("eve ALL=(ALL) ALL\n")      # ... and editor backups
-    block = _sudoers_block(PA.build_script(0, "journalctl", sudo=""))
+    block = _sudoers_block(PA.build_script(0, "", sudo=""))
     block = block.replace("/etc/sudoers", str(etc / "sudoers"))
     out = subprocess.run(["sh", "-c", "SUDO=\n" + block], capture_output=True, text=True, timeout=20).stdout
     sent = [line for line in out.splitlines() if line.startswith("SUDOERS\t")]
