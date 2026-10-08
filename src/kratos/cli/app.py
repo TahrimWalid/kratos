@@ -623,8 +623,9 @@ def cmd_llm_serve(args: argparse.Namespace) -> int:
 
 def cmd_chat(args: argparse.Namespace) -> int:
     """
-    AI-powered analysis of Kratos security findings using Qwen2.5-Coder 7B.
-    Loads the latest prepared bundle and explains findings in plain language.
+    Explain the latest findings in plain language with the configured model.
+    Loads (or prepares) the latest findings bundle; it needs findings from an
+    earlier check, and says so plainly when there are none yet.
     """
     data_dir: Path = args.data_dir
     mode = getattr(args, "mode", "summary").lower()
@@ -669,6 +670,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
         else:
             print("[KRATOS] WARNING: Date-filtered bundle regeneration failed — using most recent bundle.", flush=True)
 
+    if not bundle_path and not findings_path:
+        print("[KRATOS] Nothing to explain yet: `kratos chat` talks about the findings from an earlier check, "
+              "and there aren't any.\n"
+              "         Run a check first -- `kratos run` (a fixed audit) or `kratos investigate \"<what to look "
+              "for>\"` -- or start `kratos` and ask in plain words.", file=sys.stderr, flush=True)
+        return 1
     if not bundle_path:
         print("[KRATOS] No prepared bundle found. Generating one now...", flush=True)
         if not _regen_bundle():
@@ -1280,7 +1287,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.set_defaults(func=cmd_analyze)
 
 
-    chat = sub.add_parser("chat", help="AI analysis of the latest findings with the configured model")
+    chat = sub.add_parser("chat", help="Explain the latest findings (from an earlier check) in plain words")
     chat.add_argument(
         "--mode",
         choices=["summary", "deep"],
@@ -1392,7 +1399,8 @@ def build_parser() -> argparse.ArgumentParser:
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(
         "investigate",
-        help="ReAct-style agent investigation: the LLM picks which Kratos tool to call next (experimental; does not replace `kratos run`)",
+        help="Investigate a question in plain words: the model picks Kratos's read-only checks one at a time "
+             "and explains what it found (for a fixed, repeatable sweep use `kratos run`)",
     )
     investigate.add_argument("goal", help="Natural-language investigation goal, e.g. 'check for suspicious activity on this system'")
     investigate.add_argument(
@@ -1433,6 +1441,15 @@ def _subcommand_help_text(parser: argparse.ArgumentParser) -> dict[str, str]:
 # docs/DESIGN.md's "Known limitations" section for why that's a separate,
 # much larger, deliberately deferred item.
 PRIMARY_COMMANDS = ["init", "investigate", "run", "chat", "findings-show", "scan"]
+# Short, plain descriptions for that default view -- written to fit, never cut.
+PRIMARY_HELP = {
+    "init": "Create your settings file; show where data lives",
+    "investigate": "Ask in plain words; Kratos picks its own checks",
+    "run": "Run the fixed standard audit (no model involved)",
+    "chat": "Explain the latest findings in plain words",
+    "findings-show": "Show the latest findings",
+    "scan": "Scan the target's open ports with nmap",
+}
 
 
 def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = False) -> None:
@@ -1454,27 +1471,23 @@ def _render_top_level_help(parser: argparse.ArgumentParser, show_all: bool = Fal
     all_help = _subcommand_help_text(parser)
     shown = all_help if show_all else {k: v for k, v in all_help.items() if k in PRIMARY_COMMANDS}
     table = Table(show_header=True, header_style="bold")
-    table.add_column("Command")
-    table.add_column("Description")
-    for name, help_text in shown.items():
-        # Curated view only: keep each row to one line (the full text is
-        # always one flag/subcommand-help away) -- the parenthetical detail
-        # on longer descriptions (e.g. investigate's "(experimental; does
-        # not replace...)") is exactly what's safe to trim here, not the
-        # core sentence.
-        if not show_all and len(help_text) > 60:
-            help_text = help_text.split(" (")[0].rstrip(".")
-            if len(help_text) > 60:
-                help_text = help_text[:57].rstrip() + "..."
-        table.add_row(name, help_text)
+    table.add_column("Command", no_wrap=True)
+    table.add_column("Description", overflow="fold")
+    if not show_all:
+        table.add_row("kratos", "Open the full-screen app -- start here")
+        for name in PRIMARY_COMMANDS:
+            if name in shown:
+                table.add_row(f"kratos {name}", PRIMARY_HELP.get(name) or shown[name])
+    else:
+        for name, help_text in shown.items():
+            table.add_row(name, help_text)  # full text, wrapped -- never cut off
     console.print(table)
     if not show_all:
         hidden_count = len(all_help) - len(shown)
-        console.print(f"\n...and {hidden_count} more. Run `kratos --help --all` to see every command.")
-    console.print(
-        "\nGlobal options: --data-dir PATH   --no-color   --resume SESSION_ID_OR_NAME   --continue/-c"
-    )
-    console.print("Run `kratos <command> --help` for command-specific options.\n")
+        console.print(f"{hidden_count} more: `kratos --help --all`.  Options: `kratos <command> --help`.")
+    else:
+        console.print("One command's options: `kratos <command> --help`.")
+    console.print("Global options: --data-dir PATH  --no-color  --resume SESSION  --continue/-c")
 
 
 def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> None:
