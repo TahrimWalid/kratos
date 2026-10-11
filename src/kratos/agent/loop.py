@@ -45,6 +45,7 @@ def _handler_self_gates(tool: Any) -> bool:
 from kratos import kratos_config as _kconfig
 from kratos.kratos_config import NO_TARGET_MESSAGE, get_active_target
 from kratos.subagent import routing as _subagent_routing
+from kratos import settings_store as _settings_store
 
 
 def _reads_target_over_ssh(tool: Any) -> bool:
@@ -799,7 +800,7 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
             }
 
     try:
-        with _subagent_routing.collect_notes() as transport_notes:
+        with _subagent_routing.collect_notes() as transport_notes, _settings_store.tool_call_scope(tool_name):
             result = tool.handler(**call_args)
     except TypeError as e:
         return {"status": "error", "observation": f"Bad arguments for tool '{tool_name}': {e}"}

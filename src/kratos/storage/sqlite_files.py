@@ -68,3 +68,20 @@ def connect_private(db_path: Path | str, *, create: bool = True, **kwargs: Any) 
     and connect yourself)."""
     prepare_private_db(Path(db_path), create=create)
     return sqlite3.connect(db_path, **kwargs)
+
+
+BUSY_TIMEOUT_MS = 5000
+
+
+def connect_store(db_path: Path | str) -> sqlite3.Connection:
+    """The connection every store on `kratos.db` uses: owner-only file, WAL (the
+    TUI, `kratos scheduled-run`, `kratos mcp-serve` and the listener share it from
+    separate processes), a busy timeout so a writer waits instead of failing,
+    foreign keys on, rows as `sqlite3.Row`, and autocommit -- callers open their
+    own `BEGIN IMMEDIATE` around read-modify-write sequences."""
+    conn = connect_private(db_path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA foreign_keys=ON")
+    return conn
