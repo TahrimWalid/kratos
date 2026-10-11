@@ -674,6 +674,8 @@ def _shell() -> str:
     return resolve_binary("bash") or resolve_binary("sh") or "/bin/sh"
 
 
+# TODO(0.3): add __CURSOR, _PID, _BOOT_ID, _HOSTNAME (with an AGENT_VERSION bump) --
+# core's events (kratos.events) then take journal IDs from __CURSOR and fill process.pid.
 _JOURNAL_KEEP = ("__REALTIME_TIMESTAMP", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER", "_COMM", "MESSAGE", "PRIORITY")
 
 

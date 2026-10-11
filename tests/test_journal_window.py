@@ -179,6 +179,7 @@ def test_primary_query_not_truncated_when_window_fits(systemd):
     with patch.object(ssh_remote, "run_remote_command", side_effect=fake):
         entries, window = ssh_remote.fetch_journalctl_entries(None, 1_790_000_000, 200)
     assert len(entries) == 13 and window.truncated is False
+    assert window.via == "ssh"  # recorded on events as kratos.transport
 
 
 def test_until_bound_closes_the_window():

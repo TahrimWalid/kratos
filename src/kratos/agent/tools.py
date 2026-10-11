@@ -40,6 +40,7 @@ from kratos.kratos_config import (
 )
 from kratos import kratos_config as _kconfig
 from kratos.agent import console as _console
+from kratos.events import recording as _events_recording
 from kratos.utils.time_window import (
     TimeBoundError as _TimeBoundError,
     epoch_to_iso_utc as _epoch_to_iso_utc,
@@ -78,6 +79,7 @@ from kratos.adapters.ssh_remote import (
     fetch_yara_sweep as _fetch_yara_sweep,
     DEFAULT_YARA_SWEEP_PATHS as _DEFAULT_YARA_SWEEP_PATHS,
     fetch_privileged_accounts as _fetch_privileged_accounts,
+    last_privileged_accounts_via as _last_privileged_accounts_via,
     SSHResult as _SSHResult,
 )
 from kratos.adapters.baseline import (
@@ -429,6 +431,7 @@ def tool_parse_auth_log(
     # Wired the same way (a direct call, matching that path) so the two auth
     # sources stay symmetric.
     patterns_out = _analyze_auth_patterns(Path(data_dir), events_file=events_out, target="127.0.0.1")
+    _events_recording.record_local_auth_log(Path(data_dir), events_out, stats)  # best-effort, result unchanged
     return {
         "events_file": str(events_out),
         "stats_file": str(stats_out),
@@ -593,7 +596,7 @@ def _persist_target_auth_correlation_data(
     stats["until_utc"] = _epoch_to_iso_utc(until_epoch) if until_epoch is not None else None
     # Per-identifier coverage: a truncated identifier means events older than its
     # oldest_returned were NOT analyzed -- findings_engine states this in evidence.
-    stats["coverage"] = {ident: asdict(w) for ident, w in windows.items()}
+    stats["coverage"] = {ident: w.coverage_dict() for ident, w in windows.items()}
     if fetch_errors:
         stats["_fetch_errors"] = fetch_errors
 
@@ -606,6 +609,8 @@ def _persist_target_auth_correlation_data(
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
 
     patterns_out = _analyze_auth_patterns(data_dir, events_file=events_out, target=target)
+    _events_recording.record_target_auth(data_dir, target, entries, windows,  # best-effort, result unchanged
+                                         since_epoch=since_epoch, until_epoch=until_epoch)
 
     return {
         "events_file": str(events_out),
@@ -685,6 +690,7 @@ def tool_read_journalctl(
             "auth_correlation_data": auth_correlation,
         }
     entries, fetch_window = result
+    _events_recording.record_journal(data_dir, _ssh_target_label(), entries, fetch_window)  # best-effort
     summary = _window_summary(fetch_window, since, until)
     summary.update(_clock_note(clock_offset, since_epoch, until_epoch))
     if tw is not None:
@@ -1089,6 +1095,8 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     if isinstance(fetched, _SSHResult):
         return {"status": "error", "observation": f"privileged-account check {_remote_failure(fetched)}"}
     inv, since = fetched
+    _events_recording.record_privileged_changes(  # best-effort, result unchanged
+        data_dir, target, inv.events, since, _last_privileged_accounts_via(), len(inv.events) >= _PA.MAX_EVENTS)
 
     accounts = sorted(inv.accounts.values(), key=lambda a: (a.get("uid") != 0, a["user"]))
     all_grants = [

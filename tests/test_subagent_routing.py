@@ -155,6 +155,7 @@ def test_journal_window_truncation_from_the_agent_cap_is_kept(env):
                                                       "stdout": '{"__REALTIME_TIMESTAMP":"1790000000000000","MESSAGE":"m"}\n'}}
     entries, window = ssh_remote.fetch_journalctl_entries("sshd", 1789990000, 10)
     assert len(entries) == 1 and window.truncated
+    assert window.via == "subagent" and "via" not in window.coverage_dict()  # events record it; the report doesn't
     assert env["calls"]["agent"][0][1:] == ("journal_fetch", {"unit": "sshd", "since": 1789990000, "until": None, "lines": 10})
 
 
@@ -244,6 +245,7 @@ def test_privileged_accounts_read_through_the_agent(env):
                              "GROUP\tsudo:x:27:alice\nPASSWD\talice\t1000\t1000\t/bin/bash\nSUDOERS_OK\n"}}
     inv, since = ssh_remote.fetch_privileged_accounts(30)
     assert "alice" in inv.accounts and env["calls"]["ssh"] == []
+    assert ssh_remote.last_privileged_accounts_via() == "subagent"
     assert env["calls"]["agent"][0][1] == "privileged_accounts" and env["calls"]["agent"][0][2] == {"since": since}
 
 

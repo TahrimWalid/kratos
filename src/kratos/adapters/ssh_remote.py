@@ -29,12 +29,13 @@ never be sent to an agent, so for a sub-agent-only target they refuse.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import re
 import shlex
 import subprocess
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -312,6 +313,13 @@ class JournalWindow:
     truncated: bool
     oldest_returned: str | None
     newest_returned: str | None
+    # How the read was made: "ssh" or "subagent". Not part of the coverage report.
+    via: str = "ssh"
+
+    def coverage_dict(self) -> dict[str, Any]:
+        """What the read covered, as reported to the model and stored with the
+        auth stats (the transport goes in the separate transport note)."""
+        return {k: v for k, v in asdict(self).items() if k != "via"}
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +428,7 @@ def fetch_journalctl_entries(
         truncated=truncated,
         oldest_returned=entries[0].get("timestamp") if entries else None,
         newest_returned=entries[-1].get("timestamp") if entries else None,
+        via=result.via,
     )
     return entries, window
 
@@ -527,6 +536,7 @@ def fetch_journalctl_auth_entries(
             truncated=truncated,
             oldest_returned=kept[0][0] if kept else None,
             newest_returned=kept[-1][0] if kept else None,
+            via=result.via,
         )
     return entries, errors, windows
 
@@ -991,4 +1001,15 @@ def fetch_privileged_accounts(lookback_days: int) -> SSHResult | tuple[Any, int]
     result = _route("privileged_accounts", {"since": since}, over_ssh)
     if not result.ok:
         return result
+    _last_privileged_via.set(result.via)
     return PA.parse_output(result.stdout), since
+
+
+# How the latest fetch_privileged_accounts in this context was made ("ssh" or
+# "subagent"), for the event store -- its return shape is shared with callers
+# that don't care.
+_last_privileged_via: contextvars.ContextVar[str] = contextvars.ContextVar("kratos_privileged_via", default="ssh")
+
+
+def last_privileged_accounts_via() -> str:
+    return _last_privileged_via.get()
