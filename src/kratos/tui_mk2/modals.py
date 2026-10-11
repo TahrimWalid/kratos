@@ -429,7 +429,9 @@ class HelpModal(ModalScreen[None]):
                 ("/preset-edit / -delete", "Edit (goal or pipeline steps) or delete a preset (pick from a list)"),
                 ("/preset-scaffold", "Write an editable pipeline-preset template file (power users)"),
                 ("/preset-export / -import", "Share a preset's file, or import one from a .toml"),
-                ("/report", "Investigation summary — findings by severity"),
+                ("/report", "Investigation summary — new, still open, fixed, hidden by your decisions"),
+                ("/findings", "Findings remembered across checks — verify, accept a risk until a date, "
+                 "mark false positive / out of scope (alias /f)"),
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
@@ -498,7 +500,9 @@ class GuideModal(ModalScreen[None]):
                 ("2.  ask in plain words", "e.g. “check this host for signs of an SSH "
                  "brute-force”. Kratos picks its own read-only tools and explains what it finds."),
                 ("3.  /doctor", "confirm your setup (model, target, tools) is healthy."),
-                ("4.  /report", "see this session's findings, most severe first."),
+                ("4.  /report", "see this session's findings: what's new, still open and fixed."),
+                ("5.  /findings", "decide about a finding — accept a risk until a date, or mark it "
+                 "not a real problem. Kratos counts what your decisions hide."),
             ]))
             yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
             yield Static(self._steps([
