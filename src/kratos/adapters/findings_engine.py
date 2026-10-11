@@ -278,6 +278,40 @@ class Finding:
     # of its inputs). Lets a view tell "found in this investigation" from "still on
     # record from an earlier check" without guessing.
     collected_at: str | None = None
+    # Lifecycle identity (kratos.lifecycle): what one finding of this rule is about
+    # on a machine ("" = one finding per rule per machine; a future per-entity rule
+    # sets it, e.g. per CVE+package), and the concrete things it names -- source
+    # IPs, ports, accounts, paths, CVEs -- sorted and normalised (normalise_entities).
+    # A person's decision covers the entities it saw; a new one reopens the finding.
+    subject: str = ""
+    entities: list[str] = field(default_factory=list)
+
+
+def _normal_ip(value: Any) -> str:
+    import ipaddress
+
+    text = str(value).strip()
+    try:
+        return ipaddress.ip_address(text).compressed
+    except ValueError:
+        return text
+
+
+def normalise_entities(kind: str, values: Any) -> list[str]:
+    """Sorted, de-duplicated entities. `kind`: "ip" (compressed form), "cve"
+    (upper-case), anything else kept as given (user names and paths are
+    case-sensitive on Linux)."""
+    out: set[str] = set()
+    for v in values or ():
+        if v is None or str(v).strip() == "":
+            continue
+        if kind == "ip":
+            out.add(_normal_ip(v))
+        elif kind == "cve":
+            out.add(str(v).strip().upper())
+        else:
+            out.add(str(v).strip())
+    return sorted(out)
 
 
 # Which inputs each rule reads (longest prefix wins) -- for collected_at.
@@ -371,6 +405,9 @@ def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
             title=f"Recently granted privileged access: {', '.join(sorted(grants))}",
             severity="high",
             evidence=evidence,
+            entities=normalise_entities("text", [
+                f"{user}:{g['group']}" if g.get("group") else f"{user}:uid{g.get('uid')}"
+                for user, gs in grants.items() for g in gs]),
             recommendation=[
                 "Confirm with the system's owner that each of these grants was authorized.",
                 "If not: remove the access (e.g. `gpasswd -d <user> sudo`), lock the account (`usermod -L <user>`), "
@@ -386,6 +423,7 @@ def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
             id="PRIV-002",
             title=f"Non-root account(s) with UID 0: {', '.join(uid0)}",
             severity="high",
+            entities=normalise_entities("text", uid0),
             evidence=[source, *[f"'{u}' has UID 0 (full root privileges)" for u in uid0]],
             recommendation=["A second UID-0 account is almost never legitimate -- verify immediately; if "
                             "unauthorized, disable it and investigate how it was created."],
@@ -399,6 +437,7 @@ def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
             id="PRIV-003",
             title=f"Privileged since the last check: {', '.join(unexplained)}",
             severity="medium",
+            entities=normalise_entities("text", unexplained),
             evidence=[source, f"Previous check: {changed.get('previous_snapshot_at')}",
                       *[f"'{u}' now holds: {', '.join((accounts.get(u) or {}).get('via') or [])}" for u in unexplained],
                       *gaps],
@@ -411,6 +450,7 @@ def _privileged_account_findings(snap: dict[str, Any]) -> list[Finding]:
             id="PRIV-004",
             title=f"{len(accounts)} account(s) hold privileged access on the target",
             severity="info",
+            entities=normalise_entities("text", [u for u, a in accounts.items() if isinstance(a, dict)]),
             evidence=[source, *[f"{u}: {', '.join(a.get('via') or [])}" for u, a in sorted(accounts.items())
                                 if isinstance(a, dict)], *gaps],
             recommendation=["Keep this list minimal; remove access nobody needs."],
@@ -479,6 +519,7 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
             id="VULN-001",
             title="Service versions match known CVEs (verify which apply)",
             severity="medium",
+            entities=normalise_entities("cve", all_cves),
             evidence=evidence,
             recommendation=[
                 "Check each CVE against your distribution's security tracker for the installed package version: "
@@ -509,6 +550,7 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
             title=("Active checks found issues on the target's services" if real
                    else "Active checks reported informational results"),
             severity=worst,
+            entities=normalise_entities("text", [x.get("template_id") for x in active]),
             evidence=evidence,
             recommendation=[
                 "Confirm each result at the address shown, then fix it as its check describes (update, "
@@ -630,7 +672,8 @@ def _suspicious_source_ip_counts(auth_patterns: dict[str, Any] | None) -> list[t
                 ip = entry.get("ip")
                 if ip:
                     c[ip] += int(entry.get("count") or 0)
-    return c.most_common(5)
+    # count desc, then IP: ties are ordered the same way every run (source_ips[0] is stable)
+    return sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
 
 
 def _surface_source_ips_in_evidence(
@@ -737,6 +780,16 @@ def _merge_overlapping(findings: list[Finding], auth_patterns: dict[str, Any] | 
         f"{i} ({_MERGE_LABELS.get(i, 'same evidence')})" for i in main.also_matched))
 
 
+def _stamp_source_ip_entities(findings: list[Finding], auth_patterns: dict[str, Any] | None) -> None:
+    """IP-sourced findings' entities: EVERY suspicious source IP behind the bursts (not
+    just the top five in source_ips), so a new attacker is a new entity even when it
+    isn't among the most active."""
+    ips = normalise_entities("ip", _suspicious_source_ips(auth_patterns))
+    for f in findings:
+        if f.id in _IP_SOURCED_SUSPICIOUS_IDS:
+            f.entities = normalise_entities("ip", [*ips, *f.source_ips])
+
+
 def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[str, Any] | None) -> None:
     """If the target auth fetch was truncated (the requested window held more
     entries than were fetched -- docs/time_window_design.md step 1), say so on
@@ -826,10 +879,12 @@ def generate_findings(
         else:
             # Basic service hints (thesis-safe; not claiming exploitation)
             exposed = []
+            ports = []
             for h in hosts:
                 for p in h.get("open_ports", []):
                     svc = p.get("service") or "unknown"
                     exposed.append(f"{h.get('ip','?')} {p.get('protocol','tcp')}/{p.get('port')} ({svc})")
+                    ports.append(f"{p.get('port')}/{p.get('protocol') or 'tcp'}")
 
             sev = "medium"
             # If SSH exposed, keep medium (could be high in real environments, but thesis-safe defaults)
@@ -841,6 +896,7 @@ def generate_findings(
                     id="NET-002",
                     title="Open ports detected (attack surface present)",
                     severity=sev,
+                    entities=normalise_entities("text", ports),
                     evidence=[
                         "From the latest port scan",
                         f"Open ports found: {open_ports_total}",
@@ -905,6 +961,9 @@ def generate_findings(
                     id="AUTH-001",
                     title="Sudo authentication failures observed",
                     severity="low",
+                    entities=normalise_entities("text", [
+                        u.get("user") for key in ("top_sudo_auth_fail_users", "top_sudo_pam_auth_fail_users")
+                        for u in auth_stats.get(key) or [] if isinstance(u, dict)]),
                     evidence=[
                         f"sudo password failures: {sudo_pam_fail_count}",
                         f"sudo authentication failures: {sudo_fail_count}",
@@ -940,6 +999,8 @@ def generate_findings(
                     id="AUTH-003",
                     title="Sudo session activity observed",
                     severity="info",
+                    entities=normalise_entities("text", [
+                        u.get("user") for u in auth_stats.get("top_sudo_users") or [] if isinstance(u, dict)]),
                     evidence=[
                         f"sudo sessions opened: {sudo_open}",
                         f"sudo sessions closed: {sudo_close}",
@@ -1252,6 +1313,8 @@ def generate_findings(
                     id="INTEG-001",
                     title="Tracked file(s) changed since baseline",
                     severity="medium",
+                    entities=normalise_entities("path", [x.get("path") for x in (*changed, *added, *removed)
+                                                         if isinstance(x, dict)]),
                     evidence=evidence,
                     recommendation=[
                         "Confirm whether this change was an authorized/expected admin action.",
@@ -1293,6 +1356,7 @@ def generate_findings(
     _surface_source_ips_in_evidence(findings, auth_patterns)
     _enrich_findings_with_offline_reputation(findings, auth_patterns)
     _merge_overlapping(findings, auth_patterns)
+    _stamp_source_ip_entities(findings, auth_patterns)
     _disclose_partial_auth_coverage(findings, auth_stats)
 
     # Sort by severity (high -> info)
