@@ -554,9 +554,17 @@ def tool_correlate_findings(
         out["lifecycle"] = footer_line(lifecycle)
         hidden = int(lifecycle.get("hidden_total") or 0)
         if hidden:
+            words = {"risk_accepted": "risk accepted", "false_positive": "marked a false positive",
+                     "out_of_scope": "marked out of scope"}
+            named = "; ".join(
+                f"{f.get('id')} ({words[f['state']]} by the user"
+                + (f" until {str((f.get('decision') or {}).get('expires_at'))[:10]}"
+                   if (f.get("decision") or {}).get("expires_at") else "")
+                + ")" for f in findings if f.get("state") in words)
             out["hidden_by_user_decisions"] = (
-                f"{hidden} finding(s) are hidden from the user's default view by their own decisions "
-                "(state risk_accepted / false_positive / out_of_scope); mention them only if relevant.")
+                f"{hidden} finding(s) are hidden from the user's default view by their own decisions: {named}. "
+                "If you mention one, say it is already known and decided (e.g. 'accepted risk'), not a new "
+                "problem; mention them only if relevant.")
     return out
 
 
