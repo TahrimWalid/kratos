@@ -1229,6 +1229,30 @@ def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: 
 
 
 @register_tool(
+    name="check_log_integrity",
+    description=(
+        "Checks whether the SSH TARGET DEVICE's LOGS were cleared or edited (not the local Kratos host) -- "
+        "anti-forensics, not just 'is logging switched on': log files cut short, replaced or rewritten outside "
+        "normal rotation, a journal file deleted from the middle of history, login records (wtmp/btmp) zeroed "
+        "or reordered, auditd stopped or emptied of its rules, boots that ended without a clean shutdown, and "
+        "-- if journal sealing is set up -- whether the sealed journal still verifies. Relevant whenever an "
+        "investigation asks if an attacker covered their tracks, if the logs can be trusted, or for any "
+        "compromise investigation. The first run on a machine records a baseline (nothing to compare yet). "
+        "The result is saved so correlate_findings turns it into LOG-*/SEAL-* findings."
+    ),
+    parameters={"data_dir": {"type": "path", "description": "Kratos data directory"}},
+)
+def tool_check_log_integrity(data_dir: Path) -> dict[str, Any]:
+    from kratos.logsources import integrity as _integrity
+
+    host = get_active_target()
+    if not host:
+        return {"status": "error", "observation": _kconfig.NO_TARGET_MESSAGE}
+    doc = _integrity.run(Path(data_dir), host)
+    return {"status": "ok", **_integrity.summary_for_model(doc), "result_file": doc["file"]}
+
+
+@register_tool(
     name="check_file_integrity",
     description=(
         "Checks FILE/CONFIG INTEGRITY: hashes critical config paths (/etc/passwd, "

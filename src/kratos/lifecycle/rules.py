@@ -39,14 +39,20 @@ class RuleInfo:
     # ever describes Kratos's own machine, so requiring it would mean a remote
     # target's burst could never be marked inactive.
     needs: tuple[str, ...] | None = None
+    # Evidence of something done to the machine's own record (logs cleared or
+    # edited, auditd stopped): a later run not seeing it again proves nothing --
+    # the next check compares with the already-edited state. A sticky finding is
+    # never moved to mitigated/inactive automatically; it stays open until a
+    # person decides on it.
+    sticky: bool = False
 
     @property
     def covering_inputs(self) -> tuple[str, ...]:
         return self.needs if self.needs is not None else self.inputs
 
 
-def _r(rule_id: str, kind: Kind, needs: tuple[str, ...] | None = None) -> tuple[str, RuleInfo]:
-    return rule_id, RuleInfo(kind=kind, inputs=rule_inputs(rule_id), needs=needs)
+def _r(rule_id: str, kind: Kind, needs: tuple[str, ...] | None = None, sticky: bool = False) -> tuple[str, RuleInfo]:
+    return rule_id, RuleInfo(kind=kind, inputs=rule_inputs(rule_id), needs=needs, sticky=sticky)
 
 
 _BURST = ("auth_patterns",)
@@ -65,6 +71,13 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PRIV-004", "condition"),
     _r("VULN-001", "condition"),
     _r("VULN-002", "condition"),
+    # 0.3: log tampering and journal sealing
+    _r("LOG-001", "condition", sticky=True),
+    _r("LOG-002", "condition", sticky=True),
+    _r("LOG-004", "condition", sticky=True),
+    _r("LOG-005", "condition", sticky=True),
+    _r("SEAL-001", "condition", sticky=True),
+    _r("SEAL-002", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -73,14 +86,21 @@ RULES: dict[str, RuleInfo] = dict([
     _r("CORR-001", "occurrence", _BURST),
     _r("CORR-002", "occurrence", _BURST),
     _r("CORR-SSH-001", "occurrence", _BURST),
+    _r("LOG-003", "occurrence"),
     # run notes
     _r("COV-001", "run_note"),
     _r("VULN-003", "run_note"),
+    _r("SEAL-003", "run_note"),
 ])
 
 
 def rule_info(rule_id: str) -> RuleInfo | None:
     return RULES.get(str(rule_id or ""))
+
+
+def is_sticky(rule_id: str) -> bool:
+    info = rule_info(rule_id)
+    return info is not None and info.sticky
 
 
 def is_run_note(rule_id: str) -> bool:

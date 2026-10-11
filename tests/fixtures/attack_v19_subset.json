@@ -1,0 +1,124 @@
+{
+ "_source": "Subset of enterprise-attack/enterprise-attack-19.0.json from https://github.com/mitre-attack/attack-stix-data (ATT&CK v19.0). (c) The MITRE Corporation. This work is reproduced and distributed with the permission of The MITRE Corporation. Used only to check Kratos's technique/tactic labels.",
+ "tactics": {
+  "collection": {
+   "id": "TA0009",
+   "name": "Collection"
+  },
+  "command-and-control": {
+   "id": "TA0011",
+   "name": "Command and Control"
+  },
+  "credential-access": {
+   "id": "TA0006",
+   "name": "Credential Access"
+  },
+  "defense-impairment": {
+   "id": "TA0112",
+   "name": "Defense Impairment"
+  },
+  "discovery": {
+   "id": "TA0007",
+   "name": "Discovery"
+  },
+  "execution": {
+   "id": "TA0002",
+   "name": "Execution"
+  },
+  "exfiltration": {
+   "id": "TA0010",
+   "name": "Exfiltration"
+  },
+  "impact": {
+   "id": "TA0040",
+   "name": "Impact"
+  },
+  "initial-access": {
+   "id": "TA0001",
+   "name": "Initial Access"
+  },
+  "lateral-movement": {
+   "id": "TA0008",
+   "name": "Lateral Movement"
+  },
+  "persistence": {
+   "id": "TA0003",
+   "name": "Persistence"
+  },
+  "privilege-escalation": {
+   "id": "TA0004",
+   "name": "Privilege Escalation"
+  },
+  "reconnaissance": {
+   "id": "TA0043",
+   "name": "Reconnaissance"
+  },
+  "resource-development": {
+   "id": "TA0042",
+   "name": "Resource Development"
+  },
+  "stealth": {
+   "id": "TA0005",
+   "name": "Stealth"
+  }
+ },
+ "techniques": {
+  "T1070": {
+   "name": "Indicator Removal",
+   "revoked": false,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1070"
+  },
+  "T1070.002": {
+   "name": "Clear Linux or Mac System Logs",
+   "revoked": true,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1070/002"
+  },
+  "T1562.001": {
+   "name": "Disable or Modify Tools",
+   "revoked": true,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1562/001"
+  },
+  "T1562.012": {
+   "name": "Disable or Modify Linux Audit System",
+   "revoked": true,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1562/012"
+  },
+  "T1685": {
+   "name": "Disable or Modify Tools",
+   "revoked": false,
+   "tactics": [
+    "defense-impairment"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1685"
+  },
+  "T1685.004": {
+   "name": "Disable or Modify Linux Audit System Log",
+   "revoked": false,
+   "tactics": [
+    "defense-impairment"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1685/004"
+  },
+  "T1685.006": {
+   "name": "Clear Linux or Mac System Logs",
+   "revoked": false,
+   "tactics": [
+    "defense-impairment"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1685/006"
+  }
+ },
+ "version": "19.0"
+}

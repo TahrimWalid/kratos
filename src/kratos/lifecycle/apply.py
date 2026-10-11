@@ -175,6 +175,9 @@ def _settle_absent(r: _Run, rec: sqlite3.Row, coverage: Coverage) -> None:
         # An accepted risk that went away is still an accepted decision -- unless it expired.
         r.settle_decision(rec, present=False, severity=rec["severity"], entities=json.loads(rec["entities"]))
         return
+    info = rule_info(rec["rule_id"])
+    if info is not None and info.sticky:
+        return  # evidence of tampering: never closed by a later run not seeing it (rules.RuleInfo.sticky)
     if state in S.SHOWN_BY_DEFAULT and covered:
         to = _ABSENT_TO.get(rec["kind"], "mitigated")
         r.move(key, state, to, "state_changed",
@@ -262,8 +265,11 @@ def apply_run(findings: list[dict[str, Any]], *, target: str, coverage: Coverage
         fixed = set(summary["fixed"])
         for rec in S.list_records(conn, target=target, states=set(S.SHOWN_BY_DEFAULT)):
             if rec["finding_key"] not in present and rec["finding_key"] not in fixed:
-                summary["not_rechecked"].append(rec["finding_key"])
-        for name in ("fixed", "expired_this_run", "not_rechecked"):
+                info = rule_info(rec["rule_id"])
+                # sticky evidence stays open until a person decides: it is still open, not "unchecked"
+                summary["still_open" if info is not None and info.sticky else "not_rechecked"].append(
+                    rec["finding_key"])
+        for name in ("fixed", "expired_this_run", "not_rechecked", "still_open"):
             summary[name] = sorted(set(summary[name]))
     summary["hidden_total"] = sum(summary["hidden"].values())
     summary["target"] = target

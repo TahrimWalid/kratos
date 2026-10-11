@@ -153,6 +153,9 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         "file_integrity": pick(baseline_dir, "file_integrity_diff_*.json", "file_integrity"),
         # Filtered by its own loader (_load_recent_privileged_snapshot).
         "privileged_accounts": latest_file(ctx_dir, "privileged_accounts_*.json"),
+        # check_log_integrity (0.3): the newest result for this machine; freshness
+        # is checked by _load_recent_log_integrity.
+        "log_integrity": pick(data_dir / "integrity", "log_integrity_*.json", "log_integrity"),
     }
 
 
@@ -285,6 +288,9 @@ class Finding:
     # A person's decision covers the entities it saw; a new one reopens the finding.
     subject: str = ""
     entities: list[str] = field(default_factory=list)
+    # MITRE ATT&CK labels (kratos.logsources.attack, pinned to v19.0):
+    # [{technique_id, technique, tactic_id, tactic, version, url}]. 0.3 tamper rules.
+    attack: list[dict[str, str]] = field(default_factory=list)
 
 
 def _normal_ip(value: Any) -> str:
@@ -330,6 +336,8 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
     "INTEG-": ("file_integrity",),
     "PRIV-": ("privileged_accounts",),
     "VULN-": ("vuln_scan",),
+    "LOG-": ("log_integrity",),
+    "SEAL-": ("log_integrity",),
 }
 
 
@@ -628,6 +636,14 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "PRIV-002": "An account other than root has user ID 0, which gives it full root powers.",
     "PRIV-003": "An account gained admin or root-level access since Kratos last checked.",
     "PRIV-004": "These accounts can act as root or admin on this machine.",
+    "LOG-001": "A log file was cut short, replaced or edited outside normal log rotation — a classic way to hide activity.",
+    "LOG-002": "A journal file is missing from the middle of the machine's log history.",
+    "LOG-003": "The machine went down without a clean shutdown at least once (crash, power cut or forced restart).",
+    "LOG-004": "The login records (wtmp/btmp) look edited: records were zeroed, reordered or removed.",
+    "LOG-005": "The audit system (auditd) was stopped, disabled or emptied of its rules.",
+    "SEAL-001": "A sealed journal file failed verification or changed after it was verified — its logs were altered.",
+    "SEAL-002": "Journal sealing stopped: newer log files on this machine are no longer sealed.",
+    "SEAL-003": "Kratos couldn't verify this machine's sealed journal this time — see why.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -852,6 +868,7 @@ def generate_findings(
     privileged_accounts: dict[str, Any] | None = None,
     vuln_scan: dict[str, Any] | None = None,
     auth_patterns_window: dict[str, Any] | None = None,
+    log_integrity: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
@@ -1337,6 +1354,10 @@ def generate_findings(
     if vuln_scan:
         findings.extend(_vulnerability_findings(vuln_scan))
 
+    # LOG-* / SEAL-*: logs cleared or edited, journal sealing (from check_log_integrity)
+    if log_integrity:
+        findings.extend(_log_integrity_findings(log_integrity))
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -1480,6 +1501,161 @@ def _load_recent_privileged_snapshot(path: Path | None) -> dict[str, Any] | None
     if active and snap_host and snap_host != active:
         return None
     return data
+
+
+LOG_INTEGRITY_MAX_AGE_HOURS = 24
+
+
+def _load_recent_log_integrity(path: Path | None) -> dict[str, Any] | None:
+    """The newest check_log_integrity result for the active machine, if it is less
+    than LOG_INTEGRITY_MAX_AGE_HOURS old (find_latest_inputs already picked a file
+    describing this machine)."""
+    if path is None:
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("checks"), dict):
+        return None
+    when = data.get("checked_at_epoch")
+    if not isinstance(when, (int, float)):
+        try:
+            when = path.stat().st_mtime
+        except OSError:
+            return None
+    age = datetime.now().timestamp() - float(when)
+    if age > LOG_INTEGRITY_MAX_AGE_HOURS * 3600 or age < -3600:
+        return None
+    return data
+
+
+def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
+    """LOG-001..005 and SEAL-001..003 from one check_log_integrity result."""
+    from kratos.logsources.attack import labels
+
+    checks = data.get("checks") or {}
+    when = f"Checked {_when(data['checked_at'])}" if data.get("checked_at") else "From the latest log integrity check"
+    out: list[Finding] = []
+
+    def items(cid: str) -> list[dict[str, Any]]:
+        c = checks.get(cid) or {}
+        return [i for i in c.get("items") or [] if isinstance(i, dict)]
+
+    def cov(cid: str) -> str:
+        return f"What was checked: {(checks.get(cid) or {}).get('coverage') or 'not recorded'}"
+
+    file_items = items("file_state")
+    logs = [i for i in file_items if not i.get("login_record")]
+    if logs:
+        out.append(Finding(
+            id="LOG-001", title="Log file cut short, replaced or edited outside log rotation", severity="high",
+            entities=normalise_entities("path", [i.get("path") for i in logs]), attack=labels("LOG-001"),
+            evidence=[when, *[f"{i.get('path')}: {i.get('detail')}" for i in logs[:10]], cov("file_state")],
+            recommendation=[
+                "Treat the affected log as unreliable for the time before the change, and find out who could write it "
+                "(root or the log's owner) and when -- check sudo, auditd and login activity around then.",
+                "Compare with any copy kept off the machine (central log server, backups, a sealed journal).",
+                "If this was a deliberate admin action, record the decision on this finding so it stops alerting.",
+            ],
+        ))
+    gaps = items("journal")
+    if gaps:
+        out.append(Finding(
+            id="LOG-002", title="Journal file missing from the middle of the log history", severity="high",
+            entities=normalise_entities("text", [f"{g.get('after')}..{g.get('before')}" for g in gaps]),
+            attack=labels("LOG-002"),
+            evidence=[when, *[str(g.get("detail")) for g in gaps[:5]], cov("journal")],
+            recommendation=[
+                "journald only removes the OLDEST files on its own; a missing file between two that remain was "
+                "deleted by someone with root access. Find out who and when.",
+                "The time range shown has no journal on this machine -- use other sources (auditd, a central log "
+                "server) for that period.",
+            ],
+        ))
+    boots = items("boots")
+    if boots:
+        out.append(Finding(
+            id="LOG-003", title="Machine went down without a clean shutdown", severity="low",
+            entities=normalise_entities("text", [b.get("boot_id") for b in boots]),
+            evidence=[when, *[str(b.get("detail")) for b in boots[:5]], cov("boots"),
+                      "This is context, not proof of tampering: a crash or power cut does the same."],
+            recommendation=["If nobody restarted it on purpose, find out why it went down (hardware, kernel, power, "
+                            "or someone forcing a reboot to cut logging short)."],
+        ))
+    login_items = items("login_records")
+    shrunk = [i for i in file_items if i.get("login_record")]
+    if login_items or shrunk:
+        sev = "high" if login_items else "medium"
+        lines = [f"{i.get('file')}: record {i.get('record')} {'is all zeros' if i.get('kind') == 'zeroed' else 'is out of time order'}"
+                 for i in login_items[:10]]
+        lines += [f"{i.get('path')}: {i.get('detail')}" for i in shrunk[:5]]
+        out.append(Finding(
+            id="LOG-004", title="Login records (wtmp/btmp) look edited", severity=sev,
+            entities=normalise_entities("path", [f"/var/log/{i.get('file')}" for i in login_items]
+                                        + [i.get("path") for i in shrunk]),
+            attack=labels("LOG-004"),
+            evidence=[when, *lines, *(checks.get("login_records") or {}).get("evidence", [])[:3], cov("login_records")],
+            recommendation=[
+                "Zeroed or reordered login records are what log wipers leave behind to hide a login. Treat the login "
+                "history (last, lastb) as incomplete and look at sshd/auth logs for the same period.",
+            ],
+        ))
+    audit_items = items("auditd")
+    if audit_items:
+        sev = "high" if any(i.get("severity") == "high" for i in audit_items) else "info"
+        out.append(Finding(
+            id="LOG-005", title=("auditd was stopped, disabled or emptied of its rules" if sev == "high"
+                                 else "auditd is installed but not running"),
+            severity=sev, attack=labels("LOG-005") if sev == "high" else [],
+            entities=normalise_entities("text", [i.get("kind") for i in audit_items]),
+            evidence=[when, *(checks.get("auditd") or {}).get("evidence", [])[:8], cov("auditd")],
+            recommendation=[
+                "Restart auditd and reload its rules (sudo systemctl start auditd; sudo augenrules --load), then "
+                "find out who stopped it: its own log (read_host_logs source auditd) records DAEMON_END and "
+                "CONFIG_CHANGE with the user.",
+            ] if sev == "high" else ["Start and enable auditd if you rely on it for a record of what runs on this machine."],
+        ))
+    out.extend(_seal_findings(data.get("seal"), when))
+    return out
+
+
+def _seal_findings(seal: dict[str, Any] | None, when: str) -> list[Finding]:
+    from kratos.logsources.attack import labels
+
+    if not isinstance(seal, dict):
+        return []
+    out: list[Finding] = []
+    failed = [f for f in seal.get("failed") or [] if isinstance(f, dict)]
+    changed = [f for f in seal.get("changed_archives") or [] if isinstance(f, dict)]
+    if failed or changed:
+        out.append(Finding(
+            id="SEAL-001", title="Sealed journal failed verification or changed after it was verified",
+            severity="high", attack=labels("SEAL-001"),
+            entities=normalise_entities("text", [f.get("name") for f in failed + changed]),
+            evidence=[when, *[f"{f.get('name')}: {f.get('detail')}" for f in failed[:5]],
+                      *[f"{f.get('name')}: verified earlier with a different hash -- the archived file was altered"
+                        for f in changed[:5]]],
+            recommendation=["The journal's own seal shows its entries were altered after they were written. Treat "
+                            "the affected period as tampered; investigate who had root access then."],
+        ))
+    unsealed = [f for f in seal.get("unsealed_after_setup") or [] if isinstance(f, dict)]
+    if unsealed:
+        out.append(Finding(
+            id="SEAL-002", title="Journal sealing stopped on this machine", severity="medium",
+            attack=labels("SEAL-002"), entities=normalise_entities("text", [f.get("name") for f in unsealed]),
+            evidence=[when, *[f"{f.get('name')}: written after sealing was set up, but not sealed" for f in unsealed[:5]]],
+            recommendation=["Sealing was turned off or its key removed on the machine (sudo journalctl "
+                            "--setup-keys re-creates it -- then give Kratos the new verification key)."],
+        ))
+    note = seal.get("unverifiable")
+    if note:
+        out.append(Finding(
+            id="SEAL-003", title="Sealed journal could not be verified this time", severity="info",
+            evidence=[when, str(note)],
+            recommendation=["See the reason above; nothing here says the logs were altered."],
+        ))
+    return out
 
 
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
@@ -1628,6 +1804,8 @@ def write_findings_report(
     inputs["privileged_accounts"] = auto.get("privileged_accounts") if privileged else None
     vuln_scan, vuln_scan_path = _load_recent_vuln_scan(data_dir / "scans")
     inputs["vuln_scan"] = vuln_scan_path
+    log_integrity = _load_recent_log_integrity(auto.get("log_integrity"))
+    inputs["log_integrity"] = auto.get("log_integrity") if log_integrity else None
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -1640,6 +1818,7 @@ def write_findings_report(
         nmap_parsed, auth_stats, auth_patterns, system_context, auth_trends, file_integrity, privileged,
         vuln_scan=vuln_scan,
         auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
+        log_integrity=log_integrity,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target

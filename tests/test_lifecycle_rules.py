@@ -44,9 +44,11 @@ def test_no_stale_entries():
 
 def test_classification_matches_the_spec():
     kinds = {rid: info.kind for rid, info in RULES.items()}
-    assert {r for r, k in kinds.items() if k == "run_note"} == {"COV-001", "VULN-003"}
+    assert {r for r, k in kinds.items() if k == "run_note"} == {"COV-001", "VULN-003", "SEAL-003"}
     assert {r for r, k in kinds.items() if k == "occurrence"} == {
-        "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001"}
+        "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001", "LOG-003"}
+    # 0.3: evidence of tampering never closes itself (spec 0.3 §6; rules.RuleInfo.sticky)
+    assert {r for r, i in RULES.items() if i.sticky} == {"LOG-001", "LOG-002", "LOG-004", "LOG-005", "SEAL-001"}
     assert all(k in KINDS for k in kinds.values())
 
 

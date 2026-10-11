@@ -321,6 +321,8 @@ def standard_audit_steps() -> list[PipelineStep]:
                              it's network-heavy and secondary; a hiccup here
                              shouldn't sink the audit.
       3. run_config_audit  — the target's hardening posture over SSH. Optional.
+      3b. check_log_integrity — were the target's logs cleared or edited (0.3)?
+                             Optional: on a first run it only records a baseline.
       4. read_journalctl   — pull the target's auth journal over SSH; this also
                              persists the auth-correlation inputs correlate_findings
                              reads. Optional (SSH may be restricted).
@@ -342,6 +344,8 @@ def standard_audit_steps() -> list[PipelineStep]:
                      label="Scan the target for known vulnerabilities"),
         PipelineStep("run_config_audit", required=False,
                      label="Audit the target's security configuration"),
+        PipelineStep("check_log_integrity", required=False,
+                     label="Check whether the target's logs were cleared or edited"),
         PipelineStep("read_journalctl", required=False,
                      label="Pull the target's auth journal (SSH)"),
         PipelineStep("correlate_findings", required=True,
