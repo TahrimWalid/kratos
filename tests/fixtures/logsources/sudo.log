@@ -1,0 +1,3 @@
+Oct 11 17:17:24 : ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/id
+Oct 11 17:17:24 : ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/ls
+    /root

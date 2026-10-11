@@ -1,0 +1,13 @@
+Real log lines collected 2026-10-11 from the Kratos lab hosts for feature 0.3
+(log sources and tamper detection). Only lab hostnames (kratos-target,
+kratos-tt-*) and lab addresses (10.136.28.0/24, 127.0.0.1) appear.
+
+  audit.log.sample, audit_session.log.sample  kratos-tt-skew (Ubuntu 22.04 VM, auditd 3.0.7, ENRICHED)
+  nginx_access.log, nginx_error.log           kratos-tt-skew, requests sent from attacker-box
+                                              (one request carries a fake ?token=... / password= to test masking)
+  ufw.log, journal_kernel_ufw.jsonl           kratos-tt-skew, ufw deny 2222 hit from attacker-box
+  sudo.log                                    kratos-tt-skew with "Defaults logfile=/var/log/sudo.log"
+  dpkg.log, apt_history.log                   kratos-target (Ubuntu 22.04 container)
+  journal_cron.jsonl, journal_systemd.jsonl   kratos-target, journalctl -o json --output-fields=...
+  dnf.rpm.log, dnf.log, rhel_cron.log         kratos-tt-rhel (Rocky 9.8 container)
+  alpine_messages.log                         kratos-tt-alpine (Alpine 3.22, BusyBox syslogd)

@@ -1,0 +1,5 @@
+10.136.28.52 - - [11/Oct/2026:17:12:05 +0000] "GET / HTTP/1.1" 200 612 "-" "Mozilla/5.0 test"
+10.136.28.52 - - [11/Oct/2026:17:12:05 +0000] "GET /admin HTTP/1.1" 404 162 "-" "Mozilla/5.0 test"
+10.136.28.52 - - [11/Oct/2026:17:12:05 +0000] "GET /login?user=bob&password=hunter2 HTTP/1.1" 404 162 "-" "Mozilla/5.0 test"
+10.136.28.52 - - [11/Oct/2026:17:12:06 +0000] "GET /x.php HTTP/1.1" 404 162 "-" "Mozilla/5.0 test"
+127.0.0.1 - - [11/Oct/2026:17:17:32 +0000] "GET /?token=abc123secret HTTP/1.1" 200 612 "-" "curl/7.81.0"

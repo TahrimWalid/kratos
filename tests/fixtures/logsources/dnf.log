@@ -1,0 +1,10 @@
+2026-09-27T02:08:47+0000 DDEBUG Command: dnf --installroot=/rootfs -y --releasever=9 --skip-broken install basesystem Rocky-release yum 
+2026-09-27T02:09:25+0000 DDEBUG Command: yum -y --allowerasing makecache 
+2026-09-27T02:09:38+0000 DDEBUG Command: yum -y --allowerasing update --nobest 
+2026-09-27T02:09:39+0000 DDEBUG Command: yum -y --allowerasing install cronie cronie-noanacron curl glibc-langpack-en glibc-locale-source hostname initscripts iproute openssh-clients passwd policycoreutils rootfiles rsyslog sudo systemd-udev vim-minimal dhclient 
+2026-10-11T17:22:37+0000 DEBUG extras: using metadata from Mon 05 Oct 2026 05:58:10 AM UTC.
+2026-10-11T17:22:37+0000 DEBUG User-Agent: constructed: 'libdnf (Rocky Linux 9.8; generic; Linux.x86_64)'
+2026-10-11T17:22:37+0000 DDEBUG timer: sack setup: 7399 ms
+2026-10-11T17:22:37+0000 INFO Metadata cache created.
+2026-10-11T17:22:37+0000 DDEBUG Cleaning up.
+2026-10-11T17:22:38+0000 DDEBUG Plugins were unloaded.

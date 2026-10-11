@@ -1,0 +1,30 @@
+2026-10-08 06:52:52 status unpacked sudo:amd64 1.9.9-1ubuntu2.7
+2026-10-08 06:52:52 status half-configured sudo:amd64 1.9.9-1ubuntu2.7
+2026-10-08 06:52:52 status installed sudo:amd64 1.9.9-1ubuntu2.7
+2026-10-08 06:52:52 trigproc libc-bin:amd64 2.35-0ubuntu3.15 <none>
+2026-10-08 06:52:52 status half-configured libc-bin:amd64 2.35-0ubuntu3.15
+2026-10-08 06:52:53 status installed libc-bin:amd64 2.35-0ubuntu3.15
+2026-10-09 06:31:50 startup archives unpack
+2026-10-09 06:31:51 upgrade libxml2:amd64 2.9.13+dfsg-1ubuntu0.13 2.9.13+dfsg-1ubuntu0.14
+2026-10-09 06:31:51 status triggers-pending libc-bin:amd64 2.35-0ubuntu3.15
+2026-10-09 06:31:51 status half-configured libxml2:amd64 2.9.13+dfsg-1ubuntu0.13
+2026-10-09 06:31:51 status unpacked libxml2:amd64 2.9.13+dfsg-1ubuntu0.13
+2026-10-09 06:31:51 status half-installed libxml2:amd64 2.9.13+dfsg-1ubuntu0.13
+2026-10-09 06:31:51 status unpacked libxml2:amd64 2.9.13+dfsg-1ubuntu0.14
+2026-10-09 06:31:51 startup packages configure
+2026-10-09 06:31:51 configure libxml2:amd64 2.9.13+dfsg-1ubuntu0.14 <none>
+2026-10-09 06:31:51 status unpacked libxml2:amd64 2.9.13+dfsg-1ubuntu0.14
+2026-10-09 06:31:51 status half-configured libxml2:amd64 2.9.13+dfsg-1ubuntu0.14
+2026-10-09 06:31:51 status installed libxml2:amd64 2.9.13+dfsg-1ubuntu0.14
+2026-10-09 06:31:51 trigproc libc-bin:amd64 2.35-0ubuntu3.15 <none>
+2026-10-09 06:31:51 status half-configured libc-bin:amd64 2.35-0ubuntu3.15
+2026-10-09 06:31:51 status installed libc-bin:amd64 2.35-0ubuntu3.15
+2026-10-11 17:17:54 startup archives unpack
+2026-10-11 17:17:54 install sl:amd64 <none> 5.02-1
+2026-10-11 17:17:54 status half-installed sl:amd64 5.02-1
+2026-10-11 17:17:54 status unpacked sl:amd64 5.02-1
+2026-10-11 17:17:54 startup packages configure
+2026-10-11 17:17:54 configure sl:amd64 5.02-1 <none>
+2026-10-11 17:17:54 status unpacked sl:amd64 5.02-1
+2026-10-11 17:17:54 status half-configured sl:amd64 5.02-1
+2026-10-11 17:17:54 status installed sl:amd64 5.02-1
