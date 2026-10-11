@@ -58,3 +58,20 @@ def migrate(conn: sqlite3.Connection, component: str, steps: Sequence[Step]) -> 
     except BaseException:
         conn.execute("ROLLBACK")
         raise
+
+
+_migrated: set[tuple[str, str, int]] = set()
+
+
+def migrate_once(conn: sqlite3.Connection, db_path: object, component: str, steps: Sequence[Step]) -> None:
+    """`migrate`, skipped when this process already brought this database's
+    component up to date -- so opening a store doesn't take a write lock every
+    time. (A database replaced underneath a running process is migrated again
+    the next time the process restarts.)"""
+    import os
+
+    key = (os.path.realpath(str(db_path)), component, len(steps))
+    if key in _migrated:
+        return
+    migrate(conn, component, steps)
+    _migrated.add(key)

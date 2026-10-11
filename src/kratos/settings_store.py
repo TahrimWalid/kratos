@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from kratos.storage.migrations import migrate
+from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 from kratos.utils.timeutil import utc_now_iso
 
@@ -69,9 +69,10 @@ _STEPS = (_step_1,)
 
 
 def _db(data_dir: Path) -> sqlite3.Connection:
-    conn = connect_store(Path(data_dir) / "kratos.db")
+    db_path = Path(data_dir) / "kratos.db"
+    conn = connect_store(db_path)
     try:
-        migrate(conn, COMPONENT, _STEPS)
+        migrate_once(conn, db_path, COMPONENT, _STEPS)
     except BaseException:
         conn.close()
         raise
