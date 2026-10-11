@@ -76,6 +76,14 @@ def test_sudo_command_fields():
     e = _journal_auth("sudo", "ubuntu : TTY=pts/0 ; PWD=/home/ubuntu ; USER=nobody ; COMMAND=/usr/bin/true")
     assert e.user_name == "ubuntu" and e.user_effective_name == "nobody"
     assert e.process_command_line == "/usr/bin/true" and e.related_user == ("ubuntu", "nobody")
+    # ECS: the process event is about the command started; sudo logged it.
+    assert e.process_executable == "/usr/bin/true" and e.process_name == "true" and e.provider == "sudo"
+
+
+def test_local_sudo_line_puts_sudos_pid_as_the_parent():
+    e = _local("Oct  9 13:01:04 h sudo[777]:   ubuntu : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/id -u")
+    assert e.process_parent_pid == 777 and e.process_pid is None
+    assert e.process_executable == "/usr/bin/id" and e.process_command_line == "/usr/bin/id -u"
 
 
 def test_sudo_command_line_is_masked():

@@ -240,6 +240,15 @@ def from_auth_event(ev: AuthEvent, *, ctx: ReadContext) -> Event:
         target = _SUDO_TARGET.search(raw_line)
         effective = _short(target["target"]) if target else None
 
+    # A sudo-run command is a process event about the COMMAND (ECS): its process.*
+    # fields describe what was started; sudo is the provider and the parent.
+    executable, process_name, parent_pid = None, _short(ev.program), None
+    if ev.event_type == "sudo_command" and command:
+        first = command.split(None, 1)[0]
+        executable = first if first.startswith("/") else None
+        process_name = _short(first.rsplit("/", 1)[-1])
+        parent_pid, pid = pid, None
+
     source_ip = _ip(ev.source_ip)
     port = None
     if source_ip and ev.program and "ssh" in ev.program:
@@ -253,7 +262,8 @@ def from_auth_event(ev: AuthEvent, *, ctx: ReadContext) -> Event:
         category=category, type=etype, outcome=outcome, action=ev.event_type,
         user_name=user_name, user_id=user_id, user_effective_name=effective,
         source_ip=source_ip, source_port=port,
-        process_name=program, process_pid=pid,
+        process_name=process_name, process_pid=pid, process_parent_pid=parent_pid,
+        process_executable=_short(executable, 1024),
         related_ip=_uniq(source_ip), related_user=_uniq(user_name, effective),
     )
 

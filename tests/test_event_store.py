@@ -77,7 +77,8 @@ def test_queries_by_each_index(store):
     assert [e.user_name for e in store.query(t, source_ip="10.0.0.1")] == ["carol", "alice"]
     assert [e.user_name for e in store.query(t, source_ip="10.0.0.1", newest_first=False)] == ["alice", "carol"]
     assert store.count(t, user="bob") == 1
-    assert store.count(t, process="sudo") == 1 and store.count(t, process="sshd") == 3
+    # A sudo-run command is indexed by the command it started (sudo is the provider).
+    assert store.count(t, process="ls") == 1 and store.count(t, process="sshd") == 3
     assert store.count(t, action="ssh_failed_login") == 3 and store.count(t, dataset="kratos.auth") == 4
     assert store.count(t, start=T0 + timedelta(minutes=2), end=T0 + timedelta(minutes=4)) == 2  # half-open
     assert store.count(t, start=(T0 + timedelta(minutes=4)).timestamp()) == 1
