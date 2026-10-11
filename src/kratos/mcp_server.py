@@ -346,6 +346,28 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
     ]
 
 
+@mcp.tool()
+def kratos_finding_states(target: str | None = None, state: str | None = None, limit: int = 100) -> dict[str, Any]:
+    """Read-only: the findings Kratos remembers across runs, with each one's state
+    (open, verified, mitigated, inactive, risk_accepted, false_positive, out_of_scope),
+    first/last seen, and the user's decision if any. `target` filters by machine
+    (default: every machine); `state` is one of open, verified, mitigated, inactive,
+    risk_accepted, false_positive, out_of_scope, decided, open_verified, fixed, all
+    (default: all). Changing a finding's state is a person-only action -- there is no
+    MCP tool for it."""
+    from kratos.lifecycle import migrate as _lc_migrate, query as _lc_query
+
+    state = (state or "all").strip().lower().replace("-", "_")
+    if state not in _lc_query.STATE_FILTERS:
+        raise ValueError(f"state must be one of: {', '.join(_lc_query.STATE_FILTERS)}")
+    limit = max(1, min(int(limit or 100), 1000))
+    _lc_migrate.ensure_imported(_data_dir)
+    rows = _lc_query.list_findings(_data_dir, target=target or None, state=state, limit=limit)
+    hidden = _lc_query.hidden_counts(_data_dir, target or None)
+    return {"target": target or None, "state": state, "count": len(rows), "findings": rows,
+            "hidden_by_user_decisions": hidden}
+
+
 _TERMINAL_COMPLETION_STATUSES = {"final_answer", "max_iters_reached"}
 _FINDING_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
 
