@@ -142,3 +142,16 @@ def test_record_events_is_best_effort(tmp_path, caplog):
 def test_targets_listing(store):
     store.add([_ev(1), _ev(2), _ev(1, target="localhost")])
     assert store.targets() == [("10.136.28.168", 2), ("loopback", 1)]
+
+
+@pytest.mark.parametrize("column, value, index", [
+    ("source_ip", "10.0.0.1", "host_events_ip"), ("user_name", "bob", "host_events_user"),
+    ("process_name", "sshd", "host_events_proc"), ("file_sha256", "ab" * 32, "host_events_sha256")])
+def test_each_pivot_query_uses_its_index(tmp_path, store, column, value, index):
+    store.add([_ev(1)])
+    conn = connect_store(tmp_path / "kratos.db")
+    plan = " ".join(r[3] for r in conn.execute(
+        f"EXPLAIN QUERY PLAN SELECT doc FROM host_events WHERE target = ? AND {column} = ? AND ts >= ? AND ts < ? "
+        "ORDER BY ts DESC, id DESC LIMIT 100", ("t", value, 0.0, 1.0)))
+    conn.close()
+    assert index in plan, plan

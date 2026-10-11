@@ -52,11 +52,15 @@ def _step_1(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # The pivot indexes are partial (rows without the value aren't indexed): at a
+    # million events that is 6% smaller at the same speed. The hash index also
+    # carries ts, or a hash lookup inside a time window scans the window instead
+    # (p95 38.6 ms -> 0.01 ms). Measured with scripts/bench/events_bench.py.
     conn.execute("CREATE INDEX IF NOT EXISTS host_events_ts ON host_events(target, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS host_events_ip ON host_events(target, source_ip, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS host_events_user ON host_events(target, user_name, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS host_events_proc ON host_events(target, process_name, ts)")
-    conn.execute("CREATE INDEX IF NOT EXISTS host_events_sha256 ON host_events(target, file_sha256)")
+    for name, column in (("host_events_ip", "source_ip"), ("host_events_user", "user_name"),
+                         ("host_events_proc", "process_name"), ("host_events_sha256", "file_sha256")):
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON host_events(target, {column}, ts) "
+                     f"WHERE {column} IS NOT NULL")
     conn.execute(
         "CREATE TRIGGER IF NOT EXISTS host_events_append_only BEFORE UPDATE ON host_events "
         "BEGIN SELECT RAISE(ABORT, 'host_events is append-only'); END"

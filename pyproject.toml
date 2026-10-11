@@ -82,7 +82,8 @@ kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "tem
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
+    "bench: performance benchmarks (scripts/bench/) -- a minute or more. Excluded from a bare `pytest` run; opt in with -m bench.",
     "agent_llm: hits a real LLM backend and the real (not mocked) agent loop -- expensive (roughly 1-2 min/scenario on Gemini, 10-20 min/scenario on local qwen2.5:7b). Excluded from a bare `pytest` run; opt in with -m agent_llm.",
 ]
-addopts = "-m 'not agent_llm'"
+addopts = "-m 'not agent_llm and not bench'"
 
