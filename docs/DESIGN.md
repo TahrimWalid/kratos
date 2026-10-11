@@ -464,6 +464,58 @@ separate OS processes rather than threads, since threads sharing the GIL
 wouldn't exercise the same contention SQLite actually has to handle from
 independent processes.
 
+## Events
+
+Every log line Kratos reads becomes one **event**: a typed record whose field
+names are the [Elastic Common Schema](https://www.elastic.co/docs/reference/ecs)
+(ECS 9.5.0), with Kratos's own fields under `kratos.*` (how the line was read --
+`ssh`, `agent` or `local` --, which read, which run, the read's window and
+coverage, the converter). One Python table (`kratos/events/fields.py`) is the
+source of truth; the dataclass, the ECS document, the SQL index columns and the
+committed JSON Schema (`kratos/events/schema/event-v1.schema.json`) are derived
+from or tested against it. ECS because Sigma's tooling maps to ECS names, so
+Sigma rules later become a mapping exercise (`kratos/events/sigma_fields.py`
+already lists every field SigmaHQ's Linux rules use, mapped or with the reason
+it can't be yet); OCSF, when it comes, is an export mapping, never a second copy.
+
+The parsers are unchanged; converters map what they already produce. Four reads
+record events: Kratos's own auth log (`parse_auth_log`), the target's sshd/sudo
+journal (`read_journalctl`'s background auth read), the target's journal for any
+unit (`read_journalctl` itself) and account/group changes
+(`list_privileged_accounts`). Recording is best-effort and additive: a store
+problem is logged once and the tool returns exactly what it would have without
+it; events are never sent to the model as a bulk dump.
+
+Times are absolute UTC. journald times already are; a classic syslog line has no
+zone or year, so it is read in the machine's own zone when known (else UTC,
+flagged `kratos.time_zone_assumed`), and a line dated more than a day ahead
+belongs to the previous year. Credentials are masked before anything is stored
+(`--password`/`--token`/... values, `PASSWORD=`-style assignments, `-p` for the
+MySQL clients and sshpass, URL passwords, `Authorization:` values, Kratos's own
+API keys), and long text is capped (raw line 2 KB, message and command line 4 KB).
+
+Events live in `kratos.db` (`host_events`), per machine (`target_key()`), and are
+append-only: a trigger aborts any UPDATE, and nothing in Kratos deletes them (a
+person may). The same line read twice -- windows overlap all the time -- gets the
+same deterministic ID (a hash of machine, dataset, time to the microsecond,
+program and text) and is stored once. About 1 GB per million events (measured: 980 MB);
+queries by time, source IP, user, program or file hash stay well under 200 ms at a
+million (scripts/bench/events_bench.py). `kratos events` prints them.
+
+**Runs.** Each piece of work -- a TUI turn, a command, a scheduled run, a trigger
+investigation, an MCP call, `/evolve` -- opens a run (`kratos/run_context.py`):
+an ID, how it started (`interactive`, `schedule`, `trigger`, `pipeline`, `mcp`,
+`web`, `evolve`, `cli`), the machine and the session. Events carry the run ID;
+spending will too. A ContextVar doesn't flow into new threads, so every worker
+thread opens its own; a static check in the tests fails if a new path to the
+model or a tool doesn't.
+
+**Settings people edit** (limits and toggles, as opposed to connection settings in
+`.env`) live in `kratos.db` (`app_settings`, `kratos/settings_store.py`) so every
+Kratos process reads the same value without a restart. No agent tool can change
+one: `set` refuses while a tool is running, and a test scans every tool's module.
+Each component of `kratos.db` migrates itself through `schema_versions`.
+
 ## Presets and pipelines
 
 Saved presets (`/preset`) let a user name and re-run an

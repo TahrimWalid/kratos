@@ -783,9 +783,23 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos subagent-serve` | run the sub-agent listener in the foreground |
 | `kratos subagent-status` | list paired machines and whether they're connected |
 | `kratos mcp-serve` | start the MCP server (below) |
+| `kratos events` | show the log lines Kratos has read from a machine (below) |
 
 `kratos --help --all` lists every subcommand. Without a session, these use the
 default target Kratos saved the first time you set one (or `KRATOS_SSH_HOST`).
+
+**The log lines Kratos keeps.** Every log line Kratos reads while investigating —
+logins, sudo use, account changes, other system log lines — is kept as an *event*
+in `kratos.db`, in your data folder. This stored copy stays on this computer (it is
+never sent to the model or anywhere else), and Kratos never deletes it, so the file grows with use (roughly
+1 GB per million lines). Passwords, tokens and keys that appear in a log line
+are blanked out before it's kept. To see them:
+`kratos events --target 10.0.0.5 --since "1 hour ago"` (add `--ip`, `--user`,
+`--process` or `--action ssh_failed_login` to narrow it down, `--json` for the full
+records). To delete them, for example everything older than 90 days, close Kratos
+and run:
+`sqlite3 ~/.local/share/kratos/data/kratos.db "DELETE FROM host_events WHERE ts < strftime('%s','now','-90 days');"`
+(in a source checkout the file is `data/kratos.db` instead).
 
 **MCP.** `kratos mcp-serve` lets other AI tools that speak the
 [Model Context Protocol](https://modelcontextprotocol.io) — Claude Desktop,
@@ -954,6 +968,8 @@ permission prompt, pressing Enter is always the safe "no."
 - **`.env`** — Kratos's settings file. `kratos init` creates it and tells you where.
 - **Target** — the machine Kratos is watching.
 - **Finding** — a titled result Kratos reached, with evidence and a severity.
+- **Event** — one log line Kratos read, kept in `kratos.db` with its time, machine,
+  user, IP and so on. `kratos events` shows them.
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.
