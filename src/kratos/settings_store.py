@@ -168,6 +168,12 @@ def last_change(key: str, *, data_dir: Path) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
+def in_tool_call() -> str | None:
+    """The agent tool running right now (inside `tool_call_scope`), else None.
+    Other person-only actions (kratos.lifecycle.decide) refuse while one runs."""
+    return _IN_TOOL.get()
+
+
 @contextlib.contextmanager
 def tool_call_scope(tool_name: str) -> Iterator[None]:
     """Open around an agent tool's handler: `set` refuses inside it."""
