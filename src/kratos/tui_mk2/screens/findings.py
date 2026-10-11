@@ -204,8 +204,9 @@ class FindingsScreen(Screen):
             yield DataTable(id="fd-table", cursor_type="row")
             yield VerticalScroll(id="fd-log")
             yield Static(Text(
-                "↑↓ select · enter details · h history · v verify · a accept the risk · f not a real problem · "
-                "o out of scope · r reopen\ns which findings · p severity · m machine · / search · esc back",
+                "↑↓ select · enter details · h history · v verify · a accept the risk\n"
+                "f not a real problem · o out of scope · r reopen\n"
+                "s which findings · p severity · m machine · / search · esc back",
                 style=T.TEXT_DIM), id="fd-hints")
 
     def on_mount(self) -> None:
