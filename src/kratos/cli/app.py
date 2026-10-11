@@ -388,6 +388,50 @@ def cmd_snapshots(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_events(args: argparse.Namespace) -> int:
+    """The log lines Kratos has read from a machine, as stored events (read-only).
+    Plain lines by default; --json prints one ECS document per line."""
+    from kratos.events.store import MAX_LIMIT, EventStore
+    from kratos.target_key import target_key
+    from kratos.utils.time_window import TimeBoundError, resolve_time_bound
+    from kratos.utils.timeutil import format_for_display, resolve_display_tz
+
+    target = args.target or get_active_target()
+    if not target:
+        print("[KRATOS] Which machine? Pass --target <host> (or set KRATOS_SSH_HOST).", file=sys.stderr)
+        return 1
+    try:
+        start = resolve_time_bound(args.since) if args.since else None
+        end = resolve_time_bound(args.until) if args.until else None
+    except TimeBoundError as e:
+        print(f"[KRATOS] {e}", file=sys.stderr)
+        return 1
+    store = EventStore(Path(args.data_dir) / "kratos.db")
+    filters = dict(start=start, end=end, source_ip=args.ip, user=args.user, process=args.process,
+                   dataset=args.dataset, action=args.action)
+    events = store.query(target, **filters, limit=min(args.limit, MAX_LIMIT), newest_first=not args.oldest_first)
+    if args.json:
+        for e in events:
+            print(json.dumps(e.to_ecs(), sort_keys=True, ensure_ascii=False))
+        return 0
+    total = store.count(target, **filters)
+    if not events:
+        known = ", ".join(t for t, _ in store.targets()) or "none yet"
+        print(f"[KRATOS] No stored events for {target_key(target)} with those filters. "
+              f"Machines with events: {known}.")
+        return 0
+    tz = resolve_display_tz(Path(args.data_dir))
+    for e in events:
+        when = format_for_display(e.timestamp.isoformat(), "%Y-%m-%d %H:%M:%S", tz=tz)
+        who = " ".join(x for x in (f"user={e.user_name}" if e.user_name else "",
+                                    f"from={e.source_ip}" if e.source_ip else "") if x)
+        text = (e.message or "").replace("\n", " ")
+        print(f"{when}  {e.action or e.dataset:<22} {e.outcome or '':<8} {who:<34} {text[:120]}")
+    shown = f"{len(events)} of {total}" if total > len(events) else str(total)
+    print(f"[KRATOS] {shown} events for {target_key(target)} (times in {getattr(tz, 'key', None) or tz}).")
+    return 0
+
+
 def cmd_subagent_status(args: argparse.Namespace) -> int:
     """List paired sub-agent targets and their derived liveness status, plus
     a one-line summary of the latest telemetry received from each (capability
@@ -1401,6 +1445,24 @@ def build_parser() -> argparse.ArgumentParser:
     snapshots_p.add_argument("action", choices=("index", "list", "prune"))
     snapshots_p.add_argument("--apply", action="store_true", help="prune: actually delete (default is a preview)")
     snapshots_p.set_defaults(func=cmd_snapshots)
+
+    events_p = sub.add_parser(
+        "events",
+        help="Show the log lines Kratos has read from a machine (stored on this computer); read-only",
+    )
+    events_p.add_argument("--target", default=None, help="Machine (default: the active target)")
+    events_p.add_argument("--since", default=None, help="e.g. '1 hour ago', 'today', '2026-10-09 13:00'")
+    events_p.add_argument("--until", default=None, help="End of the period (default: now)")
+    events_p.add_argument("--ip", default=None, help="Only events from this source IP")
+    events_p.add_argument("--user", default=None, help="Only events by this user")
+    events_p.add_argument("--process", default=None, help="Only events from this program, e.g. sshd")
+    events_p.add_argument("--action", default=None, help="e.g. ssh_failed_login, sudo_command")
+    events_p.add_argument("--dataset", default=None,
+                          choices=("kratos.auth", "kratos.journal", "kratos.privileged_accounts"))
+    events_p.add_argument("--limit", type=int, default=50, help="How many (newest first; max 10000)")
+    events_p.add_argument("--oldest-first", action="store_true", help="Oldest first instead")
+    events_p.add_argument("--json", action="store_true", help="One ECS JSON document per line")
+    events_p.set_defaults(func=cmd_events)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(
