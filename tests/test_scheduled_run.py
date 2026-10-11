@@ -377,3 +377,31 @@ def test_an_unsent_notification_is_not_reported_as_notified(tmp_path, monkeypatc
     console = Console(width=120, record=True)
     console.print(R.scheduled_run_result_panel(rec))
     assert "notified: no (" in console.export_text()
+
+
+def test_notification_leads_with_what_changed_and_names_expired_decisions(tmp_path, monkeypatch):
+    """0.1: the message starts with New · Still open · Fixed · Hidden, and an acceptance
+    that ran out during this run is named (it is shown again)."""
+    import time
+    import uuid
+
+    from kratos.lifecycle import apply as A, decide as D
+    from kratos.lifecycle.coverage import nothing
+    from kratos.lifecycle.keys import finding_key
+    from kratos.run_context import RunContext
+
+    t0 = time.time() - 600
+    r = RunContext(run_id=uuid.uuid4().hex, source="schedule", target="10.136.28.168", session_id=None,
+                   started_at=t0)
+    A.apply_run([{"id": "CORR-SSH-001", "title": "SSH exposed", "severity": "high", "entities": ["1.2.3.4"]}],
+                target="10.136.28.168", coverage=nothing(), run=r, data_dir=tmp_path, now=t0)
+    D.accept_risk(finding_key("CORR-SSH-001", "10.136.28.168", ""), actor=D.Actor("alice", "cli"),
+                  reason="lab", owner=None, expires_at=t0 + 60, data_dir=tmp_path, now=t0)
+    sch = S.save_schedule(tmp_path, name="wk", kind="audit", cadence="weekly", deliver=["ntfy"])
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _audit_dispatch([]))
+    spy = _Spy()
+    W.run_scheduled(sch, tmp_path, notifier=spy)
+    lines = spy.calls[0][0].splitlines()
+    # the finding wasn't re-collected (no inputs), so it's not "new" -- but its expiry is named
+    assert lines[0] == "New 0 · Still open 0 · Fixed 0 · Hidden by your decisions 0"
+    assert "decision expired, shown again: CORR-SSH-001 — SSH exposed" in lines

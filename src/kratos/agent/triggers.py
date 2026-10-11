@@ -78,6 +78,9 @@ class Trigger:
     created_at: Optional[str]
     path: Path
     raw: dict[str, Any] = field(default_factory=dict)
+    # Fire only for findings that are new, reopened or recurred this run
+    # (kratos.lifecycle's `change`) -- not for ones still open from before.
+    only_new_or_reopened: bool = False
 
     @property
     def is_valid(self) -> bool:
@@ -92,7 +95,8 @@ class Trigger:
             parts.append(f"finding {self.finding_id}")
         if self.min_severity:
             parts.append(f"severity ≥ {self.min_severity}")
-        return " and ".join(parts) if parts else "(no condition — never fires)"
+        text = " and ".join(parts) if parts else "(no condition — never fires)"
+        return text + (" (only when new, reopened or recurred)" if parts and self.only_new_or_reopened else "")
 
 
 # --------------------------------------------------------------------------- #
@@ -146,7 +150,7 @@ def _toml_basic_string(s: str) -> str:
 def _dump_trigger_toml(
     *, name: str, min_severity: Optional[str], finding_id: Optional[str],
     target: Optional[str], action: str, cooldown_minutes: int,
-    created_at: Optional[str],
+    created_at: Optional[str], only_new_or_reopened: bool = False,
 ) -> str:
     lines = [
         "# Kratos trigger — 'if a matching finding is detected, do <action>'.",
@@ -161,6 +165,8 @@ def _dump_trigger_toml(
         lines.append(f"finding_id = {_toml_basic_string(finding_id)}")
     if target:
         lines.append(f"target = {_toml_basic_string(target)}")
+    if only_new_or_reopened:
+        lines.append("only_new_or_reopened = true")
     if created_at:
         lines.append(f"created_at = {_toml_basic_string(created_at)}")
     return "\n".join(lines) + "\n"
@@ -193,7 +199,8 @@ def _trigger_from_dict(data: dict[str, Any], path: Path, stem: str) -> Trigger:
     created_at = str(data["created_at"]) if data.get("created_at") else None
     return Trigger(name=name, min_severity=min_sev, finding_id=fid, target=target,
                    action=action, cooldown_minutes=max(0, cooldown),
-                   created_at=created_at, path=path, raw=dict(data))
+                   created_at=created_at, path=path, raw=dict(data),
+                   only_new_or_reopened=data.get("only_new_or_reopened") is True)
 
 
 def trigger_exists(data_dir: Path, name: str) -> bool:
@@ -244,6 +251,7 @@ def save_trigger(
     target: Optional[str] = None,
     cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
     created_at: Optional[str] = None,
+    only_new_or_reopened: bool = False,
 ) -> Trigger:
     ok, canonical, err = validate_trigger_name(name)
     if not ok:
@@ -276,7 +284,7 @@ def save_trigger(
     text = _dump_trigger_toml(
         name=canonical, min_severity=min_severity, finding_id=finding_id,
         target=(target or None), action=action, cooldown_minutes=cooldown_minutes,
-        created_at=(created_at or utc_now_iso()),
+        created_at=(created_at or utc_now_iso()), only_new_or_reopened=bool(only_new_or_reopened),
     )
     _atomic_write(path, text)
     reloaded = load_trigger(data_dir, canonical)

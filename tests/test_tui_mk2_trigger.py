@@ -44,8 +44,8 @@ def test_trigger_new_severity_notify(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # severity, finding_id(blank), action, cooldown, name
-            _answers(app, monkeypatch, ["high", "", "notify", "60", "high-alert"])
+            # severity, finding_id(blank), only-new?, action, cooldown, name
+            _answers(app, monkeypatch, ["high", "", False, "notify", "60", "high-alert"])
             screen._dispatch_slash("/trigger new")
             for _ in range(200):
                 await pilot.pause()
@@ -55,7 +55,28 @@ def test_trigger_new_severity_notify(tmp_path, monkeypatch):
     asyncio.run(_run())
     tg = T.load_trigger(tmp_path, "high-alert")
     assert tg is not None and tg.min_severity == "high" and tg.action == "notify"
-    assert tg.cooldown_minutes == 60
+    assert tg.cooldown_minutes == 60 and tg.only_new_or_reopened is False
+
+
+def test_trigger_new_only_new_or_reopened(tmp_path, monkeypatch):
+    store, sid, screen = _make(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _answers(app, monkeypatch, ["high", "", True, "notify", "60", "news-only"])
+            screen._dispatch_slash("/trigger new")
+            for _ in range(200):
+                await pilot.pause()
+                if T.trigger_exists(tmp_path, "news-only"):
+                    break
+
+    asyncio.run(_run())
+    tg = T.load_trigger(tmp_path, "news-only")
+    assert tg.only_new_or_reopened is True
+    assert "only_new_or_reopened = true" in tg.path.read_text()
+    assert "only when new, reopened or recurred" in tg.condition_text
 
 
 def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch):
@@ -67,7 +88,7 @@ def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch
         async with app.run_test() as pilot:
             await pilot.pause()
             # severity, finding_id(blank), action=investigate, cost-confirm=False
-            _answers(app, monkeypatch, ["high", "", "investigate", False])
+            _answers(app, monkeypatch, ["high", "", False, "investigate", False])
             screen._dispatch_slash("/trigger new")
             for _ in range(120):
                 await pilot.pause()
@@ -86,7 +107,7 @@ def test_trigger_name_is_pre_filled_from_the_condition_and_action(tmp_path, monk
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            it = iter(["", "CORR-SSH-001", "playbook", "60", ""])   # blank name = Enter
+            it = iter(["", "CORR-SSH-001", False, "playbook", "60", ""])   # blank name = Enter
 
             async def _fn(modal):
                 seen.append(modal)

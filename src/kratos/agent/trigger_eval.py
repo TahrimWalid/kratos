@@ -32,11 +32,13 @@ from kratos.agent.scheduled_run import Notifier, _NTFY_BUCKET, _SEVERITY_RANK
 from kratos.utils.timeutil import utc_now_iso
 
 InvestigateFn = Callable[[str, Path], dict[str, Any]]
+# kratos.lifecycle `change` values that count as news (an expired acceptance reopens)
+_NEW_CHANGES = frozenset({"new", "reopened", "recurred"})
 
 
 def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The findings that satisfy the trigger's condition. Reads ONLY id/severity
-    (structured, engine-generated) -- never evidence."""
+    """The findings that satisfy the trigger's condition. Reads ONLY id/severity/
+    change (structured, engine/lifecycle-generated) -- never evidence."""
     floor = _SEVERITY_RANK.get(trigger.min_severity or "", -1) if trigger.min_severity else None
     out = []
     for f in findings:
@@ -44,6 +46,8 @@ def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> li
             continue  # its own id, or one it absorbed (e.g. CORR-001 folded into CORR-SSH-001)
         if floor is not None and _SEVERITY_RANK.get(str(f.get("severity") or "info").lower(), 0) < floor:
             continue
+        if getattr(trigger, "only_new_or_reopened", False) and f.get("change") not in _NEW_CHANGES:
+            continue  # still open from before (or no lifecycle data): not news
         out.append(f)
     return out
 

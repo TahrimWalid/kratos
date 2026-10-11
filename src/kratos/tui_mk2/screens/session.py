@@ -2307,6 +2307,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
              ("has_finding()", "only if an earlier step found something"),
              ("has_finding(min_severity='high')", "only if a HIGH or CRITICAL finding exists"),
              ("has_finding(min_severity='medium')", "only if a MEDIUM+ finding exists"),
+             ("has_new_finding()", "only if something new, reopened or recurred was found"),
              ("__custom__", "custom condition… (advanced)")],
             subtitle="↑↓ pick · esc cancel this step"))
         if choice is None:
@@ -2906,6 +2907,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit(R.error_line("A trigger needs a condition — pick a severity and/or a finding-ID."))
             return
 
+        only_new = await self.app.push_screen_wait(ListPickerModal(
+            "Fire for findings still open from before too?",
+            [(False, "every time a matching finding is present"),
+             (True, "only when it's new, came back, or a decision about it expired")],
+            subtitle="↑↓ pick · esc cancel"))
+        if only_new is None:
+            return
+
         action = await self.app.push_screen_wait(ListPickerModal(
             "What should happen when it fires?",
             [("notify", "notify — send a sharp alert"),
@@ -2951,7 +2960,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         try:
             tg = _T.save_trigger(self._data_dir, name=name_raw, action=action,
                                  min_severity=(sev or None), finding_id=(fid or None),
-                                 cooldown_minutes=int(cooldown))
+                                 cooldown_minutes=int(cooldown), only_new_or_reopened=bool(only_new))
         except _T.TriggerError as e:
             self._emit(R.error_line(str(e)))
             return

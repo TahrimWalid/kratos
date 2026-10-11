@@ -112,8 +112,15 @@ def _severity_tally(findings: list[dict[str, Any]]) -> dict[str, int]:
 def _build_message(*, schedule_name: str, target: str, status: str,
                    findings: list[dict[str, Any]], report_path: Optional[str],
                    error: Optional[str], omitted: Optional[list[str]] = None,
-                   jobs: Optional[list[dict[str, Any]]] = None) -> str:
-    lines = [f"Scheduled run '{schedule_name}' — target {target}", f"status: {status}"]
+                   jobs: Optional[list[dict[str, Any]]] = None,
+                   lifecycle: Optional[dict[str, Any]] = None) -> str:
+    lines = []
+    if lifecycle and lifecycle.get("line"):
+        # What changed leads: the reader sees news first, not the same list every run.
+        lines.append(lifecycle["line"])
+    lines += [f"Scheduled run '{schedule_name}' — target {target}", f"status: {status}"]
+    for name in (lifecycle or {}).get("expired") or []:
+        lines.append(f"decision expired, shown again: {name}")
     if error:
         lines.append(f"note: {error}")
     if jobs:
@@ -140,6 +147,37 @@ def _build_message(*, schedule_name: str, target: str, status: str,
     if report_path:
         lines.append(f"report: {report_path}")
     return "\n".join(lines)
+
+
+def _lifecycle_for_message(data_dir: Path, report_json: Optional[str]) -> Optional[dict[str, Any]]:
+    """{line: 'New 1 · Still open 2 · Fixed 0 · Hidden by your decisions 3', expired:
+    ['CORR-SSH-001 — title', ...]} from this run's report (kratos.lifecycle), or None."""
+    if not report_json:
+        return None
+    try:
+        import json
+
+        from kratos.lifecycle import query as _lq
+        from kratos.lifecycle.apply import footer_line
+
+        report = json.loads(Path(report_json).read_text(encoding="utf-8"))
+        summary = report.get("lifecycle")
+        if not summary:
+            return None
+        by_key = {f.get("finding_key"): f for f in report.get("findings") or [] if f.get("finding_key")}
+        expired = []
+        for key in summary.get("expired_this_run") or []:
+            f = by_key.get(key)
+            if f is None:
+                try:
+                    rec, _latest, _events = _lq.get_finding(data_dir, key)
+                    f = {"id": rec["rule_id"], "title": rec["title"]}
+                except LookupError:
+                    f = {"id": key[:12], "title": ""}
+            expired.append(f"{f.get('id')} — {f.get('title', '')}".rstrip(" —"))
+        return {"line": footer_line(summary), "expired": expired}
+    except Exception:  # noqa: BLE001 -- a notification is never blocked by this extra line
+        return None
 
 
 def _run_audit(data_dir: Path, gated: set[str]) -> tuple[str, list[dict[str, Any]], list[str], Optional[str]]:
@@ -536,6 +574,8 @@ def _run_scheduled(
     except Exception as e:  # noqa: BLE001 -- a report-write failure shouldn't sink the run record
         error = (error + "; " if error else "") + f"report write failed: {e}"
 
+    lifecycle = _lifecycle_for_message(data_dir, report_json)
+
     # Deliver (persist-first is done). Failure is recorded, never raised. A
     # FAILED run always notifies (silence must never read as 'all clear').
     delivered: Optional[dict[str, Any]] = None
@@ -551,7 +591,7 @@ def _run_scheduled(
             ntfy_sev = "warning"
         message = _build_message(schedule_name=schedule.name, target=target, status=status,
                                  findings=findings, report_path=report_md, error=error,
-                                 omitted=omitted, jobs=job_records)
+                                 omitted=omitted, jobs=job_records, lifecycle=lifecycle)
         delivered = notifier(message, ntfy_sev)
 
     # A6.4: evaluate triggers against this run's structured findings (the

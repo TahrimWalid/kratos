@@ -18,6 +18,9 @@ Grammar (the ONLY things allowed):
     has_finding()                       -> any finding was produced so far
     has_finding(min_severity='high')    -> a finding at/above that severity
     no_findings()                       -> no finding was produced so far
+    has_new_finding()                   -> a finding that is new, reopened or recurred
+                                           (kratos.lifecycle's `change`) was produced
+    has_new_finding(min_severity='high')-> ...at/above that severity
     finding_count <op> <int>            -> count comparison (== != < <= > >=)
     finding_id == '<id>'                -> a finding with that id exists
     finding_id != '<id>'                -> no finding with that id exists
@@ -46,6 +49,8 @@ Predicate = Callable[[Any], bool]
 _MAX_WHEN_LEN = 500
 
 _ALLOWED_SEVERITIES = {"info", "low", "medium", "high", "critical"}
+_SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+_NEW_CHANGES = frozenset({"new", "reopened", "recurred"})
 _VARIABLES = {"finding_count", "finding_id"}
 _COUNT_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.Eq: _op.eq, ast.NotEq: _op.ne, ast.Lt: _op.lt,
@@ -110,19 +115,25 @@ def _compile_call(node: ast.Call) -> Predicate:
     if not isinstance(node.func, ast.Name):
         raise WhenError("only the built-in condition functions may be called")
     name = node.func.id
-    if name == "has_finding":
+    if name in ("has_finding", "has_new_finding"):
         if node.args:
-            raise WhenError("has_finding() takes no positional arguments")
+            raise WhenError(f"{name}() takes no positional arguments")
         min_sev: str | None = None
         for kw in node.keywords:
             if kw.arg is None:
-                raise WhenError("has_finding() does not accept **kwargs")
+                raise WhenError(f"{name}() does not accept **kwargs")
             if kw.arg != "min_severity":
-                raise WhenError(f"has_finding() has no argument '{kw.arg}'")
+                raise WhenError(f"{name}() has no argument '{kw.arg}'")
             min_sev = _literal_str(kw.value, "min_severity").lower()
             if min_sev not in _ALLOWED_SEVERITIES:
                 raise WhenError(
                     "min_severity must be one of " + ", ".join(sorted(_ALLOWED_SEVERITIES)))
+        if name == "has_new_finding":
+            floor = _SEVERITY_RANK[min_sev or "info"]
+            return lambda ctx: any(
+                isinstance(f, dict) and f.get("change") in _NEW_CHANGES
+                and _SEVERITY_RANK.get(str(f.get("severity") or "info").lower(), 0) >= floor
+                for f in (ctx.findings or []))
         if min_sev is None:
             return lambda ctx: bool(ctx.has_finding())
         sev = min_sev
@@ -132,7 +143,7 @@ def _compile_call(node: ast.Call) -> Predicate:
             raise WhenError("no_findings() takes no arguments")
         return lambda ctx: not ctx.has_finding()
     raise WhenError(
-        f"unknown condition '{name}(...)' — allowed: has_finding, no_findings")
+        f"unknown condition '{name}(...)' — allowed: has_finding, has_new_finding, no_findings")
 
 
 def _compile_compare(node: ast.Compare) -> Predicate:
