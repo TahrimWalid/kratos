@@ -9,6 +9,7 @@ paths never drift apart on what counts as, say, a `ssh_failed_login`.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import re
 import shutil
@@ -105,6 +106,11 @@ def _parse_syslog_timestamp(mon: str, day: str, timestr: str, year: int | None =
     """Convert syslog timestamp (no year) into ISO."""
     if year is None:
         year = datetime.now().year
+    if mon == "Feb" and int(day) == 29:
+        # Not every year has a Feb 29: the line is from the last one that did
+        # (strptime used to raise here and fail the whole log parse).
+        while not calendar.isleap(year):
+            year -= 1
     dt = datetime.strptime(f"{year} {mon} {day} {timestr}", "%Y %b %d %H:%M:%S")
     return dt.isoformat(timespec="seconds")
 
