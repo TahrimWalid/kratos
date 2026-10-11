@@ -88,7 +88,8 @@ def test_accept_until_a_date(tmp_path, monkeypatch, capsys):
     assert d["owner"] == "ops" and d["expires_at"]
 
 
-def test_investigate_prints_the_lifecycle_line_under_the_answer(tmp_path, monkeypatch, capsys):
+def test_investigate_prints_the_lifecycle_line_under_the_answer(tmp_path, monkeypatch, capfd):
+    # capfd: the rich console holds the real stdout from import time
     transcript = [{"tool": "correlate_findings", "observation": {"status": "ok", "result": {
         "findings": [], "lifecycle": "New 1 · Still open 0 · Fixed 0 · Hidden by your decisions 2"}}},
         {"final_answer": "one burst"}]
@@ -98,5 +99,5 @@ def test_investigate_prints_the_lifecycle_line_under_the_answer(tmp_path, monkey
     monkeypatch.setattr(app, "get_active_target", lambda: T)
     monkeypatch.setenv("NO_COLOR", "1")
     assert app.main(["--data-dir", str(tmp_path), "investigate", "any brute force?"]) == 0
-    assert "New 1 · Still open 0 · Fixed 0 · Hidden by your decisions 2  (kratos findings list)" in \
-        capsys.readouterr().out
+    out = " ".join(capfd.readouterr().out.split())
+    assert "New 1 · Still open 0 · Fixed 0 · Hidden by your decisions 2 (kratos findings list)" in out
