@@ -237,3 +237,26 @@ def test_every_source_has_a_parser_and_dataset():
     for s in catalog.SOURCES.values():
         assert s.dataset.startswith("kratos.") and s.doc
         assert set(s.journal) | set(s.files) | set(s.gaps) == set(catalog.FAMILIES), s.name
+
+
+def test_read_journalctl_keys_events_by_cursor_but_never_shows_it_to_the_model(tmp_path, monkeypatch):
+    from kratos import kratos_config
+    from kratos.adapters.ssh_remote import JournalWindow
+    from kratos.agent import tools
+    from kratos.events.model import cursor_event_id
+    from kratos.events.store import EventStore
+
+    kratos_config.set_active_target("ubuntu@10.136.28.168")
+    entries = [{"timestamp": "2026-09-28T06:00:00+00:00", "unit": "cron.service", "message": "same line",
+                "priority": "6", "cursor": f"s=abc;i={i}"} for i in (1, 2)]   # identical text, same time
+    monkeypatch.setattr(tools, "_fetch_journalctl_auth_entries", lambda **kw: ([], [], {}))
+    monkeypatch.setattr(tools, "_fetch_journalctl_entries",
+                        lambda unit, since, lines, until_epoch=None: (
+                            [dict(e) for e in entries],
+                            JournalWindow(since, until_epoch, lines, 2, False, entries[0]["timestamp"],
+                                          entries[1]["timestamp"])))
+    monkeypatch.setattr(tools, "_measure_target_clock_offset", lambda: 0.0)
+    result = tools.tool_read_journalctl(tmp_path, since="2026-09-28 00:00", until="2026-09-28 12:00")
+    assert all("cursor" not in e for e in result["entries"])
+    stored = EventStore(tmp_path / "kratos.db").query("10.136.28.168", dataset="kratos.journal")
+    assert sorted(e.event_id for e in stored) == sorted(cursor_event_id("10.136.28.168", e["cursor"]) for e in entries)

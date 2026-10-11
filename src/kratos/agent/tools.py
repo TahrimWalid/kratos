@@ -712,6 +712,7 @@ def tool_read_journalctl(
         }
     entries, fetch_window = result
     _events_recording.record_journal(data_dir, _ssh_target_label(), entries, fetch_window)  # best-effort
+    entries = [{k: v for k, v in e.items() if k != "cursor"} for e in entries]  # the cursor is for the store only
     summary = _window_summary(fetch_window, since, until)
     summary.update(_clock_note(clock_offset, since_epoch, until_epoch))
     if tw is not None:

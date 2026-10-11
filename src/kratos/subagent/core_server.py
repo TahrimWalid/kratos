@@ -118,6 +118,20 @@ PAIRING_GUESS_LIMIT = 60
 # reply, and how long a just-started listener / just-dropped agent is expected
 # to (re)connect -- the agent's reconnect backoff tops out at 60s.
 READ_MIN_AGENT_VERSION = (0, 3, 0)
+# Reads added after 0.3.0, and the first agent version that serves each. A read
+# sent to an older agent is answered here, before anything is sent, with a clear
+# "update the agent" message -- never a crash, never a silent empty result.
+PROBE_MIN_AGENT_VERSION: dict[str, tuple[int, int, int]] = {
+    p: (0, 4, 0) for p in ("log_read", "log_file_stat", "journal_headers", "journal_file_hash",
+                           "journal_file_chunk", "utmp_read", "audit_status", "boot_history")
+}
+
+
+def parse_agent_version(value: Any) -> tuple[int, ...] | None:
+    """'0.3.5' -> (0, 3, 5); anything else -> None."""
+    if not isinstance(value, str) or not re.fullmatch(r"\d{1,4}(\.\d{1,4}){1,3}", value.strip()):
+        return None
+    return tuple(int(x) for x in value.strip().split("."))
 READ_REPLY_MARGIN_SECONDS = 15.0
 RECONNECT_EXPECTED_SECONDS = 90.0
 _MAX_ADVERTISED_PROBES = 64
@@ -789,6 +803,13 @@ class CoreServer:
                 f"this box runs sub-agent {version.get('agent_version') or 'of an older version'}; investigating "
                 f"through it needs {'.'.join(map(str, READ_MIN_AGENT_VERSION))} or newer. Update it from "
                 "/subagent (select it, press g) -- the box keeps its pairing.")}
+        needed = PROBE_MIN_AGENT_VERSION.get(probe)
+        have = parse_agent_version(info.get("version"))
+        if needed is not None and (have is None or have < needed):
+            return {"status": "old_agent", "reason": (
+                f"this box runs sub-agent {info.get('version') or 'of an older version'}; the {probe} read needs "
+                f"{'.'.join(map(str, needed))} or newer -- update the agent (`g` in /subagent, select the box). "
+                "Nothing was read for this part.")}
         if probe not in info["probes"]:
             return {"status": "unsupported", "reason": (
                 f"this box's sub-agent ({info.get('version') or '?'}) can't do the {probe!r} read -- update it from "

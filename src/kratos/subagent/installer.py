@@ -56,6 +56,10 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "measure.py": _PACKAGE_ROOT / "timewin" / "measure.py",
     "privileged_accounts.py": _PACKAGE_ROOT / "adapters" / "privileged_accounts.py",
+    # 0.3: the log-source table, the file extractor and the hardened file reads
+    "catalog.py": _PACKAGE_ROOT / "logsources" / "catalog.py",
+    "logread.py": _PACKAGE_ROOT / "logsources" / "logread.py",
+    "hostfiles.py": _PACKAGE_ROOT / "logsources" / "hostfiles.py",
 }
 YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 

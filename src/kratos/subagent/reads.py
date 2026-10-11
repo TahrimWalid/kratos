@@ -38,12 +38,16 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import measure, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, hostfiles, logread, measure, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
         from kratos.adapters import privileged_accounts
+        from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
+        import catalog  # type: ignore[no-redef]
+        import hostfiles  # type: ignore[no-redef]
+        import logread  # type: ignore[no-redef]
         import measure  # type: ignore[no-redef]
         import privileged_accounts  # type: ignore[no-redef]
 
@@ -365,6 +369,14 @@ def v_ip(v: Any) -> str:
         raise ReadParamError("must be an IP address") from None
 
 
+def v_journal_name(v: Any) -> str:
+    """Shape only here; the agent also requires the name to be in its own
+    journal directory listing (hostfiles.find_journal_file)."""
+    if not isinstance(v, str) or not hostfiles.JOURNAL_NAME_RE.fullmatch(v):
+        raise ReadParamError("must be a journal file name as systemd names them")
+    return v
+
+
 def v_scan_path(v: Any) -> str:
     """Shape only here; the agent re-checks it against the scan roots on its
     own filesystem (symlinks resolved) in `_resolve_scan_path`."""
@@ -408,6 +420,28 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
         "exclude_ip": (v_ip, False, None),
     },
     "privileged_accounts": {"since": (v_epoch, True, None)},
+    # 0.3: log sources and tamper detection (agent 0.4.0)
+    "log_read": {
+        "source": (v_enum(*catalog.SOURCE_NAMES), True, None),
+        "since": (v_epoch, False, None),
+        "until": (v_epoch, False, None),
+        "lines": (v_int_range(1, logread.DEFAULT_MAX_LINES), False, logread.DEFAULT_MAX_LINES),
+    },
+    "log_file_stat": {},
+    "journal_headers": {},
+    "journal_file_hash": {"name": (v_journal_name, True, None)},
+    "journal_file_chunk": {
+        "name": (v_journal_name, True, None),
+        "offset": (v_int_range(0, 2 ** 40), True, None),
+        "length": (v_int_range(1, hostfiles.JOURNAL_CHUNK_MAX), True, None),
+    },
+    "utmp_read": {
+        "file": (v_enum(*catalog.UTMP_FILES), True, None),
+        "max_bytes": (v_int_range(hostfiles.UTMP_RECORD_BYTES, hostfiles.UTMP_MAX_BYTES), False,
+                      hostfiles.UTMP_MAX_BYTES),
+    },
+    "audit_status": {},
+    "boot_history": {},
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -417,11 +451,15 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "clock": 5, "journal_fetch": 30, "journal_auth": 30, "open_files": 30, "processes": 15,
     "file_hashes": 15, "config_audit": 45, "capabilities": 20, "yara_scan": 180,
     "measure_auth": MEASURE_BUDGET_SECONDS + 60, "privileged_accounts": 30,
+    "log_read": 90, "log_file_stat": 30, "journal_headers": 60, "journal_file_hash": 120, "journal_file_chunk": 60,
+    "utmp_read": 20, "audit_status": 30, "boot_history": 60,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
     "open_files": 4 * 1024 * 1024, "processes": 2 * 1024 * 1024,
     "config_audit": 256 * 1024, "measure_auth": 4 * 1024 * 1024, "privileged_accounts": 1024 * 1024,
+    "log_read": logread.DEFAULT_MAX_BYTES, "log_file_stat": 256 * 1024, "journal_headers": 1024 * 1024,
+    "boot_history": 2 * 1024 * 1024, "audit_status": 64 * 1024,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -453,7 +491,7 @@ def validate_params(probe: str, params: Any) -> dict[str, Any]:
             clean[name] = check(params[name])
         except ReadParamError as e:
             raise ReadParamError(f"{probe}: {name} {e}") from None
-    if probe in ("journal_fetch", "journal_auth", "measure_auth"):
+    if probe in ("journal_fetch", "journal_auth", "measure_auth", "log_read"):
         lo, hi = (clean.get("since"), clean.get("until")) if probe != "measure_auth" else (clean["start"], clean.get("end"))
         if lo is not None and hi is not None and hi < lo:
             raise ReadParamError(f"{probe}: the window ends before it starts")
@@ -547,7 +585,8 @@ class ProbeMissing(Exception):
 
 
 def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | None = None,
-               pass_fds: tuple[int, ...] = ()) -> dict[str, Any]:
+               pass_fds: tuple[int, ...] = (), stdin_fd: int | None = None,
+               env_extra: dict[str, str] | None = None) -> dict[str, Any]:
     """Run a fixed argv (binary resolved inside the trusted dirs, never $PATH),
     reading at most `cap` bytes of stdout. Past the cap the process is killed
     and the output cut at the last full line (`truncated: True`); past
@@ -556,8 +595,9 @@ def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | N
     if exe is None:
         raise ProbeMissing(f"{argv[0]} is not installed")
     proc = subprocess.Popen(
-        [exe, *argv[1:]], stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(READ_ENV), cwd="/",
+        [exe, *argv[1:]],
+        stdin=subprocess.PIPE if stdin_text is not None else (stdin_fd if stdin_fd is not None else subprocess.DEVNULL),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**READ_ENV, **(env_extra or {})}, cwd="/",
         start_new_session=True, close_fds=True, pass_fds=pass_fds,
     )
     if stdin_text is not None:
@@ -674,12 +714,14 @@ def _shell() -> str:
     return resolve_binary("bash") or resolve_binary("sh") or "/bin/sh"
 
 
-# TODO(0.3): add __CURSOR, _PID, _BOOT_ID, _HOSTNAME (with an AGENT_VERSION bump) --
-# core's events (kratos.events) then take journal IDs from __CURSOR and fill process.pid.
-_JOURNAL_KEEP = ("__REALTIME_TIMESTAMP", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER", "_COMM", "MESSAGE", "PRIORITY")
+# __CURSOR gives core's events (kratos.events) a stable ID per journal entry;
+# _PID/_UID/_BOOT_ID fill process.pid, user.id and boot attribution (agent 0.4.0).
+_JOURNAL_KEEP = ("__REALTIME_TIMESTAMP", "__CURSOR", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER", "_COMM", "MESSAGE",
+                 "PRIORITY", "_PID", "_UID", "_BOOT_ID")
+_LOG_JOURNAL_KEEP = ("__REALTIME_TIMESTAMP", "__CURSOR", *logread.JOURNAL_FIELDS)
 
 
-def _trim_journal(stdout: str) -> str:
+def _trim_journal(stdout: str, keep: tuple[str, ...] = _JOURNAL_KEEP) -> str:
     """Keep only the fields Kratos parses (less data leaves the box)."""
     out = []
     for line in stdout.splitlines():
@@ -691,7 +733,7 @@ def _trim_journal(stdout: str) -> str:
         except json.JSONDecodeError:
             continue
         if isinstance(raw, dict):
-            out.append(json.dumps({k: raw[k] for k in _JOURNAL_KEEP if k in raw}, separators=(",", ":")))
+            out.append(json.dumps({k: raw[k] for k in keep if k in raw}, separators=(",", ":")))
     return "\n".join(out) + ("\n" if out else "")
 
 
@@ -1166,11 +1208,187 @@ def _p_yara_scan(p: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# 0.3: log sources and tamper detection
+# ---------------------------------------------------------------------------
+def _os_release_family(root: str = "") -> str | None:
+    try:
+        with open(root + "/etc/os-release", encoding="utf-8", errors="replace") as f:
+            return catalog.family_from_os_release(f.read(16384))
+    except OSError:
+        return None
+
+
+def _local_zone_name(root: str = "") -> str:
+    try:
+        with open(root + "/etc/timezone", encoding="utf-8") as f:
+            name = f.readline().strip()
+            if name:
+                return name
+    except OSError:
+        pass
+    try:
+        return os.readlink(root + "/etc/localtime").split("zoneinfo/", 1)[-1]
+    except OSError:
+        return ""
+
+
+def _open_for_read(path: str) -> tuple[int, Any]:
+    """The hardened opener, plus the credential-path refusal (catalog paths are
+    fixed and none is a credential location -- a test checks -- so this is a
+    second lock, not the first)."""
+    if is_credential_path(path):
+        raise hostfiles.FileRefused("refused", f"{path} is a credential location and is never read")
+    return hostfiles.open_log_file(path)
+
+
+def log_read_output(source: str, since: float | None, until: float | None, lines: int,
+                    root: str = "", now: float | None = None) -> dict[str, Any]:
+    """log_read on the agent: the same lines logread.build_script prints over
+    SSH. Journal parts run journalctl (root, or the journal group/sudo -n);
+    every file is opened through the hardened opener and handed to the SAME awk
+    program as an open descriptor -- no path reaches awk, no symlink is followed.
+    `root` exists for tests only (never from the wire)."""
+    src = catalog.SOURCES[source]
+    family = _os_release_family(root)
+    now = time.time() if now is None else now
+    loc = time.localtime(now)
+    tzs = time.strftime("%z", loc)
+    have_j = resolve_binary("journalctl") is not None and not root
+    out: list[str] = [f"M\tfamily\t{family or 'unknown'}", f"M\ttz_name\t{_local_zone_name(root)}",
+                      f"M\ttz_offset\t{tzs}", f"M\tnow\t{int(now)}", f"M\tjournal\t{1 if have_j else 0}"]
+    truncated = False
+    if family is None:
+        out.append("M\tgap\tunknown Linux distribution: no log paths are known for it")
+        return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+    if family in src.gaps:
+        out.append(f"M\tgap\t{src.gaps[family]}")
+    budget = time.monotonic() + PROBE_TIMEOUT_SECONDS["log_read"]
+    cap = OUTPUT_CAP_BYTES["log_read"]
+    for match in src.journal.get(family, ()):
+        if not have_j:
+            out.append(f"JE\t{match}\tno journalctl on this machine")
+            continue
+        try:
+            r = run_capped(logread.journal_argv(match, since, until, lines, prefix=journal_prefix()),
+                           timeout=max(1.0, budget - time.monotonic()), cap=cap * 4)
+        except (ProbeTimeout, ProbeMissing) as e:
+            out.append(f"JE\t{match}\t{e}")
+            continue
+        body = _trim_journal(r["stdout"], _LOG_JOURNAL_KEEP)
+        size = 0
+        for line in body.splitlines():
+            size += len(line) + 1
+            if size > cap:
+                out.append(f"JT\t{match}")
+                break
+            out.append(f"J\t{match}\t{line}")
+        if r["truncated"]:
+            out.append(f"JT\t{match}")
+        err = (r["stderr"] or "").strip()
+        if err and r["returncode"] != 0:
+            out.append(f"JE\t{match}\t{' '.join(err.split())[:300]}")
+    awk_vars = ["-v", "lo=" + str(-1 if since is None else int(since)),
+                "-v", "hi=" + str(-1 if until is None else int(until) + 1),
+                "-v", f"tzs={tzs}", "-v", f"ynow={loc.tm_year}", "-v", f"mnow={loc.tm_mon}",
+                "-v", f"maxl={int(lines)}", "-v", f"maxb={cap}", "-v", f"lmax={logread.LINE_MAX_BYTES}",
+                "-v", f"margin={logread.WALL_MARGIN_SECONDS}"]
+    for i, spec in enumerate(src.files.get(family, ())):
+        path = root + spec.path
+        if spec.when == "no_journal" and have_j:
+            out.append(f"F\t{i}\t0\t{path}\tskipped_journal\t-")
+            continue
+        directory, base = os.path.split(path)
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            names = []
+        prev = logread.previous_rotation(base, names)
+        for slot, p in ((0, path), (1, os.path.join(directory, prev) if prev else None)):
+            if p is None:
+                continue
+            if p.endswith(logread.COMPRESSED_SUFFIXES):
+                out.append(f"F\t{i}\t{slot}\t{p}\tcompressed\t-")
+                continue
+            try:
+                fd, st = _open_for_read(p)
+            except hostfiles.FileRefused as e:
+                out.append(f"F\t{i}\t{slot}\t{p}\t{e.status}\t-")
+                continue
+            try:
+                out.append(f"F\t{i}\t{slot}\t{p}\tread\t{st.st_size}")
+                left = budget - time.monotonic()
+                if left <= 0:
+                    raise ProbeTimeout("time limit")
+                r = run_capped(["awk", "-v", f"idx={i}", "-v", f"slot={slot}", *awk_vars, logread.AWK],
+                               timeout=left, cap=cap * 2 + 65536, stdin_fd=fd,
+                               env_extra={"KR_FMT": spec.fmt, "KR_KEEP": spec.keep})
+                truncated = truncated or r["truncated"]
+                out += [ln for ln in r["stdout"].split("\n") if ln]
+            finally:
+                os.close(fd)
+        for name in logread.skipped_rotations(base, names, prev):
+            out.append(f"R\t{i}\t{os.path.join(directory, name)}")
+    return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": truncated}
+
+
+def _p_log_read(p: dict[str, Any]) -> dict[str, Any]:
+    return log_read_output(p["source"], p["since"], p["until"], p["lines"])
+
+
+def _p_log_file_stat(p: dict[str, Any]) -> dict[str, Any]:
+    family = _os_release_family()
+    lines = [f"M\tfamily\t{family or 'unknown'}", f"M\tnow\t{int(time.time())}",
+             *hostfiles.file_state_lines(family)]
+    return {"returncode": 0, "stdout": "\n".join(lines) + "\n", "stderr": "", "truncated": False}
+
+
+def _run_script(probe: str, script: str) -> dict[str, Any]:
+    sh = resolve_binary("sh") or "/bin/sh"
+    return run_capped([sh, "-s"], timeout=PROBE_TIMEOUT_SECONDS[probe], cap=OUTPUT_CAP_BYTES[probe],
+                      stdin_text=script)
+
+
+def _p_journal_headers(p: dict[str, Any]) -> dict[str, Any]:
+    return _run_script("journal_headers", hostfiles.journal_headers_script(" ".join(journal_prefix())))
+
+
+def _p_boot_history(p: dict[str, Any]) -> dict[str, Any]:
+    return _run_script("boot_history", hostfiles.boot_history_script(" ".join(journal_prefix())))
+
+
+def _p_audit_status(p: dict[str, Any]) -> dict[str, Any]:
+    return _run_script("audit_status", hostfiles.audit_status_script(_sudo()))
+
+
+def _p_utmp_read(p: dict[str, Any]) -> dict[str, Any]:
+    return {"returncode": 0, "stdout": hostfiles.utmp_line(p["file"], p["max_bytes"]) + "\n", "stderr": "",
+            "truncated": False}
+
+
+def _journal_file_op(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return fn()
+    except hostfiles.FileRefused as e:
+        raise ReadParamError(f"journal file not read: {e}") from None
+
+
+def _p_journal_file_hash(p: dict[str, Any]) -> dict[str, Any]:
+    return _journal_file_op(lambda: hostfiles.journal_file_hash(p["name"]))
+
+
+def _p_journal_file_chunk(p: dict[str, Any]) -> dict[str, Any]:
+    return _journal_file_op(lambda: hostfiles.journal_file_chunk(p["name"], p["offset"], p["length"]))
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
     "config_audit": _p_config_audit, "capabilities": _p_capabilities, "yara_scan": _p_yara_scan,
     "measure_auth": _p_measure_auth, "privileged_accounts": _p_privileged_accounts,
+    "log_read": _p_log_read, "log_file_stat": _p_log_file_stat, "journal_headers": _p_journal_headers,
+    "journal_file_hash": _p_journal_file_hash, "journal_file_chunk": _p_journal_file_chunk,
+    "utmp_read": _p_utmp_read, "audit_status": _p_audit_status, "boot_history": _p_boot_history,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

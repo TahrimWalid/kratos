@@ -292,6 +292,7 @@ def from_journal_entry(entry: dict[str, Any], *, ctx: ReadContext) -> Event:
         ctx, dataset=DATASET_JOURNAL, parser=PARSER_JOURNAL, timestamp=timestamp,
         provider=None if is_unit else unit,
         text=_text_fields(None, str(message) if message is not None else None, None),
+        cursor=entry.get("cursor") if isinstance(entry.get("cursor"), str) else None,
         type=("info",), service_name=unit if is_unit else None,
         process_name=None if is_unit else unit, log_syslog_priority=priority,
     )

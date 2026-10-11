@@ -395,6 +395,7 @@ class LogRead:
     truncated: bool = False
     since: float | None = None
     until: float | None = None
+    via: str = "ssh"                  # how it was read: ssh / subagent
 
 
 def _zone(tz_name: str | None, tz_offset: str | None) -> tuple[Any, bool]:

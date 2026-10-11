@@ -213,8 +213,12 @@ def test_run_capped_never_uses_path(monkeypatch):
 
 
 def test_journal_output_is_trimmed_to_parsed_fields():
-    raw = '{"__REALTIME_TIMESTAMP":"1","MESSAGE":"m","_HOSTNAME":"h","_CMDLINE":"secret --token x","_PID":"9"}\n'
-    assert R._trim_journal(raw) == '{"__REALTIME_TIMESTAMP":"1","MESSAGE":"m"}\n'
+    # 0.4.0 keeps the entry's cursor, PID, UID and boot ID (stable event IDs, process.pid);
+    # the command line and hostname still never leave the box.
+    raw = ('{"__REALTIME_TIMESTAMP":"1","__CURSOR":"s=a;i=1","MESSAGE":"m","_HOSTNAME":"h",'
+           '"_CMDLINE":"secret --token x","_PID":"9","_UID":"0","_BOOT_ID":"b"}\n')
+    assert R._trim_journal(raw) == ('{"__REALTIME_TIMESTAMP":"1","__CURSOR":"s=a;i=1","MESSAGE":"m",'
+                                    '"_PID":"9","_UID":"0","_BOOT_ID":"b"}\n')
 
 
 def test_a_root_agent_skips_rules_that_load_yara_modules(tmp_path, monkeypatch):

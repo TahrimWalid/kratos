@@ -292,12 +292,17 @@ def _parse_journal_entry(raw: dict[str, Any]) -> dict[str, Any]:
             timestamp = epoch_to_utc_iso(int(ts_micro) / 1_000_000)
         except (ValueError, OSError, OverflowError):
             timestamp = None
-    return {
+    entry = {
         "timestamp": timestamp,
         "unit": raw.get("_SYSTEMD_UNIT") or raw.get("SYSLOG_IDENTIFIER"),
         "message": raw.get("MESSAGE"),
         "priority": raw.get("PRIORITY"),
     }
+    if isinstance(raw.get("__CURSOR"), str):
+        # Only for the event store (a stable event ID); read_journalctl drops it
+        # before the entries reach the model.
+        entry["cursor"] = raw["__CURSOR"]
+    return entry
 
 
 @dataclass
@@ -1013,3 +1018,186 @@ _last_privileged_via: contextvars.ContextVar[str] = contextvars.ContextVar("krat
 
 def last_privileged_accounts_via() -> str:
     return _last_privileged_via.get()
+
+
+# ---------------------------------------------------------------------------
+# Log sources and tamper detection (0.3) -- SSH or sub-agent
+# ---------------------------------------------------------------------------
+# Every read below is a fixed script or a named agent probe: the SSH scripts are
+# built in kratos.logsources (catalog paths, checked values only) and read files
+# AS THE SSH USER -- group membership (adm, systemd-journal, auditd's log group),
+# never `sudo cat`. The only sudo they use is the journalctl prefix Kratos
+# already uses and `auditctl -s` / `auditctl -l`.
+LOG_READ_TIMEOUT_SECONDS = 90
+JOURNAL_COPY_TIMEOUT_SECONDS = 300
+
+
+def fetch_host_logs(source: str, since_epoch: float | None, until_epoch: float | None,
+                    lines: int = 5000) -> Any:
+    """One log source in a window: a logsources.logread.LogRead, or the failed SSHResult."""
+    from kratos.logsources import logread
+
+    lines = max(1, min(int(lines), logread.DEFAULT_MAX_LINES))
+
+    def over_ssh() -> SSHResult:
+        script = logread.build_script(source, since_epoch, until_epoch,
+                                      journal_prefix=" ".join(_journalctl_prefix()), max_lines=lines)
+        return run_remote_script(script, timeout=LOG_READ_TIMEOUT_SECONDS, shell="sh")
+
+    params = {"source": source, "since": since_epoch, "until": until_epoch, "lines": lines}
+    result = _route("log_read", params, over_ssh)
+    if not result.ok:
+        return result
+    read = logread.parse_output(source, result.stdout, since_epoch, until_epoch, max_lines=lines)
+    read.via = result.via
+    read.truncated = read.truncated or result.truncated
+    return read
+
+
+def fetch_log_file_states() -> Any:
+    """State of every tracked log file and its first rotation (tamper check §6.1)."""
+    from kratos.logsources import hostfiles
+
+    result = _route("log_file_stat", {}, lambda: run_remote_script(hostfiles.stat_script(), shell="sh"))
+    if not result.ok:
+        return result
+    out = hostfiles.parse_file_states(result.stdout)
+    out["via"] = result.via
+    return out
+
+
+def fetch_journal_headers() -> Any:
+    from kratos.logsources import hostfiles
+
+    script = hostfiles.journal_headers_script(" ".join(_journalctl_prefix()))
+    result = _route("journal_headers", {}, lambda: run_remote_script(script, timeout=60, shell="sh"))
+    if not result.ok:
+        return result
+    out = hostfiles.parse_journal_headers(result.stdout)
+    out["via"] = result.via
+    return out
+
+
+def fetch_boot_history() -> Any:
+    from kratos.logsources import hostfiles
+
+    script = hostfiles.boot_history_script(" ".join(_journalctl_prefix()))
+    result = _route("boot_history", {}, lambda: run_remote_script(script, timeout=60, shell="sh"))
+    if not result.ok:
+        return result
+    out = hostfiles.parse_boot_history(result.stdout)
+    out["via"] = result.via
+    return out
+
+
+def fetch_audit_status() -> Any:
+    from kratos.logsources import hostfiles
+
+    result = _route("audit_status", {}, lambda: run_remote_script(hostfiles.audit_status_script("sudo -n"),
+                                                                    shell="sh"))
+    if not result.ok:
+        return result
+    out = hostfiles.parse_audit_status(result.stdout)
+    out["via"] = result.via
+    return out
+
+
+def fetch_utmp(name: str, max_bytes: int | None = None) -> Any:
+    """The newest records of wtmp or btmp: {file, status, size, inode, offset, data}."""
+    from kratos.logsources import hostfiles
+
+    n = int(max_bytes or hostfiles.UTMP_MAX_BYTES)
+    result = _route("utmp_read", {"file": name, "max_bytes": n},
+                    lambda: run_remote_script(hostfiles.utmp_script(name, n), shell="sh"))
+    if not result.ok:
+        return result
+    out = hostfiles.parse_utmp_line(result.stdout) or {"file": name, "status": "unreadable"}
+    out["via"] = result.via
+    return out
+
+
+def _journal_file_guard_sh(path: str) -> str:
+    q = shlex.quote(path)
+    return (f"F={q}; [ -L \"$F\" ] && {{ echo 'symlink' >&2; exit 3; }}; [ -f \"$F\" ] || {{ echo 'missing' >&2; exit 3; }}; "
+            "[ -r \"$F\" ] || { echo 'not readable by the SSH user' >&2; exit 4; }; "
+            "set -- $(stat -c '%s %i %h' \"$F\"); [ \"$3\" -gt 1 ] && { echo 'hardlink' >&2; exit 3; }; ")
+
+
+def fetch_journal_file_hash(directory: str, name: str) -> Any:
+    """{name, size, inode, sha256} of one journal file, or the failed SSHResult.
+    Over SSH the file is hashed AS THE SSH USER (systemd-journal group)."""
+    from kratos.logsources import hostfiles
+
+    path = hostfiles.journal_file_path(directory, name)
+
+    def over_ssh() -> Any:
+        r = run_remote_command(_journal_file_guard_sh(path) + "printf '%s %s ' \"$1\" \"$2\"; sha256sum < \"$F\"",
+                               timeout=120)
+        if not r.ok:
+            return r
+        parts = r.stdout.split()
+        if len(parts) < 3 or not re.fullmatch(r"[0-9a-f]{64}", parts[2]):
+            return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"unexpected hash output: {r.stdout[:80]!r}")
+        return {"name": name, "size": int(parts[0]), "inode": int(parts[1]), "sha256": parts[2], "via": "ssh"}
+
+    def via_agent(link: Any) -> Any:
+        reply = _routing.agent_read(link, "journal_file_hash", {"name": name})
+        if reply.get("status") == "ok" and isinstance(reply.get("data"), dict):
+            return {**reply["data"], "via": "subagent"}
+        return agent_result(reply)
+
+    return _route("journal_file_hash", {"name": name}, over_ssh, agent_call=via_agent)
+
+
+def copy_journal_file(directory: str, name: str, dest: Path, max_bytes: int) -> Any:
+    """Copy one journal file into `dest` (a private local file) for verification:
+    {name, bytes, sha256, via} or the failed SSHResult. At most `max_bytes`."""
+    import hashlib
+
+    from kratos.logsources import hostfiles
+
+    path = hostfiles.journal_file_path(directory, name)
+    max_bytes = int(max_bytes)
+
+    def over_ssh() -> Any:
+        if (missing := _no_target_result()) is not None:
+            return missing
+        if (blocked := _ssh_blocked_result()) is not None:
+            return blocked
+        cmd = _journal_file_guard_sh(path) + f"[ \"$1\" -gt {max_bytes} ] && {{ echo 'too large' >&2; exit 5; }}; exec cat -- \"$F\""
+        try:
+            with open(dest, "wb") as out:
+                proc = subprocess.run(_base_ssh_argv() + [cmd], stdout=out, stderr=subprocess.PIPE,
+                                      timeout=JOURNAL_COPY_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return SSHResult(ok=False, returncode=-1, stdout="", stderr="copying the journal file timed out")
+        except FileNotFoundError:
+            return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
+        if proc.returncode != 0:
+            return SSHResult(ok=False, returncode=proc.returncode, stdout="",
+                             stderr=proc.stderr.decode("utf-8", "replace")[:500])
+        data = Path(dest).read_bytes()
+        return {"name": name, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "via": "ssh"}
+
+    def via_agent(link: Any) -> Any:
+        h = hashlib.sha256()
+        offset = 0
+        with open(dest, "wb") as out:
+            while True:
+                reply = _routing.agent_read(link, "journal_file_chunk",
+                                            {"name": name, "offset": offset, "length": hostfiles.JOURNAL_CHUNK_MAX})
+                if reply.get("status") != "ok" or not isinstance(reply.get("data"), dict):
+                    return agent_result(reply)
+                import base64
+
+                chunk = base64.b64decode(reply["data"].get("data") or "")
+                if offset + len(chunk) > max_bytes:
+                    return SSHResult(ok=False, returncode=-1, stdout="", via="subagent", stderr="too large")
+                out.write(chunk)
+                h.update(chunk)
+                offset += len(chunk)
+                if reply["data"].get("eof") or not chunk:
+                    break
+        return {"name": name, "bytes": offset, "sha256": h.hexdigest(), "via": "subagent"}
+
+    return _route("journal_file_chunk", {"name": name}, over_ssh, agent_call=via_agent)
