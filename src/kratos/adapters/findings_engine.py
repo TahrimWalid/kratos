@@ -333,6 +333,12 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
 }
 
 
+def rule_inputs(rule_id: str) -> tuple[str, ...]:
+    """The input categories a rule reads (longest matching prefix in _FINDING_INPUTS)."""
+    prefix = max((p for p in _FINDING_INPUTS if rule_id.startswith(p)), key=len, default=None)
+    return _FINDING_INPUTS[prefix] if prefix else ()
+
+
 def _stamp_collected_at(findings: list["Finding"], inputs: dict[str, Path | None]) -> None:
     times: dict[str, float] = {}
     for key, path in inputs.items():
@@ -342,8 +348,7 @@ def _stamp_collected_at(findings: list["Finding"], inputs: dict[str, Path | None
         except OSError:
             pass
     for f in findings:
-        prefix = max((p for p in _FINDING_INPUTS if f.id.startswith(p)), key=len, default=None)
-        used = [times[k] for k in _FINDING_INPUTS.get(prefix, ()) if k in times] if prefix else []
+        used = [times[k] for k in rule_inputs(f.id) if k in times]
         if used:
             f.collected_at = datetime.fromtimestamp(max(used), timezone.utc).isoformat(timespec="seconds")
 
@@ -1637,6 +1642,22 @@ def write_findings_report(
         auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
     )
     _stamp_collected_at(findings, inputs)
+    from kratos.kratos_config import get_active_target
+
+    report_target = _host_key(get_active_target()) or None
+    finding_dicts = [asdict(f) for f in findings]
+    lifecycle_summary, lifecycle_error = None, None
+    try:
+        finding_dicts, lifecycle_summary = _apply_lifecycle(
+            finding_dicts, data_dir=data_dir, target=report_target or "unknown", inputs=inputs,
+            auth_stats=auth_stats,
+            patterns_stats=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats))
+    except Exception as e:  # noqa: BLE001 -- a lifecycle failure must never lose the report
+        import logging
+
+        logging.getLogger(__name__).exception("finding lifecycle failed; writing the report without it")
+        finding_dicts = [asdict(f) for f in findings]
+        lifecycle_error = f"{type(e).__name__}: {e}"
 
     # Environment detection
     env_label = "linux"
@@ -1660,8 +1681,13 @@ def write_findings_report(
         "missing_inputs": missing,
         "input_errors": input_errors,
         "staleness_warning": staleness_warning,
-        "findings": [asdict(f) for f in findings],
+        "target": report_target,
+        "findings": finding_dicts,
     }
+    if lifecycle_summary is not None:
+        report_obj["lifecycle"] = lifecycle_summary
+    else:
+        report_obj["lifecycle_error"] = lifecycle_error
 
     reports_dir = data_dir / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1683,6 +1709,11 @@ def write_findings_report(
         md_lines.append(f"\n> Note: Missing inputs: {', '.join(missing)}\n")
     if staleness_warning:
         md_lines.append(f"\n> **Staleness warning**: {staleness_warning}\n")
+
+    if lifecycle_summary is not None:
+        md_lines.extend(_lifecycle_markdown(finding_dicts, lifecycle_summary))
+    elif lifecycle_error:
+        md_lines.append(f"\n> Finding history unavailable for this report: {lifecycle_error}\n")
 
     md_lines.append("\n## Findings\n")
     if not findings:
@@ -1710,5 +1741,55 @@ def write_findings_report(
             md_lines.append("")
 
     out_md.write_text("\n".join(md_lines).strip() + "\n", encoding="utf-8")
+    if lifecycle_summary is not None:
+        try:
+            from kratos.lifecycle import migrate as _lc_migrate
+
+            _lc_migrate.record_written_report(data_dir, out_json, report_target)
+        except Exception:  # noqa: BLE001 -- bookkeeping only; the import skips lifecycle reports anyway
+            pass
 
     return out_json, out_md
+
+
+def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, target: str,
+                     inputs: dict[str, Path | None], auth_stats: dict[str, Any] | None,
+                     patterns_stats: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The lifecycle layer (kratos.lifecycle) over this report's findings."""
+    from kratos import run_context
+    from kratos.lifecycle import apply as _lc_apply, coverage as _lc_coverage, migrate as _lc_migrate
+
+    _lc_migrate.ensure_imported(data_dir)
+    incomplete = _lc_coverage.incomplete_auth_inputs({"auth_stats": auth_stats, "auth_patterns": patterns_stats})
+    run = run_context.current()
+    cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete)
+    return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)
+
+
+def _lifecycle_markdown(findings: list[dict[str, Any]], summary: dict[str, Any]) -> list[str]:
+    """New / Still open / Fixed since last run / hidden count, ahead of the full list."""
+    from kratos.lifecycle import apply as _lc_apply, keys as _lc_keys
+
+    by_key = {f.get("finding_key"): f for f in findings if f.get("finding_key")}
+
+    def line(key: str) -> str:
+        f = by_key.get(key)
+        if f is None:
+            return f"- `{_lc_keys.short(key)}`"
+        change = f" ({f['change']})" if f.get("change") in ("reopened", "recurred") else ""
+        return f"- [{str(f.get('severity', '')).upper()}] {f.get('id')} — {f.get('title')}{change} `{_lc_keys.short(key)}`"
+
+    out = ["", f"**{_lc_apply.footer_line(summary)}**", ""]
+    out.append("## New")
+    out.extend([line(k) for k in summary["new"]] or ["_Nothing new._"])
+    out.append("\n## Still open")
+    out.extend([line(k) for k in summary["still_open"]] or ["_None._"])
+    out.append("\n## Fixed since last run")
+    out.extend([line(k) for k in summary["fixed"]] or ["_None._"])
+    if summary.get("not_rechecked"):
+        out.append(f"\n_Not rechecked in this run: {len(summary['not_rechecked'])} earlier finding(s)._")
+    if summary.get("expired_this_run"):
+        out.append(f"\n_Decisions that expired this run: {len(summary['expired_this_run'])}._")
+    out.append(f"\nHidden by your decisions: {summary.get('hidden_total', 0)} "
+               "(see `kratos findings list --state decided`)")
+    return out
