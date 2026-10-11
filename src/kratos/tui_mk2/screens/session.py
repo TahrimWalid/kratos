@@ -4465,6 +4465,21 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._remember_turn(goal, result.get("final_answer") or f"(investigation ended: {status})")
         self._ctx_chars += len(goal) + len(result.get("final_answer", "") or "")
         self.app.call_from_thread(self._refresh_footer)
+        if not target_override:
+            self._verify_seal_in_background(_eff_target)
+
+    def _verify_seal_in_background(self, target: str) -> None:
+        """Journal sealing (0.3): after an investigation of a sealed machine, verify
+        its journal on a background thread -- at most once per interval, never
+        blocking anything; stopped cleanly when Kratos exits."""
+        try:
+            from kratos.logsources import seal as _seal
+
+            if _seal.maybe_verify_in_background(self._data_dir, target):
+                self._emit_from_worker(R.note_line(
+                    "Checking this machine's sealed journal in the background (see /target seal)."))
+        except Exception:  # noqa: BLE001 -- optional; never disturbs the turn
+            pass
 
     def _match_runnable_fixes(self, commands: list[dict[str, Any]], target_id: str | None = None) -> list[dict[str, Any]]:
         """Recommended target commands that are exactly one run of an ENABLED

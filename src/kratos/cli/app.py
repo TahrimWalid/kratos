@@ -443,6 +443,73 @@ def _findings_when(value: str | None, tz) -> str:
     return format_for_display(value, "%Y-%m-%d %H:%M", tz=tz) if value else "-"
 
 
+def cmd_seal(args: argparse.Namespace) -> int:
+    """`kratos seal set-key|status|verify|remove-key`: journal sealing (FSS). The
+    verification key stays on this machine: it is read from stdin (never the
+    command line, which other users can see in `ps`) and never printed."""
+    import getpass
+
+    from kratos import kratos_config as _kc
+    from kratos.logsources import seal as SEAL
+    from kratos.run_context import run_scope
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    data_dir = Path(args.data_dir)
+    action = args.seal_action
+    if action == "status":
+        keys = SEAL.keys_on_file(data_dir)
+        if not keys:
+            print("[KRATOS] No machine has journal sealing set up in Kratos (see `kratos seal set-key`).")
+            return 0
+        for k in keys:
+            last = SEAL.latest_summary(data_dir, k["target"]) or {}
+            print(f"{k['target']:<20} key set {epoch_to_utc_iso(k.get('set_at')) if k.get('set_at') else '?'} by "
+                  f"{k.get('set_by') or '?'}; machine-id {k.get('machine_id') or 'not yet bound'}; "
+                  f"last check: {last.get('status', 'never')} {last.get('checked_at') or ''}".rstrip())
+        return 0
+    target = args.target
+    if action == "set-key":
+        if sys.stdin.isatty():
+            print("Paste the verification key journalctl --setup-keys printed, then press Enter:", file=sys.stderr)
+        key = sys.stdin.readline().strip()
+        try:
+            path = SEAL.set_key(data_dir, target, key, set_by=f"{getpass.getuser()} (cli)")
+        except SEAL.SealKeyError as e:
+            print(f"[KRATOS] {e}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] Verification key saved for {target} in {path} (owner-only). It never leaves this machine.")
+        return 0
+    if action == "remove-key":
+        if SEAL.remove_key(data_dir, target):
+            print(f"[KRATOS] Removed the verification key for {target}; sealing can't be verified until a new one is set.")
+            return 0
+        print(f"[KRATOS] No verification key on file for {target}.", file=sys.stderr)
+        return 1
+    if action == "verify":
+        if not SEAL.has_key(data_dir, target):
+            print(f"[KRATOS] No verification key on file for {target} (kratos seal set-key {target}).", file=sys.stderr)
+            return 1
+        _kc.set_active_data_dir(data_dir)
+        with run_scope("cli", target=target), _kc.pinned_target(target):
+            summary = SEAL.verify(data_dir, target)
+        if args.json:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+            return 0 if summary and summary["status"] != "failed" else 1
+        print(f"[KRATOS] {target}: {summary['status']}  (passed {len(summary['passed'])}, unchanged since verified "
+              f"{summary['skipped_unchanged']}, failed {len(summary['failed'])}, changed archives "
+              f"{len(summary['changed_archives'])}, unsealed after setup {len(summary['unsealed_after_setup'])})")
+        for f in summary["failed"] + summary["changed_archives"]:
+            print(f"  FAILED {f['name']}: {f['detail']}")
+        for f in summary["unsealed_after_setup"]:
+            print(f"  NOT SEALED {f['name']}")
+        if summary.get("unverifiable"):
+            print(f"  could not verify: {summary['unverifiable']}")
+        for n in summary["notes"]:
+            print(f"  note: {n}")
+        return 1 if summary["status"] == "failed" else 0
+    return 2
+
+
 def cmd_findings(args: argparse.Namespace) -> int:
     """`kratos findings list|show|verify|accept|fp|out-of-scope|reopen|import-reports`:
     the findings Kratos remembers across runs, and the decisions people make about them."""
@@ -1582,7 +1649,8 @@ def build_parser() -> argparse.ArgumentParser:
     events_p.add_argument("--process", default=None, help="Only events from this program, e.g. sshd")
     events_p.add_argument("--action", default=None, help="e.g. ssh_failed_login, sudo_command")
     events_p.add_argument("--dataset", default=None,
-                          choices=("kratos.auth", "kratos.journal", "kratos.privileged_accounts"))
+                          choices=("kratos.auth", "kratos.journal", "kratos.privileged_accounts", "kratos.auditd",
+                                   "kratos.cron", "kratos.systemd", "kratos.firewall", "kratos.package", "kratos.web"))
     events_p.add_argument("--limit", type=int, default=50, help="How many (newest first; max 10000)")
     events_p.add_argument("--oldest-first", action="store_true", help="Oldest first instead")
     events_p.add_argument("--json", action="store_true", help="One ECS JSON document per line")
@@ -1627,6 +1695,22 @@ def build_parser() -> argparse.ArgumentParser:
         f_dec.add_argument("--until", default=None, help="Optional: until this date")
     fsub.add_parser("import-reports", help="Import findings from report files written before this version (safe to repeat)")
     fnd.set_defaults(func=cmd_findings)
+
+    seal_p = sub.add_parser(
+        "seal",
+        help="Journal sealing (forward secure sealing): keep a machine's verification key here and check its "
+             "journal hasn't been edited",
+    )
+    ssub = seal_p.add_subparsers(dest="seal_action", required=True)
+    s_set = ssub.add_parser("set-key", help="Save a machine's verification key (read from stdin, never the command line)")
+    s_set.add_argument("target", help="The machine (as in /target)")
+    ssub.add_parser("status", help="Machines with a key on file and their last check")
+    s_ver = ssub.add_parser("verify", help="Copy the machine's sealed journal files here and verify them now")
+    s_ver.add_argument("target")
+    s_ver.add_argument("--json", action="store_true")
+    s_rm = ssub.add_parser("remove-key", help="Forget a machine's verification key")
+    s_rm.add_argument("target")
+    seal_p.set_defaults(func=cmd_seal)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(

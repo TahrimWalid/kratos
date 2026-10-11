@@ -314,6 +314,12 @@ class KratosTUI(ResilientWorkerHost, App):
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
         set_clarify_provider(None)
+        try:  # a background seal verification stops between files (0.3)
+            from kratos.logsources import seal as _seal
+
+            _seal.stop_background(timeout=1.0)
+        except Exception:  # noqa: BLE001
+            pass
         # The in-process listener (if any) is torn down by cancelling its worker
         # on shutdown; _serve_core_listener absorbs the CancelledError and its
         # `async with self._server` closes the socket. No manual close here (a

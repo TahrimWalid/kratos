@@ -540,6 +540,10 @@ def _run_scheduled(
 
     run_window = compute_watermark_window(data_dir, schedule.name, _time.time())
 
+    # Journal sealing (0.3): verify this machine's sealed journal first when it is
+    # due, so this run's log-integrity check and report include the result.
+    seal_status = _verify_seal_if_due(data_dir, target)
+
     try:
         if not schedule.is_runnable:
             status, error = "error", schedule.unsupported_reason
@@ -629,8 +633,25 @@ def _run_scheduled(
         "notified": _sent(delivered),
         "triggers_fired": [t.get("trigger") for t in triggers_fired],
         "jobs": job_records,  # A6.5: per-job partial-failure reporting (empty for non-groups)
+        "seal": seal_status,
         "error": error,
     }
     _sched.append_run_record(data_dir, schedule.name, record)
     _target_lock.release_target(lock)  # (also released by the process exiting)
     return record
+
+
+def _verify_seal_if_due(data_dir: Path, target: str) -> Optional[str]:
+    """Verify the target's sealed journal if a key is on file and the last check is
+    older than logs.seal_verify_interval_minutes. Never raises; returns the
+    outcome word (or None when sealing isn't set up / not due)."""
+    try:
+        from kratos.logsources import seal as _seal
+
+        if not _seal.due(data_dir, target):
+            return None
+        with _kconfig.pinned_target(target):
+            summary = _seal.verify(data_dir, target)
+        return summary["status"] if summary else None
+    except Exception as e:  # noqa: BLE001 -- sealing must never sink a scheduled run
+        return f"error: {type(e).__name__}"

@@ -16,7 +16,13 @@ structural stopping it.
 """
 from __future__ import annotations
 
+import re
+
 _REDACTED = "***REDACTED***"
+
+# A journal verification key (journalctl --setup-keys; kratos.logsources.seal):
+# masked wherever it appears, whether or not a caller knew to pass it.
+_FSS_KEY = re.compile(r"\b[0-9a-f]{6}(?:-[0-9a-f]{6}){3}/[0-9a-f]{1,16}-[0-9a-f]{1,16}\b")
 
 
 def redact_secrets(text: str, *secrets: str | None) -> str:
@@ -31,4 +37,4 @@ def redact_secrets(text: str, *secrets: str | None) -> str:
     for secret in secrets:
         if secret:
             text = text.replace(secret, _REDACTED)
-    return text
+    return _FSS_KEY.sub(_REDACTED, text)

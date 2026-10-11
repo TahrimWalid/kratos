@@ -7,6 +7,8 @@ backend (SSH target details, ntfy topic).
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import os
 import re
@@ -138,8 +140,24 @@ class NoTargetConfigured(RuntimeError):
 
 
 def get_active_target() -> str:
-    """The host being investigated, or "" when none has been set."""
-    return (_active_target_override or SSH_TARGET_HOST or "").strip()
+    """The host being investigated, or "" when none has been set. A thread that
+    pinned a target (pinned_target) always sees its own."""
+    return (_pinned_target.get() or _active_target_override or SSH_TARGET_HOST or "").strip()
+
+
+# A background job (e.g. a seal verification) pins the machine it works on: the
+# process-wide active target can change under it while it runs (the user switches
+# machines), and its reads must not follow. Per thread/context, default unset.
+_pinned_target: contextvars.ContextVar[str | None] = contextvars.ContextVar("kratos_pinned_target", default=None)
+
+
+@contextlib.contextmanager
+def pinned_target(host: str):
+    token = _pinned_target.set(str(host).strip() or None)
+    try:
+        yield
+    finally:
+        _pinned_target.reset(token)
 
 
 def require_active_target() -> str:
