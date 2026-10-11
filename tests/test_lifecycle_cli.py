@@ -86,3 +86,17 @@ def test_accept_until_a_date(tmp_path, monkeypatch, capsys):
     _run(tmp_path, monkeypatch, "list", "--state", "decided", "--json")
     d = json.loads(capsys.readouterr().out.split("\n", 1)[1])[0]["decision"]
     assert d["owner"] == "ops" and d["expires_at"]
+
+
+def test_investigate_prints_the_lifecycle_line_under_the_answer(tmp_path, monkeypatch, capsys):
+    transcript = [{"tool": "correlate_findings", "observation": {"status": "ok", "result": {
+        "findings": [], "lifecycle": "New 1 · Still open 0 · Fixed 0 · Hidden by your decisions 2"}}},
+        {"final_answer": "one burst"}]
+    monkeypatch.setattr(app, "run_agent", lambda *a, **k: {"status": "final_answer", "final_answer": "one burst",
+                                                           "transcript": transcript})
+    monkeypatch.setattr(app, "load_kept_tools", lambda: [])
+    monkeypatch.setattr(app, "get_active_target", lambda: T)
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert app.main(["--data-dir", str(tmp_path), "investigate", "any brute force?"]) == 0
+    assert "New 1 · Still open 0 · Fixed 0 · Hidden by your decisions 2  (kratos findings list)" in \
+        capsys.readouterr().out

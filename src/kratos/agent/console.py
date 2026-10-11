@@ -473,6 +473,19 @@ def render_evolve_tool_list(console: Console, rows: list[dict[str, Any]]) -> Non
     console.print(table)
 
 
+def lifecycle_line(transcript: list[dict[str, Any]] | None) -> str | None:
+    """'New 2 · Still open 3 · Fixed 1 · Hidden by your decisions 4' from the LAST
+    successful correlate_findings step of a transcript (kratos.lifecycle) -- the
+    deterministic line under an answer, never model-written. None when there is none."""
+    for step in reversed(transcript or []):
+        if step.get("tool") != "correlate_findings":
+            continue
+        result, status = unwrap_tool_result(step.get("observation"))
+        if status != "error" and isinstance(result, dict):
+            return result.get("lifecycle") or None
+    return None
+
+
 def render_session_summary(console: Console, events: list[str]) -> None:
     body = "\n".join(f"- {e}" for e in events) if events else "(no notable events)"
     console.print(Panel(body, title="Session summary", border_style=ACCENT))

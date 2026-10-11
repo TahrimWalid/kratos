@@ -272,19 +272,11 @@ def lifecycle_status(finding: dict[str, Any]) -> str:
 
 def lifecycle_footer(transcript: list[dict[str, Any]] | None) -> Text | None:
     """The deterministic line under an answer that ran correlate_findings:
-    'New 2 · Still open 3 · Fixed 1 · Hidden by your decisions 4 (/findings)'.
-    Taken from the LAST successful correlate_findings step; never model-written."""
-    for step in reversed(transcript or []):
-        if step.get("tool") != "correlate_findings":
-            continue
-        result, status = unwrap_tool_result(step.get("observation"))
-        if status == "error" or not isinstance(result, dict):
-            continue
-        line = result.get("lifecycle")
-        if line:
-            return Text(f"{line}  (/findings)", style=T.TEXT_MUTED)
-        return None
-    return None
+    'New 2 · Still open 3 · Fixed 1 · Hidden by your decisions 4 (/findings)'."""
+    from kratos.agent.console import lifecycle_line
+
+    line = lifecycle_line(transcript)
+    return Text(f"{line}  (/findings)", style=T.TEXT_MUTED) if line else None
 
 
 def llm_failure_banner(detail: str) -> Panel:

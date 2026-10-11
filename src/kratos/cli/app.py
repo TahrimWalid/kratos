@@ -1287,8 +1287,11 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     duration = time.monotonic() - started_at
 
     console.print()
+    lifecycle = _console.lifecycle_line(result.get("transcript"))
     if result["status"] == "final_answer":
         _console.render_result_panel(console, "Investigation complete", result["final_answer"], "green")
+        if lifecycle:
+            console.print(f"{lifecycle}  (kratos findings list)")
         console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
         session_events.append("Investigation concluded with a final answer")
         _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
@@ -1305,6 +1308,8 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             "The agent did not reach its own conclusion in time. Best-effort summary:\n\n" + result["final_answer"],
             "yellow",
         )
+        if lifecycle:
+            console.print(f"{lifecycle}  (kratos findings list)")
         console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
         session_events.append("Investigation stopped: step limit reached (best-effort answer shown)")
         _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
