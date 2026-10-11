@@ -4,7 +4,6 @@ from __future__ import annotations
 import ast
 import inspect
 import sqlite3
-import sys
 from pathlib import Path
 
 import pytest
@@ -114,9 +113,9 @@ def test_execute_tool_call_opens_the_scope(tmp_path, spec, monkeypatch):
     assert settings_store.get(KEY, data_dir=tmp_path) == 10
 
 
-def _calls_settings_set(module) -> list[str]:
-    """Names of places in `module` that call settings_store.set (under any alias)."""
-    tree = ast.parse(inspect.getsource(module))
+def _calls_settings_set(source: str) -> list[str]:
+    """Places in a module's source that call settings_store.set (under any alias)."""
+    tree = ast.parse(source)
     module_aliases, func_aliases, hits = set(), set(), []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "kratos":
@@ -143,23 +142,20 @@ def test_no_registered_tool_module_calls_set():
     call settings_store.set (the runtime refusal above is the second layer)."""
     from kratos.agent.tools import TOOL_REGISTRY
 
-    modules = {sys.modules[t.handler.__module__] for t in TOOL_REGISTRY.values()}
-    assert modules, "no tools registered?"
-    offenders = {m.__name__: hits for m in modules if (hits := _calls_settings_set(m))}
+    # By source file, so kept (self-written) tools loaded from kept_tools/ --
+    # not importable modules -- are scanned too.
+    files = {inspect.getsourcefile(t.handler) for t in TOOL_REGISTRY.values()}
+    assert files and None not in files, "a tool's source could not be found"
+    offenders = {f: hits for f in files if (hits := _calls_settings_set(Path(f).read_text(encoding="utf-8")))}
     assert offenders == {}
 
 
 def test_scan_catches_a_call():
-    import types
-    fake = types.ModuleType("fake_tool_mod")
     src = "from kratos import settings_store as s\ndef t():\n    s.set('a.b', 1, data_dir='.', actor='x')\n"
-    fake.__file__ = "<fake>"
-    original = inspect.getsource
-    try:
-        inspect.getsource = lambda m: src if m is fake else original(m)
-        assert _calls_settings_set(fake) == ["line 3"]
-    finally:
-        inspect.getsource = original
+    assert _calls_settings_set(src) == ["line 3"]
+    src2 = "from kratos.settings_store import set as put\ndef t():\n    put('a.b', 1, data_dir='.', actor='x')\n"
+    assert _calls_settings_set(src2) == ["line 3"]
+    assert _calls_settings_set("def t(d):\n    d.set('x')\n    settings_store.get('a.b')\n") == []
 
 
 def test_migration_from_empty_and_idempotent(tmp_path):
