@@ -16,6 +16,8 @@ is only ever touched from the event loop via call_from_thread.
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import json
 import re
 import time
@@ -33,6 +35,7 @@ from textual.widgets import Input, RichLog, Static
 from textual.worker import get_current_worker
 
 from kratos import kratos_config as _kconfig
+from kratos import run_context as _run_context
 from kratos.agent import target_lock as _target_lock
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
@@ -61,6 +64,27 @@ FULL_RESUME_DETAILED_TURN_CAP = 5  # matches cli/repl.py -- only the most recent
 CHAT_COMPACTION_KEEP_RECENT = 3    # turns kept verbatim on /compact (matches loop.py's investigation compactor)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")  # strip terminal control codes from captured output
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"  # braille spinner frames for the "working…" activity line
+
+
+def _with_run_scope(source: str = "interactive", *, target: str | None = None):
+    """Open a run_scope (kratos.run_context) for the whole method, inside
+    whatever thread or task runs it. Put it UNDER @work: Textual thread workers
+    start with a fresh context (run_in_executor copies nothing), so the scope
+    must open inside the worker, never around the call that starts it."""
+    def deco(fn):
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def async_wrapper(self, *args, **kwargs):
+                with self._run_scope(source, target=target):
+                    return await fn(self, *args, **kwargs)
+            return async_wrapper
+
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            with self._run_scope(source, target=target):
+                return fn(self, *args, **kwargs)
+        return wrapper
+    return deco
 
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
@@ -370,6 +394,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _now_time(self) -> str:
         """Live wall-clock HH:MM in the resolved display zone."""
         return timeutil.now_for_display("%H:%M", tz=self._display_tz)
+
+    def _run_scope(self, source: str = "interactive", *, target: str | None = None):
+        """A run_scope for work this session starts (one per turn or worker)."""
+        return _run_context.run_scope(source, target=target, session_id=self.session_state.get("session_id"))
 
     def _stamp_now(self) -> tuple[str, str]:
         """One instant, formatted as (HH:MM, full date) in the display zone --
@@ -1536,7 +1564,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.note_line(
                 f"Preset target: {target} (the session target is restored afterward)."))
         try:
-            self._run_investigation(goal)
+            with self._run_scope("interactive", target=target or None):
+                self._run_investigation(goal)
         finally:
             if prior is not None:
                 _kconfig.set_active_target(prior)
@@ -1592,6 +1621,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             f"one for review? Try{hint}  (I'll show it before anything is saved)."))
 
     @work
+    @_with_run_scope()
     async def _preset_describe_flow(self, goal: str) -> None:
         """Draft a deterministic pipeline from a plain-language
         description, show it IN FULL for review, and save it (never auto-run) as
@@ -1786,7 +1816,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 # drafter supplies a name, not a per-tool spec); the drafted name
                 # is pre-filled. run_guided_build wraps run_self_write_loop
                 # unmodified, so every keep/approval invariant still holds.
-                result = await asyncio.to_thread(run_guided_build, "", prompter, suggested_name=name)
+                with self._run_scope("evolve"):  # asyncio.to_thread carries the scope over
+                    result = await asyncio.to_thread(run_guided_build, "", prompter, suggested_name=name)
             except Exception as e:  # noqa: BLE001 — never crash the describe flow
                 self._emit(R.error_line(f"Tool build errored: {e}"))
                 return None
@@ -2684,7 +2715,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
             if sch is None:
                 self._emit_from_worker(R.error_line(f"Schedule {name!r} vanished."))
                 return
-            record = run_scheduled(sch, self._data_dir, deliver=True)
+            # A person pressed "run now": spending is attended (README §4.1).
+            record = run_scheduled(sch, self._data_dir, deliver=True, source="interactive",
+                                   session_id=self.session_state.get("session_id"))
             self._emit_from_worker(R.scheduled_run_result_panel(record))
         except Exception as e:  # noqa: BLE001
             self._emit_from_worker(R.error_line(f"Scheduled run errored: {e}"))
@@ -3292,6 +3325,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit(R.note_line("Run /evolve whenever you're ready — /evolve help shows that explainer again."))
 
     @work(thread=True)
+    @_with_run_scope("evolve")
     def _evolve_flow(self, rest: str) -> None:
         """Guided /evolve. Drives the UI-agnostic guided build
         (agent.guided_evolve.run_guided_build) through a Textual prompter, so
@@ -3449,6 +3483,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         return body
 
     @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
     def _run_tool_worker(self, name: str, args: dict[str, Any]) -> None:
         from kratos.agent.loop import execute_tool_call
 
@@ -3545,6 +3580,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     # --- deterministic subcommand shortcuts (/scan, /run, ...) -----------
     @work(thread=True)
+    @_with_run_scope()
     def _run_shortcut(self, subcommand: str, rest: str) -> None:
         """Run a fixed-pipeline subcommand (the same build_parser() ->
         args.func(args) path `kratos <sub>` uses from the shell) and capture
@@ -3609,6 +3645,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._run_standard_audit()
 
     @work(thread=True)
+    @_with_run_scope()
     def _plan_flow(self, rest: str) -> None:
         """/plan -- preview a run's plan WITHOUT running it (the same renderer the
         gate uses). No arg -> the standard audit (exact). A preset name -> that
@@ -3714,6 +3751,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         return None
 
     @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
     def _run_pipeline_turn(
         self,
         steps: list[Any],
@@ -3913,6 +3951,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._run_goal(self._last_goal)
 
     @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
     def _run_goal(self, goal: str) -> None:
         from kratos.tui_mk2.command_intent import route_message
 
@@ -4027,6 +4066,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._run_host_investigation(goal)
 
     @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope(target="127.0.0.1")
     def _run_host_investigation(self, goal: str) -> None:
         self._last_goal = goal
         self._set_busy(True)
@@ -4037,6 +4077,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._set_busy(False)
 
     @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
     def _run_target_investigation(self, goal: str) -> None:
         """Investigate the configured monitored target — the worker entry used
         when a clarify resolves to 'target' (the normal in-`_run_goal` path
@@ -4458,6 +4499,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.result_panel("Clarifying question", body, T.ACCENT))
 
     @work(thread=True)
+    @_with_run_scope()
     def _compact_flow(self) -> None:
         """Manual /compact — summarize the working conversation context into a
         compact summary, freeing token budget while KEEPING the memory (unlike

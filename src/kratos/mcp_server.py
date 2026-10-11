@@ -152,6 +152,7 @@ from kratos.agent.notify import send_notification
 from kratos.agent.tools import TOOL_REGISTRY, Tool, tool_reaches_approval
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
+from kratos.run_context import run_scope
 
 # Must match cli/repl.py::TRANSCRIPTS_DIRNAME -- both write into the SAME
 # data_dir/kratos.db + data_dir/sessions/ store, deliberately: an
@@ -213,7 +214,8 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
             session_id = store.create_session([target], get_active_llm_model())
             turn_id = store.start_turn(session_id, goal)
 
-            result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone, session_id=session_id)
+            with run_scope("mcp", target=target, session_id=session_id):
+                result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone, session_id=session_id)
 
             status = result["status"]
             transcript = result.get("transcript", [])

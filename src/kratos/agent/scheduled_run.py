@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kratos import kratos_config as _kconfig
+from kratos import run_context as _run_context
 from kratos.adapters.findings_engine import write_findings_report
 from kratos.agent import schedules as _sched
 from kratos.agent import target_lock as _target_lock
@@ -373,7 +374,9 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
     for name in excluded:
         del _tools.TOOL_REGISTRY[name]
     try:
-        result = run_agent_fn(goal, data_dir)
+        # Its own run, inside the scheduled/interactive run that fired the trigger.
+        with _run_context.run_scope("trigger"):
+            result = run_agent_fn(goal, data_dir)
     finally:
         _tools.TOOL_REGISTRY.update(excluded)
         _tools.set_approval_prompt_provider(prior_provider)
@@ -394,10 +397,27 @@ def run_scheduled(
     *,
     deliver: bool = True,
     notifier: Optional[Notifier] = None,
+    source: str = "schedule",
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Execute one scheduled run headlessly and record it. Never raises for an
     operational failure (unreachable target, delivery failure, missing preset);
-    those become a recorded + notified result. Returns the run record."""
+    those become a recorded + notified result. Returns the run record.
+
+    Opens the run's scope (kratos.run_context): `source` is "schedule" for a
+    timer, "interactive" when a person pressed "run now"."""
+    with _run_context.run_scope(source, target=schedule.target or _kconfig.get_active_target(),
+                                session_id=session_id):
+        return _run_scheduled(schedule, data_dir, deliver=deliver, notifier=notifier)
+
+
+def _run_scheduled(
+    schedule: "_sched.Schedule",
+    data_dir: Path,
+    *,
+    deliver: bool,
+    notifier: Optional[Notifier],
+) -> dict[str, Any]:
     notifier = notifier or _default_notifier
     data_dir = Path(data_dir)
     started_at = utc_now_iso()

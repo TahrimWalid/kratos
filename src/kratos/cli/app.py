@@ -54,6 +54,7 @@ from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.self_write_loop import load_kept_tools
 from kratos.agent import console as _console
 from kratos.kratos_config import get_active_target
+from kratos.run_context import run_scope
 from kratos.llm_config import LLM_OPENAI_MODEL
 
 PROJECT_NAME = "kratos"
@@ -1518,6 +1519,9 @@ def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> Non
     console.print()
 
 
+_SELF_SCOPED_COMMANDS = frozenset({"scheduled-run", "mcp-serve", "subagent-serve", "llm-serve"})
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     no_color = "--no-color" in argv or bool(os.environ.get("NO_COLOR"))
@@ -1615,7 +1619,14 @@ def main(argv: list[str] | None = None) -> int:
     # an empty list, no error.
     load_kept_tools()
 
-    return int(args.func(args))
+    # One run (kratos.run_context) per command, so model spending and stored
+    # events are attributed. Commands that start their own runs open their own
+    # scopes instead: a scheduled run is a "schedule" run, each MCP tool call is
+    # an "mcp" run, and the long-lived servers are not runs at all.
+    if args.command in _SELF_SCOPED_COMMANDS:
+        return int(args.func(args))
+    with run_scope("cli"):
+        return int(args.func(args))
 
 
 if __name__ == "__main__":

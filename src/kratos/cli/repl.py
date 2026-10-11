@@ -50,6 +50,7 @@ from kratos.llm_config import (
 )
 from kratos.adapters import llm_profiles as _llm_profiles
 from kratos.llm_interface import agent_chat, check_endpoint_reachable
+from kratos.run_context import run_scope
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil as _timeutil
 
@@ -1860,7 +1861,8 @@ def _dispatch_slash(console, text: str, session_state: dict[str, Any], store: Se
     elif cmd == "/rename":
         _cmd_rename(console, session_state, store, rest)
     elif cmd == "/evolve":
-        _cmd_evolve(console, session_state, rest)
+        with run_scope("evolve"):
+            _cmd_evolve(console, session_state, rest)
     elif cmd == "/target":
         _cmd_target(console, session_state, store, rest)
     elif cmd == "/settings":
@@ -1929,9 +1931,11 @@ def _process_input(
     routing path for "text the user submitted", regardless of which prompt
     it came from. Returns False if the session should end."""
     store.touch_session(session_state["session_id"])
-    if text.startswith("/"):
-        return _dispatch_slash(console, text, session_state, store, data_dir)
-    return _handle_goal(console, text, session_state, store, data_dir)
+    # One run (kratos.run_context) per submitted line.
+    with run_scope("interactive", session_id=session_state["session_id"]):
+        if text.startswith("/"):
+            return _dispatch_slash(console, text, session_state, store, data_dir)
+        return _handle_goal(console, text, session_state, store, data_dir)
 
 
 def _run_first_run_wizard(console, data_dir: Path) -> bool:

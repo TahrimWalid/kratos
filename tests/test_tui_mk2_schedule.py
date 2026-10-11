@@ -123,8 +123,9 @@ def test_schedule_run_now_invokes_worker(tmp_path, monkeypatch):
 
     called = {}
 
-    def _fake_run(schedule, data_dir, deliver=True, notifier=None):
+    def _fake_run(schedule, data_dir, deliver=True, notifier=None, **kw):
         called["name"] = schedule.name
+        called["source"] = kw.get("source")  # a person pressed "run now": attended
         return {"schedule": schedule.name, "status": "completed", "target": "10.0.0.1",
                 "severity_tally": {}, "notified": False}
 
@@ -142,6 +143,7 @@ def test_schedule_run_now_invokes_worker(tmp_path, monkeypatch):
 
     asyncio.run(_run())
     assert called.get("name") == "wk"
+    assert called.get("source") == "interactive"
 
 
 def test_schedule_list_renders_without_error(tmp_path, monkeypatch):
