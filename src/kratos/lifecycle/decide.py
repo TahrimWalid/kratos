@@ -221,3 +221,38 @@ def reopen(key: str, *, actor: Actor, reason: str, data_dir: Path, now: float | 
         _event(conn, full, kind="reopened", frm=rec["state"], to="open", actor=actor, reason=reason, now=now)
     return {"finding_key": full, "state": "open", "previous": rec["state"]}
 
+
+
+def expiry_from_days(days: float, *, now: float | None = None) -> float:
+    """`days` from now, as an epoch."""
+    try:
+        n = float(days)
+    except (TypeError, ValueError):
+        raise DecisionError("days must be a number") from None
+    if n <= 0:
+        raise DecisionError("days must be more than 0")
+    return (time.time() if now is None else now) + n * 86400.0
+
+
+def parse_expiry(text: str, *, tz=None) -> float:
+    """A date people type, as an epoch: 'YYYY-MM-DD' (the end of that day),
+    'YYYY-MM-DD HH:MM', or an ISO time with an offset. Times without an offset are
+    in the display time zone."""
+    from datetime import datetime, time as dtime
+
+    from kratos.utils.timeutil import resolve_display_tz
+
+    raw = str(text or "").strip()
+    if not raw:
+        raise DecisionError("give a date, e.g. 2026-12-31 or 2026-12-31 18:00")
+    tz = tz or resolve_display_tz()
+    try:
+        if len(raw) == 10:
+            day = datetime.strptime(raw, "%Y-%m-%d").date()
+            return datetime.combine(day, dtime(23, 59, 59), tzinfo=tz).timestamp()
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        raise DecisionError(f"not a date: {raw!r} (use 2026-12-31 or 2026-12-31 18:00)") from None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.timestamp()

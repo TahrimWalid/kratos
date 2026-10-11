@@ -432,6 +432,125 @@ def cmd_events(args: argparse.Namespace) -> int:
     return 0
 
 
+_STATE_WORDS = {"open": "open", "verified": "verified", "mitigated": "fixed (mitigated)",
+                "inactive": "no recurrence (inactive)", "risk_accepted": "risk accepted",
+                "false_positive": "false positive", "out_of_scope": "out of scope"}
+
+
+def _findings_when(value: str | None, tz) -> str:
+    from kratos.utils.timeutil import format_for_display
+
+    return format_for_display(value, "%Y-%m-%d %H:%M", tz=tz) if value else "-"
+
+
+def cmd_findings(args: argparse.Namespace) -> int:
+    """`kratos findings list|show|verify|accept|fp|out-of-scope|reopen|import-reports`:
+    the findings Kratos remembers across runs, and the decisions people make about them."""
+    from kratos.lifecycle import decide as D, migrate as M, query as Q
+    from kratos.lifecycle.keys import short
+    from kratos.utils.timeutil import epoch_to_utc_iso, resolve_display_tz
+
+    data_dir = Path(args.data_dir)
+    tz = resolve_display_tz(data_dir)
+    action = args.findings_action
+    if action == "import-reports":
+        result = M.import_reports(data_dir)
+        print(f"[KRATOS] imported {result['imported']} report(s) "
+              f"({result['records_created']} new finding record(s)); "
+              f"{result['skipped_lifecycle']} already tracked; {result['malformed']} unreadable (skipped).")
+        if result["by_source"]:
+            print("[KRATOS] machine taken from: " + ", ".join(f"{k} {v}" for k, v in sorted(result["by_source"].items())))
+        return 0
+    M.ensure_imported(data_dir)
+    if action == "list":
+        target = None if args.target == "all" else (args.target or get_active_target())
+        try:
+            rows = Q.list_findings(data_dir, target=target, state=args.state.replace("-", "_"))
+        except ValueError as e:
+            print(f"[KRATOS] {e}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+            return 0
+        if not rows:
+            what = {"open_verified": "open or verified", "decided": "decided", "all": ""}.get(
+                args.state, _STATE_WORDS.get(args.state, args.state))
+            print(f"[KRATOS] No {what} findings".replace("  ", " ") + (f" for {target}." if target else "."))
+        for r in rows:
+            expiry = (r.get("decision") or {}).get("expires_at")
+            print(f"{r['short_key']}  {_STATE_WORDS.get(r['state'], r['state']):<24} {r['severity']:<8} "
+                  f"{r['rule_id']:<14} {r['target']:<16} seen {_findings_when(r['first_seen'], tz)} .. "
+                  f"{_findings_when(r['last_seen'], tz)}" + (f"  until {_findings_when(expiry, tz)}" if expiry else "")
+                  + f"  {r['title']}")
+        hidden = Q.hidden_counts(data_dir, target)
+        if args.state in ("open_verified", "open-verified") and sum(hidden.values()):
+            print(f"[KRATOS] Hidden by your decisions: {sum(hidden.values())} "
+                  f"(kratos findings list --state decided)")
+        return 0
+    if action == "show":
+        try:
+            rec, latest, events = Q.get_finding(data_dir, args.key)
+        except LookupError as e:
+            print(f"[KRATOS] {e}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps({"record": rec, "finding": latest, "history": events}, indent=2, sort_keys=True))
+            return 0
+        print(f"{rec['rule_id']} -- {rec['title']}")
+        print(f"  key: {rec['finding_key']}  machine: {rec['target']}  severity: {rec['severity']}")
+        print(f"  state: {_STATE_WORDS.get(rec['state'], rec['state'])}  seen {rec['times_seen']} time(s), "
+              f"first {_findings_when(rec['first_seen'], tz)}, last {_findings_when(rec['last_seen'], tz)}, "
+              f"last re-checked {_findings_when(rec['last_checked'], tz)}")
+        if rec["entities"]:
+            print(f"  about: {', '.join(rec['entities'])}")
+        d = rec.get("decision")
+        if d:
+            print(f"  decision: {_STATE_WORDS.get(d['kind'])} ({D.SCOPE_WORDS.get(d['scope'])}) by "
+                  f"{d['decided_by']}" + (f", owner {d['owner']}" if d.get("owner") else "")
+                  + (f", until {_findings_when(d['expires_at'], tz)}" if d.get("expires_at") else "")
+                  + f": {d['reason']}")
+        for line in (latest.get("evidence") or [])[:12]:
+            print(f"  - {line}")
+        print("  history:")
+        for e in events:
+            move = f"{e['from_state'] or '-'} -> {e['to_state']}" if e["to_state"] else ""
+            print(f"    {_findings_when(e['at'], tz)}  {e['kind']:<17} {move:<26} by {e['actor']} "
+                  f"({e['interface'] or '-'}): {e['reason'] or ''}")
+        return 0
+    actor = D.Actor.current("cli")
+    try:
+        if action == "verify":
+            out = D.verify(args.key, actor=actor, reason=args.reason, data_dir=data_dir)
+        elif action == "reopen":
+            out = D.reopen(args.key, actor=actor, reason=args.reason, data_dir=data_dir)
+        elif action == "accept":
+            if (args.days is None) == (args.until is None):
+                raise D.DecisionError("give how long: --days N or --until DATE")
+            expires = D.expiry_from_days(args.days) if args.days is not None else D.parse_expiry(args.until, tz=tz)
+            out = D.accept_risk(args.key, actor=actor, reason=args.reason, owner=args.owner, expires_at=expires,
+                                scope=args.scope, data_dir=data_dir)
+        else:
+            expires = None
+            if args.days is not None:
+                expires = D.expiry_from_days(args.days)
+            elif args.until is not None:
+                expires = D.parse_expiry(args.until, tz=tz)
+            fn = D.mark_false_positive if action == "fp" else D.mark_out_of_scope
+            out = fn(args.key, actor=actor, reason=args.reason, scope=args.scope, expires_at=expires,
+                     data_dir=data_dir)
+    except D.DecisionError as e:
+        print(f"[KRATOS] Not changed: {e}", file=sys.stderr)
+        return 1
+    state = out.get("state") or out.get("kind")
+    extra = ""
+    if out.get("expires_at"):
+        extra = f" until {_findings_when(epoch_to_utc_iso(out['expires_at']), tz)}"
+    if out.get("scope") and out["scope"] != "key":
+        extra += f" ({D.SCOPE_WORDS[out['scope']]}; {len(out.get('changed') or [])} finding(s) changed now)"
+    print(f"[KRATOS] {short(out['finding_key'])}: {_STATE_WORDS.get(state, state)}{extra}.")
+    return 0
+
+
 def cmd_subagent_status(args: argparse.Namespace) -> int:
     """List paired sub-agent targets and their derived liveness status, plus
     a one-line summary of the latest telemetry received from each (capability
@@ -1463,6 +1582,46 @@ def build_parser() -> argparse.ArgumentParser:
     events_p.add_argument("--oldest-first", action="store_true", help="Oldest first instead")
     events_p.add_argument("--json", action="store_true", help="One ECS JSON document per line")
     events_p.set_defaults(func=cmd_events)
+
+    fnd = sub.add_parser(
+        "findings",
+        help="Findings Kratos remembers across runs: list, show history, verify, accept a risk, "
+             "mark false positive / out of scope, reopen",
+    )
+    fsub = fnd.add_subparsers(dest="findings_action", required=True)
+    f_list = fsub.add_parser("list", help="List findings (default: open and verified, active machine)")
+    f_list.add_argument("--target", default=None, help="Machine (default: the active target; 'all' for every machine)")
+    f_list.add_argument("--state", default="open_verified",
+                        choices=("open_verified", "open", "verified", "mitigated", "inactive", "decided",
+                                 "risk_accepted", "false_positive", "out_of_scope", "all"))
+    f_list.add_argument("--json", action="store_true")
+    f_show = fsub.add_parser("show", help="One finding: details and its history")
+    f_show.add_argument("key", help="Finding key (the 12 characters shown are enough)")
+    f_show.add_argument("--json", action="store_true")
+    scopes = ("key", "rule-target", "rule")
+    scope_help = "key: this finding (default); rule-target: this rule on this machine; rule: this rule everywhere"
+    for name, help_text in (("verify", "Confirm a finding is real (it stays shown)"),
+                            ("reopen", "Undo a decision: show the finding again")):
+        f_act = fsub.add_parser(name, help=help_text)
+        f_act.add_argument("key")
+        f_act.add_argument("--reason", required=True)
+    f_acc = fsub.add_parser("accept", help="Accept the risk until a date (it comes back after)")
+    f_acc.add_argument("key")
+    f_acc.add_argument("--reason", required=True)
+    f_acc.add_argument("--days", type=float, default=None, help="How many days (at most findings.accept_max_days)")
+    f_acc.add_argument("--until", default=None, help="Until a date: 2026-12-31 or '2026-12-31 18:00'")
+    f_acc.add_argument("--owner", default=None, help="Who owns this risk (default: you)")
+    f_acc.add_argument("--scope", default="key", choices=scopes, help=scope_help)
+    for name, help_text in (("fp", "Not a real problem (false positive)"),
+                            ("out-of-scope", "Not relevant for this machine (out of scope)")):
+        f_dec = fsub.add_parser(name, help=help_text)
+        f_dec.add_argument("key")
+        f_dec.add_argument("--reason", required=True)
+        f_dec.add_argument("--scope", default="key", choices=scopes, help=scope_help)
+        f_dec.add_argument("--days", type=float, default=None, help="Optional: for this many days")
+        f_dec.add_argument("--until", default=None, help="Optional: until this date")
+    fsub.add_parser("import-reports", help="Import findings from report files written before this version (safe to repeat)")
+    fnd.set_defaults(func=cmd_findings)
 
     # ====== PHASE 4: ReAct Agent (experimental, additive) ======
     investigate = sub.add_parser(
