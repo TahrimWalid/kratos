@@ -8,7 +8,10 @@ background findings (sudo activity, an old burst, privileged accounts), even for
 - shown in full: new in this conversation, or changed since it was last shown,
   and built from data collected in THIS investigation (or high/critical);
 - folded: unchanged since it was already shown, or built only from data an earlier
-  check collected ("still on record, not re-checked now").
+  check collected ("still on record, not re-checked now");
+- folded as "hidden by your decisions": a finding the user accepted, marked a false
+  positive or out of scope (kratos.lifecycle) -- whatever its severity, since the
+  user already decided about it. An UNDECIDED high/critical is never folded.
 
 Nothing is hidden anywhere else: /report, the model and the answer checks always see
 every finding. UI-free, so the rules are tested directly.
@@ -22,6 +25,7 @@ _URGENT = ("high", "critical")
 # Evidence lines that change on every run without the finding changing.
 _VOLATILE = ("Time window:", "Coverage:", "From ", "Checked ", "One finding for this burst")
 _FRESH_SLACK_SECONDS = 10.0
+_DECIDED = {"risk_accepted": "risk accepted", "false_positive": "false positive", "out_of_scope": "out of scope"}
 
 
 def fingerprint(finding: dict[str, Any]) -> str:
@@ -45,11 +49,14 @@ def _collected(finding: dict[str, Any]) -> float | None:
 def plan(findings: list[dict[str, Any]], shown: dict[str, str], turn_started: float | None
          ) -> tuple[list[tuple[dict[str, Any], str]], list[tuple[dict[str, Any], str]]]:
     """(full, folded): `full` is [(finding, why)] with why in {"new", "updated",
-    "earlier"}; `folded` is [(finding, why)] with why in {"unchanged", "earlier"}.
-    Updates `shown` (finding id -> fingerprint) for what is shown in full."""
+    "earlier"}; `folded` is [(finding, why)] with why in {"unchanged", "earlier",
+    "decided"}. Updates `shown` (finding id -> fingerprint) for what is shown in full."""
     full: list[tuple[dict[str, Any], str]] = []
     folded: list[tuple[dict[str, Any], str]] = []
     for f in findings:
+        if str(f.get("state") or "") in _DECIDED:
+            folded.append((f, "decided"))
+            continue
         fid = str(f.get("id") or "")
         fp = fingerprint(f)
         collected = _collected(f)
@@ -74,11 +81,36 @@ def plan(findings: list[dict[str, Any]], shown: dict[str, str], turn_started: fl
     return full, folded
 
 
+def _until(decision: Any) -> str:
+    expires = (decision or {}).get("expires_at") if isinstance(decision, dict) else None
+    if not expires:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(expires))
+        return f" until {dt.day} {dt.strftime('%b')}"
+    except ValueError:
+        return ""
+
+
+def decided_line(folded: list[tuple[dict[str, Any], str]]) -> str | None:
+    """'Hidden by your decisions: CORR-SSH-001 (risk accepted until 12 Nov) -- /findings
+    shows them.'"""
+    decided = [f for f, why in folded if why == "decided"]
+    if not decided:
+        return None
+    names = ", ".join(f"{f.get('id')} ({_DECIDED[str(f.get('state'))]}{_until(f.get('decision'))})"
+                      for f in decided)
+    return f"Hidden by your decisions: {names} — /findings shows them."
+
+
 def folded_summary(folded: list[tuple[dict[str, Any], str]]) -> str | None:
     """One line for the folded findings, e.g. 'Still on record (unchanged): AUTH-003
-    (info) · not re-checked now: PRIV-004 (info) -- /report shows them in full.'"""
+    (info) · not re-checked now: PRIV-004 (info) -- /report shows them in full.'
+    Decided findings get their own line (decided_line)."""
+    decided = decided_line(folded)
+    folded = [(f, why) for f, why in folded if why != "decided"]
     if not folded:
-        return None
+        return decided
     def names(why: str) -> str:
         return ", ".join(f"{f.get('id')} ({str(f.get('severity') or 'info').lower()})"
                          for f, w in folded if w == why)
@@ -87,4 +119,5 @@ def folded_summary(folded: list[tuple[dict[str, Any], str]]) -> str | None:
         parts.append(f"unchanged since shown above: {names('unchanged')}")
     if names("earlier"):
         parts.append(f"from earlier checks, not re-checked now: {names('earlier')}")
-    return "Also on record — " + " · ".join(parts) + ". /report shows them in full."
+    line = "Also on record — " + " · ".join(parts) + ". /report shows them in full."
+    return line + ("\n" + decided if decided else "")

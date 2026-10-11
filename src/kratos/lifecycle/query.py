@@ -20,7 +20,8 @@ STATE_FILTERS: dict[str, frozenset[str] | None] = {
     "mitigated": frozenset({"mitigated"}), "inactive": frozenset({"inactive"}),
     "risk_accepted": frozenset({"risk_accepted"}), "false_positive": frozenset({"false_positive"}),
     "out_of_scope": frozenset({"out_of_scope"}),
-    "decided": S.DECIDED, "open_verified": S.SHOWN_BY_DEFAULT, "all": None,
+    "decided": S.DECIDED, "open_verified": S.SHOWN_BY_DEFAULT, "fixed": frozenset({"mitigated", "inactive"}),
+    "all": None,
 }
 
 
@@ -84,3 +85,9 @@ def hidden_counts(data_dir: Path, target: str | None = None) -> dict[str, int]:
     out = {k: 0 for k in S.EXCEPTION_KINDS}
     out.update({r[0]: r[1] for r in rows})
     return out
+
+
+def targets(data_dir: Path) -> list[str]:
+    """Every machine with finding records."""
+    with S.opened(data_dir) as conn:
+        return [r[0] for r in conn.execute("SELECT DISTINCT target FROM finding_records ORDER BY target")]

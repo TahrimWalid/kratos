@@ -500,17 +500,50 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_name_flow", lambda: fired.append("name"))
             monkeypatch.setattr(screen, "_set_theme_flow", lambda: fired.append("theme"))
             monkeypatch.setattr(screen, "_set_timezone_flow", lambda: fired.append("timezone"))
+            monkeypatch.setattr(screen, "_set_findings_setting_flow", lambda key: fired.append(key))
             screen.query_one(TabbedContent).active = "tab-general"
             await pilot.pause()
             gen = screen.query_one("#gen-table", DataTable)
-            assert gen.row_count == 3            # name / theme / timezone
-            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name")]:
+            assert gen.row_count == 5            # name / theme / timezone / two finding settings
+            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
                 await pilot.pause()
             return fired
 
-    assert asyncio.run(_run()) == ["theme", "timezone", "name"]
+    assert asyncio.run(_run()) == ["theme", "timezone", "name", "findings.accept_max_days",
+                                   "findings.default_view"]
+
+
+def test_general_tab_saves_the_longest_risk_acceptance(tmp_path, monkeypatch):
+    from kratos import settings_store
+    from kratos.lifecycle import settings as LS
+
+    _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(data_dir=tmp_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one(TabbedContent).active = "tab-general"
+            await pilot.pause()
+            screen._set_findings_setting_flow(LS.ACCEPT_MAX_DAYS)
+            await pilot.pause()
+            app.screen.query_one("#prompt-input").value = "400"   # refused: 1-365
+            await pilot.press("enter")
+            await pilot.pause()
+            refused = settings_store.get(LS.ACCEPT_MAX_DAYS, data_dir=tmp_path)
+            screen._set_findings_setting_flow(LS.ACCEPT_MAX_DAYS)
+            await pilot.pause()
+            app.screen.query_one("#prompt-input").value = "30"
+            await pilot.press("enter")
+            await pilot.pause()
+            return refused, settings_store.get(LS.ACCEPT_MAX_DAYS, data_dir=tmp_path), \
+                settings_store.last_change(LS.ACCEPT_MAX_DAYS, data_dir=tmp_path)
+
+    refused, saved, change = asyncio.run(_run())
+    assert refused == 180 and saved == 30 and change[1] == "tui:settings"
 
 
 def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
@@ -531,7 +564,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 3      # name / theme / timezone present
+    assert gen == 5      # name / theme / timezone + two finding settings
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):

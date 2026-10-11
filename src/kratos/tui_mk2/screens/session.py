@@ -99,7 +99,8 @@ _PALETTE_COMMANDS = [
     ("/preset-delete", "delete a saved investigation (pick from a list)"),
     ("/preset-export", "show a preset's file to share/back up (pick from a list)"),
     ("/preset-import", "import a preset from a .toml file"),
-    ("/report", "investigation summary — findings by severity"),
+    ("/report", "investigation summary — new, still open, fixed, hidden by your decisions"),
+    ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
@@ -705,6 +706,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 R.result_panel("Kratos — concluded", transcript[-1]["final_answer"], T.SAFE, time_str=self._fmt_stored_time(completed)),
                 self._fmt_stored_date(completed),
             )
+            if (footer := R.lifecycle_footer(transcript)) is not None:
+                self._emit(footer)
         if status == "cancelled":
             self._emit(Text("Investigation cancelled.", style=T.TEXT_FAINT))
 
@@ -921,6 +924,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             target = _kconfig.get_active_target()
             self.app.push_screen(SubAgentScreen(self._data_dir, offer_link_for=target if target and target.lower()
                                                 not in ("127.0.0.1", "localhost", "::1") else None))
+        elif cmd in ("/findings", "/f"):
+            from kratos.tui_mk2.screens.findings import FindingsScreen
+
+            self.app.push_screen(FindingsScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd == "/whitelist":
             from kratos.tui_mk2.screens.whitelist import WhitelistScreen
 
@@ -1103,38 +1110,122 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     # --- /report -----------------------------------------------------
     def _render_report(self) -> None:
+        """New · Still open · Fixed · Not rechecked · Hidden by your decisions, for the
+        session's machine (kratos.lifecycle). "Present" means in the session's latest
+        correlation; states are read fresh, so a decision made since shows here."""
         findings = self._collect_session_findings()  # list of (finding, when)
+        latest = self._latest_session_correlation()
         self._emit(Text(""))
-        if not findings:
+        try:
+            from kratos.lifecycle import query as _lq
+
+            target = _kconfig.get_active_target()
+            records = {r["finding_key"]: r for r in _lq.list_findings(self._data_dir, target=target, state="all")}
+        except Exception:  # noqa: BLE001 -- the report still shows what the session found
+            records = {}
+        if not findings and not records:
             self._emit(R.result_panel("Report — no findings", "No findings recorded in this session yet. Run an investigation first, or the target is clean so far.", T.SAFE))
             return
         order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        findings.sort(key=lambda fw: order.get(str(fw[0].get("severity", "info")).lower(), 5))
+
+        def sev(f: dict[str, Any]) -> int:
+            return order.get(str(f.get("severity", "info")).lower(), 5)
+
+        by_key: dict[str, tuple[dict[str, Any], Any]] = {}
+        for f, when_value in findings:          # later turns overwrite earlier ones
+            by_key[f.get("finding_key") or f"id:{f.get('id')}"] = (f, when_value)
+        present = {f.get("finding_key") or f"id:{f.get('id')}" for f in latest}
+        notes, new, still = [], [], []
+        for k in present:
+            if k not in by_key:
+                continue
+            f, when_value = by_key[k]
+            state = (records.get(k) or {}).get("state", f.get("state"))
+            if f.get("state") == "run_note":
+                notes.append((f, when_value))
+            elif state in ("open", "verified", None):
+                (new if f.get("change") in ("new", "reopened", "recurred") else still).append(({**f, "state": state}
+                                                                                                if state else f, when_value))
+        fixed = [r for k, r in records.items() if k in by_key and r["state"] in ("mitigated", "inactive")]
+        not_rechecked = [r for k, r in records.items() if r["state"] in ("open", "verified") and k not in present]
+        hidden = [r for r in records.values() if r["state"] in ("risk_accepted", "false_positive", "out_of_scope")]
+
         t, d = self._stamp_now()
         self._emit_stamped(self._kratos_header(), t, d)
-        self._emit(Text(f"investigation summary — {len(findings)} finding(s), high → low severity", style=T.TEXT_MUTED))
+        self._emit(Text(f"investigation summary — new {len(new)} · still open {len(still)} · fixed {len(fixed)} · "
+                        f"not rechecked {len(not_rechecked)} · hidden by your decisions {len(hidden)}",
+                        style=T.TEXT_MUTED))
         from kratos.agent.ir_playbooks import build_response_plan
 
         plan_commands: list[str] = []
-        for f, when_value in findings:
-            # Each finding keeps the time it was ORIGINALLY found (its turn's
-            # completion time, a stored UTC value), rendered in the display
-            # zone -- not when /report was run.
-            when_str = self._fmt_stored_time(when_value)
-            self._emit(R.finding_panel(f, time_str=when_str))
-            # Auto-attach a recommend-only response plan for HIGH/CRITICAL
-            # findings (build_response_plan returns None below that, so no
-            # manufactured urgency on info/low). Recommend-only, curated
-            # templates -- Kratos runs nothing.
-            if str(f.get("severity", "")).lower() in ("high", "critical"):
-                plan = build_response_plan(f, found_at=when_str)
-                if plan is not None:
-                    self._emit(R.response_plan_panel(plan, time_str=when_str))
-                    plan_commands += [c.command for step in plan.steps for c in step.commands]
+
+        def panels(title: str, items: list[tuple[dict[str, Any], Any]]) -> None:
+            nonlocal plan_commands
+            self._emit(Text(f"\n{title} ({len(items)})", style=f"bold {T.ACCENT}"))
+            if not items:
+                self._emit(Text("  none", style=T.TEXT_DIM))
+            for f, when_value in sorted(items, key=lambda fw: sev(fw[0])):
+                # Each finding keeps the time it was ORIGINALLY found (its turn's
+                # completion time, a stored UTC value), rendered in the display zone.
+                when_str = self._fmt_stored_time(when_value)
+                self._emit(R.finding_panel(f, time_str=when_str))
+                # Recommend-only response plan for HIGH/CRITICAL (None below that).
+                if str(f.get("severity", "")).lower() in ("high", "critical"):
+                    plan = build_response_plan(f, found_at=when_str)
+                    if plan is not None:
+                        self._emit(R.response_plan_panel(plan, time_str=when_str))
+                        plan_commands += [c.command for step in plan.steps for c in step.commands]
+
+        def lines(title: str, rows: list[dict[str, Any]], tail) -> None:
+            self._emit(Text(f"\n{title} ({len(rows)})", style=f"bold {T.ACCENT}"))
+            if not rows:
+                self._emit(Text("  none", style=T.TEXT_DIM))
+            for r in sorted(rows, key=lambda r: order.get(r["severity"], 5)):
+                self._emit(Text(f"  {r['rule_id']} ({r['severity']}) — {r['title']}  {tail(r)}", style=T.TEXT_MUTED))
+
+        panels("New", new)
+        panels("Still open", still)
+        lines("Fixed", fixed, lambda r: ("fixed" if r["state"] == "mitigated" else "no recurrence")
+              + f" since {self._fmt_stored_time(r['last_checked'])}")
+        lines("Not rechecked", not_rechecked, lambda r: f"last seen {self._fmt_stored_time(r['last_seen'])} — "
+              "a later check didn't re-collect its data")
+
+        def decided(r: dict[str, Any]) -> str:
+            dec = r.get("decision") or {}
+            words = {"risk_accepted": "risk accepted", "false_positive": "not a real problem",
+                     "out_of_scope": "out of scope"}[r["state"]]
+            return words + (f" until {self._fmt_stored_time(dec['expires_at'])}" if dec.get("expires_at") else "") \
+                + (f" — {dec.get('reason')}" if dec.get("reason") else "")
+
+        lines("Hidden by your decisions", hidden, decided)
+        if notes:
+            self._emit(Text("\nAbout the latest check's coverage", style=f"bold {T.ACCENT}"))
+            for f, when_value in notes:
+                self._emit(R.finding_panel(f, time_str=self._fmt_stored_time(when_value)))
+        self._emit(Text("/findings lists them all and records your decisions.", style=T.TEXT_DIM))
         if plan_commands:
             # What Ctrl+Y copies: the plans' commands, exactly (a wrapped line
             # on screen can't be copied whole).
             self._last_commands = plan_commands
+
+    def _latest_session_correlation(self) -> list[dict[str, Any]]:
+        """The findings of the session's most recent successful correlate_findings."""
+        latest: list[dict[str, Any]] = []
+        for turn in self._store.get_goal_history(self.session_state["session_id"]):
+            ref = turn.get("transcript_ref")
+            if not ref:
+                continue
+            try:
+                transcript = json.loads(Path(ref).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for step in transcript:
+                if step.get("tool") != "correlate_findings":
+                    continue
+                result, _status = R.unwrap_tool_result(step.get("observation"))
+                if isinstance(result, dict) and isinstance(result.get("findings"), list):
+                    latest = result["findings"]
+        return latest
 
     def _collect_session_findings(self) -> list[tuple[dict[str, Any], str | None]]:
         """Aggregate correlate_findings output across this session's turns'
@@ -4325,6 +4416,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
             status = "max_iters_reached"
+        if result.get("final_answer") and (footer := R.lifecycle_footer(result.get("transcript"))) is not None:
+            self._emit_from_worker(footer)
         elif result["status"] == "llm_unavailable":
             # Kratos's own model failed mid-investigation -> banner,
             # not an inline tool-style error.

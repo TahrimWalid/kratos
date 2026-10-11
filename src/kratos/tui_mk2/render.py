@@ -223,6 +223,10 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     body = Text()
     body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
     body.append(f"\n[{fid}] {finding.get('title', '')}", style=T.TEXT_DIM)
+    status = lifecycle_status(finding)
+    if status:
+        body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred")
+                    else T.TEXT_DIM)
 
     evidence = finding.get("evidence") or []
     content: Any = body
@@ -248,6 +252,39 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
         subtitle_align="right",
         border_style=color,
     )
+
+
+_LIFECYCLE_WORDS = {"verified": "confirmed real (verified)", "risk_accepted": "risk accepted",
+                    "false_positive": "marked not a real problem", "out_of_scope": "marked out of scope"}
+_CHANGE_WORDS = {"reopened": "came back (reopened)", "recurred": "happened again (recurred)", "changed": "changed"}
+
+
+def lifecycle_status(finding: dict[str, Any]) -> str:
+    """'happened again (recurred)', 'confirmed real (verified)', ... -- '' for a plain
+    open finding or one without lifecycle data."""
+    parts = []
+    if finding.get("change") in _CHANGE_WORDS:
+        parts.append(_CHANGE_WORDS[finding["change"]])
+    if finding.get("state") in _LIFECYCLE_WORDS:
+        parts.append(_LIFECYCLE_WORDS[finding["state"]])
+    return " · ".join(parts)
+
+
+def lifecycle_footer(transcript: list[dict[str, Any]] | None) -> Text | None:
+    """The deterministic line under an answer that ran correlate_findings:
+    'New 2 · Still open 3 · Fixed 1 · Hidden by your decisions 4 (/findings)'.
+    Taken from the LAST successful correlate_findings step; never model-written."""
+    for step in reversed(transcript or []):
+        if step.get("tool") != "correlate_findings":
+            continue
+        result, status = unwrap_tool_result(step.get("observation"))
+        if status == "error" or not isinstance(result, dict):
+            continue
+        line = result.get("lifecycle")
+        if line:
+            return Text(f"{line}  (/findings)", style=T.TEXT_MUTED)
+        return None
+    return None
 
 
 def llm_failure_banner(detail: str) -> Panel:

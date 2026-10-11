@@ -334,7 +334,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._candidates: list = []
         self._current = None
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
-        self._gen_rows = ["name", "theme", "timezone"]  # General tab row order (↑↓ navigable)
+        # General tab row order (↑↓ navigable)
+        self._gen_rows = ["name", "theme", "timezone", "findings.accept_max_days", "findings.default_view"]
         self._session_rows = ["target", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -696,6 +697,11 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(T.pack_label(T.active_pack_name()), style=T.TEXT))
         gen.add_row(Text("Display timezone", style=T.TEXT_MUTED),
                     Text(self._tz_value(), style=T.TEXT))
+        max_days, view = self._findings_settings()
+        gen.add_row(Text("Longest risk acceptance", style=T.TEXT_MUTED),
+                    Text(f"{max_days} days  (a risk you accept comes back after this)", style=T.TEXT))
+        gen.add_row(Text("/findings shows first", style=T.TEXT_MUTED),
+                    Text("open and verified findings" if view == "open_verified" else "everything", style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
 
@@ -709,6 +715,52 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_theme_flow()
         elif key == "timezone":
             self._set_timezone_flow()
+        elif key and key.startswith("findings."):
+            self._set_findings_setting_flow(key)
+
+    def _findings_settings(self) -> tuple[Any, Any]:
+        from kratos import settings_store
+        from kratos.lifecycle import settings as LS
+
+        dd = self._data_dir()
+        if dd is None:
+            return 180, "open_verified"
+        return (settings_store.get(LS.ACCEPT_MAX_DAYS, data_dir=dd),
+                settings_store.get(LS.DEFAULT_VIEW, data_dir=dd))
+
+    @work
+    async def _set_findings_setting_flow(self, key: str) -> None:
+        """A finding-lifecycle setting (kratos.lifecycle.settings), saved in
+        app_settings as this person ("tui:settings")."""
+        from kratos import settings_store
+        from kratos.lifecycle import settings as LS
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        max_days, view = self._findings_settings()
+        if key == LS.ACCEPT_MAX_DAYS:
+            answer = await self.app.push_screen_wait(PromptModal(
+                "Longest risk acceptance (days)",
+                "1-365. Accepting a risk always needs an end date, at most this far ahead.", initial=str(max_days)))
+            if answer is None:
+                return
+            value: Any = answer.strip()
+        else:
+            value = await self.app.push_screen_wait(ListPickerModal(
+                "/findings shows first", [("open_verified", "open and verified findings (decided ones counted)"),
+                                          ("all", "everything")]))
+            if value is None:
+                return
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — applies everywhere on the next read.", T.SAFE)
 
     @on(DataTable.RowSelected, "#gen-table")
     def _gen_row_selected(self, event: DataTable.RowSelected) -> None:
