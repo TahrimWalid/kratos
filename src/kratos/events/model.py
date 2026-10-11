@@ -54,6 +54,17 @@ class Event:
     service_name: str | None = None
     log_file_path: str | None = None
     log_syslog_priority: int | None = None
+    sequence: int | None = None
+    process_working_directory: str | None = None
+    destination_ip: str | None = None
+    destination_port: int | None = None
+    network_transport: str | None = None
+    package_name: str | None = None
+    package_version: str | None = None
+    url_original: str | None = None
+    http_request_method: str | None = None
+    http_response_status_code: int | None = None
+    user_agent_original: str | None = None
     related_ip: tuple[str, ...] = ()
     related_user: tuple[str, ...] = ()
     ecs_version: str = F.ECS_VERSION
@@ -207,10 +218,20 @@ def event_id(host: str, dataset: str, timestamp: datetime, provider: str | None,
     (overlapping windows) gets the same ID, so it is stored once.
 
     Known limit: two genuinely identical lines from the same program in the same
-    microsecond collapse into one event. (0.3 switches journal events to the
-    journal's own __CURSOR once the agent sends it.)"""
+    microsecond collapse into one event. Journal entries that carry their
+    __CURSOR use cursor_event_id instead (0.3) -- except the sudo/sshd auth
+    events (kratos.auth), which keep this ID so the same line read by the auth
+    read and by the sudo source is still stored once."""
     micros = int(round(timestamp.astimezone(UTC).timestamp() * 1_000_000))
     raw = "\x1f".join((host, dataset, str(micros), provider or "", text or ""))
+    return hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+
+def cursor_event_id(host: str, cursor: str) -> str:
+    """A journal entry's ID from its own __CURSOR: the first 32 hex chars of
+    sha256(host ␟ cursor). Unique per entry even for identical lines in the same
+    microsecond, and the same however often the entry is read."""
+    raw = "\x1f".join((host, cursor))
     return hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:32]
 
 

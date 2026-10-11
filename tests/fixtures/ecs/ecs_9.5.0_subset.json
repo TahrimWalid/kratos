@@ -215,6 +215,10 @@
    "normalize": [],
    "type": "keyword"
   },
+  "event.sequence": {
+   "normalize": [],
+   "type": "long"
+  },
   "event.type": {
    "allowed_values": [
     "access",
@@ -261,6 +265,14 @@
    "normalize": [],
    "type": "keyword"
   },
+  "http.request.method": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "http.response.status_code": {
+   "normalize": [],
+   "type": "long"
+  },
   "log.file.path": {
    "normalize": [],
    "type": "keyword"
@@ -272,6 +284,18 @@
   "message": {
    "normalize": [],
    "type": "match_only_text"
+  },
+  "network.transport": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "package.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "package.version": {
+   "normalize": [],
+   "type": "keyword"
   },
   "process.args": {
    "normalize": [
@@ -360,6 +384,10 @@
    "type": "keyword"
   },
   "user.target.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user_agent.original": {
    "normalize": [],
    "type": "keyword"
   }

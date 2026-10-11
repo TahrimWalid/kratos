@@ -24,7 +24,7 @@ from typing import Any
 from kratos import run_context
 from kratos.adapters.auth_log_parse import AuthEvent, _ISO_PREFIX, _PROGRAM_PREFIX, _SYSLOG_PREFIX
 from kratos.events import fields as F
-from kratos.events.model import UTC, Event, event_id
+from kratos.events.model import UTC, Event, cursor_event_id, event_id
 from kratos.events.redact import clean
 from kratos.target_key import target_key
 
@@ -160,13 +160,13 @@ def _uniq(*values: str | None) -> tuple[str, ...]:
 
 
 def _build(ctx: ReadContext, *, dataset: str, parser: str, timestamp: datetime, provider: str | None,
-           text: dict[str, Any], time_zone_assumed: bool = False, **values: Any) -> Event:
+           text: dict[str, Any], time_zone_assumed: bool = False, cursor: str | None = None, **values: Any) -> Event:
     host = ctx.host
     ident_text = text["original"] or text["message"]
     return Event(
         timestamp=timestamp,
         created=ctx.created,
-        event_id=event_id(host, dataset, timestamp, provider, ident_text),
+        event_id=cursor_event_id(host, cursor) if cursor else event_id(host, dataset, timestamp, provider, ident_text),
         kind="event",
         dataset=dataset,
         provider=provider,
@@ -313,4 +313,128 @@ def from_privileged_event(ev: dict[str, Any], *, ctx: ReadContext) -> Event:
         category=category, type=etype, outcome="success", action=action or None,
         user_target_name=account, group_name=group, process_name=provider,
         related_user=_uniq(account),
+    )
+
+
+# ---------------------------------------------------------------------------
+# The 0.3 log sources (kratos.logsources.parsers)
+# ---------------------------------------------------------------------------
+PARSER_LOGSOURCE = "logsource/1"
+
+# Parsed.action -> (event.category, event.type, default event.outcome). Every
+# action a parser in kratos/logsources/parsers can return must be here (a test
+# scans their source).
+LOG_ACTIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str | None]] = {
+    # auditd
+    "process_started": (("process",), ("start",), None),
+    "user_login": (("authentication",), ("start",), None),
+    "user_auth": (("authentication",), ("info",), None),
+    "session_started": (("session",), ("start",), None),
+    "session_ended": (("session",), ("end",), None),
+    "user_added": (("iam",), ("user", "creation"), None),
+    "user_deleted": (("iam",), ("user", "deletion"), None),
+    "user_changed": (("iam",), ("user", "change"), None),
+    "group_added": (("iam",), ("group", "creation"), None),
+    "group_deleted": (("iam",), ("group", "deletion"), None),
+    "group_changed": (("iam",), ("group", "change"), None),
+    "password_changed": (("iam",), ("user", "change"), None),
+    "audit_disabled": (("configuration",), ("change",), None),
+    "audit_rule_removed": (("configuration",), ("change", "deletion"), None),
+    "audit_rule_added": (("configuration",), ("change", "creation"), None),
+    "audit_config_change": (("configuration",), ("change",), None),
+    "auditd_started": (("configuration",), ("start",), None),
+    "auditd_stopped": (("configuration",), ("end",), None),
+    "auditd_aborted": (("configuration",), ("end", "error"), "failure"),
+    "auditd_reconfigured": (("configuration",), ("change",), None),
+    "service_started": (("process",), ("start",), None),
+    "service_stopped": (("process",), ("end",), None),
+    "sudo_command": (("process",), ("start",), None),
+    "audit_other": ((), ("info",), "unknown"),
+    # cron
+    "cron_command": (("process",), ("start",), "success"),
+    "cron_command_ended": (("process",), ("end",), "success"),
+    "cron_session_opened": (("session",), ("start",), "success"),
+    "cron_session_closed": (("session",), ("end",), "success"),
+    "cron_other": ((), ("info",), "unknown"),
+    # systemd
+    "unit_started": (("process",), ("start",), "success"),
+    "unit_starting": (("process",), ("info",), "unknown"),
+    "unit_stopped": (("process",), ("end",), "success"),
+    "unit_stopping": (("process",), ("info",), "unknown"),
+    "unit_failed": (("process",), ("end", "error"), "failure"),
+    "unit_reloaded": (("configuration",), ("change",), "success"),
+    "unit_reloading": (("configuration",), ("info",), "unknown"),
+    "unit_finished": (("process",), ("end",), "success"),
+    "systemd_other": ((), ("info",), "unknown"),
+    # firewall
+    "blocked": (("network",), ("connection", "denied"), "failure"),
+    "allowed": (("network",), ("connection", "allowed"), "success"),
+    "audit": (("network",), ("connection", "info"), "unknown"),
+    "logged": (("network",), ("connection", "info"), "unknown"),
+    # packages
+    "package_installed": (("package",), ("installation",), "success"),
+    "package_upgraded": (("package",), ("change",), "success"),
+    "package_downgraded": (("package",), ("change",), "success"),
+    "package_reinstalled": (("package",), ("change",), "success"),
+    "package_removed": (("package",), ("deletion",), "success"),
+    "package_transaction": (("package",), ("change",), "success"),
+    "package_command": (("package", "process"), ("start",), "success"),
+    # web
+    "http_request": (("web", "network"), ("access",), None),
+    "web_error": (("web",), ("error",), "unknown"),
+}
+_FIELD_CAPS = {"url_original": 2048, "user_agent_original": 1024, "process_working_directory": 1024,
+               "process_executable": 1024, "file_path": 4096, "network_transport": 32, "http_request_method": 32,
+               "package_name": 256, "package_version": 128}
+
+
+def from_parsed(p: Any, *, ctx: ReadContext, dataset: str) -> Event:
+    """A logsources.parsers.Parsed -> Event. Masks command lines, messages and the
+    raw line (events.redact) and the URL's query (already masked by the web
+    parser, masked again here as a backstop); caps every text field."""
+    category, etype, default_outcome = LOG_ACTIONS.get(p.action, ((), ("info",), "unknown"))
+    f = dict(p.fields)
+    command = f.pop("process_command_line", None)
+    text = _text_fields(p.original, p.message, command)
+    if getattr(p, "redacted", False):
+        text["redacted"] = True
+    values: dict[str, Any] = {}
+    for key, value in f.items():
+        if key in ("source_ip", "destination_ip"):
+            value = _ip(str(value))
+        elif key in ("source_port", "destination_port", "process_pid", "process_parent_pid", "sequence",
+                     "http_response_status_code", "log_syslog_priority"):
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = None
+            if key.endswith("_port") and value is not None and not 0 <= value <= 65535:
+                value = None
+        elif value is not None:
+            value = str(value)
+            if key in ("url_original", "user_agent_original"):
+                value, red, cut = clean(value, _FIELD_CAPS[key])
+                text["redacted"] = text["redacted"] or red
+                text["truncated"] = text["truncated"] or cut
+            else:
+                value = _short(value, _FIELD_CAPS.get(key, 256))
+        if value is not None and value != "":
+            values[key] = value
+    if "url_original" in values:
+        from kratos.logsources.parsers.web import mask_url
+
+        values["url_original"], red = mask_url(values["url_original"])
+        text["redacted"] = text["redacted"] or red
+    timestamp = datetime.fromtimestamp(float(p.ts), UTC)
+    related_ip = _uniq(values.get("source_ip"), values.get("destination_ip"))
+    related_user = _uniq(values.get("user_name"), values.get("user_effective_name"), values.get("user_target_name"))
+    log_path = _short(p.log_file_path, 4096) or ctx.log_file_path
+    use = ReadContext(target=ctx.target, transport=ctx.transport, read=ctx.read, window=ctx.window,
+                      coverage=ctx.coverage, time_zone=ctx.time_zone, log_file_path=log_path, run_id=ctx.run_id,
+                      created=ctx.created)
+    return _build(
+        use, dataset=dataset, parser=PARSER_LOGSOURCE, timestamp=timestamp, provider=_short(p.provider),
+        text=text, time_zone_assumed=bool(p.zone_assumed),
+        cursor=p.cursor, category=category, type=etype, outcome=p.outcome or default_outcome, action=p.action,
+        related_ip=related_ip, related_user=related_user, **values,
     )

@@ -112,7 +112,7 @@
         "dataset": {
           "type": "string",
           "maxLength": 64,
-          "description": "kratos.auth, kratos.journal or kratos.privileged_accounts."
+          "description": "Which read it came from: kratos.auth, kratos.journal, kratos.privileged_accounts, kratos.auditd, kratos.cron, kratos.systemd, kratos.firewall, kratos.package or kratos.web."
         },
         "provider": {
           "type": "string",
@@ -123,6 +123,10 @@
           "type": "string",
           "maxLength": 2048,
           "description": "The raw line, credentials masked, capped at 2048 bytes."
+        },
+        "sequence": {
+          "type": "integer",
+          "description": "The source's own record number, e.g. auditd's event serial."
         }
       },
       "required": [
@@ -254,6 +258,11 @@
           "type": "string",
           "maxLength": 4096,
           "description": "Full command line, credentials masked, capped at 4096 bytes."
+        },
+        "working_directory": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "The directory a program ran in (auditd CWD)."
         }
       },
       "additionalProperties": false
@@ -314,6 +323,104 @@
             }
           },
           "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "destination": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "ipv4"
+            },
+            {
+              "format": "ipv6"
+            }
+          ],
+          "description": "Where a connection was going (firewall logs)."
+        },
+        "port": {
+          "type": "integer",
+          "description": "Destination port."
+        }
+      },
+      "additionalProperties": false
+    },
+    "network": {
+      "type": "object",
+      "properties": {
+        "transport": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "tcp, udp, icmp, ..."
+        }
+      },
+      "additionalProperties": false
+    },
+    "package": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "A software package installed or removed."
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "That package's version."
+        }
+      },
+      "additionalProperties": false
+    },
+    "url": {
+      "type": "object",
+      "properties": {
+        "original": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "The requested URL, query values that look like credentials masked, capped at 2048 bytes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "http": {
+      "type": "object",
+      "properties": {
+        "request": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "maxLength": 32,
+              "description": "GET, POST, ..."
+            }
+          },
+          "additionalProperties": false
+        },
+        "response": {
+          "type": "object",
+          "properties": {
+            "status_code": {
+              "type": "integer",
+              "description": "The HTTP status returned."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "user_agent": {
+      "type": "object",
+      "properties": {
+        "original": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "The client's User-Agent, capped at 1024 bytes."
         }
       },
       "additionalProperties": false

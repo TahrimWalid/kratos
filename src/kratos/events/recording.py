@@ -117,3 +117,21 @@ def record_privileged_changes(data_dir: Path, target: str, change_events: list[d
                         window=(float(since_epoch), None), coverage="truncated" if capped else "complete")
     return record_events(_convert(change_events, lambda e: C.from_privileged_event(e, ctx=ctx)),
                          data_dir=data_dir)
+
+
+@_guard
+def record_log_read(data_dir: Path, target: str, read: Any, via: str | None) -> int | None:
+    """read_host_logs: one source's records (kratos.logsources), as events of the
+    source's dataset -- sudo lines as kratos.auth, like the auth read's."""
+    from kratos.logsources import catalog
+    from kratos.logsources.parsers import parse_read
+
+    ctx = C.ReadContext(target=target, transport=_transport(via), read=f"log_read.{read.source}",
+                        window=(read.since, read.until), coverage="truncated" if read.truncated else "complete")
+    items = parse_read(read, target)
+    if read.source == "sudo":
+        events = _convert(items, lambda ev: C.from_auth_event(ev, ctx=ctx))
+    else:
+        dataset = catalog.SOURCES[read.source].dataset
+        events = _convert(items, lambda p: C.from_parsed(p, ctx=ctx, dataset=dataset))
+    return record_events(events, data_dir=data_dir)

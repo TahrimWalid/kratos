@@ -440,7 +440,7 @@ def parse_output(source: str, stdout: str, since: float | None, until: float | N
     pending_stats: list[list[str]] = []
     journal_rows: list[tuple[str, str]] = []
     files: dict[tuple[int, int], FileRead] = {}
-    for line in stdout.splitlines():
+    for line in stdout.split("\n"):
         cols = line.split("\t")
         tag = cols[0]
         if tag == "M" and len(cols) >= 3:
