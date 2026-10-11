@@ -535,7 +535,7 @@ def tool_correlate_findings(
     )
     report = json.loads(out_json.read_text(encoding="utf-8", errors="replace"))
     findings = report.get("findings") or []
-    return {
+    out = {
         "findings_json_file": str(out_json),
         "findings_md_file": str(out_md),
         "inputs_used": report.get("inputs"),
@@ -545,6 +545,19 @@ def tool_correlate_findings(
         "findings": findings,
         "count": len(findings),
     }
+    # Every finding is still here, each with its state; only the person's default
+    # view hides decided ones -- the model is told how many, never kept from them.
+    lifecycle = report.get("lifecycle")
+    if lifecycle:
+        from kratos.lifecycle.apply import footer_line
+
+        out["lifecycle"] = footer_line(lifecycle)
+        hidden = int(lifecycle.get("hidden_total") or 0)
+        if hidden:
+            out["hidden_by_user_decisions"] = (
+                f"{hidden} finding(s) are hidden from the user's default view by their own decisions "
+                "(state risk_accepted / false_positive / out_of_scope); mention them only if relevant.")
+    return out
 
 
 def _persist_target_auth_correlation_data(

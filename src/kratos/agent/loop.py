@@ -592,6 +592,7 @@ RULES:
 - Do not call the same tool with the same args twice in a row.
 - If a tool result shows an error, adapt (try different args, or move to a different tool, or give a final_answer noting the limitation) rather than repeating the same failing call.
 - If a tool result has a "coverage_gap", your final_answer must say plainly that this part was NOT checked -- never describe the target as fully checked or clean on that point.
+- Findings whose "state" is risk_accepted, false_positive or out_of_scope were decided by the user: don't present them as new, and never claim you changed a finding's state -- only the user can.
 """
 
 
