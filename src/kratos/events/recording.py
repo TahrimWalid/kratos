@@ -119,19 +119,28 @@ def record_privileged_changes(data_dir: Path, target: str, change_events: list[d
                          data_dir=data_dir)
 
 
-@_guard
-def record_log_read(data_dir: Path, target: str, read: Any, via: str | None) -> int | None:
-    """read_host_logs: one source's records (kratos.logsources), as events of the
-    source's dataset -- sudo lines as kratos.auth, like the auth read's."""
+def events_for_log_read(target: str, read: Any) -> list[Event]:
+    """read_host_logs: one source's records (kratos.logsources) as events of the
+    source's dataset -- sudo lines as kratos.auth, like the auth read's. Masking
+    and caps happen here, so the tool's summary only ever shows masked text.
+    Never raises: a line that won't convert is skipped."""
     from kratos.logsources import catalog
     from kratos.logsources.parsers import parse_read
 
-    ctx = C.ReadContext(target=target, transport=_transport(via), read=f"log_read.{read.source}",
+    ctx = C.ReadContext(target=target, transport=_transport(read.via), read=f"log_read.{read.source}",
                         window=(read.since, read.until), coverage="truncated" if read.truncated else "complete")
-    items = parse_read(read, target)
+    try:
+        items = parse_read(read, target)
+    except Exception as e:  # noqa: BLE001 -- a parser bug must not fail the read
+        logger.warning("could not parse the %s read (%s: %s)", read.source, type(e).__name__, e)
+        return []
     if read.source == "sudo":
-        events = _convert(items, lambda ev: C.from_auth_event(ev, ctx=ctx))
-    else:
-        dataset = catalog.SOURCES[read.source].dataset
-        events = _convert(items, lambda p: C.from_parsed(p, ctx=ctx, dataset=dataset))
+        return _convert(items, lambda ev: C.from_auth_event(ev, ctx=ctx))
+    dataset = catalog.SOURCES[read.source].dataset
+    return _convert(items, lambda p: C.from_parsed(p, ctx=ctx, dataset=dataset))
+
+
+@_guard
+def record_log_read(data_dir: Path, events: list[Event]) -> int | None:
+    """Store read_host_logs' events (best-effort)."""
     return record_events(events, data_dir=data_dir)

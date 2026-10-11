@@ -32,6 +32,8 @@ _BUILT_IN: dict[str, tuple[str, str]] = {
     "list_processes": (TARGET, "Lists the programs currently running."),
     "list_open_files": (TARGET, "Lists files and network connections that programs have open."),
     "list_privileged_accounts": (TARGET, "Shows who can become root or admin, and who was just given that access."),
+    "read_host_logs": (TARGET, "Reads one more kind of log: programs run (auditd), sudo, cron, services, firewall, installs, web."),
+    "check_log_integrity": (TARGET, "Checks whether logs were cleared, cut or edited, and whether sealed logs still verify."),
     "check_file_integrity": (TARGET, "Checks whether key system files changed since a saved baseline."),
     "run_yara_scan": (TARGET, "Scans files for known malware and web-shell signatures."),
     "state_as_of": (SAVED, "Shows what the target looked like at a past time, from saved results."),

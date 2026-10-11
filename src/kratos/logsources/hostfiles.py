@@ -196,6 +196,7 @@ def stat_script(root: str = "") -> str:
     for status_file in catalog.LOGROTATE_STATUS_FILES:
         q = shlex.quote(root + status_file)
         parts.append(f"[ -r {q} ] && [ ! -L {q} ] && grep -E '^\"?/' {q} | head -n 400 | awk '{{ print \"LR\\t\" $0 }}'")
+    parts.append("exit 0")
     return "\n".join(parts) + "\n"
 
 
@@ -320,6 +321,7 @@ def utmp_script(name: str, max_bytes: int, root: str = "") -> str:
         + f"N=$(( {max_bytes} / {rec} * {rec} )); O=$(( $1 - $1 % {rec} - N )); [ \"$O\" -lt 0 ] && O=0\n"
         "B=$(tail -c +$((O + 1)) \"$F\" | head -c \"$N\" | base64 | tr -d '\\n')\n"
         + f"printf 'U\\t{name}\\tok\\t%s\\t%s\\t%s\\t%s\\n' \"$1\" \"$2\" \"$O\" \"$B\"\n"
+        "exit 0\n"
     )
 
 
@@ -402,6 +404,7 @@ def journal_headers_script(journal_prefix: str = "sudo -n", root: str = "") -> s
         "    done\n"
         "  done\n"
         "done\n"
+        "exit 0\n"
     )
 
 
@@ -572,6 +575,7 @@ def boot_history_script(journal_prefix: str = "sudo -n") -> str:
         f"  {j} -b \"$B\" --no-pager -o json --output-fields=MESSAGE,_PID,SYSLOG_IDENTIFIER,_COMM "
         f"--reverse -n {BOOT_TAIL_ENTRIES} 2>/dev/null | awk -v b=\"$B\" '{{ print \"BE\\t\" b \"\\t\" $0 }}'\n"
         "done\n"
+        "exit 0\n"
     )
 
 
@@ -669,6 +673,7 @@ def audit_status_script(sudo: str = "sudo -n") -> str:
         "    printf 'AS\\trules\\t%s\\n' \"$(printf '%s\\n' \"$_r\" | grep -c .)\"; fi\n"
         "  printf 'AS\\trules_sha256\\t%s\\n' \"$(printf '%s\\n' \"$_r\" | sha256sum | cut -d' ' -f1)\"\n"
         "else printf 'AS\\trules_read\\tno\\t%s\\n' \"$(printf '%s' \"$_r\" | head -c 200 | tr '\\t\\n' '  ')\"; fi\n"
+        "exit 0\n"
     )
 
 

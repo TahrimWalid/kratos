@@ -27,14 +27,22 @@ def to_auth_event(rec: Any, target: str) -> Any | None:
         if len(parts) != 2:
             return None
         msg = parts[1].replace("\x1f", " ")
-        user, sep, rest = msg.partition(" : ")
-        if sep and "TTY=" not in rest:
-            msg = f"{user} : TTY=unknown ; {rest}"
         prog = "sudo"
     if prog != "sudo":
         return None
     ts = datetime.fromtimestamp(rec.ts, timezone.utc).isoformat()
-    return classify_auth_message(ts, target, "sudo", msg, msg)
+    return classify_auth_message(ts, target, "sudo", _with_tty(msg), msg)
+
+
+def _with_tty(msg: str) -> str:
+    """sudo without a terminal (every sudo over a plain SSH command) logs
+    "user : PWD=... ; USER=... ; COMMAND=..." with no TTY= field, which the shared
+    classifier needs to recognise a command. Classify with "TTY=unknown" added;
+    the event keeps the original text (raw), so its ID matches the auth read's."""
+    user, sep, rest = msg.partition(" : ")
+    if sep and "COMMAND=" in rest and "TTY=" not in rest and " ; " in rest:
+        return f"{user} : TTY=unknown ; {rest}"
+    return msg
 
 
 def parse(read: Any, target: str = "") -> list[Any]:

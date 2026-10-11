@@ -341,6 +341,7 @@ def build_script(source: str, since: float | None, until: float | None, *, journ
         parts.append(f"{family})\n" + ("\n".join(body) if body else ":") + "\n;;")
     parts.append("*) printf 'M\\tgap\\t%s\\n' 'unknown Linux distribution: no log paths are known for it' ;;")
     parts.append("esac")
+    parts.append("exit 0")   # problems are reported in the output, never as the script's exit status
     return "\n".join(parts) + "\n"
 
 

@@ -191,6 +191,7 @@ _LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
 _SSH_READ_TOOLS = frozenset({
     "read_journalctl", "measure_auth_activity", "compare_periods", "list_processes", "list_open_files",
     "list_privileged_accounts", "check_file_integrity", "run_yara_scan", "run_config_audit",
+    "read_host_logs", "check_log_integrity",
 })
 _loopback_ssh_cache: dict[str, Any] = {}
 _LOOPBACK_SSH_TTL = 600.0

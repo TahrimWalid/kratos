@@ -80,6 +80,7 @@ from kratos.adapters.ssh_remote import (
     DEFAULT_YARA_SWEEP_PATHS as _DEFAULT_YARA_SWEEP_PATHS,
     fetch_privileged_accounts as _fetch_privileged_accounts,
     last_privileged_accounts_via as _last_privileged_accounts_via,
+    fetch_host_logs as _fetch_host_logs,
     SSHResult as _SSHResult,
 )
 from kratos.adapters.baseline import (
@@ -1157,6 +1158,74 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     snap.write_text(json.dumps({**result, "accounts": inv.accounts}, indent=2, default=str), encoding="utf-8")
     result["snapshot_file"] = str(snap)
     return result
+
+
+_HOST_LOG_SOURCES = ("auditd", "sudo", "cron", "systemd", "firewall", "packages", "web")
+_HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
+
+
+@register_tool(
+    name="read_host_logs",
+    description=(
+        "Reads ONE more kind of log on the SSH TARGET DEVICE (the monitored system, not the local "
+        "Kratos host) in a time window, and returns a SUMMARY -- counts, top IPs/users, a few notable "
+        "lines (credentials masked) and exactly what was covered -- never the raw log. `source` is one of: "
+        "'auditd' (every program run, login and account change auditd recorded -- process execution "
+        "history), 'sudo' (who ran what as root, failed sudo), 'cron' (scheduled jobs that ran, with "
+        "user and command), 'systemd' (services started, stopped, failed or reloaded), 'firewall' "
+        "(connections the firewall blocked or allowed and logged), 'packages' (software installed, "
+        "upgraded or removed, and the command that did it), 'web' (web server requests and errors). "
+        "Use it when a question is about one of those -- e.g. 'what ran on this box', 'was anything "
+        "installed', 'did a service crash', 'who is probing the web server', 'what did the firewall "
+        "block'. For SSH logins use read_journalctl/measure_auth_activity; this does not count logins. "
+        "No window given = the last 24 hours."
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web"},
+        "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
+        "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time. Prefer `window`.", "default": None},
+        "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
+    },
+)
+def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: str | None = None,
+                        until: str | None = None) -> dict[str, Any]:
+    from kratos.logsources import summary as _logs_summary
+
+    data_dir = Path(data_dir)
+    source = str(source or "").strip().lower()
+    if source not in _HOST_LOG_SOURCES:
+        return {"status": "error", "observation": f"unknown source {source!r} -- use one of: {', '.join(_HOST_LOG_SOURCES)}"}
+    try:
+        tw = _resolve_tool_window(window=window, since=since, until=until, tool="read_host_logs")
+    except (_TimeBoundError, _TimeIntentError) as e:
+        return {"status": "error", "observation": f"invalid time window: {e}"}
+    if tw is not None:
+        since_epoch = tw.window.start_utc
+        until_epoch = None if tw.open_ended else tw.window.end_utc
+    else:
+        since_epoch, until_epoch = time.time() - _HOST_LOGS_DEFAULT_SECONDS, None
+    clock_offset = _measure_target_clock_offset()
+    shift = clock_offset or 0.0
+    read = _fetch_host_logs(source, since_epoch + shift, until_epoch + shift if until_epoch is not None else None)
+    target = _ssh_target_label()
+    if isinstance(read, _SSHResult):
+        failure = _remote_failure(read)
+        return {"status": "error", "observation": f"reading the {source} logs {failure}",
+                "coverage_gap": f"the {source} logs of {target} were NOT read ({failure})"}
+    events = _events_recording.events_for_log_read(target, read)
+    stored = _events_recording.record_log_read(data_dir, events)  # best-effort
+    own_user = _kconfig.ssh_user_for() if read.via == "ssh" else None
+    out = {"status": "ok", "target": target, **_logs_summary.summarize(read, events, own_user=own_user),
+           "events_stored": stored, "via": read.via}
+    window_block = {"since_utc": _epoch_to_iso_utc(since_epoch),
+                    "until_utc": _epoch_to_iso_utc(until_epoch) if until_epoch is not None else "now",
+                    "asked": "the last 24 hours (no window given)" if tw is None else tw.window.label}
+    if tw is not None:
+        window_block.update({"id": tw.window.id, "tz": tw.window.tz, "chip": tw.window.summary()})
+    window_block.update(_clock_note(clock_offset, since_epoch, until_epoch))
+    out["window"] = window_block
+    return out
 
 
 @register_tool(
