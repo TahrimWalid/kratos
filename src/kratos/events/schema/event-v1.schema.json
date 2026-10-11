@@ -1,0 +1,452 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TahrimWalid/kratos/events/event-v1.schema.json",
+  "title": "Kratos event",
+  "description": "One log line Kratos read, field-mapped to ECS 9.5.0 (kratos.* fields are Kratos's own). Schema version 1. Generated from kratos/events/fields.py -- do not edit by hand.",
+  "type": "object",
+  "properties": {
+    "@timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When it happened (UTC)."
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "created": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When Kratos collected it (UTC)."
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Deterministic: the same line read twice gets the same ID."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "alert",
+            "asset",
+            "enrichment",
+            "event",
+            "metric",
+            "state",
+            "pipeline_error",
+            "signal"
+          ],
+          "description": "`event` for everything in schema v1."
+        },
+        "category": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "api",
+              "authentication",
+              "configuration",
+              "database",
+              "driver",
+              "email",
+              "file",
+              "host",
+              "iam",
+              "intrusion_detection",
+              "library",
+              "malware",
+              "network",
+              "package",
+              "process",
+              "registry",
+              "session",
+              "threat",
+              "vulnerability",
+              "web"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "ECS category, allowed values only."
+        },
+        "type": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "access",
+              "admin",
+              "allowed",
+              "change",
+              "connection",
+              "creation",
+              "deletion",
+              "denied",
+              "device",
+              "end",
+              "error",
+              "group",
+              "indicator",
+              "info",
+              "installation",
+              "protocol",
+              "start",
+              "user"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "ECS type, allowed values only."
+        },
+        "action": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Kratos's verb for it, e.g. ssh_failed_login."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "failure",
+            "success",
+            "unknown"
+          ],
+          "description": "success / failure / unknown."
+        },
+        "dataset": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "kratos.auth, kratos.journal or kratos.privileged_accounts."
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The program that logged it: sshd, sudo, ..."
+        },
+        "original": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "The raw line, credentials masked, capped at 2048 bytes."
+        }
+      },
+      "required": [
+        "created",
+        "id",
+        "kind",
+        "dataset"
+      ],
+      "additionalProperties": false
+    },
+    "message": {
+      "type": "string",
+      "maxLength": 4096,
+      "description": "The log message, credentials masked, capped at 4096 bytes."
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The machine it happened on, as target_key()."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "user": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The acting or authenticating user."
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The acting user's ID."
+        },
+        "effective": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "Who a command ran as (sudo -u)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "target": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "The account being changed (useradd, usermod, ...)."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "group": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The group being changed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string",
+          "anyOf": [
+            {
+              "format": "ipv4"
+            },
+            {
+              "format": "ipv6"
+            }
+          ],
+          "description": "Where it came from."
+        },
+        "port": {
+          "type": "integer",
+          "description": "Source port."
+        }
+      },
+      "additionalProperties": false
+    },
+    "process": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Process name."
+        },
+        "pid": {
+          "type": "integer",
+          "description": "Process ID."
+        },
+        "parent": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "type": "integer",
+              "description": "Parent process ID."
+            }
+          },
+          "additionalProperties": false
+        },
+        "executable": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Path of the program."
+        },
+        "command_line": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "Full command line, credentials masked, capped at 4096 bytes."
+        }
+      },
+      "additionalProperties": false
+    },
+    "file": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "A file the event is about."
+        },
+        "hash": {
+          "type": "object",
+          "properties": {
+            "sha256": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "That file's SHA-256."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The systemd unit."
+        }
+      },
+      "additionalProperties": false
+    },
+    "log": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "maxLength": 4096,
+              "description": "The log file it was read from."
+            }
+          },
+          "additionalProperties": false
+        },
+        "syslog": {
+          "type": "object",
+          "properties": {
+            "priority": {
+              "type": "integer",
+              "description": "journald PRIORITY (0 emerg .. 7 debug)."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "related": {
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "anyOf": [
+              {
+                "format": "ipv4"
+              },
+              {
+                "format": "ipv6"
+              }
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Every IP in the event, for pivoting."
+        },
+        "user": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Every user name in the event, for pivoting."
+        }
+      },
+      "additionalProperties": false
+    },
+    "ecs": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "The ECS version the event follows."
+        }
+      },
+      "required": [
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "kratos": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "description": "Kratos event schema version (1)."
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "ssh",
+            "agent",
+            "local"
+          ],
+          "description": "How the line was read: ssh, agent (the machine's sub-agent) or local."
+        },
+        "read": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The named read, e.g. journal_auth."
+        },
+        "run_id": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The run (kratos.run_context) that read it."
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "since": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "until": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "description": "{since, until} epoch seconds of the read's window, if windowed."
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "truncated",
+            "sampled"
+          ],
+          "description": "complete, truncated (the read was capped) or sampled."
+        },
+        "parser": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Converter name and version, e.g. auth_log/1."
+        },
+        "time_zone_assumed": {
+          "type": "boolean",
+          "description": "True when the source time had no zone and UTC was assumed."
+        },
+        "redacted": {
+          "type": "boolean",
+          "description": "True when credential masking changed anything."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "True when a text field was cut to its byte cap."
+        }
+      },
+      "required": [
+        "schema_version",
+        "transport",
+        "parser"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "@timestamp",
+    "event",
+    "host",
+    "ecs",
+    "kratos"
+  ],
+  "additionalProperties": false
+}

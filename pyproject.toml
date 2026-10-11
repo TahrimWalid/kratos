@@ -74,7 +74,8 @@ where = ["src"]
 # read by run_yara_scan and bundled into every sub-agent installer; the settings
 # template is what `kratos init` writes.
 [tool.setuptools.package-data]
-kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example"]
+kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example",
+          "events/schema/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

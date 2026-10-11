@@ -1,0 +1,367 @@
+{
+ "_source": "Subset of generated/ecs/ecs_flat.yml from https://github.com/elastic/ecs tag v9.5.0 (Apache License 2.0, Copyright Elasticsearch B.V.). Used only to check Kratos's field names and allowed values.",
+ "fields": {
+  "@timestamp": {
+   "normalize": [],
+   "type": "date"
+  },
+  "destination.ip": {
+   "normalize": [],
+   "type": "ip"
+  },
+  "destination.port": {
+   "normalize": [],
+   "type": "long"
+  },
+  "ecs.version": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.action": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.category": {
+   "allowed_values": [
+    "api",
+    "authentication",
+    "configuration",
+    "database",
+    "driver",
+    "email",
+    "file",
+    "host",
+    "iam",
+    "intrusion_detection",
+    "library",
+    "malware",
+    "network",
+    "package",
+    "process",
+    "registry",
+    "session",
+    "threat",
+    "vulnerability",
+    "web"
+   ],
+   "expected_event_types": {
+    "api": [
+     "access",
+     "admin",
+     "allowed",
+     "change",
+     "creation",
+     "deletion",
+     "denied",
+     "end",
+     "info",
+     "start",
+     "user"
+    ],
+    "authentication": [
+     "start",
+     "end",
+     "info"
+    ],
+    "configuration": [
+     "access",
+     "change",
+     "creation",
+     "deletion",
+     "info"
+    ],
+    "database": [
+     "access",
+     "change",
+     "info",
+     "error"
+    ],
+    "driver": [
+     "change",
+     "end",
+     "info",
+     "start"
+    ],
+    "email": [
+     "info"
+    ],
+    "file": [
+     "access",
+     "change",
+     "creation",
+     "deletion",
+     "info"
+    ],
+    "host": [
+     "access",
+     "change",
+     "end",
+     "info",
+     "start"
+    ],
+    "iam": [
+     "admin",
+     "change",
+     "creation",
+     "deletion",
+     "group",
+     "info",
+     "user"
+    ],
+    "intrusion_detection": [
+     "allowed",
+     "denied",
+     "info"
+    ],
+    "library": [
+     "start"
+    ],
+    "malware": [
+     "info"
+    ],
+    "network": [
+     "access",
+     "allowed",
+     "connection",
+     "denied",
+     "end",
+     "info",
+     "protocol",
+     "start"
+    ],
+    "package": [
+     "access",
+     "change",
+     "deletion",
+     "info",
+     "installation",
+     "start"
+    ],
+    "process": [
+     "access",
+     "change",
+     "end",
+     "info",
+     "start"
+    ],
+    "registry": [
+     "access",
+     "change",
+     "creation",
+     "deletion"
+    ],
+    "session": [
+     "start",
+     "end",
+     "info"
+    ],
+    "threat": [
+     "indicator"
+    ],
+    "vulnerability": [
+     "info"
+    ],
+    "web": [
+     "access",
+     "error",
+     "info"
+    ]
+   },
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "event.created": {
+   "normalize": [],
+   "type": "date"
+  },
+  "event.dataset": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.id": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.kind": {
+   "allowed_values": [
+    "alert",
+    "asset",
+    "enrichment",
+    "event",
+    "metric",
+    "state",
+    "pipeline_error",
+    "signal"
+   ],
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.original": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.outcome": {
+   "allowed_values": [
+    "failure",
+    "success",
+    "unknown"
+   ],
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.provider": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "event.type": {
+   "allowed_values": [
+    "access",
+    "admin",
+    "allowed",
+    "change",
+    "connection",
+    "creation",
+    "deletion",
+    "denied",
+    "device",
+    "end",
+    "error",
+    "group",
+    "indicator",
+    "info",
+    "installation",
+    "protocol",
+    "start",
+    "user"
+   ],
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "file.hash.sha256": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "file.path": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "group.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "host.hostname": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "host.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "log.file.path": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "log.syslog.priority": {
+   "normalize": [],
+   "type": "long"
+  },
+  "message": {
+   "normalize": [],
+   "type": "match_only_text"
+  },
+  "process.args": {
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "process.command_line": {
+   "normalize": [],
+   "type": "wildcard"
+  },
+  "process.executable": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "process.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "process.parent.command_line": {
+   "normalize": [],
+   "type": "wildcard"
+  },
+  "process.parent.executable": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "process.parent.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "process.parent.pid": {
+   "normalize": [],
+   "type": "long"
+  },
+  "process.pid": {
+   "normalize": [],
+   "type": "long"
+  },
+  "process.working_directory": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "related.ip": {
+   "normalize": [
+    "array"
+   ],
+   "type": "ip"
+  },
+  "related.user": {
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "service.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "source.ip": {
+   "normalize": [],
+   "type": "ip"
+  },
+  "source.port": {
+   "normalize": [],
+   "type": "long"
+  },
+  "url.original": {
+   "normalize": [],
+   "type": "wildcard"
+  },
+  "user.domain": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user.effective.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user.id": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user.target.name": {
+   "normalize": [],
+   "type": "keyword"
+  }
+ }
+}
