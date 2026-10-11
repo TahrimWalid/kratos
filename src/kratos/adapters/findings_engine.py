@@ -31,19 +31,15 @@ from typing import Any
 from kratos import __version__ as KRATOS_VERSION
 from kratos.utils.latest_file import latest_file
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
+from kratos.target_key import target_key
 
 
 
 # ---------------------------
 # Helpers: find latest files
 # ---------------------------
-_LOOPBACK_NAMES = {"127.0.0.1", "localhost", "::1"}
-
-
-def _host_key(value: Any) -> str:
-    """A comparable host: lower-case, without user@ or [] around IPv6, loopback names unified."""
-    host = str(value or "").rpartition("@")[2].strip().strip("[]").lower()
-    return "loopback" if host in _LOOPBACK_NAMES else host
+# Kept under its old name: logs_trends and older code import it from here.
+_host_key = target_key
 
 
 _ACTIVE = object()  # find_latest_inputs' default: the active target
