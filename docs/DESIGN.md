@@ -615,10 +615,69 @@ for something entirely formulaic. A generic fallback summary covers any
 rule ID that doesn't have its own template yet, so a missed entry produces
 a blander sentence rather than a crash or a blank summary.
 
+## Finding lifecycle
+
+Rules regenerate every finding from scratch each run; `kratos/lifecycle/` is a
+layer *after* them that remembers. It runs inside `write_findings_report`, the
+one place every path (the agent's `correlate_findings`, `kratos run`, scheduled
+runs, `findings-generate`) writes a report, so one hook covers all of them, and
+detection logic is untouched.
+
+- **Identity.** `finding_key = sha256(rule_id ␟ target_key ␟ subject)`. Every
+  current rule has an empty subject (one finding per rule per machine); a future
+  per-entity rule (one finding per CVE+package, per persistence item) sets it.
+  Each finding also carries `entities` — the concrete things it names (source
+  IPs, `port/proto`, accounts, paths, CVE ids), sorted and normalised.
+- **Rule kinds.** `lifecycle/rules.py` classifies every rule id the engine can
+  emit as a *condition* (persists until fixed), an *occurrence* (happened in a
+  window) or a *run note* (`COV-001`, `VULN-003`: how complete this run's read
+  was — never stored, never hidden, never decidable, so nobody can accept an
+  honesty note away). A test scans the engine for rule ids, so a new rule can't
+  ship without declaring its kind.
+- **Coverage-aware mitigation.** A finding absent from a run becomes *mitigated*
+  (condition) or *inactive* (occurrence) only if that run re-collected every
+  input its rule needs — file written during the run (10 s slack), about this
+  machine, and complete (a truncated auth read covers no login-derived rule).
+  Without a run context, or with stale inputs, nothing is covered and the
+  finding is reported "not rechecked". Some rules need fewer inputs than they
+  read: no burst in a fresh, complete auth read is enough to say a brute-force
+  finding didn't recur, even though the rule also reads nmap and system context.
+- **Decisions cover what the person saw.** A decision (risk accepted with a
+  required, capped expiry; false positive; out of scope) records the finding's
+  severity and entities at that moment. A new entity or a higher severity
+  reopens it, naming what's new; counts changing don't. Scopes: this finding,
+  this rule on this machine, this rule everywhere — checked in that order, newest
+  active decision wins, a newer decision at the same scope revokes the older. A
+  reopen or an expiry *releases* a finding: decisions made before that moment no
+  longer apply to it, which stops a broad decision from silently re-hiding it.
+- **Only people decide.** Kratos makes only the deterministic moves (to
+  mitigated/inactive, and back to open on regression, recurrence, expiry or
+  no-longer-covered — plus applying an existing broader-scope decision to a
+  finding it covers). `lifecycle/decide.py` needs a TUI or CLI actor, refuses
+  inside an agent tool call (`settings_store.tool_call_scope`), and a test scans
+  every tool module and the MCP server for any reference to it. MCP is read-only
+  (`kratos_finding_states`).
+- **Nothing is hidden from the model or the guards.** `correlate_findings` still
+  returns every finding, each with `state`, `change` and `decision`, plus a count
+  of what the user's decisions hide. Only the person's default view folds decided
+  findings — always with a count line under answers, in `/report`, `/findings`
+  and scheduled notifications. Guard 3 still fires for an accepted HIGH finding
+  that a dismissive answer doesn't name.
+- **Storage.** `finding_records` (state, latest copy, first/last seen, last
+  re-checked), `finding_events` (append-only transitions, each with actor,
+  interface, reason and run id; a trigger aborts updates), `finding_exceptions`
+  (decisions), `finding_imports` (report files already accounted for). One
+  `BEGIN IMMEDIATE` transaction per report, idempotent per run id (scheduled runs
+  write a second report in the same run). A lifecycle failure never loses the
+  report: it is written without lifecycle fields plus `lifecycle_error`. Old
+  `reports/findings_*.json` are imported once (machine taken from the report, its
+  input files, the session that produced it, else "unknown") and never modified.
+
 ## MCP server surface
 
-`kratos mcp-serve` exposes four tools over stdio — `investigate`,
-`get_findings`, `notify_findings`, `list_sessions`. Kratos's own agent loop
+`kratos mcp-serve` exposes five tools over stdio — `investigate`,
+`get_findings`, `finding_states` (read-only finding lifecycle), `notify_findings`,
+`list_sessions`. Kratos's own agent loop
 remains the sole orchestrator regardless of how a request arrives: MCP
 never exposes the internal tool registry directly, so an external client's
 own model can't pick which internal tool runs or in what order.

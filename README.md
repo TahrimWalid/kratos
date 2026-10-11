@@ -22,6 +22,8 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 **Repeatable when you need it.** `/run` is a fixed audit with no model in the loop. Save any investigation as a **preset**, chain read-only tools into a **pipeline** (or describe one in words and let Kratos draft it for your review), preview a run with `/plan`, put it on a **schedule**, and set **triggers** that notify you or show a response playbook when a finding appears. Alerts go to your phone through [ntfy](https://ntfy.sh).
 
+**Remembers your decisions.** Kratos keeps each finding across checks, so you see what's new, what's still open and what got fixed — not the same list every time. Confirm a finding, accept a risk until a date, or mark it a false positive; a finding only comes back if it shows something you didn't see (a new attacker IP, a higher severity) or your acceptance runs out, and every view says how many findings your decisions hide.
+
 **Reach any box.** Over SSH (nothing installed on the target), or through a **sub-agent**: a small agent that dials out to Kratos — no inbound port, works behind NAT, best over Tailscale — streams live status and answers investigations with its own fixed set of reads.
 
 **Grows with you.** `/evolve` writes a new tool when Kratos is missing one: you approve a test, it writes the tool, tests it in a locked-down sandbox, and shows you the code and its review flags. Nothing is kept until you say yes.

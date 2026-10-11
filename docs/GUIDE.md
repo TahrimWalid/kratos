@@ -11,20 +11,21 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 6. [Connecting a machine to watch](#connecting-a-machine-to-watch)
 7. [Your first investigation](#your-first-investigation)
 8. [Understanding findings](#understanding-findings)
-9. [When Kratos asks you a question](#when-kratos-asks-you-a-question)
-10. [When Kratos asks permission](#when-kratos-asks-permission)
-11. [Two ways to analyze](#two-ways-to-analyze)
-12. [The commands](#the-commands)
-13. [Questions about time](#questions-about-time)
-14. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
-15. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
-16. [Saving and repeating work](#saving-and-repeating-work)
-17. [Keeping an eye on things](#keeping-an-eye-on-things)
-18. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
-19. [The experimental fix channel](#the-experimental-fix-channel)
-20. [Making it yours](#making-it-yours)
-21. [When something goes wrong](#when-something-goes-wrong)
-22. [Words you'll see](#words-youll-see)
+9. [Keeping track of findings](#keeping-track-of-findings)
+10. [When Kratos asks you a question](#when-kratos-asks-you-a-question)
+11. [When Kratos asks permission](#when-kratos-asks-permission)
+12. [Two ways to analyze](#two-ways-to-analyze)
+13. [The commands](#the-commands)
+14. [Questions about time](#questions-about-time)
+15. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
+16. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
+17. [Saving and repeating work](#saving-and-repeating-work)
+18. [Keeping an eye on things](#keeping-an-eye-on-things)
+19. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
+20. [The experimental fix channel](#the-experimental-fix-channel)
+21. [Making it yours](#making-it-yours)
+22. [When something goes wrong](#when-something-goes-wrong)
+23. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -398,9 +399,10 @@ the evidence behind it and, usually, a recommended action. Each finding has a
 - **amber** — medium or low. Worth a look.
 - **green** — informational, or an all-clear.
 
-Type `/report` at any time to see all of a session's findings again, most severe
-first. A finding is Kratos's *conclusion*, not an action — it doesn't act on a
-finding on its own.
+Type `/report` at any time to see the session's findings again, grouped into
+**New**, **Still open**, **Fixed**, **Not rechecked** and **Hidden by your
+decisions**. A finding is Kratos's *conclusion*, not an action — it doesn't act on
+a finding on its own.
 
 Two things keep answers readable:
 
@@ -416,6 +418,88 @@ Two things keep answers readable:
 <p align="center">
   <img src="images/report.svg" width="840" alt="/report: the session&#39;s findings, each with a plain-language summary and its evidence — here who can act as root, sudo activity, and how much of the logs was covered">
 </p>
+
+---
+
+## Keeping track of findings
+
+Kratos remembers its findings from one check to the next. The same problem on the
+same machine is the same finding every time, so instead of the same list after
+every question you see **what's new, what's still open and what got fixed**. Under
+every answer that looked at findings there's a line like:
+
+> New 1 · Still open 3 · Fixed 1 · Hidden by your decisions 2 (/findings)
+
+**What the states mean**
+
+| You see | It means | Who sets it |
+| --- | --- | --- |
+| open | found, nobody has decided anything about it | Kratos |
+| verified | you confirmed it's real; it stays shown | you |
+| fixed | a later check looked again and it was gone | Kratos |
+| no recurrence | something that *happened* (like a login burst) didn't happen again in a later check | Kratos |
+| risk accepted | you know, and accept it until a date you chose | you |
+| not a real problem | you marked it a false positive | you |
+| out of scope | not relevant for this machine | you |
+
+Kratos only calls something fixed when a later check really looked again — read
+the same kind of data, for the same machine, completely. If a check didn't
+re-collect it, the finding stays as it was and shows as **not rechecked**. If a
+fixed finding turns up again, it comes back as **open** ("regressed", or
+"recurred" for something that happened again).
+
+**Deciding about a finding.** Open `/findings` (or `/f`): it lists the open and
+verified findings for the machine you're watching. Pick one with ↑↓ and press:
+
+- `v` — confirm it's real (verify)
+- `a` — accept the risk until a date (7, 30, 90 or 180 days, or a date you type)
+- `f` — not a real problem (false positive)
+- `o` — not relevant for this machine (out of scope)
+- `r` — reopen something you decided about
+- `h` — its history: every change, who made it, when and why
+- `Enter` — the full details
+
+Every decision needs a reason, and accepting a risk always needs an end date —
+at most 180 days unless you change it in **Settings → General**. When the date
+passes, the finding comes back on its own. A decision can cover just this finding,
+this rule on this machine, or this rule everywhere (Kratos asks again before that
+last one). `s` switches between open, hidden, fixed and everything; `p` filters by
+severity; `m` picks the machine; `/` searches.
+
+**A decision covers what you saw.** If you accept a brute-force finding because
+the attempts came from your own scanner, and later the same finding shows a *new*
+source IP — or a higher severity — it comes back as open, naming what's new. Counts
+going up or down don't bring it back.
+
+**Hidden is never silent.** Decided findings are left out of the default view, but
+every answer, `/report`, `/findings` and scheduled notification says how many are
+hidden. The model still sees every finding with its state, and Kratos's own answer
+checks treat an accepted high-severity finding like any other: an answer can't wave
+it away without naming it. Only you can change a finding's state — the model can
+suggest, never decide, and nothing over MCP can change one.
+
+**From the command line:**
+
+```bash
+kratos findings list
+```
+
+```bash
+kratos findings accept 3f9c2a1b7d4e --days 30 --reason "our own vulnerability scanner"
+```
+
+`kratos findings show KEY` prints one finding's history; `verify`, `fp`,
+`out-of-scope` and `reopen` work the same way (each needs `--reason`), and
+`--scope rule-target` or `--scope rule` widens a decision. The 12-character key
+from `list` is enough. `kratos findings list --state decided` shows what your
+decisions hide.
+
+**What's kept.** Finding records, their history and your decisions live in
+`kratos.db` in your data folder (tables `finding_records`, `finding_events`,
+`finding_exceptions`). They grow by one row per finding and one per change — small.
+Nothing is deleted automatically; the old report files in `reports/` stay exactly
+as they were, and the first time you run this version Kratos reads them once to
+start your history (`kratos findings import-reports` repeats that safely).
 
 ---
 
@@ -508,7 +592,8 @@ but here's the map. Everything starts with `/`.
 | *(just type a question)* | Kratos investigates it, picking its own tools |
 | `/run` | the standard fixed audit (no model steering) |
 | `/plan` | preview exactly which steps a run will take; fixed audits show this preview and ask first by default (`/plan gate off` skips it) |
-| `/report` | show this session's findings by severity |
+| `/report` | this session's findings: new, still open, fixed, not rechecked, hidden |
+| `/findings` (or `/f`) | findings remembered across checks — verify, accept a risk, mark false positive or out of scope |
 | `/investigate-host` | investigate the Kratos machine itself, not the target |
 | `/use <tool>` | run one specific tool directly |
 | `/tools` | list every tool Kratos can use, built-in and self-written |
@@ -521,7 +606,7 @@ but here's the map. Everything starts with `/`.
 | `/preset` | save an investigation to re-run later (`/preset new`, `list`, `run`, `show`, `edit`, `delete`, `export`, `import`) |
 | `/preset-describe` | describe a pipeline in words; Kratos drafts it for you to review |
 | `/schedule` | run an audit or preset automatically on a timer |
-| `/trigger` | when a finding shows up: notify you, show a response playbook, or investigate it |
+| `/trigger` | when a finding shows up: notify you, show a response playbook, or investigate it — optionally only when it's new, came back, or an acceptance expired |
 
 **Checking and configuring**
 
@@ -739,6 +824,12 @@ and random. For anything beyond trying it out, run your own ntfy server (set
 Until a topic is set, schedules still save their reports on disk; they just
 don't send them anywhere.
 
+Each scheduled alert starts with what changed since last time (*New · Still open ·
+Fixed · Hidden by your decisions*) and names any risk acceptance that ran out. A
+trigger can be told to fire only for findings that are new, came back, or whose
+acceptance expired — so a problem you already know about doesn't page you every
+run.
+
 ---
 
 ## Keeping an eye on things
@@ -784,6 +875,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos subagent-status` | list paired machines and whether they're connected |
 | `kratos mcp-serve` | start the MCP server (below) |
 | `kratos events` | show the log lines Kratos has read from a machine (below) |
+| `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
 
 `kratos --help --all` lists every subcommand. Without a session, these use the
 default target Kratos saved the first time you set one (or `KRATOS_SSH_HOST`).
@@ -805,7 +897,8 @@ and run:
 [Model Context Protocol](https://modelcontextprotocol.io) — Claude Desktop,
 OpenWebUI and others — ask Kratos to investigate a machine, fetch a session's
 findings, list sessions, and send a notification built from real findings. It's
-read/investigate-only on purpose: every tool that would need a yes/no from you is
+read/investigate-only on purpose (`kratos_finding_states` reads finding states;
+nothing over MCP can change one): every tool that would need a yes/no from you is
 left out, and the other tool never picks Kratos's internal steps — Kratos's own
 loop does, with all its checks.
 
@@ -967,7 +1060,8 @@ permission prompt, pressing Enter is always the safe "no."
   their model. Keep it secret.
 - **`.env`** — Kratos's settings file. `kratos init` creates it and tells you where.
 - **Target** — the machine Kratos is watching.
-- **Finding** — a titled result Kratos reached, with evidence and a severity.
+- **Finding** — a titled result Kratos reached, with evidence and a severity. Kratos
+  remembers each one across checks, with a state (open, fixed, risk accepted, …).
 - **Event** — one log line Kratos read, kept in `kratos.db` with its time, machine,
   user, IP and so on. `kratos events` shows them.
 - **Investigation** — one run where Kratos looks into a question.
