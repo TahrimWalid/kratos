@@ -140,8 +140,11 @@ def _build_message(*, schedule_name: str, target: str, status: str,
         order = ("critical", "high", "medium", "low", "info")
         lines.append("findings: " + "  ".join(f"{tally[s]} {s}" for s in order if tally.get(s)))
         top = [f for f in findings if str(f.get("severity", "")).lower() in ("critical", "high")][:5]
+        decided = {"risk_accepted": "risk accepted", "false_positive": "marked false positive",
+                   "out_of_scope": "marked out of scope"}
         for f in top:
-            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}")
+            note = f"  ({decided[f['state']]} — hidden)" if f.get("state") in decided else ""
+            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}")
     else:
         lines.append("findings: none raised")
     if report_path:

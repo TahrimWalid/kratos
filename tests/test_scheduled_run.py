@@ -405,3 +405,12 @@ def test_notification_leads_with_what_changed_and_names_expired_decisions(tmp_pa
     # the finding wasn't re-collected (no inputs), so it's not "new" -- but its expiry is named
     assert lines[0] == "New 0 · Still open 0 · Fixed 0 · Hidden by your decisions 0"
     assert "decision expired, shown again: CORR-SSH-001 — SSH exposed" in lines
+
+
+def test_a_decided_high_finding_is_marked_in_the_notification_list():
+    msg = W._build_message(schedule_name="wk", target="h", status="completed", report_path=None, error=None,
+                           findings=[{"id": "CORR-SSH-001", "severity": "high", "title": "SSH exposed",
+                                      "state": "risk_accepted"},
+                                     {"id": "PRIV-002", "severity": "high", "title": "UID 0", "state": "open"}])
+    assert "[HIGH] CORR-SSH-001 — SSH exposed  (risk accepted — hidden)" in msg
+    assert "[HIGH] PRIV-002 — UID 0" in msg and "PRIV-002 — UID 0  (" not in msg
