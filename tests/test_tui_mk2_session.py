@@ -1269,42 +1269,68 @@ def test_command_blocks_are_copied_exactly_with_ctrl_y(tmp_path, monkeypatch):
     assert "Ctrl+Y copies these commands exactly" in text
 
 
-def test_usage_is_saved_with_the_session_and_survives_a_restart(tmp_path, monkeypatch):
-    """/usage counted only since Kratos started, so a resumed session showed $0."""
+def _metered(model: str, prompt: int, completion: int, *, local: bool = False) -> None:
+    """One model call through the real choke point (usage ledger)."""
     from kratos import llm_interface
-    from kratos.storage.session_store import SessionStore
 
-    store, sid, screen = _make_screen(tmp_path, monkeypatch)
-    monkeypatch.setattr("kratos.llm_config.get_active_llm_base_url", lambda: "https://api.example.test/v1")
+    body = {"choices": [{"message": {"content": "x"}}],
+            "usage": {"prompt_tokens": prompt, "completion_tokens": completion}}
+    llm_interface._metered_call(lambda: body, system_prompt="", prompt="", max_tokens=1, model=model, local=local)
 
-    async def _run(scr):
-        app = _Host(scr)
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            monkeypatch.setattr("kratos.llm_interface.get_active_llm_model", lambda: "gemini-3.1-flash-lite")
-            llm_interface._record_usage({"prompt_tokens": 1000, "completion_tokens": 200})
-            llm_interface._record_usage({"prompt_tokens": 500, "completion_tokens": 100})
-            monkeypatch.setattr("kratos.llm_interface.get_active_llm_model", lambda: "other-model")
-            llm_interface._record_usage({"prompt_tokens": 10, "completion_tokens": 5})
-            await pilot.pause()
-        assert llm_interface._usage_listener is None          # closed session stops counting
 
-    asyncio.run(_run(screen))
-    llm_interface._record_usage({"prompt_tokens": 99, "completion_tokens": 99})   # no session open: not counted
-    rows = {r["model"]: r for r in SessionStore(tmp_path / "kratos.db").get_usage(sid)}   # "after a restart"
-    assert rows["gemini-3.1-flash-lite"]["calls"] == 2 and rows["gemini-3.1-flash-lite"]["prompt_tokens"] == 1500
-    assert rows["other-model"]["total_tokens"] == 15 and not rows["other-model"]["local"]
+def _usage_text(screen, monkeypatch) -> str:
+    from rich.console import Console
 
     shown: list = []
     monkeypatch.setattr(screen, "_emit", lambda r: shown.append(r))
     screen._render_usage()
-    from rich.console import Console
-
-    console = Console(width=120, record=True, color_system=None)
+    console = Console(width=140, record=True, color_system=None)
     for r in shown:
         console.print(r)
-    text = console.export_text()
-    assert "1,500" in text and "All models" in text and "rate unknown" in text and "~$" in text
+    return console.export_text()
+
+
+def test_usage_is_saved_with_the_session_and_survives_a_restart(tmp_path, monkeypatch):
+    """/usage counted only since Kratos started, so a resumed session showed $0.
+    It now reads the usage ledger, which every model call writes with its session."""
+    from kratos import kratos_config
+    from kratos.budget.ledger import BudgetLedger
+    from kratos.run_context import run_scope
+    from kratos.storage.session_store import SessionStore
+
+    kratos_config.set_active_data_dir(tmp_path)
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    with run_scope("interactive", session_id=sid):
+        _metered("gemini-3.1-flash-lite", 1000, 200)
+        _metered("gemini-3.1-flash-lite", 500, 100)
+        _metered("other-model", 10, 5)
+    with run_scope("interactive", session_id="another-session"):
+        _metered("gemini-3.1-flash-lite", 99, 99)                 # not this session: not counted
+    assert SessionStore(tmp_path / "kratos.db").get_usage(sid) == []   # one source of truth: no double write
+    rows = {r["model"]: r for r in BudgetLedger(tmp_path).usage_by_model(session_id=sid)}   # "after a restart"
+    assert rows["gemini-3.1-flash-lite"]["calls"] == 2 and rows["gemini-3.1-flash-lite"]["prompt_tokens"] == 1500
+
+    text = _usage_text(screen, monkeypatch)
+    assert "1,500" in text and "All models" in text and "no price on file" in text and "~$" in text
+    assert "Model budget — today" in text and "Today, everything" in text and "Each run" in text
+    assert "before the usage ledger" not in text
+
+
+def test_usage_adds_an_old_sessions_pre_ledger_totals_without_double_counting(tmp_path, monkeypatch):
+    from kratos import kratos_config
+    from kratos.run_context import run_scope
+
+    kratos_config.set_active_data_dir(tmp_path)
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    store.add_usage(sid, "gemini-3.1-flash-lite", 1000, 100, 1100)          # recorded before the ledger existed
+    with run_scope("interactive", session_id=sid):
+        _metered("gemini-3.1-flash-lite", 2000, 300)
+    rows, pre = screen._usage_by_model()
+    (row,) = rows
+    assert (row["calls"], row["prompt_tokens"], row["completion_tokens"], pre) == (2, 3000, 400, 1)
+    # $0.10/$0.40 per 1M: (1000*0.1 + 100*0.4)/1e6 + (2000*0.1 + 300*0.4)/1e6
+    assert abs(row["cost"] - (0.00014 + 0.00032)) < 1e-12
+    assert "Includes 1 call(s) recorded before the usage ledger existed." in _usage_text(screen, monkeypatch)
 
 
 def test_a_local_model_is_marked_free(tmp_path, monkeypatch):
@@ -1410,3 +1436,31 @@ def test_target_a_known_machine_just_says_it_is_set_up(tmp_path, monkeypatch):
     pushed, checklist, text = _target_flow_screens(tmp_path, monkeypatch, "203.0.113.78", known=True)
     assert "OnboardTargetScreen" not in pushed and checklist == []
     assert "already set up" in text
+
+
+def test_a_final_answer_without_correlation_is_not_reported_as_stopped(tmp_path, monkeypatch):
+    """The lifecycle-footer check sat inside the status if/elif chain, so an answer
+    with no correlate_findings step (no footer) fell through to the error line
+    "Investigation stopped: final_answer" under a perfectly good answer."""
+    from kratos.agent import loop as agent_loop
+
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    monkeypatch.setattr(screen, "_maybe_auto_compact", lambda: None, raising=False)
+    monkeypatch.setattr(agent_loop, "run_agent", lambda *a, **k: {
+        "status": "final_answer", "final_answer": "All good.", "transcript": []})
+    lines: list = []
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(screen, "_emit_from_worker", lambda r: lines.append(str(r)))
+            screen._run_target_investigation("check it")
+            for _ in range(200):
+                await pilot.pause()
+                if not screen._busy and any("Done in" in line for line in lines):
+                    break
+
+    asyncio.run(_run())
+    assert any("Done in" in line for line in lines)
+    assert not any("Investigation stopped" in line for line in lines)

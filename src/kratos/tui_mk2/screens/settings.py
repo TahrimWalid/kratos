@@ -322,8 +322,10 @@ class SettingsScreen(ResilientWorkerHost, Screen):
     SettingsScreen .set-placeholder {{ color: {T.TEXT_DIM}; padding: 1 0; }}
     """
 
-    def __init__(self, session: Any = None, data_dir: Any = None) -> None:
+    def __init__(self, session: Any = None, data_dir: Any = None, initial_tab: str = "tab-models") -> None:
         super().__init__()
+        self._initial_tab = initial_tab
+        self._bud_rows: list[tuple[str, str]] = []  # (kind, key) per Budget-tab row
         # `session` is the SessionScreen underneath when opened via /settings
         # (used for live footer/backend/name/tz updates). Opened from the home
         # screen (Ctrl+S / 's') there is no session -- `data_dir` is passed
@@ -340,13 +342,13 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
-        self._TABS = ["tab-models", "tab-approvals", "tab-general"]
+        self._TABS = ["tab-models", "tab-approvals", "tab-general", "tab-budget"]
         if session is not None:
             self._TABS = self._TABS + ["tab-session"]
 
     def compose(self) -> ComposeResult:
         yield Static("Settings", id="set-title")
-        with TabbedContent(initial="tab-models"):
+        with TabbedContent(initial=self._initial_tab if self._initial_tab in self._TABS else "tab-models"):
             with TabPane("Models", id="tab-models"):
                 yield DataTable(id="ms-table", cursor_type="row", zebra_stripes=False)
                 yield Static(
@@ -373,6 +375,15 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                          "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
                     id="gen-hint")
                 yield Static("", id="gen-status")
+            with TabPane("Budget", id="tab-budget"):
+                yield DataTable(id="bud-table", cursor_type="row", zebra_stripes=False)
+                yield Static("", id="bud-detail")
+                yield Static(
+                    Text("↑↓ select · enter change / resume / edit price · ctrl+→ next tab · esc back\n"
+                         "Costs are estimates from list prices; your provider's bill is the real one.",
+                         style=T.TEXT_DIM),
+                    id="bud-hint")
+                yield Static("", id="bud-status")
             if self._session is not None:
                 with TabPane("This session", id="tab-session"):
                     yield DataTable(id="sess-table", cursor_type="row", zebra_stripes=False)
@@ -391,11 +402,16 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         gen = self.query_one("#gen-table", DataTable)
         gen.add_columns("Setting", "Value")
         self._reload_general()
+        bud = self.query_one("#bud-table", DataTable)
+        bud.add_columns("Limit", "Value", "Today")
+        self._reload_budget()
         if self._session is not None:
             sess = self.query_one("#sess-table", DataTable)
             sess.add_columns("Setting", "Value")
             self._reload_session()
         table.focus()  # so ↑↓ navigate immediately, no click needed
+        if self._initial_tab == "tab-budget":
+            self.call_after_refresh(bud.focus)
 
     def refresh_theme(self) -> None:
         """Called by KratosTUI.apply_theme_pack after a live pack switch: re-render
@@ -405,6 +421,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._reload()
         self._reload_approvals()
         self._reload_general()
+        self._reload_budget()
         if self._session is not None:
             self._reload_session()
 
@@ -430,6 +447,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self.query_one("#ap-table", DataTable).focus()
         elif tab == "tab-general":
             self.query_one("#gen-table", DataTable).focus()
+        elif tab == "tab-budget":
+            self.query_one("#bud-table", DataTable).focus()
         elif tab == "tab-session":
             self.query_one("#sess-table", DataTable).focus()
 
@@ -477,7 +496,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 
     # --- actions (keyboard-first; no buttons on this screen) -------------
     def action_close(self) -> None:
-        self.app.pop_screen()
+        # dismiss (not pop_screen) so a flow that opened Settings with
+        # push_screen_wait (the first-schedule budget modal's "Edit") resumes.
+        self.dismiss(None)
 
     def action_next_tab(self) -> None:
         tc = self.query_one(TabbedContent)
@@ -525,6 +546,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._toggle_approval()
         elif tab == "tab-general":
             self._general_primary()
+        elif tab == "tab-budget":
+            self._budget_primary()
         elif tab == "tab-session":
             self._session_primary()
 
@@ -811,6 +834,227 @@ class SettingsScreen(ResilientWorkerHost, Screen):
     @on(DataTable.RowSelected, "#gen-table")
     def _gen_row_selected(self, event: DataTable.RowSelected) -> None:
         self._general_primary()
+
+    # --- Budget tab (kratos.budget: spending limits, paused sources, prices) --
+    _BUDGET_LABELS = {
+        "budget.daily_cost_usd": "Daily budget, everything",
+        "budget.unattended_daily_cost_usd": "Daily budget, unattended runs",
+        "budget.daily_tokens": "Daily tokens, local/unpriced models",
+        "budget.run_model_calls": "Model calls per run",
+        "budget.run_tokens": "Tokens per run",
+        "budget.trigger_fires_per_day": "Fires per trigger per day",
+        "budget.trigger_investigations_allowed": "Triggers may start investigations",
+        "budget.soft_limit_percent": "Warn when a limit is this full",
+        "budget.breaker_failures": "Pause unattended runs after failures",
+        "budget.breaker_window_minutes": "... counted within (minutes)",
+        "budget.breaker_pause_minutes": "Pause length (minutes)",
+    }
+
+    def _budget_value(self, key: str, value: Any) -> str:
+        from kratos.budget import limits as BL
+
+        if key in (BL.DAILY_COST, BL.UNATTENDED_DAILY_COST):
+            return f"${value:,.2f}" if value == 0 or value >= 0.01 else f"${value:,.4f}"
+        if key == BL.TRIGGER_INVESTIGATIONS:
+            return "on" if value else "off"
+        if key == BL.SOFT_PERCENT:
+            return f"{value}%"
+        return f"{value:,}"
+
+    def _reload_budget(self) -> None:
+        """Every budget.* limit with today's spend against it, then paused
+        sources (Enter resumes) and the price table (Enter edits)."""
+        from kratos import settings_store
+        from kratos.budget import limits as BL
+        from kratos.budget import pricing, report
+
+        table = self.query_one("#bud-table", DataTable)
+        keep = table.cursor_row if table.row_count else 0
+        table.clear()
+        self._bud_rows = []
+        dd = self._data_dir()
+        if dd is None:
+            table.add_row(Text("No data folder — budget settings unavailable here.", style=T.TEXT_DIM), "", "")
+            self._bud_rows.append(("none", ""))
+            return
+        today = report.today(dd)
+        spent = {sc.scope: sc for sc in today.scopes}
+        today_col = {
+            BL.DAILY_COST: spent[BL.SCOPE_DAILY_COST],
+            BL.UNATTENDED_DAILY_COST: spent[BL.SCOPE_UNATTENDED_COST],
+            BL.DAILY_TOKENS: spent[BL.SCOPE_DAILY_TOKENS],
+        }
+        for key in BL.KEYS:
+            value = settings_store.get(key, data_dir=dd)
+            used = today_col.get(key)
+            if used is not None:
+                style = T.CRITICAL if used.share >= 1.0 else (T.ATTENTION if used.share >= report.NEAR_SHARE else T.TEXT_MUTED)
+                today_txt = Text(f"used {used.text}", style=style)
+            else:
+                today_txt = Text("")
+            table.add_row(Text(self._BUDGET_LABELS.get(key, key), style=T.TEXT_MUTED),
+                          Text(self._budget_value(key, value), style=T.TEXT), today_txt)
+            self._bud_rows.append(("limit", key))
+        table.add_row(Text("Paused sources", style=f"bold {T.TEXT_BRIGHT}"), "", "")
+        self._bud_rows.append(("header", ""))
+        if today.pauses:
+            from kratos.utils import timeutil
+
+            for p in today.pauses:
+                until = timeutil.format_for_display(timeutil.epoch_to_utc_iso(p["until"]), "%H:%M", data_dir=dd)
+                table.add_row(Text(f"  {p['key']}", style=T.ATTENTION), Text(f"paused until {until}", style=T.TEXT),
+                              Text("enter = resume now", style=T.TEXT_DIM))
+                self._bud_rows.append(("pause", p["key"]))
+        else:
+            table.add_row(Text("  none", style=T.TEXT_DIM), "", "")
+            self._bud_rows.append(("header", ""))
+        table.add_row(Text("Prices (USD per 1M tokens, in / out)", style=f"bold {T.TEXT_BRIGHT}"), "", "")
+        self._bud_rows.append(("header", ""))
+        for model, (rin, rout) in sorted(pricing.rates(dd).items()):
+            table.add_row(Text(f"  {model}", style=T.TEXT_MUTED), Text(f"${rin:g} / ${rout:g}", style=T.TEXT),
+                          Text("enter = edit", style=T.TEXT_DIM))
+            self._bud_rows.append(("rate", model))
+        table.add_row(Text("  + add a model's price", style=T.ACCENT), "", "")
+        self._bud_rows.append(("rate_add", ""))
+        if 0 <= keep < len(self._bud_rows):
+            table.move_cursor(row=keep)
+        self._show_budget_detail()
+
+    def _selected_budget_row(self) -> tuple[str, str]:
+        idx = self.query_one("#bud-table", DataTable).cursor_row
+        if idx is None or not 0 <= idx < len(self._bud_rows):
+            return ("none", "")
+        return self._bud_rows[idx]
+
+    def _show_budget_detail(self) -> None:
+        from kratos import settings_store
+
+        kind, key = self._selected_budget_row()
+        if kind == "limit":
+            doc = next((sp.doc for sp in settings_store.specs() if sp.key == key), "")
+            text = f"{doc}  ({key})"
+        elif kind == "pause":
+            text = "Paused after repeated failed or looping runs. Enter resumes it now."
+        elif kind in ("rate", "rate_add"):
+            text = ("Used to estimate costs (not your bill). A model with no price still has its token limits; "
+                    "a provider-reported cost is used when the response includes one.")
+        else:
+            text = ""
+        self.query_one("#bud-detail", Static).update(Text(text, style=T.TEXT_DIM))
+
+    @on(DataTable.RowHighlighted, "#bud-table")
+    def _bud_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_budget_detail()
+
+    @on(DataTable.RowSelected, "#bud-table")
+    def _bud_row_selected(self, event: DataTable.RowSelected) -> None:
+        self._budget_primary()
+
+    def _set_bud_status(self, msg: str, style: str | None = None) -> None:
+        self.query_one("#bud-status", Static).update(Text(msg, style=style or T.TEXT_MUTED))
+
+    def _budget_primary(self) -> None:
+        kind, key = self._selected_budget_row()
+        if kind == "limit":
+            self._set_budget_limit_flow(key)
+        elif kind == "pause":
+            self._resume_pause_flow(key)
+        elif kind == "rate":
+            self._edit_rate_flow(key)
+        elif kind == "rate_add":
+            self._edit_rate_flow(None)
+
+    @work
+    async def _set_budget_limit_flow(self, key: str) -> None:
+        """Change one budget.* limit -- validated by the setting itself, recorded
+        as this person (tui:settings); applies from the next model call."""
+        from kratos import settings_store
+        from kratos.budget import limits as BL
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            return
+        current = settings_store.get(key, data_dir=dd)
+        label = self._BUDGET_LABELS.get(key, key)
+        if key == BL.TRIGGER_INVESTIGATIONS:
+            answer = await self.app.push_screen_wait(ListPickerModal(label, [
+                ("off", "off — triggers only notify (no model spending)"),
+                ("on", "on — a trigger may start a read-only investigation (spends model money, unattended)")]))
+        else:
+            doc = next((sp.doc for sp in settings_store.specs() if sp.key == key), "")
+            hint = doc + (" 0 means none allowed; there is no 'unlimited' — set a large number on purpose."
+                          if key != BL.SOFT_PERCENT else "")
+            answer = await self.app.push_screen_wait(PromptModal(label, hint, initial=str(current)))
+        if answer is None:
+            return
+        try:
+            settings_store.set(key, answer.strip() if isinstance(answer, str) else answer, data_dir=dd,
+                               actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_bud_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_budget()
+        self._set_bud_status("Saved — applies to the next model call, in every Kratos process.", T.SAFE)
+
+    @work
+    async def _resume_pause_flow(self, key: str) -> None:
+        from kratos.budget import breaker
+        from kratos.tui_mk2.modals import ConfirmModal
+
+        dd = self._data_dir()
+        if dd is None:
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Resume now?", f"Let {key} runs use the model again before the pause ends? If whatever kept failing "
+            "isn't fixed, it may pause again.", yes_label="resume", no_label="keep paused"))
+        if not ok:
+            return
+        if breaker.resume(dd, key, actor="tui:settings"):
+            self._set_bud_status(f"Resumed {key}.", T.SAFE)
+        else:
+            self._set_bud_status(f"{key} wasn't paused any more.", T.TEXT_MUTED)
+        self._reload_budget()
+
+    @work
+    async def _edit_rate_flow(self, model: str | None) -> None:
+        """Add or correct a model's price (USD per 1M tokens), or remove it."""
+        from kratos import settings_store
+        from kratos.budget import pricing
+        from kratos.tui_mk2.modals import PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            return
+        if model is None:
+            from kratos.llm_config import get_active_llm_model
+
+            model = await self.app.push_screen_wait(PromptModal(
+                "Model name", "Exactly as your provider names it (as in /model).", initial=get_active_llm_model()))
+            if not model or not model.strip():
+                return
+            model = model.strip()
+        current = pricing.rates(dd).get(model)
+        answer = await self.app.push_screen_wait(PromptModal(
+            f"Price for {model}", "Input, output — US dollars per 1M tokens, e.g. 0.10, 0.40. "
+            "Type 'remove' to delete this price.",
+            initial=f"{current[0]:g}, {current[1]:g}" if current else ""))
+        if answer is None:
+            return
+        try:
+            if answer.strip().lower() == "remove":
+                pricing.remove_rate(dd, model, actor="tui:settings")
+                self._set_bud_status(f"Removed the price for {model}; its token limits still apply.", T.SAFE)
+            else:
+                parts = [p.strip().lstrip("$") for p in answer.replace("/", ",").split(",")]
+                if len(parts) != 2:
+                    raise settings_store.SettingError("give two prices: input, output")
+                pricing.set_rate(dd, model, parts[0], parts[1], actor="tui:settings")
+                self._set_bud_status(f"Saved the price for {model}.", T.SAFE)
+        except settings_store.SettingError as e:
+            self._set_bud_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_budget()
 
     # --- This session tab (session-scoped; only present with a session) --
     def _session_name(self) -> str:

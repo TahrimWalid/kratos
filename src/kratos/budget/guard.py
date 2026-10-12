@@ -404,8 +404,10 @@ def _soft_limit_check(res: Reservation) -> None:
         if not ledger.state_claim(f"notified:soft:{scope}:{period}"):
             continue
         label = L.SCOPE_LABEL.get(scope, scope)
-        text = (f"{lim.soft_limit_percent}% of {label} used ({L.format_amount(scope, spent)} of "
-                f"{L.format_amount(scope, limit)}). Settings -> Budget to change it.")
+        used = min(100, int(spent / limit * 100))
+        text = (f"{label[0].upper()}{label[1:]} is {used}% used ({L.format_amount(scope, spent)} of "
+                f"{L.format_amount(scope, limit)}; you're warned at {lim.soft_limit_percent}%). "
+                "Settings -> Budget to change it.")
         _notice(text, "warning")
         if scope in DAY_SCOPES:
             notify("Kratos: " + text, "info")

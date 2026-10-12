@@ -291,6 +291,15 @@ def _check_history(out: list[Check], data_dir: Path) -> None:
                         "policy; nothing is deleted automatically", "kratos snapshots prune   (preview)  /  --apply"))
 
 
+def _check_budget(out: list[Check], data_dir: Path) -> None:
+    """Spending limits (kratos.budget): today's spend against them, paused sources."""
+    from kratos.budget.report import doctor_row
+
+    status, detail = doctor_row(data_dir)
+    out.append(_row("budget", status, detail,
+                    "Settings → Budget (limits, paused sources, prices)" if status == "warn" else ""))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -298,6 +307,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     out: list[Check] = []
     sections = list(_SECTIONS)
     if data_dir is not None:
+        sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
     for name, fn in sections:
         try:

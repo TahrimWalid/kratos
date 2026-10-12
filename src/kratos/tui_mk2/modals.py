@@ -435,7 +435,7 @@ class HelpModal(ModalScreen[None]):
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
-                ("/usage", "Token usage + estimated cost this session (local models = free)"),
+                ("/usage", "Today's spending vs your limits + this session's tokens and estimated cost (limits: Settings → Budget)"),
                 ("/context", "What's currently loaded in the context window"),
                 ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
                 ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
@@ -459,7 +459,7 @@ class HelpModal(ModalScreen[None]):
                 ("/target seal [verify|remove]", "Seal the target's journal: keep its verification key here, check it"),
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
-                ("/settings", "Settings — models, tools, name, timezone, this session (also 's' at the picker)"),
+                ("/settings", "Settings — models, tools, name, timezone, spending limits (Budget), this session (also 's' at the picker)"),
                 ("Ctrl+T", "Theme picker — from anywhere"),
                 ("/whitelist", "A paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
             ]))

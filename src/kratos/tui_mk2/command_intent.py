@@ -76,7 +76,7 @@ CAPABILITIES: list[tuple[str, str]] = [
     ("/run", "run a fixed, deterministic 'standard audit' of the target (same checks every run)"),
     ("/evolve", "write a brand-new tool when an existing one doesn't cover a gap"),
     ("/doctor", "self-diagnostic of Kratos's own setup (LLM, target, tools)"),
-    ("/usage, /context", "show token usage/cost, and what's in the context window"),
+    ("/usage, /context", "show token usage/cost against the spending limits, and what's in the context window"),
     ("/report", "show the findings gathered so far"),
     ("/findings", "list remembered findings and let the user verify/accept/dismiss them (the user decides)"),
 ]

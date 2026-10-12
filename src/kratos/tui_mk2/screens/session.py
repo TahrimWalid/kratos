@@ -118,7 +118,7 @@ _PALETTE_COMMANDS = [
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
-    ("/usage", "token usage + estimated cost this session (local = free)"),
+    ("/usage", "today's spending vs your limits + this session's tokens and cost"),
     ("/context", "what's currently loaded in the context window"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
     ("/evolve", "write a new tool for the current gap  (/evolve help: how it works)"),
@@ -135,7 +135,7 @@ _PALETTE_COMMANDS = [
     ("/reset", "wipe screen + archive history, start fresh"),
     ("/delete", "archive (soft-delete) this session"),
     ("/sessions", "back to the session picker (keeps this session)"),
-    ("/settings", "settings — models, tool approvals, timezone"),
+    ("/settings", "settings — models, tool approvals, timezone, spending limits"),
     ("/subagent", "add / manage sub-agents — reach a box with no inbound SSH (telemetry + investigations)"),
     ("/whitelist", "a paired target's allowlist — add/edit entries, opt-in, typed-EXECUTE dispatch"),
     ("/run-fix", "run the last recommended command via the target's sub-agent (if it's in the allowlist)"),
@@ -283,7 +283,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos import llm_interface
 
         llm_interface.reset_session_token_usage()  # fresh cumulative accounting for this session
-        llm_interface.set_usage_listener(self._record_usage)  # and a durable total per session
+        # (The durable per-session total is the usage ledger -- kratos.budget --
+        # which every model call writes with this session's id; /usage reads it.)
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         self._user_name = (_kconfig.load_local_config(self._data_dir).get("user_name") or "").strip()
         if self.session_state["targets"]:
@@ -305,16 +306,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if note:
             self.app.pending_session_note = None
             self._emit(R.note_line(note))
+        try:  # one-time budget notices (e.g. the 0.4 upgrade kept investigate triggers on)
+            from kratos.budget.guard import pending_notices
+
+            for text in pending_notices(self._data_dir):
+                self._emit(R.note_line(text.replace(" -> ", " → ")))
+        except Exception:  # noqa: BLE001 -- a notice is never worth failing to open a session
+            pass
         self.query_one("#goal", Input).focus()
         self._maybe_timezone_fallback()  # only fires if auto-detect failed
-
-    def on_unmount(self) -> None:
-        from kratos import llm_interface
-
-        # Stop counting calls toward this session once it's closed (only if the
-        # listener is still ours -- another session may have replaced it).
-        if llm_interface._usage_listener == self._record_usage:
-            llm_interface.set_usage_listener(None)
 
     # --- one-time manual timezone entry when auto-detect fails ---
     @work
@@ -542,7 +542,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 footer.append(note, style=T.ATTENTION)
             return footer
 
-        notes = ["  ·  updated on disk — restart Kratos", "  ·  restart: updated"] if rebuilt else [""]
+        budget = self._budget_hint()
+        budget_note = f"  ·  {budget}" if budget else ""
+        notes = ([budget_note + "  ·  updated on disk — restart Kratos", budget_note + "  ·  restart: updated"]
+                 if rebuilt else [budget_note])
         candidates = [(parts[i:], note) for note in notes[:1] for i in range(len(parts) + 1)]
         candidates += [([], note) for note in notes[1:]]
         footer = build(*candidates[-1])
@@ -552,6 +555,25 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 footer = attempt
                 break
         self.query_one("#statusfooter", Static).update(footer)
+
+    _BUDGET_HINT_TTL = 10.0
+
+    def _budget_hint(self) -> str | None:
+        """'budget: $1.86 of $2.00 (today, everything)' when a daily hard limit is
+        within 10% or used up (kratos.budget.report.near_limit), else None. Read
+        at most every few seconds -- the footer refreshes after every step."""
+        now = time.monotonic()
+        cached = getattr(self, "_budget_hint_cache", None)
+        if cached is not None and now - cached[0] < self._BUDGET_HINT_TTL:
+            return cached[1]
+        try:
+            from kratos.budget.report import near_limit
+
+            hint = near_limit(self._data_dir)
+        except Exception:  # noqa: BLE001 -- the footer never fails over this
+            hint = None
+        self._budget_hint_cache = (now, hint)
+        return hint
 
     def refresh_theme(self) -> None:
         """Called after a live theme-pack switch (KratosTUI.apply_theme_pack):
@@ -1000,61 +1022,108 @@ class SessionScreen(ResilientWorkerHost, Screen):
         return False
 
     # --- /usage (token + cost transparency) -----------------
-    # Prices come from kratos.budget.pricing (one table; the person corrects it in
-    # Settings -> Budget). Only used to show an estimate, never billed.
-    @staticmethod
-    def _backend_is_local() -> bool:
-        from kratos.llm_config import _active_backend_is_local
+    # Read from the usage ledger (kratos.budget) -- every model call from every
+    # path writes it with this session's id. Sessions from before the ledger
+    # existed kept their totals in session_usage; those are added in (new calls
+    # are never written there, so nothing is counted twice).
+    def _usage_by_model(self) -> tuple[list[dict[str, Any]], int]:
+        """This session's usage per model: ledger + pre-ledger totals. Returns
+        (rows, pre_ledger_calls). Each row: model, local, calls, prompt_tokens,
+        completion_tokens, cost (USD, None when nothing about it is priced),
+        unpriced (some calls had no price on file)."""
+        from kratos.budget import pricing
+        from kratos.budget.ledger import BudgetLedger
 
-        return _active_backend_is_local()
+        sid = self.session_state["session_id"]
+        rates = pricing.rates(self._data_dir)
+        merged: dict[str, dict[str, Any]] = {}
 
-    def _record_usage(self, usage: Any, model: str) -> None:
-        """Usage listener (llm_interface): every model call adds to this session's
-        saved total, from whichever thread made the call."""
-        self._store.add_usage(self.session_state["session_id"], model, usage.prompt_tokens,
-                              usage.completion_tokens, usage.total_tokens, local=self._backend_is_local())
+        def _row(model: str) -> dict[str, Any]:
+            return merged.setdefault(model, {"model": model, "local": False, "calls": 0, "prompt_tokens": 0,
+                                             "completion_tokens": 0, "cost": None, "unpriced": False})
+
+        for r in BudgetLedger(self._data_dir).usage_by_model(session_id=sid):
+            row = _row(r["model"])
+            row["local"] = row["local"] or bool(r["local"])
+            row["calls"] += r["calls"]
+            row["prompt_tokens"] += r["prompt_tokens"]
+            row["completion_tokens"] += r["completion_tokens"]
+            if r["cost_usd"] is not None:
+                row["cost"] = (row["cost"] or 0.0) + r["cost_usd"]
+            row["unpriced"] = row["unpriced"] or bool(r["unpriced_calls"])
+        pre_ledger = 0
+        for r in self._store.get_usage(sid):
+            pre_ledger += r["calls"]
+            row = _row(r["model"])
+            row["local"] = row["local"] or bool(r["local"])
+            row["calls"] += r["calls"]
+            row["prompt_tokens"] += r["prompt_tokens"]
+            row["completion_tokens"] += r["completion_tokens"]
+            cost = 0.0 if r["local"] else pricing.tokens_cost(rates.get(r["model"]), r["prompt_tokens"],
+                                                               r["completion_tokens"])
+            if cost is None:
+                row["unpriced"] = True
+            else:
+                row["cost"] = (row["cost"] or 0.0) + cost
+        return sorted(merged.values(), key=lambda r: -(r["prompt_tokens"] + r["completion_tokens"])), pre_ledger
 
     def _render_usage(self) -> None:
-        """The whole session's model usage (saved with the session, so it survives
-        restarts), per model, with an estimated cost."""
+        """Today's spending against the limits, then this session's model usage
+        per model with an estimated cost (saved, so it survives restarts)."""
         from rich.table import Table
 
-        rows = self._store.get_usage(self.session_state["session_id"])
+        from kratos.budget import pricing, report
+
+        today = report.today(self._data_dir)
+        budget = Table(title=f"Model budget — today ({today.day})", title_justify="left",
+                       title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
+        for col, justify in (("Limit", "left"), ("Used", "right"), ("Left", "right")):
+            budget.add_column(col, justify=justify)
+        for sc in today.scopes:
+            style = T.CRITICAL if sc.share >= 1.0 else (T.ATTENTION if sc.share >= report.NEAR_SHARE else T.TEXT)
+            budget.add_row(sc.label, Text(sc.text, style=style), sc.remaining_text)
+        budget.add_row("Each run", f"at most {today.limits.run_model_calls} calls",
+                       f"{today.limits.run_tokens:,} tokens")
+        self._emit(budget)
+        for p in today.pauses:
+            self._emit(R.note_line(f"{p['key']} runs are paused after repeated failures ({p.get('reason')}) "
+                                   "— resume in Settings → Budget."))
+
+        rows, pre_ledger = self._usage_by_model()
         if not rows:
-            self._emit(R.note_line("No model calls recorded for this session yet."))
+            self._emit(R.note_line("No model calls recorded for this session yet. Limits: Settings → Budget."))
             return
         table = Table(title="Model usage — this session", title_justify="left",
                       title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
         for col, justify in (("Model", "left"), ("Calls", "right"), ("Tokens sent", "right"),
                              ("Tokens received", "right"), ("Estimated cost", "right")):
             table.add_column(col, justify=justify)
-        from kratos.budget import pricing
-
-        rates = pricing.rates(self._data_dir)
         total_cost, unknown = 0.0, []
         for r in rows:
-            rate = rates.get(r["model"])
             if r["local"]:
                 cost = Text("free (local)", style=T.SAFE)
-            elif rate:
-                value = (r["prompt_tokens"] / 1e6) * rate[0] + (r["completion_tokens"] / 1e6) * rate[1]
-                total_cost += value
-                cost = Text(f"~${value:.4f}", style=T.ATTENTION)
+            elif r["cost"] is not None:
+                total_cost += r["cost"]
+                cost = Text(f"~${r['cost']:.4f}" + (" + unpriced" if r["unpriced"] else ""), style=T.ATTENTION)
             else:
+                cost = Text("no price on file", style=T.TEXT_DIM)
+            if r["unpriced"] and not r["local"]:
                 unknown.append(r["model"])
-                cost = Text("billed — rate unknown", style=T.TEXT_DIM)
             table.add_row(r["model"], f"{r['calls']:,}", f"{r['prompt_tokens']:,}", f"{r['completion_tokens']:,}", cost)
         if len(rows) > 1:
             table.add_section()
             table.add_row("All models", f"{sum(r['calls'] for r in rows):,}",
                           f"{sum(r['prompt_tokens'] for r in rows):,}",
                           f"{sum(r['completion_tokens'] for r in rows):,}",
-                          Text(f"~${total_cost:.4f}" + (" + unknown" if unknown else ""), style=T.ATTENTION))
+                          Text(f"~${total_cost:.4f}" + (" + unpriced" if unknown else ""), style=T.ATTENTION))
         self._emit(table)
         note = (pricing.ESTIMATE_NOTE + " "
                 "Usage is saved with this session, so it counts every run of it.")
         if unknown:
-            note += f" No price on file for {', '.join(unknown)}: check your provider's pricing."
+            note += (f" No price on file for {', '.join(unknown)}: token limits still apply — "
+                     "add its price in Settings → Budget.")
+        if pre_ledger:
+            note += f" Includes {pre_ledger:,} call(s) recorded before the usage ledger existed."
         self._emit(R.note_line(note))
 
     # --- /context (what's in the window) --------------------
@@ -2687,6 +2756,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if min_sev is None:
             return
 
+        if not await self._unattended_budget_gate("schedule"):
+            self._emit(R.note_line("Schedule not created."))
+            return
         base = {"audit": "audit", "preset": preset_name or "preset", "group": "group"}[kind]
         name_raw = await self._ask_new_name(
             "Schedule name", f"{cadence}-{base}", _S.slugify_schedule_name,
@@ -2715,6 +2787,50 @@ class SessionScreen(ResilientWorkerHost, Screen):
             "Activate it — run these once (Kratos never runs systemctl for you)", cmds,
             note="systemd then owns the timing, reboot-survival, and catch-up. "
                  "Test it any time with /schedule run-now.")
+
+    _UNATTENDED_BUDGET_SHOWN = "shown:unattended_budget_summary"
+
+    async def _unattended_budget_gate(self, what: str) -> bool:
+        """Before the first schedule or trigger is saved (owner decision 3): show
+        what unattended runs may spend -- Keep / Edit (Settings → Budget) /
+        Cancel. Shown once (budget_state); afterwards the limits live in
+        Settings → Budget. Returns False to cancel the creation."""
+        from kratos.budget import guard as _bg
+        from kratos.budget import limits as _BL
+        from kratos.budget.ledger import BudgetLedger
+        from kratos.tui_mk2.screens.settings import SettingsScreen
+
+        ledger = BudgetLedger(self._data_dir)
+        if ledger.state_get(self._UNATTENDED_BUDGET_SHOWN) is not None:
+            return True
+        _bg.ensure_upgrade_migration(self._data_dir)
+        lim = _BL.read(self._data_dir)
+
+        def money(v: float) -> str:
+            return _BL.format_amount(_BL.SCOPE_DAILY_COST, v)
+
+        summary = (
+            f"A {what} runs with nobody watching, so Kratos caps what it may spend on the model:\n"
+            f"• schedules, triggers and MCP together: {money(lim.unattended_daily_cost_usd)} per day\n"
+            f"• everything, you included: {money(lim.daily_cost_usd)} per day\n"
+            f"• each run: at most {lim.run_model_calls} model calls and {lim.run_tokens:,} tokens\n"
+            f"• each trigger: at most {lim.trigger_fires_per_day} fires per day\n"
+            f"• triggers may start investigations: "
+            f"{'yes' if lim.trigger_investigations_allowed else 'no — they only notify'}\n"
+            "At a limit, unattended runs stop and tell you. Costs are estimates — your provider's bill "
+            "is the real figure.")
+        choice = await self.app.push_screen_wait(ListPickerModal(
+            "Spending limits for unattended runs",
+            [("keep", "Keep these limits"),
+             ("edit", "Edit them now (Settings → Budget)"),
+             ("cancel", f"Cancel — don't create this {what}")],
+            subtitle=summary))
+        if choice not in ("keep", "edit"):
+            return False
+        ledger.state_set(self._UNATTENDED_BUDGET_SHOWN, {"choice": choice, "what": what})
+        if choice == "edit":
+            await self.app.push_screen_wait(SettingsScreen(self, initial_tab="tab-budget"))
+        return True
 
     def _group_has_agentic_job(self, jobs: list[dict]) -> bool:
         """True if any group job runs the LLM (a goal preset) — the only kind
@@ -2965,6 +3081,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if cooldown is None:
             return
 
+        if not await self._unattended_budget_gate("trigger"):
+            self._emit(R.note_line("Trigger not created."))
+            return
         what = {"notify": "alert", "playbook": "playbook", "investigate": "investigate"}[action]
         name_raw = await self._ask_new_name(
             "Trigger name", f"{fid or sev}-{what}", _T.slugify_trigger_name,
@@ -2980,6 +3099,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         self._emit(R.success_line(
             f"Saved trigger {tg.name!r}: when {tg.condition_text} → {tg.action}."))
+        if action == "investigate":
+            from kratos import settings_store as _ss
+            from kratos.budget import limits as _BL
+
+            if not _ss.get(_BL.TRIGGER_INVESTIGATIONS, data_dir=self._data_dir):
+                self._emit(R.note_line(
+                    "Triggers may not start investigations right now, so this one will only notify. "
+                    "Turn it on in Settings → Budget → 'Triggers may start investigations'."))
         self._emit(R.note_line(
             "It's evaluated after every scheduled run (and after /run). "
             "Try it now with /trigger test."))
@@ -4556,7 +4683,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
         elif result["status"] == STOPPED_BY_BUDGET:
-            self._emit_bubble_from_worker(R.result_panel("Kratos — stopped by budget", result["final_answer"], T.ATTENTION, time_str=t), d)
+            self._emit_bubble_from_worker(R.result_panel(
+                "Kratos — stopped by budget", result["final_answer"].replace(" -> ", " → "), T.ATTENTION, time_str=t), d)
         elif result["status"] == "llm_unavailable":
             # Kratos's own model failed mid-investigation -> banner,
             # not an inline tool-style error.

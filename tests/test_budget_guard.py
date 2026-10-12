@@ -439,9 +439,9 @@ def test_soft_limit_warns_once_per_scope_per_day_across_processes(env, _budget_i
     replies.append(_ok(1000, 0))
     with run_scope("interactive"):
         _call()
-    daily = [m for m, _sev in sent if "today's model budget" in m]
-    assert len(daily) == 1 and "50%" in daily[0] and sent[0][1] == "info"
-    assert sum("today's model budget" in n for n in notices) == 1
+    daily = [m for m, _sev in sent if "Today's model budget" in m]
+    assert len(daily) == 1 and "50% used" in daily[0] and "warned at 50%" in daily[0] and sent[0][1] == "info"
+    assert sum("Today's model budget" in n for n in notices) == 1
 
 
 def test_hard_limit_notifies_once_per_day(env, _budget_isolated):

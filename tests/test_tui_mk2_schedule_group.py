@@ -26,6 +26,11 @@ def _make(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text("LLM_MODEL=m\n", encoding="utf-8")
     store = SessionStore(tmp_path / "kratos.db")
     sid = store.create_session(["10.0.0.1"], "m")
+    # The one-time "spending limits for unattended runs" summary (tests/test_tui_budget.py)
+    # was already answered here, so these flows ask only their own questions.
+    from kratos.budget.ledger import BudgetLedger
+
+    BudgetLedger(tmp_path).state_set(SessionScreen._UNATTENDED_BUDGET_SHOWN, {"choice": "keep"})
     return store, sid, SessionScreen(store, tmp_path, sid, ["10.0.0.1"], "")
 
 
