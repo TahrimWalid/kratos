@@ -153,6 +153,8 @@ from kratos.agent.tools import TOOL_REGISTRY, Tool, tool_reaches_approval
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
 from kratos.run_context import run_scope
+from kratos.budget import breaker as _budget_breaker
+from kratos.budget import guard as _budget_guard
 
 # Must match cli/repl.py::TRANSCRIPTS_DIRNAME -- both write into the SAME
 # data_dir/kratos.db + data_dir/sessions/ store, deliberately: an
@@ -210,12 +212,29 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
         for name in excluded:
             del TOOL_REGISTRY[name]
         try:
+            # Budget (docs/phase0/0.4 §5.5): an MCP client spends with nobody
+            # watching. Refuse before starting when the source is paused or a
+            # cap is already used up -- a clear status, never a hang.
+            with run_scope("mcp", target=target):
+                refusal = _budget_guard.precheck("mcp", data_dir_=data_dir)
+            if refusal is not None:
+                return {"session_id": None, "status": "refused_by_budget", "final_answer": refusal.user_message(),
+                        "findings": [], "recommended_commands": [], "token_usage": None, "time": None,
+                        "budget": refusal.as_dict()}
+
             store = SessionStore(data_dir / "kratos.db")
             session_id = store.create_session([target], get_active_llm_model())
             turn_id = store.start_turn(session_id, goal)
 
             with run_scope("mcp", target=target, session_id=session_id):
-                result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone, session_id=session_id)
+                try:
+                    result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone,
+                                       session_id=session_id)
+                except Exception as e:
+                    _budget_breaker.record_outcome(data_dir, "mcp", failure=f"the run raised {type(e).__name__}")
+                    raise
+            if result.get("status") != "stopped_by_budget":
+                _budget_breaker.record_outcome(data_dir, "mcp", failure=_budget_breaker.run_failure_reason(result))
 
             status = result["status"]
             transcript = result.get("transcript", [])
@@ -240,6 +259,8 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
                 # in `timezone_used` (docs/time_window_design.md §15) -- a client should
                 # show these rather than re-deriving periods from the answer text.
                 "time": result.get("time"),
+                # Set when a spending limit stopped the run (status "stopped_by_budget").
+                "budget": result.get("budget"),
             }
         finally:
             TOOL_REGISTRY.update(excluded)
@@ -266,7 +287,12 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
     `timezone` (optional, IANA name such as "Asia/Dhaka"): the user's timezone, used to
     interpret time periods in `goal` ("yesterday", "this morning", "since 9am"). Defaults
     to Kratos's configured display timezone; the result's `time.timezone` always states
-    which one was used. An unknown name is an error, never silently replaced."""
+    which one was used. An unknown name is an error, never silently replaced.
+
+    Spending limits (Kratos's Settings -> Budget) apply to MCP calls: when a limit is
+    already used up, or this source is paused after repeated failures, the call returns
+    at once with status "refused_by_budget"; a limit reached mid-run ends it with status
+    "stopped_by_budget". Either way `final_answer` names the limit and `budget` holds it."""
     if timezone is not None:
         from kratos.utils.timeutil import zone_from_name
 

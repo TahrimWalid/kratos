@@ -227,6 +227,13 @@ class KratosTUI(ResilientWorkerHost, App):
         # {"clarify": ...} action) via a Textual modal. Authorizes nothing; only
         # gathers intent. Cleared on unmount so nothing dangles post-exit.
         set_clarify_provider(make_textual_clarify_provider(self))
+        # Spending limits (kratos.budget): over a hard limit a person is asked
+        # (default no); soft-limit warnings become a line in the conversation.
+        from kratos.budget import guard as _budget
+        from kratos.tui_mk2.approvals import make_textual_budget_notice_listener, make_textual_budget_provider
+
+        _budget.set_prompt_provider(make_textual_budget_provider(self), actor="tui")
+        _budget.set_notice_listener(make_textual_budget_notice_listener(self))
         # Detect-once-and-save the ACTIVE model's context window if it has none
         # saved (e.g. a profile set up before detection existed). Background
         # thread: it's a network call and must never delay startup.
@@ -314,6 +321,10 @@ class KratosTUI(ResilientWorkerHost, App):
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
         set_clarify_provider(None)
+        from kratos.budget import guard as _budget
+
+        _budget.set_prompt_provider(None)
+        _budget.set_notice_listener(None)
         try:  # a background seal verification stops between files (0.3)
             from kratos.logsources import seal as _seal
 

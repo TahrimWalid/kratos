@@ -46,6 +46,7 @@ from kratos import paths as _paths
 from kratos.agent import console as _console
 from kratos.llm_interface import agent_chat
 from kratos.llm_config import MAX_TOKENS
+from kratos.budget.guard import BudgetExceeded
 
 # ---------------------------------------------------------------------------
 # Pure helpers (relocated here from cli/repl.py so the UI-agnostic core owns
@@ -377,6 +378,8 @@ def _maybe_clarify_idea(goal: str, prompter: "GuidedPrompter") -> str:
 
     try:
         clarify = assess_intake_clarity(goal, purpose="a new Kratos tool to build")
+    except BudgetExceeded:
+        raise
     except Exception:  # noqa: BLE001 -- must never block the build
         clarify = None
     if clarify is None:
@@ -1108,6 +1111,8 @@ def _run_loop_and_report(goal: str, harness_path: Path, prompter: GuidedPrompter
     prompter.say(f"Building '{harness_path.stem.replace('test_', '')}' — this can take a few minutes per try…")
     try:
         outcome = run_self_write_loop(WriteRequest(goal=goal, test_file=harness_path))
+    except BudgetExceeded:
+        raise  # the caller shows the plain budget message
     except Exception as e:  # noqa: BLE001 -- never crash the caller
         prompter.say(f"Evo-loop hit an unexpected error: {e}", kind="error")
         return GuidedBuildResult(status="error", message=str(e))

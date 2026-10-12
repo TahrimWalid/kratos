@@ -81,6 +81,7 @@ from kratos.llm_interface import (
     TokenUsage,
 )
 from kratos.llm_config import MAX_TOKENS_QUESTION
+from kratos.budget.guard import BudgetExceeded
 
 DEFAULT_MAX_ITERS = 10
 
@@ -1142,6 +1143,40 @@ class InvestigationStopped(Exception):
     """Raised out of run_agent when its should_stop callback says the user asked to stop."""
 
 
+STOPPED_BY_BUDGET = "stopped_by_budget"
+
+
+def _budget_stop_answer(exc: BudgetExceeded, transcript: list[dict[str, Any]],
+                        findings: list[dict[str, Any]] | None) -> str:
+    """The deterministic answer of a run a spending limit stopped (docs/phase0/0.4
+    §5.5). Built by code from what the run already did -- not a model answer, so
+    it claims nothing beyond the transcript."""
+    from kratos.budget import limits as _bl
+
+    setting = _bl.SCOPE_SETTING.get(exc.scope)
+    lines = [exc.user_message(),
+             "The investigation stopped before reaching its own conclusion -- treat this as unfinished, "
+             "not a clean result."]
+    ran = []
+    for entry in transcript:
+        tool = entry.get("tool")
+        if not tool:
+            continue
+        obs = entry.get("observation")
+        ok = isinstance(obs, dict) and str(obs.get("status", "")).lower() == "ok"
+        ran.append(f"- {tool}: {'ok' if ok else 'did not succeed'}")
+    lines.append("Checks run so far:" if ran else "No checks had run yet.")
+    lines.extend(ran)
+    if findings:
+        lines.append("Findings so far (from correlate_findings):")
+        for f in findings:
+            lines.append(f"- [{str(f.get('severity') or 'info').upper()}] {f.get('id')} -- {f.get('title', '')}")
+    elif findings is not None:
+        lines.append("correlate_findings ran and raised no findings.")
+    lines.append("To change the limit: Settings -> Budget" + (f" ({setting})." if setting else "."))
+    return "\n".join(lines)
+
+
 def run_agent(
     goal: str,
     data_dir: Path,
@@ -1448,7 +1483,18 @@ def _run_agent_loop(
         elif i >= max_iters - WRAP_UP_REMAINING_ITERS:
             prompt_for_call += WRAP_UP_NUDGE
 
-        raw = agent_chat(system_prompt=system_prompt, user_prompt=prompt_for_call, max_tokens=MAX_TOKENS_QUESTION)
+        try:
+            raw = agent_chat(system_prompt=system_prompt, user_prompt=prompt_for_call,
+                             max_tokens=MAX_TOKENS_QUESTION)
+        except BudgetExceeded as exc:
+            # A spending limit refused this call (nothing was sent). End like a
+            # stop: what was collected is kept and reported, the answer is
+            # deterministic, and nothing else reaches the target.
+            answer = _budget_stop_answer(exc, transcript, last_correlate_findings)
+            _record({"iteration": i, "status": STOPPED_BY_BUDGET, "budget": exc.as_dict(),
+                     "final_answer": answer})
+            return _with_usage({"status": STOPPED_BY_BUDGET, "final_answer": answer,
+                                "budget": exc.as_dict(), "transcript": transcript})
 
         # Fold this call's real usage into the run totals (get_last_token_usage
         # reflects the call just made -- serial by construction). A backend

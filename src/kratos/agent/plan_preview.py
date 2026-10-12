@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 
 from kratos.agent.tool_summaries import human_summary
 from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
+from kratos.budget.guard import BudgetExceeded
 
 # A chat function has agent_chat's shape reduced to (system, user) -> text|None.
 # Injectable so tests drive a canned predictor with no real LLM.
@@ -218,7 +219,8 @@ def preview_agentic(goal: str, target: str, *, chat: Optional[Chat] = None) -> P
     registered tool is dropped, so the preview can never name a step that
     doesn't exist. Static only -- no tool is dispatched, the target is never
     contacted. Degrades to an 'unavailable' preview (run can still proceed) if
-    the model is unreachable or returns nothing usable."""
+    the model is unreachable or returns nothing usable; a spending limit
+    (BudgetExceeded) is raised to the caller."""
     chat = chat or _default_chat
 
     catalog_lines = [f"- {t.name}: {t.description.splitlines()[0][:140]}" for t in TOOL_REGISTRY.values()]
@@ -236,6 +238,8 @@ def preview_agentic(goal: str, target: str, *, chat: Optional[Chat] = None) -> P
 
     try:
         raw = chat(_PREDICT_SYSTEM, user)
+    except BudgetExceeded:
+        raise  # a spending limit, not "the model is unreachable": the caller says so
     except Exception:  # noqa: BLE001 -- a preview must never crash the caller
         raw = None
     if not raw:

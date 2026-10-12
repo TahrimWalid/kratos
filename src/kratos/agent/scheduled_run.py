@@ -41,6 +41,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import contextvars
+
 from kratos import kratos_config as _kconfig
 from kratos import run_context as _run_context
 from kratos.adapters.findings_engine import write_findings_report
@@ -51,6 +53,9 @@ from kratos.utils.timeutil import utc_now_iso
 
 # A notifier has send_notification's shape: (message, severity) -> result dict.
 Notifier = Callable[[str, str], dict[str, Any]]
+# The schedule being run (for the circuit breaker's per-schedule key).
+_CURRENT_SCHEDULE_NAME: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "kratos_current_schedule", default=None)
 
 _SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 # Finding severity -> ntfy severity bucket (mirrors mcp_server's notify mapping).
@@ -258,6 +263,46 @@ def _apply_watermark_to_steps(specs: list[dict[str, Any]], window: dict[str, Any
     return out
 
 
+REFUSED_BY_BUDGET = "refused_by_budget"
+
+
+def _budget_refusal(data_dir: Path, source_key: str) -> Optional[str]:
+    """For a run about to use the model with nobody watching: the reason it may
+    not start (its source is paused after repeated failures, or a spending cap it
+    would spend against is already used up), else None. A person-started run is
+    never refused here -- it is asked at the limit instead."""
+    ctx = _run_context.current()
+    if ctx is None or not ctx.unattended:
+        return None
+    from kratos.budget import guard as _budget
+
+    refusal = _budget.precheck(ctx.source, data_dir_=_kconfig.get_active_data_dir() or data_dir,
+                               breaker_key=source_key)
+    return refusal.user_message() if refusal is not None else None
+
+
+def _record_breaker_outcome(data_dir: Path, source_key: str, result: Optional[dict[str, Any]],
+                            error: Optional[str] = None) -> None:
+    """Tell the circuit breaker how a model run went. Never raises."""
+    try:
+        from kratos.budget import breaker as _breaker
+
+        status = (result or {}).get("status")
+        if status in ("stopped_by_budget", REFUSED_BY_BUDGET):
+            return  # the budget stopped it -- not a failure of the source
+        failure = error or _breaker.run_failure_reason(result)
+        _breaker.record_outcome(data_dir, source_key, failure=failure)
+    except Exception:  # noqa: BLE001 -- bookkeeping must never sink a run
+        pass
+
+
+def _breaker_key() -> str:
+    from kratos.budget import breaker as _breaker
+
+    ctx = _run_context.current()
+    return _breaker.key_for(ctx.source if ctx else "schedule", _CURRENT_SCHEDULE_NAME.get())
+
+
 def _run_preset_named(preset_name: str, data_dir: Path,
                       window: Optional[dict[str, Any]] = None) -> tuple[str, list[dict[str, Any]], Optional[str]]:
     """Run a named preset headlessly, with gated tools already removed from the
@@ -308,16 +353,32 @@ def _run_preset_named(preset_name: str, data_dir: Path,
 
     from kratos.agent.loop import run_agent
 
+    # Budget (docs/phase0/0.4 §5.5): an agentic preset spends model tokens with
+    # nobody watching -- refuse BEFORE starting if its source is paused or a cap
+    # it would spend against is already used up. Recorded + notified like any
+    # other outcome by the caller (silence must never read as "all clear").
+    breaker_key = _breaker_key()
+    refusal = _budget_refusal(data_dir, breaker_key)
+    if refusal is not None:
+        return REFUSED_BY_BUDGET, [], refusal
+
     named = None
     if window:
         named = {"since last run": (window["start"], window["end"],
                                     window.get("note") or "from the end of this schedule's previous successful run")}
-    result = run_agent(preset.goal, data_dir, named_windows=named) if named else run_agent(preset.goal, data_dir)
+    try:
+        result = run_agent(preset.goal, data_dir, named_windows=named) if named else run_agent(preset.goal, data_dir)
+    except Exception as e:  # noqa: BLE001 -- recorded by the caller; the breaker counts it
+        _record_breaker_outcome(data_dir, breaker_key, None, error=f"the run raised {type(e).__name__}")
+        raise
+    _record_breaker_outcome(data_dir, breaker_key, result)
     status = str(result.get("status") or "error")
     findings = _extract_findings(result.get("transcript", []))
     error = None
     if status in ("error", "llm_unavailable"):
         error = f"agentic run did not complete cleanly (status: {status})"
+    elif status == "stopped_by_budget":
+        error = str((result.get("budget") or {}).get("message") or "stopped by a spending limit")
     return status, findings, error
 
 
@@ -417,7 +478,15 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
     try:
         # Its own run, inside the scheduled/interactive run that fired the trigger.
         with _run_context.run_scope("trigger"):
-            result = run_agent_fn(goal, data_dir)
+            refusal = _budget_refusal(Path(data_dir), "trigger")
+            if refusal is not None:
+                return {"status": REFUSED_BY_BUDGET, "findings": [], "final_answer": refusal}
+            try:
+                result = run_agent_fn(goal, data_dir)
+            except Exception as e:  # noqa: BLE001 -- counted by the breaker, then re-raised as before
+                _record_breaker_outcome(Path(data_dir), "trigger", None, error=f"the run raised {type(e).__name__}")
+                raise
+            _record_breaker_outcome(Path(data_dir), "trigger", result)
     finally:
         _tools.TOOL_REGISTRY.update(excluded)
         _tools.set_approval_prompt_provider(prior_provider)
@@ -449,7 +518,11 @@ def run_scheduled(
     timer, "interactive" when a person pressed "run now"."""
     with _run_context.run_scope(source, target=schedule.target or _kconfig.get_active_target(),
                                 session_id=session_id):
-        return _run_scheduled(schedule, data_dir, deliver=deliver, notifier=notifier)
+        token = _CURRENT_SCHEDULE_NAME.set(schedule.name)
+        try:
+            return _run_scheduled(schedule, data_dir, deliver=deliver, notifier=notifier)
+        finally:
+            _CURRENT_SCHEDULE_NAME.reset(token)
 
 
 def _run_scheduled(

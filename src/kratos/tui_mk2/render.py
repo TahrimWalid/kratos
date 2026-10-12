@@ -551,6 +551,13 @@ def error_line(text: str) -> Text:
     return _prefixed("✗", text, T.CRITICAL)
 
 
+def budget_stop_line(exc: Any) -> Text:
+    """One plain line when a spending limit stopped an action (kratos.budget):
+    which limit, what was spent, where to change it. Nothing crashed."""
+    message = exc.user_message() if hasattr(exc, "user_message") else str(exc)
+    return _prefixed("!", message.replace(" -> ", " → "), T.ATTENTION)
+
+
 def success_line(text: str) -> Text:
     return _prefixed("✓", text, T.SAFE)
 

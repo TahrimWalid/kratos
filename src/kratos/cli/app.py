@@ -1286,6 +1286,10 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             _console.render_note(console, f"Step {iteration}: the model's response wasn't understood -- asking it to try again.")
             return
 
+        if step.get("status") == "stopped_by_budget":
+            session_events.append(f"Step {iteration}: stopped by a spending limit")
+            return  # the result panel below says which limit and what was collected
+
         if step.get("status") == "final_iteration_tool_call_ignored":
             _console.render_note(
                 console,
@@ -1381,6 +1385,14 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         session_events.append("Investigation stopped: step limit reached (best-effort answer shown)")
         _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
         return 1
+
+    if result["status"] == "stopped_by_budget":
+        _console.render_result_panel(console, "Stopped by budget", result["final_answer"], "yellow")
+        if lifecycle:
+            console.print(f"{lifecycle}  (kratos findings list)")
+        console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
+        _console.render_session_summary(console, [f"Findings: {findings_count}"] + session_events)
+        return 3
 
     _console.render_error(console, f"Investigation stopped: {result['status']} (no final answer reached).")
     console.print(f"[{_console.TEXT_SECONDARY}]Done in {duration:.0f}s[/]")
@@ -1935,8 +1947,18 @@ def main(argv: list[str] | None = None) -> int:
     # an "mcp" run, and the long-lived servers are not runs at all.
     if args.command in _SELF_SCOPED_COMMANDS:
         return int(args.func(args))
-    with run_scope("cli"):
-        return int(args.func(args))
+    # Spending limits (kratos.budget): a person at this terminal is asked before
+    # a run goes over one (default no); a refused call ends the command with the
+    # limit's plain message instead of a traceback.
+    from kratos.budget import guard as _budget
+
+    _budget.set_prompt_provider(_budget.terminal_prompt, actor="cli")
+    try:
+        with run_scope("cli"):
+            return int(args.func(args))
+    except _budget.BudgetExceeded as e:
+        print(f"[KRATOS] {e.user_message()}", file=sys.stderr)
+        return 3
 
 
 if __name__ == "__main__":

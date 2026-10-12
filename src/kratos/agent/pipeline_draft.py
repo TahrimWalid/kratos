@@ -30,6 +30,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from kratos.budget.guard import BudgetExceeded
+
 Chat = Callable[[str, str], Optional[str]]
 
 
@@ -157,8 +159,8 @@ def _extract_steps(obj: dict[str, Any]) -> tuple[Optional[str], list[dict[str, A
 
 def draft_pipeline(goal: str, *, registry: dict[str, Any], chat: Optional[Chat] = None) -> DraftResult:
     """Draft a pipeline from ``goal`` via one no-tools LLM call, grounded in the
-    real registry + whitelist. Returns a DraftResult; NEVER raises and never
-    saves/runs. The steps are raw (downstream ``parse_pipeline`` is the real
+    real registry + whitelist. Returns a DraftResult and never saves/runs; the
+    only exception it raises is a spending limit (BudgetExceeded). The steps are raw (downstream ``parse_pipeline`` is the real
     validator + the honest 'that doesn't exist' gate)."""
     goal = (goal or "").strip()
     if not goal:
@@ -191,6 +193,8 @@ def repair_pipeline(goal: str, draft: DraftResult, problems: list[str], *,
 def _ask(chat: Chat, user: str) -> DraftResult:
     try:
         raw = chat(_SYSTEM, user)
+    except BudgetExceeded:
+        raise  # a spending limit, not "the model is unreachable": the caller says so
     except Exception:  # noqa: BLE001 -- a draft must never crash the caller
         raw = None
     if not raw:

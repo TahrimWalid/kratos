@@ -37,6 +37,7 @@ from textual.worker import get_current_worker
 from kratos import kratos_config as _kconfig
 from kratos import run_context as _run_context
 from kratos.agent import target_lock as _target_lock
+from kratos.budget.guard import BudgetExceeded
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil
 from kratos.tui_mk2 import finding_view as FV
@@ -70,19 +71,32 @@ def _with_run_scope(source: str = "interactive", *, target: str | None = None):
     """Open a run_scope (kratos.run_context) for the whole method, inside
     whatever thread or task runs it. Put it UNDER @work: Textual thread workers
     start with a fresh context (run_in_executor copies nothing), so the scope
-    must open inside the worker, never around the call that starts it."""
+    must open inside the worker, never around the call that starts it.
+
+    A spending limit (kratos.budget.guard.BudgetExceeded) reaching the top of
+    the method ends the action with one plain message instead of a crash."""
     def deco(fn):
         if inspect.iscoroutinefunction(fn):
             @functools.wraps(fn)
             async def async_wrapper(self, *args, **kwargs):
                 with self._run_scope(source, target=target):
-                    return await fn(self, *args, **kwargs)
+                    try:
+                        return await fn(self, *args, **kwargs)
+                    except BudgetExceeded as e:
+                        self._emit(R.budget_stop_line(e))
+                        self._set_busy(False)
+                        return None
             return async_wrapper
 
         @functools.wraps(fn)
         def wrapper(self, *args, **kwargs):
             with self._run_scope(source, target=target):
-                return fn(self, *args, **kwargs)
+                try:
+                    return fn(self, *args, **kwargs)
+                except BudgetExceeded as e:
+                    self._emit_from_worker(R.budget_stop_line(e))
+                    self._set_busy(False)
+                    return None
         return wrapper
     return deco
 
@@ -1906,6 +1920,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 # unmodified, so every keep/approval invariant still holds.
                 with self._run_scope("evolve"):  # asyncio.to_thread carries the scope over
                     result = await asyncio.to_thread(run_guided_build, "", prompter, suggested_name=name)
+            except BudgetExceeded as e:
+                self._emit(R.budget_stop_line(e))
+                return None
             except Exception as e:  # noqa: BLE001 — never crash the describe flow
                 self._emit(R.error_line(f"Tool build errored: {e}"))
                 return None
@@ -3556,6 +3573,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         result = None
         try:
             result = run_guided_build(idea, prompter, suggested_name=suggested_name)
+        except BudgetExceeded as e:
+            self._emit_from_worker(R.budget_stop_line(e))
         except Exception as e:  # noqa: BLE001 -- never crash the screen
             self._emit_from_worker(R.error_line(f"Evo-loop errored: {e}"))
         finally:
@@ -4159,6 +4178,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         started = time.monotonic()
         try:
             route = route_message(goal, self.session_state.get("resume_context", ""))
+        except BudgetExceeded as e:
+            self._emit_from_worker(R.budget_stop_line(e))
+            self._set_busy(False)
+            return
         except Exception as e:  # noqa: BLE001
             self._emit_from_worker(R.error_line(f"Routing failed: {e}"))
             self._set_busy(False)
@@ -4427,7 +4450,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._apply_target(typed)  # as typed, so a user@host login is kept
 
     def _run_investigation(self, goal: str, target_override: str | None = None) -> None:
-        from kratos.agent.loop import InvestigationStopped, run_agent
+        from kratos.agent.loop import STOPPED_BY_BUDGET, InvestigationStopped, run_agent
 
         # /investigate-host (and its NL trigger) pin the active target to
         # loopback for THIS run only, so Kratos investigates its own machine on
@@ -4518,22 +4541,21 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # so no separate stamped "Kratos:" header here -- one time per bubble.
         t, d = self._stamp_now()
         self._last_answer = result.get("final_answer", "") or ""
+        status = str(result["status"])
         if result["status"] == "final_answer":
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, time_str=t), d)
-            status = "final_answer"
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
-            status = "max_iters_reached"
-        if result.get("final_answer") and (footer := R.lifecycle_footer(result.get("transcript"))) is not None:
-            self._emit_from_worker(footer)
+        elif result["status"] == STOPPED_BY_BUDGET:
+            self._emit_bubble_from_worker(R.result_panel("Kratos — stopped by budget", result["final_answer"], T.ATTENTION, time_str=t), d)
         elif result["status"] == "llm_unavailable":
             # Kratos's own model failed mid-investigation -> banner,
             # not an inline tool-style error.
             self._emit_from_worker(R.llm_failure_banner("the language model became unavailable during the investigation"))
-            status = "llm_unavailable"
         else:
             self._emit_from_worker(R.error_line(f"Investigation stopped: {result['status']}"))
-            status = str(result["status"])
+        if result.get("final_answer") and (footer := R.lifecycle_footer(result.get("transcript"))) is not None:
+            self._emit_from_worker(footer)
 
         # Structured recommend-only remediation: render each command the
         # agent produced as its own panel, and remember them for ctrl+y copy.
@@ -4819,7 +4841,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         window change) so it can't over-eagerly compact off a stale estimate."""
         pct, _used, _window, estimated = self._context_pct()
         if not estimated and pct >= 85:
-            self._do_compact(manual=False)
+            try:
+                self._do_compact(manual=False)
+            except BudgetExceeded as e:  # housekeeping: the finished turn stands; say why it was skipped
+                self._emit_from_worker(R.budget_stop_line(e))
 
     def _remember_turn(self, user_text: str, kratos_text: str) -> None:
         """Append a SUBSTANTIVE record of this turn to the model-facing working
