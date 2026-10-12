@@ -51,6 +51,8 @@ def test_publickey_hands_over_the_authorize_command_to_run_on_the_target():
     d = D.diagnose(REAL["key_not_authorized"], ssh_addr="root@10.136.28.45", authorize_command=AUTH)
     assert d.command == AUTH and d.run_on == D.ON_TARGET
     assert "as root" in d.next_step and "never uses them" in d.next_step  # the box also takes passwords
+    # a wrong account fails exactly like a missing key: say which one was tried
+    assert "for root" in d.summary and "isn't the account you use" in d.next_step
 
 
 def test_publickey_without_a_local_key_asks_to_create_one():

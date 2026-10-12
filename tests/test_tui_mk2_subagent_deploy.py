@@ -120,6 +120,55 @@ def test_publickey_failure_pops_the_authorize_box_for_the_target(tmp_path, key):
     assert "doesn't accept this machine's SSH key" in out["texts"]
 
 
+def _fake_ssh(monkeypatch, ok_users):
+    """subprocess.run stand-in for the extra login check: succeeds only for
+    the given accounts; records each destination tried."""
+    import subprocess
+
+    tried: list[str] = []
+
+    def run(argv, **_kw):
+        dest = argv[argv.index("--") + 1]
+        tried.append(dest)
+        return subprocess.CompletedProcess(argv, 0 if dest.split("@")[0] in ok_users else 255)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return tried
+
+
+def test_wrong_account_is_named_instead_of_asking_to_install_the_key(tmp_path, key, monkeypatch):
+    # The real case: jdoe@192.0.2.62 refused, but Kratos's key opens ubuntu
+    # there. Telling the user to authorize the key was the wrong diagnosis.
+    from kratos.tui_mk2.modals import ConfirmModal
+
+    tried = _fake_ssh(monkeypatch, {"ubuntu"})
+    screen = SubAgentScreen(tmp_path)
+
+    async def script(app, pilot):
+        await asyncio.to_thread(screen._deploy_failed, "jdoe@192.0.2.62",
+                                "jdoe@192.0.2.62: Permission denied (publickey).",
+                                retry=(str(tmp_path / "x.sh"), None, True))
+
+    out = _run(screen, script)
+    assert tried == ["ubuntu@192.0.2.62"]                       # one extra attempt, nothing else
+    assert "Wrong account" in out["texts"] and "ubuntu works" in out["texts"]
+    assert "doesn't accept this machine's SSH key" not in out["texts"]
+    assert isinstance(out["screen"], ConfirmModal) and "ubuntu@192.0.2.62" in str(out["screen"]._title)
+
+
+def test_key_box_still_shows_when_no_known_account_gets_in(tmp_path, key, monkeypatch):
+    tried = _fake_ssh(monkeypatch, set())
+    screen = SubAgentScreen(tmp_path)
+
+    async def script(app, pilot):
+        await asyncio.to_thread(screen._deploy_failed, "jdoe@192.0.2.62",
+                                "jdoe@192.0.2.62: Permission denied (publickey).")
+
+    out = _run(screen, script)
+    assert tried == ["ubuntu@192.0.2.62"]
+    assert isinstance(out["screen"], CommandModal) and "for jdoe" in out["texts"]
+
+
 def test_changed_host_key_box_runs_on_this_machine(tmp_path, key):
     screen = SubAgentScreen(tmp_path)
 

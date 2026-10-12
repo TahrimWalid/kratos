@@ -41,6 +41,16 @@ def _host_of(ssh_addr: str) -> str:
     return host.split(":", 1)[0]
 
 
+def wrong_account(ssh_addr: str, works_as: str) -> Diagnosis:
+    """The key was refused for the account that was typed, but the same key
+    logs in as `works_as`: the account name was wrong, not the key."""
+    host = _host_of(ssh_addr)
+    login = ssh_addr.split("@", 1)[0] if "@" in ssh_addr else "that account"
+    return Diagnosis(
+        "wrong_account", f"Wrong account: {host} has no {login} login for this machine's key, but {works_as} works.",
+        f"Nothing needs setting up on {host}. Deploy as {works_as}@{host} instead.")
+
+
 def install_python_command() -> str:
     return ("if command -v apt-get >/dev/null; then sudo apt-get install -y python3; "
             "elif command -v dnf >/dev/null; then sudo dnf install -y python3; "
@@ -89,8 +99,10 @@ def diagnose(stderr: str, *, ssh_addr: str, authorize_command: str | None = None
             also_pw = " It also accepts passwords -- Kratos never uses them; log in with yours to run this." \
                 if {"password", "keyboard-interactive"} & methods else ""
             return Diagnosis(
-                "key_not_authorized", f"{host} doesn't accept this machine's SSH key yet.",
-                f"Run this ON the target as {login} (from wherever you can log in today), then retry.{also_pw}",
+                "key_not_authorized", f"{host} doesn't accept this machine's SSH key for {login}.",
+                f"Either {login} isn't the account you use on {host} -- then deploy again as NAME@{host} with the "
+                f"right one -- or the key isn't there yet: run this ON the target as {login} (from wherever you "
+                f"can log in today), then retry.{also_pw}",
                 authorize_command, ON_TARGET)
         if {"password", "keyboard-interactive"} & methods:
             return Diagnosis(

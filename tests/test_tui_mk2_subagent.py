@@ -519,3 +519,89 @@ def test_no_link_offer_without_a_session_target(tmp_path, monkeypatch):
 
     asyncio.run(run())
     assert offered == []
+
+
+
+def test_login_choices_offer_known_names_and_never_pick_one(tmp_path, monkeypatch):
+    from kratos import kratos_config as kc
+
+    monkeypatch.setattr("getpass.getuser", lambda: "jdoe")
+    names = [v for v, _ in sa_mod.login_choices("192.0.2.62", tmp_path)]
+    assert names == [kc.SSH_TARGET_USER, "jdoe", "root", ""]   # "" = type another
+    kc.remember_ssh_user(tmp_path, "192.0.2.62", "admin")
+    first, label = sa_mod.login_choices("192.0.2.62", tmp_path)[0]
+    assert first == "admin" and "used for this machine before" in label
+
+
+def _offer(tmp_path, answers, *, ssh_host=None):
+    """Drive _offer_ssh_deploy with canned modal answers; returns what was
+    shown and where it deployed (None = cancelled)."""
+    import asyncio
+
+    from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal, PromptModal
+
+    seen: dict = {"modals": [], "deployed_to": None}
+    answers = list(answers)
+
+    class Fake:
+        _default_name = None
+        _watched_codes: dict = {}
+        _last_deploy_commands = ""
+        _data_dir = tmp_path
+
+        def _log(self, *_a, **_k):
+            pass
+
+        def _deploy_commands(self, out_path, ssh_addr="<user@target>"):
+            return ssh_addr
+
+        def _ssh_deploy_worker(self, path, ssh_addr, code, upgrade=False):
+            seen["deployed_to"] = ssh_addr
+
+        _ask_login_for = sa_mod.SubAgentScreen._ask_login_for
+
+        class app:  # noqa: N801
+            @staticmethod
+            async def push_screen_wait(screen):
+                if isinstance(screen, ConfirmModal):
+                    return True  # "Deploy over SSH now?"
+                kind = "picker" if isinstance(screen, ListPickerModal) else "prompt"
+                assert isinstance(screen, (ListPickerModal, PromptModal))
+                seen["modals"].append((kind, getattr(screen, "_initial", None)))
+                return answers.pop(0)
+
+    asyncio.run(sa_mod.SubAgentScreen._offer_ssh_deploy(Fake(), tmp_path / "x.sh", "web-01", upgrade=True,
+                                                        ssh_host=ssh_host))
+    return seen
+
+
+def test_a_bare_address_asks_which_account_instead_of_ssh_using_the_local_name(tmp_path):
+    # The real failure: "192.0.2.62" alone made ssh log in as jdoe (this
+    # machine's account) -> Permission denied (publickey).
+    seen = _offer(tmp_path, ["192.0.2.62", "ubuntu"])
+    assert [k for k, _ in seen["modals"]] == ["prompt", "picker"]
+    assert seen["deployed_to"] == "ubuntu@192.0.2.62"
+
+
+def test_another_account_is_typed_and_validated(tmp_path):
+    seen = _offer(tmp_path, ["192.0.2.62", "", "-oops", "ec2-user"])
+    assert seen["deployed_to"] == "ec2-user@192.0.2.62"
+
+
+def test_esc_on_the_account_goes_back_to_the_address_with_it_kept(tmp_path):
+    seen = _offer(tmp_path, ["192.0.2.62", None, "debian@192.0.2.62"])
+    assert seen["modals"][2] == ("prompt", "192.0.2.62")
+    assert seen["deployed_to"] == "debian@192.0.2.62"
+
+
+def test_a_typed_account_is_used_as_is(tmp_path):
+    seen = _offer(tmp_path, ["root@192.0.2.62"])
+    assert [k for k, _ in seen["modals"]] == ["prompt"] and seen["deployed_to"] == "root@192.0.2.62"
+
+
+def test_update_prefills_the_linked_machine_with_its_account(tmp_path):
+    from kratos import kratos_config as kc
+
+    kc.remember_ssh_user(tmp_path, "192.0.2.62", "ubuntu")
+    seen = _offer(tmp_path, ["ubuntu@192.0.2.62"], ssh_host="192.0.2.62")
+    assert seen["modals"][0] == ("prompt", "ubuntu@192.0.2.62")

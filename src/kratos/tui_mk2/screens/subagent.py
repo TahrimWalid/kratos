@@ -64,6 +64,31 @@ def valid_ssh_address(addr: str) -> str | None:
     return None
 
 
+def login_choices(host: str, data_dir: Path | None = None) -> list[tuple[str, str]]:
+    """Accounts to offer when an address was typed without one (`ssh` alone
+    would log in as THIS machine's account name, which the target usually
+    doesn't have). The name Kratos already uses for that machine comes first;
+    nothing is picked for the user."""
+    import getpass
+
+    from kratos import kratos_config as _kc
+
+    remembered = _kc.remembered_ssh_user(data_dir or _kc.get_active_data_dir(), host)
+    default = _kc.ssh_user_for(host, data_dir)
+    out: list[tuple[str, str]] = [(default, f"{default}@{host} — "
+                                   + ("the account Kratos used for this machine before" if remembered
+                                      else "Kratos's default login name"))]
+    try:
+        local = getpass.getuser()
+    except Exception:  # noqa: BLE001 -- no local name is fine, just don't offer it
+        local = ""
+    for name, why in ((local, "your account name on THIS machine"), ("root", "only if root logs in over SSH there")):
+        if name and _kc.valid_ssh_user(name) and name not in {v for v, _ in out}:
+            out.append((name, f"{name}@{host} — {why}"))
+    out.append(("", "Another account… (type it)"))
+    return out
+
+
 # One line on what "add a server" gives you; same honesty as the onboarding
 # choice: no inbound port, read-only (telemetry + its own built-in reads),
 # execution off by default.
@@ -788,10 +813,11 @@ class SubAgentScreen(Screen):
             f"Update for {label}: agent {target.get('agent_version') or '?'} → {AGENT_VERSION}, same pairing, "
             f"execution stays off. Saved {out_path.name}. Run it ON the box (c copies the commands), or deploy "
             "it over SSH next.", style=T.TEXT_MUTED))
-        await self._offer_ssh_deploy(out_path, label, upgrade=True)
+        linked = [ln["host"] for ln in self._sa_store.list_links() if ln.get("target_id") == target["target_id"]]
+        await self._offer_ssh_deploy(out_path, label, upgrade=True, ssh_host=linked[0] if len(linked) == 1 else None)
 
     async def _offer_ssh_deploy(self, out_path: Path, name: str | None, code: str | None = None,
-                                upgrade: bool = False) -> None:
+                                upgrade: bool = False, ssh_host: str | None = None) -> None:
         deploy = await self.app.push_screen_wait(ConfirmModal(
             "Deploy over SSH now?",
             "Copy the installer to the target and run it over SSH for you? "
@@ -804,7 +830,8 @@ class SubAgentScreen(Screen):
         # Default to the login user Kratos is configured to SSH as (the same one
         # the investigation tools use), never a guessed root.
         previous = (self._watched_codes.get(code) or {}).get("ssh_addr") if code else None
-        initial = previous or (f"{_kc.ssh_user_for(self._default_name)}@{self._default_name}" if self._default_name else "")
+        host_hint = ssh_host or self._default_name
+        initial = previous or (f"{_kc.ssh_user_for(host_hint)}@{host_hint}" if host_hint else "")
         while True:
             ssh_addr = await self.app.push_screen_wait(PromptModal(
                 "Target SSH address",
@@ -815,6 +842,12 @@ class SubAgentScreen(Screen):
             if not ssh_addr:
                 return
             problem = valid_ssh_address(ssh_addr)
+            if problem is None and "@" not in ssh_addr:
+                login = await self._ask_login_for(ssh_addr)
+                if login is None:
+                    initial = ssh_addr  # back to the address, nothing guessed
+                    continue
+                ssh_addr = f"{login}@{ssh_addr}"
             if problem is None:
                 break
             self._log(Text(f"Not a usable SSH address ({problem}).", style=T.ATTENTION))
@@ -844,6 +877,32 @@ class SubAgentScreen(Screen):
         self._last_deploy_commands = self._deploy_commands(out_path, ssh_addr)
         self._log(Text(f"Deploying to {ssh_addr} over SSH…", style=T.ATTENTION))
         self._ssh_deploy_worker(str(out_path), ssh_addr, code, upgrade=upgrade)
+
+    async def _ask_login_for(self, host: str) -> str | None:
+        """Which account to log in to `host` as, when only the address was
+        typed. None = go back to the address."""
+        from kratos import kratos_config as _kc
+
+        choice = await self.app.push_screen_wait(ListPickerModal(
+            f"Log in to {host} as?",
+            login_choices(host, self._data_dir),
+            subtitle="The address has no account name. Pick the account you use for "
+                     f"`ssh NAME@{host}` (machines differ: ubuntu, debian, root, ec2-user, your own).",
+        ))
+        if choice is None:
+            return None
+        hint = f"The account name on {host}, as in `ssh NAME@{host}`."
+        while choice == "":
+            typed = await self.app.push_screen_wait(PromptModal("Log in as", hint))
+            if typed is None:
+                return None
+            typed = typed.strip()
+            if _kc.valid_ssh_user(typed):
+                choice = typed
+            else:
+                hint = (f"{typed!r} isn't a login name — letters, digits, '_', '.' and '-' only, not starting "
+                        "with '-'. Try again, or esc to go back.")
+        return choice
 
     def _code_usable(self, code: str) -> bool:
         row = self._sa_store.get_pairing_code(code)
@@ -915,6 +974,18 @@ class SubAgentScreen(Screen):
                        "current identity.", style=T.TEXT_MUTED))
         return out_path
 
+    def _remember_login(self, ssh_addr: str) -> None:
+        """That account just logged in, so offer it first next time (deploys,
+        updates, investigations of that machine)."""
+        from kratos import kratos_config as _kc
+
+        user, _, host = ssh_addr.rpartition("@")
+        if user and host:
+            try:
+                _kc.remember_ssh_user(self._data_dir, host, user)
+            except (OSError, ValueError):
+                pass  # a convenience; the deploy itself already worked
+
     @staticmethod
     def _ssh_options() -> list[str]:
         from kratos import kratos_config as _kc
@@ -943,7 +1014,8 @@ class SubAgentScreen(Screen):
                 capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
             )
             if scp.returncode != 0:
-                self._deploy_failed(ssh_addr, (scp.stderr or scp.stdout).strip())
+                self._deploy_failed(ssh_addr, (scp.stderr or scp.stdout).strip(),
+                                    retry=(script_path, code, upgrade))
                 return
             stage = "install"
             # The installer holds a pairing code: remove it once it ran cleanly
@@ -954,7 +1026,8 @@ class SubAgentScreen(Screen):
                 capture_output=True, text=True, timeout=180, stdin=subprocess.DEVNULL,
             )
             if run.returncode != 0:
-                self._deploy_failed(ssh_addr, "\n".join(x for x in (run.stderr, run.stdout) if x).strip())
+                self._deploy_failed(ssh_addr, "\n".join(x for x in (run.stderr, run.stdout) if x).strip(),
+                                    retry=(script_path, code, upgrade))
                 return
             row = self._sa_store.get_pairing_code(code) if code else None
             if upgrade:
@@ -963,6 +1036,7 @@ class SubAgentScreen(Screen):
                 waiting = "" if (row is not None and row.get("used_at")) else " Waiting for it to check in…"
             self.app.call_from_thread(self._log, Text(f"✓ Installer ran on {ssh_addr}.{waiting}",
                                                       style=f"bold {T.SAFE}"))
+            self._remember_login(ssh_addr)
             warning = DD.install_warning(run.stdout)
             if warning is not None:
                 self.app.call_from_thread(self._show_diagnosis, warning, ssh_addr, T.ATTENTION)
@@ -976,7 +1050,8 @@ class SubAgentScreen(Screen):
         except (OSError, subprocess.SubprocessError) as exc:
             self._deploy_failed(ssh_addr, str(exc))
 
-    def _deploy_failed(self, ssh_addr: str, detail: str, *, timed_out: str | None = None) -> None:
+    def _deploy_failed(self, ssh_addr: str, detail: str, *, timed_out: str | None = None,
+                       retry: tuple[str, str | None, bool] | None = None) -> None:
         if timed_out:
             diag = DD.Diagnosis(
                 "deploy_timeout", f"{ssh_addr} stopped responding while {timed_out}.",
@@ -984,7 +1059,51 @@ class SubAgentScreen(Screen):
                 "(press c for the commands).")
         else:
             diag = DD.diagnose(detail, ssh_addr=ssh_addr, authorize_command=ssh_keys.authorize_key_command())
+        if diag.kind == "key_not_authorized":
+            # ssh answers a wrong account name exactly like a missing key. Before
+            # telling the user to install the key, see whether the key opens the
+            # account Kratos knows for this machine -- then the name was wrong.
+            works_as = self._login_that_works(ssh_addr)
+            if works_as:
+                diag = DD.wrong_account(ssh_addr, works_as)
+                self.app.call_from_thread(self._show_diagnosis, diag, ssh_addr, T.ATTENTION)
+                if retry is not None:
+                    self.app.call_from_thread(self._offer_retry_as, works_as, ssh_addr, *retry)
+                return
         self.app.call_from_thread(self._show_diagnosis, diag, ssh_addr, T.CRITICAL, detail)
+
+    def _login_that_works(self, ssh_addr: str) -> str | None:
+        """The one other account worth trying with the same key: the name Kratos
+        already uses for that machine. A single extra attempt only (a target's
+        fail2ban counts failures). Runs `true` -- nothing else."""
+        import subprocess
+
+        from kratos import kratos_config as _kc
+
+        tried, _, host = ssh_addr.rpartition("@")
+        candidate = _kc.ssh_user_for(host, self._data_dir)
+        if not host or candidate == tried:
+            return None
+        try:
+            ok = subprocess.run(["ssh", *self._ssh_options(), "--", f"{candidate}@{host}", "true"],
+                                capture_output=True, timeout=20, stdin=subprocess.DEVNULL).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return candidate if ok else None
+
+    @work
+    async def _offer_retry_as(self, works_as: str, ssh_addr: str, script_path: str, code: str | None,
+                              upgrade: bool) -> None:
+        host = ssh_addr.rpartition("@")[2]
+        new_addr = f"{works_as}@{host}"
+        if not await self.app.push_screen_wait(ConfirmModal(
+                f"Deploy as {new_addr}?", f"{ssh_addr} was refused; {new_addr} logs in with the same key.")):
+            return
+        if code and code in self._watched_codes:
+            self._watched_codes[code]["ssh_addr"] = new_addr
+        self._last_deploy_commands = self._deploy_commands(Path(script_path), new_addr)
+        self._log(Text(f"Deploying to {new_addr} over SSH…", style=T.ATTENTION))
+        self._ssh_deploy_worker(script_path, new_addr, code, upgrade=upgrade)
 
     def _show_diagnosis(self, diag: DD.Diagnosis, ssh_addr: str, style: str, raw: str = "") -> None:
         """Say what went wrong and what to do; pop a copy-safe box for the fix
