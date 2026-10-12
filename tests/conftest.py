@@ -28,8 +28,21 @@ def _budget_isolated(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyte
     """Every model call passes the budget guard (kratos.budget), which writes the
     usage ledger to the active data folder. A test that sets none must never
     reach the real data/kratos.db, nor send a real budget notification."""
-    from kratos.budget import guard
+    from pathlib import Path
 
+    from kratos import paths
+    from kratos.budget import guard
+    from kratos.budget.ledger import BudgetLedger
+
+    real = paths.default_data_dir().resolve()
+    original_init = BudgetLedger.__init__
+
+    def guarded_init(self, data_dir):
+        if Path(data_dir).resolve() == real:
+            raise AssertionError(f"a test opened the budget ledger in the real data folder {real}")
+        original_init(self, data_dir)
+
+    monkeypatch.setattr(BudgetLedger, "__init__", guarded_init)
     fallback = tmp_path_factory.mktemp("budget-data")
     monkeypatch.setattr(guard, "_fallback_data_dir", lambda: fallback)
     sent: list[tuple[str, str]] = []
