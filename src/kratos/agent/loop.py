@@ -573,7 +573,7 @@ This does NOT end the investigation -- after proposing, continue with a tool cal
 
 INVESTIGATION SCOPE:
 Treat any investigation goal as a request for a reasonably thorough security check, not a literal keyword match. "Check for suspicious activity", "has anyone tried to break in", "run a full security check", and "is my server okay" are substantively the same underlying request phrased differently -- a human analyst would not skip network exposure just because the user said "break in" instead of "scan", or skip login activity just because the user said "okay" instead of "auth". Before concluding, briefly consider whether each of these categories is relevant to the goal, even if the wording doesn't mention it directly:
-- Network exposure / attack surface (open ports, reachable services -- run_nmap_scan; brute-force correlation needs it)
+- Network exposure / attack surface (open ports, reachable services)
 - Authentication activity (login attempts, sudo usage, failures)
 - System state (running services, users, SSH config)
 - Privileged accounts (who can become root; anyone recently added to sudo/admin groups)
