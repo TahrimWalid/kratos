@@ -1733,7 +1733,7 @@ def render_tools_for_prompt(exclude: frozenset[str] = frozenset()) -> str:
 # 0.3: more log sources and log tampering (listed last: they add to the checks a
 # broad investigation weighs, and must not crowd out the established ones)
 # ---------------------------------------------------------------------------
-_HOST_LOG_SOURCES = ("auditd", "sudo", "cron", "systemd", "firewall", "packages", "web")
+_HOST_LOG_SOURCES = ("auditd", "sudo", "cron", "systemd", "firewall", "packages", "web", "tampering")
 _HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
 
 
@@ -1744,12 +1744,12 @@ _HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
         "returns a summary (counts, top IPs/users, a few masked lines, what was covered). `source`: 'auditd' "
         "(programs run, logins, account changes), 'sudo', 'cron' (jobs that ran), 'systemd' (services "
         "started/stopped/failed), 'firewall' (blocked/allowed connections), 'packages' (installs/removals), "
-        "'web' (web server requests/errors). Not for SSH logins (read_journalctl / measure_auth_activity). "
-        "No window = last 24 hours."
+        "'web' (web server requests/errors), or 'tampering' (were the logs cleared or edited; sealed journal). "
+        "Not for SSH logins (read_journalctl / measure_auth_activity). No window = last 24 hours."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
-        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web"},
+        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web, tampering"},
         "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
         "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time. Prefer `window`.", "default": None},
         "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
@@ -1763,6 +1763,11 @@ def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: 
     source = str(source or "").strip().lower()
     if source not in _HOST_LOG_SOURCES:
         return {"status": "error", "observation": f"unknown source {source!r} -- use one of: {', '.join(_HOST_LOG_SOURCES)}"}
+    if source == "tampering":
+        # The same checks as check_log_integrity (offered to the model through this
+        # one entry -- agent/loop.py::_UNLISTED_AGENT_TOOLS). Not windowed: it
+        # compares with what the last check saw.
+        return {**tool_check_log_integrity(data_dir), "source": "tampering"}
     try:
         tw = _resolve_tool_window(window=window, since=since, until=until, tool="read_host_logs")
     except (_TimeBoundError, _TimeIntentError) as e:

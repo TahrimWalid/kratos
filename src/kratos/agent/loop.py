@@ -185,6 +185,14 @@ _LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 # (/use, pipelines) -- this shapes only what the investigating model sees.
 _LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
 
+# Tools not LISTED to the investigating model because another listed tool already
+# offers them -- still callable (a call by name runs normally), and still there for
+# /use, pipelines and the standard audit. check_log_integrity is
+# read_host_logs(source="tampering"): measured on gemini-3.1-flash-lite (eval A1,
+# phase 0.3), two new entries in the tool list made a broad investigation skip the
+# port scan noticeably more often (37/50 vs 61/65 on main); one entry did not.
+_UNLISTED_AGENT_TOOLS = frozenset({"check_log_integrity"})
+
 
 # Built-in tools that read the investigated machine over SSH (or its sub-agent).
 # Kept tools that call ssh_remote are detected from their source.
@@ -518,7 +526,7 @@ It does NOT end the investigation: after the user answers (fed back as an Observ
 
 def build_system_prompt() -> str:
     hidden = _agent_hidden_tools()
-    tools_desc = render_tools_for_prompt(exclude=hidden)
+    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS)
     local_tools = [t for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command")
                    if t not in hidden]
     local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "
