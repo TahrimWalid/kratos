@@ -288,8 +288,9 @@ def _hard_limit_notification(ledger: BudgetLedger, scope: str, limit: float, spe
         return
     if ledger.state_claim(f"notified:hard:{scope}:{day}"):
         label = L.SCOPE_LABEL.get(scope, scope)
-        notify(f"Kratos stopped a model call: {label} is used up ({L.format_amount(scope, spent)} of "
-               f"{L.format_amount(scope, limit)}). Change it in Settings -> Budget.", "warning")
+        notify(f"Kratos reached a spending limit: {label} is used up ({L.format_amount(scope, spent)} of "
+               f"{L.format_amount(scope, limit)}). Runs that need the model stop until it resets tomorrow "
+               "or you change it in Settings -> Budget.", "warning")
 
 
 # --- the guard ---------------------------------------------------------------

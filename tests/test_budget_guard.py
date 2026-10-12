@@ -450,7 +450,7 @@ def test_hard_limit_notifies_once_per_day(env, _budget_isolated):
     for _ in range(3):
         with run_scope("schedule"), pytest.raises(BudgetExceeded):
             _call()
-    hard = [(m, s) for m, s in _budget_isolated if "stopped a model call" in m]
+    hard = [(m, s) for m, s in _budget_isolated if "reached a spending limit" in m]
     assert len(hard) == 1 and hard[0][1] == "warning"
     for message, _ in _budget_isolated:
         assert "x" * 35 not in message      # never the prompt
