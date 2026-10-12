@@ -1167,18 +1167,12 @@ _HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
 @register_tool(
     name="read_host_logs",
     description=(
-        "Reads ONE more kind of log on the SSH TARGET DEVICE (the monitored system, not the local "
-        "Kratos host) in a time window, and returns a SUMMARY -- counts, top IPs/users, a few notable "
-        "lines (credentials masked) and exactly what was covered -- never the raw log. `source` is one of: "
-        "'auditd' (every program run, login and account change auditd recorded -- process execution "
-        "history), 'sudo' (who ran what as root, failed sudo), 'cron' (scheduled jobs that ran, with "
-        "user and command), 'systemd' (services started, stopped, failed or reloaded), 'firewall' "
-        "(connections the firewall blocked or allowed and logged), 'packages' (software installed, "
-        "upgraded or removed, and the command that did it), 'web' (web server requests and errors). "
-        "Use it when a question is about one of those -- e.g. 'what ran on this box', 'was anything "
-        "installed', 'did a service crash', 'who is probing the web server', 'what did the firewall "
-        "block'. For SSH logins use read_journalctl/measure_auth_activity; this does not count logins. "
-        "No window given = the last 24 hours."
+        "Reads ONE kind of log on the SSH TARGET DEVICE (not the local Kratos host) in a time window and "
+        "returns a summary (counts, top IPs/users, a few masked lines, what was covered). `source`: 'auditd' "
+        "(programs run, logins, account changes), 'sudo', 'cron' (jobs that ran), 'systemd' (services "
+        "started/stopped/failed), 'firewall' (blocked/allowed connections), 'packages' (installs/removals), "
+        "'web' (web server requests/errors). Not for SSH logins (read_journalctl / measure_auth_activity). "
+        "No window = last 24 hours."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
@@ -1231,14 +1225,10 @@ def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: 
 @register_tool(
     name="check_log_integrity",
     description=(
-        "Checks whether the SSH TARGET DEVICE's LOGS were cleared or edited (not the local Kratos host) -- "
-        "anti-forensics, not just 'is logging switched on': log files cut short, replaced or rewritten outside "
-        "normal rotation, a journal file deleted from the middle of history, login records (wtmp/btmp) zeroed "
-        "or reordered, auditd stopped or emptied of its rules, boots that ended without a clean shutdown, and "
-        "-- if journal sealing is set up -- whether the sealed journal still verifies. Relevant whenever an "
-        "investigation asks if an attacker covered their tracks, if the logs can be trusted, or for any "
-        "compromise investigation. The first run on a machine records a baseline (nothing to compare yet). "
-        "The result is saved so correlate_findings turns it into LOG-*/SEAL-* findings."
+        "Checks whether the SSH TARGET DEVICE's LOGS were cleared or edited (not the local Kratos host): logs "
+        "truncated or replaced outside rotation, journal files deleted, login records (wtmp/btmp) wiped, auditd "
+        "stopped or emptied, unclean shutdowns, and sealed-journal verification if set up. For 'did an attacker "
+        "cover their tracks / can the logs be trusted'. Results feed correlate_findings (LOG-*/SEAL-*)."
     ),
     parameters={"data_dir": {"type": "path", "description": "Kratos data directory"}},
 )
