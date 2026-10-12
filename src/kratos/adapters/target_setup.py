@@ -90,12 +90,14 @@ def seal_setup_commands(target_host: str) -> str:
     """Checklist step 7 -- journal sealing (FSS), also shown on its own by the
     onboarding seal step and /target seal. Verified on systemd 249 and 252:
     --setup-keys refuses if keys exist (--force regenerates); journald seals only
-    files it opens after the keys exist, hence the rotate."""
+    files it opens after the keys exist, hence the rotate; on Rocky the machine's
+    folder under /var/log/journal only appears once journald flushes, hence the
+    --flush (without it --setup-keys fails: "Failed to open .../fss.tmp")."""
     return f"""\
 # 7. (Recommended) Seal this machine's journal so edits can be detected.
 #    Needs persistent journal storage (the first two lines make sure of it).
 sudo mkdir -p /var/log/journal && sudo systemd-tmpfiles --create --prefix /var/log/journal
-sudo systemctl restart systemd-journald
+sudo systemctl restart systemd-journald && sudo journalctl --flush
 sudo journalctl --setup-keys
 #    It prints a "secret verification key" -- one line like
 #    a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900. Paste it into Kratos

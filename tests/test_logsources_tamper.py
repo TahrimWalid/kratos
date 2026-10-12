@@ -21,6 +21,12 @@ def _st(inode, size, head="h1", status="ok", path=P, mtime=1):
     return {"path": path, "status": status, "inode": inode, "size": size, "mtime": mtime, "head_hash": head}
 
 
+def test_a_small_file_growing_is_not_a_rewrite():
+    # under 4 KiB the hashed "head" is the whole file, so a plain append changes it
+    res, _ = _check(_st(10, 900, head="grew"), _prev(10, 0, head="empty"))
+    assert res["status"] == "ok" and not res["items"]
+
+
 def _prev(inode, size, head="h1", rot=None, status="ok"):
     row = {"path": P, "inode": inode, "size": size, "mtime": 1, "head_hash": head, "status": status,
            "rot_path": None, "rot_inode": None, "rot_size": None, "rot_mtime": None, "checked_at": T0}
@@ -60,12 +66,12 @@ def test_logrotate_record_corroborates_a_rotation():
     (_st(10, 0, head="e3b0"), _st(5, 900, path=P + ".1", mtime=1), "truncated"),          # truncate -s 0
     (_st(10, 200, head="h1"), None, "truncated"),                                           # cut, no rotation file at all
     (_st(99, 480), _st(5, 900, path=P + ".1", mtime=1), "replaced"),                        # sed -i / rm + recreate
-    (_st(10, 600, head="CHANGED"), _st(5, 900, path=P + ".1", mtime=1), "rewritten"),       # edited in place
+    (_st(10, 6000, head="CHANGED"), _st(5, 900, path=P + ".1", mtime=1), "rewritten"),      # edited in place
     (_st(None, None, head=None, status="missing"), _st(5, 900, path=P + ".1", mtime=1), "deleted"),
     (_st(None, None, head=None, status="symlink"), _st(5, 900, path=P + ".1", mtime=1), "linked"),   # ln -sf /dev/null
 ])
 def test_tampering_signals(cur, rot, kind):
-    res, _ = _check(cur, _prev(10, 500, rot=(5, 900, 1)), rot=rot)
+    res, _ = _check(cur, _prev(10, 5000, rot=(5, 900, 1)), rot=rot)
     assert res["status"] == "suspicious"
     assert [i["kind"] for i in res["items"]] == [kind]
     assert P in res["evidence"][0]
@@ -120,6 +126,18 @@ def test_deleting_the_middle_system_file_of_the_real_layout_is_caught():
              _jf("u2", "5e", 2163, 2251, journal="user-1000", entries=40)]
     res = tamper.check_journal({"available": True, "files": files})
     assert res["status"] == "suspicious" and res["items"][0]["after"] == "s1"
+
+
+def test_one_deleted_file_is_one_gap_even_when_it_shows_in_two_journals():
+    # real kratos-target layout after `rm` of a middle system archive: the user journal's
+    # own gap was explained by that very file, so it opens too -- still one deletion.
+    files = [_jf("s1", "a6", 1, 4540), _jf("s2", "a6", 4541, 4690), _jf("s4", "a6", 4842, 4990),
+             _jf("system.journal", "a6", 4991, 5100),
+             _jf("u1", "18", 1553, 2094, journal="user-1000", entries=300),
+             _jf("user-1000.journal", "18", 4700, 5200, journal="user-1000", entries=20)]
+    res = tamper.check_journal({"available": True, "files": files})
+    assert len(res["items"]) == 1 and len(res["evidence"]) == 1
+    assert (res["items"][0]["after"], res["items"][0]["before"]) == ("s2", "s4")   # the precise place
 
 
 def test_unreadable_journal_is_unknown_not_ok():

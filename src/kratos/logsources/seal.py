@@ -212,6 +212,9 @@ def _failed(result: Any) -> str | None:
     return " ".join(text.split())[:300] or "the read failed"
 
 
+# A file journald already had open when sealing began holds entries older than its
+# first seal (seen live on systemd 249): not an edit.
+_BEFORE_FIRST_SEAL = re.compile(r"too early with respect to tag", re.IGNORECASE)
 _UNSUPPORTED = re.compile(r"(Protocol not supported|unsupported|Operation not supported|newer journal|"
                           r"incompatible)", re.IGNORECASE)
 _TAIL = re.compile(r"final (\d+) entr(?:y|ies) not sealed")
@@ -230,7 +233,7 @@ def verify_file_locally(path: Path, key: str) -> dict[str, Any]:
         return {"result": "error", "detail": f"verification took longer than {VERIFY_TIMEOUT_SECONDS}s"}
     from kratos.utils.redact import redact_secrets
 
-    out = redact_secrets((p.stdout or "") + "\n" + (p.stderr or ""), key)
+    out = redact_secrets((p.stdout or "") + "\n" + (p.stderr or ""), key).replace(str(path), "the copy")
     lines = [ln.strip() for ln in out.splitlines() if ln.strip() and "old journald version" not in ln]
     tail = _TAIL.search(out)
     if p.returncode == 0 and any(ln.startswith("PASS:") for ln in lines):
@@ -240,7 +243,11 @@ def verify_file_locally(path: Path, key: str) -> dict[str, Any]:
     if _UNSUPPORTED.search(out) and "Tag failed" not in out:
         return {"result": "unsupported", "detail": " ".join(lines[-2:])[:300]}
     detail = "; ".join(ln for ln in lines if not ln.startswith("FAIL:"))[:300] or "verification failed"
-    return {"result": "fail", "detail": detail, "tag_failed": "Tag failed verification" in out}
+    tag_failed = "Tag failed verification" in out
+    if _BEFORE_FIRST_SEAL.search(out) and not tag_failed:
+        return {"result": "before_seal", "detail": "the file holds entries from before sealing began (it was already "
+                                                   "open when the keys were set up), so they can't be checked"}
+    return {"result": "fail", "detail": detail, "tag_failed": tag_failed}
 
 
 def _budget_bytes(data_dir: Path) -> int:
@@ -364,19 +371,33 @@ def verify(data_dir: Path, target: str, *, reader: SealReader | None = None, now
                     summary["notes"].append(f"{name}: the newest {res['unsealed_tail']} entr(ies) are written after "
                                             "the last seal -- protected only after the next sealing interval")
                 if res.get("old_format_note"):
-                    summary["notes"].append(f"{name}: sealed by an older journald -- completeness of the seal "
-                                            "sequence can't be guaranteed (journald's own warning)")
-            elif res["result"] == "fail" and (is_archive or res.get("tag_failed")):
+                    summary["old_format_files"] = summary.get("old_format_files", 0) + 1
+            elif res["result"] == "fail" and (res.get("tag_failed") or (is_archive and not f.get("dirty"))):
+                # A tag failure is an edit. Any failure of a cleanly archived file is too
+                # (archives never change). A file set aside after an unclean stop
+                # (".journal~") can fail on its incomplete tail -- only a tag failure counts.
                 summary["failed"].append({"name": name, "detail": res["detail"]})
+            elif res["result"] == "before_seal":
+                summary["notes"].append(f"{name}: {res['detail']}")
+            elif res["result"] == "fail" and f.get("dirty"):
+                summary["notes"].append(f"{name}: set aside by journald after an unclean stop; it failed verification "
+                                        f"without a seal mismatch ({res['detail'][:160]}) -- not counted as an edit")
             elif res["result"] == "unsupported":
                 summary["unverifiable"] = (f"this Kratos host's journalctl can't read {name} "
                                            f"({res['detail']}) -- the machine's systemd is newer; not 'tampered'")
+            elif res["result"] == "fail" and not is_archive:
+                summary["notes"].append(f"{name}: the live file changed while it was being copied, so it couldn't be "
+                                        "checked this time -- it is verified once journald archives it")
             elif res["result"] in ("fail", "copy_error", "error"):
                 summary["notes"].append(f"{name}: not verified ({res['detail']})")
-            if res["result"] in ("pass", "fail") and res.get("sha256"):
+            if res["result"] in ("pass", "fail", "before_seal") and res.get("sha256"):
+                res = {**res, "result": "pass" if res["result"] == "before_seal" else res["result"]}
                 state_store.add_verification(data_dir, target, file_name=name, sha256=res["sha256"],
                                              size=res.get("bytes"), archived=is_archive, sealed=True,
                                              result=res["result"], detail=str(res.get("detail"))[:500], run_id=run_id)
+        if summary.get("old_format_files"):
+            summary["notes"].append(f"{summary['old_format_files']} file(s) were sealed by an older journald: this "
+                                    "host's journalctl can't guarantee the seal sequence is complete (its own warning)")
         if summary["deferred"]:
             summary["notes"].append(f"{len(summary['deferred'])} older sealed file(s) not verified this time (copy "
                                     f"budget {budget // (1024 * 1024)} MB) -- the next verification continues")

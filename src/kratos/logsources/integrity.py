@@ -112,7 +112,8 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
     utmp_reads: dict[str, Any] = {}
     for name in tamper.UTMP_NAMES:
         r = reader.utmp(name)
-        utmp_reads[name] = None if _failed(r) is not None else r
+        why = _failed(r)
+        utmp_reads[name] = {"status": f"not read ({why})"} if why is not None else r
     checks["login_records"] = tamper.check_login_records(utmp_reads)
 
     au = reader.audit_status()

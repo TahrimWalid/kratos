@@ -30,7 +30,8 @@ JDIR = "/var/log/journal/" + MID
 def _f(name, *, sealed=True, head=T0, tail=None, size=1000, archived=None):
     return {"dir": JDIR, "name": name, "header_read": True, "sealed": sealed, "head_realtime": head,
             "tail_realtime": tail or head + 100, "size": size, "archived": ("@" in name) if archived is None else archived,
-            "journal": name.split("@")[0].split(".")[0], "seqnum_id": "x", "head_seqnum": 1, "tail_seqnum": 2}
+            "journal": name.split("@")[0].split(".")[0], "seqnum_id": "x", "head_seqnum": 1, "tail_seqnum": 2,
+            "dirty": name.endswith("~")}
 
 
 A1 = "system@" + "c" * 32 + "-0000000000000001-0000000000000001.journal"
@@ -147,7 +148,21 @@ def test_live_file_corruption_is_retried_once_and_not_a_seal_failure(keyed):
     r = FakeSealReader([_f("system.journal", archived=False)])
     s = seal.verify(data_dir, TARGET, reader=r, now=T0)
     assert r.copies == ["system.journal", "system.journal"]
-    assert s["status"] == "verified" and not s["failed"] and "not verified" in " ".join(s["notes"])
+    assert s["status"] == "verified" and not s["failed"] and "verified once journald archives it" in " ".join(s["notes"])
+
+
+def test_entries_from_before_sealing_and_dirty_files_are_not_edits(keyed):
+    data_dir, results = keyed
+    dirty = "user-1000@00065d99cb1f09ae-8a36662ef8eefdea.journal~"
+    results[dirty] = {"result": "before_seal", "detail": "entries from before sealing began"}
+    dirty2 = "system@00065d99cb0571ec-c5da174542971a35.journal~"
+    results[dirty2] = {"result": "fail", "detail": "File corruption detected", "tag_failed": False}
+    s = seal.verify(data_dir, TARGET, reader=FakeSealReader([_f(dirty), _f(dirty2)]), now=T0)
+    assert s["status"] == "verified" and not s["failed"]
+    assert any("before sealing began" in n for n in s["notes"]) and any("unclean stop" in n for n in s["notes"])
+    results[dirty2] = {"result": "fail", "detail": "Tag failed verification", "tag_failed": True}
+    s2 = seal.verify(data_dir, TARGET, reader=FakeSealReader([_f(dirty2)]), now=T0 + 7200)
+    assert [f["name"] for f in s2["failed"]] == [dirty2]
 
 
 def test_unsealed_files_newer_than_sealing_mean_sealing_stopped(keyed):
@@ -200,6 +215,9 @@ def test_verify_file_locally_reads_real_journalctl_output(tmp_path, monkeypatch)
         "corrupt": ("0015e0: Invalid object contents: Bad message\nFile corruption detected at f:5600\n"
                     "FAIL: f (Bad message)\n", 1),
         "old": ("Journal file f uses an unsupported feature, ignoring file.\nFAIL: f (Protocol not supported)\n", 1),
+        "early": ("3b3810: Entry realtime (1791741741754637, Sun 2026-10-11 18:02:21 UTC) is too early with respect "
+                  "to tag (1791764100000000, Mon 2026-10-12 00:15:00 UTC)\nFile corruption detected at f:3880976\n"
+                  "FAIL: f (Bad message)\n", 1),
     }
     got = {}
     for name, (text, rc) in outputs.items():
@@ -211,6 +229,7 @@ def test_verify_file_locally_reads_real_journalctl_output(tmp_path, monkeypatch)
     assert got["tag"]["result"] == "fail" and got["tag"]["tag_failed"]
     assert got["corrupt"]["result"] == "fail" and not got["corrupt"]["tag_failed"]
     assert got["old"]["result"] == "unsupported"
+    assert got["early"]["result"] == "before_seal"      # real systemd-249 output, not an edit
 
 
 def test_seal_results_reach_the_integrity_file_and_findings(keyed):

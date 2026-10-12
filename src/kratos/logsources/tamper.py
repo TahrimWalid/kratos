@@ -22,10 +22,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from kratos.logsources import utmp as _utmp
+from kratos.logsources import catalog as _catalog, utmp as _utmp
 from kratos.utils.timeutil import epoch_to_utc_iso
 
 UTMP_NAMES = ("wtmp", "btmp")
+HEAD_BYTES = _catalog.HEAD_HASH_BYTES   # how much of each file is hashed
 COPYTRUNCATE_SLACK_BYTES = 4096
 JOURNAL_GAP_MIN_ENTRIES = 64          # unexplained missing entries before a gap counts
 JOURNAL_GAP_MIN_FRACTION = 0.10
@@ -98,7 +99,10 @@ def check_file_states(current: dict[str, Any], previous: dict[str, dict[str, Any
                     kind = "truncated"
                     detail = (f"same file, but it shrank from {prev.get('size')} to {cur.get('size')} bytes since "
                               f"{since} with no rotation that explains it")
-            elif prev.get("head_hash") and cur.get("head_hash") and prev["head_hash"] != cur["head_hash"] and not why:
+            # The hash covers the first 4 KiB: only comparable once the file already
+            # had 4 KiB (a smaller file's appends change its "head" legitimately).
+            elif ((prev.get("size") or 0) >= HEAD_BYTES and prev.get("head_hash") and cur.get("head_hash")
+                  and prev["head_hash"] != cur["head_hash"] and not why):
                 kind = "rewritten"
                 detail = f"the start of the file changed since {since} (same file, not shorter) -- edited in place"
         elif not why:
@@ -173,6 +177,16 @@ def check_journal(headers: dict[str, Any] | None) -> dict[str, Any]:
                               "missing_to": hi, "unexplained": int(unexplained), "detail": detail,
                               "from_ts": a.get("tail_realtime"), "to_ts": b.get("head_realtime")})
                 evidence.append(detail)
+    # One deleted file can open a gap in several journals at once (they share one
+    # numbering): report each missing range once -- the narrowest, which pinpoints
+    # the deleted file best; overlapping ones folded in.
+    kept: list[dict[str, Any]] = []
+    for it in sorted(items, key=lambda i: (i["missing_to"] - i["missing_from"], -i["unexplained"])):
+        if any(it["missing_from"] <= k["missing_to"] and k["missing_from"] <= it["missing_to"] for k in kept):
+            continue
+        kept.append(it)
+    items = sorted(kept, key=lambda i: i["missing_from"])
+    evidence = [i["detail"] for i in items]
     cov = f"compared the sequence numbers of {len(files)} journal file(s)"
     if unreadable:
         cov += f"; {len(unreadable)} journal folder(s) not readable"
