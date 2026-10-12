@@ -1160,88 +1160,6 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     return result
 
 
-_HOST_LOG_SOURCES = ("auditd", "sudo", "cron", "systemd", "firewall", "packages", "web")
-_HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
-
-
-@register_tool(
-    name="read_host_logs",
-    description=(
-        "Reads ONE kind of log on the SSH TARGET DEVICE (not the local Kratos host) in a time window and "
-        "returns a summary (counts, top IPs/users, a few masked lines, what was covered). `source`: 'auditd' "
-        "(programs run, logins, account changes), 'sudo', 'cron' (jobs that ran), 'systemd' (services "
-        "started/stopped/failed), 'firewall' (blocked/allowed connections), 'packages' (installs/removals), "
-        "'web' (web server requests/errors). Not for SSH logins (read_journalctl / measure_auth_activity). "
-        "No window = last 24 hours."
-    ),
-    parameters={
-        "data_dir": {"type": "path", "description": "Kratos data directory"},
-        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web"},
-        "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
-        "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time. Prefer `window`.", "default": None},
-        "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
-    },
-)
-def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: str | None = None,
-                        until: str | None = None) -> dict[str, Any]:
-    from kratos.logsources import summary as _logs_summary
-
-    data_dir = Path(data_dir)
-    source = str(source or "").strip().lower()
-    if source not in _HOST_LOG_SOURCES:
-        return {"status": "error", "observation": f"unknown source {source!r} -- use one of: {', '.join(_HOST_LOG_SOURCES)}"}
-    try:
-        tw = _resolve_tool_window(window=window, since=since, until=until, tool="read_host_logs")
-    except (_TimeBoundError, _TimeIntentError) as e:
-        return {"status": "error", "observation": f"invalid time window: {e}"}
-    if tw is not None:
-        since_epoch = tw.window.start_utc
-        until_epoch = None if tw.open_ended else tw.window.end_utc
-    else:
-        since_epoch, until_epoch = time.time() - _HOST_LOGS_DEFAULT_SECONDS, None
-    clock_offset = _measure_target_clock_offset()
-    shift = clock_offset or 0.0
-    read = _fetch_host_logs(source, since_epoch + shift, until_epoch + shift if until_epoch is not None else None)
-    target = _ssh_target_label()
-    if isinstance(read, _SSHResult):
-        failure = _remote_failure(read)
-        return {"status": "error", "observation": f"reading the {source} logs {failure}",
-                "coverage_gap": f"the {source} logs of {target} were NOT read ({failure})"}
-    events = _events_recording.events_for_log_read(target, read)
-    stored = _events_recording.record_log_read(data_dir, events)  # best-effort
-    own_user = _kconfig.ssh_user_for() if read.via == "ssh" else None
-    out = {"status": "ok", "target": target, **_logs_summary.summarize(read, events, own_user=own_user),
-           "events_stored": stored, "via": read.via}
-    window_block = {"since_utc": _epoch_to_iso_utc(since_epoch),
-                    "until_utc": _epoch_to_iso_utc(until_epoch) if until_epoch is not None else "now",
-                    "asked": "the last 24 hours (no window given)" if tw is None else tw.window.label}
-    if tw is not None:
-        window_block.update({"id": tw.window.id, "tz": tw.window.tz, "chip": tw.window.summary()})
-    window_block.update(_clock_note(clock_offset, since_epoch, until_epoch))
-    out["window"] = window_block
-    return out
-
-
-@register_tool(
-    name="check_log_integrity",
-    description=(
-        "Checks whether the SSH TARGET DEVICE's LOGS were cleared or edited (not the local Kratos host): logs "
-        "truncated or replaced outside rotation, journal files deleted, login records (wtmp/btmp) wiped, auditd "
-        "stopped or emptied, unclean shutdowns, and sealed-journal verification if set up. For 'did an attacker "
-        "cover their tracks / can the logs be trusted'. Results feed correlate_findings (LOG-*/SEAL-*)."
-    ),
-    parameters={"data_dir": {"type": "path", "description": "Kratos data directory"}},
-)
-def tool_check_log_integrity(data_dir: Path) -> dict[str, Any]:
-    from kratos.logsources import integrity as _integrity
-
-    host = get_active_target()
-    if not host:
-        return {"status": "error", "observation": _kconfig.NO_TARGET_MESSAGE}
-    doc = _integrity.run(Path(data_dir), host)
-    return {"status": "ok", **_integrity.summary_for_model(doc), "result_file": doc["file"]}
-
-
 @register_tool(
     name="check_file_integrity",
     description=(
@@ -1809,3 +1727,89 @@ def render_tools_for_prompt(exclude: frozenset[str] = frozenset()) -> str:
             default = pinfo.get("default", "<required>")
             lines.append(f"    - {pname} ({pinfo.get('type', 'any')}, default={default!r}): {pinfo.get('description', '')}")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# 0.3: more log sources and log tampering (listed last: they add to the checks a
+# broad investigation weighs, and must not crowd out the established ones)
+# ---------------------------------------------------------------------------
+_HOST_LOG_SOURCES = ("auditd", "sudo", "cron", "systemd", "firewall", "packages", "web")
+_HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
+
+
+@register_tool(
+    name="read_host_logs",
+    description=(
+        "Reads ONE kind of log on the SSH TARGET DEVICE (not the local Kratos host) in a time window and "
+        "returns a summary (counts, top IPs/users, a few masked lines, what was covered). `source`: 'auditd' "
+        "(programs run, logins, account changes), 'sudo', 'cron' (jobs that ran), 'systemd' (services "
+        "started/stopped/failed), 'firewall' (blocked/allowed connections), 'packages' (installs/removals), "
+        "'web' (web server requests/errors). Not for SSH logins (read_journalctl / measure_auth_activity). "
+        "No window = last 24 hours."
+    ),
+    parameters={
+        "data_dir": {"type": "path", "description": "Kratos data directory"},
+        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web"},
+        "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
+        "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time. Prefer `window`.", "default": None},
+        "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
+    },
+)
+def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: str | None = None,
+                        until: str | None = None) -> dict[str, Any]:
+    from kratos.logsources import summary as _logs_summary
+
+    data_dir = Path(data_dir)
+    source = str(source or "").strip().lower()
+    if source not in _HOST_LOG_SOURCES:
+        return {"status": "error", "observation": f"unknown source {source!r} -- use one of: {', '.join(_HOST_LOG_SOURCES)}"}
+    try:
+        tw = _resolve_tool_window(window=window, since=since, until=until, tool="read_host_logs")
+    except (_TimeBoundError, _TimeIntentError) as e:
+        return {"status": "error", "observation": f"invalid time window: {e}"}
+    if tw is not None:
+        since_epoch = tw.window.start_utc
+        until_epoch = None if tw.open_ended else tw.window.end_utc
+    else:
+        since_epoch, until_epoch = time.time() - _HOST_LOGS_DEFAULT_SECONDS, None
+    clock_offset = _measure_target_clock_offset()
+    shift = clock_offset or 0.0
+    read = _fetch_host_logs(source, since_epoch + shift, until_epoch + shift if until_epoch is not None else None)
+    target = _ssh_target_label()
+    if isinstance(read, _SSHResult):
+        failure = _remote_failure(read)
+        return {"status": "error", "observation": f"reading the {source} logs {failure}",
+                "coverage_gap": f"the {source} logs of {target} were NOT read ({failure})"}
+    events = _events_recording.events_for_log_read(target, read)
+    stored = _events_recording.record_log_read(data_dir, events)  # best-effort
+    own_user = _kconfig.ssh_user_for() if read.via == "ssh" else None
+    out = {"status": "ok", "target": target, **_logs_summary.summarize(read, events, own_user=own_user),
+           "events_stored": stored, "via": read.via}
+    window_block = {"since_utc": _epoch_to_iso_utc(since_epoch),
+                    "until_utc": _epoch_to_iso_utc(until_epoch) if until_epoch is not None else "now",
+                    "asked": "the last 24 hours (no window given)" if tw is None else tw.window.label}
+    if tw is not None:
+        window_block.update({"id": tw.window.id, "tz": tw.window.tz, "chip": tw.window.summary()})
+    window_block.update(_clock_note(clock_offset, since_epoch, until_epoch))
+    out["window"] = window_block
+    return out
+
+
+@register_tool(
+    name="check_log_integrity",
+    description=(
+        "Checks whether the SSH TARGET DEVICE's LOGS were cleared or edited (not the local Kratos host): logs "
+        "truncated or replaced outside rotation, journal files deleted, login records (wtmp/btmp) wiped, auditd "
+        "stopped or emptied, unclean shutdowns, and sealed-journal verification if set up. For 'did an attacker "
+        "cover their tracks / can the logs be trusted'. Results feed correlate_findings (LOG-*/SEAL-*)."
+    ),
+    parameters={"data_dir": {"type": "path", "description": "Kratos data directory"}},
+)
+def tool_check_log_integrity(data_dir: Path) -> dict[str, Any]:
+    from kratos.logsources import integrity as _integrity
+
+    host = get_active_target()
+    if not host:
+        return {"status": "error", "observation": _kconfig.NO_TARGET_MESSAGE}
+    doc = _integrity.run(Path(data_dir), host)
+    return {"status": "ok", **_integrity.summary_for_model(doc), "result_file": doc["file"]}
