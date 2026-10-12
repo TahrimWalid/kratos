@@ -159,7 +159,14 @@ def list_pauses(data_dir: Path, now: float | None = None) -> list[dict[str, Any]
 
 
 def resume(data_dir: Path, key: str, *, actor: str) -> bool:
-    """End a pause now (a person, from Settings). Kept as a record, not deleted."""
+    """End a pause now (a person, from Settings). Kept as a record, not deleted.
+    The model suggests, people decide: refused inside an agent tool call."""
+    from kratos import settings_store
+
+    tool = settings_store.in_tool_call()
+    if tool:
+        raise settings_store.SettingError(f"resuming a paused source is a person's decision -- refused inside "
+                                          f"the tool call {tool!r}")
     ledger = BudgetLedger(data_dir)
     pause = active_pause(ledger, key)
     if pause is None:

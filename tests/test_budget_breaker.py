@@ -157,3 +157,28 @@ def test_interactive_use_is_never_paused_only_warned(dd, _budget_isolated):
     assert not any("paused" in m for m, _ in _budget_isolated)
     with run_scope("interactive"):
         guard.before_call(est_prompt_tokens=1, max_completion_tokens=1, model="m", local=True)
+
+
+def test_resume_is_refused_inside_a_tool_call(dd):
+    from kratos import settings_store
+
+    for _ in range(3):
+        breaker.record_outcome(dd, "mcp", failure="x")
+    with settings_store.tool_call_scope("some_tool"), pytest.raises(settings_store.SettingError):
+        breaker.resume(dd, "mcp", actor="model")
+    assert breaker.list_pauses(dd)
+
+
+def test_no_registered_tool_module_touches_budget_decisions():
+    """No agent tool may change a limit, a price or a pause: their modules don't
+    reach the people-only budget functions (settings_store.set is scanned by
+    tests/test_settings_store.py; the runtime refusals are the second layer)."""
+    import inspect
+    from pathlib import Path
+
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    files = {inspect.getsourcefile(t.handler) for t in TOOL_REGISTRY.values()}
+    words = ("set_rate", "remove_rate", "breaker.resume", "set_prompt_provider", "kratos.budget")
+    offenders = {f: [w for w in words if w in Path(f).read_text(encoding="utf-8")] for f in files}
+    assert {f: w for f, w in offenders.items() if w} == {}
