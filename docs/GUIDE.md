@@ -23,12 +23,13 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 18. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
 19. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
 20. [Saving and repeating work](#saving-and-repeating-work)
-21. [Keeping an eye on things](#keeping-an-eye-on-things)
-22. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
-23. [The experimental fix channel](#the-experimental-fix-channel)
-24. [Making it yours](#making-it-yours)
-25. [When something goes wrong](#when-something-goes-wrong)
-26. [Words you'll see](#words-youll-see)
+21. [Keeping model costs under control](#keeping-model-costs-under-control)
+22. [Keeping an eye on things](#keeping-an-eye-on-things)
+23. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
+24. [The experimental fix channel](#the-experimental-fix-channel)
+25. [Making it yours](#making-it-yours)
+26. [When something goes wrong](#when-something-goes-wrong)
+27. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -928,6 +929,79 @@ run.
 
 ---
 
+## Keeping model costs under control
+
+A hosted model charges for every question Kratos asks it, and some of those
+questions are asked while nobody is watching: schedules, triggers and other
+programs talking to Kratos over MCP. So Kratos counts every model call and stops
+before it spends more than you allow.
+
+**What's counted.** Every call to the model, from every part of Kratos: your
+investigations and chats, plan previews, drafting pipelines, building tools
+with `/evolve`, `kratos investigate` on the command line, scheduled runs, trigger
+investigations and MCP calls. Each one is written down with how many tokens it
+used and roughly what it cost. Costs are **estimates** from list prices (or the
+exact figure, if your provider reports one) — your provider's bill is the real
+number. A model you run yourself costs nothing, but its token limits still
+apply, because a run that loops wastes time and power too.
+
+**The limits, and their starting values:**
+
+| Limit | Starts at | What it stops |
+| --- | --- | --- |
+| Daily budget, everything | $2.00 a day | all spending, you included |
+| Daily budget, unattended runs | $0.50 a day | schedules, triggers and MCP together |
+| Model calls per run | 40 | one investigation or chat turn that loops |
+| Tokens per run | 300,000 | one run that grows out of control |
+| Daily tokens, local or unpriced models | 3,000,000 | a model with no price on file, or your own |
+| Fires per trigger per day | 10 | a trigger that keeps firing |
+| Triggers may start investigations | off | each trigger investigation costs money |
+
+"A day" is your local day (the timezone Kratos shows times in). A limit of `0`
+means nothing is allowed for that scope; there is no "unlimited" — if you want a
+lot, type a large number on purpose. The starting values are chosen so a normal
+day of use never reaches them, while a run that loops or a trigger that fires
+hundreds of times does.
+
+**Changing them.** Open Settings (`/settings`, or `s` at the session picker),
+move to the **Budget** tab with `ctrl+→`, pick a limit with ↑↓ and press Enter.
+Each row shows what has been used today. A change applies from the very next
+model call, in every Kratos window and in scheduled runs. The same tab lists the
+prices Kratos estimates with (correct them, or add one for your model) and any
+paused sources. The first time you create a schedule or a trigger, Kratos shows
+these limits once and lets you keep them, edit them or cancel.
+
+**What happens at a limit:**
+
+- **While you're using Kratos**, it asks: *"This would go over today's model
+  budget ($2.00, used $1.94). Continue this run anyway?"* Press `y` to let this
+  one run continue (your answer is recorded); anything else stops it. An
+  investigation that stops this way says so — "stopped by budget" — and still
+  shows what it had checked and found so far. On the command line the same
+  question is asked in the terminal; with no terminal (a cron job, a pipe) the
+  answer is no.
+- **Schedules, triggers and MCP** are never asked — nobody is there. A scheduled
+  run that would go over doesn't start; it saves a "refused by budget" result and
+  notifies you, so silence never means "all clear". One that reaches a limit
+  midway stops at the next step and reports what it found.
+- **Triggers** stop firing for the rest of the day once they reach their fire
+  limit, and tell you once. A trigger set to *investigate* only notifies until you
+  turn on **Triggers may start investigations**, and its alert says how. (If you
+  already had an investigating trigger before these limits existed, Kratos turned
+  that setting on for you once and told you.)
+- **Warnings come first.** At 80% of a daily limit Kratos shows one warning line
+  and sends one notification; when you're within 10% of a limit, the bottom bar
+  of the conversation says so.
+- **Something that keeps failing gets paused.** If a schedule, triggers or MCP
+  runs fail or loop 5 times within an hour, Kratos pauses that source for two
+  hours and tells you once. Resume it early from the Budget tab. Your own use is
+  never paused — you just get a warning.
+
+`/usage` shows today against every limit and what this session has used;
+`/doctor` has a **budget** line with today's spending and anything paused.
+
+---
+
 ## Keeping an eye on things
 
 - **`/doctor`** is your "is everything OK?" button. It checks the model
@@ -938,9 +1012,10 @@ run.
     <img src="images/doctor.svg" width="840" alt="The /doctor self-check: every part of the setup marked with a tick, a warning or a cross, with the fix next to each problem">
   </p>
 
-- **`/usage`** shows how many tokens this session has used and a rough cost, per
-  model, counting every time you've opened the session (it's saved with it). With
-  a local model it's free and says so.
+- **`/usage`** shows today's spending against your limits, then how many tokens
+  this session has used and a rough cost, per model, counting every time you've
+  opened the session (it's saved with it). With a local model it's free and says
+  so. See [Keeping model costs under control](#keeping-model-costs-under-control).
 
   <p align="center">
     <img src="images/usage.svg" width="840" alt="The /usage view — token counts and an estimated cost for the session">

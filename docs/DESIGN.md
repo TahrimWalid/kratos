@@ -257,6 +257,91 @@ supported for anyone who wants to run entirely offline, but it's an option
 alongside the hosted default, not the primary positioning — see the README
 for the resulting privacy and per-run cost posture.
 
+## Model spending limits
+
+Kratos runs a hosted, metered model by default, and schedules, triggers, MCP
+clients (and later web chat) can all call it with nobody watching. OWASP lists
+this as LLM10:2025 *Unbounded Consumption* ("denial of wallet"): its guidance is
+per-request, per-agent and per-period budgets that throttle, reject or ask a
+human when they run out. `kratos.budget` is that layer.
+
+**One choke point.** `llm_interface._metered_call` is the only place a request
+is sent to a model: the three request sites (the OpenAI-compatible HTTP call,
+the llama.cpp server call, the in-process llama.cpp call) each hand their
+request to it as a `send` function. Before sending it asks the budget guard to
+check every cap and reserve the call's worst case; afterwards it records what
+the call actually used. A source scan (`tests/test_budget_choke_point.py`)
+fails if a request is sent anywhere else, or if anything outside
+`llm_interface` talks to a model endpoint or SDK directly. Retries are separate
+requests and each passes the guard; a failed request keeps a zero-token row so
+failures stay visible. Budget code never calls the model itself.
+
+**The ledger** (`budget_ledger` in `kratos.db`) is the single source of truth
+for usage: one row per model call with the run, source (`interactive`,
+`schedule`, `trigger`, `mcp`, `cli`, `evolve`, ... from the run context),
+session, machine, model, tokens and cost. `/usage` reads it; sessions from
+before it existed keep their old `session_usage` totals, which `/usage` adds in
+(new calls are never written there, so nothing is counted twice). Rows are never
+deleted. A call with no run scope is recorded as `unattributed` and logged as a
+bug.
+
+**Reservations make caps hold across processes.** The TUI, `kratos
+scheduled-run` and `kratos mcp-serve` share `kratos.db`. Inside one
+`BEGIN IMMEDIATE` transaction the guard sums the run's and the day's spending
+plus every open reservation, refuses if this call's worst case
+(`ceil(characters / 3.5)` prompt tokens + its `max_tokens`) would cross a hard
+limit, and otherwise writes a `reserved` row. After the call that row becomes
+`settled` with the real usage. A reservation whose process died is `expired`
+after ten minutes, or the request timeout plus a minute if that is longer (a
+call still running must not look free); it then counts as a call with unknown
+usage.
+
+**Limits** are user settings (`budget.*` in `app_settings`, Settings → Budget),
+read fresh on every check, so a change applies to the next call in every
+process: tokens and model calls per run, cost per local day (everything, and
+unattended sources on their own), tokens per day for local or unpriced models,
+fires per trigger per day, whether triggers may start investigations, the
+soft-limit share and the breaker thresholds. `0` means "nothing allowed"; there
+is no "unlimited". Cost is the provider's own figure when the response reports
+one, else tokens × the price table (`budget.model_rates`), else unknown -- then
+only the token caps apply. A local model costs nothing, but its token and call
+caps still apply. "Today" is the person's local day in the display timezone.
+
+**At a hard limit** an unattended run (`schedule`, `trigger`, `mcp`, `web`)
+gets `BudgetExceeded`. An attended one is asked through a prompt provider (a
+TUI modal; `input()` on the command line; nothing installed, or no terminal,
+means no): only an explicit yes continues, records an `override` row with who
+approved it, and lets *that run* go over *that* cap. `run_agent` turns a refusal
+into status `stopped_by_budget` with a deterministic answer built from its
+transcript (what ran, the findings so far, which limit, where to change it) --
+not a model answer, so no answer guard needs to look at it. Unattended runs that
+would use the model are refused before they start when their source is paused
+or a cap they spend against is already used up; the refusal is recorded and
+notified like any other run outcome. The deterministic pipeline makes no model
+calls and is never limited.
+
+**Triggers** fire at most `budget.trigger_fires_per_day` times per local day
+(counted from their own fire ledger), with one "limit reached" notification per
+trigger per day. An `investigate` action runs only while
+`budget.trigger_investigations_allowed` is on -- off on a new install. The
+first time this version runs on an existing data folder, if a trigger already
+investigates, the setting is turned on once (the person already chose that),
+with a one-time notice and a `note` row in the ledger.
+
+**Circuit breaker.** A run fails for the breaker when its model was
+unavailable, it errored, it hit the step limit without the rule engine ever
+succeeding, or it looped (the same tool with the same arguments three times).
+`budget.breaker_failures` failures within the window pause that source --
+each schedule separately, triggers, MCP -- for the pause time, with one
+notification; a paused source refuses to start until the pause ends or a person
+resumes it in Settings → Budget. Interactive use is never paused, only warned.
+
+**Soft limit and notifications.** At `budget.soft_limit_percent` of a limit the
+TUI shows one warning line and (for the daily limits) one notification is sent;
+"once" is a `budget_state` claim, so it holds across processes. Budget
+notifications carry only fixed wording and numbers -- never prompts, findings
+or keys.
+
 ## Live-switchable settings
 
 A recurring bug shape, worth naming once: a module that does
