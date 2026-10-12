@@ -243,7 +243,13 @@ def _active_backend_is_local() -> bool:
     32k+."""
     if get_active_llm_backend() == "llama_cpp":
         return True
-    host = (urlparse(get_active_llm_base_url()).hostname or "").lower()
+    return is_local_base_url(get_active_llm_base_url())
+
+
+def is_local_base_url(base_url: str | None) -> bool:
+    """An OpenAI-compatible endpoint on this machine's loopback (local Ollama,
+    llama.cpp or vLLM server) -- nothing is billed for it."""
+    host = (urlparse(base_url or "").hostname or "").lower()
     return host in _LOCAL_HOSTS or host.startswith("127.")
 
 

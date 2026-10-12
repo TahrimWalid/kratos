@@ -986,19 +986,13 @@ class SessionScreen(ResilientWorkerHost, Screen):
         return False
 
     # --- /usage (token + cost transparency) -----------------
-    # Rough per-1M-token rates (USD input, output) — APPROXIMATE, provider
-    # pricing changes; edit here. Only used to show an estimate, never billed.
-    _MODEL_RATES: dict[str, tuple[float, float]] = {
-        "gemini-3.1-flash-lite": (0.10, 0.40),
-        "gemini-3.1-pro-preview": (1.25, 5.00),
-    }
-
+    # Prices come from kratos.budget.pricing (one table; the person corrects it in
+    # Settings -> Budget). Only used to show an estimate, never billed.
     @staticmethod
     def _backend_is_local() -> bool:
-        from kratos.llm_config import get_active_llm_base_url
+        from kratos.llm_config import _active_backend_is_local
 
-        base = (get_active_llm_base_url() or "").lower()
-        return any(h in base for h in ("127.0.0.1", "localhost", "::1", "0.0.0.0"))
+        return _active_backend_is_local()
 
     def _record_usage(self, usage: Any, model: str) -> None:
         """Usage listener (llm_interface): every model call adds to this session's
@@ -1020,9 +1014,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         for col, justify in (("Model", "left"), ("Calls", "right"), ("Tokens sent", "right"),
                              ("Tokens received", "right"), ("Estimated cost", "right")):
             table.add_column(col, justify=justify)
+        from kratos.budget import pricing
+
+        rates = pricing.rates(self._data_dir)
         total_cost, unknown = 0.0, []
         for r in rows:
-            rate = self._MODEL_RATES.get(r["model"])
+            rate = rates.get(r["model"])
             if r["local"]:
                 cost = Text("free (local)", style=T.SAFE)
             elif rate:
@@ -1040,7 +1037,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                           f"{sum(r['completion_tokens'] for r in rows):,}",
                           Text(f"~${total_cost:.4f}" + (" + unknown" if unknown else ""), style=T.ATTENTION))
         self._emit(table)
-        note = ("Costs are estimates from list prices — your provider's bill is the real figure. "
+        note = (pricing.ESTIMATE_NOTE + " "
                 "Usage is saved with this session, so it counts every run of it.")
         if unknown:
             note += f" No price on file for {', '.join(unknown)}: check your provider's pricing."
