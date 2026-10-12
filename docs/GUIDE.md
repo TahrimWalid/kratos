@@ -12,20 +12,23 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 7. [Your first investigation](#your-first-investigation)
 8. [Understanding findings](#understanding-findings)
 9. [Keeping track of findings](#keeping-track-of-findings)
-10. [When Kratos asks you a question](#when-kratos-asks-you-a-question)
-11. [When Kratos asks permission](#when-kratos-asks-permission)
-12. [Two ways to analyze](#two-ways-to-analyze)
-13. [The commands](#the-commands)
-14. [Questions about time](#questions-about-time)
-15. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
-16. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
-17. [Saving and repeating work](#saving-and-repeating-work)
-18. [Keeping an eye on things](#keeping-an-eye-on-things)
-19. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
-20. [The experimental fix channel](#the-experimental-fix-channel)
-21. [Making it yours](#making-it-yours)
-22. [When something goes wrong](#when-something-goes-wrong)
-23. [Words you'll see](#words-youll-see)
+10. [Reading more of a machine's logs](#reading-more-of-a-machines-logs)
+11. [Detecting log tampering](#detecting-log-tampering)
+12. [Sealing a machine's logs](#sealing-a-machines-logs)
+13. [When Kratos asks you a question](#when-kratos-asks-you-a-question)
+14. [When Kratos asks permission](#when-kratos-asks-permission)
+15. [Two ways to analyze](#two-ways-to-analyze)
+16. [The commands](#the-commands)
+17. [Questions about time](#questions-about-time)
+18. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
+19. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
+20. [Saving and repeating work](#saving-and-repeating-work)
+21. [Keeping an eye on things](#keeping-an-eye-on-things)
+22. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
+23. [The experimental fix channel](#the-experimental-fix-channel)
+24. [Making it yours](#making-it-yours)
+25. [When something goes wrong](#when-something-goes-wrong)
+26. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -334,9 +337,18 @@ Typically the checklist covers:
 
 - an SSH key Kratos can log in with,
 - permission to read the system logs (either through a group membership or a
-  narrow sudo rule),
+  narrow sudo rule) — the `systemd-journal` group for the journal and `adm` for the
+  files in `/var/log`,
+- two read-only sudo lines for auditd's status (`auditctl -s` and `auditctl -l`),
+  if auditd is installed,
 - two small helper programs installed on the target (`yara` and `lsof`),
-- the SSH port reachable from the Kratos machine.
+- the SSH port reachable from the Kratos machine,
+- and, recommended, **sealing the machine's journal** (see
+  [Sealing a machine's logs](#sealing-a-machines-logs)) — one key skips it.
+
+The setup check lists every kind of log Kratos can read on that machine — auditd,
+sudo, cron, services, firewall, packages, web server — and for each one says
+readable, not readable (with the exact fix), or not present.
 
 <p align="center">
   <img src="images/target_setup.svg" width="840" alt="The target setup checklist (commands to run on the target) and the setup-check results table">
@@ -503,6 +515,90 @@ start your history (`kratos findings import-reports` repeats that safely).
 
 ---
 
+## Reading more of a machine's logs
+
+Besides logins and sudo, Kratos can read seven more kinds of log on a machine, in
+any time window you ask about. You don't have to name them — ask "what ran on this
+box last night?", "was anything installed this week?" or "who is probing the web
+server?" and Kratos picks the right one. Each read comes back as a summary (counts,
+the busiest IPs and users, a few notable lines with passwords and tokens blanked
+out) plus exactly what it covered.
+
+| Log | What it tells you | What Kratos needs on the machine |
+| --- | --- | --- |
+| **auditd** | every program run, login and account change auditd recorded | auditd installed with rules; its log readable by the `adm` group (setup step 2) |
+| **sudo** | who ran what as root, and failed sudo attempts | the journal (`systemd-journal` group); sudo's own log file if you set one |
+| **cron** | scheduled jobs that ran, with the user and the command | the journal; `/var/log/cron` on Rocky/RHEL |
+| **services** (systemd) | services started, stopped, failed or reloaded | the journal (not on Alpine, which uses OpenRC) |
+| **firewall** | connections the firewall blocked or allowed and logged | the journal; on a container these lines live on the host, and Kratos says so |
+| **packages** | software installed, upgraded or removed, and the command | `dpkg.log` / `apt` history (Debian, Ubuntu), `dnf` logs (Rocky/RHEL); Alpine keeps none |
+| **web** | requests to nginx or Apache, and their errors | the web server's logs readable by the `adm` group |
+
+Kratos reads the current file and its first rotation (`.1`), never the compressed
+older ones; if those matter for the time you asked about, the answer says that part
+of the window is unknown rather than clean. Anything it couldn't read is stated
+with the fix — never quietly skipped. Through a sub-agent the same logs are read by
+the agent on the box (as root), so no group membership is needed; Kratos still
+refuses any log file that is a link to somewhere else.
+
+## Detecting log tampering
+
+Someone who breaks in often tries to hide it by editing the logs. Kratos looks for
+that — not just "is logging switched on" — every time you ask whether a machine was
+tampered with, and in the standard audit (`/run`). It notices:
+
+- a log file **cut short, replaced or rewritten** outside normal log rotation
+  (normal rotation — renaming or copy-and-truncate — is recognized and ignored),
+- a **journal file missing from the middle** of the machine's history (the journal
+  only ever removes its oldest files by itself),
+- **login records** (`wtmp`, `btmp` — what `last` and `lastb` show) with a record
+  wiped to zeros or out of time order,
+- **auditd stopped**, disabled, or emptied of its rules,
+- a **boot that ended without a clean shutdown** — a crash, a power cut or a forced
+  restart; context, not proof.
+
+The very first check of a machine only records how its logs look; changes are
+judged from the second check on. What it finds becomes findings `LOG-001` to
+`LOG-005`, each labeled with the matching MITRE ATT&CK technique (for example
+*T1685.006 Clear Linux or Mac System Logs*). Evidence of tampering **stays open
+until you decide on it** — a later check that sees nothing new doesn't close it,
+because the logs it now compares against are the edited ones.
+
+## Sealing a machine's logs
+
+Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal
+as it writes it. If anyone — even root — later edits or deletes entries, the
+signatures stop matching and Kratos tells you (`SEAL-001`). It's recommended for
+every machine you care about, and takes a minute:
+
+1. Kratos shows the commands when you set a machine up (or type `/target seal`).
+   You run them **on the machine**: they keep the journal on disk and run
+   `journalctl --setup-keys`.
+2. That prints a *verification key* — one line like
+   `a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900`. Paste it into the masked box Kratos
+   shows (or `kratos seal set-key HOST` and paste). Press `s` to skip instead.
+3. That's it. After each investigation of that machine Kratos copies its sealed
+   journal files here and checks them in the background (at most once an hour,
+   never slowing anything down); `/target seal verify` or `kratos seal verify HOST`
+   checks right away. A file that has been checked once is only re-hashed after
+   that; if it ever changed, that is reported too.
+
+**The key never leaves this computer.** It's kept in your data folder under
+`fss/` (readable only by you), never sent to the machine, to the model, or into
+logs and transcripts. Keep it off the machine: anyone who can read it there could
+forge seals. (One limit, stated plainly: while a check runs, the key is on the
+command line of this computer's own `journalctl` for a moment, so another user on
+this computer could see it in the process list.)
+
+**If you lose the key**, nothing breaks — Kratos just can't check the seals any
+more and says so. Run `sudo journalctl --setup-keys --force` on the machine and give
+Kratos the new key. If the machine is reinstalled, Kratos notices the key belongs
+to the old one and asks you to set sealing up again. If new journal files stop being
+sealed (for example the sealing key on the machine was deleted), that is `SEAL-002`.
+The two settings for this — how often the background check may run, and how much
+journal one check copies — are in Settings → General; Settings → This session has
+the machine's sealing key (set, replace, remove, verify now).
+
 ## When Kratos asks you a question
 
 Sometimes a request genuinely could go several ways — how deep to look, or which
@@ -577,7 +673,7 @@ but here's the map. Everything starts with `/`.
 | --- | --- |
 | `/guide` | the short, in-app version of this guide |
 | `/help` or `?` | list every command |
-| `/target <host>` | connect a machine to watch (and check its setup); `/target verify` re-checks; `/target link` changes how it's reached |
+| `/target <host>` | connect a machine to watch (and check its setup); `/target verify` re-checks; `/target link` changes how it's reached; `/target seal` keeps its journal-sealing key here (`/target seal verify` checks now) |
 | `/sessions` (or `Ctrl+B`) | go back to the list of past sessions |
 | `/rename <name>` | give this session a name |
 | `/clear` | clear the screen (your history is kept) |
@@ -876,12 +972,14 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos mcp-serve` | start the MCP server (below) |
 | `kratos events` | show the log lines Kratos has read from a machine (below) |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
+| `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |
 
 `kratos --help --all` lists every subcommand. Without a session, these use the
 default target Kratos saved the first time you set one (or `KRATOS_SSH_HOST`).
 
 **The log lines Kratos keeps.** Every log line Kratos reads while investigating —
-logins, sudo use, account changes, other system log lines — is kept as an *event*
+logins, sudo use, account changes, programs run, cron jobs, service changes,
+firewall blocks, package installs, web requests, other system log lines — is kept as an *event*
 in `kratos.db`, in your data folder. This stored copy stays on this computer (it is
 never sent to the model or anywhere else), and Kratos never deletes it, so the file grows with use (roughly
 1 GB per million lines). Passwords, tokens and keys that appear in a log line
@@ -1064,6 +1162,12 @@ permission prompt, pressing Enter is always the safe "no."
   remembers each one across checks, with a state (open, fixed, risk accepted, …).
 - **Event** — one log line Kratos read, kept in `kratos.db` with its time, machine,
   user, IP and so on. `kratos events` shows them.
+- **auditd** — Linux's audit system: when installed with rules, it records every
+  program run, login and account change.
+- **Sealed journal** — a journal the machine signs as it writes, so later edits can
+  be detected. The *verification key* that checks the signatures stays with Kratos.
+- **ATT&CK** — MITRE's public catalogue of attacker techniques; findings about log
+  tampering name the matching technique.
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.

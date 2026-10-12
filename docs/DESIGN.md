@@ -516,6 +516,96 @@ Kratos process reads the same value without a restart. No agent tool can change
 one: `set` refuses while a tool is running, and a test scans every tool's module.
 Each component of `kratos.db` migrates itself through `schema_versions`.
 
+## Log sources and tamper detection
+
+**Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources
+(auditd, sudo, cron, systemd unit activity, firewall, packages, web), each with its
+journal matches and file paths **per distribution family** (Debian/Ubuntu,
+Rocky/RHEL, Alpine) and, where nothing exists, the reason (OpenRC has no unit log;
+apk keeps no install history). A read names a source; the table decides what that
+means on the machine -- no path, pattern or match ever comes from the model or the
+wire. Journal sources use a closed match enum (`cron`, `systemd_pid1`, `kernel`,
+`sudo`), newest first, absolute epochs, `--output-fields` so only what Kratos
+parses leaves the box.
+
+**One extractor, two transports.** File sources go through one awk program
+(`logsources/logread.py`) that understands nine time formats (syslog and RFC3339,
+audit epochs, combined access logs, nginx/Apache error logs, dpkg, apt history
+blocks, ISO with an offset, sudo's own logfile). It keeps only the requested
+window, newest first, up to a line and byte cap, so only the window crosses the
+link. Zone-less times travel as local wall-clock "pseudo-epochs" and are converted
+with the machine's zone and filtered exactly on the Kratos side. It runs unchanged
+under mawk, gawk and BusyBox awk (tested under all three; fixed regexes reach awk
+through `ENVIRON`, never `-v`, whose escape handling differs per awk). Over SSH a
+fixed script pipes each file into it **as the SSH user** -- group membership
+(`adm`, `systemd-journal`, auditd's `log_group`), never `sudo cat`; the only new
+sudo lines are `auditctl -s` and `auditctl -l`. The sub-agent (0.4.0) reads as
+root, so it opens every file through `logsources/hostfiles.open_log_file`: each
+path component opened `O_NOFOLLOW` from a pinned `/`, a regular file with exactly
+one link, the name looked up again after opening and required to be the same
+inode, credential paths refused -- the same approach as the YARA walker -- and
+hands awk the open descriptor. A symlink or hard link to `/etc/shadow` planted in a
+log directory is refused by both transports (proven on the lab). Both print the
+same lines; one parser reads them. Parsers per source (`logsources/parsers/`) turn
+lines into ECS events (auditd records grouped by event serial, hex-decoded
+arguments; credentials in command lines and URL query values masked). Journal
+events now take their ID from the entry's `__CURSOR`. Reading is the
+`read_host_logs` tool: a summary for the model (counts, tops, a few masked
+lines, coverage) and the events in the store -- never the raw log.
+
+**Tamper checks** (`logsources/tamper.py`, run by `check_log_integrity`, also an
+optional step of the standard audit). Heuristics, each measured clean on every lab
+host and read-only on a real server before shipping:
+
+- *Log file state* (`log_file_state`): inode, size, mtime and a hash of the first
+  4 KiB of each tracked log and of its first rotation, remembered per machine. A
+  rename rotation (the old inode is now `.1`), a copytruncate rotation (`.1` changed
+  and holds at least the old size) or logrotate's own record are rotation; a shrink
+  of the same file, a new file nothing explains, a rewrite of the first 4 KiB or a
+  deletion are not (`LOG-001`; wtmp/btmp shrinking is `LOG-004`). The first look is
+  only a baseline.
+- *Journal continuity*: from every journal file's header, a gap in sequence
+  numbers *between two files that still exist* that the other files can't account
+  for (journald numbers system and user journals from one counter) means a file in
+  the middle was deleted (`LOG-002`). Gaps before the oldest file are retention.
+- *Boots*: a previous boot whose last entries hold no orderly-shutdown message
+  (`LOG-003`, low: context, not proof). In a container a forced stop or snapshot
+  restore counts too, and the result says it's a container.
+- *Login records*: glibc `struct utmp` parsed with `struct`; an all-zero record
+  between real ones, or time running backwards (clock-change records excepted),
+  is `LOG-004`. Not a whole number of 384-byte records = unknown format, not judged.
+- *auditd*: running with rules last time and now stopped, emptied or disabled in
+  the kernel (`LOG-005`); not installed is a coverage note, not a finding.
+
+Each tamper rule carries an ATT&CK label pinned to **v19.0**, where log clearing
+and audit tampering moved to the new *Defense Impairment* tactic:
+T1685.006 Clear Linux or Mac System Logs (LOG-001/002/004, SEAL-001), T1685.004
+Disable or Modify Linux Audit System Log (LOG-005), T1685 Disable or Modify Tools
+(SEAL-002) -- checked against the official v19 STIX data. Evidence of tampering is
+**sticky** in the lifecycle: a later run not seeing it doesn't close it, because the
+next comparison is against the already-edited state; it stays open until a person
+decides.
+
+**Journal sealing (FSS).** The machine seals its journal (`journalctl --setup-keys`,
+run by a person from the setup checklist); Kratos keeps the verification key in
+`data_dir/fss/<machine>.json` (0600, folder 0700), bound to the machine-id, and
+never sends it anywhere -- not to the machine, the model, logs or transcripts (a
+test scans every one of those surfaces; the key pattern is also masked by
+`redact_secrets`). Verification runs on the Kratos host: journal files are copied
+(SSH `cat` as the journal-group user, or the agent's `journal_file_chunk` in ≤4 MiB
+pieces) into a private temp folder, checked with the local `journalctl --verify
+--verify-key=...`, and deleted. Archived files never change, so each is verified
+once and its sha256 recorded (`seal_verifications`); later runs only re-hash, and a
+changed hash is `SEAL-001` even where the seal itself doesn't reach. A seal failure
+is `SEAL-001`, unsealed files newer than the newest sealed one `SEAL-002`; not being
+able to check (key for another machine, unreadable journal, this host's journalctl
+too old) is `SEAL-003`, a run note. Entries written before sealing began, and a
+`.journal~` file journald set aside after a crash, are notes, not edits. It runs in
+the background after an investigation of a sealed machine (at most every
+`logs.seal_verify_interval_minutes`, copying at most `logs.seal_copy_budget_mb`,
+newest first, on a thread pinned to its machine), in scheduled runs and on demand,
+and never blocks an investigation.
+
 ## Presets and pipelines
 
 Saved presets (`/preset`) let a user name and re-run an
@@ -783,3 +873,18 @@ it any more. Two notes that still apply:
   Both are reported as gaps rather than silently skipped.
 - **One target per investigation**: a session can store several targets but
   investigates the first; multi-target runs are not built.
+- **Journal sealing and the process list**: `journalctl --verify-key=` takes the
+  key on its command line, so while a verification runs another user on the
+  Kratos host could read it from `/proc/<pid>/cmdline` unless `/proc` is mounted
+  with `hidepid`. Run Kratos on a single-user host, or mount `/proc` with
+  `hidepid=2`.
+- **Log sources read the current file and its first plain rotation only**:
+  compressed rotations (`.gz` …) are listed as not read and make the earlier part
+  of a window "unknown". Over SSH, logs a group can't read (root-only files on
+  Rocky/RHEL, `btmp`, `/var/log/messages` on Alpine, whose group is usually also
+  the admin group) are reported with the fix; the sub-agent reads them as root.
+- **Tamper heuristics have known blind spots**: a log edited in place after its
+  first 4 KiB without changing its size, a copytruncate rotation compressed
+  immediately (only logrotate's root-only state file shows it), a log rotated
+  several times between two checks, and logs on a machine whose clock jumps.
+  Evidence is reported as what was seen, not as proof.
