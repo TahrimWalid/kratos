@@ -4537,6 +4537,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
             _target_lock.release_target(_lock)
 
         duration = time.monotonic() - started
+        if result.get("status") != STOPPED_BY_BUDGET:
+            # Circuit breaker (kratos.budget): a person is watching, so repeated
+            # failures here only warn -- never pause.
+            try:
+                from kratos.budget import breaker as _breaker
+
+                _breaker.record_outcome(self._data_dir, "interactive", failure=_breaker.run_failure_reason(result))
+            except Exception:  # noqa: BLE001 -- bookkeeping never disturbs the turn
+                pass
         # The conclusion panel carries its own in-bubble timestamp (subtitle),
         # so no separate stamped "Kratos:" header here -- one time per bubble.
         t, d = self._stamp_now()
