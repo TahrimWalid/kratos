@@ -335,8 +335,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._current = None
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
         # General tab row order (↑↓ navigable)
-        self._gen_rows = ["name", "theme", "timezone", "findings.accept_max_days", "findings.default_view"]
-        self._session_rows = ["target", "name", "reset", "delete"]  # This session tab rows
+        self._gen_rows = ["name", "theme", "timezone", "findings.accept_max_days", "findings.default_view",
+                          "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb"]
+        self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
         self._TABS = ["tab-models", "tab-approvals", "tab-general"]
@@ -702,6 +703,11 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{max_days} days  (a risk you accept comes back after this)", style=T.TEXT))
         gen.add_row(Text("/findings shows first", style=T.TEXT_MUTED),
                     Text("open and verified findings" if view == "open_verified" else "everything", style=T.TEXT))
+        interval, budget = self._logs_settings()
+        gen.add_row(Text("Sealed-journal check, at most every", style=T.TEXT_MUTED),
+                    Text(f"{interval} minutes  (after investigations of a sealed machine)", style=T.TEXT))
+        gen.add_row(Text("Sealed-journal copy per check", style=T.TEXT_MUTED),
+                    Text(f"{budget} MB  (newest files first; the rest next time)", style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
 
@@ -717,6 +723,46 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_timezone_flow()
         elif key and key.startswith("findings."):
             self._set_findings_setting_flow(key)
+        elif key and key.startswith("logs."):
+            self._set_logs_setting_flow(key)
+
+    def _logs_settings(self) -> tuple[Any, Any]:
+        from kratos import settings_store
+        from kratos.logsources import seal as SEAL
+
+        dd = self._data_dir()
+        if dd is None:
+            return 60, 256
+        return (settings_store.get(SEAL.SEAL_INTERVAL_KEY, data_dir=dd),
+                settings_store.get(SEAL.SEAL_BUDGET_KEY, data_dir=dd))
+
+    @work
+    async def _set_logs_setting_flow(self, key: str) -> None:
+        """A journal-sealing setting (kratos.logsources.seal), saved in app_settings."""
+        from kratos import settings_store
+        from kratos.logsources import seal as SEAL
+        from kratos.tui_mk2.modals import PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        interval, budget = self._logs_settings()
+        title, hint, current = ((("Sealed-journal check interval (minutes)", "5-10080: the least time between two "
+                                  "background checks of the same machine.", interval))
+                                if key == SEAL.SEAL_INTERVAL_KEY else
+                                ("Sealed-journal copy per check (MB)", "16-8192: how much journal one check copies "
+                                 "from the machine; older files wait for the next check.", budget))
+        answer = await self.app.push_screen_wait(PromptModal(title, hint, initial=str(current)))
+        if answer is None:
+            return
+        try:
+            settings_store.set(key, answer.strip(), data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — applies everywhere on the next read.", T.SAFE)
 
     def _findings_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store
@@ -790,6 +836,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         targets = ", ".join(st.get("targets") or []) or "(none set)"
         name = self._session_name() or "(unnamed)"
         tbl.add_row(Text("Target", style=T.TEXT_MUTED), Text(targets, style=T.TEXT))
+        tbl.add_row(Text("Log sealing", style=T.TEXT_MUTED), Text(self._seal_value(st), style=T.TEXT))
         tbl.add_row(Text("Session name", style=T.TEXT_MUTED), Text(name, style=T.TEXT))
         tbl.add_row(Text("Reset session", style=T.TEXT_MUTED),
                     Text("wipe screen + archive history, start fresh", style=T.TEXT_DIM))
@@ -797,6 +844,17 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text("archive (soft-delete), back to the picker", style=T.TEXT_DIM))
         if idx is not None and 0 <= idx < len(self._session_rows):
             tbl.move_cursor(row=idx)
+
+    def _seal_value(self, st: dict[str, Any]) -> str:
+        from kratos.logsources import seal as SEAL
+
+        dd, targets = self._data_dir(), st.get("targets") or []
+        if dd is None or not targets:
+            return "-"
+        if not SEAL.has_key(dd, targets[0]):
+            return "not set up  (Enter: set up -- recommended)"
+        last = SEAL.latest_summary(dd, targets[0]) or {}
+        return f"key on file, last check: {last.get('status', 'not yet')}  (Enter: replace / verify now / remove)"
 
     def _session_primary(self) -> None:
         idx = self.query_one("#sess-table", DataTable).cursor_row
@@ -815,6 +873,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self.app.pop_screen()  # close Settings -> the session is active again
         if key == "target":
             session._target_flow("")
+        elif key == "seal":
+            session._seal_menu_flow()
         elif key == "name":
             session._rename_flow("")
         elif key == "reset":

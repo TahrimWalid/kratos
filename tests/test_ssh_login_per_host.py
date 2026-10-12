@@ -42,7 +42,7 @@ def test_ssh_argv_and_label_use_the_hosts_login(data, monkeypatch):
 def test_setup_checklist_uses_the_hosts_login(data):
     kc.remember_ssh_user(data, "10.0.0.5", "alice")
     text = target_setup.generate_target_setup_checklist("10.0.0.5")
-    assert "usermod -aG systemd-journal alice" in text and "alice ALL=(ALL) NOPASSWD" in text
+    assert "usermod -aG systemd-journal,adm alice" in text and "alice ALL=(ALL) NOPASSWD" in text
     assert "ubuntu" not in text
 
 

@@ -314,6 +314,7 @@ def build_script(source: str, since: float | None, until: float | None, *, journ
         "KR_YM=$(date '+%Y %m'); KR_Y=${KR_YM% *}; KR_M=$(echo \"${KR_YM#* }\" | sed 's/^0//')",
         "KR_HAVE_J=0; command -v journalctl >/dev/null 2>&1 && KR_HAVE_J=1",
         "printf 'M\\tjournal\\t%s\\n' \"$KR_HAVE_J\"",
+        "printf 'M\\tcontainer\\t%s\\n' \"$(systemd-detect-virt -c 2>/dev/null || echo none)\"",
         f"KR_LO={lo}; KR_HI={hi}; KR_MAXL={max_lines}; KR_MAXB={max_bytes}; KR_LMAX={LINE_MAX_BYTES}; "
         f"KR_MARGIN={WALL_MARGIN_SECONDS}",
         f"KR_AWK={shlex.quote(AWK)}",
@@ -397,6 +398,7 @@ class LogRead:
     since: float | None = None
     until: float | None = None
     via: str = "ssh"                  # how it was read: ssh / subagent
+    container: str | None = None      # systemd-detect-virt -c, if the machine is a container
 
 
 def _zone(tz_name: str | None, tz_offset: str | None) -> tuple[Any, bool]:
@@ -459,6 +461,8 @@ def parse_output(source: str, stdout: str, since: float | None, until: float | N
                 out.has_journal = val.strip() == "1"
             elif key == "gap":
                 out.gaps.append(val)
+            elif key == "container":
+                out.container = None if val.strip() in ("", "none") else val.strip()
         elif tag == "F" and len(cols) >= 6 and cols[1].isdigit() and cols[2].isdigit():
             fr = FileRead(index=int(cols[1]), slot=int(cols[2]), path=cols[3], status=cols[4],
                           detail="" if cols[5] == "-" else cols[5])

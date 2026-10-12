@@ -1233,6 +1233,13 @@ def _local_zone_name(root: str = "") -> str:
         return ""
 
 
+def _container() -> str:
+    """systemd-detect-virt -c, or 'none'."""
+    rc, out = _quick(["systemd-detect-virt", "-c"], timeout=5)
+    word = (out or "").strip().split()[0] if (out or "").strip() else "none"
+    return word if rc in (0, 1) and re.fullmatch(r"[a-z0-9-]{1,32}", word) else "none"
+
+
 def _open_for_read(path: str) -> tuple[int, Any]:
     """The hardened opener, plus the credential-path refusal (catalog paths are
     fixed and none is a credential location -- a test checks -- so this is a
@@ -1256,7 +1263,8 @@ def log_read_output(source: str, since: float | None, until: float | None, lines
     tzs = time.strftime("%z", loc)
     have_j = resolve_binary("journalctl") is not None and not root
     out: list[str] = [f"M\tfamily\t{family or 'unknown'}", f"M\ttz_name\t{_local_zone_name(root)}",
-                      f"M\ttz_offset\t{tzs}", f"M\tnow\t{int(now)}", f"M\tjournal\t{1 if have_j else 0}"]
+                      f"M\ttz_offset\t{tzs}", f"M\tnow\t{int(now)}", f"M\tjournal\t{1 if have_j else 0}",
+                      f"M\tcontainer\t{_container() if not root else 'none'}"]
     truncated = False
     if family is None:
         out.append("M\tgap\tunknown Linux distribution: no log paths are known for it")

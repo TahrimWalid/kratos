@@ -51,6 +51,16 @@ CHECK_LABELS: dict[str, str] = {
     "lsof_installed": "lsof installed (open files)",
     "yara_rules": "YARA rules on the box",
     "target_timezone": "Clock and timezone",
+    "log_source_auditd": "Read auditd's log (programs run)",
+    "log_source_sudo": "Read sudo's log",
+    "log_source_cron": "Read cron's log",
+    "log_source_systemd": "Read service activity (systemd)",
+    "log_source_firewall": "Read firewall log lines",
+    "log_source_packages": "Read the package install history",
+    "log_source_web": "Read web server logs",
+    "audit_status": "Read auditd's status",
+    "journal_persistent": "Journal kept on disk",
+    "sealing": "Journal sealing",
 }
 
 
@@ -74,6 +84,27 @@ def _detect_local_ip(target_host: str) -> str | None:
             return sock.getsockname()[0]
     except OSError:
         return None
+
+
+def seal_setup_commands(target_host: str) -> str:
+    """Checklist step 7 -- journal sealing (FSS), also shown on its own by the
+    onboarding seal step and /target seal. Verified on systemd 249 and 252:
+    --setup-keys refuses if keys exist (--force regenerates); journald seals only
+    files it opens after the keys exist, hence the rotate."""
+    return f"""\
+# 7. (Recommended) Seal this machine's journal so edits can be detected.
+#    Needs persistent journal storage (the first two lines make sure of it).
+sudo mkdir -p /var/log/journal && sudo systemd-tmpfiles --create --prefix /var/log/journal
+sudo systemctl restart systemd-journald
+sudo journalctl --setup-keys
+#    It prints a "secret verification key" -- one line like
+#    a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900. Paste it into Kratos
+#    (/target seal, or: kratos seal set-key {target_host}).
+#    Keep it OFF this machine: anyone who can read it here could forge seals.
+#    If it says keys already exist and you no longer have that key:
+#    sudo journalctl --setup-keys --force   (then give Kratos the new key)
+sudo journalctl --rotate     # start sealing new log files right away
+"""
 
 
 def generate_target_setup_checklist(target_host: str) -> str:
@@ -105,17 +136,25 @@ def generate_target_setup_checklist(target_host: str) -> str:
 # 1. SSH key access (as {login})
 {authorize}
 
-# 2. journalctl access (read logs) -- group membership, no sudo needed.
-#    Takes effect on Kratos's NEXT ssh connection (it opens a fresh one per
-#    command already, so nothing else to do -- no reboot/relogin required
-#    for Kratos itself, though your own shell session won't see it until
-#    you reconnect too).
-sudo usermod -aG systemd-journal {login}
+# 2. Read access to logs -- group membership, no sudo needed. systemd-journal
+#    reads the journal; adm reads the files under /var/log (auth.log, syslog,
+#    ufw.log, web server logs, sudo's own log). Takes effect on Kratos's NEXT
+#    ssh connection (it opens a fresh one per command already, so nothing else
+#    to do -- no reboot/relogin required for Kratos itself, though your own
+#    shell session won't see it until you reconnect too). On Rocky/RHEL the
+#    /var/log files are root-only by default; the journal covers most of them.
+sudo usermod -aG systemd-journal,adm {login}
+#    If auditd is installed, let adm read its log too (auditd's own setting):
+if [ -f /etc/audit/auditd.conf ]; then
+  sudo sed -i 's/^log_group *=.*/log_group = adm/' /etc/audit/auditd.conf
+  sudo chgrp adm /var/log/audit && sudo chmod 0750 /var/log/audit
+  sudo systemctl restart auditd || sudo service auditd restart
+fi
 
-# 3. Passwordless sudo for 3 read-only status checks (used by
-#    run_config_audit). Adjust binary paths below if `which sshd` / `which
-#    ufw` etc. differ on your distro. All 3 are status/read-only commands,
-#    never state-changing.
+# 3. Passwordless sudo for read-only status checks (run_config_audit, and
+#    auditd's status for the log-tampering check). Adjust binary paths below if
+#    `which sshd` / `which ufw` / `which auditctl` differ on your distro. All are
+#    status/read-only commands, never state-changing.
 sudo tee /etc/sudoers.d/kratos > /dev/null << 'EOF'
 {login} ALL=(ALL) NOPASSWD: /usr/sbin/sshd -T
 {login} ALL=(ALL) NOPASSWD: /usr/sbin/ufw status
@@ -124,6 +163,8 @@ sudo tee /etc/sudoers.d/kratos > /dev/null << 'EOF'
 {login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client status
 {login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * maxretry
 {login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * bantime
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/auditctl -s
+{login} ALL=(ALL) NOPASSWD: /usr/sbin/auditctl -l
 EOF
 sudo chmod 440 /etc/sudoers.d/kratos
 
@@ -143,6 +184,7 @@ sudo ufw allow from {kratos_ip_display} to any port 22 proto tcp
 #      ignoreip = 127.0.0.1/8 ::1 {kratos_ip_display}
 #    then: sudo systemctl restart fail2ban
 
+{seal_setup_commands(target_host)}
 # When done, verify from Kratos with: /target {target_host}
 # (or /target verify, if this target is already active)
 """

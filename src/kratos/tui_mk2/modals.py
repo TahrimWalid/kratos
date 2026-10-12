@@ -456,6 +456,7 @@ class HelpModal(ModalScreen[None]):
                 ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
                 ("/target verify", "Re-check the active target's setup"),
                 ("/target link", "Read the target through a paired sub-agent (or back to SSH)"),
+                ("/target seal [verify|remove]", "Seal the target's journal: keep its verification key here, check it"),
                 ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
                 ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
                 ("/settings", "Settings — models, tools, name, timezone, this session (also 's' at the picker)"),
@@ -986,6 +987,105 @@ class CommandModal(ModalScreen[None]):
         self.app.notify("Copied to clipboard.", timeout=3)
 
     def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class SealKeyModal(ModalScreen[str | None]):
+    """Journal sealing setup for one machine (0.3): the commands to run ON the
+    machine (copy-safe), then a masked field for the verification key it prints.
+    Returns the validated key, or None when skipped. `s` skips, `?` explains,
+    `c` copies the commands, `k`/Enter goes to the key field; other keys do
+    nothing. The key is never shown back (password field) and never logged."""
+
+    BINDINGS = [
+        Binding("s,escape", "skip", "skip", show=True),
+        Binding("c", "copy", "copy commands", show=True),
+        Binding("k", "focus_key", "paste key", show=True),
+        Binding("question_mark", "explain", "why?", show=True),
+    ]
+
+    CSS = """
+    SealKeyModal #seal-cmds { height: auto; max-height: 16; }
+    SealKeyModal #seal-error { height: auto; }
+    SealKeyModal Horizontal { height: auto; }
+    SealKeyModal Button { margin: 1 1 0 0; }
+    """
+
+    def __init__(self, target: str, commands: str, *, replacing: bool = False) -> None:
+        super().__init__()
+        self._target = target
+        self._commands = commands
+        self._replacing = replacing
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text(("Replace the" if self._replacing else "Seal") + f" journal of {self._target}"
+                              + (" verification key" if self._replacing else " (recommended)"),
+                              style=f"bold {T.ACCENT}"), classes="modal-title")
+            yield Static(Text("Run these ON the machine (Kratos never does). Then paste the verification key it "
+                              "prints below -- it is kept on this computer only.", style=T.TEXT_DIM))
+            with VerticalScroll(id="seal-cmds"):
+                yield Static(Panel(Text(self._commands, style=T.TEXT_BRIGHT), border_style=T.ACCENT, padding=(0, 1)))
+            with Horizontal():
+                yield Button("Copy commands", id="seal-copy")
+                yield Button("Paste key", id="seal-paste", variant="primary")
+                yield Button("Skip", id="seal-skip")
+            yield Input(placeholder="verification key, e.g. a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900",
+                        password=True, id="seal-key")
+            yield Static("", id="seal-error")
+            yield Static(Text("Enter saves · s skip · c copy commands · k paste key · ? why", style=T.TEXT_DIM))
+
+    def on_mount(self) -> None:
+        self.query_one("#seal-paste", Button).focus()
+
+    @on(Button.Pressed, "#seal-copy")
+    def _copy_btn(self, event: Button.Pressed) -> None:
+        self.action_copy()
+
+    @on(Button.Pressed, "#seal-paste")
+    def _paste_btn(self, event: Button.Pressed) -> None:
+        self.action_focus_key()
+
+    @on(Button.Pressed, "#seal-skip")
+    def _skip_btn(self, event: Button.Pressed) -> None:
+        self.action_skip()
+
+    @on(Input.Submitted, "#seal-key")
+    def _submit(self, event: Input.Submitted) -> None:
+        from kratos.logsources.seal import SealKeyError, validate_key
+
+        try:
+            key = validate_key(event.value)
+        except SealKeyError as e:
+            event.input.value = ""
+            self.query_one("#seal-error", Static).update(Text(str(e), style=T.CRITICAL))
+            return
+        self.dismiss(key)
+
+    def on_key(self, event: events.Key) -> None:
+        # In the key field, letters are the key being typed -- never shortcuts.
+        if isinstance(self.focused, Input) and event.key in ("s", "c", "k", "question_mark"):
+            event.stop()
+
+    def action_copy(self) -> None:
+        self.app.copy_to_clipboard(self._commands)
+        self.app.notify("Commands copied.", timeout=3)
+
+    def action_focus_key(self) -> None:
+        self.query_one("#seal-key", Input).focus()
+
+    def action_explain(self) -> None:
+        self.app.push_screen(InfoModal(
+            "Why seal the journal?",
+            "Sealing makes the machine sign its own journal as it writes it, so if anyone (even root) edits or "
+            "deletes entries later, Kratos's check fails and tells you. The key that checks the signatures stays "
+            "on this computer, so an attacker on the machine can't forge it -- if you lose it, sealing just can't "
+            "be checked until you set it up again."))
+
+    def action_skip(self) -> None:
+        if isinstance(self.focused, Input) and self.focused.value:
+            self.focused.value = ""
+            return
         self.dismiss(None)
 
 

@@ -110,7 +110,8 @@ def test_probe_parses_tab_separated_output():
         checks = ssh_remote.run_target_probe_checks()
 
     assert isinstance(checks, list)
-    assert len(checks) == 4
+    assert len(checks) == 5   # + the Kratos-side sealing row (0.3)
+    assert checks[-1]["check"] == "sealing"
     by_id = {c["check"]: c for c in checks}
     assert by_id["ssh_reachable"]["status"] == "PASS"
     assert by_id["sudo_sshd_config"]["status"] == "FAIL"
@@ -211,3 +212,41 @@ def test_every_check_the_probes_can_report_has_a_label():
     assert {"fail2ban_status", "agent_privilege"} <= agent_ids and {"ssh_reachable", "sudo_fail2ban"} <= ssh_ids
     ids = agent_ids | ssh_ids | {"subagent_reachable"}
     assert sorted(i for i in ids if i not in CHECK_LABELS) == []
+
+
+
+def test_checklist_has_the_0_3_log_access_auditd_and_sealing_steps():
+    text = target_setup.generate_target_setup_checklist("10.0.0.5")
+    assert "usermod -aG systemd-journal,adm" in text
+    assert "log_group = adm" in text and "chmod 0750 /var/log/audit" in text
+    assert "NOPASSWD: /usr/sbin/auditctl -s" in text and "NOPASSWD: /usr/sbin/auditctl -l" in text
+    assert "sudo journalctl --setup-keys" in text and "Keep it OFF" in text
+    assert "/target seal" in text and "kratos seal set-key 10.0.0.5" in text
+    assert "sudo cat" not in text                     # least privilege: reads go through groups, never sudo cat
+
+
+def test_sealing_row_states(tmp_path):
+    from kratos.logsources import seal, setup_probe
+
+    key = "a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900"
+    assert setup_probe.sealing_row(tmp_path, "h", "a" * 32)["status"] == "INFO"
+    seal.set_key(tmp_path, "h", key, set_by="t", machine_id="a" * 32)
+    assert setup_probe.sealing_row(tmp_path, "h", "a" * 32)["status"] == "PASS"
+    bad = setup_probe.sealing_row(tmp_path, "h", "b" * 32)
+    assert bad["status"] == "FAIL" and "different machine" in bad["detail"]
+    rows = setup_probe.finish_rows([{"check": "machine_id", "status": "INFO", "detail": "a" * 32}], tmp_path, "h")
+    assert [r["check"] for r in rows] == ["sealing"] and key not in str(rows)
+
+
+def test_probe_script_names_every_source_and_is_read_only():
+    from kratos.logsources import catalog, setup_probe
+
+    script = setup_probe.probe_script()
+    for name in catalog.SOURCE_NAMES:
+        assert f"kr_probe_src {name} " in script
+    import re
+
+    for forbidden in ("rm ", "tee ", "chmod", "chown", "> /", "sudo -n cat"):
+        assert forbidden not in script
+    # the only commands run through sudo are the read-only journal and auditd status reads
+    assert set(re.findall(r"sudo -n (\S+)", script)) <= {"journalctl", "auditctl"}

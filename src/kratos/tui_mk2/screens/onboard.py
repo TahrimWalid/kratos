@@ -155,6 +155,8 @@ class OnboardTargetScreen(Screen[str | None]):
         self._core_port = core_port
         self._method: str | None = None
         self._login_confirmed = False
+        self._ssh_ok = False          # the read-only probe logged in over SSH
+        self._seal_offered = False
         # A box this target looks like (by name/hostname/address) that is
         # already paired: offered as its own choice, never linked silently.
         from kratos.tui_mk2 import target_link as TL
@@ -437,6 +439,8 @@ class OnboardTargetScreen(Screen[str | None]):
                 Text(c.get("detail", ""), style=T.TEXT_DIM),
             )
         self.app.call_from_thread(self._log, table)
+        if not via_agent:
+            self._ssh_ok = True
         if n_fail == 0 or via_agent:
             self.app.call_from_thread(self._log, Text(
                 f"✓ Kratos can reach {self._target_host} — you're ready. Press Enter to start."
@@ -524,6 +528,35 @@ class OnboardTargetScreen(Screen[str | None]):
         if self._choosing():
             self._select_method(self._highlighted_key())
             return
+        if self._method == "ssh" and self._ssh_ok and not self._seal_offered:
+            from kratos.logsources import seal as _seal
+
+            if not _seal.has_key(self._data_dir, self._target_host):
+                self._seal_offered = True
+                self._offer_seal()
+                return
+        self.dismiss(self._method)
+
+    @work(exclusive=True, group="ob-seal")
+    async def _offer_seal(self) -> None:
+        """Journal sealing, after SSH works: recommended, one key (`s`) to skip
+        (owner decision 6). The key is saved on this computer only."""
+        from kratos.adapters.target_setup import seal_setup_commands
+        from kratos.logsources import seal as _seal
+        from kratos.tui_mk2.modals import SealKeyModal
+
+        key = await self.app.push_screen_wait(SealKeyModal(self._target_host, seal_setup_commands(self._target_host)))
+        if key is not None:
+            import getpass
+
+            try:
+                _seal.set_key(self._data_dir, self._target_host, key, set_by=f"{getpass.getuser()} (onboarding)")
+                self._log(Text("✓ Verification key saved on this computer. Kratos will check the sealed journal "
+                               "after investigations.", style=f"bold {T.SAFE}"))
+            except _seal.SealKeyError as e:
+                self._log(Text(str(e), style=T.CRITICAL))
+                self._seal_offered = False
+                return
         self.dismiss(self._method)
 
     def action_skip(self) -> None:

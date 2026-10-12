@@ -103,6 +103,9 @@ class _FakeSessionFull(_FakeSession):
     def _rename_flow(self, rest):
         self.calls.append(("name", rest))
 
+    def _seal_menu_flow(self):
+        self.calls.append(("seal",))
+
     def _reset_flow(self):
         self.calls.append(("reset",))
 
@@ -501,18 +504,20 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_theme_flow", lambda: fired.append("theme"))
             monkeypatch.setattr(screen, "_set_timezone_flow", lambda: fired.append("timezone"))
             monkeypatch.setattr(screen, "_set_findings_setting_flow", lambda key: fired.append(key))
+            monkeypatch.setattr(screen, "_set_logs_setting_flow", lambda key: fired.append(key))
             screen.query_one(TabbedContent).active = "tab-general"
             await pilot.pause()
             gen = screen.query_one("#gen-table", DataTable)
-            assert gen.row_count == 5            # name / theme / timezone / two finding settings
-            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, "")]:
+            assert gen.row_count == 7            # name / theme / timezone / two finding + two sealing settings
+            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
                 await pilot.pause()
             return fired
 
     assert asyncio.run(_run()) == ["theme", "timezone", "name", "findings.accept_max_days",
-                                   "findings.default_view"]
+                                   "findings.default_view", "logs.seal_verify_interval_minutes",
+                                   "logs.seal_copy_budget_mb"]
 
 
 def test_general_tab_saves_the_longest_risk_acceptance(tmp_path, monkeypatch):
@@ -564,7 +569,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 5      # name / theme / timezone + two finding settings
+    assert gen == 7      # name / theme / timezone + two finding + two sealing settings
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
@@ -585,6 +590,7 @@ def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
 def test_this_session_tab_dispatches_and_closes(tmp_path, monkeypatch):
     _write_env(tmp_path, monkeypatch)
     fake = _FakeSessionFull()
+    fake._data_dir = tmp_path
 
     async def _run():
         app = _ScreenHost(SettingsScreen(fake))
@@ -593,12 +599,13 @@ def test_this_session_tab_dispatches_and_closes(tmp_path, monkeypatch):
             screen = app.screen
             assert "tab-session" in screen._TABS
             sess = screen.query_one("#sess-table", DataTable)
-            assert sess.row_count == 4                       # target/name/reset/delete
+            assert sess.row_count == 5                       # target/sealing/name/reset/delete
             assert sess.get_row_at(0)[1].plain == "10.0.0.1"  # current target shown
-            assert sess.get_row_at(1)[1].plain == "myproj"    # current name shown
+            assert sess.get_row_at(1)[1].plain.startswith("not set up")   # log sealing
+            assert sess.get_row_at(2)[1].plain == "myproj"    # current name shown
             screen.query_one(TabbedContent).active = "tab-session"
             await pilot.pause()
-            sess.move_cursor(row=3)          # Delete session
+            sess.move_cursor(row=4)          # Delete session
             screen.action_primary()          # Enter -> closes settings, acts in session
             await pilot.pause()
             return fake.calls
@@ -652,3 +659,23 @@ def test_models_table_fits_the_window_and_starts_on_the_active_model(tmp_path, m
     assert widths <= table_width, (widths, table_width)       # nothing hidden off to the side
     assert all("…" not in r[3] for r in cells)                 # context window shown in full
     assert cells[cursor][1] == "gemini-3.1-pro"                 # cursor on the model in use
+
+
+def test_this_session_tab_log_sealing_row_dispatches(tmp_path, monkeypatch):
+    _write_env(tmp_path, monkeypatch)
+    fake = _FakeSessionFull()
+    fake._data_dir = tmp_path
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(fake))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one(TabbedContent).active = "tab-session"
+            await pilot.pause()
+            screen.query_one("#sess-table", DataTable).move_cursor(row=1)  # Log sealing
+            screen.action_primary()
+            await pilot.pause()
+            return fake.calls
+
+    assert asyncio.run(_run()) == [("seal",)]

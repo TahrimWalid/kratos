@@ -718,11 +718,16 @@ def run_target_probe_checks() -> SSHResult | list[dict[str, str]]:
     checklist; left as a manual step, called out with extra emphasis in the
     checklist text itself given it's a real, previously-hit failure mode
     (Kratos's own SSH traffic getting itself banned mid-investigation)."""
-    result = _route("capabilities", {}, lambda: run_remote_script(_TARGET_PROBE_SCRIPT),
+    from kratos.logsources import setup_probe
+
+    result = _route("capabilities", {}, lambda: run_remote_script(_TARGET_PROBE_SCRIPT + setup_probe.probe_script()),
                     agent_call=agent_capabilities)
-    if isinstance(result, list) or not result.ok:
+    if isinstance(result, list):
+        return setup_probe.finish_rows(result, _kconfig.get_active_data_dir(), get_active_target())
+    if not result.ok:
         return result
-    return _reads.parse_check_lines(result.stdout)
+    return setup_probe.finish_rows(_reads.parse_check_lines(result.stdout), _kconfig.get_active_data_dir(),
+                                   get_active_target())
 
 
 def agent_capabilities(link: Any) -> SSHResult | list[dict[str, str]]:

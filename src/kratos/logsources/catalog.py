@@ -48,6 +48,10 @@ class Source:
     files: dict[str, tuple[FileSpec, ...]] = field(default_factory=dict)  # family -> files
     gaps: dict[str, str] = field(default_factory=dict)                  # family -> why nothing is read
     access: str = ""                                 # how to give the SSH user read access (setup text)
+    access_by_family: dict[str, str] = field(default_factory=dict)      # a different fix on some distributions
+
+    def access_for(self, family: str | None) -> str:
+        return self.access_by_family.get(family or "", self.access)
 
 
 # Closed journal matches: a name -> the journalctl match arguments. Repeating a
@@ -63,6 +67,15 @@ JOURNAL_MATCHES: dict[str, tuple[str, ...]] = {
 _FW_KEEP = r"\[UFW |IN=[^ ]* OUT=[^ ]* .*SRC="
 _ADM = ("add the SSH user to the adm group (sudo usermod -aG adm <user>) so it can read "
         "/var/log files without sudo")
+# Where the classic log files are NOT adm-readable by default.
+_FILE_ACCESS = {
+    "rhel": ("these files are root-only on Rocky/RHEL (the journal holds the same lines -- add the SSH user to "
+             "systemd-journal); to read the files too, have rsyslog create them group-readable "
+             "($FileGroup/$FileCreateMode) for a group the SSH user is in"),
+    "alpine": ("/var/log/messages belongs to the wheel group on Alpine, which is usually also the admin "
+               "(doas/sudo) group -- don't add Kratos's SSH user to it; read this machine through its sub-agent "
+               "(it reads logs as root) instead"),
+}
 
 SOURCES: dict[str, Source] = {s.name: s for s in (
     Source(
@@ -81,7 +94,7 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
             "rhel": (FileSpec("/var/log/sudo.log", "sudo_log"), FileSpec("/var/log/secure", "syslog", keep=" sudo")),
             "alpine": (FileSpec("/var/log/messages", "syslog", keep=" sudo"),),
         },
-        access=_ADM,
+        access=_ADM, access_by_family=_FILE_ACCESS,
     ),
     Source(
         "cron", "kratos.cron",
@@ -91,7 +104,7 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
             "rhel": (FileSpec("/var/log/cron", "syslog"),),
             "alpine": (FileSpec("/var/log/messages", "syslog", keep=" crond?\\["),),
         },
-        access=_ADM,
+        access=_ADM, access_by_family=_FILE_ACCESS,
     ),
     Source(
         "systemd", "kratos.systemd",
@@ -107,7 +120,7 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
             "debian": (FileSpec("/var/log/ufw.log", "syslog", keep=_FW_KEEP, when="no_journal"),),
             "alpine": (FileSpec("/var/log/messages", "syslog", keep=_FW_KEEP),),
         },
-        access=_ADM,
+        access=_ADM, access_by_family=_FILE_ACCESS,
     ),
     Source(
         "packages", "kratos.package",
@@ -133,7 +146,8 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
             "alpine": (FileSpec("/var/log/nginx/access.log", "clf"),
                        FileSpec("/var/log/nginx/error.log", "nginx_error")),
         },
-        access=_ADM,
+        access=_ADM, access_by_family={"rhel": "nginx/httpd logs are root-only on Rocky/RHEL by default: make "
+                                               "them group-readable for a group the SSH user is in"},
     ),
 )}
 

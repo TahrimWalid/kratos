@@ -114,7 +114,7 @@ _PALETTE_COMMANDS = [
     ("/help", "list all commands"),
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
-    ("/target", "set, change, or verify the active target"),
+    ("/target", "set, change, verify or seal the active target (/target seal)"),
     ("/rename", "name this session"),
     ("/compact", "summarize the conversation to free context (keeps memory)"),
     ("/clear", "clear the screen + working context (history kept)"),
@@ -3164,6 +3164,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if rest in ("link", "unlink", "via"):
             await self._target_link_flow(unlink=rest == "unlink")
             return
+        if rest == "seal" or rest.startswith("seal "):
+            await self._target_seal_flow(rest[4:].strip())
+            return
         if not rest:
             from kratos.tui_mk2.target_input import KRATOS_HOST_SENTINEL, KRATOS_HOST_VALUE
 
@@ -3186,6 +3189,105 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit(R.note_line(f"Target unchanged — current: {current or '(none set)'}"))
                 return
         await self._apply_target_checked(rest.split(), raw=rest)
+
+    async def _target_seal_flow(self, sub: str) -> None:
+        """`/target seal` -- set or replace this machine's journal verification key
+        (masked, never echoed); `/target seal verify` checks now; `/target seal
+        remove` forgets the key. The key stays on this computer (0.3 §7)."""
+        from kratos.adapters.target_setup import seal_setup_commands
+        from kratos.logsources import seal as _seal
+        from kratos.tui_mk2.modals import SealKeyModal
+
+        targets = self.session_state.get("targets") or []
+        if not targets:
+            self._emit(R.error_line("No target set — /target <host> first."))
+            return
+        target = targets[0]
+        if _seal.KEY_SEARCH_RE.search(sub):
+            # Typed on the command line: never stored or used -- the box below is the only way in.
+            self._emit(R.error_line("Don't type the key on the command line -- use the masked box "
+                                    "(/target seal). That key was not saved anywhere."))
+            return
+        if sub == "verify":
+            if not _seal.has_key(self._data_dir, target):
+                self._emit(R.note_line(f"No verification key on file for {target} — /target seal to set one up."))
+                return
+            self._emit(R.note_line(f"Verifying {target}'s sealed journal…"))
+            self._seal_verify_worker(target)
+            return
+        if sub == "remove":
+            if not _seal.has_key(self._data_dir, target):
+                self._emit(R.note_line(f"No verification key on file for {target}."))
+                return
+            ok = await self.app.push_screen_wait(ConfirmModal(
+                "Remove the verification key?",
+                f"Kratos will forget {target}'s journal verification key and can no longer check its seals. "
+                "The machine keeps sealing; you can paste the key again later."))
+            if ok:
+                _seal.remove_key(self._data_dir, target)
+                self._emit(R.success_line(f"Verification key for {target} removed."))
+            return
+        if sub:
+            self._emit(R.note_line("/target seal  ·  /target seal verify  ·  /target seal remove"))
+            return
+        had = _seal.load_key(self._data_dir, target)
+        if had:
+            last = _seal.latest_summary(self._data_dir, target) or {}
+            self._emit(R.note_line(f"{target}: a verification key is on file (last check: "
+                                   f"{last.get('status', 'not yet')} {last.get('checked_at') or ''}).".replace(" )", ")")))
+        key = await self.app.push_screen_wait(SealKeyModal(target, seal_setup_commands(target), replacing=bool(had)))
+        if key is None:
+            self._emit(R.note_line("Sealing skipped — /target seal any time."))
+            return
+        import getpass
+
+        try:
+            _seal.set_key(self._data_dir, target, key, set_by=f"{getpass.getuser()} (tui)")
+        except _seal.SealKeyError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        self._emit(R.success_line(f"Verification key saved for {target} — on this computer only. Kratos checks "
+                                  "the sealed journal after investigations (or now: /target seal verify)."))
+
+    @work
+    async def _seal_menu_flow(self) -> None:
+        """Settings -> This session -> Log sealing."""
+        from kratos.logsources import seal as _seal
+        from kratos.tui_mk2.modals import ListPickerModal
+
+        targets = self.session_state.get("targets") or []
+        if not targets or not _seal.has_key(self._data_dir, targets[0]):
+            await self._target_seal_flow("")
+            return
+        pick = await self.app.push_screen_wait(ListPickerModal(
+            f"Log sealing — {targets[0]}", [("verify", "Verify now"), ("set", "Replace the verification key"),
+                                            ("remove", "Remove the key (sealing can't be checked)")]))
+        if pick is not None:
+            await self._target_seal_flow("" if pick == "set" else pick)
+
+    @work(thread=True, exclusive=True, group="seal")
+    def _seal_verify_worker(self, target: str) -> None:
+        from kratos.logsources import seal as _seal
+
+        try:
+            with _kconfig.pinned_target(target):
+                s = _seal.verify(self._data_dir, target)
+        except Exception as e:  # noqa: BLE001
+            self._emit_from_worker(R.error_line(f"Seal verification failed to run: {e}"))
+            return
+        if s is None:
+            return
+        bad = s["failed"] + s["changed_archives"]
+        line = (f"{target}: {s['status']} — {len(s['passed'])} file(s) verified, {s['skipped_unchanged']} unchanged "
+                f"since verified, {len(bad)} failed, {len(s['unsealed_after_setup'])} newer file(s) not sealed")
+        self._emit_from_worker(R.error_line(line) if bad else R.success_line(line) if s["status"] == "verified"
+                               else R.note_line(line))
+        for f in bad:
+            self._emit_from_worker(R.error_line(f"  {f['name']}: {f['detail']}"))
+        if s.get("unverifiable"):
+            self._emit_from_worker(R.note_line(f"  could not verify: {s['unverifiable']}"))
+        for n in s.get("notes") or []:
+            self._emit_from_worker(R.note_line(f"  {n}"))
 
     async def _apply_target_checked(self, tokens: list[str], raw: str) -> None:
         """Apply typed target tokens, but when they look like a pasted phrase

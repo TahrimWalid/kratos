@@ -64,8 +64,9 @@ def _line(e: Any) -> str:
 def coverage(read: Any, source: str) -> dict[str, Any]:
     src = catalog.SOURCES[source]
     files_read = [f.path for f in read.files if f.status == "read"]
+    fix = src.access_for(read.family) or "-"
     unreadable = [{"path": f.path, "why": f.status if f.status != "unreadable" or f.detail != "directory"
-                   else "its directory isn't readable", "fix": src.access or "-"}
+                   else "its directory isn't readable", "fix": fix}
                   for f in read.files if f.status in ("unreadable", "no_content")]
     refused = [{"path": f.path, "why": f"{f.status} (refused: Kratos never follows links in log directories)"}
                for f in read.files if f.status in ("symlink", "hardlink", "not_regular", "changed", "refused")]
@@ -76,7 +77,7 @@ def coverage(read: Any, source: str) -> dict[str, Any]:
     if read.journal_errors:
         problems += [f"journal ({m}): {e}" for m, e in read.journal_errors.items()]
     if unreadable:
-        problems.append("could not read " + ", ".join(u["path"] for u in unreadable) + f" -- fix: {src.access}")
+        problems.append("could not read " + ", ".join(u["path"] for u in unreadable) + f" -- fix: {fix}")
     if refused:
         problems.append("refused " + ", ".join(r["path"] for r in refused) + " (a link in a log directory)")
     reaches_back = True
@@ -90,6 +91,9 @@ def coverage(read: Any, source: str) -> dict[str, Any]:
                         f"read ({', '.join(read.skipped[:4])}) -- that earlier part of the window is unknown")
     if read.truncated:
         problems.append("the window held more lines than the cap: only the newest were read")
+    if source == "firewall" and read.container:
+        gaps.append(f"this machine is a container ({read.container}): the kernel writes firewall log lines on the "
+                    "host, not inside it -- read the host's logs for blocked connections")
     present = [f for f in read.files if f.status not in ("missing", "skipped_journal")]
     nothing = not present and not read.journal_counts and not read.journal_errors
     complete = not problems and not gaps and not nothing
@@ -109,6 +113,7 @@ def coverage(read: Any, source: str) -> dict[str, Any]:
         "gaps": gaps,
         "problems": problems,
         "distribution": read.family,
+        "container": read.container,
     }
 
 
