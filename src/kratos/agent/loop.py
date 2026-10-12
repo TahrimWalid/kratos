@@ -185,13 +185,33 @@ _LOOPBACK_SELF_TARGETS = {"127.0.0.1", "localhost", "::1"}
 # (/use, pipelines) -- this shapes only what the investigating model sees.
 _LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
 
-# Tools not LISTED to the investigating model because another listed tool already
-# offers them -- still callable (a call by name runs normally), and still there for
-# /use, pipelines and the standard audit. check_log_integrity is
-# read_host_logs(source="tampering"): measured on gemini-3.1-flash-lite (eval A1,
-# phase 0.3), two new entries in the tool list made a broad investigation skip the
-# port scan noticeably more often (37/50 vs 61/65 on main); one entry did not.
+# Tools not LISTED to the investigating model -- still callable (a call by name runs
+# normally) and still there for /use, pipelines and the standard audit.
+# check_log_integrity is offered as read_host_logs(source="tampering").
 _UNLISTED_AGENT_TOOLS = frozenset({"check_log_integrity"})
+
+# read_host_logs is listed only when the goal is about what it reads. Measured on
+# gemini-3.1-flash-lite (eval A1, phase 0.3, interleaved with main): ANY extra entry
+# in the tool list -- even a three-line one -- made "check for suspicious activity"
+# skip the port scan in ~4 of 20 runs, losing the exposed-SSH brute-force finding;
+# the same code with main's exact prompt scored 19/20 vs main 17/20. So a broad goal
+# sees the established tools only, and a goal about programs run, cron, services,
+# the firewall, installs, the web server, sudo's log or tampered logs gets the tool.
+_HOST_LOGS_GOAL_RE = re.compile(
+    r"\b(?:audit\w*|execve|programs?\s+(?:ran|run|were\s+run|executed|started)|what\s+(?:ran|was\s+run|executed)|"
+    r"commands?\s+(?:ran|run|executed|history)|process\s+history|cron\w*|scheduled\s+(?:jobs?|tasks?)|"
+    r"systemd|services?|units?|crash\w*|reboot\w*|shut\s?down|firewall|ufw|iptables|nftables?|blocked|"
+    r"packages?|install\w*|uninstall\w*|upgrad\w*|apt|dpkg|dnf|yum|rpm|software|nginx|apache|httpd|"
+    r"web\s?servers?|websites?|http|urls?|requests?|sudo\.log|tamper\w*|wip(?:e|ed|ing)|cleared|"
+    r"truncat\w*|anti-?forensic\w*|cover\w*\s+(?:\w+\s+)?tracks|seal\w*|wtmp|btmp|login\s+records?|"
+    r"logs?\s+(?:were|was|been|got)\s+(?:cleared|deleted|edited|modified|removed|changed|tampered\w*)|"
+    r"(?:cleared|deleted|edited|modified|removed|missing)\s+(?:the\s+)?logs?|trust\s+the\s+logs?)\b",
+    re.IGNORECASE)
+
+
+def goal_unlisted_tools(goal: str | None) -> frozenset[str]:
+    """Tools not listed to the model for this goal (see _HOST_LOGS_GOAL_RE)."""
+    return frozenset() if goal and _HOST_LOGS_GOAL_RE.search(goal) else frozenset({"read_host_logs"})
 
 
 # Built-in tools that read the investigated machine over SSH (or its sub-agent).
@@ -524,9 +544,11 @@ You may ask more than one question across a single investigation if genuinely wa
 It does NOT end the investigation: after the user answers (fed back as an Observation), continue normally."""
 
 
-def build_system_prompt() -> str:
+def build_system_prompt(goal: str | None = None) -> str:
+    """`goal`: the investigation goal -- some tools are listed only when it is about
+    what they read (goal_unlisted_tools)."""
     hidden = _agent_hidden_tools()
-    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS)
+    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS | goal_unlisted_tools(goal))
     local_tools = [t for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command")
                    if t not in hidden]
     local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "
@@ -1190,7 +1212,7 @@ def _run_agent_loop(
     the (never-compacted) preamble ahead of the goal -- see _Conversation. Default
     None preserves the exact prior behavior for every other caller (CLI, MCP).
     """
-    system_prompt = build_system_prompt()
+    system_prompt = build_system_prompt(goal)
     # Bound prior_context to a window-aware budget (see the constants above) so a
     # large conversation handed to a small-window backend can't overflow into a
     # silent local truncation.

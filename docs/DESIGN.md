@@ -554,7 +554,16 @@ events now take their ID from the entry's `__CURSOR`. Reading is the
 lines, coverage) and the events in the store -- never the raw log.
 
 **Tamper checks** (`logsources/tamper.py`, run by `check_log_integrity`, also an
-optional step of the standard audit). Heuristics, each measured clean on every lab
+optional step of the standard audit; the investigating model reaches it as
+`read_host_logs` with `source="tampering"`, while `/use` and pipelines call
+`check_log_integrity` directly). `read_host_logs` is listed to the model only when
+the question is about what it reads (programs run, cron, services, firewall,
+installs, the web server, tampered logs): measured on the eval with
+gemini-3.1-flash-lite, *any* extra entry in the tool list made a broad "check for
+suspicious activity" skip the port scan in about 4 of 20 runs (losing the
+exposed-SSH brute-force finding), while the same code with the old list matched
+the old results. A broad investigation therefore sees exactly the established
+tools; `/run` still includes the integrity check. Heuristics, each measured clean on every lab
 host and read-only on a real server before shipping:
 
 - *Log file state* (`log_file_state`): inode, size, mtime and a hash of the first

@@ -192,7 +192,7 @@ def test_the_model_sees_one_log_tool_and_tampering_runs_through_it(tmp_path, mon
 
     monkeypatch.setattr(integrity, "Reader", FakeReader)
     kratos_config.set_active_target(TARGET)
-    prompt = build_system_prompt()
+    prompt = build_system_prompt("did an attacker cover their tracks on this box?")
     assert "- read_host_logs:" in prompt and "tampering (were the logs cleared or edited)" in prompt
     assert "- check_log_integrity:" not in prompt          # listed through read_host_logs only (eval A1)
     out = TOOL_REGISTRY["read_host_logs"].handler(data_dir=tmp_path, source="tampering")
@@ -200,3 +200,35 @@ def test_the_model_sees_one_log_tool_and_tampering_runs_through_it(tmp_path, mon
     # still a real tool: a call by name (or /use, a pipeline) runs it
     res = execute_tool_call("check_log_integrity", {}, tmp_path)
     assert res.get("status") == "ok", res
+
+
+
+@pytest.mark.parametrize("goal, listed", [
+    ("check for suspicious activity on this system", False),     # eval A1: main's exact tool list
+    ("is my server okay", False),
+    ("who has privileged access on this system", False),
+    ("has anything on this system been tampered with", True),
+    ("what ran on this box last night?", True),
+    ("was anything installed this week", True),
+    ("did a service crash", True),
+    ("what did the firewall block", True),
+    ("who is probing the web server", True),
+    ("were the logs cleared", True),
+    ("list cron jobs that ran", True),
+])
+def test_read_host_logs_is_listed_only_for_goals_about_what_it_reads(goal, listed):
+    from kratos.agent.loop import build_system_prompt
+
+    kratos_config.set_active_target(TARGET)
+    assert ("- read_host_logs:" in build_system_prompt(goal)) is listed
+
+
+def test_a_call_by_name_runs_even_when_not_listed(tmp_path, monkeypatch):
+    from kratos.agent import tools as T
+    from kratos.agent.loop import execute_tool_call
+
+    kratos_config.set_active_target(TARGET)
+    monkeypatch.setattr(T, "_fetch_host_logs", lambda *a, **k: T._SSHResult(ok=False, returncode=255, stdout="",
+                                                                          stderr="ssh: unreachable"))
+    res = execute_tool_call("read_host_logs", {"source": "cron"}, tmp_path)
+    assert "were NOT read" in json.dumps(res)            # it ran (and reported the gap), it wasn't refused
