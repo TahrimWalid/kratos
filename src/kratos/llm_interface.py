@@ -44,6 +44,7 @@ from kratos.llm_config import (
     get_active_llm_api_key,
     get_active_llm_model,
     get_active_llm_backend,
+    is_local_base_url,
 )
 from kratos.utils.redact import redact_secrets
 
@@ -103,20 +104,20 @@ def set_usage_listener(listener: Optional[Callable[["TokenUsage", str], None]]) 
     _usage_listener = listener
 
 
-def _record_usage(raw: Any) -> None:
-    """Capture a response's `usage` block. Tolerant of a missing/partial/
-    malformed block (some endpoints omit it) -- records nothing rather than
-    raising into a query path. total_tokens is derived when the endpoint
-    reports the two components but not the sum."""
+def _record_usage(raw: Any) -> Optional[TokenUsage]:
+    """Capture a response's `usage` block and return it. Tolerant of a missing/
+    partial/malformed block (some endpoints omit it) -- records nothing (None)
+    rather than raising into a query path. total_tokens is derived when the
+    endpoint reports the two components but not the sum."""
     global _last_usage
     if not isinstance(raw, dict):
-        return
+        return None
     try:
         prompt = int(raw.get("prompt_tokens") or 0)
         completion = int(raw.get("completion_tokens") or 0)
         total = int(raw.get("total_tokens") or 0)
     except (TypeError, ValueError):
-        return
+        return None
     if total == 0 and (prompt or completion):
         total = prompt + completion
     usage = TokenUsage(prompt_tokens=prompt, completion_tokens=completion, total_tokens=total)
@@ -128,6 +129,7 @@ def _record_usage(raw: Any) -> None:
             listener(usage.copy(), get_active_llm_model())
         except Exception:  # noqa: BLE001 -- bookkeeping must never fail a model call
             pass
+    return usage.copy()
 
 
 def get_last_token_usage() -> Optional[TokenUsage]:
@@ -245,11 +247,59 @@ def _resolved_backend() -> str:
     return "openai_compatible"
 
 
+def _metered_call(
+    send: Callable[[], Any],
+    *,
+    system_prompt: str,
+    prompt: str,
+    max_tokens: int,
+    model: str,
+    local: bool,
+) -> Any:
+    """THE one place a request reaches a model (docs/phase0/0.4 §3.1) -- every
+    request site hands its request to this function as `send` (a no-argument
+    callable returning the response body). Around it:
+
+      * before: the budget guard checks every cap and reserves this call's worst
+        case (raises budget.guard.BudgetExceeded -- callers let it propagate,
+        never turn it into "the model is unavailable");
+      * after: the actual usage (and the provider's own cost, if reported) is
+        recorded in the usage ledger, also when the request failed.
+
+    tests/test_budget_choke_point.py fails if a request is sent anywhere else."""
+    from kratos.budget import guard as _budget
+    from kratos.budget.pricing import reported_cost_from_usage
+
+    reservation = _budget.before_call(
+        est_prompt_tokens=_budget.estimate_prompt_tokens(system_prompt, prompt),
+        max_completion_tokens=max_tokens, model=model, local=local,
+    )
+    usage: Optional[TokenUsage] = None
+    reported_cost: Optional[float] = None
+    failed = True
+    try:
+        body = send()
+        raw_usage = body.get("usage") if isinstance(body, dict) else None
+        usage = _record_usage(raw_usage)
+        reported_cost = reported_cost_from_usage(raw_usage)
+        failed = False
+        return body
+    finally:
+        _budget.after_call(reservation, usage=usage, reported_cost=reported_cost, failed=failed)
+
+
+def _budget_exceeded_type() -> type:
+    from kratos.budget.guard import BudgetExceeded
+
+    return BudgetExceeded
+
+
 def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[str]:
     """Send a chat completions request to the running llama-cpp-python server."""
     if requests is None:
         return None
-    try:
+
+    def _send() -> Any:
         resp = requests.post(
             f"{LLAMA_SERVER_URL}/v1/chat/completions",
             json={
@@ -266,9 +316,14 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
-        body = resp.json()
-        _record_usage(body.get("usage"))
+        return resp.json()
+
+    try:
+        body = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
+                             model=MODEL_PATH.stem, local=is_local_base_url(LLAMA_SERVER_URL))
         return body["choices"][0]["message"]["content"].strip()
+    except _budget_exceeded_type():
+        raise
     except Exception as e:
         print(f"[KRATOS-LLM] Server query error: {e}", file=sys.stderr)
         return None
@@ -366,27 +421,32 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
         )
         return None
 
+    def _send() -> Any:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
+                "max_tokens": max_tokens,
+            },
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    local = is_local_base_url(base_url)
     for attempt in range(_MAX_LLM_ATTEMPTS):
         try:
-            resp = requests.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "max_tokens": max_tokens,
-                },
-                timeout=REQUEST_TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            # Record real usage regardless of whether content came back --
-            # a length-truncated reasoning response (content is None, below)
-            # still consumed real tokens worth reflecting in a meter.
-            _record_usage(body.get("usage"))
+            # Each attempt is its own metered request: a retried request can
+            # consume tokens too. Usage is recorded regardless of whether
+            # content came back -- a length-truncated reasoning response
+            # (content is None, below) still consumed real tokens.
+            body = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
+                                 model=model, local=local)
             choice = body["choices"][0]
             content = choice.get("message", {}).get("content")
             if content is None:
@@ -419,6 +479,8 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
                     )
                 return None
             return content.strip()
+        except _budget_exceeded_type():
+            raise
         except Exception as e:
             if _is_retryable_llm_error(e) and attempt < _MAX_LLM_ATTEMPTS - 1:
                 _render_retry_note(attempt, e)
@@ -515,8 +577,10 @@ class LLMServer:
             f"<|im_start|>assistant\n"
         )
 
-        try:
-            response = self._llama(
+        llama = self._llama
+
+        def _send() -> Any:
+            return llama(
                 full_prompt,
                 max_tokens=max_tokens,
                 temperature=LLAMA_TEMP,
@@ -524,8 +588,13 @@ class LLMServer:
                 top_k=LLAMA_TOP_K,
                 stop=["<|im_end|>", "<|im_start|>"],
             )
-            _record_usage(response.get("usage"))
+
+        try:
+            response = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
+                                     model=MODEL_PATH.stem, local=True)
             return response["choices"][0]["text"].strip()
+        except _budget_exceeded_type():
+            raise
         except Exception as e:
             print(f"[KRATOS-LLM] Inference error: {e}", file=sys.stderr)
             return None
