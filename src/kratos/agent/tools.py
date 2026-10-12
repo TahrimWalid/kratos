@@ -1740,23 +1740,20 @@ _HOST_LOGS_DEFAULT_SECONDS = 24 * 3600
 @register_tool(
     name="read_host_logs",
     description=(
-        "Reads ONE kind of log on the SSH TARGET DEVICE (not the local Kratos host) in a time window and "
-        "returns a summary (counts, top IPs/users, a few masked lines, what was covered). `source`: 'auditd' "
-        "(programs run, logins, account changes), 'sudo', 'cron' (jobs that ran), 'systemd' (services "
-        "started/stopped/failed), 'firewall' (blocked/allowed connections), 'packages' (installs/removals), "
-        "'web' (web server requests/errors), or 'tampering' (were the logs cleared or edited; sealed journal). "
-        "Not for SSH logins (read_journalctl / measure_auth_activity). No window = last 24 hours."
+        "Reads one more kind of log on the SSH TARGET DEVICE in a time window; returns a summary, not raw lines. "
+        "source: auditd (programs run, logins, account changes) | sudo | cron | systemd (services) | firewall | "
+        "packages (installs) | web | tampering (were the logs cleared or edited). Not for SSH logins."
     ),
     parameters={
         "data_dir": {"type": "path", "description": "Kratos data directory"},
-        "source": {"type": "str", "description": "One of: auditd, sudo, cron, systemd, firewall, packages, web, tampering"},
-        "window": {"type": "object|str|null", "description": "PREFERRED way to scope time: a window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object (see TIME CONTEXT). Kratos computes the exact instants -- never compute timestamps yourself.", "default": None},
-        "since": {"type": "str|null", "description": "Legacy alternative to `window`: '<N> minutes|hours|days|weeks ago', 'today', 'yesterday', or an ISO date/time. Prefer `window`.", "default": None},
-        "until": {"type": "str|null", "description": "Legacy end bound for `since` (default: now).", "default": None},
+        "source": {"type": "str", "description": "auditd, sudo, cron, systemd, firewall, packages, web or tampering"},
+        "window": {"type": "object|str|null", "description": "A window id from the TIME CONTEXT (e.g. \"w1\") or a time intent object; none = the last 24 hours.", "default": None},
     },
 )
 def tool_read_host_logs(data_dir: Path, source: str, window: Any = None, since: str | None = None,
                         until: str | None = None) -> dict[str, Any]:
+    # since/until: kept for direct callers (/use, pipelines, tests); not offered to the
+    # model, which uses `window` (a shorter tool entry -- see the eval note in loop.py).
     from kratos.logsources import summary as _logs_summary
 
     data_dir = Path(data_dir)

@@ -193,7 +193,7 @@ def test_the_model_sees_one_log_tool_and_tampering_runs_through_it(tmp_path, mon
     monkeypatch.setattr(integrity, "Reader", FakeReader)
     kratos_config.set_active_target(TARGET)
     prompt = build_system_prompt()
-    assert "- read_host_logs:" in prompt and "'tampering'" in prompt
+    assert "- read_host_logs:" in prompt and "tampering (were the logs cleared or edited)" in prompt
     assert "- check_log_integrity:" not in prompt          # listed through read_host_logs only (eval A1)
     out = TOOL_REGISTRY["read_host_logs"].handler(data_dir=tmp_path, source="tampering")
     assert out["status"] == "ok" and out["source"] == "tampering" and "file_state" in out
