@@ -1927,6 +1927,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _kc.seed_active_target_from_config(args.data_dir)
     _kc.set_active_data_dir(args.data_dir)
+    from kratos.budget import guard as _budget_guard
+
+    _budget_guard.migrate_at_startup(args.data_dir)  # 0.4 upgrade: keep existing investigate triggers working
 
     # Re-register any previously-APPROVED self-written tools (Part D,
     # agent/self_write_loop.py) into TOOL_REGISTRY for this process, on top

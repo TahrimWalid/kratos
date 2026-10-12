@@ -504,6 +504,15 @@ def ensure_upgrade_migration(dd: Path, ledger: BudgetLedger | None = None) -> No
     _migrated.add(key)
 
 
+def migrate_at_startup(dd: Path) -> None:
+    """ensure_upgrade_migration at process start (CLI, TUI): the upgrade happens
+    before the person can create a trigger under the new version. Never raises."""
+    try:
+        ensure_upgrade_migration(Path(dd))
+    except Exception as e:  # noqa: BLE001 -- startup must not fail over this; the next budget read retries
+        logger.warning("budget upgrade step skipped: %s", e)
+
+
 def pending_notices(dd: Path) -> list[str]:
     """One-time notices not shown yet; reading them marks them shown."""
     ledger = BudgetLedger(dd)

@@ -17,6 +17,11 @@ Boundaries this module obeys:
 * **Cooldown/dedupe (design doc §7 flapping).** A trigger fires at most once per
   its ``cooldown_minutes`` window, so a persistent condition pages once, not every
   run. The matched signature is recorded for a future fire-on-change refinement.
+* **Spending limits (kratos.budget).** A trigger fires at most
+  ``budget.trigger_fires_per_day`` times per local day (counted from its own
+  fire ledger), with one "limit reached" notification per day; an
+  ``investigate`` action runs only while ``budget.trigger_investigations_allowed``
+  is on -- otherwise it notifies and says how to turn investigations on.
 * **Coverage honesty.** A fired notification is stamped "as of <run time>" -- it
   reflects the moment of that run, never an implied continuous watch.
 """
@@ -140,6 +145,7 @@ def evaluate_triggers(
         from kratos.agent.scheduled_run import run_headless_investigation
         investigate_fn = run_headless_investigation
 
+    budget = _budget_limits(Path(data_dir))
     fired: list[dict[str, Any]] = []
     triggers, _errors = _triggers.list_triggers(data_dir)
     for trigger in triggers:
@@ -153,8 +159,12 @@ def evaluate_triggers(
                 continue
             if not _cooldown_elapsed(data_dir, trigger, now):
                 continue
+            if _fires_on_day(data_dir, trigger, now) >= budget.trigger_fires_per_day:
+                _cap_reached(data_dir, trigger, now, budget.trigger_fires_per_day, notifier, deliver)
+                continue
             record = _fire(data_dir, trigger, matched, target, now, notifier,
-                           deliver, run_investigations, investigate_fn)
+                           deliver, run_investigations, investigate_fn,
+                           investigations_allowed=budget.trigger_investigations_allowed)
             fired.append(record)
         except Exception as e:  # noqa: BLE001 -- one trigger's failure never sinks the rest
             rec = {"trigger": trigger.name, "fired_at": utc_now_iso(),
@@ -165,7 +175,55 @@ def evaluate_triggers(
     return fired
 
 
-def _build_body(data_dir, trigger, matched, target, now, run_investigations, investigate_fn):
+def _budget_limits(data_dir: Path) -> Any:
+    """The spending limits that govern triggers (kratos.budget), read fresh. The
+    first read on an upgraded install carries an existing 'investigate' trigger's
+    choice over (budget.guard.ensure_upgrade_migration)."""
+    from kratos.budget import guard as _budget
+    from kratos.budget import limits as _limits
+
+    _budget.ensure_upgrade_migration(data_dir)
+    return _limits.read(data_dir)
+
+
+def _fires_on_day(data_dir: Path, trigger: "_triggers.Trigger", now: datetime) -> int:
+    """How many times `trigger` fired on the person's local day containing `now`
+    (from its own <name>.fired.jsonl ledger)."""
+    from kratos.budget.guard import local_day
+    from kratos.utils.timeutil import parse_stored_instant
+
+    today = local_day(now.timestamp(), data_dir)
+    count = 0
+    for rec in _triggers.read_fire_records(data_dir, trigger.name):
+        when = parse_stored_instant(rec.get("fired_at"))
+        if when is not None and local_day(when.timestamp(), data_dir) == today:
+            count += 1
+    return count
+
+
+def _cap_reached(data_dir: Path, trigger: "_triggers.Trigger", now: datetime, cap: int,
+                 notifier: Notifier, deliver: bool) -> None:
+    """A trigger at its daily fire limit waits for the next local day; say so ONCE
+    per trigger per day (claimed in budget_state, across processes)."""
+    if not deliver:
+        return
+    from kratos.budget.guard import local_day
+    from kratos.budget.ledger import BudgetLedger
+
+    day = local_day(now.timestamp(), data_dir)
+    if BudgetLedger(data_dir).state_claim(f"notified:trigger_cap:{trigger.name}:{day}"):
+        notifier(f"Trigger '{trigger.name}' reached its limit of {cap} fires today and stops firing until "
+                 "tomorrow (local time). Change the limit in Settings -> Budget.", "warning")
+
+
+_INVESTIGATIONS_OFF = (
+    "This trigger is set to start a deeper investigation, but triggers may not start investigations "
+    "(each one spends model money with nobody watching), so it only notified. To allow it: "
+    "Settings -> Budget -> 'Triggers may start investigations'.")
+
+
+def _build_body(data_dir, trigger, matched, target, now, run_investigations, investigate_fn,
+                investigations_allowed: bool = True):
     """The notification body + the investigation (if one was run). Shared by the
     real fire and the side-effect-free preview."""
     matched_ids = sorted({str(f.get("id") or "") for f in matched if f.get("id")})
@@ -181,6 +239,8 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     elif action == "playbook":
         pb = _playbook_text(matched)
         body = header + (("\n\n" + pb) if pb else "\n\n(no curated response plan for these findings)")
+    elif action == "investigate" and not investigations_allowed:
+        body = header + "\n\n" + _INVESTIGATIONS_OFF
     elif action == "investigate" and run_investigations:
         investigation = investigate_fn(_investigation_goal(matched[0]), Path(data_dir))
         ans = str(investigation.get("final_answer") or "").strip()
@@ -200,15 +260,18 @@ def preview_trigger(data_dir: Path, trigger: "_triggers.Trigger",
     if not matched:
         return {"would_fire": False, "matched_ids": [], "body": None}
     body, worst, ids, _inv = _build_body(data_dir, trigger, matched, target, now,
-                                         run_investigations=False, investigate_fn=None)
+                                         run_investigations=False, investigate_fn=None,
+                                         investigations_allowed=_budget_limits(Path(data_dir))
+                                         .trigger_investigations_allowed)
     return {"would_fire": True, "matched_ids": ids, "worst": worst, "body": body}
 
 
 def _fire(data_dir, trigger, matched, target, now, notifier, deliver,
-          run_investigations, investigate_fn) -> dict[str, Any]:
+          run_investigations, investigate_fn, investigations_allowed: bool = True) -> dict[str, Any]:
     stamp = now.isoformat()
     body, worst, matched_ids, investigation = _build_body(
-        data_dir, trigger, matched, target, now, run_investigations, investigate_fn)
+        data_dir, trigger, matched, target, now, run_investigations, investigate_fn,
+        investigations_allowed=investigations_allowed)
     ntfy_sev = _NTFY_BUCKET.get(worst, "info")
 
     delivered = None
