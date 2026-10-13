@@ -510,6 +510,71 @@ def cmd_seal(args: argparse.Namespace) -> int:
     return 2
 
 
+def _budget_value_text(value: object) -> str:
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, int):
+        return f"{value:,}"
+    return str(value)
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    """`kratos budget [show|set|resume]`: the model spending limits, for a machine with
+    no TUI (schedules, `kratos mcp-serve`). Same settings and checks as Settings ->
+    Budget; a change applies from the next model call in every Kratos process."""
+    from kratos import settings_store
+    from kratos.budget import breaker, limits as L, report
+
+    data_dir = Path(args.data_dir)
+    action = getattr(args, "budget_action", None) or "show"
+    if action == "set":
+        key = args.key if args.key.startswith("budget.") else f"budget.{args.key}"
+        if key not in L.KEYS:
+            print(f"[KRATOS] '{args.key}' isn't a budget limit. Limits: "
+                  + ", ".join(k.removeprefix("budget.") for k in L.KEYS), file=sys.stderr)
+            return 2
+        try:
+            settings_store.set(key, args.value, data_dir=data_dir, actor="cli")
+        except settings_store.SettingError as e:
+            print(f"[KRATOS] Not changed: {e}", file=sys.stderr)
+            return 2
+        value = _budget_value_text(settings_store.get(key, data_dir=data_dir))
+        print(f"[KRATOS] {key} = {value}. Applies to the next model call, in every Kratos process.")
+        return 0
+    if action == "resume":
+        if breaker.resume(data_dir, args.source, actor="cli"):
+            print(f"[KRATOS] Resumed {args.source}.")
+            return 0
+        print(f"[KRATOS] {args.source} isn't paused.", file=sys.stderr)
+        return 1
+    t = report.today(data_dir)
+    specs = {sp.key: sp for sp in settings_store.specs()}
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "day": t.day,
+            "today": [{"scope": s.scope, "label": s.label, "spent": s.spent, "limit": s.limit} for s in t.scopes],
+            "calls_today": t.totals.calls,
+            "limits": {k: settings_store.get(k, data_dir=data_dir) for k in L.KEYS},
+            "paused": [{"source": p["key"], "until": p.get("until"), "reason": p.get("reason")} for p in t.pauses],
+        }, indent=2, sort_keys=True))
+        return 0
+    print(f"Model spending today ({t.day}), {t.totals.calls} model call{'s' if t.totals.calls != 1 else ''}:")
+    for s in t.scopes:
+        print(f"  {s.label}: {s.text} ({s.remaining_text})")
+    print("Limits (kratos budget set <name> <value>):")
+    for k in L.KEYS:
+        changed = settings_store.last_change(k, data_dir=data_dir)
+        who = f"  -- set by {changed[1]}" if changed else "  -- default"
+        doc = specs[k].doc if k in specs else ""
+        print(f"  {k.removeprefix('budget.'):<34} {_budget_value_text(settings_store.get(k, data_dir=data_dir)):<12}{who}")
+        if doc:
+            print(f"      {doc}")
+    for p in t.pauses:
+        print(f"Paused: {p['key']} {breaker.pause_text(p)} (kratos budget resume {p['key']})")
+    print("Costs are estimates from list prices; your provider's bill is the real figure.")
+    return 0
+
+
 def cmd_findings(args: argparse.Namespace) -> int:
     """`kratos findings list|show|verify|accept|fp|out-of-scope|reopen|import-reports`:
     the findings Kratos remembers across runs, and the decisions people make about them."""
@@ -1707,6 +1772,20 @@ def build_parser() -> argparse.ArgumentParser:
         f_dec.add_argument("--until", default=None, help="Optional: until this date")
     fsub.add_parser("import-reports", help="Import findings from report files written before this version (safe to repeat)")
     fnd.set_defaults(func=cmd_findings)
+
+    bud = sub.add_parser(
+        "budget",
+        help="Model spending limits: show today's spend against them, change one, or resume a paused source",
+    )
+    bsub = bud.add_subparsers(dest="budget_action")
+    b_show = bsub.add_parser("show", help="Today's spend, every limit and any paused source (the default)")
+    b_show.add_argument("--json", action="store_true")
+    b_set = bsub.add_parser("set", help="Change one limit, e.g. `kratos budget set daily_cost_usd 5`")
+    b_set.add_argument("key", help="The limit's name, with or without 'budget.'")
+    b_set.add_argument("value", help="The new value (0 = none allowed; on/off for yes/no settings)")
+    b_res = bsub.add_parser("resume", help="End a pause after repeated failures (e.g. schedule:nightly)")
+    b_res.add_argument("source", help="The paused source, as `kratos budget` lists it")
+    bud.set_defaults(func=cmd_budget)
 
     seal_p = sub.add_parser(
         "seal",

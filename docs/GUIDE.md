@@ -978,6 +978,21 @@ prices Kratos estimates with (correct them, or add one for your model) and any
 paused sources. The first time you create a schedule or a trigger, Kratos shows
 these limits once and lets you keep them, edit them or cancel.
 
+On a machine without the app open (schedules, `kratos mcp-serve` on a server), use
+the command line instead — same limits, same checks:
+
+```bash
+kratos budget
+```
+
+```bash
+kratos budget set daily_cost_usd 5
+```
+
+`kratos budget` shows today's spending and every limit; `kratos budget set NAME
+VALUE` changes one (`on`/`off` for the yes/no ones); `kratos budget resume SOURCE`
+ends a pause early.
+
 **What happens at a limit:**
 
 - **While you're using Kratos**, it asks: *"This would go over today's model
@@ -1054,6 +1069,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos mcp-serve` | start the MCP server (below) |
 | `kratos events` | show the log lines Kratos has read from a machine (below) |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
+| `kratos budget` | model spending limits: show today's spend, `set NAME VALUE`, `resume SOURCE` ([Keeping model costs under control](#keeping-model-costs-under-control)) |
 | `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |
 
 `kratos --help --all` lists every subcommand. Without a session, these use the
