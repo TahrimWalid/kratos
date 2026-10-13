@@ -59,6 +59,17 @@ class Machine:
         return logread.parse_output(source, out["stdout"], None, None, max_lines=logread.SYNC_MAX_RECORDS)
 
 
+@pytest.fixture(autouse=True)
+def _fake_machine_runs_in_utc(monkeypatch):
+    """The agent reads its own clock's zone (it runs ON the machine); the fake machine here is UTC, so the
+    test process must be too, whatever zone the developer's computer is in."""
+    monkeypatch.setenv("TZ", "UTC")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 @pytest.fixture(params=[(a, t) for a in (awks() or ["mawk"]) for t in ("ssh", "agent")],
                 ids=lambda p: f"{p[1]}-{p[0]}")
 def m(request, tmp_path):
