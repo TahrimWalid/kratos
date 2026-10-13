@@ -14,8 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from rich.text import Text
-
+from kratos.untrusted_rich import SafeText as Text
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import routing
 from kratos.tui_mk2 import theme as T

@@ -53,7 +53,7 @@ from kratos.llm_interface import agent_chat, check_endpoint_reachable
 from kratos.run_context import run_scope
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil as _timeutil
-from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
+from kratos.untrusted import for_model as _for_model, safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 
 # ---------------------------------------------------------------------------
 # Display timezone (UTC-storage / local-display split, see utils/timeutil.py).
@@ -889,7 +889,10 @@ def _build_full_resume_context(history: list[dict[str, Any]], data_dir: Path) ->
             if "final_answer" in step:
                 lines.append(f"Concluded: {step['final_answer']}")
             elif "tool" in step:
-                lines.append(f"Used {step['tool']}({step.get('args')}) -> {step.get('observation')}")
+                # one JSON line, strings cleaned and capped: a replayed result can hold text from a
+                # machine, and a raw multi-line repr could start a fake turn (kratos.untrusted)
+                shown = json.dumps(_for_model(step.get("observation"), field_cap=1000), default=str)
+                lines.append(f"Used {step['tool']}({json.dumps(_for_model(step.get('args')), default=str)}) -> {shown}")
     return "\n".join(lines)
 
 

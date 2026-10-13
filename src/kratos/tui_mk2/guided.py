@@ -19,7 +19,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Literal
 
-from rich.text import Text
+from kratos.untrusted_rich import SafeText as Text
 from textual.app import App
 
 from kratos.agent.guided_evolve import GuidedPrompter

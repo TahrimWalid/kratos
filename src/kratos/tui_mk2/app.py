@@ -20,13 +20,13 @@ import sys
 from pathlib import Path
 
 from rich.align import Align
-from rich.text import Text
+from kratos.untrusted_rich import SafeText as Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.events import Resize
 from textual.screen import Screen
-from textual.widgets import Static
+from kratos.tui_mk2.safe_widgets import SafeStatic as Static
 
 from kratos import paths as _paths
 from kratos.agent import console as _console
@@ -169,6 +169,15 @@ class KratosTUI(ResilientWorkerHost, App):
         if _ClickOnlyLinuxDriver is not None and base is _LinuxDriver:
             return _ClickOnlyLinuxDriver
         return base
+
+    def notify(self, message: str, *, title: str = "", severity: str = "information",
+               timeout: float | None = None, markup: bool = False) -> None:
+        """Toasts carry text from machines and tools (a probe's stderr, a target's note), so
+        they are never parsed as markup and are cleaned first (kratos.untrusted)."""
+        from kratos.untrusted import for_display
+
+        super().notify(for_display(message), title=for_display(title), severity=severity,   # type: ignore[arg-type]
+                       timeout=timeout, markup=False)
 
     def action_toggle_mouse(self) -> None:
         """F2 -- flip mouse reporting so the user can natively select+copy

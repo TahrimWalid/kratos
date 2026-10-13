@@ -40,17 +40,18 @@ import asyncio
 import socket
 from pathlib import Path
 
-from rich.panel import Panel
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.text import Text
+from kratos.untrusted_rich import SafePanel as Panel
+from kratos.untrusted_rich import SafeSyntax as Syntax
+from kratos.untrusted_rich import SafeTable as Table
+from kratos.untrusted_rich import SafeText as Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import OptionList
+from kratos.tui_mk2.safe_widgets import SafeStatic as Static
+from kratos.tui_mk2.safe_widgets import SafeOption as Option
 
 from kratos import kratos_config as _kconfig
 from kratos.subagent import deploy_diagnosis as DD

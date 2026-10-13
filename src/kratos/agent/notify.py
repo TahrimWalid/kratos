@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from kratos.untrusted import for_display
+
 from kratos import kratos_config as _kc
 from kratos.utils.redact import redact_secrets
 
@@ -111,7 +113,7 @@ def send_notification(message: str, severity: str = "info") -> dict[str, Any]:
     try:
         resp = requests.post(
             url,
-            data=message.encode("utf-8"),
+            data=for_display(message).encode("utf-8"),     # may quote text from a machine (kratos.untrusted)
             headers=headers,
             timeout=_kc.NTFY_REQUEST_TIMEOUT_SECONDS,
         )

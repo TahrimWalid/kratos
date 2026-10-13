@@ -20,11 +20,12 @@ from rich import box
 from rich.align import Align
 from rich.columns import Columns
 from rich.console import Group
-from rich.panel import Panel
 from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.text import Text
+
+# Text from a monitored machine is untrusted (kratos.untrusted, A.4): every Text, Panel,
+# Table and Syntax built here is the cleaning kind, so a string put into one can never
+# carry an escape sequence, a hidden bidi character or Rich markup onto the screen.
+from kratos.untrusted_rich import SafePanel as Panel, SafeSyntax as Syntax, SafeTable as Table, SafeText as Text
 
 from kratos.agent.console import plain_label, unwrap_tool_result  # reused, palette-neutral
 from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_FINDING_SUMMARY

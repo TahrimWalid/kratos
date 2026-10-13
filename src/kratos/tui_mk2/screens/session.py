@@ -24,14 +24,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rich.panel import Panel
-from rich.text import Text
+from kratos.untrusted_rich import SafePanel as Panel
+from kratos.untrusted_rich import SafeText as Text, scrubbed
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, RichLog
+from kratos.tui_mk2.safe_widgets import SafeStatic as Static
 from textual.worker import get_current_worker
 
 from kratos import kratos_config as _kconfig
@@ -593,22 +594,24 @@ class SessionScreen(ResilientWorkerHost, Screen):
         conclusions) all get the same width -- the column, up to a readable
         maximum -- instead of each shrinking to its own text, which left their
         right edges staggered. Everything else keeps its natural width."""
+        # Whatever reaches the transcript passes the scrubber last (kratos.untrusted_rich):
+        # nothing Kratos writes holds an escape sequence, so one that got here came from a machine.
         if isinstance(renderable, Panel):
             width = self._log.scrollable_content_region.width
             if width > 0:
-                self._log.write(renderable, width=min(width, _PANEL_MAX_WIDTH))
+                self._log.write(scrubbed(renderable), width=min(width, _PANEL_MAX_WIDTH))
             else:  # not laid out yet: the deferred render fills the width once it is
-                self._log.write(renderable, expand=True)
+                self._log.write(scrubbed(renderable), expand=True)
             return
-        self._log.write(renderable)
+        self._log.write(scrubbed(renderable))
 
     def _write_full(self, renderable: Any) -> None:
         """Write at the transcript's full width (for content that centres itself)."""
         width = self._log.scrollable_content_region.width
         if width > 0:
-            self._log.write(renderable, width=width)
+            self._log.write(scrubbed(renderable), width=width)
         else:
-            self._log.write(renderable, expand=True)
+            self._log.write(scrubbed(renderable), expand=True)
 
     def _emit(self, renderable: Any) -> None:
         """Write to the transcript from the EVENT LOOP (main-thread callers)."""
@@ -1079,8 +1082,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _render_usage(self) -> None:
         """Today's spending against the limits, then this session's model usage
         per model with an estimated cost (saved, so it survives restarts)."""
-        from rich.table import Table
-
+        from kratos.untrusted_rich import SafeTable as Table
         from kratos.budget import pricing, report
 
         today = report.today(self._data_dir)
@@ -3634,9 +3636,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _show_target_setup(self, target_host: str) -> None:
         from kratos.adapters import target_setup as _ts
-        from rich.panel import Panel
-        from rich.syntax import Syntax
-
+        from kratos.untrusted_rich import SafePanel as Panel
+        from kratos.untrusted_rich import SafeSyntax as Syntax
         checklist = _ts.generate_target_setup_checklist(target_host)
         self._emit_from_worker(
             Panel(
@@ -3650,8 +3651,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _probe_target(self) -> None:
         from kratos.adapters.ssh_remote import run_target_probe_checks, SSHResult
-        from rich.table import Table
-
+        from kratos.untrusted_rich import SafeTable as Table
         result = run_target_probe_checks()
         from kratos.subagent import routing as _routing
         from kratos.tui_mk2 import target_memory as TM
@@ -3761,8 +3761,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _render_evolve_list(self) -> None:
         from kratos.agent.tools import TOOL_REGISTRY
         from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
-        from rich.table import Table
-
+        from kratos.untrusted_rich import SafeTable as Table
         metadata = _read_metadata(KEPT_TOOLS_DIR)
         table = Table(show_header=True, header_style="bold", title=f"Tools reachable by the agent ({len(TOOL_REGISTRY)})")
         table.add_column("Name")
@@ -3943,8 +3942,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _tools_table(self, heading: str, subtitle: str, names: list[str], metadata: dict, kept: bool):
         from kratos.agent.tools import TOOL_REGISTRY
-        from rich.table import Table
-
+        from kratos.untrusted_rich import SafeTable as Table
         table = Table(
             show_header=True, header_style="bold", title=f"{heading} — {len(names)}",
             title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",

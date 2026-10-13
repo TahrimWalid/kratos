@@ -15,13 +15,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from rich.text import Text
+from kratos.untrusted_rich import SafeText as Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import DataTable, Input, Select, Static, TabbedContent, TabPane
+from textual.widgets import Input, Select, TabbedContent, TabPane
+from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T

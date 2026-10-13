@@ -62,6 +62,14 @@ PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = _paths.default_data_dir()
 
 
+def _frame_findings(text: str) -> str:
+    """A findings bundle for the model, framed as data: it holds finding titles and evidence
+    that quote usernames, paths and process names from the machine (kratos.untrusted)."""
+    from kratos import untrusted
+
+    return untrusted.frame_text(text, kind="findings", run_id=untrusted.new_run_tag(), call_id=untrusted.new_call_id(1))
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     try:
         out_xml = run_nmap_scan(args.data_dir, args.target)
@@ -1077,13 +1085,13 @@ def cmd_chat(args: argparse.Namespace) -> int:
         focused = re.sub(r"INPUT FILES.*?\n\n", "", bundle_text, flags=re.DOTALL).strip()
         prompt = (
             f"Based on this security data, answer the following question:\n\n"
-            f"{question}\n\nData:\n{focused}\n\n"
+            f"{question}\n\nData:\n{_frame_findings(focused)}\n\n"
             f"Be specific and grounded in the provided data only. If information is missing, say so."
         )
         response = analyze_findings(bundle_text=prompt, mode="summary",
                                     max_tokens=MAX_TOKENS_QUESTION, is_custom_question=True)
     else:
-        response = analyze_findings(bundle_text=bundle_text, mode=mode)
+        response = analyze_findings(bundle_text=_frame_findings(bundle_text), mode=mode)
 
     if response is None:
         print("[KRATOS-LLM] LLM unavailable — showing raw findings instead.", flush=True)

@@ -28,19 +28,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from rich.panel import Panel
+from kratos.untrusted_rich import SafePanel as Panel
 from rich.segment import Segment
 from rich.style import Style
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.text import Text
+from kratos.untrusted_rich import SafeSyntax as Syntax
+from kratos.untrusted_rich import SafeTable as Table
+from kratos.untrusted_rich import SafeText as Text
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.strip import Strip
-from textual.widgets import Button, Input, Label, ListItem, ListView, SelectionList, Static
+from textual.widgets import Input, ListItem, ListView, SelectionList
+from kratos.tui_mk2.safe_widgets import SafeButton as Button, SafeLabel as Label, SafeStatic as Static
 from textual.widgets.option_list import OptionDoesNotExist
 
 from kratos.tui_mk2 import theme as T

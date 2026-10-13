@@ -14,14 +14,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from rich.table import Table
-from rich.text import Text
+from kratos.untrusted_rich import SafeTable as Table
+from kratos.untrusted_rich import SafeText as Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Button, DataTable, Input, RadioButton, RadioSet, Static
+from textual.widgets import Input, RadioButton, RadioSet
+from kratos.tui_mk2.safe_widgets import SafeButton as Button, SafeDataTable as DataTable, SafeStatic as Static
 
 from kratos import settings_store
 from kratos.lifecycle import decide as D

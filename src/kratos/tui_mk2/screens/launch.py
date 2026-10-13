@@ -17,13 +17,14 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from rich.text import Text
+from kratos.untrusted_rich import SafeText as Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Input, Static
+from textual.widgets import Input
+from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil

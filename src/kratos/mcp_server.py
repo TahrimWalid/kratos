@@ -138,6 +138,7 @@ shared mutable state to protect.
 """
 from __future__ import annotations
 
+import functools
 import json
 import threading
 from pathlib import Path
@@ -153,6 +154,7 @@ from kratos.agent.tools import TOOL_REGISTRY, Tool, tool_reaches_approval
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
 from kratos.run_context import run_scope
+from kratos import untrusted as _untrusted
 from kratos.budget import breaker as _budget_breaker
 from kratos.budget import guard as _budget_guard
 
@@ -169,6 +171,19 @@ _investigation_lock = threading.Lock()
 _data_dir: Path = _paths.default_data_dir()
 
 mcp = FastMCP(name="kratos")
+
+
+def _clean_for_client(fn):
+    """Every MCP tool result passes `kratos.untrusted.for_model` on the way out (A.4): the
+    result carries text from monitored machines (finding evidence, answers, transcripts) to
+    another program, which may print it on a terminal or hand it to its own model. Control
+    characters and escape sequences are removed and hidden characters shown as markers;
+    nothing is capped, the client asked for the whole result."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return _untrusted.for_model(fn(*args, **kwargs), field_cap=None)
+
+    return wrapper
 
 
 # Which tools to exclude from an MCP-invoked investigation (anything that could
@@ -267,6 +282,7 @@ def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: 
 
 
 @mcp.tool()
+@_clean_for_client
 def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITERS,
                        timezone: str | None = None) -> dict[str, Any]:
     """Runs a real Kratos investigation against `target` for `goal`, using Kratos's own
@@ -333,6 +349,7 @@ def _load_session_turns(store: SessionStore, session_id: str) -> list[dict[str, 
 
 
 @mcp.tool()
+@_clean_for_client
 def kratos_get_findings(session_id: str | None = None) -> dict[str, Any]:
     """Retrieves findings from a specific Kratos session (by session_id), or the most
     recently active session if session_id is omitted. Findings come from every turn in
@@ -355,6 +372,7 @@ def kratos_get_findings(session_id: str | None = None) -> dict[str, Any]:
 
 
 @mcp.tool()
+@_clean_for_client
 def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
     """Lists recent Kratos sessions (most recently active first) -- id, target(s), the most
     recent goal, and when it was last active. Same data the interactive REPL's own session
@@ -373,6 +391,7 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+@_clean_for_client
 def kratos_finding_states(target: str | None = None, state: str | None = None, limit: int = 100) -> dict[str, Any]:
     """Read-only: the findings Kratos remembers across runs, with each one's state
     (open, verified, mitigated, inactive, risk_accepted, false_positive, out_of_scope),
@@ -419,10 +438,11 @@ def _build_findings_notification_message(session: dict[str, Any], findings: list
         severity = str(f.get("severity", "info")).upper()
         title = f.get("title") or f.get("id", "finding")
         lines.append(f"- [{severity}] {f.get('id', '?')}: {title}")
-    return "\n".join(lines)
+    return _untrusted.for_display("\n".join(lines))
 
 
 @mcp.tool()
+@_clean_for_client
 def kratos_notify_findings(session_id: str) -> dict[str, Any]:
     """Sends a push notification summarizing a REAL, already-completed investigation's
     stored findings. The message and severity are always derived from that session's actual

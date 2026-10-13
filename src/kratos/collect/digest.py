@@ -8,6 +8,7 @@ accounts (PRIV-*) is left out for exactly that reason.
 from __future__ import annotations
 
 from kratos.collect.registry import get as get_check
+from kratos.untrusted import for_display
 from kratos.collect.runner import CheckOutcome, CollectionReport
 
 DIGEST_CAP = 1500
@@ -46,7 +47,13 @@ def _finding_tag(f: dict, with_title: bool) -> str:
 
 
 def build_digest(report: CollectionReport) -> str:
-    """The text placed at the top of the investigation's first turn."""
+    """The text placed at the top of the investigation's first turn. Anything that
+    came from the machine (a service name, an account in a summary) is cleaned with
+    kratos.untrusted, and the agent loop frames the whole block as data."""
+    return for_display(_build_digest(report))
+
+
+def _build_digest(report: CollectionReport) -> str:
     if report.disabled_reason or not report.checks:
         return ""
     lines = [f"WHAT KRATOS ALREADY CHECKED ON {report.target} (collected by Kratos itself, before you; "

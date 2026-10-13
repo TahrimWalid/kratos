@@ -20,12 +20,15 @@ from typing import Any, Iterable, Iterator
 
 from rich.console import Console, ConsoleOptions, RenderableType, RenderResult
 from rich.measure import Measurement
+from rich.panel import Panel
 from rich.segment import Segment
+from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 from kratos.untrusted import for_display
 
-__all__ = ["SafeText", "Scrubbed", "scrub_segments", "scrubbed"]
+__all__ = ["SafeText", "SafePanel", "SafeTable", "SafeSyntax", "Scrubbed", "scrub_segments", "scrubbed"]
 
 
 class SafeText(Text):
@@ -36,10 +39,57 @@ class SafeText(Text):
             text = for_display(text)
         super().__init__(text, *args, **kwargs)
 
+    def __eq__(self, other: object) -> bool:
+        # a SafeText stands in for a str in titles and cells, so it compares like one
+        if isinstance(other, str):
+            return self.plain == other
+        return super().__eq__(other)
+
+    __hash__ = None                                                      # type: ignore[assignment]
+
     def append(self, text: Any, style: Any = None) -> "SafeText":     # type: ignore[override]
         if isinstance(text, str):
             text = for_display(text)
         return super().append(text, style)                              # type: ignore[return-value]
+
+
+def _safe(value: Any) -> Any:
+    """A `str` becomes a `SafeText` (cleaned, and never parsed as markup); anything else
+    -- a renderable, None -- is returned as it is."""
+    return SafeText(value) if isinstance(value, str) else value
+
+
+class SafePanel(Panel):
+    """`rich.panel.Panel` whose body, title and subtitle strings are cleaned and not
+    parsed as markup."""
+
+    def __init__(self, renderable: Any = "", *args: Any, title: Any = None, subtitle: Any = None,
+                 **kwargs: Any) -> None:
+        super().__init__(_safe(renderable), *args, title=_safe(title), subtitle=_safe(subtitle), **kwargs)
+
+
+class SafeTable(Table):
+    """`rich.table.Table` whose cells, title and caption strings are cleaned and not parsed
+    as markup (a plain `str` cell is otherwise rendered as markup)."""
+
+    def __init__(self, *headers: Any, title: Any = None, caption: Any = None, **kwargs: Any) -> None:
+        super().__init__(*headers, title=_safe(title), caption=_safe(caption), **kwargs)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in ("title", "caption"):
+            value = _safe(value)
+        super().__setattr__(name, value)
+
+    def add_row(self, *renderables: Any, **kwargs: Any) -> None:             # type: ignore[override]
+        super().add_row(*(_safe(r) for r in renderables), **kwargs)
+
+
+class SafeSyntax(Syntax):
+    """`rich.syntax.Syntax` over cleaned code: a command or a source file under review can
+    carry a bidi override or an escape sequence like any other text from a machine."""
+
+    def __init__(self, code: str, *args: Any, **kwargs: Any) -> None:
+        super().__init__(for_display(code), *args, **kwargs)
 
 
 def scrub_segments(segments: Iterable[Segment]) -> Iterator[Segment]:
