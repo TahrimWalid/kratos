@@ -346,6 +346,12 @@ def v_enum(*allowed: Any) -> Callable[[Any], Any]:
     return check
 
 
+def v_cursor(v: Any) -> str:
+    if not logread.valid_cursor(v):
+        raise ReadParamError("must be a systemd journal cursor (s=...;i=...;b=...;m=...;t=...;x=...)")
+    return v
+
+
 def v_unit(v: Any) -> str:
     if not isinstance(v, str) or not _UNIT_RE.fullmatch(v):
         raise ReadParamError("must be a systemd unit or program name (letters, digits, @._:+-, at most 64)")
@@ -442,6 +448,20 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
     },
     "audit_status": {},
     "boot_history": {},
+    # phase A.0: incremental log sync (agent 0.5.0)
+    "journal_sync": {
+        "match": (v_enum(*catalog.JOURNAL_MATCHES), True, None),
+        "after_cursor": (v_cursor, False, None),
+        "since": (v_epoch, False, None),
+        "lines": (v_int_range(1, logread.SYNC_JOURNAL_MAX_LINES), False, 20000),
+    },
+    "file_sync": {
+        "source": (v_enum(*catalog.SYNC_SOURCE_NAMES), True, None),
+        "file_index": (v_int_range(0, 15), True, None),
+        "inode": (v_int_range(1, 2 ** 63 - 1), False, None),
+        "offset": (v_int_range(0, 2 ** 44), False, 0),
+        "floor": (v_epoch, False, None),
+    },
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -452,7 +472,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "file_hashes": 15, "config_audit": 45, "capabilities": 20, "yara_scan": 180,
     "measure_auth": MEASURE_BUDGET_SECONDS + 60, "privileged_accounts": 30,
     "log_read": 90, "log_file_stat": 30, "journal_headers": 60, "journal_file_hash": 120, "journal_file_chunk": 60,
-    "utmp_read": 20, "audit_status": 30, "boot_history": 60,
+    "utmp_read": 20, "audit_status": 30, "boot_history": 60, "journal_sync": 90, "file_sync": 60,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -460,6 +480,7 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "config_audit": 256 * 1024, "measure_auth": 4 * 1024 * 1024, "privileged_accounts": 1024 * 1024,
     "log_read": logread.DEFAULT_MAX_BYTES, "log_file_stat": 256 * 1024, "journal_headers": 1024 * 1024,
     "boot_history": 2 * 1024 * 1024, "audit_status": 64 * 1024,
+    "journal_sync": logread.SYNC_JOURNAL_MAX_BYTES + 65536, "file_sync": logread.SYNC_CHUNK_BYTES * 3 + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -586,7 +607,7 @@ class ProbeMissing(Exception):
 
 def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | None = None,
                pass_fds: tuple[int, ...] = (), stdin_fd: int | None = None,
-               env_extra: dict[str, str] | None = None) -> dict[str, Any]:
+               env_extra: dict[str, str] | None = None, stdin_bytes: bytes | None = None) -> dict[str, Any]:
     """Run a fixed argv (binary resolved inside the trusted dirs, never $PATH),
     reading at most `cap` bytes of stdout. Past the cap the process is killed
     and the output cut at the last full line (`truncated: True`); past
@@ -594,16 +615,18 @@ def run_capped(argv: list[str], *, timeout: float, cap: int, stdin_text: str | N
     exe = resolve_binary(argv[0]) if not argv[0].startswith("/") else argv[0]
     if exe is None:
         raise ProbeMissing(f"{argv[0]} is not installed")
+    if stdin_bytes is None and stdin_text is not None:
+        stdin_bytes = stdin_text.encode("utf-8")
     proc = subprocess.Popen(
         [exe, *argv[1:]],
-        stdin=subprocess.PIPE if stdin_text is not None else (stdin_fd if stdin_fd is not None else subprocess.DEVNULL),
+        stdin=subprocess.PIPE if stdin_bytes is not None else (stdin_fd if stdin_fd is not None else subprocess.DEVNULL),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env={**READ_ENV, **(env_extra or {})}, cwd="/",
         start_new_session=True, close_fds=True, pass_fds=pass_fds,
     )
-    if stdin_text is not None:
+    if stdin_bytes is not None:
         def feed() -> None:
             try:
-                proc.stdin.write(stdin_text.encode("utf-8"))  # type: ignore[union-attr]
+                proc.stdin.write(stdin_bytes)  # type: ignore[union-attr]
                 proc.stdin.close()  # type: ignore[union-attr]
             except (BrokenPipeError, OSError):
                 pass
@@ -1389,6 +1412,147 @@ def _p_journal_file_chunk(p: dict[str, Any]) -> dict[str, Any]:
     return _journal_file_op(lambda: hostfiles.journal_file_chunk(p["name"], p["offset"], p["length"]))
 
 
+# ---------------------------------------------------------------------------
+# phase A.0: incremental log sync (agent 0.5.0). Same line protocol as the SSH
+# scripts in logsources/logread.py (parsed by the same functions), nothing written
+# on this machine: positions live with the caller.
+# ---------------------------------------------------------------------------
+def journal_sync_output(match: str, after_cursor: str | None, since: float | None, lines: int,
+                        now: float | None = None) -> dict[str, Any]:
+    now = time.time() if now is None else now
+    have_j = resolve_binary("journalctl") is not None
+    out: list[str] = [f"M\tnow\t{int(now)}", f"M\tjournal\t{1 if have_j else 0}"]
+    if not have_j:
+        return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+    prefix = journal_prefix()
+    deadline = time.monotonic() + PROBE_TIMEOUT_SECONDS["journal_sync"]
+    try:  # the oldest entry the journal still holds: a hole from vacuuming shows against it
+        r0 = run_capped([*prefix, "journalctl", "--no-pager", "-o", "json", "--output-fields=MESSAGE"],
+                        timeout=20, cap=64 * 1024)
+        first = next((ln for ln in r0["stdout"].split("\n") if ln.startswith("{")), None)
+        if first:
+            out.append("O\t" + first)
+    except (ProbeTimeout, ProbeMissing):
+        pass
+    cap = OUTPUT_CAP_BYTES["journal_sync"]
+    try:
+        r = run_capped(logread.journal_sync_argv(match, after_cursor, since, prefix),
+                       timeout=max(1.0, deadline - time.monotonic()), cap=cap)
+    except (ProbeTimeout, ProbeMissing) as e:
+        out.append("JE\t" + str(e)[:300])
+        return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+    kept = 0
+    for line in r["stdout"].split("\n"):
+        if not line.startswith("{"):
+            continue
+        if kept >= lines + 1:
+            break
+        out.append("J\t" + line)
+        kept += 1
+    if r["truncated"]:
+        out.append("JT")
+    err = (r["stderr"] or "").strip()
+    if err and r["returncode"] != 0:
+        out.append("JE\t" + " ".join(err.split())[:300])
+    return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": r["truncated"]}
+
+
+def _p_journal_sync(p: dict[str, Any]) -> dict[str, Any]:
+    return journal_sync_output(p["match"], p["after_cursor"], p["since"], p["lines"])
+
+
+def _sync_slice(spec: Any, idx: int, slot: int, path: str, fd: int, st: os.stat_result, off: int,
+                skip_first: bool, awk_vars: list[str]) -> list[str]:
+    """One slice [off, off+n) of an open file through the extractor in chunk mode."""
+    n = max(0, min(st.st_size - off, logread.SYNC_CHUNK_BYTES))
+    out = [f"F\t{idx}\t{slot}\t{path}\tread\t{st.st_size}\t{st.st_ino}\t{off}"]
+    if n <= 0:
+        out.append(f"S\t{idx}\t{slot}\t0\t0\t\t\t\t\t0\t0\t0")
+        return out
+    data = os.pread(fd, n, off)
+    r = run_capped(["awk", "-v", f"idx={idx}", "-v", f"slot={slot}", *awk_vars, "-v", f"chunk={len(data)}",
+                    "-v", f"skip1={1 if skip_first else 0}", logread.AWK],
+                   timeout=PROBE_TIMEOUT_SECONDS["file_sync"], cap=OUTPUT_CAP_BYTES["file_sync"],
+                   stdin_bytes=data, env_extra={"KR_FMT": spec.fmt, "KR_KEEP": spec.keep})
+    out += [ln for ln in r["stdout"].split("\n") if ln]
+    return out
+
+
+def file_sync_output(source: str, file_index: int, inode: int | None, offset: int, floor: float | None,
+                     root: str = "", now: float | None = None) -> dict[str, Any]:
+    """file_sync on the agent: the same lines logread.build_file_sync_script prints over
+    SSH, for ONE of the source's files. Every file goes through the hardened opener and is
+    read with pread at the saved offset -- no path reaches awk, no symlink is followed, the
+    offset never moves the read outside this one file. `root` is for tests only."""
+    family = _os_release_family(root)
+    now = time.time() if now is None else now
+    loc = time.localtime(now)
+    tzs = time.strftime("%z", loc)
+    out: list[str] = [f"M\tfamily\t{family or 'unknown'}", f"M\ttz_name\t{_local_zone_name(root)}",
+                      f"M\ttz_offset\t{tzs}", f"M\tnow\t{int(now)}"]
+    specs = catalog.sync_files(source, family)
+    if family is None:
+        out.append("M\tgap\tunknown Linux distribution: no log paths are known for it")
+        return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+    if file_index >= len(specs):
+        raise ReadParamError(f"file_sync: {source} has no file number {file_index} on this machine")
+    spec = specs[file_index]
+    awk_vars = ["-v", "lo=" + str(-1 if floor is None else int(floor)), "-v", "hi=-1", "-v", f"tzs={tzs}",
+                "-v", f"ynow={loc.tm_year}", "-v", f"mnow={loc.tm_mon}", "-v", f"maxl={logread.SYNC_MAX_RECORDS}",
+                "-v", f"maxb={logread.SYNC_CHUNK_BYTES * 3}", "-v", f"lmax={logread.LINE_MAX_BYTES}",
+                "-v", f"margin={logread.WALL_MARGIN_SECONDS}"]
+    path = root + spec.path
+    try:
+        fd, st = _open_for_read(path)
+    except hostfiles.FileRefused as e:
+        out.append(f"F\t{file_index}\t0\t{path}\t{e.status}\t-")
+        return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+    try:
+        if inode is None:                                    # first sync: the tail of the file
+            off = max(0, st.st_size - logread.SYNC_FIRST_TAIL_BYTES)
+            out += _sync_slice(spec, file_index, 0, path, fd, st, off, off > 0, awk_vars)
+        elif inode == st.st_ino:
+            if offset > st.st_size:
+                out.append(f"F\t{file_index}\t0\t{path}\ttruncated\t{st.st_size}\t{st.st_ino}")
+            else:
+                out += _sync_slice(spec, file_index, 0, path, fd, st, offset, False, awk_vars)
+        else:                                                # rotated: find the file that had the saved inode
+            out.append(f"F\t{file_index}\t0\t{path}\tcurrent\t{st.st_size}\t{st.st_ino}")
+            directory, base = os.path.split(path)
+            try:
+                names = os.listdir(directory)
+            except OSError:
+                names = []
+            candidates = [n for n in (base + ".0", base + ".1") if n in names]
+            candidates += sorted(n for n in names if n.startswith(base + "-") and n[len(base) + 1:len(base) + 2].isdigit()
+                                 and not n.endswith(logread.COMPRESSED_SUFFIXES))
+            found = False
+            for name in candidates:
+                cand = os.path.join(directory, name)
+                try:
+                    cfd, cst = _open_for_read(cand)
+                except hostfiles.FileRefused:
+                    continue
+                try:
+                    if cst.st_ino != inode:
+                        continue
+                    found = True
+                    out += _sync_slice(spec, file_index, 1, cand, cfd, cst, min(offset, cst.st_size), False,
+                                       awk_vars)
+                    break
+                finally:
+                    os.close(cfd)
+            if not found:
+                out.append(f"F\t{file_index}\t1\t{path}\trotated_lost\t-")
+    finally:
+        os.close(fd)
+    return {"returncode": 0, "stdout": "\n".join(out) + "\n", "stderr": "", "truncated": False}
+
+
+def _p_file_sync(p: dict[str, Any]) -> dict[str, Any]:
+    return file_sync_output(p["source"], p["file_index"], p["inode"], p["offset"], p["floor"])
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1397,6 +1561,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "log_read": _p_log_read, "log_file_stat": _p_log_file_stat, "journal_headers": _p_journal_headers,
     "journal_file_hash": _p_journal_file_hash, "journal_file_chunk": _p_journal_file_chunk,
     "utmp_read": _p_utmp_read, "audit_status": _p_audit_status, "boot_history": _p_boot_history,
+    "journal_sync": _p_journal_sync, "file_sync": _p_file_sync,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

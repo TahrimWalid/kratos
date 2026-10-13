@@ -58,6 +58,7 @@ class Source:
 # field ORs it (verified on systemd 249 and 252).
 JOURNAL_MATCHES: dict[str, tuple[str, ...]] = {
     "sudo": ("_COMM=sudo",),
+    "auth": ("_COMM=sshd", "_COMM=sshd-session", "_COMM=sudo"),
     "cron": ("SYSLOG_IDENTIFIER=CRON", "SYSLOG_IDENTIFIER=cron", "SYSLOG_IDENTIFIER=CROND",
              "SYSLOG_IDENTIFIER=crond"),
     "systemd_pid1": ("_PID=1",),
@@ -152,6 +153,48 @@ SOURCES: dict[str, Source] = {s.name: s for s in (
 )}
 
 SOURCE_NAMES: tuple[str, ...] = tuple(SOURCES)
+
+# ---------------------------------------------------------------------------
+# Incremental sync (phase A.0): which sources Kratos keeps up to date by itself.
+# One journal match per source (read forward from a saved cursor) when the machine
+# has journalctl, else its classic files (read forward from a saved inode + offset).
+# Same closed-table rule as everything above: names and paths live here only.
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SyncSource:
+    name: str
+    dataset: str
+    doc: str
+    journal: str | None = None                      # a JOURNAL_MATCHES key; used when the machine has journalctl
+    files: dict[str, tuple[FileSpec, ...]] = field(default_factory=dict)   # family -> files (no journal / no match)
+    default: bool = True                            # in the default `collect.sync_sources`
+
+
+_AUTH_FILES = {
+    "debian": (FileSpec("/var/log/auth.log", "syslog"),),
+    "rhel": (FileSpec("/var/log/secure", "syslog"),),
+    "alpine": (FileSpec("/var/log/messages", "syslog", keep=r" (sshd|sudo)(\[|:)"),),
+}
+
+SYNC_SOURCES: dict[str, SyncSource] = {s.name: s for s in (
+    SyncSource("auth", "kratos.auth", "SSH and sudo activity: logins, failures, who ran what as root.",
+               journal="auth", files=_AUTH_FILES),
+    SyncSource("cron", "kratos.cron", SOURCES["cron"].doc, journal="cron", files=SOURCES["cron"].files),
+    SyncSource("systemd", "kratos.systemd", SOURCES["systemd"].doc, journal="systemd_pid1"),
+    SyncSource("firewall", "kratos.firewall", SOURCES["firewall"].doc, journal="kernel",
+               files=SOURCES["firewall"].files),
+    SyncSource("auditd", "kratos.auditd", SOURCES["auditd"].doc, files=SOURCES["auditd"].files),
+    SyncSource("packages", "kratos.package", SOURCES["packages"].doc, files=SOURCES["packages"].files),
+    SyncSource("web", "kratos.web", SOURCES["web"].doc, files=SOURCES["web"].files, default=False),
+)}
+SYNC_SOURCE_NAMES: tuple[str, ...] = tuple(SYNC_SOURCES)
+DEFAULT_SYNC_SOURCES: tuple[str, ...] = tuple(n for n, s in SYNC_SOURCES.items() if s.default)
+
+
+def sync_files(source: str, family: str | None) -> tuple[FileSpec, ...]:
+    """The classic files a sync of `source` reads on a `family` machine."""
+    return SYNC_SOURCES[source].files.get(family or "", ())
+
 
 # Log files watched for truncation / replacement (tamper check, §6.1), per family.
 # Each is compared with its own previous state and with its first rotation.

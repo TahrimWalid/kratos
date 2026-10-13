@@ -122,8 +122,9 @@ READ_MIN_AGENT_VERSION = (0, 3, 0)
 # sent to an older agent is answered here, before anything is sent, with a clear
 # "update the agent" message -- never a crash, never a silent empty result.
 PROBE_MIN_AGENT_VERSION: dict[str, tuple[int, int, int]] = {
-    p: (0, 4, 0) for p in ("log_read", "log_file_stat", "journal_headers", "journal_file_hash",
-                           "journal_file_chunk", "utmp_read", "audit_status", "boot_history")
+    **{p: (0, 4, 0) for p in ("log_read", "log_file_stat", "journal_headers", "journal_file_hash",
+                              "journal_file_chunk", "utmp_read", "audit_status", "boot_history")},
+    **{p: (0, 5, 0) for p in ("journal_sync", "file_sync")},     # phase A.0: incremental log sync
 }
 
 

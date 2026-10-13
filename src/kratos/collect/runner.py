@@ -122,15 +122,14 @@ def _available_transports(target: str, data_dir: Path) -> tuple[set[str], str | 
 def _inputs_present(check: Check, data_dir: Path, target: str) -> bool:
     """A fresh row whose input files are gone (a different data folder, deleted) is not
     a fresh result for the findings engine."""
-    if not check.inputs:
-        return True
     from kratos.adapters.findings_engine import find_latest_inputs
 
     try:
         found = find_latest_inputs(data_dir, target)
     except Exception:  # noqa: BLE001 -- discovery trouble means "re-run", never a crash
         return False
-    return all(found.get(cat) is not None for cat in check.inputs)
+    # "events" is not a findings-engine file: that check's result lives in the event store.
+    return all(found.get(cat) is not None for cat in check.inputs if cat != "events")
 
 
 class _Box:

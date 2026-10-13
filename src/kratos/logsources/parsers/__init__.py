@@ -94,10 +94,12 @@ def record_parts(rec: Any) -> tuple[str | None, int | None, str, str | None, str
 def parse_read(read: Any, target: str = "") -> list[Any]:
     """Parsed facts (or AuthEvents, for the sudo source) for every record of a
     logread.LogRead, newest first. Lines that aren't events are skipped."""
-    from kratos.logsources.parsers import auditd, cron, firewall, packages, sudo, systemd, web
+    from kratos.logsources.parsers import auditd, auth, cron, firewall, packages, sudo, systemd, web
 
     if read.source == "sudo":
         return sudo.parse(read, target)
+    if read.source == "auth":
+        return auth.parse(read, target)
     module = {"auditd": auditd, "cron": cron, "systemd": systemd, "firewall": firewall, "packages": packages,
               "web": web}[read.source]
     return module.parse(read)

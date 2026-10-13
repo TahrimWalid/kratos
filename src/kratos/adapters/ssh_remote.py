@@ -191,7 +191,8 @@ def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
 
 
-def run_remote_script(script: str, timeout: int | None = None, shell: str = "bash") -> SSHResult:
+def run_remote_script(script: str, timeout: int | None = None, shell: str = "bash",
+                      errors: str | None = None) -> SSHResult:
     """Run a multi-line script on the target via `<shell> -s`, fed over stdin (avoids
     shell-quoting a large one-liner). `shell="sh"` for POSIX scripts that must also run on
     hosts without bash (e.g. Alpine) -- timewin.measure's counter is one."""
@@ -206,6 +207,7 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
             capture_output=True,
             text=True,
             timeout=timeout or SSH_COMMAND_TIMEOUT_SECONDS,
+            **({"errors": errors} if errors else {}),
         )
         return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
     except subprocess.TimeoutExpired:
@@ -1057,6 +1059,58 @@ def fetch_host_logs(source: str, since_epoch: float | None, until_epoch: float |
     read = logread.parse_output(source, result.stdout, since_epoch, until_epoch, max_lines=lines)
     read.via = result.via
     read.truncated = read.truncated or result.truncated
+    return read
+
+
+SYNC_READ_TIMEOUT_SECONDS = 120
+
+
+def fetch_journal_sync(match: str, after_cursor: str | None, since: float | None, lines: int) -> Any:
+    """One journal sync step (phase A.0): the entries of a closed match AFTER a saved
+    cursor (or since a time, on a first sync), oldest first, as a logread.JournalSync --
+    or the failed SSHResult. Nothing is written on the machine."""
+    from kratos.logsources import logread
+
+    lines = max(1, min(int(lines), logread.SYNC_JOURNAL_MAX_LINES))
+
+    def over_ssh() -> SSHResult:
+        script = logread.build_journal_sync_script(match, after_cursor, since, lines,
+                                                   journal_prefix=" ".join(_journalctl_prefix()))
+        return run_remote_script(script, timeout=SYNC_READ_TIMEOUT_SECONDS, shell="sh", errors="replace")
+
+    params: dict[str, Any] = {"match": match, "lines": lines}
+    if after_cursor is not None:
+        params["after_cursor"] = after_cursor
+    if since is not None:
+        params["since"] = since
+    result = _route("journal_sync", params, over_ssh)
+    if not result.ok:
+        return result
+    out = logread.parse_journal_sync(result.stdout)
+    out.via = result.via
+    return out
+
+
+def fetch_file_sync(source: str, file_index: int, inode: int | None, offset: int, floor: float | None) -> Any:
+    """One file sync step: file number `file_index` of `source`, FORWARD from a saved
+    (inode, offset) -- a logread.LogRead (its FileRead lines carry inode, size and the bytes
+    consumed) or the failed SSHResult."""
+    from kratos.logsources import logread
+
+    def over_ssh() -> SSHResult:
+        script = logread.build_file_sync_script(source, {int(file_index): (inode, int(offset))}, floor=floor)
+        return run_remote_script(script, timeout=SYNC_READ_TIMEOUT_SECONDS, shell="sh", errors="replace")
+
+    params: dict[str, Any] = {"source": source, "file_index": int(file_index), "offset": int(offset)}
+    if inode is not None:
+        params["inode"] = int(inode)
+    if floor is not None:
+        params["floor"] = floor
+    result = _route("file_sync", params, over_ssh)
+    if not result.ok:
+        return result
+    read = logread.parse_output(source, result.stdout, None, None, max_lines=logread.SYNC_MAX_RECORDS)
+    read.via = result.via
     return read
 
 

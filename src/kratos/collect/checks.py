@@ -171,6 +171,35 @@ def _run_config_audit(ctx: CheckContext) -> CheckResult:
     return CheckResult("ok", "; ".join(parts), tools=["run_config_audit"])
 
 
+# --------------------------------------------------------------------------- log sync
+def _run_log_sync(ctx: CheckContext) -> CheckResult:
+    """Keep the event store up to date: only the lines that are new since last time."""
+    import time as _time
+
+    from kratos.collect import sync as _sync
+    from kratos.collect.sync import settings as _sync_settings  # noqa: F401 -- registers collect.sync_* settings
+
+    rep = _sync.sync_logs(ctx.target, ctx.data_dir, deadline=_time.monotonic() + max(1.0, ctx.deadline - _time.monotonic() - 1.5))
+    done = [s for s in rep.sources if s.status in ("ok", "partial") and not s.behind]
+    behind = [s.source for s in rep.sources if s.behind]
+    failed = [s for s in rep.sources if s.status == "failed"]
+    parts = [f"{rep.new_events} new log event(s)"]
+    if done:
+        parts.append(f"{len(done)} log(s) up to date")
+    if behind:
+        parts.append("catching up on " + ", ".join(behind))
+    if failed:
+        parts.append("could not sync " + ", ".join(s.source for s in failed))
+    gaps = []
+    for s in rep.sources:
+        if s.old_agent and s.gaps and s.gaps[0] not in gaps:
+            gaps.append(s.gaps[0])
+    all_failed = bool(rep.sources) and len(failed) == len(rep.sources)
+    status = "failed" if all_failed else ("partial" if (failed or behind or any(s.status == "partial" for s in rep.sources)) else "ok")
+    return CheckResult(status, "; ".join(parts), gaps, tools=[],
+                       detail="; ".join(g for s in rep.sources for g in s.gaps)[:400])
+
+
 # --------------------------------------------------------------------------- registration
 register(Check(
     name="ports", cost="quick", ttl_setting="collect.ttl.ports_minutes", default_ttl_minutes=60,
@@ -193,3 +222,7 @@ register(Check(
     name="config_audit", cost="quick", ttl_setting="collect.ttl.config_audit_minutes", default_ttl_minutes=360,
     run=_run_config_audit, inputs=(), transports=frozenset({"ssh", "agent"}), budget_seconds=40.0,
     label="configuration audit", order=60, short="config"))
+register(Check(
+    name="log_sync", cost="quick", ttl_setting="collect.ttl.log_sync_minutes", default_ttl_minutes=15,
+    run=_run_log_sync, inputs=("events",), transports=frozenset({"ssh", "agent"}), budget_seconds=60.0,
+    label="log sync", order=70, short="logs"))

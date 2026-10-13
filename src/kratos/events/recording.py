@@ -127,14 +127,15 @@ def events_for_log_read(target: str, read: Any) -> list[Event]:
     from kratos.logsources import catalog
     from kratos.logsources.parsers import parse_read
 
-    ctx = C.ReadContext(target=target, transport=_transport(read.via), read=f"log_read.{read.source}",
+    ctx = C.ReadContext(target=target, transport=_transport(read.via),
+                        read=f"{getattr(read, 'read_label', None) or 'log_read'}.{read.source}",
                         window=(read.since, read.until), coverage="truncated" if read.truncated else "complete")
     try:
         items = parse_read(read, target)
     except Exception as e:  # noqa: BLE001 -- a parser bug must not fail the read
         logger.warning("could not parse the %s read (%s: %s)", read.source, type(e).__name__, e)
         return []
-    if read.source == "sudo":
+    if read.source in ("sudo", "auth"):
         return _convert(items, lambda ev: C.from_auth_event(ev, ctx=ctx))
     dataset = catalog.SOURCES[read.source].dataset
     return _convert(items, lambda p: C.from_parsed(p, ctx=ctx, dataset=dataset))

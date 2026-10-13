@@ -68,6 +68,8 @@ MAX_SKIPPED_LISTED = 20
 AWK = r'''
 BEGIN { CONVFMT = "%.6f"; OFMT = "%.6f"; fmt = ENVIRON["KR_FMT"]; keep = ENVIRON["KR_KEEP"]
   n = 0; matched = 0; parsed = 0; cut = 0; fk = ""; fv = ""; lk = ""; lv = ""; ro = 0
+  if (chunk == "") chunk = -1
+  chunk += 0; nb = 0; havep = 0; pos = 0; rstart = 0; skip1 += 0
   tzoff = offsec(tzs) }
 function dfc(y, m, d,   era, yoe, doy, doe) {   # days from civil (H. Hinnant), pure arithmetic
   y -= (m <= 2); era = int((y >= 0 ? y : y - 399) / 400); yoe = y - era * 400
@@ -155,10 +157,10 @@ function consider(k, v, text) {
   ring[n % maxl] = k "\t" v "\t" text; n++
 }
 # multi-line records: apt history blocks, sudo logfile continuations
-function ropen(k, v, text) { rclose(); ro = 1; rk = k; rv = v; rt = text }
+function ropen(k, v, text) { rclose(); ro = 1; rk = k; rv = v; rt = text; rstart = pos }
 function radd(text) { if (ro && length(rt) < lmax) rt = rt "\037" text }
 function rclose() { if (ro) consider(rk, rv, rt); ro = 0 }
-{
+function proc(   aa, tt, cont) {
   sub(/\r$/, "")
   if (fmt == "apt_history") {
     if ($0 ~ /^Start-Date: [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] +[0-9][0-9]:[0-9][0-9]:[0-9][0-9]/) {
@@ -168,24 +170,47 @@ function rclose() { if (ro) consider(rk, rv, rt); ro = 0 }
     } else if ($0 ~ /^End-Date:/) { radd($0); rclose() }
     else if ($0 == "") rclose()
     else radd($0)
-    next
+    return
   }
   if (fmt == "sudo_log") {
-    if ($0 ~ /^[ \t]/) { cont = $0; sub(/^[ \t]+/, "", cont); radd(cont); next }
+    if ($0 ~ /^[ \t]/) { cont = $0; sub(/^[ \t]+/, "", cont); radd(cont); return }
     if (ptime($0)) { seen_time(TK, TV); ropen(TK, TV, $0) }
-    next
+    return
   }
   if (ptime($0)) { seen_time(TK, TV); consider(TK, TV, $0) }
 }
+# chunk >= 0 (incremental sync): the input is a slice of a file that may end mid-line,
+# so a line is only processed once the next one proves it was complete; a record still
+# open at the end (an apt block, a sudo entry with continuations) is held back. The S
+# line then also reports `consumed`: how many bytes of the slice are fully handled, so
+# the caller advances exactly that far. chunk < 0 (the default) is the whole-file
+# behaviour, line for line as before.
+{
+  if (chunk < 0) { proc(); next }
+  curlen = length($0) + 1
+  if (skip1 + 0 && NR == 1) { nb += curlen; next }      # a first sync starts mid-line: drop the partial line
+  if (havep) { cur = $0; $0 = pend; pos = pendpos; proc(); $0 = cur }
+  pend = $0; pendlen = curlen; pendpos = nb; havep = 1; nb += curlen
+}
 END {
-  rclose()
+  if (chunk >= 0) {
+    if (havep) {
+      if (nb == chunk) { $0 = pend; pos = pendpos; proc() } else nb -= pendlen
+    }
+    consumed = nb
+    if (consumed > chunk) consumed = chunk
+    if (ro) { consumed = rstart; ro = 0 }
+  } else rclose()
   c = (n < maxl) ? n : maxl; b = 0; e = 0
   for (j = n - 1; j >= n - c; j--) {
     r = ring[j % maxl]; b += length(r) + 1
     if (b > maxb) break
     printf "L\t%s\t%s\t%s\n", idx, slot, r; e++
   }
-  printf "S\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\n", idx, slot, matched, e, fk, fv, lk, lv, parsed, cut
+  if (chunk >= 0)
+    printf "S\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%d\n", idx, slot, matched, e, fk, fv, lk, lv, parsed, cut, consumed
+  else
+    printf "S\t%s\t%s\t%d\t%d\t%s\t%s\t%s\t%s\t%d\t%d\n", idx, slot, matched, e, fk, fv, lk, lv, parsed, cut
 }
 '''
 
@@ -362,6 +387,10 @@ class FileRead:
     first: float | None = None   # oldest time in the file (UTC epoch, any line)
     last: float | None = None
     cut_lines: int = 0
+    inode: int | None = None      # sync reads: the file's inode / size when it was looked at
+    size: int | None = None
+    consumed: int | None = None   # sync reads: bytes of the slice fully handled (whole lines / closed records)
+    start: int | None = None      # sync reads: the byte offset the slice began at
 
     @property
     def truncated(self) -> bool:
@@ -399,6 +428,7 @@ class LogRead:
     until: float | None = None
     via: str = "ssh"                  # how it was read: ssh / subagent
     container: str | None = None      # systemd-detect-virt -c, if the machine is a container
+    read_label: str | None = None     # the event "read" name's prefix ("log_read" unless a sync set it)
 
 
 def _zone(tz_name: str | None, tz_offset: str | None) -> tuple[Any, bool]:
@@ -466,6 +496,12 @@ def parse_output(source: str, stdout: str, since: float | None, until: float | N
         elif tag == "F" and len(cols) >= 6 and cols[1].isdigit() and cols[2].isdigit():
             fr = FileRead(index=int(cols[1]), slot=int(cols[2]), path=cols[3], status=cols[4],
                           detail="" if cols[5] == "-" else cols[5])
+            if cols[5].isdigit():
+                fr.size = int(cols[5])
+            if len(cols) >= 7 and cols[6].isdigit():
+                fr.inode = int(cols[6])
+            if len(cols) >= 8 and cols[7].isdigit():
+                fr.start = int(cols[7])
             files[(fr.index, fr.slot)] = fr
             out.files.append(fr)
         elif tag == "L" and len(cols) >= 6 and cols[1].isdigit() and cols[2].isdigit():
@@ -497,6 +533,8 @@ def parse_output(source: str, stdout: str, since: float | None, until: float | N
         fr.first = to_utc(cols[5], cols[6]) if cols[5] else None
         fr.last = to_utc(cols[7], cols[8]) if cols[7] else None
         fr.parsed, fr.cut_lines = int(_num(cols[9]) or 0), int(_num(cols[10]) or 0)
+        if len(cols) >= 12:
+            fr.consumed = int(_num(cols[11]) or 0)
 
     lo = since if since is not None else float("-inf")
     hi = until if until is not None else float("inf")
@@ -563,3 +601,209 @@ def _dup_of_journal(rec: Record, keys: set[tuple[int, str]]) -> bool:
     if not sep:
         return False
     return (int(rec.ts), " ".join(msg.split())[:200]) in keys
+
+
+# --------------------------------------------------------------------------
+# Incremental sync (phase A.0): read FORWARD from a saved position
+# --------------------------------------------------------------------------
+SYNC_CHUNK_BYTES = 2 * 1024 * 1024        # most bytes of one file handled per sync round
+SYNC_FIRST_TAIL_BYTES = 2 * 1024 * 1024   # a first sync of a file starts this far from its end
+SYNC_MAX_RECORDS = 400000
+SYNC_JOURNAL_MAX_LINES = 200000
+SYNC_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
+# systemd's cursor: s=<seqnum id>;i=<seqnum>;b=<boot id>;m=<monotonic>;t=<realtime>;x=<xor hash>.
+# Checked before one is ever placed in a command (verified on systemd 249 and 252).
+CURSOR_RE = re.compile(r"^s=[0-9a-f]{32};i=[0-9a-f]{1,16};b=[0-9a-f]{32};m=[0-9a-f]{1,16};t=[0-9a-f]{1,16};"
+                       r"x=[0-9a-f]{1,16}$")
+
+
+def valid_cursor(value: Any) -> bool:
+    return isinstance(value, str) and len(value) <= 160 and bool(CURSOR_RE.fullmatch(value))
+
+
+def cursor_realtime(cursor: str) -> float | None:
+    """The wall-clock time (UTC epoch) a journal cursor's `t=` field holds."""
+    m = re.search(r";t=([0-9a-f]+);", cursor or "")
+    return int(m.group(1), 16) / 1000000 if m else None
+
+
+def journal_sync_argv(match: str, after_cursor: str | None, since: float | None,
+                      prefix: list[str] | tuple[str, ...] = ()) -> list[str]:
+    """journalctl for one closed match, FORWARD from a saved cursor (or from `since` on a
+    first sync). No -n: it is version-dependent (it can mean the newest N), so the caller
+    caps the lines itself. No --cursor-file: that would write a file on the monitored machine."""
+    args = [*prefix, "journalctl", "--no-pager", "-o", "json", "--output-fields=" + ",".join(JOURNAL_FIELDS),
+            *catalog.JOURNAL_MATCHES[match]]
+    if after_cursor is not None:
+        if not valid_cursor(after_cursor):
+            raise ValueError("not a journal cursor")
+        args.append("--after-cursor=" + after_cursor)
+    elif since is not None:
+        args += ["--since", f"@{int(since)}"]
+    return args
+
+
+# One awk keeps entry lines, labels journalctl's own complaints, and stops at a byte cap.
+_JOURNAL_SYNC_AWK = (r'''/^\{/ { b += length($0) + 1; if (b > cap) { print "JT"; exit } print "J\t" $0; next } '''
+                     r'''{ gsub(/\t/, " "); print "JE\t" substr($0, 1, 300) }''')
+
+
+def build_journal_sync_script(match: str, after_cursor: str | None, since: float | None, lines: int, *,
+                              journal_prefix: str = "sudo -n", max_bytes: int = SYNC_JOURNAL_MAX_BYTES) -> str:
+    """The read-only script for one journal sync over SSH: the oldest entry the journal
+    still holds (so a vacuumed hole shows), then up to `lines`+1 entries after the cursor."""
+    jp = _checked_prefix(journal_prefix)
+    prefix = jp.split() if jp else []
+    main = journal_sync_argv(match, after_cursor, since, prefix)
+    oldest = [*prefix, "journalctl", "--no-pager", "-o", "json", "--output-fields=MESSAGE"]
+    return "\n".join([
+        "LC_ALL=C; export LC_ALL",
+        "printf 'M\\tnow\\t%s\\n' \"$(date +%s)\"",
+        "KR_HAVE_J=0; command -v journalctl >/dev/null 2>&1 && KR_HAVE_J=1",
+        "printf 'M\\tjournal\\t%s\\n' \"$KR_HAVE_J\"",
+        "if [ \"$KR_HAVE_J\" = 1 ]; then",
+        f"  {shlex.join(oldest)} 2>/dev/null | head -n 1 | awk '{{ print \"O\\t\" $0 }}'",
+        f"  {shlex.join(main)} 2>&1 | head -n {int(lines) + 1} | awk -v cap={int(max_bytes)} "
+        f"{shlex.quote(_JOURNAL_SYNC_AWK)}",
+        "fi",
+        "exit 0",
+    ]) + "\n"
+
+
+@dataclass
+class JournalSync:
+    have_journal: bool = False
+    now: float | None = None
+    oldest_ts: float | None = None            # the oldest entry the journal still holds (any source)
+    entries: list[dict[str, Any]] = field(default_factory=list)   # forward order
+    byte_capped: bool = False                 # the output byte cap stopped the stream early
+    errors: list[str] = field(default_factory=list)
+    via: str = "ssh"
+
+
+def parse_journal_sync(stdout: str) -> JournalSync:
+    out = JournalSync()
+    for line in stdout.split("\n"):
+        cols = line.split("\t", 2)
+        tag = cols[0]
+        if tag == "M" and len(cols) == 3:
+            if cols[1] == "journal":
+                out.have_journal = cols[2].strip() == "1"
+            elif cols[1] == "now":
+                out.now = _num(cols[2])
+        elif tag == "O" and len(cols) >= 2:
+            try:
+                out.oldest_ts = int(json.loads(line.split("\t", 1)[1]).get("__REALTIME_TIMESTAMP")) / 1000000
+            except (ValueError, TypeError, AttributeError):
+                pass
+        elif tag == "J" and len(cols) >= 2:
+            try:
+                entry = json.loads(line.split("\t", 1)[1])
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                out.entries.append(entry)
+        elif tag == "JT":
+            out.byte_capped = True
+        elif tag == "JE" and len(cols) >= 2:
+            out.errors.append(line.split("\t", 1)[1].strip())
+    return out
+
+
+_SYNC_FN = r'''
+kr_state() {  # path idx slot -> sets _INO _SIZE, or prints the reason and returns 1
+  if [ -L "$1" ]; then printf 'F\t%s\t%s\t%s\tsymlink\t-\n' "$2" "$3" "$1"; return 1; fi
+  if [ ! -e "$1" ]; then
+    _p=${1%/*}
+    if [ -d "$_p" ] && { [ ! -x "$_p" ] || [ ! -r "$_p" ]; }; then printf 'F\t%s\t%s\t%s\tunreadable\tdirectory\n' "$2" "$3" "$1"
+    else printf 'F\t%s\t%s\t%s\tmissing\t-\n' "$2" "$3" "$1"; fi
+    return 1
+  fi
+  if [ ! -f "$1" ]; then printf 'F\t%s\t%s\t%s\tnot_regular\t-\n' "$2" "$3" "$1"; return 1; fi
+  _nl=$(stat -c %h "$1" 2>/dev/null || echo 1)
+  if [ "${_nl:-1}" -gt 1 ]; then printf 'F\t%s\t%s\t%s\thardlink\t%s\n' "$2" "$3" "$1" "$_nl"; return 1; fi
+  if [ ! -r "$1" ]; then printf 'F\t%s\t%s\t%s\tunreadable\t-\n' "$2" "$3" "$1"; return 1; fi
+  _INO=$(stat -c %i "$1" 2>/dev/null); _SIZE=$(stat -c %s "$1" 2>/dev/null)
+  case "$_INO$_SIZE" in ""|*[!0-9]*) printf 'F\t%s\t%s\t%s\tunreadable\tstat\n' "$2" "$3" "$1"; return 1;; esac
+  return 0
+}
+kr_slice() {  # idx slot path fmt off n skipfirst : one slice [off, off+n) through the extractor
+  printf 'F\t%s\t%s\t%s\tread\t%s\t%s\t%s\n' "$1" "$2" "$3" "$_SIZE" "$_INO" "$5"
+  if [ "$6" -le 0 ]; then printf 'S\t%s\t%s\t0\t0\t\t\t\t\t0\t0\t0\n' "$1" "$2"; return; fi
+  tail -c +$(($5 + 1)) "$3" | head -c "$6" | KR_FMT="$4" awk -v idx="$1" -v slot="$2" -v lo="$KR_LO" -v hi=-1 \
+      -v tzs="$KR_TZS" -v ynow="$KR_Y" -v mnow="$KR_M" -v maxl="$KR_MAXL" -v maxb="$KR_MAXB" -v lmax="$KR_LMAX" \
+      -v margin="$KR_MARGIN" -v chunk="$6" -v skip1="$7" "$KR_AWK"
+  _I2=$(stat -c %i "$3" 2>/dev/null)
+  [ "$_I2" = "$_INO" ] || printf 'F\t%s\t%s\t%s\tchanged\t-\n' "$1" "$2" "$3"
+}
+kr_sync() {  # idx path fmt saved_ino saved_off     (KR_KEEP set by the caller)
+  kr_state "$2" "$1" 0 || return
+  _cur_ino=$_INO; _cur_size=$_SIZE
+  if [ -z "$4" ]; then                               # first sync: the tail of the file
+    _off=$((_cur_size - KR_FIRST)); _skip=1; [ "$_off" -le 0 ] && { _off=0; _skip=0; }
+    _n=$((_cur_size - _off)); [ "$_n" -gt "$KR_CHUNK" ] && _n=$KR_CHUNK
+    kr_slice "$1" 0 "$2" "$3" "$_off" "$_n" "$_skip"
+  elif [ "$4" = "$_cur_ino" ]; then
+    if [ "$5" -gt "$_cur_size" ]; then
+      printf 'F\t%s\t0\t%s\ttruncated\t%s\t%s\n' "$1" "$2" "$_cur_size" "$_cur_ino"
+    else
+      _n=$((_cur_size - $5)); [ "$_n" -gt "$KR_CHUNK" ] && _n=$KR_CHUNK
+      kr_slice "$1" 0 "$2" "$3" "$5" "$_n" 0
+    fi
+  else                                               # rotated: find the file that had the saved inode
+    _found=""
+    for _g in "$2.0" "$2.1" "$2"-[0-9]*; do
+      case "$_g" in *.gz|*.xz|*.bz2|*.zst|*.lz4) continue;; esac
+      [ -f "$_g" ] && [ ! -L "$_g" ] && [ "$(stat -c %i "$_g" 2>/dev/null)" = "$4" ] && _found="$_g"
+    done
+    printf 'F\t%s\t0\t%s\tcurrent\t%s\t%s\n' "$1" "$2" "$_cur_size" "$_cur_ino"
+    if [ -n "$_found" ] && kr_state "$_found" "$1" 1; then
+      _n=$((_SIZE - $5)); [ "$_n" -lt 0 ] && _n=0; [ "$_n" -gt "$KR_CHUNK" ] && _n=$KR_CHUNK
+      kr_slice "$1" 1 "$_found" "$3" "$5" "$_n" 0
+    else
+      printf 'F\t%s\t1\t%s\trotated_lost\t-\n' "$1" "$2"
+    fi
+  fi
+}
+'''
+
+
+def build_file_sync_script(source: str, positions: dict[int, tuple[int | None, int]], *, floor: float | None,
+                           root: str = "") -> str:
+    """The read-only script that reads a source's classic files FORWARD from saved
+    positions {file index: (inode, byte offset)} over SSH. A file with no saved
+    position (inode None) is read from its tail. Every value placed in the script is an
+    int, or comes from the catalog. `floor` (UTC epoch) keeps lines older than it out
+    of the result (a first sync's look-back)."""
+    src = catalog.SYNC_SOURCES[source]
+    root = _checked_root(root)
+    lo = -1 if floor is None else int(floor)
+    parts: list[str] = [
+        "LC_ALL=C; export LC_ALL",
+        catalog.FAMILY_SH.replace("/etc/os-release", f"{root}/etc/os-release"),
+        "printf 'M\\tfamily\\t%s\\n' \"$FAMILY\"",
+        f"printf 'M\\ttz_name\\t%s\\n' \"$( (cat {root}/etc/timezone 2>/dev/null || readlink {root}/etc/localtime "
+        "2>/dev/null | sed 's|.*zoneinfo/||') | head -1)\"",
+        "KR_TZS=$(date +%z); printf 'M\\ttz_offset\\t%s\\n' \"$KR_TZS\"",
+        "printf 'M\\tnow\\t%s\\n' \"$(date +%s)\"",
+        "KR_YM=$(date '+%Y %m'); KR_Y=${KR_YM% *}; KR_M=$(echo \"${KR_YM#* }\" | sed 's/^0//')",
+        f"KR_LO={lo}; KR_MAXL={SYNC_MAX_RECORDS}; KR_MAXB={SYNC_CHUNK_BYTES * 3}; KR_LMAX={LINE_MAX_BYTES}; "
+        f"KR_MARGIN={WALL_MARGIN_SECONDS}; KR_CHUNK={SYNC_CHUNK_BYTES}; KR_FIRST={SYNC_FIRST_TAIL_BYTES}",
+        f"KR_AWK={shlex.quote(AWK)}",
+        _SYNC_FN,
+        "case \"$FAMILY\" in",
+    ]
+    for family in catalog.FAMILIES:
+        body: list[str] = []
+        for i, spec in enumerate(src.files.get(family, ())):
+            if i not in positions:
+                continue
+            ino, off = positions[i]
+            ino_s = "" if ino is None else str(int(ino))
+            body.append(f"KR_KEEP={shlex.quote(spec.keep)}; export KR_KEEP; "
+                        f"kr_sync {i} {shlex.quote(root + spec.path)} {spec.fmt} '{ino_s}' {int(off)}")
+        parts.append(f"{family})\n" + ("\n".join(body) if body else ":") + "\n;;")
+    parts.append("*) printf 'M\\tgap\\t%s\\n' 'unknown Linux distribution: no log paths are known for it' ;;")
+    parts.append("esac")
+    parts.append("exit 0")
+    return "\n".join(parts) + "\n"
