@@ -25,7 +25,7 @@ from typing import Any
 
 __all__ = [
     "ENVELOPE_RULE", "new_run_tag", "new_call_id", "frame_text", "for_display", "display_text", "markup_safe", "safe_print", "for_model", "envelope",
-    "mixed_script", "mixed_script_marker", "has_hidden_characters",
+    "mixed_script", "mixed_script_marker", "annotate_lookalikes", "has_hidden_characters",
 ]
 
 # --- escape sequences -------------------------------------------------------------
@@ -269,3 +269,22 @@ def mixed_script(s: Any) -> bool:
 def mixed_script_marker(s: Any) -> str:
     """` ⟨mixed scripts⟩` to append to a displayed name that looks like a homoglyph, else ''."""
     return f" {_MARKER_OPEN}mixed scripts{_MARKER_CLOSE}" if mixed_script(s) else ""
+
+
+def annotate_lookalikes(s: Any) -> str:
+    """`for_display(s)` with a ` ⟨mixed scripts⟩` marker after each word that mixes look-alike
+    scripts -- what findings use for evidence and titles, where an attacker-chosen username such
+    as "аdmin" (Cyrillic а) must not pass for the real one. Letters are never rewritten."""
+    text = for_display(s)
+    if text.isascii():
+        return text
+    out: list[str] = []
+    last = 0
+    for m in _TOKEN_RE.finditer(text):
+        out.append(text[last:m.end()])
+        last = m.end()
+        marker = mixed_script_marker(m.group(0))
+        if marker and not text.startswith(marker, m.end()):          # already marked: keep it idempotent
+            out.append(marker)
+    out.append(text[last:])
+    return "".join(out)

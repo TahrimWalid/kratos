@@ -25,6 +25,7 @@ from rich.rule import Rule
 # Text from a monitored machine is untrusted (kratos.untrusted, A.4): every Text, Panel,
 # Table and Syntax built here is the cleaning kind, so a string put into one can never
 # carry an escape sequence, a hidden bidi character or Rich markup onto the screen.
+from kratos.untrusted import annotate_lookalikes
 from kratos.untrusted_rich import SafePanel as Panel, SafeSyntax as Syntax, SafeTable as Table, SafeText as Text
 
 from kratos.agent.console import plain_label, unwrap_tool_result  # reused, palette-neutral
@@ -223,7 +224,7 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
 
     body = Text()
     body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
-    body.append(f"\n[{fid}] {finding.get('title', '')}", style=T.TEXT_DIM)
+    body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style=T.TEXT_DIM)
     status = lifecycle_status(finding)
     if status:
         body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred")
@@ -239,7 +240,7 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
         details.add_column(width=4, no_wrap=True)
         details.add_column(ratio=1)
         for e in evidence[:5]:
-            details.add_row(Text("  • ", style=T.TEXT_MUTED), Text(str(e), style=T.TEXT_MUTED))
+            details.add_row(Text("  • ", style=T.TEXT_MUTED), Text(annotate_lookalikes(e), style=T.TEXT_MUTED))
         if len(evidence) > 5:
             details.add_row(Text("  … ", style=T.TEXT_FAINT),
                             Text(f"{len(evidence) - 5} more (see /report)", style=T.TEXT_FAINT))

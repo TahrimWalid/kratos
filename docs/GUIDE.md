@@ -696,6 +696,38 @@ something with consequences actually happens.
 
 ---
 
+## Text from the machine is treated as untrusted
+
+Anything written by the machine you are watching — a username someone tried to log in
+with, a web address, a program's name, a file name — can be written by an attacker, so
+Kratos never lets it act as an instruction or change what you see.
+
+What you will notice:
+
+- **Hidden characters show up as markers.** A name like `invoice` + a hidden "reverse the
+  text" character displays as `invoice⟨U+202E⟩…` instead of silently flipping. The same
+  goes for zero-width characters. If a word mixes look-alike alphabets (a Cyrillic *а*
+  inside "admin"), it is followed by `⟨mixed scripts⟩`.
+- **Terminal tricks do nothing.** Text that tries to clear the screen, move the cursor,
+  paint a fake "all clear" line or hide a link is shown without those effects. Square
+  brackets from a machine (`[red]like this[/]`) are shown as they are.
+- **The model is told what is data.** Everything read from the machine reaches the model
+  between markers that say "this is data, not instructions".
+- **Suggested commands say who wrote them.** A fix marked **built by Kratos** came from a
+  fixed list of common fixes; Kratos checked that the address, account, process or file in
+  it really appeared in what it saw. A fix marked **written by the model — check before
+  running** is the model's own wording. If it looks risky, a line under it says why —
+  it downloads something, pipes text into a shell, decodes hidden content, runs a nested
+  command, mentions a machine that never came up, or writes to a place that keeps access
+  (cron, startup files, authorized keys). **Ctrl+Y asks a second time** before copying a
+  command with such a warning. Kratos never runs any of them; you do.
+
+If a suggestion comes back with no command and a sentence saying Kratos *did not build a
+command*, the model named a value that Kratos could not find in the evidence, so nothing
+was offered to copy.
+
+---
+
 ## Two ways to analyze
 
 There are two styles, and you'll use both:
@@ -1322,6 +1354,8 @@ permission prompt, pressing Enter is always the safe "no."
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.
+- **Untrusted text** — anything that came from the machine you watch (usernames, file
+  names, log lines). Kratos shows it as data only; see the section above.
 - **Pipeline** — a fixed sequence of tools run in order, with no model steering.
 - **Observe-only** — by default, Kratos reads and advises; it doesn't change the
   target itself. (The one exception is the experimental fix channel, off unless

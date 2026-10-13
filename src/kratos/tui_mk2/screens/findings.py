@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from kratos.untrusted import annotate_lookalikes
 from kratos.untrusted_rich import SafeTable as Table
 from kratos.untrusted_rich import SafeText as Text
 from textual import on, work
@@ -332,11 +333,11 @@ class FindingsScreen(Screen):
         body = Table.grid(padding=(0, 2))
         body.add_column(style=T.TEXT_DIM)
         body.add_column()
-        body.add_row("rule", f"{row['rule_id']} — {row['title']}")
+        body.add_row("rule", f"{row['rule_id']} — {annotate_lookalikes(row['title'])}")
         body.add_row("state", f"{STATE_WORDS.get(row['state'], row['state'])}  ({row['state']})")
         body.add_row("severity", row["severity"])
         body.add_row("machine", row["target"])
-        body.add_row("about", ", ".join(row["entities"]) or "-")
+        body.add_row("about", annotate_lookalikes(", ".join(row["entities"])) or "-")
         body.add_row("seen", f"{row['times_seen']} time(s), first {self._when(row['first_seen'])}, "
                               f"last {self._when(row['last_seen'])}")
         body.add_row("last re-checked", self._when(row["last_checked"]))
@@ -347,7 +348,7 @@ class FindingsScreen(Screen):
                                      + (f", until {self._when(d['expires_at'])}" if d.get("expires_at") else ""))
             body.add_row("reason", d["reason"])
         for i, line in enumerate((latest.get("evidence") or [])[:12]):
-            body.add_row("evidence" if i == 0 else "", str(line))
+            body.add_row("evidence" if i == 0 else "", annotate_lookalikes(line))
         body.add_row("key", row["finding_key"])
         self.app.push_screen(InfoModal(f"{row['rule_id']} — details", body))
 

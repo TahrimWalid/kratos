@@ -299,3 +299,18 @@ def test_mixed_script(name, expected):
 def test_mixed_script_marker_is_visible_and_empty_for_honest_names():
     assert u.mixed_script_marker("аdmin") == " ⟨mixed scripts⟩"
     assert u.mixed_script_marker("admin") == ""
+
+
+# --- annotate_lookalikes ---------------------------------------------------------------------------------
+
+def test_annotate_lookalikes_marks_only_the_mixed_word():
+    out = u.annotate_lookalikes("login for аdmin from 10.0.0.1 and admin")
+    assert out == "login for аdmin ⟨mixed scripts⟩ from 10.0.0.1 and admin"
+    assert u.annotate_lookalikes("plain ascii") == "plain ascii"
+    assert u.annotate_lookalikes("José and Zhang张") == "José and Zhang张"
+
+
+def test_annotate_lookalikes_also_cleans():
+    assert u.annotate_lookalikes("a\x1b[2J‮b") == "a⟨U+202E⟩b"
+    once = u.annotate_lookalikes("аdmin")
+    assert u.annotate_lookalikes(once) == once                       # idempotent

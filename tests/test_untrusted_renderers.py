@@ -416,3 +416,18 @@ def test_console_helpers_never_put_unescaped_variables_into_markup():
                 continue
             risky.append((body, var))
     assert not risky, risky
+
+
+def test_a_homoglyph_username_gets_a_visible_marker_in_every_finding_view():
+    from kratos.tui_mk2.screens import findings as findings_screen
+
+    finding = {"id": "AUTH-004", "severity": "high", "title": "Burst for аdmin",
+               "evidence": ["user аdmin failed 4 times", "user admin failed once"]}
+    console = _plain_console()
+    console.print(R.finding_panel(finding))
+    text = _text(console)
+    assert text.count("⟨mixed scripts⟩") == 2                 # the title and the first evidence line only
+    console = _cli_console()
+    cli.render_finding(console, finding)
+    assert _text(console).count("⟨mixed scripts⟩") == 2
+    assert "annotate_lookalikes" in Path(findings_screen.__file__).read_text(encoding="utf-8")

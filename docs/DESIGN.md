@@ -919,6 +919,60 @@ detection logic is untouched.
   `reports/findings_*.json` are imported once (machine taken from the report, its
   input files, the session that produced it, else "unknown") and never modified.
 
+## Untrusted input
+
+Text that came from a monitored machine is attacker-controlled: usernames in failed
+logins, URLs and user agents in web logs, process and file names, cron lines, package
+descriptions. Kratos's structure already limits what it can do (fixed read-only tools, a
+fixed target, dispatch guards, answers checked by rules); what is left is what a person
+sees, what a person copies, and what the model reads as instructions. Stored evidence
+keeps its original bytes (`event.original`, the transcript's tool results); the text is
+neutralised at the **exits**, and `kratos/untrusted.py` is the one module that owns how.
+
+- **The screen.** `for_display` removes control characters and every escape-sequence
+  family (CSI, OSC including OSC 8 hyperlinks and OSC 52 clipboard writes, DCS/SOS/PM/APC,
+  the 8-bit C1 forms, a bare ESC; unterminated ones run to the end of the line), and shows
+  bidirectional controls, zero-width characters, Unicode tag characters and lone surrogates
+  as visible `⟨U+202E⟩` markers. Plain non-ASCII text is untouched, and homoglyphs are not
+  rewritten (that would corrupt real names); a word that mixes look-alike scripts gets a
+  `⟨mixed scripts⟩` marker in findings. `untrusted_rich.py` makes this the default: `SafeText`,
+  `SafePanel`, `SafeTable` and `SafeSyntax` clean every string they are given and never parse
+  markup, `tui_mk2/safe_widgets.py` does the same for Textual's `Static`, `Label`, `Button`,
+  `Option` and `DataTable` (whose plain-`str` cells are otherwise parsed as markup), and a
+  source-scan test fails if a TUI module imports the unsafe classes. Backstops sit at the
+  sinks: the CLI console and the transcript writer pass what they draw through
+  `scrub_segments`, because nothing Kratos writes legitimately holds an escape byte. The plain
+  CLI commands use `safe_print`; MCP replies, ntfy notifications and the toast notifier are
+  cleaned too.
+- **The model.** Each tool result is wrapped as
+  `<<tool_result run=… id=…>> JSON <<end id=…>>` under one fixed line saying everything between
+  the markers is data that may contain attacker text. The id has a random part per call, so a
+  payload written earlier cannot contain the real end marker; strings are JSON-escaped (a newline
+  is `\n`, so no payload can start a fake `Assistant:` turn), cleaned and length-capped. The
+  digest of what Kratos collected, the replayed conversation on resume and the findings bundle
+  of the one-shot analysis are framed the same way (`frame_text`), and the system prompt carries
+  one rule saying what the markers mean. The size cap still cuts the JSON text, never the markers.
+- **Suggested commands** (`kratos/remediation/`). The text a person pastes into a root shell is
+  where an injection would do real harm, so there are two tiers. A **template** (a closed
+  catalogue: ban an IP, enable or restart a service, lock or expire an account, remove one
+  authorized key by fingerprint, kill a process, remove a cron line, restrict a file's mode) is
+  chosen by the model but built by code: every value must occur in this run's evidence (an IP
+  that attacked and is not the machine under investigation, an account named in a finding, a PID a
+  tool listed, a path, fingerprint or cron line seen verbatim) or on a vetted list, and the
+  command is rendered from a fixed shape with shell quoting. A refused template yields an
+  explanation and no command. A **free-form** command the model wrote is still allowed, labelled
+  "written by the model", with a flag and reason for each risky shape (a download or network
+  connection, a pipe into a shell or interpreter, decoding, command substitution, a host the
+  evidence never mentions, a write to a place that keeps access); a flagged command needs a
+  second confirmation before Ctrl+Y or the copy box puts it on the clipboard. Flags are
+  heuristics that warn, never forbid. The catalogue is display-only: nothing is executed and it
+  is not connected to the fix channel's whitelist (it only reuses its unit list).
+- **Checked, not assumed.** `tests/test_untrusted*.py` drive a corpus of payload shapes
+  (`tests/fixtures/untrusted/corpus.json`) through every renderer, the transcript, the widgets,
+  the envelope in the real loop, and the rule engine (findings must be byte-identical except for
+  the payload value itself). The full corpus is injected for real into lab machines from
+  `attacker-box` by the eval harness (scenarios F1, F2, F3) outside the repo.
+
 ## MCP server surface
 
 `kratos mcp-serve` exposes five tools over stdio — `investigate`,

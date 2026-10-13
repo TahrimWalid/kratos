@@ -44,7 +44,7 @@ from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_F
 # Text from a monitored machine is untrusted (kratos.untrusted, A.4): Text here is the
 # cleaning kind, markup strings escape what they interpolate, and the console scrubs
 # whatever it finally draws.
-from kratos.untrusted import display_text, for_display, markup_safe  # noqa: E402
+from kratos.untrusted import annotate_lookalikes, display_text, for_display, markup_safe  # noqa: E402
 from kratos.untrusted_rich import SafeText as Text, scrub_segments  # noqa: E402
 
 _no_color_default = False
@@ -336,13 +336,13 @@ def render_finding(console: Console, finding: dict[str, Any]) -> None:
 
     body = Text()
     body.append(summary, style="bold")
-    body.append(f"\n[{fid}] {finding.get('title', '')}", style="dim")
+    body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style="dim")
 
     evidence = finding.get("evidence") or []
     if evidence:
         body.append("\n\nDetails:", style="dim")
         for e in evidence[:5]:
-            body.append(f"\n  • {e}", style="dim")
+            body.append(f"\n  • {annotate_lookalikes(e)}", style="dim")
         if len(evidence) > 5:
             body.append(f"\n  ... {len(evidence) - 5} more (see the full findings report)", style="dim")
 
