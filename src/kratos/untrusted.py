@@ -51,12 +51,18 @@ def _marker(ch: str) -> str:
     return f"{_MARKER_OPEN}U+{ord(ch):04X}{_MARKER_CLOSE}"
 
 
+_LINE_SEPARATORS = "\u2028\u2029"
+# Not format characters, but they draw as blanks and are used to spoof a name: the Hangul
+# fillers, the Khmer inherent vowels and the combining grapheme joiner.
+_BLANK_LOOKING = frozenset("\u115f\u1160\u3164\uffa0\u17b4\u17b5\u034f")
+
+
 def _is_hidden(ch: str) -> bool:
     """A character that draws nothing (or changes how neighbours are drawn): format
     characters (bidi overrides and isolates, zero-width, joiners, the BOM, soft hyphen,
-    Unicode tag characters) and lone surrogates."""
+    Unicode tag characters), blank-looking fillers, and lone surrogates."""
     cat = unicodedata.category(ch)
-    return cat == "Cf" or cat == "Cs"
+    return cat == "Cf" or cat == "Cs" or ch in _BLANK_LOOKING
 
 
 def _show_hidden(text: str) -> str:
@@ -64,7 +70,7 @@ def _show_hidden(text: str) -> str:
         return text
     out: list[str] = []
     for ch in text:
-        if ch in "  ":
+        if ch in _LINE_SEPARATORS:
             out.append("\n")                        # a line break some terminals/widgets honour
         elif _is_hidden(ch):
             out.append(_marker(ch))

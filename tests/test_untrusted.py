@@ -314,3 +314,13 @@ def test_annotate_lookalikes_also_cleans():
     assert u.annotate_lookalikes("a\x1b[2J‮b") == "a⟨U+202E⟩b"
     once = u.annotate_lookalikes("аdmin")
     assert u.annotate_lookalikes(once) == once                       # idempotent
+
+
+@pytest.mark.parametrize("code", [0x115F, 0x1160, 0x3164, 0xFFA0, 0x17B4, 0x17B5, 0x034F])
+def test_blank_looking_fillers_become_visible_markers(code):
+    # a name made of invisible fillers must not pass for an empty or ordinary one
+    assert u.for_display(f"a{chr(code)}b") == f"a⟨U+{code:04X}⟩b"
+
+
+def test_ordinary_non_ascii_letters_are_not_mistaken_for_fillers():
+    assert u.for_display("한국어 ខ្មែរ") == "한국어 ខ្មែរ"
