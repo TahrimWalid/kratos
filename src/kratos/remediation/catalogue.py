@@ -25,6 +25,7 @@ from typing import Callable
 
 from kratos.remediation.evidence import Evidence
 from kratos.subagent import ceiling as _ceiling
+from kratos.subagent import whitelist as _wl
 
 
 class TemplateError(ValueError):
@@ -41,6 +42,22 @@ _MAX_LINE = 300
 PID_MIN, PID_MAX = 2, 4_194_304
 
 _UNITS = tuple(_ceiling.ENABLE_UNITS)
+
+# The closed slot validators of the fix channel's whitelist, reused here so a unit, a PID, an
+# address or an account name means exactly what it means there (the catalogue adds the
+# evidence checks on top, and stays display-only).
+_UNIT_SLOT = _wl.Slot(kind="enum", values=_UNITS)
+_PID_SLOT = _wl.Slot(kind="int_range", min_value=PID_MIN, max_value=PID_MAX)
+_IP_SLOT = _wl.Slot(kind="ip")
+_USER_SLOT = _wl.Slot(kind="token", pattern=_USER_RE.pattern, max_length=32)
+_MODE_SLOT = _wl.Slot(kind="enum", values=_FILE_MODES)
+
+
+def _slot_ok(name: str, slot: _wl.Slot, value: object, problem: str) -> None:
+    try:
+        _wl.validate_slot_value("catalogue", name, slot, value)
+    except _wl.SlotValueError:
+        raise TemplateError(problem) from None
 
 
 @dataclass(frozen=True)
@@ -67,10 +84,8 @@ class Template:
 def _check_ip(value: object, evidence: Evidence) -> str:
     if not isinstance(value, str):
         raise TemplateError("the IP address must be text")
-    try:
-        addr = ipaddress.ip_address(value.strip())
-    except ValueError:
-        raise TemplateError(f"{value!r} is not an IP address") from None
+    _slot_ok("ip", _IP_SLOT, value.strip(), f"{value!r} is not an IP address")
+    addr = ipaddress.ip_address(value.strip())
     ip = str(addr)
     if addr.is_loopback or addr.is_unspecified or addr.is_multicast or addr.is_reserved or addr.is_link_local:
         raise TemplateError(f"{ip} is not an address worth blocking")
@@ -82,14 +97,12 @@ def _check_ip(value: object, evidence: Evidence) -> str:
 
 
 def _check_unit(value: object, evidence: Evidence) -> str:
-    if not isinstance(value, str) or value not in _UNITS:
-        raise TemplateError(f"{value!r} is not on the list of services Kratos will suggest managing")
-    return value
+    _slot_ok("unit", _UNIT_SLOT, value, f"{value!r} is not on the list of services Kratos will suggest managing")
+    return value  # type: ignore[return-value]
 
 
 def _check_user(value: object, evidence: Evidence) -> str:
-    if not isinstance(value, str) or not _USER_RE.fullmatch(value):
-        raise TemplateError(f"{value!r} is not a valid account name")
+    _slot_ok("user", _USER_SLOT, value, f"{value!r} is not a valid account name")
     if value == "root":
         raise TemplateError("root is not locked or changed by a suggested command")
     if not evidence.in_findings(value):
@@ -102,8 +115,7 @@ def _check_pid(value: object, evidence: Evidence) -> str:
         value = int(value)
     if isinstance(value, bool) or not isinstance(value, int):
         raise TemplateError("the process id must be a number")
-    if not PID_MIN <= value <= PID_MAX:
-        raise TemplateError(f"{value} is not a process id Kratos will suggest killing")
+    _slot_ok("pid", _PID_SLOT, value, f"{value} is not a process id Kratos will suggest killing")
     if value not in evidence.pids:
         raise TemplateError(f"process {value} was not listed by any tool in this investigation")
     return str(value)
@@ -140,10 +152,11 @@ def _check_line(value: object, evidence: Evidence) -> str:
 
 
 def _enum(values: tuple[str, ...]) -> Callable[[object, Evidence], str]:
+    slot = _MODE_SLOT if values == _FILE_MODES else _wl.Slot(kind="enum", values=values)
+
     def check(value: object, evidence: Evidence) -> str:
-        if not isinstance(value, str) or value not in values:
-            raise TemplateError(f"{value!r} is not one of: {', '.join(values)}")
-        return value
+        _slot_ok("value", slot, value, f"{value!r} is not one of: {', '.join(values)}")
+        return value  # type: ignore[return-value]
 
     return check
 
