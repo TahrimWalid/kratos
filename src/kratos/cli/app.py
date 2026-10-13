@@ -1844,6 +1844,17 @@ def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> Non
 _SELF_SCOPED_COMMANDS = frozenset({"scheduled-run", "mcp-serve", "subagent-serve", "llm-serve"})
 
 
+def _unknown_command(word: str, commands: list[str]) -> int:
+    import difflib
+
+    close = difflib.get_close_matches(word, commands, n=1, cutoff=0.75)
+    hint = f" Did you mean `kratos {close[0]}`?" if close else ""
+    print(f"kratos: '{word}' isn't a command or option.{hint}\n"
+          "`kratos --help` lists the commands; `kratos` on its own opens the app, where commands like "
+          "/doctor and /findings are typed.", file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     no_color = "--no-color" in argv or bool(os.environ.get("NO_COLOR"))
@@ -1888,7 +1899,11 @@ def main(argv: list[str] | None = None) -> int:
         global_only_parser.add_argument(
             "--continue", "-c", dest="continue_most_recent", action="store_true"
         )
-        global_args, _unused = global_only_parser.parse_known_args(argv)
+        global_args, unknown = global_only_parser.parse_known_args(argv)
+        if unknown:
+            # A word or flag Kratos doesn't know used to be dropped here, opening the
+            # app as if nothing was wrong (`kratos doctor`, a typo'd `kratos investgate`).
+            return _unknown_command(unknown[0], sorted(subcommand_names))
         # Bare `kratos` launches the full-screen TUI -- the primary interface.
         # The classic prompt_toolkit REPL (cli/repl.py) is retired as the default
         # face (kept in the tree, just no longer the bare-command entry); every
