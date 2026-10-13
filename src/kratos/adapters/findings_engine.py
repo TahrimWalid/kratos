@@ -641,6 +641,7 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "LOG-003": "The machine went down without a clean shutdown at least once (crash, power cut or forced restart).",
     "LOG-004": "The login records (wtmp/btmp) look edited: records were zeroed, reordered or removed.",
     "LOG-005": "The audit system (auditd) was stopped, disabled or emptied of its rules.",
+    "LOG-006": "The audit system (auditd) is installed on this machine but not running.",
     "SEAL-001": "A sealed journal file failed verification or changed after it was verified — its logs were altered.",
     "SEAL-002": "Journal sealing stopped: newer log files on this machine are no longer sealed.",
     "SEAL-003": "Kratos couldn't verify this machine's sealed journal this time — see why.",
@@ -1545,12 +1546,25 @@ def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
     def cov(cid: str) -> str:
         return f"What was checked: {(checks.get(cid) or {}).get('coverage') or 'not recorded'}"
 
+    # A person's decision on a tamper finding covers the incidents they saw, not the
+    # next one (lifecycle: a new entity reopens a decided finding). Checks that
+    # report an incident ONCE, at the check that noticed it (file state, auditd),
+    # name it by what changed plus that check's time; checks that keep reporting
+    # the same evidence every run (zeroed wtmp records, a changed archive) name it
+    # by something stable to it (record number, the file's fingerprint).
+    detected = f"detected {_when(data['checked_at'])}" if data.get("checked_at") else ""
+
+    def incident(what: Any) -> str | None:
+        if what is None or str(what).strip() == "":
+            return None
+        return f"{str(what).strip()} ({detected})" if detected else str(what).strip()
+
     file_items = items("file_state")
     logs = [i for i in file_items if not i.get("login_record")]
     if logs:
         out.append(Finding(
             id="LOG-001", title="Log file cut short, replaced or edited outside log rotation", severity="high",
-            entities=normalise_entities("path", [i.get("path") for i in logs]), attack=labels("LOG-001"),
+            entities=normalise_entities("path", [incident(i.get("path")) for i in logs]), attack=labels("LOG-001"),
             evidence=[when, *[f"{i.get('path')}: {i.get('detail')}" for i in logs[:10]], cov("file_state")],
             recommendation=[
                 "Treat the affected log as unreliable for the time before the change, and find out who could write it "
@@ -1592,8 +1606,10 @@ def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
         lines += [f"{i.get('path')}: {i.get('detail')}" for i in shrunk[:5]]
         out.append(Finding(
             id="LOG-004", title="Login records (wtmp/btmp) look edited", severity=sev,
-            entities=normalise_entities("path", [f"/var/log/{i.get('file')}" for i in login_items]
-                                        + [i.get("path") for i in shrunk]),
+            entities=normalise_entities("path", [f"/var/log/{i.get('file')} record {i.get('record')} "
+                                                 f"({'zeroed' if i.get('kind') == 'zeroed' else 'out of order'})"
+                                                 for i in login_items]
+                                        + [incident(i.get("path")) for i in shrunk]),
             attack=labels("LOG-004"),
             evidence=[when, *lines, *(checks.get("login_records") or {}).get("evidence", [])[:3], cov("login_records")],
             recommendation=[
@@ -1602,19 +1618,26 @@ def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
             ],
         ))
     audit_items = items("auditd")
-    if audit_items:
-        sev = "high" if any(i.get("severity") == "high" for i in audit_items) else "info"
+    changes = [i for i in audit_items if i.get("severity") == "high"]
+    if changes:
         out.append(Finding(
-            id="LOG-005", title=("auditd was stopped, disabled or emptied of its rules" if sev == "high"
-                                 else "auditd is installed but not running"),
-            severity=sev, attack=labels("LOG-005") if sev == "high" else [],
-            entities=normalise_entities("text", [i.get("kind") for i in audit_items]),
+            id="LOG-005", title="auditd was stopped, disabled or emptied of its rules", severity="high",
+            attack=labels("LOG-005"),
+            entities=normalise_entities("text", [incident(i.get("kind")) for i in changes]),
             evidence=[when, *(checks.get("auditd") or {}).get("evidence", [])[:8], cov("auditd")],
             recommendation=[
                 "Restart auditd and reload its rules (sudo systemctl start auditd; sudo augenrules --load), then "
                 "find out who stopped it: its own log (read_host_logs source auditd) records DAEMON_END and "
                 "CONFIG_CHANGE with the user.",
-            ] if sev == "high" else ["Start and enable auditd if you rely on it for a record of what runs on this machine."],
+            ],
+        ))
+    elif any(i.get("kind") == "not_running" for i in audit_items):
+        # A state, not an incident: closes on its own once auditd runs again.
+        out.append(Finding(
+            id="LOG-006", title="auditd is installed but not running", severity="info",
+            evidence=[when, *(checks.get("auditd") or {}).get("evidence", [])[:3], cov("auditd")],
+            recommendation=["Start and enable auditd if you rely on it for a record of what runs on this machine "
+                            "(sudo systemctl enable --now auditd)."],
         ))
     out.extend(_seal_findings(data.get("seal"), when))
     return out
@@ -1632,7 +1655,9 @@ def _seal_findings(seal: dict[str, Any] | None, when: str) -> list[Finding]:
         out.append(Finding(
             id="SEAL-001", title="Sealed journal failed verification or changed after it was verified",
             severity="high", attack=labels("SEAL-001"),
-            entities=normalise_entities("text", [f.get("name") for f in failed + changed]),
+            entities=normalise_entities("text", [
+                f"{f.get('name')} (sha256 {str(f['sha256'])[:12]})" if f.get("sha256") else f.get("name")
+                for f in failed + changed]),
             evidence=[when, *[f"{f.get('name')}: {f.get('detail')}" for f in failed[:5]],
                       *[f"{f.get('name')}: verified earlier with a different hash -- the archived file was altered"
                         for f in changed[:5]]],

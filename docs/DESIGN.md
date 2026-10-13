@@ -669,7 +669,8 @@ host and read-only on a real server before shipping:
   between real ones, or time running backwards (clock-change records excepted),
   is `LOG-004`. Not a whole number of 384-byte records = unknown format, not judged.
 - *auditd*: running with rules last time and now stopped, emptied or disabled in
-  the kernel (`LOG-005`); not installed is a coverage note, not a finding.
+  the kernel (`LOG-005`); installed but not running is `LOG-006` (info, an ordinary
+  condition that closes when auditd runs); not installed is a coverage note.
 
 Each tamper rule carries an ATT&CK label pinned to **v19.0**, where log clearing
 and audit tampering moved to the new *Defense Impairment* tactic:
@@ -678,7 +679,11 @@ Disable or Modify Linux Audit System Log (LOG-005), T1685 Disable or Modify Tool
 (SEAL-002) -- checked against the official v19 STIX data. Evidence of tampering is
 **sticky** in the lifecycle: a later run not seeing it doesn't close it, because the
 next comparison is against the already-edited state; it stays open until a person
-decides.
+decides. A decision covers the incidents the person saw: each tamper finding's
+entities name the incident -- what changed plus the time of the check that noticed it
+for one-shot detections (file state, auditd), the record number for zeroed or
+reordered login records, the file's current sha256 for a changed or failing archive
+-- so the next incident is a new entity and reopens a decided finding.
 
 **Journal sealing (FSS).** The machine seals its journal (`journalctl --setup-keys`,
 run by a person from the setup checklist); Kratos keeps the verification key in

@@ -565,6 +565,13 @@ judged from the second check on. What it finds becomes findings `LOG-001` to
 until you decide on it** — a later check that sees nothing new doesn't close it,
 because the logs it now compares against are the edited ones.
 
+Deciding on a tampering finding covers the incidents you saw, not the next one: if
+you mark "auth.log was cut short" as expected maintenance and it's cut short again
+later, the finding comes back with the new incident. (If something on the machine
+legitimately truncates a log, let logrotate do it — Kratos recognizes rotation.)
+An installed but stopped auditd is shown separately (`LOG-006`, info) and goes away
+once auditd runs again.
+
 ## Sealing a machine's logs
 
 Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal

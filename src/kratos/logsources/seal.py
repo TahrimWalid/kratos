@@ -352,8 +352,9 @@ def verify(data_dir: Path, target: str, *, reader: SealReader | None = None, now
                     summary["skipped_unchanged"] += 1
                     continue
                 if known and known.get("sha256") != h["sha256"]:
-                    entry = {"name": name, "detail": f"verified on {epoch_to_utc_iso(known['verified_at'])} with "
-                                                     f"sha256 {known['sha256'][:12]}..., now {h['sha256'][:12]}..."}
+                    entry = {"name": name, "sha256": h["sha256"],
+                             "detail": f"verified on {epoch_to_utc_iso(known['verified_at'])} with "
+                                       f"sha256 {known['sha256'][:12]}..., now {h['sha256'][:12]}..."}
                     summary["changed_archives"].append(entry)
                     state_store.add_verification(data_dir, target, file_name=name, sha256=h["sha256"], size=h.get("size"),
                                                  archived=True, sealed=True, result="fail",
@@ -376,7 +377,10 @@ def verify(data_dir: Path, target: str, *, reader: SealReader | None = None, now
                 # A tag failure is an edit. Any failure of a cleanly archived file is too
                 # (archives never change). A file set aside after an unclean stop
                 # (".journal~") can fail on its incomplete tail -- only a tag failure counts.
-                summary["failed"].append({"name": name, "detail": res["detail"]})
+                failed_entry = {"name": name, "detail": res["detail"]}
+                if is_archive:
+                    failed_entry["sha256"] = h["sha256"]   # stable while the archive stays as it is
+                summary["failed"].append(failed_entry)
             elif res["result"] == "before_seal":
                 summary["notes"].append(f"{name}: {res['detail']}")
             elif res["result"] == "fail" and f.get("dirty"):

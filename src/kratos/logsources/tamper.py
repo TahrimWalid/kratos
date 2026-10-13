@@ -291,7 +291,7 @@ def check_auditd(now_status: dict[str, Any] | None, previous: dict[str, Any] | N
     if previous and previous.get("kernel_enabled") == 1 and kernel == 0:
         items.append({"kind": "disabled", "severity": "high",
                       "detail": f"kernel auditing was enabled at {since} and is now disabled (audit_enabled=0)"})
-    if not previous and not active:
+    if not active and not prev_running:
         items.append({"kind": "not_running", "severity": "info",
                       "detail": f"auditd is installed but not running ({now_status.get('active') or 'unknown'})"})
     evidence = [i["detail"] for i in items]

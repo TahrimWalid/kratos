@@ -24,7 +24,7 @@ from kratos.logsources import attack
 from kratos.run_context import run_scope
 
 ATTACK_REF = json.loads((Path(__file__).parent / "fixtures" / "attack_v19_subset.json").read_text())
-NEW_RULES = ("LOG-001", "LOG-002", "LOG-003", "LOG-004", "LOG-005", "SEAL-001", "SEAL-002", "SEAL-003")
+NEW_RULES = ("LOG-001", "LOG-002", "LOG-003", "LOG-004", "LOG-005", "LOG-006", "SEAL-001", "SEAL-002", "SEAL-003")
 TARGET = "10.136.28.168"
 
 
@@ -76,12 +76,15 @@ DOC: dict[str, Any] = {
 
 def test_findings_from_an_integrity_result():
     out = {f.id: f for f in FE._log_integrity_findings(DOC)}
-    assert set(out) == set(NEW_RULES)
+    assert set(out) == set(NEW_RULES) - {"LOG-006"}   # auditd stopped (high), so not the "not running" note
     assert {k: v.severity for k, v in out.items()} == {
         "LOG-001": "high", "LOG-002": "high", "LOG-003": "low", "LOG-004": "high", "LOG-005": "high",
         "SEAL-001": "high", "SEAL-002": "medium", "SEAL-003": "info"}
-    assert out["LOG-001"].entities == ["/var/log/auth.log"]
-    assert out["LOG-004"].entities == ["/var/log/wtmp"]
+    # entities name the incident, not just the file (a decision covers what was seen)
+    assert out["LOG-001"].entities == ["/var/log/auth.log (detected 2026-10-11 18:00:00 UTC)"]
+    assert out["LOG-004"].entities == ["/var/log/wtmp (detected 2026-10-11 18:00:00 UTC)",
+                                       "/var/log/wtmp record 7 (zeroed)"]
+    assert out["LOG-005"].entities == ["stopped (detected 2026-10-11 18:00:00 UTC)"]
     assert out["LOG-003"].entities == ["2f5bd599ff5a4180a24db87a8b4f22a0"] and out["LOG-003"].attack == []
     assert out["LOG-001"].attack[0]["technique_id"] == "T1685.006"
     assert out["LOG-005"].attack[0]["technique_id"] == "T1685.004"
@@ -232,3 +235,93 @@ def test_a_call_by_name_runs_even_when_not_listed(tmp_path, monkeypatch):
                                                                           stderr="ssh: unreachable"))
     res = execute_tool_call("read_host_logs", {"source": "cron"}, tmp_path)
     assert "were NOT read" in json.dumps(res)            # it ran (and reported the gap), it wasn't refused
+
+
+# --- a person's decision covers the incident they saw, not the next one (audit) ---
+def _lifecycle(tmp_path, doc: dict[str, Any], t: float):
+    """Apply one integrity result's tamper findings to the lifecycle as one run."""
+    from dataclasses import asdict
+
+    findings = [asdict(f) for f in FE._log_integrity_findings(doc)]
+    cov = Coverage(inputs={"log_integrity": None})
+    with run_scope("cli", target=TARGET) as run:
+        return lc_apply.apply_run(findings, target=TARGET, coverage=cov, run=run, data_dir=tmp_path, now=t)
+
+
+def _only(check: str, items: list[dict[str, Any]], checked_at: str, seal: dict[str, Any] | None = None) -> dict[str, Any]:
+    doc: dict[str, Any] = {"target": TARGET, "checked_at": checked_at,
+                           "checks": {check: {"status": "suspicious", "coverage": "c", "evidence": [], "items": items}}}
+    if seal is not None:
+        doc = {"target": TARGET, "checked_at": checked_at, "checks": {}, "seal": seal}
+    return doc
+
+
+def _decide_fp(tmp_path, rule: str, t: float) -> None:
+    from kratos.lifecycle import decide as D
+    from kratos.lifecycle.keys import finding_key
+
+    D.mark_false_positive(finding_key(rule, TARGET, ""), actor=D.Actor(user="alice", interface="cli"),
+                          reason="that was me", data_dir=tmp_path, now=t)
+
+
+def _state(out: list[dict[str, Any]], rule: str) -> str:
+    return next(f["state"] for f in out if f["id"] == rule)
+
+
+def test_a_second_truncation_of_the_same_log_reopens_a_decided_finding(tmp_path):
+    item = {"path": "/var/log/auth.log", "kind": "truncated", "detail": "shrank", "login_record": False}
+    _lifecycle(tmp_path, _only("file_state", [item], "2026-10-11T18:00:00+00:00"), 1_000_000.0)
+    _decide_fp(tmp_path, "LOG-001", 1_000_010.0)
+    out, summary = _lifecycle(tmp_path, _only("file_state", [item], "2026-10-12T09:00:00+00:00"), 1_000_100.0)
+    assert _state(out, "LOG-001") == "open" and summary["new"]
+    out, _ = _lifecycle(tmp_path, _only("file_state", [item], "2026-10-12T09:00:00+00:00"), 1_000_200.0)
+    assert _state(out, "LOG-001") == "open"          # the same result read again is the same incident
+
+
+def test_zeroed_wtmp_record_reported_every_run_stays_covered_a_new_one_reopens(tmp_path):
+    rec7 = {"file": "wtmp", "kind": "zeroed", "record": 7}
+    _lifecycle(tmp_path, _only("login_records", [rec7], "2026-10-11T18:00:00+00:00"), 1_000_000.0)
+    _decide_fp(tmp_path, "LOG-004", 1_000_010.0)
+    out, _ = _lifecycle(tmp_path, _only("login_records", [rec7], "2026-10-12T09:00:00+00:00"), 1_000_100.0)
+    assert _state(out, "LOG-004") == "false_positive"
+    rec9 = {"file": "wtmp", "kind": "zeroed", "record": 9}
+    out, _ = _lifecycle(tmp_path, _only("login_records", [rec7, rec9], "2026-10-12T10:00:00+00:00"), 1_000_200.0)
+    assert _state(out, "LOG-004") == "open"
+
+
+def test_auditd_stopped_again_reopens_and_not_running_is_its_own_closing_rule(tmp_path):
+    from kratos.logsources import tamper
+
+    stopped = {"kind": "stopped", "severity": "high", "detail": "auditd was running ... now inactive"}
+    _lifecycle(tmp_path, _only("auditd", [stopped], "2026-10-11T18:00:00+00:00"), 1_000_000.0)
+    _decide_fp(tmp_path, "LOG-005", 1_000_010.0)
+    out, _ = _lifecycle(tmp_path, _only("auditd", [stopped], "2026-10-12T09:00:00+00:00"), 1_000_100.0)
+    assert _state(out, "LOG-005") == "open"
+
+    # installed but not running -> LOG-006 (info) every run, and it closes once auditd runs
+    status = {"installed": True, "active": "inactive", "enabled": "disabled", "rules_read": True, "rules": 0}
+    first, state = tamper.check_auditd(status, None)
+    second, _ = tamper.check_auditd(status, state)
+    for res in (first, second):
+        doc = {"target": TARGET, "checked_at": "2026-10-12T10:00:00+00:00", "checks": {"auditd": res}}
+        assert [f.id for f in FE._log_integrity_findings(doc)] == ["LOG-006"]
+    out, _ = _lifecycle(tmp_path, {"target": TARGET, "checked_at": "2026-10-12T10:00:00+00:00",
+                                   "checks": {"auditd": second}}, 1_000_300.0)
+    assert _state(out, "LOG-006") == "open"
+    running, _ = tamper.check_auditd({**status, "active": "active", "rules": 3}, state)
+    _, summary = _lifecycle(tmp_path, {"target": TARGET, "checked_at": "2026-10-12T11:00:00+00:00",
+                                       "checks": {"auditd": running}}, 1_000_400.0)
+    assert len(summary["fixed"]) == 1
+
+
+def test_a_changed_archive_is_one_incident_until_it_changes_again(tmp_path):
+    def seal(sha: str) -> dict[str, Any]:
+        return {"failed": [], "unsealed_after_setup": [], "unverifiable": None,
+                "changed_archives": [{"name": "system@a.journal", "sha256": sha, "detail": "changed"}]}
+
+    _lifecycle(tmp_path, _only("", [], "2026-10-11T18:00:00+00:00", seal("f3348bef" + "0" * 56)), 1_000_000.0)
+    _decide_fp(tmp_path, "SEAL-001", 1_000_010.0)
+    out, _ = _lifecycle(tmp_path, _only("", [], "2026-10-12T09:00:00+00:00", seal("f3348bef" + "0" * 56)), 1_000_100.0)
+    assert _state(out, "SEAL-001") == "false_positive"
+    out, _ = _lifecycle(tmp_path, _only("", [], "2026-10-12T10:00:00+00:00", seal("9a1b2c3d" + "0" * 56)), 1_000_200.0)
+    assert _state(out, "SEAL-001") == "open"

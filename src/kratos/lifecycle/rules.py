@@ -78,6 +78,7 @@ RULES: dict[str, RuleInfo] = dict([
     _r("LOG-005", "condition", sticky=True),
     _r("SEAL-001", "condition", sticky=True),
     _r("SEAL-002", "condition"),
+    _r("LOG-006", "condition"),        # auditd installed but not running: a state, closes when it runs
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
