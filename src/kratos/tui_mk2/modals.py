@@ -950,17 +950,23 @@ class CommandModal(ModalScreen[None]):
     CommandModal Button { margin: 1 1 0 0; }
     """
 
-    def __init__(self, command: str, title: str = "Run this", note: str = "") -> None:
+    def __init__(self, command: str, title: str = "Run this", note: str = "",
+                 warnings: list[str] | None = None) -> None:
         super().__init__()
         self._command = command
         self._title = title
         self._note = note
+        # Risk flags for a command the model wrote (kratos.remediation.flags): shown with the
+        # command, and copying then asks a second time.
+        self._warnings = [w for w in (warnings or []) if w]
 
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._note:
                 yield Static(Text(self._note, style=T.TEXT_DIM))
+            if self._warnings:
+                yield Static(Text("\n".join(f"! {w}" for w in self._warnings), style=T.ATTENTION), id="cmd-warnings")
             # Wrap so the whole command is visible even when it's wider than the
             # box; the copy is always the exact byte-correct string regardless.
             yield Static(
@@ -984,6 +990,20 @@ class CommandModal(ModalScreen[None]):
         self.action_close()
 
     def action_copy(self) -> None:
+        if self._warnings:
+            # A flagged command needs a second yes before it reaches the clipboard.
+            body = Text("\n".join(f"! {w}" for w in self._warnings) + "\n\nCopy this command anyway?", style=T.ATTENTION)
+
+            def _after(answer: bool | None) -> None:
+                if answer:
+                    self._copy_now()
+
+            self.app.push_screen(ConfirmModal("Copy a command with warnings?", body, yes_label="copy",
+                                              no_label="don't copy"), _after)
+            return
+        self._copy_now()
+
+    def _copy_now(self) -> None:
         self.app.copy_to_clipboard(self._command)
         self.app.notify("Copied to clipboard.", timeout=3)
 
@@ -1148,7 +1168,7 @@ class MultiSelectModal(ModalScreen[list[Any] | None]):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._subtitle:
                 yield Static(Text(self._subtitle, style=T.TEXT_DIM), classes="picker-subtitle")
-            yield CheckboxSelectionList(*[(label, i, value in self._selected)
+            yield CheckboxSelectionList(*[(Text(str(label)), i, value in self._selected)
                                   for i, (value, label) in enumerate(self._entries)], id="multi")
             yield Static(Text("↑↓ move · space tick/untick · Enter done · esc cancel", style=T.TEXT_DIM),
                          id="multi-hint")

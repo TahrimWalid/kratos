@@ -247,6 +247,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._last_day: str | None = None  # for the date divider (WhatsApp-style)
         self._last_answer = ""             # most recent Kratos answer/reply, for ctrl+y copy
         self._last_commands: list[str] = []  # recommended commands from the last turn, for ctrl+y
+        self._flagged_commands: dict[str, list[dict]] = {}  # command -> risk flags (model-written ones only)
         # Findings already shown in full on screen (id -> fingerprint) and when the
         # current turn started: background findings are folded (finding_view).
         self._shown_findings: dict[str, str] = {}
@@ -347,8 +348,33 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # transient confirmation. If the last turn produced recommended
         # commands, those are copied instead (joined one per line).
         if self._last_commands:
-            self.app.copy_to_clipboard("\n".join(self._last_commands))
-            self.notify(f"Copied {len(self._last_commands)} command(s) to the clipboard.", timeout=3)
+            flagged = [(c, self._flagged_commands[c]) for c in self._last_commands if c in self._flagged_commands]
+            commands = list(self._last_commands)
+
+            def _copy() -> None:
+                self.app.copy_to_clipboard("\n".join(commands))
+                self.notify(f"Copied {len(commands)} command(s) to the clipboard.", timeout=3)
+
+            if not flagged:
+                _copy()
+                return
+            # A command the model wrote that carries a risk flag needs a second yes before it is copied.
+            body = Text()
+            body.append("The model wrote these commands, and they have warnings:\n\n", style=T.TEXT)
+            for c, fl in flagged:
+                body.append(c + "\n", style=T.TEXT_BRIGHT)
+                for f in fl:
+                    body.append(f"  ! {f.get('reason', f.get('id', ''))}\n", style=T.ATTENTION)
+            body.append("\nYou will paste them into a shell yourself. Copy anyway?", style=T.TEXT)
+
+            def _after(answer: bool | None) -> None:
+                if answer:
+                    _copy()
+                else:
+                    self.notify("Not copied.", timeout=3)
+
+            self.app.push_screen(ConfirmModal("Copy commands with warnings?", body, yes_label="copy", no_label="don't copy"),
+                                 _after)
             return
         if not self._last_answer.strip():
             self.notify("Nothing to copy yet — run a goal first.", timeout=3)
@@ -4747,6 +4773,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # agent produced as its own panel, and remember them for ctrl+y copy.
         commands = result.get("recommended_commands") or []
         self._last_commands = [str(c.get("command") or "") for c in commands if c.get("command")]
+        self._flagged_commands = {str(c["command"]): list(c.get("flags") or []) for c in commands
+                                  if c.get("command") and c.get("flags")}
         if target_override:
             target_label = f"this Kratos host ({target_override})"
         else:

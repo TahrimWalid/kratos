@@ -414,7 +414,7 @@ def render_evolve_harness_template(
     console.print(
         Panel(
             Syntax(for_display(template_text), "python", word_wrap=True, background_color="default"),
-            title=title,
+            title=Text(title),
             border_style=ATTENTION,
         )
     )
@@ -591,7 +591,7 @@ def render_approval_situation(console: Console, title: str, details: dict[str, A
         renderables.append(Text(""))
 
     console.print()
-    console.print(Panel(Group(*renderables), title=f"Approval needed: {title}", border_style=ATTENTION))
+    console.print(Panel(Group(*renderables), title=Text(f"Approval needed: {title}"), border_style=ATTENTION))
 
 
 def approval_prompt_text() -> str:

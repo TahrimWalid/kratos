@@ -589,23 +589,46 @@ def recommended_fix_panel(title: str, command: str, footnote: str) -> Panel:
     return Panel(body, title=f"✓ {title}", title_align="left", border_style=T.SAFE)
 
 
+def command_flag_lines(flags: list[dict[str, Any]] | None) -> list[Text]:
+    """One amber line per risk flag found in a command the model wrote (kratos.remediation.flags)."""
+    return [Text(f"  ! {f.get('reason', f.get('id', ''))}", style=T.ATTENTION) for f in flags or []]
+
+
 def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
     """Design 19b -- a recommend-only remediation command the agent produced
     (structured `recommended_commands` from run_agent, feature 19b backend).
-    Green, calm, and explicit that Kratos does NOT run it: it's for the human
-    to run in their own session (matching the observe-and-recommend default; a
-    kept tool / a whitelisted opt-in path is a separate, gated capability).
-    Copyable via ctrl+y."""
+    Calm and explicit that Kratos does NOT run it: it's for the human to run in
+    their own session (matching the observe-and-recommend default; a kept tool /
+    a whitelisted opt-in path is a separate, gated capability). Copyable via ctrl+y.
+
+    A.4: says WHO wrote the command. A catalogue template is "built by Kratos from the
+    evidence" (green); a command the model wrote is "written by the model -- check before
+    running" (amber), with a line for each risk flag; a template the checks refused has
+    only the explanation (no command to copy)."""
     run_on = str(cmd.get("run_on") or "target")
     where = target_label if run_on == "target" else "Kratos's own host"
+    source = str(cmd.get("source") or "model")
+    flags = cmd.get("flags") or []
     parts: list[Any] = []
     explanation = str(cmd.get("explanation") or "").strip()
     if explanation:
         parts.append(Text(explanation, style=T.TEXT))
         parts.append(Text(""))
+    if source == "withheld" or not str(cmd.get("command") or "").strip():
+        parts.append(Text("No command was built.", style=T.ATTENTION))
+        return Panel(Group(*parts), title="! suggestion without a command", title_align="left",
+                     border_style=T.ATTENTION)
     parts.append(Syntax(str(cmd.get("command") or ""), "bash", word_wrap=False, background_color="default"))
+    if source == "template":
+        parts.append(Text("Built by Kratos from the evidence.", style=T.SAFE))
+        title, border = "✓ recommended fix — built by Kratos", T.SAFE
+    else:
+        parts.append(Text("Written by the model — check before running.", style=T.ATTENTION))
+        parts.extend(command_flag_lines(flags))
+        title = "! recommended fix — written by the model" if flags else "recommended fix — written by the model"
+        border = T.ATTENTION if flags else T.SAFE
     parts.append(Text(f"Run this yourself on {where} — Kratos does not execute it.", style=T.TEXT_FAINT))
-    return Panel(Group(*parts), title="✓ recommended fix", title_align="left", border_style=T.SAFE)
+    return Panel(Group(*parts), title=title, title_align="left", border_style=border)
 
 
 def plan_preview_panel(preview: Any) -> Panel:

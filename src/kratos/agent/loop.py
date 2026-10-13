@@ -536,6 +536,12 @@ _DIGEST_SENTENCE = (
 )
 
 
+def _remediation_templates() -> str:
+    from kratos.remediation.catalogue import prompt_lines
+
+    return prompt_lines()
+
+
 def build_system_prompt(goal: str | None = None, *, with_digest: bool = False) -> str:
     """`goal`: the investigation goal (kept for callers; the tool list no longer depends on it). `with_digest`: Kratos collected the basics first
     (kratos.collect), so the prompt says where to find them."""
@@ -586,6 +592,9 @@ To finish, once you have enough evidence to answer the goal:
 When your final_answer recommends concrete remediation, you MAY additionally attach a structured list of the exact commands for a HUMAN to run -- Kratos NEVER runs them itself, this only structures your recommendation so it can be shown clearly:
 {{"reasoning": "...", "final_answer": "...", "recommended_commands": [{{"command": "<exact shell command>", "explanation": "<what it does and why>", "run_on": "target"}}]}}
 Set "run_on" to "target" for a command the human runs on the monitored device, or "kratos_host" for one on Kratos's own host. Omit recommended_commands entirely unless the investigation genuinely warrants specific remediation -- it is never a claim that anything was executed.
+PREFER a template when one fits: Kratos checks your values against the Observations and builds the exact command itself, and shows it as built by Kratos. Use {{"template": "<id>", "values": {{...}}, "explanation": "...", "run_on": "target"}} in place of "command". Values must be copied from Observations you received (an IP that attacked, an account named in a finding, a PID a tool listed); a value that was never observed is refused. Templates:
+{_remediation_templates()}
+Write a plain "command" only when no template fits; those are shown as written by you, with warnings, so keep them simple and never fetch or decode anything.
 
 To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
 {{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
@@ -881,28 +890,19 @@ _MAX_EXPLANATION_LEN = 500
 _VALID_RUN_ON = {"target", "kratos_host"}
 
 
-def _sanitize_recommended_commands(raw: Any) -> list[dict[str, str]]:
+def _sanitize_recommended_commands(raw: Any, evidence: Any = None) -> list[dict[str, Any]]:
     """Normalize the optional recommended_commands into a clean, bounded list
-    of {command, explanation, run_on} dicts. Drops any malformed entry rather
-    than raising; returns [] for a missing/non-list value. `run_on` is
-    normalized to 'target' (default) or 'kratos_host'."""
-    if not isinstance(raw, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        command = str(item.get("command") or "").strip()
-        if not command:
-            continue
-        explanation = str(item.get("explanation") or "").strip()[:_MAX_EXPLANATION_LEN]
-        run_on = str(item.get("run_on") or "target").strip().lower()
-        if run_on not in _VALID_RUN_ON:
-            run_on = "target"
-        out.append({"command": command[:_MAX_COMMAND_LEN], "explanation": explanation, "run_on": run_on})
-        if len(out) >= _MAX_RECOMMENDED_COMMANDS:
-            break
-    return out
+    of {command, explanation, run_on, source, flags} dicts. Drops any malformed
+    entry rather than raising; returns [] for a missing/non-list value. `run_on`
+    is normalized to 'target' (default) or 'kratos_host'.
+
+    An entry that names a catalogue template is built by code from values checked
+    against `evidence` (kratos.remediation.catalogue); a command the model wrote
+    carries the risk flags found in it (kratos.remediation.flags). A9: the text a
+    person copies and runs as root is the place an injected instruction would do harm."""
+    from kratos.remediation.build import build_recommendations
+
+    return build_recommendations(raw, evidence)
 
 
 _GAP_ACKNOWLEDGED_RE = re.compile(
@@ -1279,6 +1279,20 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).warning("collection before the investigation failed", exc_info=True)
         return None
+
+
+def _remediation_evidence(transcript: list[dict[str, Any]], findings: list[dict[str, Any]] | None, goal: str) -> Any:
+    """What this run saw, for checking a suggested command against (kratos.remediation)."""
+    from kratos.remediation.evidence import Evidence
+
+    try:
+        return Evidence.from_run(transcript=transcript, findings=findings, goal=goal,
+                                 targets=[t for t in [get_active_target()] if t])
+    except Exception:  # noqa: BLE001 -- evidence is a safety aid; never fail an investigation over it
+        import logging
+
+        logging.getLogger(__name__).warning("could not build the evidence for suggested commands", exc_info=True)
+        return Evidence.empty()
 
 
 def _collection_digest(report: Any) -> str:
@@ -1690,7 +1704,9 @@ def _run_agent_loop(
             # sanitized here, carried through unchanged whether or not the
             # guards below NOTE-tag the prose answer. Recommendations only;
             # never executed.
-            recommended_commands = _sanitize_recommended_commands(parsed.get("recommended_commands"))
+            recommended_commands = _sanitize_recommended_commands(
+                parsed.get("recommended_commands"),
+                _remediation_evidence(transcript, last_correlate_findings, goal))
 
             # Each guard's violated/can-reject condition is computed up front
             # (against the model's raw answer) before any rejection or

@@ -196,7 +196,9 @@ def envelope(result: Any, *, run_id: str, call_id: str, max_chars: int | None = 
 
     if not run_id or not call_id:
         raise ValueError("an envelope needs a run id and a call id")
-    body = json.dumps(for_model(result, field_cap=field_cap), default=str)
+    # ensure_ascii=False: the strings are already clean, and a marker such as ⟨U+202E⟩ stays 8
+    # characters instead of growing to 48 as \\u escapes (which would eat the size budget)
+    body = json.dumps(for_model(result, field_cap=field_cap), default=str, ensure_ascii=False)
     if max_chars is not None and len(body) > max_chars:
         body = body[:max_chars] + f"...[truncated, {len(body) - max_chars} more chars]"
     return f"{ENVELOPE_RULE}\n<<tool_result run={run_id} id={call_id}>>\n{body}\n<<end id={call_id}>>"
