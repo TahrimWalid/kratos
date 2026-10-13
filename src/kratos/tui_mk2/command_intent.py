@@ -247,7 +247,13 @@ def route_message(message: str, resume_context: str = "") -> RouteResult:
     run on user input."""
     full = message
     if resume_context:
-        full = f"[Recent session context:]\n{resume_context}\n\n[User's new message:] {message}"
+        # Earlier answers can quote text from a machine; framed as data, the router cannot take
+        # an instruction in it for a request from the user (kratos.untrusted, A.4).
+        from kratos import untrusted
+
+        framed = untrusted.frame_text(resume_context, kind="session_context", run_id=untrusted.new_run_tag(),
+                                      call_id=untrusted.new_call_id(0))
+        full = f"[Recent session context:]\n{framed}\n\n[User's new message:] {message}"
     captured = io.StringIO()
     with contextlib.redirect_stderr(captured):
         response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
