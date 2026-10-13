@@ -238,7 +238,7 @@ def test_build_bounds_and_normalises():
 def test_the_system_prompt_lists_every_template():
     prompt = agent_loop.build_system_prompt("g")
     for tid in catalogue.template_ids():
-        assert f"- {catalogue.TEMPLATES[tid].signature()}" in prompt
+        assert f'- "{tid}" -- ' in prompt and catalogue.TEMPLATES[tid].prompt_line() in prompt
 
 
 # --- through the real loop ---------------------------------------------------------------------------------------------------
@@ -310,3 +310,12 @@ def test_evidence_from_a_run_collects_pids_hosts_and_findings():
     assert ev.knows_host("web-01.example.org") and ev.knows_host("10.136.28.168") and ev.knows_host("127.0.0.1")
     assert "10.136.28.168" in ev.protected
     assert not ev.contains("198.51.100.99")                 # tool ARGUMENTS the model chose are not evidence
+
+
+def test_a_template_id_copied_with_its_argument_list_still_works():
+    ev = _evidence()
+    for tid in ("service.enable_now(unit)", " service.enable_now ", "service.enable_now(unit, extra)"):
+        assert render_template(tid, {"unit": "fail2ban"}, ev) == "sudo systemctl enable --now fail2ban"
+    for bad in ("service.enable_now(", "sudo(rm)", "service.enable_now;id", "(unit)"):
+        with pytest.raises(TemplateError):
+            render_template(bad, {"unit": "fail2ban"}, ev)

@@ -78,6 +78,15 @@ class Template:
     def signature(self) -> str:
         return f"{self.id}({', '.join(p.name for p in self.params)})"
 
+    def prompt_line(self) -> str:
+        """`- "id" -- what it does. values: {"ip": ...}`: the id stands alone in quotes, so a model
+        copies it as the template id and not the argument list with it."""
+        values = ", ".join(f'"{p.name}"' for p in self.params)
+        return f'- "{self.id}" -- {self.description}. values: {values}'
+
+
+_ID_WITH_ARGS = re.compile(r"^\s*([A-Za-z0-9_.]+)\s*\(.*\)\s*$")
+
 
 # --- value checks ---------------------------------------------------------------------------------
 
@@ -226,13 +235,16 @@ def template_ids() -> list[str]:
 
 def prompt_lines() -> str:
     """The short list the system prompt shows the model: one line per template."""
-    return "\n".join(f"- {t.signature()}: {t.description}" for t in TEMPLATES.values())
+    return "\n".join(t.prompt_line() for t in TEMPLATES.values())
 
 
 def render_template(template_id: object, values: object, evidence: Evidence) -> str:
     """The exact command for `template_id` with `values`, every value checked against `evidence`.
     Raises TemplateError (with a reason) for an unknown template, a missing or extra value, or a
     value that fails its check."""
+    if isinstance(template_id, str):
+        template_id = (_ID_WITH_ARGS.match(template_id).group(1)       # "fail2ban.ban_ip(ip)" -> "fail2ban.ban_ip"
+                       if _ID_WITH_ARGS.match(template_id) else template_id.strip())
     tpl = TEMPLATES.get(template_id) if isinstance(template_id, str) else None
     if tpl is None:
         raise TemplateError(f"{template_id!r} is not a template Kratos knows")
