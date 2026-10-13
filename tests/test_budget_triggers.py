@@ -146,9 +146,15 @@ def test_storm_of_400_matches(tmp_path, monkeypatch):
     fires = T.read_fire_records(tmp_path, "storm")
     assert len(fires) == 10                                            # the default cap
     assert sum("reached its limit of 10 fires today" in m for m, _ in sent) == 1
+    # The ledger dates rows by the real clock (the trigger evaluation's `now` above is
+    # fixed): read the day(s) back from the rows instead of naming one -- a hard-coded
+    # date passed only on the day the test was written. A run across local midnight
+    # gets a fresh cap for the new day.
     ledger = BudgetLedger(tmp_path)
-    spent = ledger.totals_for_day("2026-10-12").unattended_cost_usd
-    assert 0 < spent <= 0.0025
+    with ledger.connect() as conn:
+        days = [r[0] for r in conn.execute("SELECT DISTINCT day FROM budget_ledger")]
+    spent = sum(ledger.totals_for_day(d).unattended_cost_usd for d in days)
+    assert days and 0 < spent <= 0.0025 * len(days)
     statuses = [f["investigation_status"] for f in fires]
     assert statuses.count("final_answer") < 10
     assert set(statuses) <= {"final_answer", "stopped_by_budget", "refused_by_budget"}
