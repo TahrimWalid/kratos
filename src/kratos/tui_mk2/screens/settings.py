@@ -338,7 +338,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._ap_names: list[tuple[str, bool]] = []  # (tool_name, is_kept) per ap-table row
         # General tab row order (↑↓ navigable)
         self._gen_rows = ["name", "theme", "timezone", "findings.accept_max_days", "findings.default_view",
-                          "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb"]
+                          "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb",
+                          "collect.enabled", "collect.start_budget_seconds", "collect.sync_sources",
+                          "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -731,8 +733,74 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{interval} minutes  (after investigations of a sealed machine)", style=T.TEXT))
         gen.add_row(Text("Sealed-journal copy per check", style=T.TEXT_MUTED),
                     Text(f"{budget} MB  (newest files first; the rest next time)", style=T.TEXT))
+        for key, label, tail in self._collection_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
+
+    # --- Collection (kratos.collect): what Kratos checks by itself before an investigation ---
+    def _collection_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.collect import checks as _checks  # noqa: F401 -- registers the checks and their settings
+        from kratos.collect import registry
+        from kratos.collect import settings as CS
+        from kratos.collect.sync import settings as SS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("collect.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        ttls = ", ".join(f"{c.short or c.label} {get(c.ttl_setting)}" for c in registry.checks("quick"))
+        return [
+            (CS.ENABLED, "Check the basics first", "on" if get(CS.ENABLED) else "off  (the model decides what to look at)"),
+            (CS.START_BUDGET, "Most time spent checking first", f"{get(CS.START_BUDGET)} seconds  (the rest is reported as not checked)"),
+            (SS.SOURCES, "Logs kept up to date", ", ".join(get(SS.SOURCES)) or "none"),
+            (SS.INITIAL_HOURS, "First sync reaches back", f"{get(SS.INITIAL_HOURS)} hours"),
+            (SS.MAX_LINES, "Most lines per log per round", f"{get(SS.MAX_LINES):,}"),
+            ("collect.ttl", "Results stay fresh (minutes)", ttls),
+        ]
+
+    @work
+    async def _set_collect_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.collect import checks as _checks  # noqa: F401
+        from kratos.collect import registry
+        from kratos.collect.sync import settings as SS  # noqa: F401
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        if key == "collect.ttl":
+            key = await self.app.push_screen_wait(ListPickerModal(
+                "Which result?", [(c.ttl_setting, f"{c.label} — now {settings_store.get(c.ttl_setting, data_dir=dd)} min")
+                                  for c in registry.checks()]))
+            if key is None:
+                return
+        spec = next((sp for sp in settings_store.specs() if sp.key == key), None)
+        if spec is None:
+            return
+        current = settings_store.get(key, data_dir=dd)
+        if key == "collect.enabled":
+            value: Any = await self.app.push_screen_wait(ListPickerModal(
+                "Check the basics first", [("on", "on — ports, sign-ins, altered logs, ... before the model starts"),
+                                           ("off", "off — the model decides what to look at")]))
+            if value is None:
+                return
+        else:
+            shown = ", ".join(current) if isinstance(current, list) else str(current)
+            answer = await self.app.push_screen_wait(PromptModal(spec.doc, "Enter the new value", initial=shown))
+            if answer is None:
+                return
+            value = answer.strip()
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — applies everywhere on the next read.", T.SAFE)
 
     def _general_primary(self) -> None:
         """Enter on the General tab acts on the highlighted setting."""
@@ -748,6 +816,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_findings_setting_flow(key)
         elif key and key.startswith("logs."):
             self._set_logs_setting_flow(key)
+        elif key and key.startswith("collect."):
+            self._set_collect_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store

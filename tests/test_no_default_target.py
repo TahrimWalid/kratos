@@ -99,8 +99,8 @@ def test_cli_run_uses_the_saved_target_and_stops_cleanly_without_one(tmp_path, m
     from kratos.cli import app as cli
 
     seen: list = []
-    monkeypatch.setattr(pipeline, "run_pipeline",
-                        lambda steps, data_dir: seen.append(kc.get_active_target()) or pipeline.PipelineOutcome(
+    monkeypatch.setattr(pipeline, "run_standard_audit",
+                        lambda data_dir, **kw: seen.append(kc.get_active_target()) or pipeline.PipelineOutcome(
                             status="completed", steps=[], findings=[]))
     assert cli.main(["--data-dir", str(tmp_path), "run"]) == 1
     assert "No target is set yet" in capsys.readouterr().out and seen == []

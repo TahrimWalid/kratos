@@ -601,6 +601,63 @@ Kratos process reads the same value without a restart. No agent tool can change
 one: `set` refuses while a tool is running, and a test scans every tool's module.
 Each component of `kratos.db` migrates itself through `schema_versions`.
 
+## Collection layer
+
+**Code collects, the model reasons.** Before the investigation loop's first model call,
+`kratos.collect.runner.prepare()` makes sure the basics are fresh for the machine (ports, 24 h
+of sign-in activity, log tampering, privileged accounts, configuration, log sync): each
+*check* is a registered wrapper over a tool Kratos already has (`collect/checks.py`), run
+through `execute_tool_call` so the dispatch guards, approval gating and event recording still
+apply. A check declares its cost class (`quick` runs at investigation start; `slow` -- known
+vulnerabilities, a malware sweep, the critical-files diff -- runs in the standard audit,
+schedules and `/collect all`), freshness setting (`collect.ttl.<check>_minutes`), the
+findings-engine input it refreshes, the transports it supports and its own time budget. A new
+detection read is a check, never a new entry in the model's tool list (that list is frozen --
+`tests/test_collect_loop.py::test_the_models_tool_list_is_frozen` -- and changing what the model
+sees needs the tool-selection eval with no regression).
+
+**Freshness and claims.** `collect_state` (one row per machine and check, in `kratos.db`) holds
+the last result. A result younger than its limit is reused (and re-run if its input files are
+gone); a stale one is *claimed* inside `BEGIN IMMEDIATE`, so the TUI and a scheduled run never
+run the same check on the same machine at once -- the loser waits for the winner's result. A
+claim older than twice the budget belongs to a dead process and is taken over. A reused result
+does not touch the input files, so the lifecycle's "collected in this run" rule still holds: it
+can't mark a finding fixed. Checks run in parallel threads, each pinned to its machine. At the
+start budget (`collect.start_budget_seconds`, 15) the rest is cancelled: `utils/cancel.py`
+registers every `ssh`/`nmap` a check starts and kills them, so nothing keeps running on this host
+or, through the closed channel, on the target. The digest says "NOT checked: ...".
+
+**What the model receives.** A digest in the first message (`collect/digest.py`), built only
+from Kratos-written text: each check's one-line summary (made from structured results, never raw
+log lines), finding IDs and severities, and the titles of rules whose titles hold no data from
+the machine (PRIV-* titles name accounts, so they stay out). The correlation Kratos ran is
+*seeded* into the loop (`last_correlate_findings`, the staleness warning, coverage gaps), so
+Guards 1/3/4 judge the answer against it exactly as if the model had called it first. If the
+model's own tools refresh an input afterwards, Kratos re-runs `correlate_findings` by code before
+the guards evaluate the final answer (no model call) -- a new HIGH finding reaches Guard 3.
+Counting questions are unchanged: `measure_auth_activity` counts on the target; the event store is
+for rules, hunts and timelines.
+
+**Incremental log sync** (`collect/sync/`). Per machine and source Kratos keeps a position in
+`kratos.db` (`sync_cursors`) -- the journal cursor, or (inode, byte offset) of a classic file --
+and reads forward from it. Journal: `journalctl --after-cursor` (the cursor is checked against
+systemd's format before it is ever placed in a command), capped at `collect.sync_max_lines` per
+round; no `-n` (version-dependent), no `--cursor-file` (it would write on the target). Files: a
+shell script (or the agent's `file_sync` probe) slices `[offset, offset+n)` and feeds it to the same
+awk extractor as `read_host_logs` in *chunk mode*, which only handles whole lines, holds back a
+multi-line record still open at the end, and reports the bytes consumed so the offset moves exactly
+that far. A first sync starts at the tail. Rotation by rename is followed through the old inode;
+copytruncate, a vanished file, or a journal that was vacuumed past the position (found by comparing
+the journal's oldest entry with where the last sync got to) are recorded as incomplete spans in
+`sync_coverage`. `cursors.covered(target, source, start, end)` is true only for a window with no
+hole in it. The position moves only after the events are stored. Limitation: a log deleted and
+recreated that reuses the old inode and outgrows the saved offset before the next sync looks like
+the same file; the tamper check (head hash) is what catches that.
+
+**Standard audit.** `run_standard_audit()` is `prepare(classes=("quick","slow"), force=True)` plus
+one correlation, reported as steps; `/run`, `kratos run` and audit schedules use it, so there is one
+implementation of "look at the machine".
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources

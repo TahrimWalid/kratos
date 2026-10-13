@@ -315,48 +315,123 @@ def run_pipeline(
     return outcome
 
 
+AUDIT_BUDGET_SECONDS = 480.0
+
+
+def run_standard_audit(
+    data_dir: Path,
+    *,
+    on_step: Optional[Callable[["StepResult"], None]] = None,
+    dispatch: Optional[Dispatch] = None,
+    skip_tools: frozenset[str] = frozenset(),
+    target: Optional[str] = None,
+    budget: float = AUDIT_BUDGET_SECONDS,
+) -> PipelineOutcome:
+    """The standard audit on the collection layer (kratos.collect): every check, quick and
+    slow, re-run now (``force``) in parallel -- the SAME checks an investigation starts
+    from -- then one ``correlate_findings`` over what they collected. One implementation
+    of "look at the machine", not two. Each check is reported as a step (named by the tool
+    it ran) so the screen, the CLI, schedules and reports read it like any pipeline.
+    ``skip_tools``: tools an unattended run must not use (the approval-gated ones)."""
+    from kratos.collect import checks as _checks  # noqa: F401 -- registers the built-in checks
+    from kratos.collect import registry as _registry
+    from kratos.collect import runner as _runner
+
+    data_dir = Path(data_dir)
+    outcome = PipelineOutcome(status="completed")
+
+    def to_step(o: Any) -> StepResult:
+        tool = (o.tools[0] if o.tools else None) or (_CHECK_TOOLS.get(o.name) or (o.name,))[0]
+        step = PipelineStep(tool, label=o.label, required=False)
+        first = next((s for s in o.steps if s.get("tool") == tool), None)
+        obs = (first or {}).get("observation") or {}
+        result = obs.get("result") if isinstance(obs, dict) and isinstance(obs.get("result"), dict) else None
+        if o.status in ("ok", "partial"):
+            return StepResult(step=step, status="ok", result=result or {}, detail=o.summary)
+        if o.status in ("not_supported", "skipped"):
+            return StepResult(step=step, status="skipped", result=result, detail=o.reason or o.summary)
+        return StepResult(step=step, status="error", result=result, detail=o.summary)
+
+    def on_outcome(o: Any) -> None:
+        sr = to_step(o)
+        outcome.steps.append(sr)
+        if on_step is not None:
+            on_step(sr)
+
+    chosen = tuple(c.name for c in _registry.checks()
+                   if not (set(_tool_names(c)) & set(skip_tools)))
+    report = _runner.prepare(target, data_dir, classes=("quick", "slow"), budget=budget, force=True,
+                             only=chosen, dispatch=dispatch or execute_tool_call, correlate=True,
+                             on_outcome=on_outcome)
+    if report.disabled_reason:
+        outcome.status = "aborted"
+        outcome.aborted_on = "run_nmap_scan"
+        return outcome
+    # The port scan keeps its old role as the "is the target there at all" check: when it FAILS (not
+    # "unavailable for this machine"), the audit is reported as aborted -- never a quiet partial pass.
+    ports = next((c for c in report.checks if c.name == "ports"), None)
+    if ports is not None and ports.status == "failed":
+        outcome.status = "aborted"
+        outcome.aborted_on = "run_nmap_scan"
+    if report.correlation is not None:
+        step = PipelineStep("correlate_findings", required=True, label="Correlate everything into ranked findings")
+        sr = StepResult(step=step, status="ok", result=report.correlation)
+        outcome.steps.append(sr)
+        outcome.findings = [f for f in report.findings if isinstance(f, dict) and f.get("id") and f.get("severity")]
+        if on_step is not None:
+            on_step(sr)
+    else:
+        step = PipelineStep("correlate_findings", required=True)
+        sr = StepResult(step=step, status="error", detail=report.correlation_error or "nothing was collected to correlate")
+        outcome.steps.append(sr)
+        outcome.status = "aborted"
+        outcome.aborted_on = outcome.aborted_on or "correlate_findings"
+        if on_step is not None:
+            on_step(sr)
+    return outcome
+
+
+# The tools each check runs (to leave out the ones an unattended run may not use).
+_CHECK_TOOLS = {
+    "ports": ("run_nmap_scan",), "auth_activity": ("measure_auth_activity",), "log_integrity": ("check_log_integrity",),
+    "privileged_accounts": ("list_privileged_accounts",), "config_audit": ("run_config_audit",),
+    "vuln_scan": ("run_vuln_scan",), "yara_sweep": ("run_yara_scan",), "file_integrity": ("check_file_integrity",),
+    "log_sync": (),
+}
+
+
+def _tool_names(check: Any) -> tuple[str, ...]:
+    return _CHECK_TOOLS.get(check.name, ())
+
+
 def standard_audit_steps() -> list[PipelineStep]:
-    """The built-in "standard audit": a fixed, deterministic security sweep of
-    the configured target. Target-correct by construction -- every step below is
-    target-facing (network scan or SSH-to-target), so nothing about Kratos's own
-    host is ever mixed into the target's findings (the ``cmd_run`` bug this
-    replaces).
+    """The built-in "standard audit", as a plan: what it looks at, in the order it is
+    shown. It RUNS through ``run_standard_audit`` (the collection layer: every check in
+    parallel, then one correlation); this list is what previews, ``/plan`` and approval
+    summaries describe, one entry per check plus the correlation.
 
-    Order and rationale:
-      1. run_nmap_scan     — map the target's network attack surface. REQUIRED:
-                             if the target is unreachable the rest is moot, so a
-                             failure here fail-fasts the whole audit.
-      2. run_vuln_scan     — known-CVE / misconfig sweep (network). Optional:
-                             it's network-heavy and secondary; a hiccup here
-                             shouldn't sink the audit.
-      3. run_config_audit  — the target's hardening posture over SSH. Optional.
-      3b. check_log_integrity — were the target's logs cleared or edited (0.3)?
-                             Optional: on a first run it only records a baseline.
-      4. read_journalctl   — pull the target's auth journal over SSH; this also
-                             persists the auth-correlation inputs correlate_findings
-                             reads. Optional (SSH may be restricted).
-      5. correlate_findings— the rule engine synthesizes everything gathered above
-                             into ranked findings. REQUIRED: it is the point of the
-                             audit.
-
-    Deliberately NOT included: ``parse_auth_log`` and ``collect_system_context``
-    — both analyze KRATOS'S OWN host, not the target. ``cmd_run`` ran them and
-    folded their output into "the target's findings", which is silently wrong for
-    any real remote target. Omitting them is the fix, not an oversight. (They can
-    be offered later as an explicit, clearly-labeled "audit this Kratos host"
-    pipeline — a different recipe, never mixed into this one.)
+    Target-correct by construction -- every step is target-facing (a network scan or an
+    SSH/sub-agent read of the target), so nothing about Kratos's own host is ever mixed
+    into the target's findings (the ``cmd_run`` bug this replaced). ``parse_auth_log`` and
+    ``collect_system_context`` analyse KRATOS'S OWN host and are deliberately not here.
     """
     return [
-        PipelineStep("run_nmap_scan", required=True,
+        PipelineStep("run_nmap_scan", required=False,
                      label="Map the target's open ports & services"),
-        PipelineStep("run_vuln_scan", required=False,
-                     label="Scan the target for known vulnerabilities"),
-        PipelineStep("run_config_audit", required=False,
-                     label="Audit the target's security configuration"),
+        PipelineStep("measure_auth_activity", {"window": {"kind": "rolling", "amount": 24, "unit": "hour"}},
+                     required=False, label="Count the target's sign-in activity over the last 24 hours"),
         PipelineStep("check_log_integrity", required=False,
                      label="Check whether the target's logs were cleared or edited"),
-        PipelineStep("read_journalctl", required=False,
-                     label="Pull the target's auth journal (SSH)"),
+        PipelineStep("list_privileged_accounts", required=False,
+                     label="List who has privileged access on the target"),
+        PipelineStep("run_config_audit", required=False,
+                     label="Audit the target's security configuration"),
+        PipelineStep("check_file_integrity", required=False,
+                     label="Compare the target's critical files with their baseline"),
+        PipelineStep("run_vuln_scan", required=False,
+                     label="Scan the target for known vulnerabilities"),
+        PipelineStep("run_yara_scan", required=False,
+                     label="Sweep the target's usual drop locations for malware signatures"),
         PipelineStep("correlate_findings", required=True,
                      label="Correlate everything into ranked findings"),
     ]

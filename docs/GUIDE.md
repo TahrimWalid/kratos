@@ -402,6 +402,57 @@ go several directions, Kratos asks you first (see below) rather than guessing.
 
 ---
 
+## What Kratos checks by itself
+
+You don't have to ask for the basics. When an investigation starts, Kratos first checks them
+on the machine — in parallel, in a few seconds, without using the model — and only then hands
+the question to the model together with a short summary of what it found:
+
+| Checked first | What it tells you |
+|---|---|
+| open ports | what is reachable from the network |
+| sign-ins, last 24 hours | failed and successful SSH logins, bursts, sudo activity |
+| log tampering | logs cut short, replaced or wiped |
+| privileged accounts | who can become root, and what changed since the last check |
+| configuration | SSH, firewall, fail2ban and other settings |
+| log sync | new log lines are copied into Kratos's event store on your computer |
+
+You see one line above the answer, for example
+`Checked first: ports (12 min ago) · auth 24 h (now) · tampering (now) · config: not this time`.
+"Not this time" means a check didn't finish in its time budget (15 seconds by default); the
+answer says so rather than guessing. Because the basics are checked by Kratos itself, a broad
+question such as *"check this system for anything suspicious"* now always includes the
+tampering check, whatever the model would have picked.
+
+**Fresh results are reused.** Each check has a freshness limit (sign-ins 15 minutes,
+open ports and accounts 60 minutes, configuration 6 hours, log tampering only 10 minutes — new
+tampering shouldn't hide behind an hour-old answer; `/collect --force` checks right now), so a second investigation soon after starts
+almost instantly. A reused result is never mistaken for a new one: it can't make
+a finding look "fixed".
+
+**Do it yourself:** `/collect` (or `kratos collect`) runs the same checks now and shows what
+they found; `/collect all` (`kratos collect --all`) adds the slow ones — known vulnerabilities,
+a malware-signature sweep, the critical-files comparison — and `--force` re-runs even fresh
+results. `/run` (the standard audit) is exactly this, with everything forced. None of it uses
+the model, so none of it costs anything. `/doctor` has a "collection" row showing when each
+check last ran and whether any log is still catching up.
+
+**Logs stay up to date.** Kratos remembers where it stopped in each security log of a machine
+(the sign-in log, cron, services, firewall, auditd, package installs) and fetches only what is
+new; those lines are stored on **your computer** (never sent anywhere) so `kratos events` can
+show them. Kratos also records which stretches it holds *completely*: if a log was rotated
+away, cut short, or the journal was cleaned, that stretch is marked as a gap instead of being
+reported as complete — see them with `kratos events --coverage`. Nothing is ever written on the
+machine being watched. Web server logs are left out by default (they can be huge). The store
+grows with how busy the machine is — on the busy lab server about 14,000 sign-in events a day;
+a quiet server a few hundred — and Kratos never deletes it by itself.
+
+**Settings** (Settings → General): whether to check first at all, the time allowed, which logs
+to keep up to date, how far back a first sync reaches, how many lines one round takes, and each
+check's freshness limit.
+
+---
+
 ## Understanding findings
 
 When Kratos finds something, it writes a **finding**: a short, titled result with
@@ -717,6 +768,7 @@ but here's the map. Everything starts with `/`.
 | Command | What it does |
 | --- | --- |
 | `/doctor` | check that your setup (model, target, tools) is healthy |
+| `/collect` | check the basics now (ports, sign-ins, altered logs, accounts, configuration); `/collect all` adds the slow checks |
 | `/usage` | tokens used and rough cost this session |
 | `/context` | how full the model's memory is right now (`/compact` makes room) |
 | `/model` | switch, add, or edit which model Kratos uses |
@@ -1067,7 +1119,8 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos subagent-serve` | run the sub-agent listener in the foreground |
 | `kratos subagent-status` | list paired machines and whether they're connected |
 | `kratos mcp-serve` | start the MCP server (below) |
-| `kratos events` | show the log lines Kratos has read from a machine (below) |
+| `kratos collect` | check the basics on a machine now (`--all` adds the slow checks, `--force` re-runs fresh ones) |
+| `kratos events` | show the log lines Kratos has read from a machine (below); `--coverage` shows which stretches are complete |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
 | `kratos budget` | model spending limits: show today's spend, `set NAME VALUE`, `resume SOURCE` ([Keeping model costs under control](#keeping-model-costs-under-control)) |
 | `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |

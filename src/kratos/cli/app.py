@@ -388,6 +388,51 @@ def cmd_snapshots(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_collect(args: argparse.Namespace) -> int:
+    """`kratos collect [--all] [--force] [--target HOST]`: make sure the basics are fresh for one
+    machine -- the same checks an investigation starts from -- and print what was checked. Free
+    (no model). A fresh result is reused unless --force; --all adds the slow checks."""
+    from kratos.collect import checks as _checks  # noqa: F401 -- registers the checks
+    from kratos.collect import runner as _runner
+    from kratos.collect.digest import ago, build_digest
+    from kratos.kratos_config import pinned_target, set_active_data_dir
+    from kratos.run_context import run_scope
+
+    target = args.target or get_active_target()
+    if not target:
+        print("[KRATOS] Which machine? Pass --target <host> (or set KRATOS_SSH_HOST).", file=sys.stderr)
+        return 1
+    data_dir = Path(args.data_dir)
+    set_active_data_dir(data_dir)
+    classes = ("quick", "slow") if args.all else ("quick",)
+    with run_scope("cli", target=target), pinned_target(target):
+        report = _runner.prepare(target, data_dir, classes=classes, force=args.force,
+                                 budget=args.budget if args.budget else (480.0 if args.all else None))
+    if getattr(args, "json", False):
+        print(json.dumps({"target": report.target_key, "elapsed": round(report.elapsed, 2), "cold": report.cold,
+                          "checks": [{"name": c.name, "status": c.status, "source": c.source, "summary": c.summary,
+                                      "age_seconds": c.age_seconds, "finding_ids": c.finding_ids} for c in report.checks],
+                          "findings": [{"id": f.get("id"), "severity": f.get("severity")} for f in report.findings]},
+                         indent=2))
+        return 0
+    if report.disabled_reason:
+        print(f"[KRATOS] Nothing to do: {report.disabled_reason}.")
+        return 1
+    for c in report.checks:
+        mark = {"ok": "✓", "partial": "~"}.get(c.status, "✗" if c.status == "failed" else "–")
+        when = {"ran": "just now", "reused": ago(c.age_seconds), "waited": ago(c.age_seconds)}.get(c.source, "not this time")
+        print(f"[KRATOS]   {mark} {c.label:<26} ({when}) {c.summary}")
+    if report.correlation is not None:
+        findings = report.findings
+        print(f"[KRATOS] {len(findings)} finding(s): " + (", ".join(f"{f.get('id')} ({f.get('severity')})" for f in findings)
+                                                          or "none") + f"   [{report.elapsed:.1f}s]")
+        if report.correlation.get("lifecycle"):
+            print(f"[KRATOS] {report.correlation['lifecycle']}")
+    elif report.correlation_error:
+        print(f"[KRATOS] correlate_findings could not run: {report.correlation_error}")
+    return 0 if report.any_ok() else 1
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """The log lines Kratos has read from a machine, as stored events (read-only).
     Plain lines by default; --json prints one ECS document per line."""
@@ -400,6 +445,8 @@ def cmd_events(args: argparse.Namespace) -> int:
     if not target:
         print("[KRATOS] Which machine? Pass --target <host> (or set KRATOS_SSH_HOST).", file=sys.stderr)
         return 1
+    if getattr(args, "coverage", False):
+        return _print_sync_coverage(Path(args.data_dir), target)
     try:
         start = resolve_time_bound(args.since) if args.since else None
         end = resolve_time_bound(args.until) if args.until else None
@@ -429,6 +476,35 @@ def cmd_events(args: argparse.Namespace) -> int:
         print(f"{when}  {e.action or e.dataset:<22} {e.outcome or '':<8} {who:<34} {text[:120]}")
     shown = f"{len(events)} of {total}" if total > len(events) else str(total)
     print(f"[KRATOS] {shown} events for {target_key(target)} (times in {getattr(tz, 'key', None) or tz}).")
+    return 0
+
+
+def _print_sync_coverage(data_dir: Path, target: str) -> int:
+    """`kratos events --coverage`: which stretches of each log Kratos holds COMPLETELY."""
+    from kratos.collect.sync import cursors
+    from kratos.target_key import target_key
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    tkey = target_key(target)
+    spans = cursors.spans(data_dir, tkey)
+    cur = {(c.source, c.kind): c for c in cursors.cursors(data_dir, tkey)}
+    if not spans and not cur:
+        print(f"[KRATOS] No log sync has run for {tkey} yet (it runs when an investigation, `kratos collect` or a "
+              "schedule starts).")
+        return 0
+    sources = sorted({s for s, _ in spans} | {s for s, _ in cur})
+    for source in sources:
+        mine = [sp for src, sp in spans if src == source]
+        complete = [sp for sp in mine if sp.complete]
+        gaps = [sp for sp in mine if not sp.complete]
+        behind = any(c.behind for (src, _k), c in cur.items() if src == source)
+        print(f"{source}:")
+        for sp in complete:
+            print(f"  complete   {epoch_to_utc_iso(sp.start)}  ->  {epoch_to_utc_iso(sp.end)}")
+        for sp in gaps:
+            print(f"  GAP        {epoch_to_utc_iso(sp.start)}  ->  {epoch_to_utc_iso(sp.end)}  {sp.note}")
+        if behind:
+            print("  (still catching up: more is pending)")
     return 0
 
 
@@ -1101,7 +1177,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     runs over ``TOOL_REGISTRY`` via ``execute_tool_call``, inheriting every
     guard. Same recipe shape (scan → config → auth → correlate).
     """
-    from kratos.agent.pipeline import run_pipeline, standard_audit_steps
+    from kratos.agent.pipeline import run_standard_audit
     from kratos.kratos_config import get_active_target, set_active_target
 
     prior_active = None
@@ -1117,7 +1193,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     print(f"[KRATOS] Standard audit — deterministic security sweep of {target} (no LLM).")
     try:
-        outcome = run_pipeline(standard_audit_steps(), args.data_dir)
+        outcome = run_standard_audit(args.data_dir)
     finally:
         if prior_active is not None:
             set_active_target(prior_active)
@@ -1343,6 +1419,14 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         nonlocal findings_count
         live.stop()
         iteration = step.get("iteration")
+
+        if step.get("status") == "collection":
+            if step.get("summary_line"):
+                _console.render_note(console, step["summary_line"])
+            session_events.append("Kratos checked the basics first")
+            return
+        if step.get("collected") and step.get("tool") != "correlate_findings":
+            return                                   # one line above covers what Kratos collected by itself
 
         if step.get("status") == "llm_unavailable":
             _console.render_error(console, f"Step {iteration}: could not reach the language model backend -- stopping.")
@@ -1733,7 +1817,21 @@ def build_parser() -> argparse.ArgumentParser:
     events_p.add_argument("--limit", type=int, default=50, help="How many (newest first; max 10000)")
     events_p.add_argument("--oldest-first", action="store_true", help="Oldest first instead")
     events_p.add_argument("--json", action="store_true", help="One ECS JSON document per line")
+    events_p.add_argument("--coverage", action="store_true",
+                          help="Instead of events: which stretches of each log Kratos holds completely, and the gaps")
     events_p.set_defaults(func=cmd_events)
+
+    collect_p = sub.add_parser(
+        "collect",
+        help="Check the basics on a machine now (open ports, sign-ins, altered logs, accounts, configuration, "
+             "log sync); free, no model",
+    )
+    collect_p.add_argument("--target", default=None, help="Machine (default: the active target)")
+    collect_p.add_argument("--all", action="store_true", help="Also run the slow checks (vulnerabilities, malware, files)")
+    collect_p.add_argument("--force", action="store_true", help="Re-run even checks whose last result is still fresh")
+    collect_p.add_argument("--budget", type=float, default=None, help="Seconds to allow (default: the setting)")
+    collect_p.add_argument("--json", action="store_true")
+    collect_p.set_defaults(func=cmd_collect)
 
     fnd = sub.add_parser(
         "findings",

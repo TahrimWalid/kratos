@@ -175,15 +175,13 @@ def test_standard_audit_is_target_correct():
     assert "parse_auth_log" not in tools
     assert "collect_system_context" not in tools
 
-    # The essential spine is present and required; the extras are resilient.
+    # The plan: the checks, then the one required correlation.
     assert tools[0] == "run_nmap_scan"
     assert tools[-1] == "correlate_findings"
     by_tool = {s.tool: s for s in steps}
-    assert by_tool["run_nmap_scan"].required is True
     assert by_tool["correlate_findings"].required is True
-    assert by_tool["run_vuln_scan"].required is False
-    assert by_tool["run_config_audit"].required is False
-    assert by_tool["read_journalctl"].required is False
+    assert all(not s.required for s in steps if s.tool != "correlate_findings")
+    assert {"measure_auth_activity", "check_log_integrity", "run_config_audit", "run_vuln_scan"} <= set(tools)
     # Every step is a real, resolvable label.
     assert all(s.label for s in steps)
 

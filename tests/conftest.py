@@ -20,6 +20,19 @@ def _collection_off_by_default(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_log_sync_reads(monkeypatch: pytest.MonkeyPatch):
+    """The log_sync check reads through ssh_remote directly (not through a tool dispatch):
+    a test that runs checks must never make a real SSH or agent read."""
+    from kratos.adapters.ssh_remote import SSHResult
+    from kratos.collect.sync import engine
+
+    def refuse(*a, **k):
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr="no machine in tests")
+
+    monkeypatch.setattr(engine.Fetchers, "default", classmethod(lambda cls: cls(journal=refuse, file=refuse)))
+
+
+@pytest.fixture(autouse=True)
 def _restore_process_globals():
     """Several tests set the active target / data folder (module globals, like /target
     does). Restore them after every test so a later test never runs against a machine

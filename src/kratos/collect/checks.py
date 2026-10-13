@@ -36,7 +36,7 @@ def _unwrap(res: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str
 def _failed(label: str, err: str, gap: str | None, tool: str) -> CheckResult:
     return CheckResult(
         status="not_supported" if gap else "failed",
-        summary="not checked (unavailable on this machine)" if gap else "could not be checked",
+        summary="not available for this machine" if gap else "could not be checked",
         coverage_gaps=[gap or f"{label}: could not be checked"], detail=err, tools=[tool])
 
 
@@ -171,6 +171,47 @@ def _run_config_audit(ctx: CheckContext) -> CheckResult:
     return CheckResult("ok", "; ".join(parts), tools=["run_config_audit"])
 
 
+# --------------------------------------------------------------------------- slow checks (audit, schedules, /collect all)
+def _run_vuln_scan(ctx: CheckContext) -> CheckResult:
+    res = ctx.call("run_vuln_scan", {})
+    inner, err, gap = _unwrap(res)
+    if inner is None:
+        return _failed("known vulnerabilities", err or "", gap, "run_vuln_scan")
+    n = int(inner.get("finding_count") or 0)
+    bits = [f"{n} possible issue(s) on the network services" if n else "nothing found on the network services"]
+    if inner.get("database_stale"):
+        bits.append("the CVE list is out of date")
+    gaps = [gap] if gap else []
+    return CheckResult("partial" if (gap or inner.get("status") == "partial") else "ok", "; ".join(bits), gaps,
+                       tools=["run_vuln_scan"])
+
+
+def _run_yara_sweep(ctx: CheckContext) -> CheckResult:
+    res = ctx.call("run_yara_scan", {})
+    inner, err, gap = _unwrap(res)
+    if inner is None:
+        return _failed("malware signatures", err or "", gap, "run_yara_scan")
+    n = int(inner.get("match_count") or 0)
+    gaps = [gap] if gap else []
+    summary = f"{n} file(s) matched a malware signature" if n else "no malware signature matched"
+    return CheckResult("partial" if gap else "ok", summary, gaps, tools=["run_yara_scan"])
+
+
+def _run_file_integrity(ctx: CheckContext) -> CheckResult:
+    res = ctx.call("check_file_integrity", {})
+    inner, err, gap = _unwrap(res)
+    if inner is None:
+        return _failed("critical files", err or "", gap, "check_file_integrity")
+    if inner.get("status") == "baseline_established":
+        return CheckResult("ok", "first look: recorded a baseline of the critical files", tools=["check_file_integrity"])
+    diff = inner.get("diff") if isinstance(inner.get("diff"), dict) else {}
+    changed, added, removed = (len(diff.get(k) or []) for k in ("changed", "added", "removed"))
+    if changed or added or removed:
+        return CheckResult("ok", f"{changed} changed, {added} added, {removed} removed since the baseline",
+                           tools=["check_file_integrity"])
+    return CheckResult("ok", "no change since the baseline", tools=["check_file_integrity"])
+
+
 # --------------------------------------------------------------------------- log sync
 def _run_log_sync(ctx: CheckContext) -> CheckResult:
     """Keep the event store up to date: only the lines that are new since last time."""
@@ -191,9 +232,8 @@ def _run_log_sync(ctx: CheckContext) -> CheckResult:
     if failed:
         parts.append("could not sync " + ", ".join(s.source for s in failed))
     gaps = []
-    for s in rep.sources:
-        if s.old_agent and s.gaps and s.gaps[0] not in gaps:
-            gaps.append(s.gaps[0])
+    if any(s.old_agent for s in rep.sources):          # one line, not one per log
+        gaps.append("log sync: this machine's sub-agent is too old for it -- update it (`g` in /subagent)")
     all_failed = bool(rep.sources) and len(failed) == len(rep.sources)
     status = "failed" if all_failed else ("partial" if (failed or behind or any(s.status == "partial" for s in rep.sources)) else "ok")
     return CheckResult(status, "; ".join(parts), gaps, tools=[],
@@ -210,7 +250,7 @@ register(Check(
     run=_run_auth_activity, inputs=("auth_stats", "auth_patterns"), transports=frozenset({"ssh", "agent"}),
     budget_seconds=40.0, label="sign-in activity (24 h)", order=10, short="auth 24 h"))
 register(Check(
-    name="log_integrity", cost="quick", ttl_setting="collect.ttl.log_integrity_minutes", default_ttl_minutes=60,
+    name="log_integrity", cost="quick", ttl_setting="collect.ttl.log_integrity_minutes", default_ttl_minutes=10,
     run=_run_log_integrity, inputs=("log_integrity",), transports=frozenset({"ssh", "agent"}),
     budget_seconds=40.0, label="log tampering", order=20, short="tampering"))
 register(Check(
@@ -226,3 +266,15 @@ register(Check(
     name="log_sync", cost="quick", ttl_setting="collect.ttl.log_sync_minutes", default_ttl_minutes=15,
     run=_run_log_sync, inputs=("events",), transports=frozenset({"ssh", "agent"}), budget_seconds=60.0,
     label="log sync", order=70, short="logs"))
+register(Check(
+    name="vuln_scan", cost="slow", ttl_setting="collect.ttl.vuln_scan_minutes", default_ttl_minutes=1440,
+    run=_run_vuln_scan, inputs=("vuln_scan",), transports=frozenset({"ssh", "agent"}), budget_seconds=300.0,
+    label="known vulnerabilities", order=80, short="vulnerabilities"))
+register(Check(
+    name="yara_sweep", cost="slow", ttl_setting="collect.ttl.yara_sweep_minutes", default_ttl_minutes=1440,
+    run=_run_yara_sweep, inputs=(), transports=frozenset({"ssh", "agent"}), budget_seconds=240.0,
+    label="malware signatures", order=85, short="malware"))
+register(Check(
+    name="file_integrity", cost="slow", ttl_setting="collect.ttl.file_integrity_minutes", default_ttl_minutes=360,
+    run=_run_file_integrity, inputs=("file_integrity",), transports=frozenset({"ssh", "agent"}),
+    budget_seconds=90.0, label="critical files", order=75, short="files"))

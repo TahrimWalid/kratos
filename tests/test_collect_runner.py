@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from kratos.collect import checks as _register_checks  # noqa: F401 -- register at import, never inside a patched registry
+from kratos.collect.sync import settings as _register_sync_settings  # noqa: F401
 from kratos import kratos_config, settings_store
 from kratos.collect import registry, runner, state
 from kratos.collect.digest import DIGEST_CAP, build_digest, summary_line
@@ -55,12 +57,14 @@ def prepare(tmp_path, **kw):
 def test_every_builtin_check_is_complete():
     """Every registered check has a freshness setting, a transport, and an input category
     the findings engine knows (or none, when it only feeds events)."""
-    from kratos.adapters.findings_engine import find_latest_inputs
+    from kratos.adapters.findings_engine import _FINDING_INPUTS, find_latest_inputs
     from kratos.collect import checks  # noqa: F401
 
-    known = set(find_latest_inputs(Path("/nonexistent-dir"), target=None)) | {"events"}
+    known = (set(find_latest_inputs(Path("/nonexistent-dir"), target=None)) | {"events"}
+             | {c for cats in _FINDING_INPUTS.values() for c in cats})
     found = registry.checks()
-    assert {c.name for c in found} >= {"ports", "auth_activity", "log_integrity"}
+    assert {c.name for c in found} >= {"ports", "auth_activity", "log_integrity", "privileged_accounts", "config_audit",
+                                       "log_sync", "vuln_scan", "yara_sweep", "file_integrity"}
     for c in found:
         assert c.transports and c.transports <= registry.TRANSPORTS, c.name
         assert c.ttl_setting.startswith("collect.ttl."), c.name
@@ -196,7 +200,7 @@ def test_two_processes_run_the_check_once(tmp_path):
         "d = Path(sys.argv[1])\n"
         "def run(ctx):\n"
         "    with open(d / 'ran.log', 'a') as f: f.write('x\\n')\n"
-        "    time.sleep(1.5)\n"
+        "    time.sleep(4)\n"
         "    return CheckResult('ok', 'done')\n"
         "registry._CHECKS.clear()\n"
         "registry.register(Check(name='t_x', cost='quick', ttl_setting='collect.ttl.t_x_minutes', default_ttl_minutes=60,\n"
@@ -208,7 +212,7 @@ def test_two_processes_run_the_check_once(tmp_path):
     procs = [subprocess.Popen([sys.executable, "-c", script, str(tmp_path)], stdout=subprocess.PIPE, text=True, env=env)
              for _ in range(2)]
     outs = [p.communicate(timeout=60)[0].strip() for p in procs]
-    assert sorted(outs) == ["ran", "waited"], outs
+    assert sorted(outs)[0] == "ran" and sorted(outs)[1] in ("waited", "reused"), outs   # late start: fresh, not waited
     assert (tmp_path / "ran.log").read_text().count("x") == 1
 
 
@@ -251,6 +255,21 @@ def test_a_slow_check_is_cancelled_at_the_budget_and_leaves_no_process(tmp_path,
     time.sleep(0.3)
     assert subprocess.run(["pgrep", "-f", f"sleep {marker}"], capture_output=True).returncode == 1, "process left running"
     assert "not checked" in build_digest(r).lower()
+
+
+def test_a_check_cancelled_at_the_budget_is_skipped_even_when_its_tool_swallowed_the_cancel(tmp_path, fake_registry):
+    """execute_tool_call turns any exception (including our cancel) into an error reply, so the check returns
+    "failed" -- but running out of time is not a failure of the machine or the tool."""
+    def swallow(ctx):
+        try:
+            cancel.run(["sleep", "7124.5"], capture_output=True, text=True)
+        except Exception:  # noqa: BLE001
+            return CheckResult("failed", "could not be checked")
+        return CheckResult("ok", "x")
+
+    fake_registry.register(make_check("t_swallow", run=swallow))
+    r = prepare(tmp_path, budget=1.0)
+    assert r.checks[0].status == "skipped" and "time budget" in r.checks[0].summary
 
 
 def test_a_cancelled_scope_refuses_to_start_a_command():

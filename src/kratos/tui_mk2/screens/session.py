@@ -118,6 +118,7 @@ _PALETTE_COMMANDS = [
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
+    ("/collect", "check the basics now (ports, sign-ins, altered logs, ...); `/collect all` adds the slow checks"),
     ("/usage", "today's spending vs your limits + this session's tokens and cost"),
     ("/context", "what's currently loaded in the context window"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
@@ -753,6 +754,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         rendering have a real behavioral difference (replay owns the answer;
         on_step defers it) that's cleaner as two small functions than one
         special-cased one."""
+        if step.get("status") == "collection":
+            if step.get("summary_line"):
+                self._emit(R.note_line(step["summary_line"]))
+            return
+        if step.get("collected") and step.get("tool") != "correlate_findings":
+            return
         tool_name = step.get("tool")
         if tool_name:
             result, effective_status = R.unwrap_tool_result(step.get("observation"))
@@ -914,6 +921,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._preset_flow("import " + rest if rest else "import")
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
+        elif cmd == "/collect":
+            self._collect_flow(rest)
         elif cmd in ("/guide", "/start", "/getting-started"):
             self._render_guide()
         elif cmd == "/usage":
@@ -1165,6 +1174,43 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.tui_mk2.modals import GuideModal
 
         self.app.push_screen(GuideModal())
+
+    # --- /collect (the checks Kratos runs by itself before an investigation) ---------
+    @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
+    def _collect_flow(self, rest: str) -> None:
+        """/collect [all] [--force]: run the same checks an investigation starts from, now, and show
+        what was checked. Free (no model). `all` adds the slow checks."""
+        from kratos.collect import checks as _checks  # noqa: F401
+        from kratos.collect import runner as _runner
+        from kratos.collect.digest import ago
+
+        words = rest.lower().split()
+        classes = ("quick", "slow") if "all" in words else ("quick",)
+        force = "--force" in words or "force" in words
+        self._set_busy(True)
+        try:
+            self._emit_from_worker(R.note_line("Checking the basics on the target"
+                                               + (" (including the slow checks)" if len(classes) > 1 else "") + "…"))
+            report = _runner.prepare(None, self._data_dir, classes=classes, force=force,
+                                     budget=480.0 if len(classes) > 1 else None)
+        except Exception as e:  # noqa: BLE001
+            self._emit_from_worker(R.error_line(f"/collect failed: {e}"))
+            return
+        finally:
+            self._set_busy(False)
+        if report.disabled_reason:
+            self._emit_from_worker(R.note_line(f"Nothing to check: {report.disabled_reason}."))
+            return
+        for c in report.checks:
+            when = {"ran": "just now", "reused": ago(c.age_seconds), "waited": ago(c.age_seconds)}.get(c.source, "not this time")
+            if c.status in ("ok", "partial"):
+                self._emit_from_worker(R.note_line(f"✓ {c.label} ({when}): {c.summary}"))
+            else:
+                self._emit_from_worker(R.note_line(f"– {c.label}: {c.summary}"))
+        if report.correlation is not None:
+            ids = ", ".join(f"{f.get('id')} ({f.get('severity')})" for f in report.findings) or "no findings"
+            self._emit_from_worker(R.note_line(f"{ids}   [{report.elapsed:.1f}s]"))
 
     # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")
@@ -4074,6 +4120,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                    "(no LLM; same steps every run)."),
             remember_label="/run — standard audit",
             remember_kind="deterministic audit",
+            standard=True,
         )
 
     def _pipeline_host_note(self, steps: list[Any], target_label: str) -> Text | None:
@@ -4107,6 +4154,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         remember_kind: str = "pipeline",
         pin_target: str | None = None,
         pipeline_name: str | None = None,
+        standard: bool = False,
     ) -> None:
         """Shared worker for any deterministic pipeline run (the built-in
         standard audit AND a user's kind='pipeline' preset). Renders mk2-first:
@@ -4116,7 +4164,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         set for this run and restored after (like /investigate-host), so a
         pipeline preset can target a specific host without changing the session
         target."""
-        from kratos.agent.pipeline import run_pipeline
+        from kratos.agent.pipeline import run_pipeline, run_standard_audit
 
         self._set_busy(True)
         # Per-preset target pin (restored in every exit path below).
@@ -4179,7 +4227,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.app.call_from_thread(self._refresh_footer)
 
         try:
-            outcome = run_pipeline(steps, self._data_dir, on_step=_on_step)
+            outcome = (run_standard_audit(self._data_dir, on_step=_on_step) if standard
+                       else run_pipeline(steps, self._data_dir, on_step=_on_step))
         except _CancelInvestigation:
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target."))
@@ -4815,6 +4864,13 @@ class SessionScreen(ResilientWorkerHost, Screen):
                                              preselect={"action_id": fix["action_id"], "values": fix["values"]}))
 
     def _render_step(self, step: dict) -> None:
+        if step.get("status") == "collection":
+            # What Kratos checked by itself before the model's first step (kratos.collect): one line.
+            if step.get("summary_line"):
+                self._emit_from_worker(R.note_line(step["summary_line"]))
+            return
+        if step.get("collected") and step.get("tool") != "correlate_findings":
+            return                                    # covered by the line above
         tool_name = step.get("tool")
         if tool_name:
             result, effective_status = R.unwrap_tool_result(step.get("observation"))

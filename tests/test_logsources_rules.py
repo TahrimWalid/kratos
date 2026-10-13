@@ -206,24 +206,18 @@ def test_the_model_sees_one_log_tool_and_tampering_runs_through_it(tmp_path, mon
 
 
 
-@pytest.mark.parametrize("goal, listed", [
-    ("check for suspicious activity on this system", False),     # eval A1: main's exact tool list
-    ("is my server okay", False),
-    ("who has privileged access on this system", False),
-    ("has anything on this system been tampered with", True),
-    ("what ran on this box last night?", True),
-    ("was anything installed this week", True),
-    ("did a service crash", True),
-    ("what did the firewall block", True),
-    ("who is probing the web server", True),
-    ("were the logs cleared", True),
-    ("list cron jobs that ran", True),
+@pytest.mark.parametrize("goal", [
+    "check for suspicious activity on this system", "is my server okay", "who has privileged access on this system",
+    "has anything on this system been tampered with", "what ran on this box last night?", "list cron jobs that ran",
 ])
-def test_read_host_logs_is_listed_only_for_goals_about_what_it_reads(goal, listed):
+def test_read_host_logs_is_listed_for_every_goal(goal):
+    """Kratos collects the basics by code now (phase A.0), so the 0.3 goal regex that hid this
+    tool from broad goals is gone: one fixed tool list."""
     from kratos.agent.loop import build_system_prompt
 
     kratos_config.set_active_target(TARGET)
-    assert ("- read_host_logs:" in build_system_prompt(goal)) is listed
+    assert "- read_host_logs:" in build_system_prompt(goal)
+    assert build_system_prompt(goal) == build_system_prompt("something else entirely")
 
 
 def test_a_call_by_name_runs_even_when_not_listed(tmp_path, monkeypatch):

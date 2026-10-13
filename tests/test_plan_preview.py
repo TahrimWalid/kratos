@@ -24,12 +24,11 @@ def test_exact_preview_lists_standard_audit_steps():
     p = preview_pipeline(standard_audit_steps(), "10.0.0.9")
     assert p.kind == "exact" and p.is_exact
     assert [i.ref for i in p.items] == [
-        "run_nmap_scan", "run_vuln_scan", "run_config_audit", "check_log_integrity",
-        "read_journalctl", "correlate_findings",
+        "run_nmap_scan", "measure_auth_activity", "check_log_integrity", "list_privileged_accounts",
+        "run_config_audit", "check_file_integrity", "run_vuln_scan", "run_yara_scan", "correlate_findings",
     ]
-    # required/optional carried from the step list
-    assert p.items[0].required is True   # run_nmap_scan required
-    assert p.items[1].required is False  # run_vuln_scan optional
+    # required/optional carried from the step list: only the correlation is required
+    assert [i.required for i in p.items] == [False] * 8 + [True]
     assert not p.empty
     assert all(i.known for i in p.items)
 

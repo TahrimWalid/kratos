@@ -300,6 +300,15 @@ def _check_budget(out: list[Check], data_dir: Path) -> None:
                     "Settings → Budget (limits, paused sources, prices)" if status == "warn" else ""))
 
 
+def _check_collection(out: list[Check], data_dir: Path) -> None:
+    """What Kratos checks by itself (kratos.collect): last run per check, logs catching up."""
+    from kratos.collect.report import doctor_row
+
+    status, detail = doctor_row(data_dir)
+    out.append(_row("collection", status, detail,
+                    "run /collect (or `kratos collect`) to refresh them" if status == "warn" else ""))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -308,6 +317,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     sections = list(_SECTIONS)
     if data_dir is not None:
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
+        sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
     for name, fn in sections:
         try:

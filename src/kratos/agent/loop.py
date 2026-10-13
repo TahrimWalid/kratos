@@ -191,14 +191,12 @@ _LOCAL_ONLY_AGENT_TOOLS = frozenset({"run_linux_command"})
 # check_log_integrity is offered as read_host_logs(source="tampering").
 _UNLISTED_AGENT_TOOLS = frozenset({"check_log_integrity"})
 
-# GATE EXPERIMENT (docs/phaseA/A.0 §2): is read_host_logs listed for every goal or for none?
-# Removed again once the gate has decided.
-import os as _os_gate
-
-
-def goal_unlisted_tools(goal: str | None) -> frozenset[str]:
-    return frozenset() if _os_gate.environ.get("KRATOS_GATE_HOSTLOGS", "unlisted") == "listed" else frozenset({"read_host_logs"})
-
+# read_host_logs is listed for every goal. (Phase 0.3 hid it behind a goal regex because any extra
+# tool entry made broad goals skip the port scan ~1 run in 5; since phase A.0 Kratos runs the port
+# scan -- and tampering, sign-ins, ... -- by code before the model starts, so that reason is gone.
+# Gate A.0 §2, flash-lite N=5 interleaved with main: listed vs unlisted made no measurable difference
+# on A1/A3/A4/A6/A8/C6/G1/L2, and listing keeps narrow questions (cron, firewall, installs) answerable.)
+# The tool list is FROZEN: tests/test_collect_loop.py::test_the_models_tool_list_is_frozen.
 
 # Built-in tools that read the investigated machine over SSH (or its sub-agent).
 # Kept tools that call ssh_remote are detected from their source.
@@ -538,10 +536,10 @@ _DIGEST_SENTENCE = (
 
 
 def build_system_prompt(goal: str | None = None, *, with_digest: bool = False) -> str:
-    """`goal`: the investigation goal. `with_digest`: Kratos collected the basics first
+    """`goal`: the investigation goal (kept for callers; the tool list no longer depends on it). `with_digest`: Kratos collected the basics first
     (kratos.collect), so the prompt says where to find them."""
     hidden = _agent_hidden_tools()
-    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS | goal_unlisted_tools(goal))
+    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS)
     local_tools = [t for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command")
                    if t not in hidden]
     local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "

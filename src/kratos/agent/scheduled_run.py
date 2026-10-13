@@ -191,12 +191,10 @@ def _lifecycle_for_message(data_dir: Path, report_json: Optional[str]) -> Option
 def _run_audit(data_dir: Path, gated: set[str]) -> tuple[str, list[dict[str, Any]], list[str], Optional[str]]:
     """Run the standard audit with gated-tool steps filtered out. Returns
     (status, findings, omitted_tools, error)."""
-    from kratos.agent.pipeline import run_pipeline, standard_audit_steps
+    from kratos.agent.pipeline import run_standard_audit, standard_audit_steps
 
-    steps = standard_audit_steps()
-    kept = [s for s in steps if s.tool not in gated]
-    omitted = [s.tool for s in steps if s.tool in gated]
-    outcome = run_pipeline(kept, data_dir)
+    omitted = [s.tool for s in standard_audit_steps() if s.tool in gated]
+    outcome = run_standard_audit(data_dir, skip_tools=frozenset(gated))
     status = "completed" if outcome.status == "completed" else "aborted"
     error = None if outcome.status == "completed" else (
         f"required step '{outcome.aborted_on}' did not succeed (target may be unreachable)")

@@ -24,6 +24,8 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 **Notices cleared or edited logs.** Kratos watches for logs cut short, replaced or rewritten outside normal rotation, journal files deleted from the middle of history, wiped login records and a stopped or emptied auditd — each finding labeled with its MITRE ATT&CK technique. Optionally, **seal a machine's journal**: the machine signs its own logs as it writes them, Kratos keeps the verification key on your computer only and checks the seals in the background, so even an edit by root shows up.
 
+**Checks the basics itself before answering.** Open ports, a day of sign-ins, signs of altered logs, who has root and the configuration are checked by Kratos — in parallel, in seconds, free, no model — so even a broad question always covers them; the model starts from that summary and digs deeper where your question needs it.
+
 **Remembers your decisions.** Kratos keeps each finding across checks, so you see what's new, what's still open and what got fixed — not the same list every time. Confirm a finding, accept a risk until a date, or mark it a false positive; a finding only comes back if it shows something you didn't see (a new attacker IP, a higher severity) or your acceptance runs out, and every view says how many findings your decisions hide.
 
 **Reach any box.** Over SSH (nothing installed on the target), or through a **sub-agent**: a small agent that dials out to Kratos — no inbound port, works behind NAT, best over Tailscale — streams live status and answers investigations with its own fixed set of reads.

@@ -265,3 +265,30 @@ def test_stop_before_collection_stops_the_run(data_dir, monkeypatch):
     monkeypatch.setattr("kratos.collect.runner.prepare", lambda *a, **k: pytest.fail("must not collect after Stop"))
     with pytest.raises(agent_loop.InvestigationStopped):
         agent_loop._collect_first(data_dir, lambda: True)
+
+
+# ----------------------------------------------------------------------------- the frozen tool list
+FROZEN_LISTED_TOOLS = frozenset({
+    "check_file_integrity", "check_ip_reputation", "collect_system_context", "compare_periods", "correlate_findings",
+    "list_open_files", "list_privileged_accounts", "list_processes", "measure_auth_activity", "parse_auth_log",
+    "read_host_logs", "read_journalctl", "run_config_audit", "run_nmap_scan", "run_vuln_scan", "run_yara_scan",
+    "send_notification", "state_as_of",
+})
+
+
+def test_the_models_tool_list_is_frozen():
+    """The tools the investigating model is shown (remote target) are exactly this set. Adding one, or
+    changing what the model sees, needs the tool-selection eval (docs/phaseA/README.md §4.2) with no
+    regression -- and then this set updated on purpose. New detection reads are collection checks."""
+    import re
+
+    kratos_config.set_active_target(TARGET)
+    prompt = agent_loop.build_system_prompt("anything")
+    section = prompt[prompt.index("AVAILABLE TOOLS:"):prompt.index("LOCAL HOST VS. MONITORED TARGET")]
+    builtin = {n for n, t in TOOL_REGISTRY.items() if t.handler.__module__ == "kratos.agent.tools"}
+    listed = frozenset(re.findall(r"^- ([a-z_]+):", section, re.M)) & builtin     # kept (self-written) tools come on top
+    assert listed == FROZEN_LISTED_TOOLS, (sorted(listed - FROZEN_LISTED_TOOLS), sorted(FROZEN_LISTED_TOOLS - listed))
+
+
+def test_the_goal_regex_is_gone():
+    assert not hasattr(agent_loop, "_HOST_LOGS_GOAL_RE") and not hasattr(agent_loop, "goal_unlisted_tools")

@@ -129,7 +129,9 @@ def _inputs_present(check: Check, data_dir: Path, target: str) -> bool:
     except Exception:  # noqa: BLE001 -- discovery trouble means "re-run", never a crash
         return False
     # "events" is not a findings-engine file: that check's result lives in the event store.
-    return all(found.get(cat) is not None for cat in check.inputs if cat != "events")
+    # "events" and "vuln_scan" are not files find_latest_inputs discovers (the event store; the
+    # findings engine loads the newest scan itself): nothing to check for those.
+    return all(found.get(cat) is not None for cat in check.inputs if cat in found)
 
 
 class _Box:
@@ -176,7 +178,10 @@ def prepare(
     dispatch: Dispatch | None = None,
     correlate: bool = True,
     now: float | None = None,
+    on_outcome: Callable[[CheckOutcome], None] | None = None,
 ) -> CollectionReport:
+    from kratos.collect import checks as _checks  # noqa: F401 -- the built-in checks register themselves on import
+
     data_dir = Path(data_dir) if data_dir is not None else kratos_config.get_active_data_dir()
     host = (target or kratos_config.get_active_target() or "").strip()
     started = time.time() if now is None else now
@@ -207,6 +212,11 @@ def prepare(
     def outcome(check: Check, **kw: Any) -> CheckOutcome:
         o = CheckOutcome(name=check.name, label=check.label, cost=check.cost, inputs=check.inputs, **kw)
         by_name[check.name] = o
+        if on_outcome is not None:
+            try:
+                on_outcome(o)
+            except Exception:  # noqa: BLE001 -- a display callback must not break collection
+                logger.debug("collect: on_outcome callback failed", exc_info=True)
         return o
 
     for check in selected:
@@ -246,11 +256,12 @@ def prepare(
     for check, thread, scope, box, t_start, ctx in running:
         limit = min(overall_deadline, mono_start + check.budget_seconds)
         box.done.wait(timeout=max(0.0, limit - time.monotonic()))
-        if not box.done.is_set():
+        out_of_time = not box.done.is_set()
+        if out_of_time:
             scope.cancel()
             box.done.wait(timeout=CANCEL_GRACE_SECONDS)
         finished = time.time()
-        if box.result is not None and not box.cancelled:
+        if box.result is not None and not box.cancelled and not out_of_time:
             res = box.result
             o = outcome(check, status=res.status, source="ran", summary=res.summary, gaps=list(res.coverage_gaps),
                         finished_at=finished, age_seconds=0.0, tools=list(res.tools), steps=list(ctx.steps))
@@ -258,7 +269,7 @@ def prepare(
                          finished_at=finished, status=res.status, summary=res.summary, gaps=o.gaps,
                          detail=res.detail)
         else:
-            if box.error is not None:
+            if box.error is not None and not out_of_time:
                 reason, detail = "the check failed", _short_error(box.error)
                 logger.warning("collect: %s failed: %s", check.name, detail)
                 summary, status = f"could not be checked ({reason})", "failed"
