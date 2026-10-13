@@ -177,8 +177,25 @@ def explicit_self_reference(message: str) -> bool:
     return bool(_SELF_REFERENCE_RE.search(message or ""))
 
 
+_SENTINEL_KINDS = {_INVESTIGATE_HOST_SENTINEL: "investigate_host", _CLARIFY_HOST_SENTINEL: "clarify_host",
+                   _INVESTIGATE_SENTINEL: "investigate"}
+
+
 def _parse(response: str) -> RouteResult:
     text = response.strip()
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(lines) > 1:
+        # More than one outcome in one reply (seen live: "COMMAND: target | <ip>" then
+        # "INVESTIGATE." for "check <ip> for failed logins"). Naming a machine in a
+        # question isn't asking to switch to it, so an investigation outcome on any
+        # line wins; otherwise only the first line can be a control, and its
+        # arguments never take in the lines after it.
+        for ln in lines:
+            kind = _SENTINEL_KINDS.get(ln.rstrip(".").strip().upper())
+            if kind is not None:
+                return RouteResult(kind=kind)
+        first = _parse(lines[0])
+        return first if first.kind != "chat" else RouteResult(kind="chat", reply=text)
     bare = text.rstrip(".").strip().upper()
     # Check the more specific host sentinel first (its string contains the plain
     # one as a prefix, though the match is exact-equality either way).

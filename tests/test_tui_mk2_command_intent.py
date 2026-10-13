@@ -144,3 +144,33 @@ def test_host_routing_needs_an_explicit_self_reference(monkeypatch):
     for msg in ("check your own host", "scan yourself", "how is this machine you run on",
                 "is the Kratos host itself okay"):
         assert ci.route_message(msg).kind == "investigate_host", msg
+
+
+# Seen live (phase 0.4 lab, gemini-3.1-flash-lite): asked "check 10.136.28.168 for
+# failed ssh logins", the model answered with TWO outcomes on two lines --
+# "COMMAND: target | 10.136.28.168" then "INVESTIGATE." -- and Kratos took the
+# whole text after "COMMAND:" as the target control, args "10.136.28.168\nINVESTIGATE.".
+# Naming a machine in a question isn't asking to switch to it: an investigation
+# outcome anywhere in the reply wins, and a control's arguments never span lines.
+@pytest.mark.parametrize("raw,kind", [
+    ("COMMAND: target | 10.136.28.168\nINVESTIGATE.", "investigate"),
+    ("COMMAND: target | 10.136.28.168\n\nINVESTIGATE", "investigate"),
+    ("INVESTIGATE\nCOMMAND: target | 10.0.0.5", "investigate"),
+    ("COMMAND: report |\nINVESTIGATE_HOST", "investigate_host"),
+    ("PRESET_RUN: nightly\nINVESTIGATE.", "investigate"),
+])
+def test_a_reply_with_an_investigation_outcome_on_any_line_is_an_investigation(raw, kind):
+    assert ci._parse(raw).kind == kind
+
+
+def test_a_control_argument_never_spans_lines():
+    r = ci._parse("COMMAND: target | 10.0.0.5\nalso, here is some explanation")
+    assert (r.kind, r.command, r.args) == ("command", "target", "10.0.0.5")
+    r = ci._parse("PRESET_NEW: weekly | review ssh hardening\nsure!")
+    assert (r.kind, r.preset_name, r.preset_goal) == ("preset_new", "weekly", "review ssh hardening")
+
+
+def test_a_multi_line_chat_reply_stays_chat():
+    text = "Yes -- I can check that.\nJust ask me to investigate the target."
+    r = ci._parse(text)
+    assert r.kind == "chat" and r.reply == text
