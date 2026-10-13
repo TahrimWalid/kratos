@@ -290,3 +290,20 @@ def test_a_value_only_an_attacker_wrote_still_needs_to_be_in_the_evidence(tmp_pa
     result = agent_loop.run_agent("g", data_dir, max_iters=6)
     assert result["recommended_commands"][0]["source"] == "withheld"
     assert result["recommended_commands"][0]["command"] == ""
+
+
+def test_evidence_from_a_run_collects_pids_hosts_and_findings():
+    transcript = [
+        {"tool": "list_processes", "observation": {"status": "ok", "result": {"processes": [
+            {"pid": 4321, "name": "miner", "peer": "203.0.113.9"}, {"PID": "777", "cmd": "x"}]}}},
+        {"tool": "correlate_findings", "args": {"ignored": "198.51.100.99"}, "observation": {"status": "ok"}},
+        {"iteration": 3, "status": "parse_error"},
+    ]
+    findings = [{"id": "AUTH-004", "title": "burst by mallory", "evidence": ["from 203.0.113.9"], "entities": ["mallory"]}]
+    ev = Evidence.from_run(transcript=transcript, findings=findings, goal="check web-01.example.org",
+                           targets=["ubuntu@10.136.28.168"])
+    assert ev.pids == frozenset({4321, 777})
+    assert ev.contains("203.0.113.9") and ev.in_findings("mallory") and not ev.in_findings("miner")
+    assert ev.knows_host("web-01.example.org") and ev.knows_host("10.136.28.168") and ev.knows_host("127.0.0.1")
+    assert "10.136.28.168" in ev.protected
+    assert not ev.contains("198.51.100.99")                 # tool ARGUMENTS the model chose are not evidence
