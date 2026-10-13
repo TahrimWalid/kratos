@@ -436,3 +436,29 @@ def test_a_homoglyph_username_gets_a_visible_marker_in_every_finding_view():
     cli.render_finding(console, finding)
     assert _text(console).count("⟨mixed scripts⟩") == 2
     assert "annotate_lookalikes" in Path(findings_screen.__file__).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", NAMES)
+def test_kratos_events_prints_stored_payloads_cleanly(name, tmp_path, monkeypatch, capsys):
+    """An event holds the machine's original bytes; `kratos events` (plain and --json) must still be safe to read."""
+    import json
+    from datetime import datetime, timedelta, timezone
+
+    from kratos.adapters.auth_log_parse import classify_auth_message
+    from kratos.cli import app
+    from kratos.events import converters as C
+    from kratos.events.store import EventStore
+
+    payload = CORPUS[name]
+    ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+    msg = f"Invalid user {payload} from 10.136.28.52 port 4000"
+    ctx = C.ReadContext(target="10.136.28.168", transport="ssh", read=C.READ_JOURNAL_AUTH, run_id="run1")
+    EventStore(tmp_path / "kratos.db").add([C.from_auth_event(classify_auth_message(ts, "t", "sshd", msg, msg), ctx=ctx)])
+    monkeypatch.setattr(app, "load_kept_tools", lambda: [])
+    for extra in ([], ["--json"]):
+        assert app.main(["--data-dir", str(tmp_path), "events", "--target", "10.136.28.168", "--since", "1 hour ago", *extra]) == 0
+        out = capsys.readouterr().out
+        assert_screen_safe(out, where=f"kratos events {extra} / {name}")
+        if extra:
+            for line in out.splitlines():
+                json.loads(line)                                  # still one valid JSON document per line

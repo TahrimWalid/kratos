@@ -106,3 +106,17 @@ def test_unset_fields_are_left_out_of_the_document():
     doc = [e for e in fixtures() if e.dataset == "kratos.privileged_accounts"][0].to_ecs()
     assert "source" not in doc and "redacted" not in doc["kratos"]
     assert doc["event"]["category"] == ["iam"]
+
+
+def test_an_unpaired_surrogate_in_a_log_line_does_not_lose_the_event(tmp_path):
+    # hostile or mis-decoded text: it cannot be encoded or stored, so it becomes U+FFFD and the event is kept
+    from kratos.events.store import EventStore
+
+    msg = "Invalid user a\ud800b from 10.136.28.52 port 4000"
+    ev = C.from_auth_event(classify_auth_message("2026-10-09T13:01:02+00:00", "t", "sshd", msg, msg),
+                           ctx=_ctx(C.READ_JOURNAL_AUTH))
+    assert "\ud800" not in (ev.message or "") + (ev.original or "") + (ev.user_name or "")
+    assert "a\ufffdb" in ev.message
+    store = EventStore(tmp_path / "kratos.db")
+    store.add([ev])
+    assert store.count("10.136.28.168") == 1

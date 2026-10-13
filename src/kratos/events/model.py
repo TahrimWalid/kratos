@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import re
 from dataclasses import dataclass, fields as dc_fields
 from datetime import datetime, timezone
 from typing import Any
@@ -80,6 +81,7 @@ class Event:
     truncated: bool = False
 
     def __post_init__(self) -> None:
+        _replace_lone_surrogates(self)
         _validate(self)
 
     @property
@@ -164,6 +166,22 @@ def _decode(f: F.Field, value: Any) -> Any:
             raise EventError(f"{f.name} must be an array")
         return tuple(value)
     return value
+
+
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _replace_lone_surrogates(event: "Event") -> None:
+    """Text from a machine can carry an unpaired surrogate (a hostile or mis-decoded line); it cannot be
+    encoded as UTF-8 or stored. Each one becomes U+FFFD so the event -- and the rest of its batch -- is
+    kept rather than lost (kratos.untrusted, A.4)."""
+    for f in dc_fields(event):
+        value = getattr(event, f.name)
+        if isinstance(value, str) and _LONE_SURROGATE.search(value):
+            object.__setattr__(event, f.name, _LONE_SURROGATE.sub("\ufffd", value))
+        elif isinstance(value, tuple) and any(isinstance(v, str) and _LONE_SURROGATE.search(v) for v in value):
+            object.__setattr__(event, f.name, tuple(_LONE_SURROGATE.sub("\ufffd", v) if isinstance(v, str) else v
+                                                    for v in value))
 
 
 def _validate(e: Event) -> None:
