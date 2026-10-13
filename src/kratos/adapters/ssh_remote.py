@@ -42,6 +42,7 @@ from typing import Any
 from kratos import kratos_config as _kconfig
 from kratos.subagent import reads as _reads
 from kratos.subagent import routing as _routing
+from kratos.utils import cancel as _cancel
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
     SSH_TARGET_KEY_PATH,
@@ -177,7 +178,7 @@ def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
     if (blocked := _ssh_blocked_result()) is not None:
         return blocked
     try:
-        result = subprocess.run(
+        result = _cancel.run(
             _base_ssh_argv() + [command],
             capture_output=True,
             text=True,
@@ -199,7 +200,7 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
     if (blocked := _ssh_blocked_result()) is not None:
         return blocked
     try:
-        result = subprocess.run(
+        result = _cancel.run(
             _base_ssh_argv() + [shell, "-s"],
             input=script,
             capture_output=True,

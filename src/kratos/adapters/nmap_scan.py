@@ -11,6 +11,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from kratos.utils import cancel as _cancel
+
 
 def run_nmap_scan(data_dir: Path, target: str) -> Path:
     """
@@ -43,7 +45,7 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     # for MCP, and swallowed by the TUI. Only the -oX XML is consumed downstream.
     print(f"[KRATOS] Running: {' '.join(cmd)}", file=sys.stderr)
     try:
-        proc = subprocess.run(cmd, check=True, capture_output=True, text=True, errors="replace")
+        proc = _cancel.run(cmd, check=True, capture_output=True, text=True, errors="replace")
     except FileNotFoundError as e:
         raise RuntimeError("nmap not found. Install with: sudo apt install nmap") from e
     except subprocess.CalledProcessError as e:

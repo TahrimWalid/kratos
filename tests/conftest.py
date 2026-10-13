@@ -12,6 +12,14 @@ def _no_real_self_ssh_probe(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture(autouse=True)
+def _collection_off_by_default(monkeypatch: pytest.MonkeyPatch):
+    """run_agent collects the basics (ports, sign-ins, ...) before the model starts. A test
+    that drives run_agent with scripted tools must not trigger real checks; the tests
+    of the collection layer itself delete this variable."""
+    monkeypatch.setenv("KRATOS_COLLECT", "off")
+
+
+@pytest.fixture(autouse=True)
 def _restore_process_globals():
     """Several tests set the active target / data folder (module globals, like /target
     does). Restore them after every test so a later test never runs against a machine
