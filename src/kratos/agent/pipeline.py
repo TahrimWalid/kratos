@@ -208,6 +208,15 @@ class PipelineOutcome:
             tally[sev] = tally.get(sev, 0) + 1
         return tally
 
+    @property
+    def lifecycle_line(self) -> Optional[str]:
+        """'New 2 · Still open 3 · Fixed 1 · Hidden by your decisions 4' from the
+        last correlation step, or None when no step correlated."""
+        for s in reversed(self.steps):
+            if s.tool == "correlate_findings" and isinstance(s.result, dict) and s.result.get("lifecycle"):
+                return str(s.result["lifecycle"])
+        return None
+
 
 _SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 

@@ -4210,6 +4210,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             ),
             d,
         )
+        if outcome.lifecycle_line:
+            self._emit_from_worker(Text(f"{outcome.lifecycle_line}  (/findings)", style=T.TEXT_MUTED))
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
 
         # Evaluate triggers against this run's findings. run_investigations

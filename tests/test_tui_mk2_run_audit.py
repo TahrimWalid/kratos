@@ -156,3 +156,34 @@ def test_pipeline_preset_run_records_turn_and_surfaces_findings(tmp_path, monkey
     assert any(t.get("status") == "final_answer"
                and "sweep" in (t.get("goal") or "") for t in turns), turns
     assert [f[0]["id"] for f in collected] == ["CORR-SSH-001"], collected
+
+
+def test_run_audit_shows_what_is_new_open_fixed_and_hidden(tmp_path, monkeypatch):
+    """The deterministic audit leads with the same lifecycle line an investigation
+    shows (it used to stop at the severity tally)."""
+    store, sid, screen = _make_screen(tmp_path, monkeypatch)
+    line = "New 1 · Still open 2 · Fixed 0 · Hidden by your decisions 3"
+
+    def _canned(tool, args, data_dir):
+        if tool == "correlate_findings":
+            return {"status": "ok", "result": {"findings": [{"id": "NET-002", "severity": "medium", "title": "t"}],
+                                               "count": 1, "lifecycle": line}}
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _canned)
+    shown: list[str] = []
+    original = screen._emit_from_worker
+    monkeypatch.setattr(screen, "_emit_from_worker", lambda r, *a, **k: (shown.append(str(r)), original(r, *a, **k)))
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/run")
+            for _ in range(400):
+                await pilot.pause()
+                if not screen._busy and screen._busy_since is None:
+                    break
+
+    asyncio.run(_run())
+    assert any(line in s for s in shown), shown

@@ -379,3 +379,14 @@ def test_raw_scan_rows_are_not_threaded_as_findings():
              PipelineStep("check_ip_reputation", when=lambda ctx: seen.setdefault("f", list(ctx.findings)) or True)]
     outcome = run_pipeline(steps, DATA_DIR, dispatch=dispatch)
     assert seen["f"] == [] and outcome.findings == []
+
+
+def test_outcome_lifecycle_line_comes_from_the_last_correlation():
+    from kratos.agent.pipeline import PipelineOutcome, PipelineStep, StepResult
+
+    def corr(line):
+        return StepResult(step=PipelineStep(tool="correlate_findings"), status="ok", result={"lifecycle": line})
+
+    assert PipelineOutcome(status="completed").lifecycle_line is None
+    out = PipelineOutcome(status="completed", steps=[corr("New 1 · a"), corr("New 2 · b")])
+    assert out.lifecycle_line == "New 2 · b"

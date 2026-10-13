@@ -1146,6 +1146,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     print(f"[KRATOS] Findings MD   -> {s.result['findings_md_file']}")
     else:
         print("[KRATOS] No findings raised by the correlation engine.")
+    if outcome.lifecycle_line:
+        print(f"[KRATOS] {outcome.lifecycle_line}  (kratos findings list)")
 
     if outcome.status != "completed":
         print(f"[KRATOS] ERROR: audit aborted — required step '{outcome.aborted_on}' did not succeed.")
