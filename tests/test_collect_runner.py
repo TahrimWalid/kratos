@@ -195,7 +195,7 @@ def test_two_processes_run_the_check_once(tmp_path):
     script = (
         "import sys, time\n"
         "from pathlib import Path\n"
-        "from kratos.collect import registry, runner\n"
+        "from kratos.collect import checks, registry, runner\n"
         "from kratos.collect.registry import Check, CheckResult\n"
         "d = Path(sys.argv[1])\n"
         "def run(ctx):\n"
