@@ -4,6 +4,8 @@ Each entry becomes one of:
 
 * a **template** command (`source: "template"`): the model named a catalogue id and values;
   code checked them against the evidence and rendered the command. No flags.
+* a **recognised** command (`source: "template"`, `recognised: True`): the model wrote the text, but it is
+  exactly a template's shape and its values pass the same evidence checks -- shown as the template command.
 * a **model** command (`source: "model"`): the model wrote the command text. It carries the
   `flags` found in it and is shown as "written by the model -- check before running".
 * a **withheld** entry (`source: "withheld"`): a template the checks refused. The reason is
@@ -23,6 +25,22 @@ MAX_COMMANDS = 12
 MAX_COMMAND_LEN = 500
 MAX_EXPLANATION_LEN = 500
 VALID_RUN_ON = ("target", "kratos_host")
+
+
+def _as_template(command: str, evidence: Evidence) -> tuple[str, str] | None:
+    """A command the model wrote that is, line for line, a catalogue template whose values pass the
+    evidence checks: (template id, the command code renders). Anything else -- another shape, or a
+    value the evidence doesn't support -- stays a model-written command."""
+    hit = catalogue.recognise(command)
+    if hit is None:
+        return None
+    tid, values = hit
+    if "pid" in values:
+        values = {**values, "pid": int(values["pid"])}
+    try:
+        return tid, catalogue.render_template(tid, values, evidence)
+    except catalogue.TemplateError:
+        return None
 
 
 def build_recommendations(raw: Any, evidence: Evidence | None = None) -> list[dict[str, Any]]:
@@ -54,6 +72,14 @@ def build_recommendations(raw: Any, evidence: Evidence | None = None) -> list[di
             if not command:
                 continue
             command = command[:MAX_COMMAND_LEN]
+            recognised = _as_template(command, evidence)
+            if recognised is not None:
+                tid, built = recognised
+                out.append({"command": built, "explanation": explanation, "run_on": run_on, "source": "template",
+                            "flags": [], "template": tid, "recognised": True})
+                if len(out) >= MAX_COMMANDS:
+                    break
+                continue
             out.append({"command": command, "explanation": explanation, "run_on": run_on, "source": "model",
                         "flags": [f.as_dict() for f in flags.flag_command(command, evidence)]})
         if len(out) >= MAX_COMMANDS:

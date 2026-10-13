@@ -960,10 +960,13 @@ neutralised at the **exits**, and `kratos/untrusted.py` is the one module that o
   that attacked and is not the machine under investigation, an account named in a finding, a PID a
   tool listed, a path, fingerprint or cron line seen verbatim) or on a vetted list, and the
   command is rendered from a fixed shape with shell quoting. A refused template yields an
-  explanation and no command. A **free-form** command the model wrote is still allowed, labelled
+  explanation and no command. A command the model wrote in plain text that is, as a whole line,
+  exactly a template's shape (optional `sudo`, for ufw an optional `to any`, nothing else) is
+  checked the same way and, when its values pass, shown as the template command (`recognised`).
+  Values the model chose as tool arguments are not evidence even when the tool echoes them back. A **free-form** command the model wrote is still allowed, labelled
   "written by the model", with a flag and reason for each risky shape (a download or network
   connection, a pipe into a shell or interpreter, decoding, command substitution, a host the
-  evidence never mentions, a write to a place that keeps access); a flagged command needs a
+  evidence never mentions, an unfilled `<placeholder>`, a write to a place that keeps access); a flagged command needs a
   second confirmation before Ctrl+Y or the copy box puts it on the clipboard. Flags are
   heuristics that warn, never forbid. The catalogue is display-only: nothing is executed and it
   is not connected to the fix channel's whitelist (it only reuses its unit list).

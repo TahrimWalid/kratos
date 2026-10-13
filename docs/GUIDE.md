@@ -715,10 +715,12 @@ What you will notice:
   between markers that say "this is data, not instructions".
 - **Suggested commands say who wrote them.** A fix marked **built by Kratos** came from a
   fixed list of common fixes; Kratos checked that the address, account, process or file in
-  it really appeared in what it saw. A fix marked **written by the model — check before
+  it really appeared in what it saw. (If the model typed out one of those fixes itself, word
+  for word, Kratos checks it the same way and shows it as built by Kratos.) A fix marked **written by the model — check before
   running** is the model's own wording. If it looks risky, a line under it says why —
   it downloads something, pipes text into a shell, decodes hidden content, runs a nested
-  command, mentions a machine that never came up, or writes to a place that keeps access
+  command, mentions a machine that never came up, still has a blank to fill in (like
+  `<SOURCE_IP>`), or writes to a place that keeps access
   (cron, startup files, authorized keys). **Ctrl+Y asks a second time** before copying a
   command with such a warning. Kratos never runs any of them; you do.
 

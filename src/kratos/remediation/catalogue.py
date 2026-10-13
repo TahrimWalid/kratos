@@ -264,3 +264,35 @@ def render_template(template_id: object, values: object, evidence: Evidence) -> 
         except TemplateError as e:
             raise TemplateError(f"{p.name}: {e}") from None
     return tpl.render(clean)
+
+
+# --- recognising a model-written command that IS a template ----------------------------------------------
+# A command the model wrote in plain text is often exactly a template's command. Matching is strict on
+# purpose: the WHOLE line, an optional leading `sudo` (the templates all run with it), and for ufw an
+# optional `to any` -- nothing else (no extra flags, no other arguments, no chaining). The values it
+# captures still go through the same evidence checks as a template the model named, so a recognised
+# command is exactly as safe as one built from scratch; one that fails them stays model-written (and
+# flagged as before).
+_S = r"(?:sudo\s+)?"
+_TOKEN = r"[^\s;&|<>$`\\'\"()]+"
+_RECOGNISERS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("fail2ban.ban_ip", re.compile(rf"^{_S}fail2ban-client\s+set\s+sshd\s+banip\s+(?P<ip>{_TOKEN})$")),
+    ("ufw.deny_from", re.compile(rf"^{_S}ufw\s+deny\s+from\s+(?P<ip>{_TOKEN})(?:\s+to\s+any)?$")),
+    ("service.enable_now", re.compile(rf"^{_S}systemctl\s+enable\s+--now\s+(?P<unit>{_TOKEN})$")),
+    ("service.restart", re.compile(rf"^{_S}systemctl\s+restart\s+(?P<unit>{_TOKEN})$")),
+    ("account.lock", re.compile(rf"^{_S}usermod\s+-L\s+(?P<user>{_TOKEN})$")),
+    ("account.expire", re.compile(rf"^{_S}chage\s+-E\s+0\s+(?P<user>{_TOKEN})$")),
+    ("process.kill", re.compile(rf"^{_S}kill\s+(?P<pid>\d{{1,8}})$")),
+    ("file.restrict_mode", re.compile(rf"^{_S}chmod\s+(?P<mode>{_TOKEN})\s+(?:--\s+)?(?P<path>/{_TOKEN})$")),
+)
+
+
+def recognise(command: str) -> tuple[str, dict[str, str]] | None:
+    """(template id, values) when `command` is, as a whole line, one of the template shapes above;
+    otherwise None. Says nothing about whether the values are acceptable -- `render_template` does."""
+    line = " ".join(str(command or "").split())
+    for tid, rx in _RECOGNISERS:
+        m = rx.match(line)
+        if m:
+            return tid, m.groupdict()
+    return None

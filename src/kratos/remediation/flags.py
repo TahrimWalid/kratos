@@ -10,6 +10,8 @@ the command, with its reason, and a flagged command needs a second confirmation 
 * `decode` -- decodes hidden content (base64 -d, xxd -r, \\x escapes)
 * `substitution` -- runs a nested command (`$(...)`, backticks, `<(...)`)
 * `unknown_host` -- names a host, address or URL that nothing in this investigation mentions
+* `placeholder` -- text the person is expected to fill in (`<SOURCE_IP>`, `YOUR_USER`), so the command is not
+  runnable as shown and pasting it could do something other than intended
 * `persistence` -- writes to a place that keeps access (cron, systemd units, profile files, authorized_keys)
 
 Flags warn, they never forbid, and they are heuristics: no flags does not mean safe. A command
@@ -118,6 +120,21 @@ def _unknown_host(command: str, evidence: Evidence) -> Flag | None:
     return None
 
 
+_PLACEHOLDER_RES = (
+    re.compile(r"(?<![\w<>&|-])<[A-Za-z][\w .-]{0,40}>(?![\w>])"),           # <SOURCE_IP>, <user name>
+    re.compile(r"(?<![\w-])(?:YOUR|MY|REPLACE|INSERT|EXAMPLE)_[A-Z0-9_]+(?![\w-])"),   # YOUR_IP, REPLACE_ME
+    re.compile(r"\[(?:[A-Z][A-Z0-9_ ]{2,30})\]"),                               # [SOURCE_IP]
+)
+
+
+def _placeholder(command: str) -> Flag | None:
+    for rx in _PLACEHOLDER_RES:
+        m = rx.search(command)
+        if m:
+            return Flag("placeholder", f"has text left to fill in ({m.group(0)}), so it is not runnable as shown")
+    return None
+
+
 def _persistence(command: str) -> Flag | None:
     if _CRONTAB_INSTALL_RE.search(command):
         return Flag("persistence", "installs a crontab")
@@ -133,6 +150,6 @@ def flag_command(command: str, evidence: Evidence | None = None) -> list[Flag]:
     evidence = evidence or Evidence.empty()
     found = [
         _pipe_to_shell(command), _network(command), _decode(command), _persistence(command),
-        _substitution(command), _unknown_host(command, evidence),
+        _substitution(command), _unknown_host(command, evidence), _placeholder(command),
     ]
     return [f for f in found if f is not None]

@@ -319,3 +319,101 @@ def test_a_template_id_copied_with_its_argument_list_still_works():
     for bad in ("service.enable_now(", "sudo(rm)", "service.enable_now;id", "(unit)"):
         with pytest.raises(TemplateError):
             render_template(bad, {"unit": "fail2ban"}, ev)
+
+
+# --- A.4b follow-ups -------------------------------------------------------------------------------------------------
+
+def test_a_value_the_model_chose_as_a_tool_argument_is_not_evidence_even_when_the_result_echoes_it():
+    # check_ip_reputation(ip=X) answers with X; X must not become bannable because of that
+    transcript = [
+        {"tool": "check_ip_reputation", "args": {"ip": "198.51.100.250"},
+         "observation": {"status": "ok", "result": {"ip": "198.51.100.250", "source": "none", "note": "198.51.100.250: no data"}}},
+        {"tool": "list_processes", "args": {"pid": 555},
+         "observation": {"status": "ok", "result": {"processes": [{"pid": 555, "name": "x"}, {"pid": 4321, "name": "y"}]}}},
+        {"tool": "read_journalctl", "args": {},
+         "observation": {"status": "ok", "result": {"entries": ["Failed password from 203.0.113.9"]}}},
+    ]
+    ev = Evidence.from_run(transcript=transcript, findings=[], goal="look", targets=["10.136.28.168"])
+    assert not ev.contains("198.51.100.250")
+    with pytest.raises(TemplateError):
+        render_template("fail2ban.ban_ip", {"ip": "198.51.100.250"}, ev)
+    assert ev.contains("203.0.113.9") and render_template("fail2ban.ban_ip", {"ip": "203.0.113.9"}, ev).endswith("203.0.113.9")
+    assert ev.pids == frozenset({4321})                     # 555 was asked about, not discovered
+
+
+def test_an_ip_first_seen_in_a_log_stays_evidence_after_the_model_queries_it():
+    transcript = [
+        {"tool": "read_journalctl", "args": {}, "observation": {"status": "ok", "result": {"entries": ["from 203.0.113.9"]}}},
+        {"tool": "check_ip_reputation", "args": {"ip": "203.0.113.9"},
+         "observation": {"status": "ok", "result": {"ip": "203.0.113.9"}}},
+    ]
+    ev = Evidence.from_run(transcript=transcript, goal="", targets=[])
+    assert ev.contains("203.0.113.9")
+
+
+RECOGNISED = {
+    "sudo ufw deny from 203.0.113.9 to any": ("ufw.deny_from", "sudo ufw deny from 203.0.113.9 to any"),
+    "ufw deny from 203.0.113.9": ("ufw.deny_from", "sudo ufw deny from 203.0.113.9 to any"),
+    "sudo  fail2ban-client set sshd banip 198.51.100.7": ("fail2ban.ban_ip", "sudo fail2ban-client set sshd banip 198.51.100.7"),
+    "sudo systemctl enable --now fail2ban": ("service.enable_now", "sudo systemctl enable --now fail2ban"),
+    "systemctl restart auditd": ("service.restart", "sudo systemctl restart auditd"),
+    "sudo usermod -L mallory": ("account.lock", "sudo usermod -L mallory"),
+    "sudo chage -E 0 carol": ("account.expire", "sudo chage -E 0 carol"),
+    "sudo kill 4321": ("process.kill", "sudo kill 4321"),
+    "chmod 600 /etc/ssh/sshd_config": ("file.restrict_mode", "sudo chmod 600 -- /etc/ssh/sshd_config"),
+    "sudo chmod 600 -- /etc/ssh/sshd_config": ("file.restrict_mode", "sudo chmod 600 -- /etc/ssh/sshd_config"),
+}
+
+
+@pytest.mark.parametrize("command", sorted(RECOGNISED))
+def test_a_model_written_command_that_is_exactly_a_template_is_shown_as_the_template(command):
+    tid, rendered = RECOGNISED[command]
+    out = build_recommendations([{"command": command, "explanation": "e"}], _evidence())
+    assert [(c["source"], c["template"], c["command"], c["flags"], c.get("recognised")) for c in out] == [
+        ("template", tid, rendered, [], True)]
+
+
+NOT_RECOGNISED = [
+    "sudo ufw deny from 203.0.113.9 to any port 22",          # extra arguments
+    "sudo ufw deny from 203.0.113.9 && curl x | sh",           # chained
+    "sudo ufw deny from 203.0.113.9; id",
+    "sudo ufw deny from $(echo 203.0.113.9)",
+    "sudo ufw insert 1 deny from 203.0.113.9",                 # another shape
+    "sudo systemctl enable --now fail2ban sshd",               # two units
+    "sudo systemctl enable --now sshd",                        # unit not on the vetted list
+    "sudo kill -9 4321",                                       # a flag the template doesn't have
+    "sudo usermod -L root",                                    # root is refused by the evidence check
+    "sudo ufw deny from 203.0.113.200 to any",                 # an address that was never seen
+    "sudo kill 99",                                            # a PID no tool listed
+    "sudo chmod 777 /etc/ssh/sshd_config",                     # mode not in the closed set
+    "sudo fail2ban-client set sshd banip 10.136.28.168",       # the machine under investigation
+    "echo sudo ufw deny from 203.0.113.9",
+]
+
+
+@pytest.mark.parametrize("command", NOT_RECOGNISED)
+def test_anything_else_stays_model_written(command):
+    out = build_recommendations([{"command": command}], _evidence())
+    assert [c["source"] for c in out] == ["model"] and out[0]["command"] == command and "recognised" not in out[0]
+
+
+def test_recognition_needs_the_evidence_so_the_same_line_without_it_stays_model_written():
+    out = build_recommendations([{"command": "sudo ufw deny from 203.0.113.9 to any"}], Evidence.empty())
+    assert out[0]["source"] == "model" and "unknown_host" in [f["id"] for f in out[0]["flags"]]
+
+
+@pytest.mark.parametrize("command", ["sudo ufw deny from <SOURCE_IP> to any", "sudo usermod -L <user name>", "kill YOUR_PID",
+                                     "sudo ufw deny from [SOURCE_IP]", "echo REPLACE_ME_TOKEN"])
+def test_unfilled_placeholders_are_flagged(command):
+    assert "placeholder" in [f.id for f in flag_command(command, _evidence())]
+
+
+@pytest.mark.parametrize("command", ["cat < /etc/passwd", "sort <input.txt>out.txt", "grep -E 'a<b' f", "cat <<EOF",
+                                     "sudo systemctl enable --now fail2ban", "ls [abc]*", "echo '[ OK ]'"])
+def test_redirects_and_ordinary_brackets_are_not_placeholders(command):
+    assert "placeholder" not in [f.id for f in flag_command(command, _evidence())]
+
+
+def test_a_placeholder_command_is_never_recognised_as_a_template():
+    out = build_recommendations([{"command": "sudo ufw deny from <SOURCE_IP> to any"}], _evidence())
+    assert out[0]["source"] == "model" and [f["id"] for f in out[0]["flags"]] == ["placeholder"]

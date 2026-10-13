@@ -69,6 +69,31 @@ def _walk_pids(value: Any, out: set[int], depth: int = 0) -> None:
             _walk_pids(v, out, depth + 1)
 
 
+def _argument_values(args: Any) -> set[str]:
+    """Every scalar the model passed in a tool call's arguments, as text."""
+    found: list[str] = []
+    _walk_strings(args, found)
+    if isinstance(args, dict):
+        found += [str(v) for v in args.values() if isinstance(v, int) and not isinstance(v, bool)]
+    return {v.strip() for v in found if v and v.strip()}
+
+
+def _without_echoes(strings: list[str], echoed: set[str]) -> list[str]:
+    """`strings` minus the model's own argument values: a string equal to one is dropped, and an
+    occurrence inside a longer string is cut out (whole-token matches, 3+ characters)."""
+    if not echoed:
+        return strings
+    patterns = [re.compile(r"(?<![\w.-])" + re.escape(v) + r"(?![\w-])") for v in echoed if len(v) >= 3]
+    out: list[str] = []
+    for text in strings:
+        if text.strip() in echoed:
+            continue
+        for rx in patterns:
+            text = rx.sub(" ", text)
+        out.append(text)
+    return out
+
+
 def hosts_in(text: str) -> set[str]:
     """Every IP address, URL host, user@host host and bare dotted hostname that `text` mentions
     (lower-cased). A dotted word that is only a file name (`sshd_config.bak`, `unit.service`)
@@ -131,8 +156,15 @@ class Evidence:
                 continue
             obs = step.get("observation")
             if obs is not None:
-                _walk_strings(obs, texts)
-                _walk_pids(obs, pids)
+                # A tool echoes back what it was asked about (check_ip_reputation repeats its `ip`), so
+                # a value the MODEL chose as an argument is not evidence just because the result repeats it.
+                echoed = _argument_values(step.get("args"))
+                step_texts: list[str] = []
+                _walk_strings(obs, step_texts)
+                texts.extend(_without_echoes(step_texts, echoed))
+                step_pids: set[int] = set()
+                _walk_pids(obs, step_pids)
+                pids |= {p for p in step_pids if str(p) not in echoed}
         finding_texts: list[str] = []
         for f in findings or ():
             if isinstance(f, dict):
