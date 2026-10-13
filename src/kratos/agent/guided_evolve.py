@@ -857,9 +857,8 @@ _RECOVERY: dict[str, str] = {
 def _render_claims(prompter: GuidedPrompter, claims: HarnessClaims, *, drafted: bool) -> None:
     """Show the plain-English review of what the test will check. This is the
     non-expert's window into the trust anchor: they review MEANING, not pytest."""
-    from rich.panel import Panel
-    from rich.text import Text as _Text
-
+    from kratos.untrusted_rich import SafePanel as Panel
+    from kratos.untrusted_rich import SafeText as _Text
     body = _Text()
     if claims.parse_error:
         body.append(f"⚠ {claims.parse_error}\n", style=_console.ATTENTION)

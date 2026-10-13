@@ -275,8 +275,7 @@ def _print_trailing_timestamp(console, left: str, when: datetime | None = None) 
     the live input line uses prompt_toolkit's own `rprompt` instead, since
     that content's final width isn't known until the user finishes typing
     -- see run_session's main loop."""
-    from rich.table import Table
-
+    from kratos.untrusted_rich import SafeTable as Table
     # Stored timestamps are absolute UTC; render `when` in the display zone.
     # A live call (when=None) shows the current instant in that same zone.
     hhmm = _display_stored(when, "%H:%M") if when is not None else _display_now("%H:%M")
@@ -367,8 +366,7 @@ def _build_sessions_table(sessions: list[dict[str, Any]]):
     `s["name"]` if set, a dim placeholder if not; `s["name"]` is always a
     real dict key here since every SessionStore query builds these dicts
     via `SELECT *`, so a NULL name just becomes None, never a missing key."""
-    from rich.table import Table
-
+    from kratos.untrusted_rich import SafeTable as Table
     table = Table(show_header=True, header_style="bold")
     table.add_column("#")
     table.add_column("ID")
@@ -391,8 +389,7 @@ def _build_sessions_table(sessions: list[dict[str, Any]]):
 
 
 def _render_chooser(console, sessions: list[dict[str, Any]]) -> None:
-    from rich.panel import Panel
-
+    from kratos.untrusted_rich import SafePanel as Panel
     console.print(
         Panel(
             _build_sessions_table(sessions),
@@ -423,7 +420,7 @@ def _render_archived_chooser(console, sessions: list[dict[str, Any]]) -> None:
     chooser (_build_sessions_table), different title/footer since the only
     actions here are "restore and resume" or "go back", not the full
     Enter/n/q command set."""
-    from rich.panel import Panel
+    from kratos.untrusted_rich import SafePanel as Panel
     from rich.markup import escape
 
     console.print(
@@ -481,7 +478,7 @@ def _choose_more_sessions(
         _console.render_note(console, "No additional sessions.")
         return None
 
-    from rich.panel import Panel
+    from kratos.untrusted_rich import SafePanel as Panel
     from rich.markup import escape
 
     console.print(
@@ -901,8 +898,7 @@ def _build_full_resume_context(history: list[dict[str, Any]], data_dir: Path) ->
 # ---------------------------------------------------------------------------
 
 def _cmd_help(console, **_: Any) -> None:
-    from rich.table import Table
-
+    from kratos.untrusted_rich import SafeTable as Table
     console.print("\n[bold]Session / navigation[/]")
     t = Table(show_header=False, box=None)
     t.add_row("/help", "List available commands")
@@ -1967,8 +1963,7 @@ def _run_first_run_wizard(console, data_dir: Path) -> bool:
     if config.get("trusted"):
         return True
 
-    from rich.panel import Panel
-
+    from kratos.untrusted_rich import SafePanel as Panel
     console.print(
         Panel(
             "Do you trust the files in this folder?\n\n"

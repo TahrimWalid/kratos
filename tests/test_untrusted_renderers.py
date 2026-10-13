@@ -380,20 +380,25 @@ def test_mcp_replies_keep_their_shape():
 
 # --- the structural source scans ---------------------------------------------------------------------------------------
 
-_FORBIDDEN_TUI_IMPORTS = re.compile(
-    r"^\s*from rich\.(text import Text|panel import Panel|table import Table|syntax import Syntax)\b"
-    r"|^\s*from textual\.widgets import [^\n]*\b(Static|Label|Button|DataTable)\b"
-    r"|^\s*from textual\.widgets\.option_list import [^\n]*\bOption\b(?!DoesNotExist)",
-    re.M)
+_FORBIDDEN_RICH_IMPORTS = re.compile(
+    r"^\s*from rich\.(text import Text|panel import Panel|table import Table|syntax import Syntax)\b", re.M)
+_FORBIDDEN_TEXTUAL_IMPORTS = re.compile(
+    r"^\s*from textual\.widgets import [^\n]*\b(Static|Label|Button|DataTable)\b"
+    r"|^\s*from textual\.widgets\.option_list import [^\n]*\bOption\b(?!DoesNotExist)", re.M)
+# the modules that define the safe classes, and one that only measures text widths
+_ALLOWED = {"untrusted.py", "untrusted_rich.py", "tui_mk2/safe_widgets.py", "tui_mk2/table_fit.py"}
 
 
-def test_no_tui_module_builds_text_from_a_machine_with_the_unsafe_classes():
+def test_no_module_builds_text_from_a_machine_with_the_unsafe_rich_classes():
     offenders = []
-    for path in sorted((SRC / "tui_mk2").rglob("*.py")):
-        if path.name in ("safe_widgets.py", "table_fit.py"):
+    for path in sorted(SRC.rglob("*.py")):
+        rel = path.relative_to(SRC).as_posix()
+        if rel in _ALLOWED:
             continue
-        for m in _FORBIDDEN_TUI_IMPORTS.finditer(path.read_text(encoding="utf-8")):
-            offenders.append(f"{path.relative_to(SRC)}: {m.group(0).strip()}")
+        text = path.read_text(encoding="utf-8")
+        for rx in (_FORBIDDEN_RICH_IMPORTS, _FORBIDDEN_TEXTUAL_IMPORTS):
+            for m in rx.finditer(text):
+                offenders.append(f"{rel}: {m.group(0).strip()}")
     assert not offenders, "use kratos.untrusted_rich / tui_mk2.safe_widgets instead:\n" + "\n".join(offenders)
 
 

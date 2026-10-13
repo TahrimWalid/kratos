@@ -34,10 +34,7 @@ from typing import Any
 
 from rich.console import Console, ConsoleDimensions, Group
 from rich.live import Live
-from rich.panel import Panel
 from rich.spinner import Spinner
-from rich.syntax import Syntax
-from rich.table import Table
 
 from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_FINDING_SUMMARY
 
@@ -45,7 +42,8 @@ from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_F
 # cleaning kind, markup strings escape what they interpolate, and the console scrubs
 # whatever it finally draws.
 from kratos.untrusted import annotate_lookalikes, display_text, for_display, markup_safe  # noqa: E402
-from kratos.untrusted_rich import SafeText as Text, scrub_segments  # noqa: E402
+from kratos.untrusted_rich import (  # noqa: E402
+    SafePanel as Panel, SafeSyntax as Syntax, SafeTable as Table, SafeText as Text, scrub_segments)
 
 _no_color_default = False
 _console: Console | None = None
@@ -223,7 +221,7 @@ def render_session_header(console: Console, goal: str, max_iters: int, ssh_targe
         f"Max steps   : {max_iters}\n\n"
     )
     body.append_text(Text.from_markup(LEGEND))
-    console.print(Panel(body, title=f"[{ACCENT}]Kratos[/] -- investigation session", border_style=ACCENT))
+    console.print(Panel(body, title=Text.from_markup(f"[{ACCENT}]Kratos[/] -- investigation session"), border_style=ACCENT))
 
 
 def unwrap_tool_result(observation: Any) -> tuple[Any, str]:

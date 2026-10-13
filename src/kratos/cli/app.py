@@ -22,8 +22,8 @@ import json
 import shutil
 import time
 from pathlib import Path
-from rich.panel import Panel
-from rich.table import Table
+from kratos.untrusted_rich import SafePanel as Panel
+from kratos.untrusted_rich import SafeTable as Table
 from kratos import paths as _paths
 from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
