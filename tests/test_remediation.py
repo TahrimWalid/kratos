@@ -156,6 +156,9 @@ CLEAN = ["sudo systemctl enable --now fail2ban", "sudo ufw status verbose", "ss 
          "sudo fail2ban-client set sshd banip 203.0.113.9", "cat /etc/ssh/sshd_config", "crontab -l", "crontab -u bob -l",
          "sudo grep -c 'Failed password' /var/log/auth.log", "ls -la /etc/cron.d", "sudo journalctl -u ssh --since today",
          "sudo usermod -L mallory", "sudo chmod 600 /etc/ssh/sshd_config", "find / -perm -4000 -type f 2>/dev/null",
+         # hardening advice edits sshd_config all the time: not a persistence write
+         "sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak && sudo nano /etc/ssh/sshd_config",
+         "sudo sed -i 's/^#\\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config",
          "sudo kill 4321", "ping -c1 203.0.113.9", "ssh-keygen -lf /home/carol/.ssh/authorized_keys"]
 
 

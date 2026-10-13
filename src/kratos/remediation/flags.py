@@ -66,7 +66,7 @@ _PERSISTENCE_PLACES = re.compile(
     r"|/lib/systemd/[\w./-]*|~?/?\.config/systemd/[\w./-]*|/etc/init\.d/[\w.-]*|/etc/rc\.local|/etc/profile(?:\.d/[\w.-]*)?"
     r"|/etc/(?:bash\.bashrc|environment|ld\.so\.preload|ld\.so\.conf\.d/[\w.-]*|sudoers(?:\.d/[\w.-]*)?)"
     r"|(?:~\w*|/home/[\w.-]+|/root)?/?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|xinitrc)"
-    r"|authorized_keys2?|/etc/ssh/sshd_config(?:\.d/[\w.-]*)?)")
+    r"|authorized_keys2?)")
 _WRITE_VERB_RES = (
     re.compile(r">>?"),
     re.compile(r"(?<![\w-])(?:tee|cp|mv|ln|install|dd|rsync|scp|sponge|truncate)(?![\w-])"),
