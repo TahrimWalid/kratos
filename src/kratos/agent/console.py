@@ -38,9 +38,14 @@ from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.text import Text
 
 from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_FINDING_SUMMARY
+
+# Text from a monitored machine is untrusted (kratos.untrusted, A.4): Text here is the
+# cleaning kind, markup strings escape what they interpolate, and the console scrubs
+# whatever it finally draws.
+from kratos.untrusted import display_text, for_display, markup_safe  # noqa: E402
+from kratos.untrusted_rich import SafeText as Text, scrub_segments  # noqa: E402
 
 _no_color_default = False
 _console: Console | None = None
@@ -181,6 +186,12 @@ class _MarginConsole(Console):
         dims = super().size
         return ConsoleDimensions(max(1, dims.width - _WIDTH_MARGIN), dims.height)
 
+    def render(self, renderable, options=None):
+        """Everything this console draws passes the scrubber last: nothing Kratos writes
+        legitimately holds an escape sequence, so one that got this far came from the
+        machine under investigation (kratos.untrusted_rich)."""
+        yield from scrub_segments(super().render(renderable, options))
+
 
 def get_console() -> Console:
     global _console
@@ -205,13 +216,13 @@ def plain_label(tool_name: str) -> str:
 
 
 def render_session_header(console: Console, goal: str, max_iters: int, ssh_target: str, backend: str) -> None:
-    body = (
+    body = Text(
         f"Goal        : {goal}\n"
         f"SSH target  : {ssh_target}\n"
         f"Model       : {backend}\n"
         f"Max steps   : {max_iters}\n\n"
-        f"{LEGEND}"
     )
+    body.append_text(Text.from_markup(LEGEND))
     console.print(Panel(body, title=f"[{ACCENT}]Kratos[/] -- investigation session", border_style=ACCENT))
 
 
@@ -247,17 +258,19 @@ def unwrap_tool_result(observation: Any) -> tuple[Any, str]:
 
 def render_tool_call(console: Console, name: str, status: str) -> None:
     icon = {"done": f"[{SAFE}]✓[/]", "error": f"[{FAILURE}]✗[/]", "warn": f"[{ATTENTION}]![/]"}.get(status, f"[{SAFE}]✓[/]")
-    console.print(f"{icon} [bold]{name}[/] -- {plain_label(name)}")
+    console.print(f"{icon} [bold]{markup_safe(name)}[/] -- {markup_safe(plain_label(name))}")
 
 
 _METADATA_NOTE_CHAR_CAP = 110
 
 
 def _truncate_note(text: str, limit: int = _METADATA_NOTE_CHAR_CAP) -> str:
-    text = str(text)
-    if len(text) <= limit:
-        return text
-    return text[:limit].rstrip() + "... (full detail in the findings report)"
+    """A note's text shortened and made safe to put inside a markup string (the callers
+    interpolate the result into `[dim ...]...[/]`): cleaned and markup-escaped."""
+    text = for_display(str(text))
+    if len(text) > limit:
+        text = text[:limit].rstrip() + "... (full detail in the findings report)"
+    return markup_safe(text)
 
 
 def render_tool_metadata_notes(console: Console, result: dict[str, Any]) -> None:
@@ -295,7 +308,7 @@ def render_transport_note(console: Console, result: Any) -> None:
     note = result.get("transport") if isinstance(result, dict) else None
     if isinstance(note, str) and note:
         style = ATTENTION if ("SSH" in note and "failed" in note) else TEXT_SECONDARY
-        console.print(f"    [dim {style}]↳ {note}[/]", highlight=False)
+        console.print(f"    [dim {style}]↳ {markup_safe(note)}[/]", highlight=False)
 
 
 def render_window_note(console: Console, result: Any) -> None:
@@ -309,7 +322,7 @@ def render_window_note(console: Console, result: Any) -> None:
     if isinstance(pct, (int, float)):
         cov = "counted in full" if pct >= 100 else f"PARTIAL ({pct:g}% of the window covered)"
     else:
-        cov = f"PARTIAL (nothing before {window.get('oldest_returned')})" if window.get("truncated") else "complete"
+        cov = f"PARTIAL (nothing before {markup_safe(window.get('oldest_returned'))})" if window.get("truncated") else "complete"
     clock = f"; {window['clock']}" if window.get("clock") else ""
     style = ATTENTION if (window.get("truncated") or window.get("clock")) else TEXT_SECONDARY
     console.print(f"    [dim {style}]window {_truncate_note(text)} · {cov}{_truncate_note(clock)}[/]")
@@ -337,19 +350,19 @@ def render_finding(console: Console, finding: dict[str, Any]) -> None:
 
 
 def render_note(console: Console, text: str, style: str = ATTENTION) -> None:
-    console.print(f"[{style}]![/{style}] {text}")
+    console.print(f"[{style}]![/{style}] {markup_safe(text)}")
 
 
 def render_error(console: Console, text: str) -> None:
-    console.print(f"[{FAILURE}]✗ {text}[/]")
+    console.print(f"[{FAILURE}]✗ {markup_safe(text)}[/]")
 
 
 def render_success(console: Console, text: str) -> None:
-    console.print(f"[{SAFE}]✓[/] {text}")
+    console.print(f"[{SAFE}]✓[/] {markup_safe(text)}")
 
 
 def render_result_panel(console: Console, title: str, body: str, border_style: str) -> None:
-    console.print(Panel(body, title=title, border_style=border_style))
+    console.print(Panel(Text(str(body)), title=Text(str(title)), border_style=border_style))
 
 
 def render_evolve_suggestion(console: Console, name: str, description: str) -> None:
@@ -362,11 +375,15 @@ def render_evolve_suggestion(console: Console, name: str, description: str) -> N
     cli/repl.py's /evolve command is the only thing that can ever start
     evo-loop, matching the project's standing no-auto-escalation
     principle."""
-    body = (
-        f"[bold]{name}[/bold]\n{description}\n\n"
-        "[dim]Run [/dim][bold]/evolve[/bold][dim] to have Kratos build this, or "
-        '[/dim][bold]/evolve "<your own idea>"[/bold][dim] to propose something else.[/dim]'
-    )
+    # name and description are model-written (and the model reads attacker text): Text, not markup
+    body = Text()
+    body.append(str(name), style="bold")
+    body.append(f"\n{description}\n\n")
+    body.append("Run ", style="dim")
+    body.append("/evolve", style="bold")
+    body.append(" to have Kratos build this, or ", style="dim")
+    body.append('/evolve "<your own idea>"', style="bold")
+    body.append(" to propose something else.", style="dim")
     console.print(Panel(body, title="Evo-loop suggestion", border_style=ATTENTION))
 
 
@@ -396,7 +413,7 @@ def render_evolve_harness_template(
         title = f"Starter harness (save to {suggested_path}, then edit the TODOs before running /evolve again)"
     console.print(
         Panel(
-            Syntax(template_text, "python", word_wrap=True, background_color="default"),
+            Syntax(for_display(template_text), "python", word_wrap=True, background_color="default"),
             title=title,
             border_style=ATTENTION,
         )
@@ -421,7 +438,7 @@ def render_target_setup_checklist(console: Console, checklist_text: str) -> None
     byte-correct either way."""
     console.print(
         Panel(
-            Syntax(checklist_text, "bash", word_wrap=False, background_color="default"),
+            Syntax(for_display(checklist_text), "bash", word_wrap=False, background_color="default"),
             title="Target setup checklist -- run these ON the target, Kratos does not run them",
             border_style=ATTENTION,
         )
@@ -441,7 +458,7 @@ def render_target_probe_results(console: Console, checks: list[dict[str, str]]) 
     table.add_column("Detail")
     for c in checks:
         style = status_style.get(c["status"], TEXT_PRIMARY)
-        table.add_row(check_label(c["check"]), f"[{style}]{c['status']}[/{style}]", c["detail"])
+        table.add_row(Text(check_label(c["check"])), Text(str(c["status"]), style=style), Text(str(c["detail"])))
     console.print(table)
 
 
@@ -464,11 +481,11 @@ def render_evolve_tool_list(console: Console, rows: list[dict[str, Any]]) -> Non
     for r in rows:
         kind_style = ACCENT if r["kind"] == "kept" else TEXT_SECONDARY
         table.add_row(
-            r["name"],
-            f"[{kind_style}]{r['kind']}[/{kind_style}]",
+            Text(str(r["name"])),
+            Text(str(r["kind"]), style=kind_style),
             "yes" if r["requires_approval"] else "no",
-            r.get("kept_at") or "-",
-            r["description"],
+            Text(str(r.get("kept_at") or "-")),
+            Text(str(r["description"])),
         )
     console.print(table)
 
@@ -487,7 +504,7 @@ def lifecycle_line(transcript: list[dict[str, Any]] | None) -> str | None:
 
 
 def render_session_summary(console: Console, events: list[str]) -> None:
-    body = "\n".join(f"- {e}" for e in events) if events else "(no notable events)"
+    body = Text("\n".join(f"- {e}" for e in events) if events else "(no notable events)")
     console.print(Panel(body, title="Session summary", border_style=ACCENT))
 
 
@@ -540,7 +557,7 @@ def _test_summary_table(value: str) -> Table:
         result = result_m.group(1) if result_m else "?"
         name = text.split("::", 1)[0] if "::" in text else text
         style = {"PASSED": SAFE, "FAILED": FAILURE, "ERROR": FAILURE, "SKIPPED": ATTENTION}.get(result, "")
-        table.add_row(name, f"[{style}]{result}[/{style}]" if style else result)
+        table.add_row(Text(name), Text(result, style=style))
     return table
 
 
@@ -568,7 +585,7 @@ def render_approval_situation(console: Console, title: str, details: dict[str, A
         if _looks_like_test_summary(text):
             renderables.append(_test_summary_table(text))
         elif _is_code_like(text):
-            renderables.append(Syntax(text, "python", word_wrap=True, background_color="default"))
+            renderables.append(Syntax(for_display(text), "python", word_wrap=True, background_color="default"))
         else:
             renderables.append(Text(text))
         renderables.append(Text(""))

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from kratos.utils.latest_file import latest_file, files_in_date_range
+from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 
 
 _SEV_ORDER = {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}

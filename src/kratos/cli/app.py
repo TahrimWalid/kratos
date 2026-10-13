@@ -56,6 +56,7 @@ from kratos.agent import console as _console
 from kratos.kratos_config import get_active_target
 from kratos.run_context import run_scope
 from kratos.llm_config import LLM_OPENAI_MODEL
+from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 
 PROJECT_NAME = "kratos"
 DEFAULT_DATA_DIR = _paths.default_data_dir()
@@ -459,7 +460,7 @@ def cmd_events(args: argparse.Namespace) -> int:
     events = store.query(target, **filters, limit=min(args.limit, MAX_LIMIT), newest_first=not args.oldest_first)
     if args.json:
         for e in events:
-            print(json.dumps(e.to_ecs(), sort_keys=True, ensure_ascii=False))
+            print(json.dumps(e.to_ecs(), sort_keys=True))     # ASCII-escaped: raw C1/bidi characters never reach a terminal
         return 0
     total = store.count(target, **filters)
     if not events:
@@ -1472,7 +1473,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
             return
 
         if "final_answer" in step:
-            console.print(f"[green]✓[/green] Step {iteration}: concluding -- {step.get('reasoning', '')}")
+            console.print(f"[green]✓[/green] Step {iteration}: concluding -- {_console.markup_safe(step.get('reasoning', ''))}")
             return
 
         tool_name = step.get("tool")
@@ -1486,7 +1487,7 @@ def cmd_investigate(args: argparse.Namespace) -> int:
         elif tool_name == "correlate_findings" and isinstance(tool_result, dict):
             findings = tool_result.get("findings") or []
             if findings:
-                console.print(f"[green]✓[/green] [bold]{tool_name}[/bold] -- {_console.plain_label(tool_name)} ({len(findings)} found)")
+                console.print(f"[green]✓[/green] [bold]{_console.markup_safe(tool_name)}[/bold] -- {_console.markup_safe(_console.plain_label(tool_name))} ({len(findings)} found)")
                 for finding in findings:
                     _console.render_finding(console, finding)
                     findings_count += 1

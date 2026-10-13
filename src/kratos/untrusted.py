@@ -24,7 +24,7 @@ import unicodedata
 from typing import Any
 
 __all__ = [
-    "ENVELOPE_RULE", "for_display", "display_text", "markup_safe", "for_model", "envelope",
+    "ENVELOPE_RULE", "for_display", "display_text", "markup_safe", "safe_print", "for_model", "envelope",
     "mixed_script", "mixed_script_marker", "has_hidden_characters",
 ]
 
@@ -116,6 +116,16 @@ def markup_safe(s: Any, *, max_len: int | None = None) -> str:
     from rich.markup import escape
 
     return escape(for_display(s, max_len=max_len))
+
+
+def safe_print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, flush: bool = False) -> None:
+    """`print` that cleans every argument with `for_display` first. The plain-text CLI
+    commands (`kratos findings`, `kratos events`, ...) import it as `print`, so text from a
+    machine reaches a terminal the same safe way as in the TUI. Not for machine-readable
+    output that must keep exact bytes -- that uses `sys.stdout.write`."""
+    import builtins
+
+    builtins.print(*(for_display(a) for a in args), sep=sep, end=end, file=file, flush=flush)
 
 
 # --- the model side ----------------------------------------------------------------

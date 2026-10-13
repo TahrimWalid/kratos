@@ -53,6 +53,7 @@ from kratos.llm_interface import agent_chat, check_endpoint_reachable
 from kratos.run_context import run_scope
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil as _timeutil
+from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 
 # ---------------------------------------------------------------------------
 # Display timezone (UTC-storage / local-display split, see utils/timeutil.py).
@@ -746,7 +747,7 @@ def _render_step_for_replay(console, step: dict) -> None:
             _console.render_error(console, f"{tool_name} failed -- {error_text or 'no error detail available'}")
         elif tool_name == "correlate_findings" and isinstance(tool_result, dict) and tool_result.get("findings"):
             findings = tool_result["findings"]
-            console.print(f"[{_console.SAFE}]✓[/] [bold]{tool_name}[/bold] -- {_console.plain_label(tool_name)} ({len(findings)} found)")
+            console.print(f"[{_console.SAFE}]✓[/] [bold]{_console.markup_safe(tool_name)}[/bold] -- {_console.markup_safe(_console.plain_label(tool_name))} ({len(findings)} found)")
             for finding in findings:
                 _console.render_finding(console, finding)
             _console.render_tool_metadata_notes(console, tool_result)
@@ -762,7 +763,7 @@ def _render_turn_replay(console, turn: dict[str, Any]) -> None:
     goal = turn["goal"]
     status = turn.get("status") or "in_progress"
     when = _parse_turn_time(turn.get("started_at"))
-    _print_trailing_timestamp(console, f"[{_console.TEXT_SECONDARY} bold]{_USER_PROMPT_LABEL}[/]{goal}", when=when)
+    _print_trailing_timestamp(console, f"[{_console.TEXT_SECONDARY} bold]{_USER_PROMPT_LABEL}[/]{_console.markup_safe(goal)}", when=when)
 
     ref = turn.get("transcript_ref")
     if not ref:
@@ -824,7 +825,7 @@ def _render_resumed_full_history(console, history: list[dict[str, Any]]) -> None
     for i, turn in enumerate(history):
         if i < detailed_from:
             status = turn.get("status") or "in_progress"
-            console.print(f"[{_console.TEXT_SECONDARY}]- Goal: {turn['goal']!r} -> {status}[/]")
+            console.print(f"[{_console.TEXT_SECONDARY}]- Goal: {_console.markup_safe(repr(turn['goal']))} -> {_console.markup_safe(status)}[/]")
         else:
             _render_turn_replay(console, turn)
 
@@ -1631,7 +1632,7 @@ def _cmd_model(console, session_state: dict[str, Any], **_: Any) -> None:
 
     for i, c in enumerate(candidates, start=1):
         marker = " [bold](active)[/]" if current is not None and c.model == current.model else ""
-        console.print(f"  [{i}] {c.model}{marker}")
+        console.print(f"  [{i}] {_console.markup_safe(c.model)}{marker}")
 
     target = None
     while target is None:
@@ -1764,7 +1765,7 @@ def _run_investigate_turn(
                 _console.render_error(console, f"{tool_name} failed -- {error_text or 'no error detail available'}")
             elif tool_name == "correlate_findings" and isinstance(tool_result, dict) and tool_result.get("findings"):
                 findings = tool_result["findings"]
-                console.print(f"[{_console.SAFE}]✓[/] [bold]{tool_name}[/bold] -- {_console.plain_label(tool_name)} ({len(findings)} found)")
+                console.print(f"[{_console.SAFE}]✓[/] [bold]{_console.markup_safe(tool_name)}[/bold] -- {_console.markup_safe(_console.plain_label(tool_name))} ({len(findings)} found)")
                 for finding in findings:
                     _console.render_finding(console, finding)
                     findings_count += 1
@@ -2176,7 +2177,7 @@ def _run_one_session(
     # at the normal "you>" prompt, instead of discarding it.
     if pending_input:
         day_marker.maybe_render(console)
-        _print_trailing_timestamp(console, f"[{_console.TEXT_SECONDARY} bold]{_USER_PROMPT_LABEL}[/]{pending_input}")
+        _print_trailing_timestamp(console, f"[{_console.TEXT_SECONDARY} bold]{_USER_PROMPT_LABEL}[/]{_console.markup_safe(pending_input)}")
         if not _process_input(console, pending_input, session_state, store, data_dir):
             return session_state["restart_chooser"]
 
