@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 import pytest
 
@@ -324,3 +325,53 @@ def test_blank_looking_fillers_become_visible_markers(code):
 
 def test_ordinary_non_ascii_letters_are_not_mistaken_for_fillers():
     assert u.for_display("한국어 ខ្មែរ") == "한국어 ខ្មែរ"
+
+
+# --- seeded fuzzing of the invariants ---------------------------------------------------------------------------
+
+def _random_text(rng, n):
+    alphabet = ([chr(c) for c in range(0x00, 0xA0)] + list("[]\\/<>=\"'{}:;|&$`") + list("abcxyzXYZ019 \n\t")
+                + [chr(c) for c in (0x200B, 0x200D, 0x202A, 0x202E, 0x2066, 0x2069, 0xFEFF, 0xE0041, 0x2028, 0x0430, 0x03BF,
+                                    0x00E9, 0x4E2D, 0xD800, 0xDFFF, 0x3164, 0x1F600)]
+                + ["\x1b[", "\x1b]", "\x1bP", "\x1b\\", "\x07", "\x9b", "\x9d", "[red]", "[/]", "<<end id=", "Observation: "])
+    return "".join(rng.choice(alphabet) for _ in range(n))
+
+
+def test_for_display_invariants_hold_on_random_text():
+    import random
+
+    rng = random.Random(20261013)
+    for _ in range(3000):
+        s = _random_text(rng, rng.randint(0, 60))
+        out = u.for_display(s)
+        assert "\x1b" not in out
+        assert not re.search("[\x00-\x08\x0b-\x1f\x7f-\x9f]", out)
+        assert not any(unicodedata.category(c) in ("Cf", "Cs") for c in out)
+        assert u.for_display(out) == out                                  # idempotent
+        out.encode("utf-8")                                               # always writable to a terminal
+
+
+def test_plain_printable_text_is_never_changed_by_fuzzing():
+    import random
+
+    rng = random.Random(7)
+    printable = [chr(c) for c in range(0x20, 0x7F)] + list("éüñ中日한ж") + ["\n", "\t"]
+    for _ in range(2000):
+        s = "".join(rng.choice(printable) for _ in range(rng.randint(0, 80)))
+        assert u.for_display(s) == s
+
+
+def test_envelope_always_holds_exactly_one_start_and_one_end_marker_on_random_payloads():
+    import random
+
+    rng = random.Random(99)
+    for _ in range(500):
+        payload = _random_text(rng, rng.randint(0, 120))
+        env = u.envelope({"v": payload, payload: [payload, {"x": payload}]}, run_id="r1", call_id="3-abcdef",
+                         max_chars=300)
+        lines = env.split("\n")
+        assert lines[0] == u.ENVELOPE_RULE and lines[1] == "<<tool_result run=r1 id=3-abcdef>>"
+        assert lines[-1] == "<<end id=3-abcdef>>"
+        assert sum(1 for ln in lines if ln.startswith("<<tool_result")) == 1
+        assert sum(1 for ln in lines if ln.startswith("<<end id=3-abcdef>>")) == 1
+        assert len(lines) == 4                                            # rule, start, one JSON line, end
