@@ -1101,6 +1101,7 @@ class _Conversation:
                                                      call_id=_untrusted.new_call_id(0))
             preamble += f"\n{digest_block}\n"
         self._preamble = preamble
+        self._run_tag = run_tag
         self._turns: list[tuple[str, str]] = []   # (verbatim text, one-line digest)
         self.compaction_count = 0
 
@@ -1130,11 +1131,16 @@ class _Conversation:
         old = self._turns[: -COMPACTION_KEEP_RECENT_TURNS]
         recent = self._turns[-COMPACTION_KEEP_RECENT_TURNS:]
         digest_lines = "\n".join(f"- {digest}" for _, digest in old if digest)
+        # The lines quote values from the machine (paths, names), so with a run tag they are framed
+        # as data like any tool result (kratos.untrusted).
+        shown_lines = (_untrusted.frame_text(digest_lines, kind="earlier_steps", run_id=self._run_tag,
+                                             call_id=_untrusted.new_call_id(0))
+                       if self._run_tag else digest_lines)
         folded_text = (
             "\n[EARLIER STEPS -- COMPACTED to fit the context window; the full, "
             "unabridged detail of every step is preserved in the saved transcript. "
             "Any tool-result file paths listed below are still valid to reference.]\n"
-            f"{digest_lines}\n"
+            f"{shown_lines}\n"
         )
         # Never let the digest be larger than the turns it replaces -- a real
         # 85%-of-window trigger always folds substantial observations, but this
