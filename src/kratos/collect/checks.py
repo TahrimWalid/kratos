@@ -117,6 +117,60 @@ def _run_log_integrity(ctx: CheckContext) -> CheckResult:
     return CheckResult(status, "no sign of altered logs", gaps, tools=["check_log_integrity"])
 
 
+# --------------------------------------------------------------------------- privileged accounts
+def _run_privileged_accounts(ctx: CheckContext) -> CheckResult:
+    res = ctx.call("list_privileged_accounts", {"lookback_days": 30})
+    inner, err, gap = _unwrap(res)
+    if inner is None:
+        return _failed("privileged accounts", err or "", gap, "list_privileged_accounts")
+    n = len(inner.get("privileged_accounts") or [])
+    grants = len(inner.get("recent_privilege_grants") or [])
+    changed = inner.get("changed_since_last_check") if isinstance(inner.get("changed_since_last_check"), dict) else {}
+    added, removed = len(changed.get("added") or []), len(changed.get("removed") or [])
+    parts = [f"{n} account(s) hold privileged access"]
+    if grants:
+        parts.append(f"{grants} recent grant(s)")
+    if changed.get("previous_snapshot_at"):
+        parts.append(f"{added} new and {removed} gone since the last check" if added or removed
+                     else "no change since the last check")
+    else:
+        parts.append("first look, nothing to compare with")
+    gaps = [g for g in (inner.get("evidence_gaps") or []) if isinstance(g, str)]
+    if gaps:
+        parts.append("some account-change history is missing")
+    return CheckResult("partial" if gaps else "ok", "; ".join(parts), [], tools=["list_privileged_accounts"],
+                       detail="; ".join(gaps)[:300])
+
+
+# --------------------------------------------------------------------------- configuration audit
+_AUDIT_NAMES = {
+    "ssh_root_login": "SSH root login", "ssh_password_auth": "SSH password login", "firewall": "firewall",
+    "fail2ban_status": "fail2ban", "world_writable_etc": "world-writable files in /etc",
+    "unattended_upgrades": "automatic updates",
+}
+
+
+def _run_config_audit(ctx: CheckContext) -> CheckResult:
+    res = ctx.call("run_config_audit", {})
+    inner, err, gap = _unwrap(res)
+    if inner is None:
+        return _failed("configuration", err or "", gap, "run_config_audit")
+    rows = [c for c in inner.get("checks") or [] if isinstance(c, dict)]
+    by_status: dict[str, list[str]] = {}
+    for c in rows:
+        status = str(c.get("status") or "UNKNOWN").upper()
+        name = _AUDIT_NAMES.get(str(c.get("check")), "another setting")     # fixed words, never the machine's
+        by_status.setdefault(status if status in ("PASS", "FAIL", "WARN") else "UNKNOWN", []).append(name)
+    if not rows:
+        return CheckResult("failed", "could not be checked", ["configuration: could not be checked"],
+                           tools=["run_config_audit"])
+    parts = [f"{len(by_status.get('PASS', []))} of {len(rows)} settings are fine"]
+    for key, word in (("FAIL", "failing"), ("WARN", "warning"), ("UNKNOWN", "could not be read")):
+        if by_status.get(key):
+            parts.append(f"{word}: {', '.join(sorted(set(by_status[key])))}")
+    return CheckResult("ok", "; ".join(parts), tools=["run_config_audit"])
+
+
 # --------------------------------------------------------------------------- registration
 register(Check(
     name="ports", cost="quick", ttl_setting="collect.ttl.ports_minutes", default_ttl_minutes=60,
@@ -130,3 +184,12 @@ register(Check(
     name="log_integrity", cost="quick", ttl_setting="collect.ttl.log_integrity_minutes", default_ttl_minutes=60,
     run=_run_log_integrity, inputs=("log_integrity",), transports=frozenset({"ssh", "agent"}),
     budget_seconds=40.0, label="log tampering", order=20, short="tampering"))
+register(Check(
+    name="privileged_accounts", cost="quick", ttl_setting="collect.ttl.privileged_accounts_minutes",
+    default_ttl_minutes=60, run=_run_privileged_accounts, inputs=("privileged_accounts",),
+    transports=frozenset({"ssh", "agent"}), budget_seconds=40.0, label="privileged accounts", order=40,
+    short="privileged"))
+register(Check(
+    name="config_audit", cost="quick", ttl_setting="collect.ttl.config_audit_minutes", default_ttl_minutes=360,
+    run=_run_config_audit, inputs=(), transports=frozenset({"ssh", "agent"}), budget_seconds=40.0,
+    label="configuration audit", order=60, short="config"))

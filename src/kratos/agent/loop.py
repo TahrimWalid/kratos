@@ -1218,6 +1218,26 @@ def run_agent(
 
 
 
+def _input_signature(data_dir: Path) -> tuple:
+    """Which input files correlate_findings would read right now (path + time), for the
+    active machine -- compared before and after to learn whether anything was refreshed."""
+    from kratos.adapters.findings_engine import find_latest_inputs
+
+    try:
+        found = find_latest_inputs(Path(data_dir))
+    except Exception:  # noqa: BLE001
+        return ()
+    sig = []
+    for cat, path in sorted(found.items()):
+        if path is None:
+            continue
+        try:
+            sig.append((cat, str(path), Path(path).stat().st_mtime_ns))
+        except OSError:
+            continue
+    return tuple(sig)
+
+
 def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> Any:
     """Kratos collects the basics BEFORE the model reasons (kratos.collect): fresh
     results are reused, stale ones re-run in parallel under a time budget. Returns a
@@ -1498,6 +1518,47 @@ def _run_agent_loop(
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
 
+    corr_signature: tuple | None = None   # the inputs correlate_findings last saw (see _inputs_changed)
+
+    def _absorb_correlation(exec_result: Any) -> None:
+        nonlocal correlate_findings_called, last_correlate_findings, last_correlate_findings_error
+        nonlocal last_staleness_warning, corr_signature
+        # correlate_findings_called just tracks "was it attempted at
+        # least once" (used only to distinguish never-attempted from
+        # attempted-but-failed for guard 1's feedback/bypass logic, see
+        # comment at its declaration) -- it is NOT guard 1's pass
+        # condition anymore. That's last_correlate_findings being set
+        # below, which requires a genuinely successful call with a real
+        # findings list.
+        correlate_findings_called = True
+        corr_signature = _input_signature(data_dir)
+
+        inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
+        if isinstance(inner_result, dict) and isinstance(inner_result.get("findings"), list):
+            last_correlate_findings = inner_result["findings"]
+            last_correlate_findings_error = None
+            # "Latest wins" -- see guard 4's tracking-var comment above.
+            # Not nested under the findings check specifically for any
+            # other reason; a successful call always has this key (None
+            # when there's nothing stale to warn about), so this is the
+            # correct place to read it regardless of whether findings
+            # happened to be empty.
+            last_staleness_warning = inner_result.get("staleness_warning")
+        else:
+            # Real error text, from whichever layer it surfaced at:
+            # execute_tool_call's own top-level error (bad tool name/
+            # args, an exception from the handler) or the handler's own
+            # domain-level error result (e.g. correlate_findings's real
+            # "guessed file path" validation, which returns an error
+            # dict rather than raising). Fed back verbatim in guard 1's
+            # rejection message below -- not summarized/genericized.
+            if isinstance(exec_result, dict) and exec_result.get("status") == "error":
+                last_correlate_findings_error = exec_result.get("observation") or "correlate_findings failed with no error detail."
+            elif isinstance(inner_result, dict) and inner_result.get("status") == "error":
+                last_correlate_findings_error = inner_result.get("observation") or "correlate_findings failed with no error detail."
+            else:
+                last_correlate_findings_error = "correlate_findings call did not return a real findings result."
+
     # Seed from what Kratos collected before the first step: it is a real
     # correlate_findings over fresh inputs, so Guards 1/3/4 see it exactly as if the
     # model had called it first, and the coverage the checks could not give is named
@@ -1513,9 +1574,7 @@ def _run_agent_loop(
         if collection.any_ok():
             any_data_tool_ok = True
         if collection.correlation is not None:
-            correlate_findings_called = True
-            last_correlate_findings = collection.correlation["findings"]
-            last_staleness_warning = collection.correlation.get("staleness_warning")
+            _absorb_correlation({"status": "ok", "result": collection.correlation})
         _record({
             "iteration": 0, "status": "collection", "summary_line": _collect_summary_line(collection),
             "digest": digest_block, "cold": collection.cold, "elapsed_seconds": round(collection.elapsed, 2),
@@ -1597,6 +1656,15 @@ def _run_agent_loop(
             continue
 
         if "final_answer" in parsed:
+            if collection is not None and _input_signature(data_dir) != corr_signature:
+                # The model's tools refreshed an input after the last correlation: re-run it by
+                # code (no model call) so the guards judge this answer against what is true NOW
+                # -- a new HIGH finding reaches Guard 3 as usual, and Guard 1 is satisfied without
+                # a rejected-draft round trip.
+                _re = execute_tool_call("correlate_findings", {}, data_dir)
+                _record({"iteration": i, "reasoning": "re-correlated by Kratos: new data arrived after the last correlation",
+                         "collected": True, "tool": "correlate_findings", "args": {}, "observation": _re})
+                _absorb_correlation(_re)
             final_answer_text = parsed["final_answer"]
             if isinstance(final_answer_text, str):
                 # A claims list written into the prose never reaches the reader, even
@@ -2296,40 +2364,7 @@ def _run_agent_loop(
             any_data_tool_ok = True
 
         if tool_name == "correlate_findings":
-            # correlate_findings_called just tracks "was it attempted at
-            # least once" (used only to distinguish never-attempted from
-            # attempted-but-failed for guard 1's feedback/bypass logic, see
-            # comment at its declaration) -- it is NOT guard 1's pass
-            # condition anymore. That's last_correlate_findings being set
-            # below, which requires a genuinely successful call with a real
-            # findings list.
-            correlate_findings_called = True
-
-            inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
-            if isinstance(inner_result, dict) and isinstance(inner_result.get("findings"), list):
-                last_correlate_findings = inner_result["findings"]
-                last_correlate_findings_error = None
-                # "Latest wins" -- see guard 4's tracking-var comment above.
-                # Not nested under the findings check specifically for any
-                # other reason; a successful call always has this key (None
-                # when there's nothing stale to warn about), so this is the
-                # correct place to read it regardless of whether findings
-                # happened to be empty.
-                last_staleness_warning = inner_result.get("staleness_warning")
-            else:
-                # Real error text, from whichever layer it surfaced at:
-                # execute_tool_call's own top-level error (bad tool name/
-                # args, an exception from the handler) or the handler's own
-                # domain-level error result (e.g. correlate_findings's real
-                # "guessed file path" validation, which returns an error
-                # dict rather than raising). Fed back verbatim in guard 1's
-                # rejection message below -- not summarized/genericized.
-                if isinstance(exec_result, dict) and exec_result.get("status") == "error":
-                    last_correlate_findings_error = exec_result.get("observation") or "correlate_findings failed with no error detail."
-                elif isinstance(inner_result, dict) and inner_result.get("status") == "error":
-                    last_correlate_findings_error = inner_result.get("observation") or "correlate_findings failed with no error detail."
-                else:
-                    last_correlate_findings_error = "correlate_findings call did not return a real findings result."
+            _absorb_correlation(exec_result)
 
         if tool_name == "compare_periods":
             inner_result = exec_result.get("result") if isinstance(exec_result, dict) else None
