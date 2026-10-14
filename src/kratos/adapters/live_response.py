@@ -131,12 +131,15 @@ kr_proc() {
     [ -n "$_uid" ] || { _uid=-1; _un='UNKNOWN'; }
     awk @AWKSTAT@ "$_d/stat" 2>/dev/null
     _exe=$(readlink "$_d/exe" 2>/dev/null)
-    if [ -n "$_exe" ]; then printf 'PX\t%s\t%s\n' "$_pid" "$_exe"
-    elif [ -L "$_d/exe" ]; then printf 'PGAP\t%s\texe\n' "$_pid"; fi
     _comm=$(cat "$_d/comm" 2>/dev/null | tr '\t\n\r' '   ')
     [ -n "$_comm" ] && printf 'PC\t%s\t%s\n' "$_pid" "$_comm"
     _cmd=$(kr_cmdline "$_d/cmdline")
     [ -n "$_cmd" ] && printf 'PL\t%s\t%s\n' "$_pid" "$_cmd"
+    # a process with no exe link AND no command line is a kernel thread: it has no
+    # executable by nature, so that is not a coverage gap (even as root).
+    _kt=0; { [ -z "$_exe" ] && [ -z "$_cmd" ]; } && _kt=1
+    if [ -n "$_exe" ]; then printf 'PX\t%s\t%s\n' "$_pid" "$_exe"
+    elif [ "$_kt" = 0 ] && [ -L "$_d/exe" ]; then printf 'PGAP\t%s\texe\n' "$_pid"; fi
     _cwd=$(readlink "$_d/cwd" 2>/dev/null)
     [ -n "$_cwd" ] && printf 'PW\t%s\t%s\n' "$_pid" "$_cwd"
     _cg=$(head -n 1 "$_d/cgroup" 2>/dev/null | tr '\t\n\r' '   ')
@@ -150,7 +153,7 @@ kr_proc() {
       for _v in @LDPATHVARS@; do
         tr '\0' '\n' < "$_d/environ" 2>/dev/null | grep -q "^$_v=" && printf 'PENV\t%s\t%s\t(set)\n' "$_pid" "$_v"
       done
-    elif [ -e "$_d/environ" ]; then printf 'PGAP\t%s\tenviron\n' "$_pid"; fi
+    elif [ "$_kt" = 0 ] && [ -e "$_d/environ" ]; then printf 'PGAP\t%s\tenviron\n' "$_pid"; fi
     if [ -r "$_d/fd" ] && [ -x "$_d/fd" ]; then
       _nf=0
       for _f in "$_d"/fd/*; do
@@ -562,20 +565,22 @@ def inventory_output(*, root: str = "", run: Runner | None = None,
             out.append(f"PP\t{pid}\t{ppid}\t{starttime}")
         out.append(f"PP2\t{pid}\t{uid}\t{un}")
         exe = _readlink(d + "/exe")
-        if exe:
-            out.append(f"PX\t{pid}\t{exe}")
-            proc_exes.append(_strip_root_exe(exe, r))
-        elif os.path.islink(d + "/exe"):
-            out.append(f"PGAP\t{pid}\texe")
-            gaps["exe"] = gaps.get("exe", 0) + 1
         comm = _read_proc_file(d + "/comm", 256)
         if comm:
             out.append(f"PC\t{pid}\t{_clean(comm.decode('utf-8', 'replace')).strip()}")
         cmd = _read_proc_file(d + "/cmdline", 1024 * 1024)
-        if cmd:
-            text = _clean(cmd.replace(b"\x00", b" ").decode("utf-8", "replace")).strip()
-            if text:
-                out.append(f"PL\t{pid}\t{text[:MAX_CMDLINE_CHARS]}")
+        cmd_text = _clean((cmd or b"").replace(b"\x00", b" ").decode("utf-8", "replace")).strip()
+        if cmd_text:
+            out.append(f"PL\t{pid}\t{cmd_text[:MAX_CMDLINE_CHARS]}")
+        # no exe link AND no command line = a kernel thread: it has no executable by
+        # nature, so that is not a coverage gap (even as root).
+        kernel_thread = not exe and not cmd_text
+        if exe:
+            out.append(f"PX\t{pid}\t{exe}")
+            proc_exes.append(_strip_root_exe(exe, r))
+        elif not kernel_thread and os.path.islink(d + "/exe"):
+            out.append(f"PGAP\t{pid}\texe")
+            gaps["exe"] = gaps.get("exe", 0) + 1
         cwd = _readlink(d + "/cwd")
         if cwd:
             out.append(f"PW\t{pid}\t{cwd}")
@@ -590,7 +595,7 @@ def inventory_output(*, root: str = "", run: Runner | None = None,
                 out.append(f"PENV\t{pid}\t{var}\t{value}")
                 if var in PRELOAD_VARS and value.startswith("/"):
                     preloads.append(value)
-        elif os.path.exists(d + "/environ"):
+        elif not kernel_thread and os.path.exists(d + "/environ"):
             out.append(f"PGAP\t{pid}\tenviron")
             gaps["environ"] = gaps.get("environ", 0) + 1
         _scan_fds(d, pid, out, gaps)

@@ -305,7 +305,7 @@ def test_the_new_probes_need_agent_0_5_0():
     assert core_server.PROBE_MIN_AGENT_VERSION["live_inventory"] == (0, 6, 1)          # A.5
     from kratos.subagent import agent
 
-    assert agent.AGENT_VERSION == "0.6.1"       # A.5 bumped the bundle (live_inventory probe)
+    assert agent.AGENT_VERSION == "0.6.2"       # A.5: live_inventory probe (0.6.1) + kernel-thread gap fix (0.6.2)
     assert {"journal_sync", "file_sync", "persistence_inventory", "live_inventory"} <= set(reads.READ_PROBES)
 
 

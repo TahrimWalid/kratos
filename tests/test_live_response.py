@@ -56,6 +56,21 @@ def mkproc(root: Path, pid: int, comm: str, exe: str, cmdline: bytes, *, ppid: i
         _link(d / "fd" / fd, f"socket:[{inode}]")
 
 
+def _kthread(root: Path, pid: int, comm: str, *, ppid: int = 2, start: int = 5) -> None:
+    """A kernel thread: no readable exe and an empty command line. (On a real /proc
+    the exe is a magic symlink whose readlink returns ENOENT; a plain filesystem
+    can't reproduce an islink-true/empty-readlink pair, so the fake tree just omits
+    the exe link -- the live web-01 run verifies the islink case gives no gap.)"""
+    d = root / "proc" / str(pid)
+    fields = [str(pid), f"({comm})", "S", str(ppid)] + ["0"] * 17 + [str(start)] + ["0"] * 20
+    _w(d / "stat", " ".join(fields))
+    _w(d / "comm", comm + "\n")
+    _w(d / "cmdline", b"")
+    _w(d / "environ", b"")
+    _w(d / "cgroup", "0::/\n")
+    (d / "fd").mkdir(parents=True, exist_ok=True)
+
+
 def make_machine(tmp_path: Path, family: str = "debian", *, name: str = "root",
                  owned: dict[str, str] | None = None) -> Path:
     r = tmp_path / name
@@ -123,6 +138,7 @@ def _planted(tmp_path: Path, family: str = "debian", name: str = "root") -> Path
            environ=b"LD_PRELOAD=/opt/evil.so\x00PATH=/bin\x00", sockets={"3": 50})
     mkproc(r, 3000, "py", "/memfd:stage (deleted)", b"python3\x00", start=300)                 # LIVE-002
     mkproc(r, 4000, "sleep", str(r) + "/usr/bin/sleep (deleted)", b"sleep\x00", start=400)      # restart hint
+    _kthread(r, 2, "kthreadd", start=5)                                    # kernel thread: no exe, no cmdline
     _w(r / "proc/net/tcp", net_table([("00000000", 0x1F90, "0A")]))        # inode 50 listening
     _w(r / "tmp/.x", b"\x7fELFdrop", 0o755)                                # LIVE-004 present
     _w(r / "dev/shm/run.sh", b"#!/bin/sh\necho hi\n", 0o755)               # LIVE-004 present
@@ -176,6 +192,19 @@ def test_awk_net_under_three_awks(tmp_path, awk):
 
 
 # ---------------------------------------------------------------- caps
+def test_kernel_threads_are_not_a_coverage_gap(tmp_path):
+    """A process with no exe and no command line is a kernel thread -- it has no
+    executable by nature, so it must not be reported as 'could not read exe'."""
+    r = make_machine(tmp_path)
+    _kthread(r, 2, "kthreadd")
+    _kthread(r, 3, "rcu_gp")
+    inv = run_agent(r)
+    assert inv["proc_gaps"] == {}
+    assert 2 in inv["procs"] and inv["procs"][2].get("exe") is None
+    j = judge(inv)
+    assert all(s.rule != "LIVE-007" for s in j.signals)   # nothing to note
+
+
 def test_cmdline_is_capped_and_cleaned(tmp_path):
     r = make_machine(tmp_path)
     mkproc(r, 7, "x", "/bin/x", (b"A" * 1000 + b"\x00" + b"B" * 10), start=5)
