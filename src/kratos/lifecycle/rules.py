@@ -79,6 +79,16 @@ RULES: dict[str, RuleInfo] = dict([
     _r("SEAL-001", "condition", sticky=True),
     _r("SEAL-002", "condition"),
     _r("LOG-006", "condition"),        # auditd installed but not running: a state, closes when it runs
+    # A.1: where someone could keep access. Each is a state that lasts until the item
+    # is removed or a person accepts it; a fresh, complete persistence read closes it.
+    _r("PERSIST-001", "condition"),
+    _r("PERSIST-002", "condition"),
+    _r("PERSIST-003", "condition"),
+    _r("PERSIST-004", "condition"),
+    _r("PERSIST-005", "condition"),
+    _r("PERSIST-006", "condition"),
+    _r("PERSIST-007", "condition"),
+    _r("PERSIST-008", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -92,6 +102,7 @@ RULES: dict[str, RuleInfo] = dict([
     _r("COV-001", "run_note"),
     _r("VULN-003", "run_note"),
     _r("SEAL-003", "run_note"),
+    _r("PERSIST-009", "run_note"),     # what the persistence check could not read
 ])
 
 

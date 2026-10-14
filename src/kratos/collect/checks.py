@@ -278,3 +278,7 @@ register(Check(
     name="file_integrity", cost="slow", ttl_setting="collect.ttl.file_integrity_minutes", default_ttl_minutes=360,
     run=_run_file_integrity, inputs=("file_integrity",), transports=frozenset({"ssh", "agent"}),
     budget_seconds=90.0, label="critical files", order=75, short="files"))
+
+# A.1: the persistence inventory and the slow package-file verification register
+# themselves in their own module (they read through kratos.persist, not a tool).
+from kratos.persist import check as _persistence_checks  # noqa: E402,F401

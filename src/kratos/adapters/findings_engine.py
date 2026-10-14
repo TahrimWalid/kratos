@@ -156,6 +156,8 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         # check_log_integrity (0.3): the newest result for this machine; freshness
         # is checked by _load_recent_log_integrity.
         "log_integrity": pick(data_dir / "integrity", "log_integrity_*.json", "log_integrity"),
+        # The persistence check (A.1): freshness is checked by _load_recent_persistence.
+        "persistence": pick(data_dir / "persistence", "persistence_*.json", "persistence"),
     }
 
 
@@ -338,6 +340,7 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
     "VULN-": ("vuln_scan",),
     "LOG-": ("log_integrity",),
     "SEAL-": ("log_integrity",),
+    "PERSIST-": ("persistence",),
 }
 
 
@@ -645,6 +648,15 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "SEAL-001": "A sealed journal file failed verification or changed after it was verified — its logs were altered.",
     "SEAL-002": "Journal sealing stopped: newer log files on this machine are no longer sealed.",
     "SEAL-003": "Kratos couldn't verify this machine's sealed journal this time — see why.",
+    "PERSIST-001": "Something that can start programs by itself (a scheduled job, a service, a startup file) appeared or changed since Kratos first looked, and no installed package owns it.",
+    "PERSIST-002": "A place that starts programs contains a line worth a look — it has the shape attackers use, which normal software sometimes has too.",
+    "PERSIST-003": "A program that runs with its owner's powers (setuid/setgid) is installed by no package — a common way to keep root access.",
+    "PERSIST-004": "Every program on this machine is made to load an extra library (/etc/ld.so.preload) — how a rootkit hides.",
+    "PERSIST-005": "A kernel module that belongs to no installed package is loaded, or the kernel is tainted by one.",
+    "PERSIST-006": "An SSH key that can log in is new since Kratos first looked, or has options that make it a quiet way back in.",
+    "PERSIST-007": "A file that starts programs no longer matches what its package installed.",
+    "PERSIST-008": "A login (PAM) rule points at software no package installed — it can accept a password that was never set.",
+    "PERSIST-009": "Part of the persistence check could not be done — those places are unknown, not clean.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -870,6 +882,7 @@ def generate_findings(
     vuln_scan: dict[str, Any] | None = None,
     auth_patterns_window: dict[str, Any] | None = None,
     log_integrity: dict[str, Any] | None = None,
+    persistence: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
@@ -1359,6 +1372,10 @@ def generate_findings(
     if log_integrity:
         findings.extend(_log_integrity_findings(log_integrity))
 
+    # PERSIST-*: where someone could keep access (from the persistence check, A.1)
+    if persistence:
+        findings.extend(_persistence_findings(persistence))
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -1683,6 +1700,83 @@ def _seal_findings(seal: dict[str, Any] | None, when: str) -> list[Finding]:
     return out
 
 
+# A persistence snapshot feeds findings while it is this fresh (same rule as the
+# privileged-accounts and log-integrity snapshots): the places an intruder keeps
+# access in are a state, but a month-old inventory must not keep re-firing as if
+# it were today's.
+PERSISTENCE_MAX_AGE_HOURS = 24
+
+
+def _load_recent_persistence(path: Path | None) -> dict[str, Any] | None:
+    """The newest persistence check of the active machine, if it is less than
+    PERSISTENCE_MAX_AGE_HOURS old (find_latest_inputs already picked a file
+    describing this machine)."""
+    if path is None:
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("signals"), list):
+        return None
+    captured = _snapshot_time(data, "checked_at", path)
+    if datetime.now().timestamp() - captured > PERSISTENCE_MAX_AGE_HOURS * 3600:
+        return None
+    return data
+
+
+def _persist_kwargs(sig: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:
+    """The shared Finding fields for one judged persistence signal. The rule id is
+    passed as a literal by each builder below (the lifecycle-completeness scan in
+    tests/test_lifecycle_rules.py reads literal Finding(id=...) calls)."""
+    target = doc.get("target") or "the target"
+    via = str(doc.get("via") or "ssh")
+    how = ("read through the machine's sub-agent (as root)" if via == "subagent"
+           else f"read over SSH as uid {doc.get('reader_uid')}" if doc.get("reader_uid") not in (None, 0)
+           else "read over SSH")
+    evidence = [f"From the persistence check of {target} at {_when(doc.get('checked_at', 'unknown'))} ({how})",
+                *[str(line) for line in sig.get("evidence") or []]]
+    if str(sig.get("rule")) != "PERSIST-009" and doc.get("coverage_gaps"):
+        evidence.append("Not everything could be checked -- see PERSIST-009 for what was not read.")
+    return {"title": str(sig.get("title") or sig.get("rule")), "severity": str(sig.get("severity") or "info"),
+            "evidence": evidence, "recommendation": [str(r) for r in sig.get("recommendation") or []],
+            "entities": normalise_entities("path", sig.get("entities") or []),
+            "attack": [dict(a) for a in sig.get("attack") or [] if isinstance(a, dict)]}
+
+
+def _persistence_findings(doc: dict[str, Any]) -> list[Finding]:
+    """PERSIST-001..009 from one persistence snapshot (A.1).
+
+    The judging happened when the inventory was read (kratos.persist.judge) and its
+    result is in the snapshot, so a later correlation of the same snapshot says
+    exactly the same thing. Here each judged signal only becomes a Finding; one
+    literal-id builder per rule, so the lifecycle-completeness scan sees every id."""
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for s in doc.get("signals") or []:
+        if isinstance(s, dict) and str(s.get("rule", "")).startswith("PERSIST-"):
+            by_rule.setdefault(s["rule"], []).append(s)
+    out: list[Finding] = []
+    for s in by_rule.get("PERSIST-001", []):
+        out.append(Finding(id="PERSIST-001", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-002", []):
+        out.append(Finding(id="PERSIST-002", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-003", []):
+        out.append(Finding(id="PERSIST-003", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-004", []):
+        out.append(Finding(id="PERSIST-004", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-005", []):
+        out.append(Finding(id="PERSIST-005", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-006", []):
+        out.append(Finding(id="PERSIST-006", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-007", []):
+        out.append(Finding(id="PERSIST-007", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-008", []):
+        out.append(Finding(id="PERSIST-008", **_persist_kwargs(s, doc)))
+    for s in by_rule.get("PERSIST-009", []):
+        out.append(Finding(id="PERSIST-009", **_persist_kwargs(s, doc)))
+    return out
+
+
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """
     None if fewer than 2 auto-discovered inputs are present (nothing to
@@ -1831,6 +1925,8 @@ def write_findings_report(
     inputs["vuln_scan"] = vuln_scan_path
     log_integrity = _load_recent_log_integrity(auto.get("log_integrity"))
     inputs["log_integrity"] = auto.get("log_integrity") if log_integrity else None
+    persistence_doc = _load_recent_persistence(auto.get("persistence"))
+    inputs["persistence"] = auto.get("persistence") if persistence_doc else None
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -1844,6 +1940,7 @@ def write_findings_report(
         vuln_scan=vuln_scan,
         auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
         log_integrity=log_integrity,
+        persistence=persistence_doc,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target
@@ -1854,7 +1951,7 @@ def write_findings_report(
     try:
         finding_dicts, lifecycle_summary = _apply_lifecycle(
             finding_dicts, data_dir=data_dir, target=report_target or "unknown", inputs=inputs,
-            auth_stats=auth_stats,
+            auth_stats=auth_stats, persistence=persistence_doc,
             patterns_stats=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats))
     except Exception as e:  # noqa: BLE001 -- a lifecycle failure must never lose the report
         import logging
@@ -1958,13 +2055,20 @@ def write_findings_report(
 
 def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, target: str,
                      inputs: dict[str, Path | None], auth_stats: dict[str, Any] | None,
-                     patterns_stats: dict[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     patterns_stats: dict[str, Any] | None,
+                     persistence: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The lifecycle layer (kratos.lifecycle) over this report's findings."""
     from kratos import run_context
     from kratos.lifecycle import apply as _lc_apply, coverage as _lc_coverage, migrate as _lc_migrate
 
     _lc_migrate.ensure_imported(data_dir)
     incomplete = _lc_coverage.incomplete_auth_inputs({"auth_stats": auth_stats, "auth_patterns": patterns_stats})
+    # A persistence read that did not finish, or one that could not tell which files
+    # came from a package, cannot say a PERSIST-* finding is gone (A.1 §7 "Budget").
+    if persistence is not None and (not persistence.get("complete")
+                                    or not (persistence.get("ownership") or {}).get("source")
+                                    or (persistence.get("ownership") or {}).get("error")):
+        incomplete = set(incomplete) | {"persistence"}
     run = run_context.current()
     cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete)
     return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)
