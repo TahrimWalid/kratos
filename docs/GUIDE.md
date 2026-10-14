@@ -672,6 +672,53 @@ wasn't read is never reported as empty.
 (with the other checks); whether the slow package-file verification runs in the
 full audit is `persist.verify_packages` there too.
 
+## What's running right now
+
+Persistence is about what an intruder left *on disk* to come back later; this
+check is about what is *running at this moment*. Kratos looks at every process
+(`/proc`) for the classic signs of a live intrusion, by itself, as part of the
+basics and in the standard audit:
+
+- **a program that deleted its own file while still running** (`LIVE-001`). Malware
+  often unlinks its executable so there is nothing left on disk to scan. This is
+  also normal right after a package update — but then the file exists again and
+  belongs to a package, and Kratos tells those two cases apart (see the
+  restart-needed note below).
+- **a program running from memory or a just-deleted temporary file** (`LIVE-002`):
+  a `memfd:` executable, or an executable deleted out of `/tmp` or `/dev/shm`.
+  Running code that never touched disk is a common way to hide a payload.
+- **a process started with `LD_PRELOAD` or `LD_AUDIT`** pointing at a library no
+  package owns (`LIVE-003`) — how a userspace rootkit loads itself into everything.
+  A library a package *does* own is shown as "worth a look", not high.
+- **an executable sitting in a world-writable directory** — `/tmp`, `/dev/shm`,
+  `/var/tmp` (`LIVE-004`): high if a process is running it right now, medium if it
+  is only present.
+- **a network listener run by a suspicious process** (`LIVE-005`): something
+  accepting connections that was started from `/tmp`, from a deleted file, or from
+  a binary no package installed — a likely backdoor.
+- **a shell or interpreter started by a web server or database** (`LIVE-006`) — the
+  classic web-shell / exploited-service shape.
+
+Each finding names the process (pid, command, the user it runs as) with the command
+line masked and capped, and carries the matching MITRE ATT&CK technique. Because a
+process is identified by its program, pid **and** start time, the same process is
+the same finding across runs, and a reused pid is a new one.
+
+**The restart-needed note.** After you upgrade a package, long-running services keep
+the old (now-deleted) binary until you restart them. That is normal, not a
+compromise, so Kratos does **not** raise `LIVE-001` for it — it adds a quiet
+info note (`LIVE-007`) listing which processes to restart (for example
+`systemctl restart <service>` or a reboot).
+
+**What SSH can't see.** Over a plain SSH connection Kratos reads as your SSH user,
+so other users' processes — their program, environment and open files — are not
+readable. Those come back as a **coverage gap** in `LIVE-007` ("not checked —
+unknown, not clean") with the fix: connect the machine through its sub-agent, which
+reads as root and sees every process. Kratos never sends an environment variable's
+value except the `LD_PRELOAD`/`LD_AUDIT` library path (masked), and never kills
+anything — a recommendation like `kill <pid>` is shown for you to run, never run for
+you.
+
 ## Sealing a machine's logs
 
 Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal
@@ -1405,6 +1452,10 @@ permission prompt, pressing Enter is always the safe "no."
 - **Persistence** — the places an intruder leaves something behind to keep access
   across reboots and password changes (a cron job, a service, an SSH key, a setuid
   program, …). Kratos checks them by itself and reports what is new or backdoor-shaped.
+- **Live response** — looking at what is *running right now* for signs of an active
+  intrusion: a program that deleted its own file, code running from memory, a process
+  started with an injected library, an executable dropped in /tmp, a shell under a web
+  server. Kratos checks this by itself too and never kills anything.
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.

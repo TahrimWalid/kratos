@@ -708,6 +708,45 @@ the package database, can't mark a `PERSIST-*` finding mitigated (`_apply_lifecy
 into the lifecycle's incomplete set). No tool is added to the model's list (A.1 is a check, not a
 tool).
 
+## Live-response reads
+
+**What is running right now, by code** (`adapters/live_response.py`, `kratos/live/`). The same
+inventory/judge split and transport pattern as the persistence check, over `/proc` instead of the
+filesystem. A fixed POSIX sh+awk script over SSH (as the SSH user) and the sub-agent's
+`live_inventory` probe (a stdlib walk as root) print the **same** tab-separated records; one parser
+reads both (an awk program splits `/proc/<pid>/stat` into pid/ppid/start-time, another parses
+`/proc/net/{tcp,tcp6,udp,udp6}`; both tested under mawk/gawk/BusyBox). Per process: pid, ppid, start
+time, uid/user, `comm`, the `exe` link (with `(deleted)`/`memfd:` markers), a capped masked command
+line, cwd, cgroup, whether `LD_PRELOAD`/`LD_AUDIT`/`LD_LIBRARY_PATH` is set (the *value* only for the
+first two, masked), and socket inodes from the fd links. Listening and established sockets come from
+`/proc/net`; executables in `/tmp`, `/dev/shm`, `/var/tmp` (and `/run/user` on the agent) are stat'd,
+header-classified (ELF/script) and hashed through the hardened opener. Package ownership of exe paths,
+preload libraries and dropped files reuses persistence's on-machine ownership lookup. Bounded (5,000
+processes, a dropped-file `find` with a timeout, a 4 MiB cap, an overall budget); over the budget the
+read is partial and says so. No environment value other than the preload library path ever leaves the
+machine; nothing is written on the target.
+
+**Judging** (`live/judge.py`) runs entirely on Kratos from one inventory -- there is no baseline,
+because "right now" is point-in-time. `LIVE-001` (deleted running binary not explained by an
+upgrade), `LIVE-002` (memfd / deleted-in-tmp execution), `LIVE-003` (unowned `LD_PRELOAD`/`LD_AUDIT`;
+owned is "worth a look"), `LIVE-004` (a dropped executable -- running: high, present: medium),
+`LIVE-005` (a listener run by a temp/deleted/unowned process), `LIVE-006` (a shell under a network
+service), and `LIVE-007` (a run note: the restart-needed hint for upgrade-deleted binaries, and what
+could not be read as a non-root SSH user, with the sub-agent fix). A process is identified by
+`exe|pid|starttime`, so the same process is the same finding across runs and a reused pid is a new
+one; a dropped file by `path#sha256[:12]`. `LIVE-001/002/003/005/006` are *occurrence* rules (a later
+run that re-read and no longer sees the process marks it inactive), `LIVE-004` is a *condition* (the
+file is a state), `LIVE-007` is a run note. ATT&CK v19 labels: File Deletion (T1070.004),
+Reflective Code Loading (T1620), Dynamic Linker Hijacking (T1574.006), Unix Shell + Web Shell
+(T1059.004, T1505.003); `LIVE-004`/`LIVE-005` are posture and carry none.
+
+**The check** (`live/check.py`, `live/record.py`). `live_response` (quick) registers with the
+collection layer; `record.run` reads, judges and writes `data_dir/live/live_response_<time>.json`.
+`find_latest_inputs` category `live_response` picks it up; `generate_findings` turns its signals into
+`LIVE-*` findings. A failed read saves nothing (never "nothing running"); an incomplete read can't
+mark a `LIVE-*` finding inactive. No model tool is added (A.5 is a check). Nothing is killed: a
+`kill <pid>` recommendation is shown, never run.
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources
