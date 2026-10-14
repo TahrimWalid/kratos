@@ -414,6 +414,7 @@ the question to the model together with a short summary of what it found:
 | sign-ins, last 24 hours | failed and successful SSH logins, bursts, sudo activity |
 | log tampering | logs cut short, replaced or wiped |
 | privileged accounts | who can become root, and what changed since the last check |
+| where someone could keep access | new or backdoor-shaped cron jobs, services, startup files, SSH keys, SUID programs, preload and PAM rules |
 | configuration | SSH, firewall, fail2ban and other settings |
 | log sync | new log lines are copied into Kratos's event store on your computer |
 
@@ -622,6 +623,54 @@ later, the finding comes back with the new incident. (If something on the machin
 legitimately truncates a log, let logrotate do it — Kratos recognizes rotation.)
 An installed but stopped auditd is shown separately (`LOG-006`, info) and goes away
 once auditd runs again.
+
+## Where someone could keep access (persistence)
+
+Once an intruder is in, they want to stay in across reboots and password changes.
+On Linux there are many places to hide a line that re-launches their access: a
+cron job, a systemd service or timer, an SSH key, a startup file like `.bashrc`,
+a program with the setuid bit, the dynamic-linker preload, a login (PAM) rule, a
+udev rule, a package-manager hook. Kratos checks all of them, by itself, as part
+of the basics — you don't have to ask — and in the standard audit (`/run`).
+
+It reports a place only when there is a reason to:
+
+- **new since Kratos first looked.** The first check of a machine records every
+  such place as the baseline; from then on, something that **appeared or changed**
+  and that **no installed package owns** is reported (`PERSIST-001`). "Owned by a
+  package" is the main filter — the thousands of cron jobs, services and PAM rules
+  a normal system ships are left out.
+- **shaped like a backdoor** (`PERSIST-002`, "worth a look", never a verdict): a
+  line that runs a program from `/tmp` or a hidden folder, downloads and runs
+  something, decodes hidden text and runs it, opens a shell over the network, or
+  makes every program load an extra library. These patterns also show up in normal
+  software, so this is a prompt to read the line, not an accusation. If a *new*,
+  unowned place also has one of these shapes, it is raised to high.
+- **a program that runs with its owner's powers** (setuid/setgid) that **no package
+  installed** (`PERSIST-003`) — a classic way to keep root.
+- **the dynamic-linker preload is in use** (`PERSIST-004`) — a library listed in
+  `/etc/ld.so.preload` runs inside every program, which is how a rootkit hides.
+- **a kernel module from outside the system's packages** (`PERSIST-005`).
+- **a new SSH key, or one with backdoor-ish options** (`PERSIST-006`).
+- **a package's own file changed** from what it shipped (`PERSIST-007`, in the full
+  audit only — it asks the package manager to verify its files, which is slow).
+- **a login (PAM) rule pointing at software no package installed** (`PERSIST-008`).
+
+Each finding shows the path, owner, mode and a short, masked excerpt of the lines
+that execute something — never whole files — and carries the matching MITRE ATT&CK
+technique. A finding stays open until you decide on it; because a place is named by
+its path **and** its content, a *changed* line reopens a decision you already made,
+while an unchanged one stays decided.
+
+**What SSH can't see.** Over a plain SSH connection Kratos reads as your SSH user,
+so other users' home folders, `/root`, and other users' crontabs come back as a
+**coverage gap** (`PERSIST-009`, "not checked" — unknown, not clean) with the fix:
+connect the machine through its sub-agent, which reads as root. A location that
+wasn't read is never reported as empty.
+
+**Settings:** the persistence check's freshness limit is in Settings → General
+(with the other checks); whether the slow package-file verification runs in the
+full audit is `persist.verify_packages` there too.
 
 ## Sealing a machine's logs
 
@@ -1352,7 +1401,10 @@ permission prompt, pressing Enter is always the safe "no."
 - **Sealed journal** — a journal the machine signs as it writes, so later edits can
   be detected. The *verification key* that checks the signatures stays with Kratos.
 - **ATT&CK** — MITRE's public catalogue of attacker techniques; findings about log
-  tampering name the matching technique.
+  tampering and persistence name the matching technique.
+- **Persistence** — the places an intruder leaves something behind to keep access
+  across reboots and password changes (a cron job, a service, an SSH key, a setuid
+  program, …). Kratos checks them by itself and reports what is new or backdoor-shaped.
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.

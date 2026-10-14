@@ -605,7 +605,8 @@ Each component of `kratos.db` migrates itself through `schema_versions`.
 
 **Code collects, the model reasons.** Before the investigation loop's first model call,
 `kratos.collect.runner.prepare()` makes sure the basics are fresh for the machine (ports, 24 h
-of sign-in activity, log tampering, privileged accounts, configuration, log sync): each
+of sign-in activity, log tampering, privileged accounts, where someone could keep access
+(persistence), configuration, log sync): each
 *check* is a registered wrapper over a tool Kratos already has (`collect/checks.py`), run
 through `execute_tool_call` so the dispatch guards, approval gating and event recording still
 apply. A check declares its cost class (`quick` runs at investigation start; `slow` -- known
@@ -657,6 +658,55 @@ the same file; the tamper check (head hash) is what catches that.
 **Standard audit.** `run_standard_audit()` is `prepare(classes=("quick","slow"), force=True)` plus
 one correlation, reported as steps; `/run`, `kratos run` and audit schedules use it, so there is one
 implementation of "look at the machine".
+
+## Persistence checks
+
+**Inventory on the machine, judging on Kratos** (`adapters/persistence.py`, `kratos/persist/`).
+One closed table of persistence locations per distribution family (cron, at, systemd units and
+timers, SSH authorized keys, SUID/SGID files, `ld.so.preload`, kernel modules, shell startup, PAM,
+boot/init, udev, package-manager hooks) is read two ways that print the **same** tab-separated
+records: a fixed POSIX sh+awk script over SSH (run as the SSH user, no sudo) and the sub-agent's
+`persistence_inventory` probe (a stdlib walk as root through the hardened opener in
+`logsources/hostfiles.py`). One parser (`parse_output`) reads both; an awk program and its Python
+twin pick the same executing lines (a test runs both on the same files under mawk/gawk/BusyBox).
+The read never sends whole files -- for a text item only the lines that execute something, capped
+(20 per file, 200 bytes each) and masked (`events/redact`); an authorized_keys file leaves the
+machine only as key type, SHA-256 fingerprint, options and comment, never the key. Package
+ownership is looked up **on the machine** from the package database files (`dpkg`'s `.list`s,
+`rpm -qf` in one batch, apk's installed db), so the main noise filter doesn't need a package
+database on Kratos. Reads are bounded (per-location file caps, a SUID `find` limited to local
+filesystems with a timeout, a 2 MiB total cap, an overall time budget); over the budget the read
+is partial and says so, never hangs.
+
+**Judging** (`persist/judge.py`) runs entirely on Kratos from (current inventory, baseline,
+ownership). The filters, in order: *owned by a package* (following a symlink to its target, which is
+how an enabled unit looks) removes the bulk; *in the baseline* decides newness; a closed list of
+*shapes* (`persist/shapes.py`) adds "worth a look" and, when a new unowned item is also strongly
+shaped (a reverse shell, download-and-run, decode-and-run), raises it to high. Rules `PERSIST-001`
+(new unowned item) through `PERSIST-008` (unowned PAM module / `pam_exec` script), plus `PERSIST-009`
+(a run note listing what could not be read). `PERSIST-007` (a package's own file changed from what it
+shipped, via `dpkg --verify`/`rpm -V`/`apk audit`) is the slow part and runs only in the full audit.
+Each finding carries item identities (`path#sha256[:12]`, `user:fingerprint`, `module@taint`) so a
+*changed* item is a new entity and reopens a decision, and ATT&CK v19 labels for the item's area
+(verified against the official v19 STIX data).
+
+**Baseline** (`persist/baseline.py`, table `persistence_baseline`, one row per machine, the identity
+map zlib-compressed). Kratos's first look at a machine is the baseline; a later item not in it is
+"new". The baseline is never updated with items a later run found -- a person's decision on the
+finding is how "this is fine" is said -- but its *coverage* only grows: an area this Kratos knows and
+the baseline doesn't, or a location that was unreadable then and readable now (SSH-as-user, then the
+sub-agent as root), is merged in as a first look so a wider read doesn't report a whole machine as
+new. Both are recorded (new areas, re-read gaps) as run notes.
+
+**The check** (`persist/check.py`, `persist/record.py`). `persistence` (quick) and
+`persistence_verify` (slow) register with the collection layer like any other check; the read, judge
+and baseline-update happen in `record.run`, which writes `data_dir/persistence/persistence_<time>.json`
+(the judged signals). `find_latest_inputs` category `persistence` picks it up; `generate_findings`
+turns its signals into `PERSIST-*` findings. A read that fails saves nothing and leaves the baseline
+alone, so a failed read never becomes "nothing there"; an incomplete read, or one that couldn't read
+the package database, can't mark a `PERSIST-*` finding mitigated (`_apply_lifecycle` folds persistence
+into the lifecycle's incomplete set). No tool is added to the model's list (A.1 is a check, not a
+tool).
 
 ## Log sources and tamper detection
 
@@ -800,7 +850,7 @@ investigation conclusions. It auto-discovers the newest input file per
 category (`scans`, `logs`, `context`, `reports`, `baseline`) under the
 active `data_dir`, so a call doesn't need to be told which specific file to
 read. Finding IDs follow a fixed prefix scheme: `NET-*`, `AUTH-*`,
-`CORR-*`, `INTEG-*`, `PRIV-*`. `PRIV-*` comes from `list_privileged_accounts`
+`CORR-*`, `INTEG-*`, `PRIV-*`, `LOG-*`/`SEAL-*`, `PERSIST-*`. `PRIV-*` comes from `list_privileged_accounts`
 snapshots, and only from one that is fresh (24 h) and of the active target, so
 an old "X was just added to sudo" can't keep re-firing or leak into another
 machine's report; grants to accounts that have since lost the access are kept
