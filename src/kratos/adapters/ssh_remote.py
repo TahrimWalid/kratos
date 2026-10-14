@@ -1138,6 +1138,29 @@ def fetch_persistence(verify: bool = False) -> Any:
     return out
 
 
+LIVE_RESPONSE_TIMEOUT_SECONDS = 90
+
+
+def fetch_live_response() -> Any:
+    """What is running right now (phase A.5) as a dict (adapters.live_response.parse_output),
+    or the failed SSHResult. Over SSH it walks /proc AS THE SSH USER -- no sudo -- and
+    processes it can't read come back as coverage gaps; through the sub-agent it is the
+    agent's own `live_inventory` read (root). No path or pattern is sent."""
+    from kratos.adapters import live_response
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(live_response.build_script(), shell="sh", errors="replace",
+                                 timeout=LIVE_RESPONSE_TIMEOUT_SECONDS)
+
+    result = _route("live_inventory", {}, over_ssh)
+    if not result.ok:
+        return result
+    out = live_response.parse_output(result.stdout)
+    out["via"] = result.via
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
 def fetch_log_file_states() -> Any:
     """State of every tracked log file and its first rotation (tamper check §6.1)."""
     from kratos.logsources import hostfiles

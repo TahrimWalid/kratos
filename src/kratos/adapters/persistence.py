@@ -529,7 +529,7 @@ def build_script(root: str = "", verify: bool = False) -> str:
         "done")
     out.append("}")
     out.append(_SH_MAIN)
-    script = "\n".join(out)
+    script = "\n".join(out).replace("@OWNERSHIP@", OWNERSHIP_SH)
     mods = " ".join(m for m in MODES if m not in ("keys", "none"))
     skip = "|".join(f"{p}|{p}/*" for p in SKIP_MOUNT_PREFIXES)
     q = _sh_q(r) if r else ""
@@ -543,6 +543,42 @@ def build_script(root: str = "", verify: bool = False) -> str:
         script += _VERIFY_SH
     # everything through one byte cap: a cut-off read has no END line (the parser says partial)
     return "{\n" + script + "printf 'END\\n'\n} | head -c " + str(OUTPUT_CAP_BYTES) + "\nexit 0\n"
+
+
+# Package ownership of every path in $WANT (one per line, root-prefixed), read from the
+# package database files ON the machine; prints OWNSRC/OWNERR/OWN lines and sets $OWNOUT.
+# Shared with the live-response read (kratos.adapters.live_response).
+OWNERSHIP_SH = r"""
+kr_alts='function alt(p) { if (p ~ /^\/usr\/(lib|bin|sbin|lib64)\//) return substr(p, 5); if (p ~ /^\/(lib|bin|sbin|lib64)\//) return "/usr" p; return "" }'
+OWNOUT=""
+case "$FAMILY" in
+debian)
+  if [ -r @ROOT@/var/lib/dpkg/info ]; then
+    printf 'OWNSRC\tdpkg\n'
+    OWNOUT=$(printf '%s\n' "$WANT" | awk -v root=@ROOTV@ "$kr_alts"'
+      NR == FNR { k = substr($0, length(root) + 1); want[k] = $0; a = alt(k); if (a != "") want[a] = $0; next }
+      ($0 in want) { f = FILENAME; sub(/.*\//, "", f); sub(/[.]list$/, "", f); print "OWN\t" want[$0] "\t" f }' - @ROOT@/var/lib/dpkg/info/*.list 2>/dev/null | sort -u)
+  else printf 'OWNERR\tthe dpkg database is not readable here\n'; fi ;;
+rhel)
+  if command -v rpm >/dev/null 2>&1; then
+    printf 'OWNSRC\trpm\n'
+    OWNOUT=$( { printf '%s\n' "$WANT" | sed 's/^/W	/'; rpm -qa --qf '[R\t%{FILENAMES}\t%{=NAME}\n]' 2>/dev/null; } | awk -F'\t' -v root=@ROOTV@ "$kr_alts"'
+      $1 == "W" { k = substr($2, length(root) + 1); want[k] = $2; a = alt(k); if (a != "") want[a] = $2; next }
+      $1 == "R" && ($2 in want) { print "OWN\t" want[$2] "\t" $3 }' | sort -u)
+    [ -n "$OWNOUT" ] || printf 'OWNERR\tthe rpm database gave no answer\n'
+  else printf 'OWNERR\tno rpm command on this machine\n'; fi ;;
+alpine)
+  if [ -r @ROOT@/lib/apk/db/installed ]; then
+    printf 'OWNSRC\tapk\n'
+    OWNOUT=$(printf '%s\n' "$WANT" | awk -v root=@ROOTV@ "$kr_alts"'
+      NR == FNR { k = substr($0, length(root) + 1); want[k] = $0; a = alt(k); if (a != "") want[a] = $0; next }
+      /^P:/ { pkg = substr($0, 3) } /^F:/ { dir = substr($0, 3) }
+      /^R:/ { p = "/" dir "/" substr($0, 3); if (p in want) print "OWN\t" want[p] "\t" pkg }' - @ROOT@/lib/apk/db/installed 2>/dev/null | sort -u)
+  else printf 'OWNERR\tthe apk database is not readable here\n'; fi ;;
+*) printf 'OWNERR\tunknown Linux distribution\n' ;;
+esac
+[ -n "$OWNOUT" ] && printf '%s\n' "$OWNOUT"
+""".lstrip("\n")
 
 
 _SH_MAIN = r"""
@@ -629,36 +665,7 @@ if [ "$CT" = none ] && [ -r @ROOT@/proc/modules ]; then
 fi
 # package ownership of every path above, from the package database files
 WANT=$( { printf '%s\n' "$PATHS"; printf '%s\n' "$REFS"; printf '%s\n' "$MODPATHS" | cut -f3; } | grep '^/' | sort -u)
-kr_alts='function alt(p) { if (p ~ /^\/usr\/(lib|bin|sbin|lib64)\//) return substr(p, 5); if (p ~ /^\/(lib|bin|sbin|lib64)\//) return "/usr" p; return "" }'
-OWNOUT=""
-case "$FAMILY" in
-debian)
-  if [ -r @ROOT@/var/lib/dpkg/info ]; then
-    printf 'OWNSRC\tdpkg\n'
-    OWNOUT=$(printf '%s\n' "$WANT" | awk -v root=@ROOTV@ "$kr_alts"'
-      NR == FNR { k = substr($0, length(root) + 1); want[k] = $0; a = alt(k); if (a != "") want[a] = $0; next }
-      ($0 in want) { f = FILENAME; sub(/.*\//, "", f); sub(/[.]list$/, "", f); print "OWN\t" want[$0] "\t" f }' - @ROOT@/var/lib/dpkg/info/*.list 2>/dev/null | sort -u)
-  else printf 'OWNERR\tthe dpkg database is not readable here\n'; fi ;;
-rhel)
-  if command -v rpm >/dev/null 2>&1; then
-    printf 'OWNSRC\trpm\n'
-    OWNOUT=$( { printf '%s\n' "$WANT" | sed 's/^/W	/'; rpm -qa --qf '[R\t%{FILENAMES}\t%{=NAME}\n]' 2>/dev/null; } | awk -F'\t' -v root=@ROOTV@ "$kr_alts"'
-      $1 == "W" { k = substr($2, length(root) + 1); want[k] = $2; a = alt(k); if (a != "") want[a] = $2; next }
-      $1 == "R" && ($2 in want) { print "OWN\t" want[$2] "\t" $3 }' | sort -u)
-    [ -n "$OWNOUT" ] || printf 'OWNERR\tthe rpm database gave no answer\n'
-  else printf 'OWNERR\tno rpm command on this machine\n'; fi ;;
-alpine)
-  if [ -r @ROOT@/lib/apk/db/installed ]; then
-    printf 'OWNSRC\tapk\n'
-    OWNOUT=$(printf '%s\n' "$WANT" | awk -v root=@ROOTV@ "$kr_alts"'
-      NR == FNR { k = substr($0, length(root) + 1); want[k] = $0; a = alt(k); if (a != "") want[a] = $0; next }
-      /^P:/ { pkg = substr($0, 3) } /^F:/ { dir = substr($0, 3) }
-      /^R:/ { p = "/" dir "/" substr($0, 3); if (p in want) print "OWN\t" want[p] "\t" pkg }' - @ROOT@/lib/apk/db/installed 2>/dev/null | sort -u)
-  else printf 'OWNERR\tthe apk database is not readable here\n'; fi ;;
-*) printf 'OWNERR\tunknown Linux distribution\n' ;;
-esac
-[ -n "$OWNOUT" ] && printf '%s\n' "$OWNOUT"
-OWNED=$(printf '%s\n' "$OWNOUT" | cut -f2)
+@OWNERSHIP@OWNED=$(printf '%s\n' "$OWNOUT" | cut -f2)
 # hashes: everything except package-owned files in package-managed directories
 VEND=$(printf '%s\n' "$ITEMS" | awk -F'\t' '$3 == "1" { print $4 }')
 HASHME=$(printf '%s\n' "$OKF" | while IFS= read -r _f; do
