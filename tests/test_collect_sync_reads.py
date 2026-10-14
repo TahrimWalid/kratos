@@ -302,10 +302,11 @@ def test_the_new_probes_need_agent_0_5_0():
     assert core_server.PROBE_MIN_AGENT_VERSION["journal_sync"] == (0, 5, 0)
     assert core_server.PROBE_MIN_AGENT_VERSION["file_sync"] == (0, 5, 0)
     assert core_server.PROBE_MIN_AGENT_VERSION["persistence_inventory"] == (0, 6, 0)   # A.1
+    assert core_server.PROBE_MIN_AGENT_VERSION["live_inventory"] == (0, 6, 1)          # A.5
     from kratos.subagent import agent
 
-    assert agent.AGENT_VERSION == "0.6.0"       # A.1 bumped the bundle (persistence probe)
-    assert {"journal_sync", "file_sync", "persistence_inventory"} <= set(reads.READ_PROBES)
+    assert agent.AGENT_VERSION == "0.6.1"       # A.5 bumped the bundle (live_inventory probe)
+    assert {"journal_sync", "file_sync", "persistence_inventory", "live_inventory"} <= set(reads.READ_PROBES)
 
 
 def test_the_bundle_still_imports_without_kratos():
