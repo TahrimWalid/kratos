@@ -1114,6 +1114,30 @@ def fetch_file_sync(source: str, file_index: int, inode: int | None, offset: int
     return read
 
 
+PERSISTENCE_TIMEOUT_SECONDS = 90
+PERSISTENCE_VERIFY_TIMEOUT_SECONDS = 240
+
+
+def fetch_persistence(verify: bool = False) -> Any:
+    """The persistence inventory (phase A.1) as a dict (adapters.persistence.parse_output),
+    or the failed SSHResult. Over SSH it runs AS THE SSH USER -- no sudo -- and what that
+    user can't read comes back as coverage gaps; through the sub-agent it is the agent's
+    own `persistence_inventory` read (root, hardened opener). No path or pattern is sent."""
+    from kratos.adapters import persistence
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(persistence.build_script(verify=verify), shell="sh", errors="replace",
+                                 timeout=PERSISTENCE_VERIFY_TIMEOUT_SECONDS if verify else PERSISTENCE_TIMEOUT_SECONDS)
+
+    result = _route("persistence_inventory", {"verify": bool(verify)}, over_ssh)
+    if not result.ok:
+        return result
+    out = persistence.parse_output(result.stdout)
+    out["via"] = result.via
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
 def fetch_log_file_states() -> Any:
     """State of every tracked log file and its first rotation (tamper check §6.1)."""
     from kratos.logsources import hostfiles

@@ -60,6 +60,8 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "catalog.py": _PACKAGE_ROOT / "logsources" / "catalog.py",
     "logread.py": _PACKAGE_ROOT / "logsources" / "logread.py",
     "hostfiles.py": _PACKAGE_ROOT / "logsources" / "hostfiles.py",
+    # A.1: the persistence-location table, its walk and its line extractor
+    "persistence.py": _PACKAGE_ROOT / "adapters" / "persistence.py",
 }
 YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 

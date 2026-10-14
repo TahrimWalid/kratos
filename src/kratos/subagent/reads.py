@@ -38,10 +38,10 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, hostfiles, logread, measure, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, hostfiles, logread, measure, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import privileged_accounts
+        from kratos.adapters import persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
@@ -49,6 +49,7 @@ except ImportError:  # pragma: no cover -- exercised by whichever layout is runn
         import hostfiles  # type: ignore[no-redef]
         import logread  # type: ignore[no-redef]
         import measure  # type: ignore[no-redef]
+        import persistence  # type: ignore[no-redef]
         import privileged_accounts  # type: ignore[no-redef]
 
 READ_API_VERSION = 1
@@ -346,6 +347,12 @@ def v_enum(*allowed: Any) -> Callable[[Any], Any]:
     return check
 
 
+def v_bool(v: Any) -> bool:
+    if v is True or v is False:
+        return v
+    raise ReadParamError("must be true or false")
+
+
 def v_cursor(v: Any) -> str:
     if not logread.valid_cursor(v):
         raise ReadParamError("must be a systemd journal cursor (s=...;i=...;b=...;m=...;t=...;x=...)")
@@ -462,6 +469,9 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
         "offset": (v_int_range(0, 2 ** 44), False, 0),
         "floor": (v_epoch, False, None),
     },
+    # phase A.1: persistence inventory (agent 0.6.0). No paths, no patterns: the
+    # locations are the closed table in persistence.py.
+    "persistence_inventory": {"verify": (v_bool, False, False)},
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -473,6 +483,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "measure_auth": MEASURE_BUDGET_SECONDS + 60, "privileged_accounts": 30,
     "log_read": 90, "log_file_stat": 30, "journal_headers": 60, "journal_file_hash": 120, "journal_file_chunk": 60,
     "utmp_read": 20, "audit_status": 30, "boot_history": 60, "journal_sync": 90, "file_sync": 60,
+    "persistence_inventory": persistence.DEFAULT_BUDGET_SECONDS + persistence.VERIFY_EXTRA_SECONDS + 10,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -481,6 +492,7 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "log_read": logread.DEFAULT_MAX_BYTES, "log_file_stat": 256 * 1024, "journal_headers": 1024 * 1024,
     "boot_history": 2 * 1024 * 1024, "audit_status": 64 * 1024,
     "journal_sync": logread.SYNC_JOURNAL_MAX_BYTES + 65536, "file_sync": logread.SYNC_CHUNK_BYTES * 3 + 65536,
+    "persistence_inventory": persistence.OUTPUT_CAP_BYTES + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1553,6 +1565,16 @@ def _p_file_sync(p: dict[str, Any]) -> dict[str, Any]:
     return file_sync_output(p["source"], p["file_index"], p["inode"], p["offset"], p["floor"])
 
 
+def _p_persistence_inventory(p: dict[str, Any]) -> dict[str, Any]:
+    """The persistence inventory (persistence.inventory_output): the closed table,
+    walked as root, every file opened through the hardened opener, credential
+    locations never read (authorized_keys only for fingerprints)."""
+    budget = persistence.DEFAULT_BUDGET_SECONDS + (persistence.VERIFY_EXTRA_SECONDS if p["verify"] else 0)
+    return persistence.inventory_output(
+        verify=bool(p["verify"]), is_credential=is_credential_path, deadline=time.monotonic() + budget,
+        run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap))
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1562,6 +1584,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "journal_file_hash": _p_journal_file_hash, "journal_file_chunk": _p_journal_file_chunk,
     "utmp_read": _p_utmp_read, "audit_status": _p_audit_status, "boot_history": _p_boot_history,
     "journal_sync": _p_journal_sync, "file_sync": _p_file_sync,
+    "persistence_inventory": _p_persistence_inventory,
 }
 assert set(_PROBES) == set(READ_PROBES)
 
