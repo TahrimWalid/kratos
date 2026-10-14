@@ -15,6 +15,7 @@ _DI = ("TA0112", "Defense Impairment")
 _PERSIST = ("TA0003", "Persistence")
 _PRIVESC = ("TA0004", "Privilege Escalation")
 _STEALTH = ("TA0005", "Stealth")
+_EXEC = ("TA0002", "Execution")
 
 
 def _t(tid: str, name: str, tactic: tuple[str, str] = _DI) -> dict[str, str]:
@@ -47,6 +48,14 @@ UDEV = _t("T1546.017", "Udev Rules", _PERSIST)
 INSTALLER_PACKAGES = _t("T1546.016", "Installer Packages", _PERSIST)
 EVENT_TRIGGERED = _t("T1546", "Event Triggered Execution", _PERSIST)
 
+# A.5 live-response checks. v19 tactics verified against the STIX bundle:
+# Reflective Code Loading and File Deletion moved under Stealth; Unix Shell is
+# Execution; Web Shell is Persistence.
+REFLECTIVE_CODE_LOADING = _t("T1620", "Reflective Code Loading", _STEALTH)
+FILE_DELETION = _t("T1070.004", "File Deletion", _STEALTH)
+UNIX_SHELL = _t("T1059.004", "Unix Shell", _EXEC)
+WEB_SHELL = _t("T1505.003", "Web Shell", _PERSIST)
+
 PERSISTENCE_TECHNIQUES: tuple[dict[str, str], ...] = (
     CRON, AT, SYSTEMD_SERVICE, SYSTEMD_TIMER, SYSTEM_PROCESS, SSH_KEYS, SETUID, DYNAMIC_LINKER, KERNEL_MODULES,
     SHELL_CONFIG, PAM, RC_SCRIPTS, LOGON_SCRIPTS, XDG_AUTOSTART, UDEV, INSTALLER_PACKAGES, EVENT_TRIGGERED)
@@ -68,6 +77,13 @@ RULE_ATTACK: dict[str, tuple[dict[str, str], ...]] = {
     "PERSIST-006": (SSH_KEYS,),
     "PERSIST-007": PERSISTENCE_TECHNIQUES,
     "PERSIST-008": (PAM,),
+    # A.5: a live-response finding carries the technique for the signal it is about
+    # (kratos.live.judge). LIVE-004 (a dropped executable) and LIVE-005 (an
+    # unexpected listener) are posture, not a named technique, so they carry none.
+    "LIVE-001": (FILE_DELETION,),
+    "LIVE-002": (REFLECTIVE_CODE_LOADING,),
+    "LIVE-003": (DYNAMIC_LINKER,),
+    "LIVE-006": (UNIX_SHELL, WEB_SHELL),
 }
 
 

@@ -13,7 +13,7 @@ from kratos.collect.runner import CheckOutcome, CollectionReport
 
 DIGEST_CAP = 1500
 # Titles that interpolate names from the machine (accounts, file paths).
-_TITLE_UNSAFE_PREFIXES = ("PRIV-", "PERSIST-")
+_TITLE_UNSAFE_PREFIXES = ("PRIV-", "PERSIST-", "LIVE-")
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 _DECIDED = {"risk_accepted": "accepted", "false_positive": "false positive", "out_of_scope": "out of scope"}
 

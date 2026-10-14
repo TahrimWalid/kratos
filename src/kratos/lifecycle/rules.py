@@ -89,6 +89,9 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PERSIST-006", "condition"),
     _r("PERSIST-007", "condition"),
     _r("PERSIST-008", "condition"),
+    # A.5: a dropped executable in a world-writable directory is a state that lasts
+    # until the file is removed or a person accepts it.
+    _r("LIVE-004", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -98,11 +101,19 @@ RULES: dict[str, RuleInfo] = dict([
     _r("CORR-002", "occurrence", _BURST),
     _r("CORR-SSH-001", "occurrence", _BURST),
     _r("LOG-003", "occurrence"),
+    # A.5: a running process is an event in time -- a later run that re-reads and no
+    # longer sees it marks it inactive ("not seen since ...").
+    _r("LIVE-001", "occurrence"),
+    _r("LIVE-002", "occurrence"),
+    _r("LIVE-003", "occurrence"),
+    _r("LIVE-005", "occurrence"),
+    _r("LIVE-006", "occurrence"),
     # run notes
     _r("COV-001", "run_note"),
     _r("VULN-003", "run_note"),
     _r("SEAL-003", "run_note"),
     _r("PERSIST-009", "run_note"),     # what the persistence check could not read
+    _r("LIVE-007", "run_note"),        # the restart-needed hint + what could not be read
 ])
 
 

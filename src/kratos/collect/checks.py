@@ -282,3 +282,6 @@ register(Check(
 # A.1: the persistence inventory and the slow package-file verification register
 # themselves in their own module (they read through kratos.persist, not a tool).
 from kratos.persist import check as _persistence_checks  # noqa: E402,F401
+# A.5: what is running right now registers itself the same way (reads through
+# kratos.live, not a tool).
+from kratos.live import check as _live_response_check  # noqa: E402,F401

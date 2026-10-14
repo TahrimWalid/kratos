@@ -111,6 +111,14 @@
    ],
    "url": "https://attack.mitre.org/techniques/T1053/006"
   },
+  "T1059.004": {
+   "name": "Unix Shell",
+   "revoked": false,
+   "tactics": [
+    "execution"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1059/004"
+  },
   "T1070": {
    "name": "Indicator Removal",
    "revoked": false,
@@ -127,6 +135,14 @@
    ],
    "url": "https://attack.mitre.org/techniques/T1070/002"
   },
+  "T1070.004": {
+   "name": "File Deletion",
+   "revoked": false,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1070/004"
+  },
   "T1098.004": {
    "name": "SSH Authorized Keys",
    "revoked": false,
@@ -135,6 +151,14 @@
     "privilege-escalation"
    ],
    "url": "https://attack.mitre.org/techniques/T1098/004"
+  },
+  "T1505.003": {
+   "name": "Web Shell",
+   "revoked": false,
+   "tactics": [
+    "persistence"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1505/003"
   },
   "T1543": {
    "name": "Create or Modify System Process",
@@ -250,6 +274,14 @@
     "execution"
    ],
    "url": "https://attack.mitre.org/techniques/T1574/006"
+  },
+  "T1620": {
+   "name": "Reflective Code Loading",
+   "revoked": false,
+   "tactics": [
+    "stealth"
+   ],
+   "url": "https://attack.mitre.org/techniques/T1620"
   },
   "T1685": {
    "name": "Disable or Modify Tools",

@@ -158,6 +158,8 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         "log_integrity": pick(data_dir / "integrity", "log_integrity_*.json", "log_integrity"),
         # The persistence check (A.1): freshness is checked by _load_recent_persistence.
         "persistence": pick(data_dir / "persistence", "persistence_*.json", "persistence"),
+        # The live-response check (A.5): freshness is checked by _load_recent_live.
+        "live_response": pick(data_dir / "live", "live_response_*.json", "live_response"),
     }
 
 
@@ -341,6 +343,7 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
     "LOG-": ("log_integrity",),
     "SEAL-": ("log_integrity",),
     "PERSIST-": ("persistence",),
+    "LIVE-": ("live_response",),
 }
 
 
@@ -657,6 +660,13 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "PERSIST-007": "A file that starts programs no longer matches what its package installed.",
     "PERSIST-008": "A login (PAM) rule points at software no package installed — it can accept a password that was never set.",
     "PERSIST-009": "Part of the persistence check could not be done — those places are unknown, not clean.",
+    "LIVE-001": "A running program deleted its own file from disk and is not explained by a package update — a common way malware hides.",
+    "LIVE-002": "A process is running from memory or from a just-deleted temporary file, so there is nothing on disk to scan.",
+    "LIVE-003": "A process was started with an extra library forced into it (LD_PRELOAD/LD_AUDIT) that no package owns — how a userspace rootkit loads itself.",
+    "LIVE-004": "An executable is sitting in a world-writable directory (/tmp, /dev/shm, /var/tmp) — a common place to stage a payload.",
+    "LIVE-005": "A network listener is run by a process started from /tmp, from a deleted file, or from a binary no package installed — a likely backdoor.",
+    "LIVE-006": "A shell or interpreter was started by a web server or database — the classic web-shell or exploited-service shape.",
+    "LIVE-007": "Part of the live-response check could not be done, or a running program needs a restart after an update — context, not a finding of compromise.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -883,6 +893,7 @@ def generate_findings(
     auth_patterns_window: dict[str, Any] | None = None,
     log_integrity: dict[str, Any] | None = None,
     persistence: dict[str, Any] | None = None,
+    live_response: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
@@ -1376,6 +1387,10 @@ def generate_findings(
     if persistence:
         findings.extend(_persistence_findings(persistence))
 
+    # LIVE-*: what is running right now (from the live-response check, A.5)
+    if live_response:
+        findings.extend(_live_response_findings(live_response))
+
     # 4) Environment note (WSL)
     if system_context:
         rel = (system_context.get("os") or {}).get("release", "")
@@ -1777,6 +1792,77 @@ def _persistence_findings(doc: dict[str, Any]) -> list[Finding]:
     return out
 
 
+# A live-response snapshot feeds findings while it is this fresh: what is running
+# "right now" is only true for a while, so a day-old read must not keep re-firing.
+LIVE_MAX_AGE_HOURS = 24
+
+
+def _load_recent_live(path: Path | None) -> dict[str, Any] | None:
+    """The newest live-response read of the active machine, if it is less than
+    LIVE_MAX_AGE_HOURS old (find_latest_inputs already picked a file describing
+    this machine)."""
+    if path is None:
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("signals"), list):
+        return None
+    captured = _snapshot_time(data, "checked_at", path)
+    if datetime.now().timestamp() - captured > LIVE_MAX_AGE_HOURS * 3600:
+        return None
+    return data
+
+
+def _live_kwargs(sig: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:
+    """The shared Finding fields for one judged live-response signal. The rule id is
+    passed as a literal by each builder below (the lifecycle-completeness scan in
+    tests/test_lifecycle_rules.py reads literal Finding(id=...) calls)."""
+    target = doc.get("target") or "the target"
+    via = str(doc.get("via") or "ssh")
+    how = ("read through the machine's sub-agent (as root)" if via == "subagent"
+           else f"read over SSH as uid {doc.get('reader_uid')}" if doc.get("reader_uid") not in (None, 0)
+           else "read over SSH")
+    evidence = [f"From the live-response check of {target} at {_when(doc.get('checked_at', 'unknown'))} ({how})",
+                *[str(line) for line in sig.get("evidence") or []]]
+    if str(sig.get("rule")) != "LIVE-007" and doc.get("coverage_gaps"):
+        evidence.append("Not everything could be checked -- see LIVE-007 for what was not read.")
+    return {"title": str(sig.get("title") or sig.get("rule")), "severity": str(sig.get("severity") or "info"),
+            "evidence": evidence, "recommendation": [str(r) for r in sig.get("recommendation") or []],
+            "entities": normalise_entities("process", sig.get("entities") or []),
+            "attack": [dict(a) for a in sig.get("attack") or [] if isinstance(a, dict)]}
+
+
+def _live_response_findings(doc: dict[str, Any]) -> list[Finding]:
+    """LIVE-001..007 from one live-response snapshot (A.5).
+
+    The judging happened when the read was taken (kratos.live.judge) and its result
+    is in the snapshot, so a later correlation of the same snapshot says exactly the
+    same thing. One literal-id builder per rule, so the lifecycle-completeness scan
+    sees every id."""
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for s in doc.get("signals") or []:
+        if isinstance(s, dict) and str(s.get("rule", "")).startswith("LIVE-"):
+            by_rule.setdefault(s["rule"], []).append(s)
+    out: list[Finding] = []
+    for s in by_rule.get("LIVE-001", []):
+        out.append(Finding(id="LIVE-001", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-002", []):
+        out.append(Finding(id="LIVE-002", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-003", []):
+        out.append(Finding(id="LIVE-003", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-004", []):
+        out.append(Finding(id="LIVE-004", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-005", []):
+        out.append(Finding(id="LIVE-005", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-006", []):
+        out.append(Finding(id="LIVE-006", **_live_kwargs(s, doc)))
+    for s in by_rule.get("LIVE-007", []):
+        out.append(Finding(id="LIVE-007", **_live_kwargs(s, doc)))
+    return out
+
+
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """
     None if fewer than 2 auto-discovered inputs are present (nothing to
@@ -1927,6 +2013,8 @@ def write_findings_report(
     inputs["log_integrity"] = auto.get("log_integrity") if log_integrity else None
     persistence_doc = _load_recent_persistence(auto.get("persistence"))
     inputs["persistence"] = auto.get("persistence") if persistence_doc else None
+    live_doc = _load_recent_live(auto.get("live_response"))
+    inputs["live_response"] = auto.get("live_response") if live_doc else None
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -1941,6 +2029,7 @@ def write_findings_report(
         auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
         log_integrity=log_integrity,
         persistence=persistence_doc,
+        live_response=live_doc,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target
@@ -1951,7 +2040,7 @@ def write_findings_report(
     try:
         finding_dicts, lifecycle_summary = _apply_lifecycle(
             finding_dicts, data_dir=data_dir, target=report_target or "unknown", inputs=inputs,
-            auth_stats=auth_stats, persistence=persistence_doc,
+            auth_stats=auth_stats, persistence=persistence_doc, live_response=live_doc,
             patterns_stats=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats))
     except Exception as e:  # noqa: BLE001 -- a lifecycle failure must never lose the report
         import logging
@@ -2056,7 +2145,8 @@ def write_findings_report(
 def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, target: str,
                      inputs: dict[str, Path | None], auth_stats: dict[str, Any] | None,
                      patterns_stats: dict[str, Any] | None,
-                     persistence: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     persistence: dict[str, Any] | None = None,
+                     live_response: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The lifecycle layer (kratos.lifecycle) over this report's findings."""
     from kratos import run_context
     from kratos.lifecycle import apply as _lc_apply, coverage as _lc_coverage, migrate as _lc_migrate
@@ -2069,6 +2159,10 @@ def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, tar
                                     or not (persistence.get("ownership") or {}).get("source")
                                     or (persistence.get("ownership") or {}).get("error")):
         incomplete = set(incomplete) | {"persistence"}
+    # A live-response read that did not finish (over budget, output truncated) saw
+    # only some of what is running, so it cannot say a LIVE-* finding is gone (A.5).
+    if live_response is not None and not live_response.get("complete"):
+        incomplete = set(incomplete) | {"live_response"}
     run = run_context.current()
     cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete)
     return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)
