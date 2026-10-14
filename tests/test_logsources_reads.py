@@ -224,10 +224,10 @@ def test_a_current_agent_serves_the_new_reads_over_the_real_channel(tmp_path):
 def test_agent_version_and_bundle_files():
     from kratos.subagent import agent, installer
 
-    assert agent.AGENT_VERSION == "0.5.0"
+    assert agent.AGENT_VERSION == "0.6.0"       # A.1 bumped the bundle (persistence probe)
     files = installer.read_bundle_files()
-    assert {"catalog.py", "logread.py", "hostfiles.py"} <= set(files)
-    for name in ("catalog.py", "logread.py", "hostfiles.py"):
+    assert {"catalog.py", "logread.py", "hostfiles.py", "persistence.py"} <= set(files)
+    for name in ("catalog.py", "logread.py", "hostfiles.py", "persistence.py"):
         assert "import kratos" not in files[name].replace("from kratos.logsources import", "")
 
 
