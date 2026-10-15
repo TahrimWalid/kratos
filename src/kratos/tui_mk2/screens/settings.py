@@ -341,7 +341,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self._gen_rows = ["name", "theme", "timezone", "findings.accept_max_days", "findings.default_view",
                           "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb",
                           "collect.enabled", "collect.start_budget_seconds", "collect.sync_sources",
-                          "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl"]
+                          "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
+                          "vulndb.max_age_days", "vulndb.epss_high"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -736,8 +737,49 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{budget} MB  (newest files first; the rest next time)", style=T.TEXT))
         for key, label, tail in self._collection_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        age, epss = self._vulndb_settings()
+        gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
+                    Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
+        gen.add_row(Text("Likely-exploited threshold (EPSS)", style=T.TEXT_MUTED),
+                    Text(f"{epss:.0%}  (a serious fixable CVE at least this likely to be exploited is high)", style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
+
+    # --- Package vulnerabilities (kratos.pkgvuln): how old the data may get, what counts as likely exploited ---
+    def _vulndb_settings(self) -> tuple[Any, Any]:
+        from kratos import settings_store
+        from kratos.pkgvuln import settings as VS
+
+        dd = self._data_dir()
+        if dd is None:
+            return 7, 0.1
+        return settings_store.get(VS.MAX_AGE_DAYS, data_dir=dd), settings_store.get(VS.EPSS_HIGH, data_dir=dd)
+
+    @work
+    async def _set_vulndb_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.pkgvuln import settings as VS
+        from kratos.tui_mk2.modals import PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        age, epss = self._vulndb_settings()
+        title, hint, current = (("Vulnerability data counts as old after (days)", "1-365.", str(age))
+                                if key == VS.MAX_AGE_DAYS else
+                                ("Likely-exploited threshold", "A chance between 0 and 1, or a percentage "
+                                 "(10% = 0.1, the commonly used EPSS threshold).", f"{epss:g}"))
+        answer = await self.app.push_screen_wait(PromptModal(title, hint, initial=current))
+        if answer is None:
+            return
+        try:
+            settings_store.set(key, answer.strip(), data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — used from the next package check.", T.SAFE)
 
     # --- Collection (kratos.collect): what Kratos checks by itself before an investigation ---
     def _collection_rows(self) -> list[tuple[str, str, str]]:
@@ -819,6 +861,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
+        elif key and key.startswith("vulndb."):
+            self._set_vulndb_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store

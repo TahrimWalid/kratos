@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import time
 from typing import Any
 
 Check = dict[str, str]
@@ -309,6 +310,30 @@ def _check_collection(out: list[Check], data_dir: Path) -> None:
                     "run /collect (or `kratos collect`) to refresh them" if status == "warn" else ""))
 
 
+def _check_vulndb(out: list[Check], data_dir: Path) -> None:
+    """The package-vulnerability data (kratos.pkgvuln.index): present, which releases, how old."""
+    from kratos import settings_store
+    from kratos.pkgvuln import index as vindex
+    from kratos.pkgvuln import settings as vsettings
+
+    st = vindex.status(data_dir)
+    if not st.present:
+        out.append(_row("vulnerability data", "warn", "not downloaded — installed packages aren't checked for "
+                        "known vulnerabilities", fix="run `kratos vulndb-update` (it downloads the data for the "
+                        "distributions of the machines Kratos has checked)."))
+        return
+    age = st.age_days() or 0.0
+    limit = settings_store.get(vsettings.MAX_AGE_DAYS, data_dir=data_dir)
+    detail = f"{', '.join(st.selectors) or 'no release'}; updated {age:.0f} day(s) ago"
+    stale = [n for n, info in st.sources.items() if n in ("kev", "epss", "nvd") and info.get("fetched_at")
+             and (time.time() - float(info["fetched_at"])) / 86400 > limit]
+    if age > limit or stale:
+        out.append(_row("vulnerability data", "warn", detail + (f"; stale: {', '.join(stale)}" if stale else ""),
+                        fix="run `kratos vulndb-update`."))
+    else:
+        out.append(_row("vulnerability data", "pass", detail))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -318,6 +343,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     if data_dir is not None:
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
+        sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
     for name, fn in sections:
         try:

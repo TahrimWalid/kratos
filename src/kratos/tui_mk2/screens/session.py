@@ -120,7 +120,7 @@ _PALETTE_COMMANDS = [
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
-    ("/collect", "check the basics now (ports, sign-ins, altered logs, ...); `/collect all` adds the slow checks"),
+    ("/collect", "check the basics now (ports, sign-ins, altered logs, vulnerable packages, ...); `/collect all` adds the slow checks"),
     ("/usage", "today's spending vs your limits + this session's tokens and cost"),
     ("/context", "what's currently loaded in the context window"),
     ("/investigate-host", "investigate THIS Kratos host itself (not the target)"),
