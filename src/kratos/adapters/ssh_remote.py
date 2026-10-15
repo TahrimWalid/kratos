@@ -171,22 +171,43 @@ def _ssh_blocked_result() -> SSHResult | None:
     return None
 
 
+REMOTE_KILL_GRACE_SECONDS = 5
+
+
+def _with_remote_deadline(inner: str, seconds: float) -> str:
+    """`inner` (a shell command line) run on the target under the same deadline the
+    local ssh client waits. Killing the local client does not stop the remote side:
+    without a pty sshd sends no hangup, so a remote command that is busy (a hash, a
+    package verify) keeps running until it next writes -- found in the phase A audit
+    (a 60 GB file in /tmp kept sha256sum busy on the target after every timed-out
+    read). `timeout` runs the command in its own process group and kills the whole
+    group, children included; a target without `timeout` runs it as before. The
+    outer `sh -c '...'` makes this independent of the login shell."""
+    secs = max(1, int(seconds))
+    wrapped = (f"command -v timeout >/dev/null 2>&1 && exec timeout -k {REMOTE_KILL_GRACE_SECONDS} {secs} {inner}"
+               f" || exec {inner}")
+    return "sh -c " + shlex.quote(wrapped)
+
+
 def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
-    """Run a single command string on the target over SSH."""
+    """Run a single command string on the target over SSH (stopped on the target too
+    when `timeout` runs out: _with_remote_deadline)."""
     if (missing := _no_target_result()) is not None:
         return missing
     if (blocked := _ssh_blocked_result()) is not None:
         return blocked
+    secs = timeout or SSH_COMMAND_TIMEOUT_SECONDS
     try:
         result = _cancel.run(
-            _base_ssh_argv() + [command],
+            # "${SHELL:-sh}": the login shell runs the command, exactly as before the wrapper
+            _base_ssh_argv() + [_with_remote_deadline('"${SHELL:-sh}" -c ' + shlex.quote(command), secs)],
             capture_output=True,
             text=True,
-            timeout=timeout or SSH_COMMAND_TIMEOUT_SECONDS,
+            timeout=secs,
         )
         return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
     except subprocess.TimeoutExpired:
-        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH command timed out after {timeout or SSH_COMMAND_TIMEOUT_SECONDS}s")
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH command timed out after {secs}s")
     except FileNotFoundError:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
 
@@ -195,23 +216,27 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
                       errors: str | None = None) -> SSHResult:
     """Run a multi-line script on the target via `<shell> -s`, fed over stdin (avoids
     shell-quoting a large one-liner). `shell="sh"` for POSIX scripts that must also run on
-    hosts without bash (e.g. Alpine) -- timewin.measure's counter is one."""
+    hosts without bash (e.g. Alpine) -- timewin.measure's counter is one. The script is
+    stopped on the target too when `timeout` runs out (_with_remote_deadline)."""
     if (missing := _no_target_result()) is not None:
         return missing
     if (blocked := _ssh_blocked_result()) is not None:
         return blocked
+    if shell not in ("sh", "bash"):
+        raise ValueError(f"unsupported remote shell {shell!r}")
+    secs = timeout or SSH_COMMAND_TIMEOUT_SECONDS
     try:
         result = _cancel.run(
-            _base_ssh_argv() + [shell, "-s"],
+            _base_ssh_argv() + [_with_remote_deadline(f"{shell} -s", secs)],
             input=script,
             capture_output=True,
             text=True,
-            timeout=timeout or SSH_COMMAND_TIMEOUT_SECONDS,
+            timeout=secs,
             **({"errors": errors} if errors else {}),
         )
         return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
     except subprocess.TimeoutExpired:
-        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH script timed out after {timeout or SSH_COMMAND_TIMEOUT_SECONDS}s")
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH script timed out after {secs}s")
     except FileNotFoundError:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
 
