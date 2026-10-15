@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from kratos.attack import attack_of
 from kratos.lifecycle import store as S
 from kratos.lifecycle.keys import short
 from kratos.target_key import target_key
@@ -32,6 +33,12 @@ def _iso(epoch: float | None) -> str | None:
 def _row(conn, rec, now: float) -> dict[str, Any]:
     d = {k: rec[k] for k in rec.keys() if k != "latest"}
     d["entities"] = json.loads(rec["entities"] or "[]")
+    try:
+        latest = json.loads(rec["latest"] or "{}")
+    except (TypeError, ValueError):
+        latest = {}
+    d["attack"] = attack_of({**(latest if isinstance(latest, dict) else {}), "id": rec["rule_id"],
+                             "entities": d["entities"]})
     d["short_key"] = short(rec["finding_key"])
     for k in ("first_seen", "last_seen", "last_checked"):
         d[k] = _iso(rec[k])

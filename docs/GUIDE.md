@@ -482,6 +482,45 @@ Two things keep answers readable:
   from an earlier check, are folded into one line — *"Also on record — unchanged since
   shown above: …"* — and `/report` shows them all.
 
+**The ATT&CK line.** A finding about something an attacker *did* carries a line like
+
+> ATT&CK: T1110.001 Password Guessing (Credential Access)
+
+It names the matching technique in [MITRE ATT&CK](https://attack.mitre.org), the
+public catalogue of attacker techniques that most security teams and tools use, so
+you can look the technique up, search other tools for it, or hand it to someone who
+speaks that language. The part in brackets is the *tactic* — the attacker's goal at
+that step (getting credentials, keeping access, hiding, …). Kratos uses ATT&CK
+version 19, where the old "Defense Evasion" is split into **Stealth** and **Defense
+Impairment**; older tutorials still use the old name.
+
+Findings about *exposure or weakness* — an open port, an outdated package, the list
+of who holds admin rights, a note about what couldn't be checked — have no ATT&CK
+line, on purpose: they describe your machine, not something someone did to it. A
+changed tracked file is labeled by *which* file changed (`/etc/passwd` → Account
+Manipulation, `/etc/crontab` → Cron, `sshd_config` → Modify Authentication
+Process); any other file has none. The labels come from one table Kratos ships,
+built from MITRE's own data — the model never writes them. In `/findings`, `Enter`
+shows a finding's technique with its link and `c` copies the link.
+
+**A map of what Kratos can catch.** `kratos attack-layer` writes a file for the
+[ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/), MITRE's
+free web viewer for the catalogue, with every technique a Kratos rule can detect
+highlighted. `kratos attack-layer --observed` instead highlights the techniques in
+the open and verified findings for the machine you're watching (`--target all` for
+every machine), colored by the worst severity; findings you've decided about or that
+were fixed are left out. To view one: open the Navigator, choose **Open Existing
+Layer → Upload from local**, and pick the file. Highlighted means *a rule can raise
+a finding labeled with it* — not that every variant of the technique is caught.
+
+```bash
+kratos attack-layer
+```
+
+```bash
+kratos attack-layer --observed --out myserver-attack.json
+```
+
 <p align="center">
   <img src="images/report.svg" width="840" alt="/report: the session&#39;s findings, each with a plain-language summary and its evidence — here who can act as root, sudo activity, and how much of the logs was covered">
 </p>
@@ -524,7 +563,8 @@ verified findings for the machine you're watching. Pick one with ↑↓ and pres
 - `o` — not relevant for this machine (out of scope)
 - `r` — reopen something you decided about
 - `h` — its history: every change, who made it, when and why
-- `Enter` — the full details
+- `Enter` — the full details, including its ATT&CK technique and link
+- `c` — copy the ATT&CK technique link
 
 Every decision needs a reason, and accepting a risk always needs an end date —
 at most 180 days unless you change it in **Settings → General**. When the date
@@ -1340,6 +1380,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos collect` | check the basics on a machine now (`--all` adds the slow checks, `--force` re-runs fresh ones) |
 | `kratos events` | show the log lines Kratos has read from a machine (below); `--coverage` shows which stretches are complete |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
+| `kratos attack-layer` | write an ATT&CK Navigator file of what Kratos can detect, or (`--observed`) what its open findings show ([The ATT&CK line](#understanding-findings)) |
 | `kratos budget` | model spending limits: show today's spend, `set NAME VALUE`, `resume SOURCE` ([Keeping model costs under control](#keeping-model-costs-under-control)) |
 | `kratos vulndb-update` | download the package-vulnerability data and rebuild the local index (`--status`, `--about`, `--ecosystems`) ([Vulnerable packages](#vulnerable-packages)) |
 | `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |
@@ -1536,8 +1577,9 @@ permission prompt, pressing Enter is always the safe "no."
   program run, login and account change.
 - **Sealed journal** — a journal the machine signs as it writes, so later edits can
   be detected. The *verification key* that checks the signatures stays with Kratos.
-- **ATT&CK** — MITRE's public catalogue of attacker techniques; findings about log
-  tampering and persistence name the matching technique.
+- **ATT&CK** — MITRE's public catalogue of attacker techniques; every finding about
+  something an attacker did names the matching technique (`kratos attack-layer` draws
+  the map).
 - **Persistence** — the places an intruder leaves something behind to keep access
   across reboots and password changes (a cron job, a service, an SSH key, a setuid
   program, …). Kratos checks them by itself and reports what is new or backdoor-shaped.

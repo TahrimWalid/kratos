@@ -326,6 +326,15 @@ def render_window_note(console: Console, result: Any) -> None:
     console.print(f"    [dim {style}]window {_truncate_note(text)} · {cov}{_truncate_note(clock)}[/]")
 
 
+def attack_line(finding: dict[str, Any]) -> str:
+    """'ATT&CK: T1110.001 Password Guessing (Credential Access)' -- '' for a posture
+    finding (an open port, a vulnerable package) that describes no adversary action."""
+    from kratos.attack import attack_of, format_labels
+
+    labels = attack_of(finding)
+    return f"ATT&CK: {format_labels(labels)}" if labels else ""
+
+
 def render_finding(console: Console, finding: dict[str, Any]) -> None:
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
@@ -335,6 +344,9 @@ def render_finding(console: Console, finding: dict[str, Any]) -> None:
     body = Text()
     body.append(summary, style="bold")
     body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style="dim")
+    attack = attack_line(finding)
+    if attack:
+        body.append(f"\n{attack}", style="dim")
 
     evidence = finding.get("evidence") or []
     if evidence:

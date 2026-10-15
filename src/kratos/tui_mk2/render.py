@@ -28,7 +28,7 @@ from rich.rule import Rule
 from kratos.untrusted import annotate_lookalikes
 from kratos.untrusted_rich import SafePanel as Panel, SafeSyntax as Syntax, SafeTable as Table, SafeText as Text
 
-from kratos.agent.console import plain_label, unwrap_tool_result  # reused, palette-neutral
+from kratos.agent.console import attack_line, plain_label, unwrap_tool_result  # reused, palette-neutral
 from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_FINDING_SUMMARY
 from kratos.tui_mk2 import theme as T
 
@@ -229,6 +229,10 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     if status:
         body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred")
                     else T.TEXT_DIM)
+
+    attack = attack_line(finding)
+    if attack:
+        body.append(f"\n{attack}", style=T.TEXT_DIM)
 
     evidence = finding.get("evidence") or []
     content: Any = body

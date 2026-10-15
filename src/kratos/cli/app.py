@@ -483,6 +483,44 @@ def cmd_collect(args: argparse.Namespace) -> int:
     return 0 if report.any_ok() else 1
 
 
+def cmd_attack_layer(args: argparse.Namespace) -> int:
+    """`kratos attack-layer [--observed] [--target T|all] [--out FILE|-]`: an ATT&CK
+    Navigator layer (JSON) of what Kratos can detect, or (--observed) what its open
+    and verified findings show on a machine. Open it at
+    https://mitre-attack.github.io/attack-navigator/ -> Open Existing Layer."""
+    from kratos.attack import navigator as N
+    from kratos.lifecycle import migrate as M
+    from kratos.paths import write_private_text
+    from kratos.target_key import target_key
+
+    data_dir = Path(args.data_dir)
+    if args.observed:
+        target = None if args.target == "all" else (args.target or get_active_target())
+        M.ensure_imported(data_dir)
+        records = N.observed_records(data_dir, target)
+        scope = target_key(target) if target else "every machine"
+        layer = N.observed_layer(records, scope=scope)
+        default_name = f"kratos-attack-observed-{(target_key(target) if target else 'all').replace(':', '_')}.json"
+    else:
+        if args.target:
+            print("[KRATOS] --target only applies with --observed; the coverage layer is the same for every "
+                  "machine.", file=sys.stderr)
+        layer = N.coverage_layer()
+        default_name = "kratos-attack-coverage.json"
+    text = json.dumps(layer, indent=2) + "\n"
+    if args.out == "-":
+        sys.stdout.write(text)
+        return 0
+    out = Path(args.out or default_name)
+    write_private_text(out, text)
+    scored = [t for t in layer["techniques"] if "score" in t]
+    what = "technique cell(s) seen in open findings" if args.observed else "technique cell(s) Kratos can detect"
+    print(f"[KRATOS] Wrote {out} -- {len(scored)} {what}.")
+    print("[KRATOS] Open it at https://mitre-attack.github.io/attack-navigator/ -> Open Existing Layer -> "
+          "Upload from local.")
+    return 0
+
+
 def cmd_events(args: argparse.Namespace) -> int:
     """The log lines Kratos has read from a machine, as stored events (read-only).
     Plain lines by default; --json prints one ECS document per line."""
@@ -761,6 +799,9 @@ def cmd_findings(args: argparse.Namespace) -> int:
               f"last re-checked {_findings_when(rec['last_checked'], tz)}")
         if rec["entities"]:
             print(f"  about: {', '.join(rec['entities'])}")
+        from kratos.attack import format_label
+        for lab in rec.get("attack") or []:
+            print(f"  ATT&CK: {format_label(lab)}  {lab.get('url')}")
         d = rec.get("decision")
         if d:
             print(f"  decision: {_STATE_WORDS.get(d['kind'])} ({D.SCOPE_WORDS.get(d['scope'])}) by "
@@ -1882,6 +1923,20 @@ def build_parser() -> argparse.ArgumentParser:
     events_p.add_argument("--coverage", action="store_true",
                           help="Instead of events: which stretches of each log Kratos holds completely, and the gaps")
     events_p.set_defaults(func=cmd_events)
+
+    attack_p = sub.add_parser(
+        "attack-layer",
+        help="Write an ATT&CK Navigator layer: the techniques Kratos can detect, or (--observed) the ones its "
+             "open findings show",
+    )
+    attack_p.add_argument("--observed", action="store_true",
+                          help="Techniques in open/verified findings instead of what Kratos can detect")
+    attack_p.add_argument("--target", default=None,
+                          help="With --observed: machine (default: the active target; 'all' for every machine)")
+    attack_p.add_argument("--out", default=None,
+                          help="File to write (default: kratos-attack-coverage.json / kratos-attack-observed-<machine>.json "
+                               "in this folder; '-' prints it)")
+    attack_p.set_defaults(func=cmd_attack_layer)
 
     collect_p = sub.add_parser(
         "collect",

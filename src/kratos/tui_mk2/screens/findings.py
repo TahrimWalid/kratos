@@ -26,6 +26,7 @@ from textual.widgets import Input, RadioButton, RadioSet
 from kratos.tui_mk2.safe_widgets import SafeButton as Button, SafeDataTable as DataTable, SafeStatic as Static
 
 from kratos import settings_store
+from kratos.attack import format_label
 from kratos.lifecycle import decide as D
 from kratos.lifecycle import query as Q
 from kratos.lifecycle import settings as LS
@@ -179,6 +180,7 @@ class FindingsScreen(Screen):
         Binding("p", "cycle_severity", "severity", show=True),
         Binding("m", "pick_machine", "machine", show=True),
         Binding("slash", "search", "search", show=True),
+        Binding("c", "copy_attack", "copy ATT&CK link", show=True),
     ]
 
     CSS = """
@@ -207,7 +209,7 @@ class FindingsScreen(Screen):
             yield VerticalScroll(id="fd-log")
             yield Static(Text(
                 "↑↓ select · enter details · h history · v verify · a accept the risk\n"
-                "f not a real problem · o out of scope · r reopen\n"
+                "f not a real problem · o out of scope · r reopen · c copy ATT&CK link\n"
                 "s which findings · p severity · m machine · / search · esc back",
                 style=T.TEXT_DIM), id="fd-hints")
 
@@ -338,6 +340,8 @@ class FindingsScreen(Screen):
         body.add_row("severity", row["severity"])
         body.add_row("machine", row["target"])
         body.add_row("about", annotate_lookalikes(", ".join(row["entities"])) or "-")
+        for i, lab in enumerate(row.get("attack") or []):
+            body.add_row("ATT&CK" if i == 0 else "", f"{format_label(lab)}\n{lab.get('url')}")
         body.add_row("seen", f"{row['times_seen']} time(s), first {self._when(row['first_seen'])}, "
                               f"last {self._when(row['last_seen'])}")
         body.add_row("last re-checked", self._when(row["last_checked"]))
@@ -351,6 +355,20 @@ class FindingsScreen(Screen):
             body.add_row("evidence" if i == 0 else "", annotate_lookalikes(line))
         body.add_row("key", row["finding_key"])
         self.app.push_screen(InfoModal(f"{row['rule_id']} — details", body))
+
+    def action_copy_attack(self) -> None:
+        """Copy the selected finding's ATT&CK technique link(s) (Kratos-generated
+        urls from the pinned table), one per line."""
+        row = self._need_row()
+        if row is None:
+            return
+        labels = row.get("attack") or []
+        if not labels:
+            self.note(Text(f"{row['rule_id']} has no ATT&CK label -- it describes exposure or a weakness, "
+                           "not an attacker's action.", style=T.TEXT_DIM))
+            return
+        self.app.copy_to_clipboard("\n".join(f"{format_label(lab)} {lab.get('url')}" for lab in labels))
+        self.note(Text(f"✓ Copied {len(labels)} ATT&CK link(s) for {row['rule_id']}.", style=T.SAFE))
 
     def action_history(self) -> None:
         row = self._need_row()

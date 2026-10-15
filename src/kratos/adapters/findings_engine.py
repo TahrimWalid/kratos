@@ -294,9 +294,10 @@ class Finding:
     # A person's decision covers the entities it saw; a new one reopens the finding.
     subject: str = ""
     entities: list[str] = field(default_factory=list)
-    # MITRE ATT&CK labels (kratos.logsources.attack, pinned to v19.0):
-    # [{technique_id, technique, tactic_id, tactic, version, url}]. 0.3 tamper rules.
-    attack: list[dict[str, str]] = field(default_factory=list)
+    # MITRE ATT&CK labels (kratos.attack, the pinned v19 table):
+    # [{technique_id, technique, tactic_id, tactic, tactics, version, url}]. Set for
+    # every behaviour rule (kratos.attack.mapping); posture rules carry none.
+    attack: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _normal_ip(value: Any) -> str:
@@ -887,6 +888,22 @@ def _disclose_partial_auth_coverage(findings: list[Finding], auth_stats: dict[st
     )
 
 
+def _stamp_attack_labels(findings: list[Finding]) -> None:
+    """ATT&CK labels from the one mapping (kratos.attack.mapping): a finding keeps
+    any its builder set for its own item (PERSIST-*, LOG-*), gains its rule's
+    labels otherwise (INTEG-001 by which file changed), and gains those of every
+    rule it absorbed (_merge_overlapping). Posture rules add none."""
+    from kratos.attack import labels_for_finding
+
+    for f in findings:
+        merged: dict[str, dict[str, Any]] = {}
+        for lab in [*f.attack, *labels_for_finding(f.id, f.entities),
+                    *(lab for other in f.also_matched for lab in labels_for_finding(other))]:
+            if isinstance(lab, dict) and lab.get("technique_id"):
+                merged.setdefault(str(lab["technique_id"]), lab)
+        f.attack = list(merged.values())
+
+
 def _time_window_note(window: dict[str, Any] | None) -> str:
     """The log window a count or burst list covers, said once in plain words.
     `window` is the auth_stats data of that read (its since/since_utc/until_utc)."""
@@ -1445,6 +1462,7 @@ def generate_findings(
     _merge_overlapping(findings, auth_patterns)
     _stamp_source_ip_entities(findings, auth_patterns)
     _disclose_partial_auth_coverage(findings, auth_stats)
+    _stamp_attack_labels(findings)
 
     # Sort by severity (high -> info)
     findings.sort(key=lambda f: _severity_rank(f.severity), reverse=True)
@@ -1593,7 +1611,7 @@ def _load_recent_log_integrity(path: Path | None) -> dict[str, Any] | None:
 
 def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
     """LOG-001..005 and SEAL-001..003 from one check_log_integrity result."""
-    from kratos.logsources.attack import labels
+    from kratos.attack import labels
 
     checks = data.get("checks") or {}
     when = f"Checked {_when(data['checked_at'])}" if data.get("checked_at") else "From the latest log integrity check"
@@ -1704,7 +1722,7 @@ def _log_integrity_findings(data: dict[str, Any]) -> list[Finding]:
 
 
 def _seal_findings(seal: dict[str, Any] | None, when: str) -> list[Finding]:
-    from kratos.logsources.attack import labels
+    from kratos.attack import labels
 
     if not isinstance(seal, dict):
         return []
@@ -2213,6 +2231,10 @@ def write_findings_report(
     else:
         for f in findings:
             md_lines.append(f"### [{f.severity.upper()}] {f.id} — {f.title}\n")
+            if f.attack:
+                from kratos.attack import format_label
+                md_lines.append("**ATT&CK**: " + "; ".join(f"[{format_label(a)}]({a.get('url')})" for a in f.attack)
+                                + "\n")
             md_lines.append("**Evidence**")
             for e in f.evidence:
                 md_lines.append(f"- {e}")

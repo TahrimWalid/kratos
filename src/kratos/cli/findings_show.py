@@ -79,6 +79,9 @@ def cmd_findings_show(args) -> int:
 
     sev = (match.get("severity") or "info").upper()
     print(f"[{sev}] {match.get('id')} — {match.get('title')}")
+    from kratos.attack import attack_of, format_label
+    for lab in attack_of(match):
+        print(f"ATT&CK: {format_label(lab)}  {lab.get('url')}")
     print("")
     print("Evidence:")
     print(_fmt_list(match.get("evidence") or []))
