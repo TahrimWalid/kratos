@@ -977,3 +977,40 @@ def test_a_stale_running_kernel_with_an_exploited_cve_is_a_high_pkg003_not_an_up
     doc = REC.run(tmp_path, "10.0.0.5", reader=lambda: _deb_inv(kernels[:1], running_kernel="6.1.0-13-amd64"))
     assert any(s["rule"] == "PKG-001" and s["subject"] == "linux" and s["severity"] == "critical"
                for s in doc["signals"])
+
+
+def test_an_investigation_start_sends_no_package_list_anywhere(deb_index, monkeypatch):
+    """The collection an investigation starts from (the packages check, the digest the
+    model reads, and the correlated findings) makes no HTTP request, and nothing bound
+    for the model carries a package that has no finding -- only the vulnerable
+    packages, by name, in their findings. (The model sees findings like any other
+    evidence; the full package list stays on the Kratos machine.)"""
+    from kratos import kratos_config
+    from kratos.adapters import findings_engine as FE
+    from kratos.collect import runner
+    from kratos.collect.digest import build_digest
+    from kratos.run_context import run_scope
+
+    monkeypatch.setenv("KRATOS_COLLECT", "on")
+    sent: list[str] = []
+
+    def block(self, method, url, *a, **kw):
+        sent.append(url)
+        raise requests.ConnectionError("blocked")
+    monkeypatch.setattr(requests.Session, "request", block)
+    harmless = {"manager": "dpkg", "name": "zz-quiet-tool", "version": "9.9-1", "arch": "amd64",
+                "source": "zz-quiet-tool", "source_version": "9.9-1"}
+    monkeypatch.setattr(REC, "_default_reader", lambda: _deb_inv(DEB12_PACKAGES + [harmless]))
+    kratos_config.set_active_target("10.0.0.5")
+    with run_scope("cli", target="10.0.0.5"):
+        rep = runner.prepare("10.0.0.5", deb_index, only=("packages",), correlate=False,
+                             dispatch=lambda *a, **k: {"status": "ok", "result": {}})
+        digest = build_digest(rep)
+        j, md = FE.write_findings_report(deb_index)
+    assert any(c.name == "packages" and c.status == "ok" for c in rep.checks)
+    assert "installed package" in digest
+    assert sent == []
+    findings_text = Path(j).read_text()
+    assert "openssh" in findings_text                         # the vulnerable package is named in its finding
+    for text in (digest, findings_text, Path(md).read_text()):
+        assert "zz-quiet-tool" not in text and "9.9-1" not in text
