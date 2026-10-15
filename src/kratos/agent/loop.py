@@ -45,6 +45,7 @@ def _handler_self_gates(tool: Any) -> bool:
 from kratos import kratos_config as _kconfig
 from kratos.kratos_config import NO_TARGET_MESSAGE, get_active_target
 from kratos import untrusted as _untrusted
+from kratos import attack as _attack
 from kratos.subagent import routing as _subagent_routing
 from kratos import settings_store as _settings_store
 
@@ -2444,8 +2445,10 @@ def _run_agent_loop(
 
         # The result goes to the model as data inside an unguessable boundary, its strings
         # JSON-escaped and cleaned (kratos.untrusted); the transcript keeps the real result.
+        # ATT&CK labels go in as 'T1110.001 Password Guessing' (kratos.attack.compact_for_model)
+        # so they don't spend the observation window.
         observation_json = _untrusted.envelope(
-            exec_result, run_id=run_tag, call_id=_untrusted.new_call_id(i), max_chars=OBSERVATION_CHAR_CAP)
+            _attack.compact_for_model(exec_result), run_id=run_tag, call_id=_untrusted.new_call_id(i), max_chars=OBSERVATION_CHAR_CAP)
         ctx.add(
             f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation_json}\n",
             tool=tool_name,

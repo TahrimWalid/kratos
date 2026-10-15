@@ -20,10 +20,10 @@ from kratos.agent.tools import TOOL_REGISTRY
 from kratos.lifecycle import apply as lc_apply
 from kratos.lifecycle.coverage import Coverage
 from kratos.lifecycle.rules import RULES
-from kratos.logsources import attack
+from kratos.attack import mapping as attack
+from kratos.attack.table import technique
 from kratos.run_context import run_scope
 
-ATTACK_REF = json.loads((Path(__file__).parent / "fixtures" / "attack_v19_subset.json").read_text())
 NEW_RULES = ("LOG-001", "LOG-002", "LOG-003", "LOG-004", "LOG-005", "LOG-006", "SEAL-001", "SEAL-002", "SEAL-003")
 TARGET = "10.136.28.168"
 
@@ -36,21 +36,12 @@ def test_every_new_rule_is_registered_everywhere():
     assert RULES["LOG-003"].kind == "occurrence" and RULES["SEAL-003"].kind == "run_note"
 
 
-@pytest.mark.parametrize("rule, labels", sorted(attack.RULE_ATTACK.items()))
-def test_attack_labels_match_the_official_v19_data(rule, labels):
-    assert ATTACK_REF["version"] == attack.ATTACK_VERSION == "19.0"
-    for label in labels:
-        ref = ATTACK_REF["techniques"][label["technique_id"]]
-        assert not ref["revoked"], f"{label['technique_id']} is revoked in v19"
-        assert ref["name"] == label["technique"]
-        tactics = {ATTACK_REF["tactics"][t]["name"]: ATTACK_REF["tactics"][t]["id"] for t in ref["tactics"]}
-        assert tactics.get(label["tactic"]) == label["tactic_id"]
-        assert label["url"] == ref["url"]
-
-
 def test_the_old_ids_the_spec_named_are_revoked_in_v19():
+    # The labels themselves are checked against the pinned table for every rule
+    # in tests/test_attack_mapping.py; this keeps 0.3's own note on record.
     for old, new in (("T1070.002", "T1685.006"), ("T1562.012", "T1685.004"), ("T1562.001", "T1685")):
-        assert ATTACK_REF["techniques"][old]["revoked"] and not ATTACK_REF["techniques"][new]["revoked"]
+        assert technique(old)["revoked"] and technique(old)["revoked_by"] == new
+        assert not technique(new)["revoked"] and technique(new)["tactics"] == ["defense-impairment"]
 
 
 DOC: dict[str, Any] = {
@@ -89,7 +80,7 @@ def test_findings_from_an_integrity_result():
     assert out["LOG-001"].attack[0]["technique_id"] == "T1685.006"
     assert out["LOG-005"].attack[0]["technique_id"] == "T1685.004"
     assert out["SEAL-002"].attack[0]["technique_id"] == "T1685"
-    assert all(f.attack for k, f in out.items() if k in attack.RULE_ATTACK)
+    assert all(f.attack for k, f in out.items() if attack.labels(k))
 
 
 def test_shrink_only_login_record_change_is_medium():

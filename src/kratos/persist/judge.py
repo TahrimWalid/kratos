@@ -26,7 +26,7 @@ from typing import Any, Iterable
 
 from kratos.adapters.persistence import AREA_LABELS, usrmerge_alternates
 from kratos.events import redact
-from kratos.logsources import attack
+from kratos.attack import mapping as attack
 from kratos.persist import shapes
 from kratos.persist.baseline import Baseline, fingerprint_of, key_identity
 
@@ -37,7 +37,7 @@ MAX_EVIDENCE_LINES = 60
 AGENT_FIX = "Read this machine through its sub-agent (it reads as root), or run the check as root."
 
 # Which ATT&CK technique an item's area stands for. Set/verified against the
-# official v19 data (tests/fixtures/attack_v19_subset.json).
+# pinned v19 table (kratos.attack, checked by tests/test_attack_mapping.py).
 _AREA_ATTACK: dict[str, dict[str, str]] = {
     "cron": attack.CRON, "at": attack.AT, "systemd": attack.SYSTEMD_SERVICE, "ssh": attack.SSH_KEYS,
     "suid": attack.SETUID, "preload": attack.DYNAMIC_LINKER, "kernel": attack.KERNEL_MODULES,
