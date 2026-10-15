@@ -382,8 +382,10 @@ def test_loader_drops_a_stale_live_snapshot(tmp_path):
     from kratos.adapters import findings_engine as FE
     fresh = tmp_path / "fresh.json"
     old = tmp_path / "old.json"
-    fresh.write_text(json.dumps({"target": "t", "checked_at": "2026-10-14T00:00:00Z", "signals": [],
-                                 "checked_at_epoch": __import__("time").time()}))
+    from kratos.utils.timeutil import epoch_to_utc_iso
+    now = __import__("time").time()
+    fresh.write_text(json.dumps({"target": "t", "checked_at": epoch_to_utc_iso(now), "signals": [],
+                                 "checked_at_epoch": now}))
     old.write_text(json.dumps({"target": "t", "checked_at": "2000-01-01T00:00:00Z", "signals": [],
                                "checked_at_epoch": 946684800.0}))
     assert FE._load_recent_live(fresh) is not None
