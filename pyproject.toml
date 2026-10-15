@@ -44,6 +44,10 @@ dependencies = [
     "tzdata",
     # Presets, schedules and triggers are TOML; tomllib is stdlib from 3.11.
     "tomli>=1.1; python_version < '3.11'",
+    # Package-vulnerability matching (A.2): Debian, RPM and Alpine version comparison,
+    # the same library VulnerableCode uses. Pinned: comparison rules must not shift
+    # under a released index. Apache-2.0; pulls attrs, packaging, semantic-version, semver.
+    "univers==32.0.1",
 ]
 
 [project.urls]

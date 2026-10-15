@@ -267,6 +267,47 @@ def cmd_vulscan_install(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_vulndb_update(args: argparse.Namespace) -> int:
+    """`kratos vulndb-update`: download the package-vulnerability data (OSV, CISA KEV,
+    EPSS, NVD CVSS) and rebuild the local index. Sends no package data anywhere --
+    only the names of public files. A failed update keeps the previous index."""
+    from kratos.pkgvuln import index as _vindex
+    from kratos.pkgvuln import update as _vupdate
+
+    data_dir = Path(args.data_dir)
+    if args.about:
+        print(_vupdate.NOTICES)
+        return 0
+    if args.status:
+        st = _vindex.status(data_dir)
+        if not st.present:
+            print("[KRATOS] No vulnerability data yet. Run `kratos vulndb-update` (it downloads the data for the "
+                  "distributions of the machines Kratos has checked).")
+            return 1
+        age = st.age_days()
+        print(f"[KRATOS] Vulnerability data: {_vindex.path_for(data_dir)} ({st.size_bytes / 1e6:.1f} MB), "
+              f"built {age:.1f} days ago, for {', '.join(st.selectors) or 'no release'}.")
+        for name, info in sorted(st.sources.items()):
+            when = (f"{(time.time() - float(info['fetched_at'])) / 86400:.1f} days ago"
+                    if info.get("fetched_at") else "never")
+            print(f"         {name:<22} {info.get('rows') or 0:>8} rows, fetched {when}"
+                  + (f" ({info['detail']})" if info.get("detail") else ""))
+        return 0
+    wanted = [x.strip() for x in (args.ecosystems or "").split(",") if x.strip()] or None
+    print("[KRATOS] Updating the package-vulnerability data (no package list is sent; only public files are "
+          "downloaded) ...", flush=True)
+    result = _vupdate.run_update(data_dir, selectors=wanted, full=args.full,
+                                 log=lambda m: print(f"         {m}", flush=True))
+    print(f"[KRATOS] {result.message}")
+    if result.ok:
+        from kratos.collect import state as _cstate
+
+        _cstate.expire(data_dir, "packages")
+        print(f"[KRATOS] Took {result.seconds:.0f} s. Machines are matched against it at their next package "
+              "check. Data sources and their terms: `kratos vulndb-update --about`.")
+    return 0 if result.ok else 1
+
+
 def cmd_subagent_install(args: argparse.Namespace) -> int:
     """
     Emit a self-contained, one-command installer for a new sub-agent
@@ -1760,6 +1801,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     vulscan_p.add_argument("--force", action="store_true", help="Rebuild everything even if it's current")
     vulscan_p.set_defaults(func=cmd_vulscan_install)
+
+    vulndb_p = sub.add_parser(
+        "vulndb-update",
+        help="Download the package-vulnerability data (OSV, CISA KEV, EPSS, NVD) and rebuild the local index",
+    )
+    vulndb_p.add_argument("--ecosystems", default=None,
+                          help="Releases to hold, comma-separated (e.g. ubuntu:22.04,debian:12,alpine:3.22,rocky:9). "
+                               "Default: every release Kratos has seen in a machine's package check")
+    vulndb_p.add_argument("--full", action="store_true", help="Download everything again instead of only what changed")
+    vulndb_p.add_argument("--status", action="store_true", help="Show what the current data holds and how old it is")
+    vulndb_p.add_argument("--about", action="store_true", help="Show the data sources and their licences/notices")
+    vulndb_p.set_defaults(func=cmd_vulndb_update)
 
     # ====== Sub-agent telemetry (capability 1 only -- docs/subagent_architecture.md) ======
     subagent_pair = sub.add_parser(
