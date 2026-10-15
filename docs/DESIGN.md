@@ -724,7 +724,17 @@ header-classified (ELF/script) and hashed through the hardened opener. Package o
 preload libraries and dropped files reuses persistence's on-machine ownership lookup. Bounded (5,000
 processes, a dropped-file `find` with a timeout, a 4 MiB cap, an overall budget); over the budget the
 read is partial and says so. No environment value other than the preload library path ever leaves the
-machine; nothing is written on the target.
+machine; nothing is written on the target. Dropped files over 64 MiB are listed but not hashed on
+either transport (a `HBIG` record), and the SSH script's hashing runs under `timeout`: one huge
+executable in `/tmp` used to keep `sha256sum` busy past the read's limit, losing the whole read.
+The script also reports the temp folders it could not enter (`TDENY`) and a `hidepid` `/proc`.
+
+**Remote deadline.** Every SSH read (`ssh_remote.run_remote_script`/`run_remote_command`) runs on the
+target under `timeout -k 5 <the client's own timeout>` when the target has `timeout(1)`: killing the
+local `ssh` client does not stop the remote side (no pty, no hangup), so a busy remote command used to
+outlive Kratos. GNU `timeout` kills the whole process group; BusyBox's kills only its direct child, so
+on BusyBox-only machines a busy grandchild can still finish on its own (each read keeps its own
+internal bounds for that reason).
 
 **Judging** (`live/judge.py`) runs entirely on Kratos from one inventory -- there is no baseline,
 because "right now" is point-in-time. `LIVE-001` (deleted running binary not explained by an
@@ -817,7 +827,11 @@ index build, threshold), so repeated checks of an unchanged machine rewrite one 
 text, if the machine's distribution lists that CVE for installed packages and every one of them is
 past the fix, the CVE is noted as "already fixed by the installed packages — a backported fix" and
 removed from `VULN-001`'s entities (it stays in the evidence); if none remain, `VULN-001` drops to info.
-Done locally at correlation time from the saved inventory and the index.
+Done locally at correlation time from the saved inventory and the index. **Except** when the live-response
+snapshot saw the program listening on the matched port and it is not from a package that has the fix
+(`listener_doubts`, phase A audit: a build in `/usr/local`, an unowned or memory-only program): the CVE is
+kept with the reason. That is the case the network check exists for (software not installed from
+packages). An unseen listener (another user's socket over SSH) leaves the package verdict as it was.
 
 **Checked against other scanners** (2026-10-15, release-day Docker images, pairs of (source
 package, CVE) that are affected and fixable; Trivy 0.76.0, OSV-Scanner 2.7.0, debsecan 0.4.20.1):
@@ -1143,6 +1157,15 @@ detection logic is untouched.
   finding is reported "not rechecked". Some rules need fewer inputs than they
   read: no burst in a fresh, complete auth read is enough to say a brute-force
   finding didn't recur, even though the rule also reads nmap and system context.
+  **Blind spots, per entity** (`Coverage.blind`, phase A audit): a read can finish
+  and still not have looked at everything -- a non-root SSH login can't open
+  `/root/.ssh` or read another user's `/proc` entry, and `hidepid` hides those
+  processes entirely. The persistence and live-response snapshots record what
+  their read could not look at (unreadable paths and homes, processes seen but
+  not readable, unopened temp folders, hidepid); a finding whose entity falls in
+  such a blind spot is not marked gone, even when the rule as a whole is covered.
+  Without this, a root process the sub-agent found was marked *inactive* by the
+  next SSH read on an `ssh_first` link.
 - **Decisions cover what the person saw.** A decision (risk accepted with a
   required, capped expiry; false positive; out of scope) records the finding's
   severity and entities at that moment. A new entity or a higher severity

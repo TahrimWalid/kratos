@@ -761,6 +761,16 @@ value except the `LD_PRELOAD`/`LD_AUDIT` library path (masked), and never kills
 anything — a recommendation like `kill <pid>` is shown for you to run, never run for
 you.
 
+The same note says when the SSH login could not open a folder under `/tmp` or
+`/var/tmp` (systemd's private temp folders are the usual ones), and when `/proc` is
+mounted with `hidepid`, which hides other users' processes from a normal login
+completely. Something a read could not look at is never taken as gone: a finding the
+sub-agent raised about a root process stays open after a later SSH read that could
+not see that process, until a read that *can* see it says it has ended.
+
+A very large executable dropped in a temp folder is listed but not hashed (over 64 MB,
+on both connections), so it cannot use up the check's time.
+
 ## Vulnerable packages
 
 Kratos reads the list of **installed packages** on each machine (`dpkg`, `rpm` or
@@ -776,7 +786,11 @@ reports those as vulnerable when they aren't. Kratos uses the distribution's own
 which package version fixed each CVE, so a backported fix is not reported. When the
 network check matched a CVE that the installed packages already fix, `VULN-001` says so
 ("the network match is likely wrong — a backported fix") and leaves that CVE out of what
-you're asked to decide.
+you're asked to decide — **unless** Kratos saw that the program actually listening on
+that port is not the one from the fixed package (a build in `/usr/local`, a copy no
+package installed, something running from memory). Then the CVE is kept, and
+`VULN-001` says which program answers on the port and why the package fix may not
+apply to it.
 
 **What you see** — for fixable vulnerabilities, one finding per package (so `openssl` with twelve CVEs is one
 finding):
