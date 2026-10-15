@@ -143,6 +143,24 @@ def status(data_dir: Path) -> Status:
         conn.close()
 
 
+def held_selectors(data_dir: Path) -> list[str]:
+    """The releases the current index file was built for -- read even from an index
+    of an older schema, so an update that rebuilds it keeps the same releases."""
+    p = path_for(data_dir)
+    if not p.is_file():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute("SELECT value FROM info WHERE key = 'selectors'").fetchone()
+        finally:
+            conn.close()
+        value = json.loads(row[0]) if row else []
+    except (sqlite3.Error, ValueError, TypeError):
+        return []
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
 # --------------------------------------------------------------------------- queries matching uses
 @dataclass(frozen=True)
 class Entry:

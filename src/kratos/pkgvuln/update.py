@@ -650,8 +650,7 @@ def resolve_selectors(data_dir: Path, requested: Iterable[str] | None) -> list[S
     from kratos.pkgvuln import inventory_store
 
     keys.update(inventory_store.known_selectors(data_dir))
-    st = _index.status(data_dir)
-    keys.update(st.selectors)
+    keys.update(_index.held_selectors(data_dir))
     out = []
     for k in sorted(keys):
         try:
