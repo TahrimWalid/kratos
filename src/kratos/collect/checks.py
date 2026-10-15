@@ -243,7 +243,10 @@ def _run_log_sync(ctx: CheckContext) -> CheckResult:
 # --------------------------------------------------------------------------- registration
 register(Check(
     name="ports", cost="quick", ttl_setting="collect.ttl.ports_minutes", default_ttl_minutes=60,
-    run=_run_ports, inputs=("nmap_parsed",), transports=frozenset({"ssh", "agent"}), budget_seconds=40.0,
+    # 180 s: nmap -sV over the internet takes minutes (121 s to a real VPS in the phase A
+    # audit), so 40 s meant a remote machine's ports were never checked. An investigation
+    # doesn't wait for it: it finishes in the background and is reused for an hour.
+    run=_run_ports, inputs=("nmap_parsed",), transports=frozenset({"ssh", "agent"}), budget_seconds=180.0,
     label="open ports", order=30, short="ports"))
 register(Check(
     name="auth_activity", cost="quick", ttl_setting="collect.ttl.auth_activity_minutes", default_ttl_minutes=15,

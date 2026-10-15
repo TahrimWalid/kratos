@@ -380,3 +380,48 @@ def test_no_target_means_nothing_is_attempted(tmp_path):
     kratos_config.set_active_target(None)
     r = runner.prepare("", tmp_path, dispatch=dispatch_ok)
     assert r.disabled_reason and not r.checks and build_digest(r) == ""
+
+
+# ------------------------------------------------- background mode (phase A audit)
+def test_background_mode_starts_on_time_and_records_a_slow_check_later(fake_registry, tmp_path):
+    """On a distant machine the start budget used to cancel the slow checks and throw
+    their work away on every run. In background mode the wait ends at the budget, the
+    check finishes within its own cap, and its result is recorded for the answer."""
+    fake_registry.register(make_check("t_fast"))
+    fake_registry.register(make_check("t_slow", run=lambda ctx: time.sleep(1.0) or CheckResult("ok", "slow fine"),
+                                      budget=10.0))
+    t0 = time.monotonic()
+    rep = prepare(tmp_path, budget=0.3, background=True)
+    assert time.monotonic() - t0 < 1.0
+    by = {c.name: c for c in rep.checks}
+    assert by["t_fast"].status == "ok" and by["t_slow"].status == "running"
+    assert rep.still_running() == ["t_slow"] and any("still running" in g for g in rep.gaps())
+    assert rep.settle(5.0) == ["t_slow"]
+    by = {c.name: c for c in rep.checks}
+    assert by["t_slow"].status == "ok" and by["t_slow"].summary == "slow fine" and rep.gaps() == []
+    assert state.get(tmp_path, TARGET, "t_slow").status == "ok"       # recorded for the next run too
+
+
+def test_background_mode_still_cancels_a_check_at_its_own_cap(fake_registry, tmp_path):
+    def endless(ctx):
+        scope = cancel.current()
+        while not (scope and scope.cancelled):
+            time.sleep(0.02)
+        raise cancel.Cancelled("stopped")
+    fake_registry.register(make_check("t_endless", run=endless, budget=0.6))
+    rep = prepare(tmp_path, budget=0.2, background=True)
+    assert rep.still_running() == ["t_endless"]
+    rep.settle(5.0)
+    o = rep.checks[0]
+    assert o.status == "skipped" and "over the time budget" in o.summary
+
+
+def test_without_background_the_budget_still_cancels(fake_registry, tmp_path):
+    fake_registry.register(make_check("t_slow", run=lambda ctx: time.sleep(1.0) or CheckResult("ok", "x"), budget=10.0))
+    rep = prepare(tmp_path, budget=0.2)
+    assert rep.checks[0].status == "skipped" and rep.pending == []
+
+
+def test_collect_commands_wait_for_every_check():
+    import kratos.collect.checks  # noqa: F401
+    assert runner.full_budget(("quick",)) >= max(c.budget_seconds for c in registry.checks() if c.cost == "quick")

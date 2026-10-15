@@ -103,8 +103,45 @@ class CollectionReport:
     def any_ok(self) -> bool:
         return any(c.usable for c in self.checks)
 
+    # checks still running in the background after the start budget (prepare(background=True))
+    pending: list["_Pending"] = field(default_factory=list, repr=False)
+
+    def still_running(self) -> list[str]:
+        return [p.check.name for p in self.pending if not p.recorded.is_set()]
+
+    def unsettled(self) -> bool:
+        """A background check whose outcome is not in `checks` yet (running, or finished
+        since and waiting for settle())."""
+        return any(not p.applied for p in self.pending)
+
+    def settle(self, max_wait: float) -> list[str]:
+        """Wait up to `max_wait` seconds for the checks still running in the background,
+        and put the outcome of every one that finished into `checks` (status, summary,
+        gaps). Returns the names that finished during this call. Never raises."""
+        deadline = time.monotonic() + max(0.0, max_wait)
+        done: list[str] = []
+        for p in self.pending:
+            if p.applied:
+                continue
+            p.recorded.wait(timeout=max(0.0, deadline - time.monotonic()))
+            if p.recorded.is_set() and p.final is not None:
+                self.checks = [p.final if c.name == p.check.name else c for c in self.checks]
+                p.applied = True
+                done.append(p.check.name)
+        return done
+
 
 WARM_WAIT_SECONDS = 3.0
+
+
+def full_budget(classes: tuple[str, ...] = ("quick",)) -> float:
+    """A budget long enough for every selected check to reach its own limit -- for the
+    commands whose whole job is to collect (`kratos collect`, /collect): unlike an
+    investigation's start, nobody is waiting to ask the model anything."""
+    from kratos.collect import checks as _checks  # noqa: F401 -- register the built-ins
+
+    caps = [c.budget_seconds for c in registry.checks() if c.cost in classes]
+    return (max(caps) if caps else 60.0) + CANCEL_GRACE_SECONDS
 
 
 def _warm_ssh(host: str) -> None:
@@ -155,6 +192,18 @@ def _inputs_present(check: Check, data_dir: Path, target: str) -> bool:
     return all(found.get(cat) is not None for cat in check.inputs if cat in found)
 
 
+@dataclass(eq=False)
+class _Pending:
+    """A check left running past the start budget; its finisher records the result."""
+    check: Check
+    recorded: threading.Event = field(default_factory=threading.Event)
+    final: "CheckOutcome | None" = None
+    applied: bool = False
+
+
+STILL_RUNNING = "still running -- its result is added when it finishes"
+
+
 class _Box:
     """A check thread's result slot."""
     __slots__ = ("result", "error", "cancelled", "done")
@@ -200,6 +249,7 @@ def prepare(
     correlate: bool = True,
     now: float | None = None,
     on_outcome: Callable[[CheckOutcome], None] | None = None,
+    background: bool = False,
 ) -> CollectionReport:
     from kratos.collect import checks as _checks  # noqa: F401 -- the built-in checks register themselves on import
 
@@ -219,11 +269,11 @@ def prepare(
     report.budget_seconds = float(budget)
     available, first = _available_transports(host, data_dir)
     report.transport = first
+    mono_start = time.monotonic()            # the warm-up counts inside the budget: 15 s means 15 s
     if first == "ssh":
         _warm_ssh(host)
     dispatch = dispatch or _default_dispatch()
     owner = state.new_owner()
-    mono_start = time.monotonic()
     overall_deadline = mono_start + budget
     stale_claim = max(2.0 * budget, 30.0)
 
@@ -268,42 +318,86 @@ def prepare(
         ctx = CheckContext(
             target=host, target_key=report.target_key, data_dir=data_dir,
             transport=first if first in usable else sorted(usable)[0],
-            dispatch=dispatch, deadline=min(overall_deadline, mono_start + check.budget_seconds), now=started)
+            # background: a check keeps its own limit -- the start budget only ends the wait
+            dispatch=dispatch, deadline=(mono_start + check.budget_seconds if background
+                                         else min(overall_deadline, mono_start + check.budget_seconds)), now=started)
         pycontext = contextvars.copy_context()
         thread = threading.Thread(target=pycontext.run, args=(_thread_main, check, ctx, scope, box),
                                   name=f"collect-{check.name}", daemon=True)
         running.append((check, thread, scope, box, time.time(), ctx))
         thread.start()
 
-    # --- wait for the checks we started, up to each one's own cap and the overall budget ---
+    def record(check: Check, box: _Box, ctx: CheckContext, t_start: float, out_of_time: bool) -> CheckOutcome:
+        """The outcome of one check this run started, also saved as its state row."""
+        finished = time.time()
+        if box.result is not None and not box.cancelled and not out_of_time:
+            res = box.result
+            o = CheckOutcome(name=check.name, label=check.label, cost=check.cost, inputs=check.inputs,
+                             status=res.status, source="ran", summary=res.summary, gaps=list(res.coverage_gaps),
+                             finished_at=finished, age_seconds=0.0, tools=list(res.tools), steps=list(ctx.steps))
+            state.finish(data_dir, report.target_key, check.name, owner=owner, started_at=t_start,
+                         finished_at=finished, status=res.status, summary=res.summary, gaps=o.gaps,
+                         detail=res.detail)
+            return o
+        if box.error is not None and not out_of_time:
+            reason, detail = "the check failed", _short_error(box.error)
+            logger.warning("collect: %s failed: %s", check.name, detail)
+            summary, status = f"could not be checked ({reason})", "failed"
+        else:
+            reason, detail = "over the time budget", "cancelled at the time budget"
+            summary, status = OVER_BUDGET, "skipped"
+        o = CheckOutcome(name=check.name, label=check.label, cost=check.cost, inputs=check.inputs,
+                         status=status, source="skipped", summary=summary, reason=reason,
+                         gaps=[f"{check.label}: {summary}"], finished_at=finished, age_seconds=0.0)
+        state.finish(data_dir, report.target_key, check.name, owner=owner, started_at=t_start,
+                     finished_at=finished, status=status, summary=summary, gaps=[f"{check.label}: {summary}"],
+                     detail=detail)
+        return o
+
+    def finish_later(pend: _Pending, box: _Box, scope: cancel.CancelScope, ctx: CheckContext, t_start: float,
+                     own_limit: float) -> None:
+        """Runs after prepare() returned: wait for the check up to its own limit, then
+        record it (the next correlation reads its input file)."""
+        try:
+            box.done.wait(timeout=max(0.0, own_limit - time.monotonic()))
+            late = not box.done.is_set()
+            if late:
+                scope.cancel()
+                box.done.wait(timeout=CANCEL_GRACE_SECONDS)
+            pend.final = record(pend.check, box, ctx, t_start, late)
+        except Exception:  # noqa: BLE001 -- bookkeeping in the background must never raise
+            logger.warning("collect: recording %s in the background failed", pend.check.name, exc_info=True)
+        finally:
+            pend.recorded.set()
+
+    # --- wait for the checks we started: each up to its own cap and the start budget. In
+    # background mode a check still inside its own cap keeps running instead of being
+    # cancelled -- the investigation starts on time and gets its result later (phase A
+    # audit: on a distant machine the start budget used to throw away half the checks) ---
     for check, thread, scope, box, t_start, ctx in running:
-        limit = min(overall_deadline, mono_start + check.budget_seconds)
+        own_limit = mono_start + check.budget_seconds
+        limit = min(overall_deadline, own_limit)
         box.done.wait(timeout=max(0.0, limit - time.monotonic()))
+        if background and not box.done.is_set() and time.monotonic() < own_limit:
+            pend = _Pending(check=check)
+            report.pending.append(pend)
+            outcome(check, status="running", source="background", summary=STILL_RUNNING,
+                    reason="still running when the investigation started", gaps=[f"{check.label}: {STILL_RUNNING}"])
+            threading.Thread(target=contextvars.copy_context().run,
+                             args=(finish_later, pend, box, scope, ctx, t_start, own_limit),
+                             name=f"collect-finish-{check.name}", daemon=True).start()
+            continue
         out_of_time = not box.done.is_set()
         if out_of_time:
             scope.cancel()
             box.done.wait(timeout=CANCEL_GRACE_SECONDS)
-        finished = time.time()
-        if box.result is not None and not box.cancelled and not out_of_time:
-            res = box.result
-            o = outcome(check, status=res.status, source="ran", summary=res.summary, gaps=list(res.coverage_gaps),
-                        finished_at=finished, age_seconds=0.0, tools=list(res.tools), steps=list(ctx.steps))
-            state.finish(data_dir, report.target_key, check.name, owner=owner, started_at=t_start,
-                         finished_at=finished, status=res.status, summary=res.summary, gaps=o.gaps,
-                         detail=res.detail)
-        else:
-            if box.error is not None and not out_of_time:
-                reason, detail = "the check failed", _short_error(box.error)
-                logger.warning("collect: %s failed: %s", check.name, detail)
-                summary, status = f"could not be checked ({reason})", "failed"
-            else:
-                reason, detail = "over the time budget", "cancelled at the time budget"
-                summary, status = OVER_BUDGET, "skipped"
-            outcome(check, status=status, source="skipped", summary=summary, reason=reason,
-                    gaps=[f"{check.label}: {summary}"], finished_at=finished, age_seconds=0.0)
-            state.finish(data_dir, report.target_key, check.name, owner=owner, started_at=t_start,
-                         finished_at=finished, status=status, summary=summary, gaps=[f"{check.label}: {summary}"],
-                         detail=detail)
+        o = record(check, box, ctx, t_start, out_of_time)
+        by_name[check.name] = o
+        if on_outcome is not None:
+            try:
+                on_outcome(o)
+            except Exception:  # noqa: BLE001 -- a display callback must not break collection
+                logger.debug("collect: on_outcome callback failed", exc_info=True)
 
     # --- checks someone else is running: wait for their result, within what is left of the budget ---
     for check, holder in waiting:

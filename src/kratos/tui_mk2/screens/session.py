@@ -1222,7 +1222,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._emit_from_worker(R.note_line("Checking the basics on the target"
                                                + (" (including the slow checks)" if len(classes) > 1 else "") + "…"))
             report = _runner.prepare(None, self._data_dir, classes=classes, force=force,
-                                     budget=480.0 if len(classes) > 1 else None)
+                                     budget=480.0 if len(classes) > 1 else _runner.full_budget(classes))
         except Exception as e:  # noqa: BLE001
             self._emit_from_worker(R.error_line(f"/collect failed: {e}"))
             return

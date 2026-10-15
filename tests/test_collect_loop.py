@@ -292,3 +292,25 @@ def test_the_models_tool_list_is_frozen():
 
 def test_the_goal_regex_is_gone():
     assert not hasattr(agent_loop, "_HOST_LOGS_GOAL_RE") and not hasattr(agent_loop, "goal_unlisted_tools")
+
+
+def test_a_check_that_finishes_in_the_background_is_settled_before_the_answer(data_dir, collected, monkeypatch):
+    """The investigation started while 'what is running right now' was still running; it
+    finished before the answer, so its 'still running' gap is gone from the answer."""
+    from kratos.collect.runner import STILL_RUNNING, _Pending
+
+    report = make_report([HIGH_FINDING])
+    running = CheckOutcome(name="live_response", label="what is running right now", cost="quick", status="running",
+                           source="background", summary=STILL_RUNNING,
+                           gaps=[f"what is running right now: {STILL_RUNNING}"])
+    report.checks.append(running)
+    pend = _Pending(check=type("C", (), {"name": "live_response"})())
+    pend.final = CheckOutcome(name="live_response", label="what is running right now", cost="quick", status="ok",
+                              source="ran", summary="40 running process(es) checked; nothing unusual")
+    pend.recorded.set()
+    report.pending.append(pend)
+    collected(report)
+    chat = Chat([_final_json(CORRECTED_ANSWER)])
+    result = run(data_dir, chat, monkeypatch)
+    assert STILL_RUNNING not in result["final_answer"]
+    assert any(s.get("status") == "collection_settled" for s in result["transcript"])

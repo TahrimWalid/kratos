@@ -120,6 +120,9 @@ def set_clarify_provider(provider: "Callable[[str, list[dict[str, Any]]], str | 
 # the local model's context window (LLAMA_N_CTX) is small, and some tools
 # (e.g. collect_system_context) can return large raw text blobs.
 OBSERVATION_CHAR_CAP = 1500
+# Before the final answer, the longest wait for checks the start budget left running in
+# the background (kratos.collect.runner.prepare(background=True)).
+COLLECTION_SETTLE_SECONDS = 20.0
 
 # When this many iterations (or fewer) remain, a short wrap-up reminder is
 # appended to the prompt for that call. With the default max_iters=10, that's
@@ -1399,7 +1402,9 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
             return None
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
-        report = _runner.prepare(get_active_target(), Path(data_dir), dispatch=execute_tool_call)
+        # background: checks still running at the start budget finish while the model works,
+        # and are folded in before the final answer (_settle_collection)
+        report = _runner.prepare(get_active_target(), Path(data_dir), dispatch=execute_tool_call, background=True)
         return None if report.disabled_reason else report
     except InvestigationStopped:
         raise
@@ -1810,6 +1815,19 @@ def _run_agent_loop(
             continue
 
         if "final_answer" in parsed:
+            if collection is not None and collection.unsettled():
+                # Checks the start budget left running in the background: give them a short,
+                # bounded wait, then judge the answer against what they found. Their "still
+                # running" gaps go away for the ones that finished (phase A audit).
+                before = collection.gaps()
+                finished_now = collection.settle(COLLECTION_SETTLE_SECONDS)
+                after = collection.gaps()
+                coverage_gaps[:] = [g for g in coverage_gaps if g not in before or g in after] + \
+                    [g for g in after if g not in coverage_gaps]
+                if finished_now:
+                    _record({"iteration": i, "status": "collection_settled", "collected": True,
+                             "reasoning": "checks that were still running when the investigation started finished: "
+                                          + ", ".join(finished_now)})
             if collection is not None and _input_signature(data_dir) != corr_signature:
                 # The model's tools refreshed an input after the last correlation: re-run it by
                 # code (no model call) so the guards judge this answer against what is true NOW

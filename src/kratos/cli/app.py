@@ -457,7 +457,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     classes = ("quick", "slow") if args.all else ("quick",)
     with run_scope("cli", target=target), pinned_target(target):
         report = _runner.prepare(target, data_dir, classes=classes, force=args.force,
-                                 budget=args.budget if args.budget else (480.0 if args.all else None))
+                                 budget=args.budget if args.budget else (480.0 if args.all else _runner.full_budget(classes)))
     if getattr(args, "json", False):
         print(json.dumps({"target": report.target_key, "elapsed": round(report.elapsed, 2), "cold": report.cold,
                           "checks": [{"name": c.name, "status": c.status, "source": c.source, "summary": c.summary,
@@ -1946,7 +1946,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_p.add_argument("--target", default=None, help="Machine (default: the active target)")
     collect_p.add_argument("--all", action="store_true", help="Also run the slow checks (vulnerabilities, malware, files)")
     collect_p.add_argument("--force", action="store_true", help="Re-run even checks whose last result is still fresh")
-    collect_p.add_argument("--budget", type=float, default=None, help="Seconds to allow (default: the setting)")
+    collect_p.add_argument("--budget", type=float, default=None, help="Seconds to allow (default: long enough for every check to finish)")
     collect_p.add_argument("--json", action="store_true")
     collect_p.set_defaults(func=cmd_collect)
 
