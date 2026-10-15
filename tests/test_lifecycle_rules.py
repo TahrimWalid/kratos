@@ -45,7 +45,7 @@ def test_no_stale_entries():
 def test_classification_matches_the_spec():
     kinds = {rid: info.kind for rid, info in RULES.items()}
     assert {r for r, k in kinds.items() if k == "run_note"} == {
-        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007"}
+        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004"}
     assert {r for r, k in kinds.items() if k == "occurrence"} == {
         "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001", "LOG-003",
         "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-005", "LIVE-006"}

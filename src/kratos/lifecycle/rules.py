@@ -92,6 +92,12 @@ RULES: dict[str, RuleInfo] = dict([
     # A.5: a dropped executable in a world-writable directory is a state that lasts
     # until the file is removed or a person accepts it.
     _r("LIVE-004", "condition"),
+    # A.2: a vulnerable package is a state until it is upgraded (a fresh, complete
+    # package check that no longer sees it marks it mitigated); a pending kernel
+    # reboot lasts until the machine reboots.
+    _r("PKG-001", "condition"),
+    _r("PKG-002", "condition"),
+    _r("PKG-003", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -114,6 +120,7 @@ RULES: dict[str, RuleInfo] = dict([
     _r("SEAL-003", "run_note"),
     _r("PERSIST-009", "run_note"),     # what the persistence check could not read
     _r("LIVE-007", "run_note"),        # the restart-needed hint + what could not be read
+    _r("PKG-004", "run_note"),         # what the package check could not cover (no data, stale data, ...)
 ])
 
 

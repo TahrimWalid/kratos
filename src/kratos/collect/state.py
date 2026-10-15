@@ -228,3 +228,18 @@ def set_finding_ids(data_dir: Path, target: str, check_name: str, finding_ids: l
                      (json.dumps(finding_ids), target, check_name))
     finally:
         conn.close()
+
+
+def expire(data_dir: Path, check_name: str) -> int:
+    """Make every machine's result of `check_name` stale, so the next collection
+    runs it again (e.g. after new vulnerability data arrives). Keeps the result
+    text; only its age changes. Returns how many rows were touched."""
+    if not (Path(data_dir) / "kratos.db").exists():
+        return 0
+    conn = connect(data_dir)
+    try:
+        cur = conn.execute("UPDATE collect_state SET finished_at = 0 WHERE check_name = ? AND finished_at IS NOT NULL",
+                           (check_name,))
+        return cur.rowcount
+    finally:
+        conn.close()

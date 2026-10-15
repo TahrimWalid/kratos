@@ -285,3 +285,5 @@ from kratos.persist import check as _persistence_checks  # noqa: E402,F401
 # A.5: what is running right now registers itself the same way (reads through
 # kratos.live, not a tool).
 from kratos.live import check as _live_response_check  # noqa: E402,F401
+# A.2: the installed packages, matched offline against the vulnerability index.
+from kratos.pkgvuln import check as _packages_check  # noqa: E402,F401

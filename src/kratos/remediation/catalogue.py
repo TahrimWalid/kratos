@@ -39,6 +39,9 @@ _MD5_FP_RE = re.compile(r"^(?:MD5:)?(?:[0-9a-f]{2}:){15}[0-9a-f]{2}$")
 _FORBIDDEN_PATH_PREFIXES = ("/proc/", "/sys/", "/dev/")
 _FILE_MODES = ("go-w", "go-rwx", "u-s", "600", "640", "644", "700", "750", "755")
 _MAX_LINE = 300
+# A package name as dpkg, rpm and apk allow it (no shell metacharacters, no leading dash).
+_PACKAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9+._-]{0,127}$")
+_PACKAGE_MANAGERS = ("apt", "dnf", "apk")
 PID_MIN, PID_MAX = 2, 4_194_304
 
 _UNITS = tuple(_ceiling.ENABLE_UNITS)
@@ -63,7 +66,7 @@ def _slot_ok(name: str, slot: _wl.Slot, value: object, problem: str) -> None:
 @dataclass(frozen=True)
 class Param:
     name: str
-    kind: str                      # ip | unit | user | pid | path | fingerprint | line | enum
+    kind: str                      # ip | unit | user | pid | path | fingerprint | line | package | enum
     doc: str
     values: tuple[str, ...] = ()   # for enum/unit
 
@@ -170,10 +173,23 @@ def _enum(values: tuple[str, ...]) -> Callable[[object, Evidence], str]:
     return check
 
 
+def _check_package(value: object, evidence: Evidence) -> str:
+    if not isinstance(value, str) or not _PACKAGE_RE.fullmatch(value):
+        raise TemplateError(f"{value!r} is not a package name")
+    if not evidence.in_findings(value):
+        raise TemplateError(f"the package {value!r} does not appear in any finding of this investigation")
+    return value
+
+
 _CHECKS: dict[str, Callable[[object, Evidence], str]] = {
     "ip": _check_ip, "unit": _check_unit, "user": _check_user, "pid": _check_pid,
-    "path": _check_path, "fingerprint": _check_fingerprint, "line": _check_line,
+    "path": _check_path, "fingerprint": _check_fingerprint, "line": _check_line, "package": _check_package,
 }
+
+
+def _upgrade(v: dict[str, str]) -> str:
+    return {"apt": "sudo apt-get install --only-upgrade {p}", "dnf": "sudo dnf upgrade {p}",
+            "apk": "sudo apk upgrade {p}"}[v["manager"]].format(p=v["package"])
 
 
 # --- the templates -------------------------------------------------------------------------------------
@@ -226,6 +242,10 @@ TEMPLATES: dict[str, Template] = {t.id: t for t in (
              (Param("path", "path", "a path the evidence mentions"),
               Param("mode", "enum", "the permissions to set", _FILE_MODES)),
              lambda v: f'sudo chmod {v["mode"]} -- {_q(v["path"])}'),
+    Template("package.upgrade", "Upgrade one installed package that a PKG finding names (apt, dnf or apk)",
+             (Param("package", "package", "an installed package named in a finding"),
+              Param("manager", "enum", "the machine's package manager", _PACKAGE_MANAGERS)),
+             _upgrade),
 )}
 
 
@@ -284,6 +304,9 @@ _RECOGNISERS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("account.expire", re.compile(rf"^{_S}chage\s+-E\s+0\s+(?P<user>{_TOKEN})$")),
     ("process.kill", re.compile(rf"^{_S}kill\s+(?P<pid>\d{{1,8}})$")),
     ("file.restrict_mode", re.compile(rf"^{_S}chmod\s+(?P<mode>{_TOKEN})\s+(?:--\s+)?(?P<path>/{_TOKEN})$")),
+    ("package.upgrade", re.compile(rf"^{_S}(?P<manager>apt)(?:-get)?\s+install\s+--only-upgrade\s+(?:-y\s+)?(?P<package>{_TOKEN})$")),
+    ("package.upgrade", re.compile(rf"^{_S}(?P<manager>dnf)\s+(?:-y\s+)?upgrade\s+(?P<package>{_TOKEN})$")),
+    ("package.upgrade", re.compile(rf"^{_S}(?P<manager>apk)\s+upgrade\s+(?P<package>{_TOKEN})$")),
 )
 
 

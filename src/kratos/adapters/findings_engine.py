@@ -160,6 +160,8 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         "persistence": pick(data_dir / "persistence", "persistence_*.json", "persistence"),
         # The live-response check (A.5): freshness is checked by _load_recent_live.
         "live_response": pick(data_dir / "live", "live_response_*.json", "live_response"),
+        # The package check (A.2): freshness is checked by _load_recent_packages.
+        "packages": pick(data_dir / "packages", "packages_*.json", "packages"),
     }
 
 
@@ -268,7 +270,7 @@ def _auth_failure_count(auth_stats: dict[str, Any] | None) -> int:
 class Finding:
     id: str
     title: str
-    severity: str          # info | low | medium | high
+    severity: str          # info | low | medium | high | critical (critical: PKG-* on CISA's exploited list)
     evidence: list[str]
     recommendation: list[str]
     playbooks: list[dict[str, Any]] = field(default_factory=list)
@@ -344,6 +346,7 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
     "SEAL-": ("log_integrity",),
     "PERSIST-": ("persistence",),
     "LIVE-": ("live_response",),
+    "PKG-": ("packages",),
 }
 
 
@@ -494,7 +497,7 @@ def _cve_sort_key(cve: str) -> tuple[int, int]:
         return 0, 0
 
 
-def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
+def _vulnerability_findings(scan: dict[str, Any], package_fixed: dict[str, str] | None = None) -> list[Finding]:
     """VULN-001..003 from one run_vuln_scan snapshot.
 
     VULN-001 -- vulscan's CVE matches. vulscan matches nmap's product/version
@@ -502,7 +505,13 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
     backport fixes without changing versions), never confirmed vulnerabilities.
     VULN-002 -- Nuclei results, at Nuclei's own severity.
     VULN-003 -- what the scan could NOT check, so a quiet result isn't read as clean.
+
+    `package_fixed` (A.2 cross-check): CVEs the machine's installed packages already
+    fix ({cve: explanation}). They stay visible in the evidence, marked as a likely
+    wrong network match, and leave the finding's entities -- so a decision is not
+    asked about something the distribution already fixed.
     """
+    package_fixed = package_fixed or {}
     findings: list[Finding] = []
     target = scan.get("target") or "the target"
     source = f"From the vulnerability scan of {target} at {_when(scan.get('scanned_at')) if scan.get('scanned_at') else 'an unknown time'}"
@@ -534,11 +543,20 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
                         "build, and an unlisted CVE can still apply.")
         if scan.get("database_newest_cve_year"):
             evidence.append(f"CVE list used for matching goes up to {scan['database_newest_cve_year']}")
+        backported = sorted(c for c in all_cves if c.upper() in package_fixed)
+        remaining = sorted(c for c in all_cves if c.upper() not in package_fixed)
+        if backported:
+            evidence.append(f"{len(backported)} of these CVE(s) are already fixed by the installed packages "
+                            "(the distribution's own advisory data, checked on the Kratos machine):")
+            evidence += [package_fixed[c.upper()] for c in backported[:_VULN_ITEMS_SHOWN]]
+            if len(backported) > _VULN_ITEMS_SHOWN:
+                evidence.append(f"... and {len(backported) - _VULN_ITEMS_SHOWN} more already fixed")
         findings.append(Finding(
             id="VULN-001",
-            title="Service versions match known CVEs (verify which apply)",
-            severity="medium",
-            entities=normalise_entities("cve", all_cves),
+            title=("Service versions match known CVEs (verify which apply)" if remaining
+                   else "Service versions match known CVEs, but the installed packages already fix them"),
+            severity="medium" if remaining else "info",
+            entities=normalise_entities("cve", remaining),
             evidence=evidence,
             recommendation=[
                 "Check each CVE against your distribution's security tracker for the installed package version: "
@@ -609,7 +627,7 @@ def _vulnerability_findings(scan: dict[str, Any]) -> list[Finding]:
 
 
 def _severity_rank(sev: str) -> int:
-    return {"info": 0, "low": 1, "medium": 2, "high": 3}.get(sev, 0)
+    return {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}.get(sev, 0)
 
 
 # Plain-language, one-line summary per rule ID, keyed to every id="..."
@@ -667,6 +685,10 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "LIVE-005": "A network listener is run by a process started from /tmp, from a deleted file, or from a binary no package installed — a likely backdoor.",
     "LIVE-006": "A shell or interpreter was started by a web server or database — the classic web-shell or exploited-service shape.",
     "LIVE-007": "Part of the live-response check could not be done, or a running program needs a restart after an update — context, not a finding of compromise.",
+    "PKG-001": "An installed package has known vulnerabilities that an available update fixes.",
+    "PKG-002": "An installed package has known vulnerabilities its distribution has not released a fix for yet.",
+    "PKG-003": "A newer kernel is installed than the one running — the machine needs a reboot for the kernel fixes to apply.",
+    "PKG-004": "Part of the package vulnerability check could not be done — those packages are unknown, not safe.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -894,6 +916,8 @@ def generate_findings(
     log_integrity: dict[str, Any] | None = None,
     persistence: dict[str, Any] | None = None,
     live_response: dict[str, Any] | None = None,
+    packages: dict[str, Any] | None = None,
+    package_fixed_cves: dict[str, str] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
@@ -1377,7 +1401,7 @@ def generate_findings(
 
     # VULN-*: known vulnerabilities on the target's services (from run_vuln_scan)
     if vuln_scan:
-        findings.extend(_vulnerability_findings(vuln_scan))
+        findings.extend(_vulnerability_findings(vuln_scan, package_fixed_cves or {}))
 
     # LOG-* / SEAL-*: logs cleared or edited, journal sealing (from check_log_integrity)
     if log_integrity:
@@ -1390,6 +1414,10 @@ def generate_findings(
     # LIVE-*: what is running right now (from the live-response check, A.5)
     if live_response:
         findings.extend(_live_response_findings(live_response))
+
+    # PKG-*: vulnerable installed packages (from the package check, A.2)
+    if packages:
+        findings.extend(_package_findings(packages))
 
     # 4) Environment note (WSL)
     if system_context:
@@ -1863,6 +1891,63 @@ def _live_response_findings(doc: dict[str, Any]) -> list[Finding]:
     return out
 
 
+# A package result feeds findings while it is this fresh (the check re-reads every
+# six hours by default): an old inventory must not keep describing today's machine.
+PACKAGES_MAX_AGE_HOURS = 24
+
+
+def _load_recent_packages(path: Path | None) -> dict[str, Any] | None:
+    """The newest package check of the active machine, if it is less than
+    PACKAGES_MAX_AGE_HOURS old (find_latest_inputs already picked a file describing
+    this machine)."""
+    if path is None:
+        return None
+    try:
+        data = _read_json(path)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("signals"), list):
+        return None
+    captured = _snapshot_time(data, "checked_at", path)
+    if datetime.now().timestamp() - captured > PACKAGES_MAX_AGE_HOURS * 3600:
+        return None
+    return data
+
+
+def _pkg_kwargs(sig: dict[str, Any]) -> dict[str, Any]:
+    """The shared Finding fields for one package signal. The rule id is passed as a
+    literal by each builder below (the lifecycle-completeness scan reads literal
+    Finding(id=...) calls)."""
+    kind = "text" if str(sig.get("rule")) == "PKG-003" else "cve"
+    return {"title": str(sig.get("title") or sig.get("rule")), "severity": str(sig.get("severity") or "info"),
+            "evidence": [str(x) for x in sig.get("evidence") or []],
+            "recommendation": [str(r) for r in sig.get("recommendation") or []],
+            "subject": str(sig.get("subject") or ""),
+            "entities": normalise_entities(kind, sig.get("entities") or [])}
+
+
+def _package_findings(doc: dict[str, Any]) -> list[Finding]:
+    """PKG-001..004 from one package check (A.2). Matching and scoring happened when
+    the check ran (kratos.pkgvuln.record), so re-correlating the same result says
+    exactly the same thing. PKG-001/002 carry the package as their subject -- one
+    finding per package -- and its CVEs as entities, so a new CVE for an
+    already-decided package reopens it."""
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for s in doc.get("signals") or []:
+        if isinstance(s, dict) and str(s.get("rule", "")).startswith("PKG-"):
+            by_rule.setdefault(s["rule"], []).append(s)
+    out: list[Finding] = []
+    for s in by_rule.get("PKG-001", []):
+        out.append(Finding(id="PKG-001", **_pkg_kwargs(s)))
+    for s in by_rule.get("PKG-002", []):
+        out.append(Finding(id="PKG-002", **_pkg_kwargs(s)))
+    for s in by_rule.get("PKG-003", []):
+        out.append(Finding(id="PKG-003", **_pkg_kwargs(s)))
+    for s in by_rule.get("PKG-004", []):
+        out.append(Finding(id="PKG-004", **_pkg_kwargs(s)))
+    return out
+
+
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """
     None if fewer than 2 auto-discovered inputs are present (nothing to
@@ -2015,6 +2100,20 @@ def write_findings_report(
     inputs["persistence"] = auto.get("persistence") if persistence_doc else None
     live_doc = _load_recent_live(auto.get("live_response"))
     inputs["live_response"] = auto.get("live_response") if live_doc else None
+    packages_doc = _load_recent_packages(auto.get("packages"))
+    inputs["packages"] = auto.get("packages") if packages_doc else None
+    package_fixed: dict[str, str] = {}
+    if packages_doc and vuln_scan:
+        try:
+            from kratos.pkgvuln import crosscheck as _pkg_crosscheck
+
+            scan_cves = {c for x in vuln_scan.get("findings") or [] if isinstance(x, dict)
+                         and x.get("source") == "vulscan" for c in x.get("cve_ids") or [] if isinstance(c, str)}
+            package_fixed = _pkg_crosscheck.fixed_by_packages(data_dir, packages_doc, scan_cves)
+        except Exception:  # noqa: BLE001 -- the cross-check only refines VULN-001; never lose the report
+            import logging
+
+            logging.getLogger(__name__).exception("package cross-check failed; VULN-001 left as matched")
     # We allow partial reports; still generate report but mark missing/errored inputs.
     nmap_parsed = _read_json(inputs["nmap_parsed"]) if inputs["nmap_parsed"] else None
     auth_stats = _read_json(inputs["auth_stats"]) if inputs["auth_stats"] else None
@@ -2030,6 +2129,8 @@ def write_findings_report(
         log_integrity=log_integrity,
         persistence=persistence_doc,
         live_response=live_doc,
+        packages=packages_doc,
+        package_fixed_cves=package_fixed,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target
@@ -2040,7 +2141,7 @@ def write_findings_report(
     try:
         finding_dicts, lifecycle_summary = _apply_lifecycle(
             finding_dicts, data_dir=data_dir, target=report_target or "unknown", inputs=inputs,
-            auth_stats=auth_stats, persistence=persistence_doc, live_response=live_doc,
+            auth_stats=auth_stats, persistence=persistence_doc, live_response=live_doc, packages=packages_doc,
             patterns_stats=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats))
     except Exception as e:  # noqa: BLE001 -- a lifecycle failure must never lose the report
         import logging
@@ -2146,7 +2247,8 @@ def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, tar
                      inputs: dict[str, Path | None], auth_stats: dict[str, Any] | None,
                      patterns_stats: dict[str, Any] | None,
                      persistence: dict[str, Any] | None = None,
-                     live_response: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     live_response: dict[str, Any] | None = None,
+                     packages: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The lifecycle layer (kratos.lifecycle) over this report's findings."""
     from kratos import run_context
     from kratos.lifecycle import apply as _lc_apply, coverage as _lc_coverage, migrate as _lc_migrate
@@ -2163,6 +2265,10 @@ def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, tar
     # only some of what is running, so it cannot say a LIVE-* finding is gone (A.5).
     if live_response is not None and not live_response.get("complete"):
         incomplete = set(incomplete) | {"live_response"}
+    # A package check that could not read the whole list, or could not match it
+    # (no or stale-coverage vulnerability data), cannot say a PKG-* finding is gone.
+    if packages is not None and not packages.get("complete"):
+        incomplete = set(incomplete) | {"packages"}
     run = run_context.current()
     cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete)
     return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)
