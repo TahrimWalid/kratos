@@ -589,7 +589,10 @@ def test_guard4_no_friction_when_no_staleness_warning(
     assert rejected_steps == [], f"Expected zero rejections when there's no staleness_warning, got {rejected_steps}"
 
     final_answer = result["final_answer"]
-    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+    # No Guard 4 note. (The mocked correlation holds a HIGH CORR-SSH-001 this sudo answer
+    # never mentions, so Guard 12's serious-findings note is expected and correct here.)
+    assert "timeframe" not in final_answer, f"Guard 4 fired with no staleness_warning: {final_answer!r}"
+    assert final_answer.count("[NOTE:") == 1 and "serious findings" in final_answer
 
 
 

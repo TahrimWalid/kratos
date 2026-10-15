@@ -400,6 +400,20 @@ Other things you can ask, to get a feel for it:
 You don't have to phrase these a special way. If your request is unclear or could
 go several directions, Kratos asks you first (see below) rather than guessing.
 
+**Notes at the top of an answer.** Kratos checks the model's write-up against what it
+actually found before showing it. Anything the write-up gets wrong or leaves out comes
+first, in a `[NOTE: …]` written by Kratos itself, not by the model:
+
+- *serious findings the answer above leaves out* — a HIGH or CRITICAL finding the
+  write-up skipped, or named without the fact that matters (the attacker's address, a
+  known-malicious match, the program or file involved);
+- *not checked in this investigation* — what could not be looked at this time, one short
+  line each (for example processes of other users over a normal SSH login);
+- and a few others when the write-up's claims about time periods or past state don't
+  match what Kratos measured.
+
+Read the notes first: they are the parts Kratos is sure about.
+
 ---
 
 ## What Kratos checks by itself

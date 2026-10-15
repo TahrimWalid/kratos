@@ -429,3 +429,57 @@ def test_the_model_reads_correlation_findings_first_not_report_paths():
     assert "missing_inputs" in view                       # what wasn't used still reaches the model
     assert result["result"]["inputs_used"] == inputs      # the real result is untouched
     assert _for_model("run_nmap_scan", result) is result
+
+
+# ------------------------------------------- Guard 12: serious findings the answer leaves out
+_CORR = {"id": "CORR-SSH-001", "severity": "high", "title": "SSH exposed with failed-login burst activity observed",
+         "entities": ["10.136.28.52"],
+         "evidence": ["Source IP(s) behind this activity: 10.136.28.52 (88 events).",
+                      "Threat-intel corroboration (offline OTX cache): source IP 10.136.28.52 is KNOWN-MALICIOUS"]}
+_LIVE = {"id": "LIVE-002", "severity": "high", "title": "1 process(es) running from memory or a deleted temporary file",
+         "entities": ["/memfd:stage (deleted)|353191|467793179"], "evidence": ["pid 353191 ..."]}
+# the real eval answers (R1_live run 2 and A8 run 1 on the merged code)
+_R1_ANSWER = ("This system shows signs of a persistent brute-force attack (156 failed SSH login attempts from "
+              "10.136.28.1 over the last 24 hours). Evidence of log tampering (LOG-003) ...")
+_A8_ANSWER = "The target is under an SSH brute-force attack from 10.136.28.52; fail2ban should ban it."
+
+
+def test_guard12_adds_what_a_real_answer_left_out():
+    from kratos.agent.loop import _serious_findings_left_out, _serious_findings_note
+
+    left = _serious_findings_left_out(_R1_ANSWER, [_CORR, dict(_LIVE)])
+    note = _serious_findings_note(left)
+    assert "LIVE-002" in note and "/memfd:stage" in note and "pid 353191" in note
+    assert "source 10.136.28.52" in note                    # the answer named the wrong address
+    a8 = _serious_findings_note(_serious_findings_left_out(_A8_ANSWER, [_CORR]))
+    assert "known-malicious" in a8 and "source 10.136.28.52" not in a8   # the IP was there, the match wasn't
+
+
+def test_guard12_stays_quiet_for_a_complete_answer_or_a_decided_finding():
+    from kratos.agent.loop import _serious_findings_left_out
+
+    complete = ("Brute force from 10.136.28.52, which the threat-intel cache lists as malicious; and a process "
+                "(pid 353191) runs from memory.")
+    assert _serious_findings_left_out(complete, [_CORR, _LIVE]) == []
+    decided = dict(_LIVE, state="risk_accepted")
+    assert _serious_findings_left_out("nothing", [decided]) == []
+    assert _serious_findings_left_out("nothing", [dict(_LIVE, severity="medium")]) == []
+
+
+def test_guard12_reaches_the_final_answer(tmp_path, monkeypatch):
+    from kratos.agent import loop as agent_loop
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos import kratos_config
+    from tests.test_agent_loop_guards import ScriptedChat, _final_json, _tool_json
+
+    def correlate(**kwargs):
+        return {"findings_json_file": "f.json", "findings_md_file": "f.md", "inputs_used": {}, "missing_inputs": [],
+                "input_errors": {}, "staleness_warning": None, "findings": [_CORR, _LIVE], "count": 2}
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", correlate)
+    kratos_config.set_active_target(T)
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(_R1_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("check this system for anything suspicious", tmp_path, max_iters=6)
+    answer = result["final_answer"]
+    assert answer.startswith("[NOTE: serious findings the answer above leaves out")
+    assert "LIVE-002" in answer and _R1_ANSWER in answer

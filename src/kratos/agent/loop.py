@@ -940,6 +940,93 @@ def _for_model(tool_name: str | None, exec_result: Any) -> Any:
     return {k: v for k, v in out.items() if k not in hidden}
 
 
+# --- Guard 12: serious findings the answer leaves out (phase A audit) -----------------
+_SERIOUS = ("critical", "high")
+_DECIDED_STATES = frozenset({"risk_accepted", "false_positive", "out_of_scope"})
+_SERIOUS_NOTE_MAX = 5
+_MALICIOUS_MARK = "KNOWN-MALICIOUS"
+
+
+def _is_ip(text: str) -> bool:
+    import ipaddress
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _entity_facts(entity: str) -> tuple[str, list[str]]:
+    """(shown, tokens): how an entity is named in the note, and the words that count
+    as the answer naming it -- an IP; a program path and pid (`exe|pid|start`); a file
+    (`path#sha`); an account (`user:...`); a package (`pkg:CVE`)."""
+    import posixpath
+
+    e = str(entity)
+    parts = e.rsplit("|", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+        exe = parts[0].removesuffix(" (deleted)")
+        base = posixpath.basename(exe) if exe.startswith("/") else exe
+        return f"{exe} (pid {parts[1]})", [t for t in (base, parts[1]) if len(t) >= 2]
+    if "#" in e and e.startswith("/"):
+        path = e.split("#", 1)[0]
+        return path, [posixpath.basename(path) or path]
+    head, sep, _rest = e.partition(":")
+    if sep and not head.upper().startswith("CVE") and not _is_ip(e):
+        return e, [head]
+    return e, [e]
+
+
+_TITLE_WORD_RE = re.compile(r"[a-z][a-z-]{3,}")
+_TITLE_STOPWORDS = frozenset({"with", "from", "that", "this", "were", "have", "been", "into", "than", "more",
+                              "some", "only", "they", "there", "their", "which", "while"})
+
+
+def _paraphrases_title(answer_lower: str, title: str) -> bool:
+    """Most (60%) of the title's content words appear in the answer -- the finding is
+    described, if not by its id or exact title."""
+    words = {w for w in _TITLE_WORD_RE.findall(title.lower()) if w not in _TITLE_STOPWORDS}
+    return bool(words) and sum(1 for w in words if w in answer_lower) / len(words) >= 0.6
+
+
+def _serious_findings_left_out(answer: str, findings: list[dict[str, Any]] | None) -> list[tuple[dict, list[str]]]:
+    """Open HIGH/CRITICAL findings and what of each the answer is missing."""
+    out: list[tuple[dict, list[str]]] = []
+    low = (answer or "").lower()
+    for f in findings or []:
+        if not isinstance(f, dict) or str(f.get("severity") or "").lower() not in _SERIOUS:
+            continue
+        if str(f.get("state") or "") in _DECIDED_STATES:
+            continue
+        entities = [str(x) for x in f.get("entities") or []]
+        missing: list[str] = []
+        ips = [e for e in entities if _is_ip(e)][:3]
+        missing += [f"source {ip}" for ip in ips if ip.lower() not in low]
+        if any(_MALICIOUS_MARK in str(ev) for ev in f.get("evidence") or []) and "malicious" not in low:
+            missing.append("known-malicious in the threat-intel cache")
+        others = [e for e in entities if not _is_ip(e)]
+        if not ips:
+            named = (_names_finding(answer or "", f) or _paraphrases_title(low, str(f.get("title") or ""))
+                     or any(tok.lower() in low for e in others[:5] for tok in _entity_facts(e)[1]))
+            if not named:
+                missing += [_entity_facts(e)[0] for e in others[:2]] or ["not mentioned above"]
+        if missing:
+            out.append((f, missing))
+    return out
+
+
+def _serious_findings_note(left_out: list[tuple[dict, list[str]]]) -> str:
+    from kratos import untrusted
+
+    items = []
+    for f, missing in left_out[:_SERIOUS_NOTE_MAX]:
+        detail = ", ".join(untrusted.for_display(m)[:120] for m in missing)
+        items.append(f"{f.get('id')} ({str(f.get('severity')).lower()}) {untrusted.for_display(str(f.get('title') or ''))[:100]}"
+                     + (f" -- {detail}" if detail else ""))
+    more = f" (and {len(left_out) - _SERIOUS_NOTE_MAX} more)" if len(left_out) > _SERIOUS_NOTE_MAX else ""
+    return f"[NOTE: serious findings the answer above leaves out or leaves incomplete: {'; '.join(items)}{more}.]\n\n"
+
+
 _SSH_LOGIN_LIMIT = "over this SSH login"
 _SSH_LOGIN_FIX = ("A normal SSH login can't read what belongs to other users or root; the machine's sub-agent "
                   "(it reads as root) covers it.")
@@ -2158,6 +2245,14 @@ def _run_agent_loop(
             unstated_gaps = _unstated_coverage_gaps(coverage_gaps, final_answer_text)
             if unstated_gaps:
                 final_answer_text = _coverage_note(unstated_gaps) + final_answer_text
+
+            # Guard 12 (phase A audit): an open HIGH/CRITICAL finding the answer leaves out,
+            # or names without its key facts (the attacker's address, a known-malicious
+            # match, the program or file) is added by code -- the model often summarises
+            # them away. No model call, no rejection; on top of every other note.
+            left_out = _serious_findings_left_out(final_answer_text, last_correlate_findings)
+            if left_out:
+                final_answer_text = _serious_findings_note(left_out) + final_answer_text
 
             if gap_claim is not None:
                 # Guard 8's one reminder is spent (or there is no iteration
