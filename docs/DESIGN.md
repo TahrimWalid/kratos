@@ -1090,7 +1090,13 @@ records too.
 **What the model sees.** A tool result reaches the model through a 1500-character
 window, so labels go in as `"T1110.001 Password Guessing"` strings
 (`compact_for_model`); the transcript, the screen and MCP keep the full label (both
-tactics, url, version).
+tactics, url, version). For the same reason a `correlate_findings` result reaches the model
+without its people-only bookkeeping (`loop._for_model`: the report file paths and the
+`inputs_used` table, ~900 characters that came before the first finding); missing inputs,
+input errors and the staleness warning stay. An investigation's "not checked" NOTE names
+each gap in one short line and the shared sub-agent fix once (`loop._coverage_note`); a
+check's detailed run note (`PERSIST-009`, `LIVE-007`) keeps the long form, and a
+restart-needed hint or a first look is never a "not checked" gap.
 
 | Rules | Label (v19) |
 | --- | --- |
