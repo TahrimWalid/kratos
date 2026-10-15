@@ -2040,6 +2040,10 @@ def write_findings_report(
     else:
         for f in findings:
             md_lines.append(f"### [{f.severity.upper()}] {f.id} — {f.title}\n")
+            if f.attack:
+                from kratos.attack import format_label
+                md_lines.append("**ATT&CK**: " + "; ".join(f"[{format_label(a)}]({a.get('url')})" for a in f.attack)
+                                + "\n")
             md_lines.append("**Evidence**")
             for e in f.evidence:
                 md_lines.append(f"- {e}")
