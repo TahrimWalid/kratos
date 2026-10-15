@@ -779,11 +779,11 @@ host and read-only on a real server before shipping:
   the kernel (`LOG-005`); installed but not running is `LOG-006` (info, an ordinary
   condition that closes when auditd runs); not installed is a coverage note.
 
-Each tamper rule carries an ATT&CK label pinned to **v19.0**, where log clearing
+Each tamper rule carries an ATT&CK v19 label (see "ATT&CK labels"), where log clearing
 and audit tampering moved to the new *Defense Impairment* tactic:
 T1685.006 Clear Linux or Mac System Logs (LOG-001/002/004, SEAL-001), T1685.004
 Disable or Modify Linux Audit System Log (LOG-005), T1685 Disable or Modify Tools
-(SEAL-002) -- checked against the official v19 STIX data. Evidence of tampering is
+(SEAL-002). Evidence of tampering is
 **sticky** in the lifecycle: a later run not seeing it doesn't close it, because the
 next comparison is against the already-edited state; it stays open until a person
 decides. A decision covers the incidents the person saw: each tamper finding's
@@ -910,6 +910,81 @@ set, so a lookup table avoids adding a non-deterministic extra model call
 for something entirely formulaic. A generic fallback summary covers any
 rule ID that doesn't have its own template yet, so a missed entry produces
 a blander sentence rather than a crash or a blank summary.
+
+## ATT&CK labels
+
+Every rule has exactly one entry in `kratos/attack/mapping.py::RULE_ATTACK`: either
+`Behaviour` (it describes something an adversary *did* -- it carries MITRE ATT&CK
+labels) or `Posture` (exposure, weakness, inventory, or a run note -- explicitly no
+label, with a one-line reason). A test fails when a rule the engine can emit or the
+lifecycle registers has no entry. The labels are Kratos-generated: never written by
+the model, never parsed from a machine's text.
+
+**One table, generated and pinned.** `scripts/dev/build_attack_table.py` reads MITRE's
+official Enterprise STIX bundle (`mitre-attack/attack-stix-data`,
+`enterprise-attack-19.2.json`, downloaded by a developer -- Kratos never fetches it)
+and writes `src/kratos/attack/v19_table.json` (package data, ~250 KB vs the ~50 MB
+bundle): every technique and sub-technique's name, tactics, platforms, url and
+revoked/deprecated flag (with what replaced a revoked one), every tactic in matrix
+order, and the bundle's version and sha256. Same bundle in, same bytes out. Every
+label is built through `kratos.attack.table.label()`, which refuses an id the table
+lacks, a revoked or deprecated id, or a tactic the technique isn't listed under -- at
+import time, so a wrong mapping can't ship.
+
+**Where labels are set.** `generate_findings` stamps them after the rules run
+(`_stamp_attack_labels`): a finding keeps labels its builder set for its own item
+(`PERSIST-001/002/007` are labelled by the area of the item they found -- cron, a
+systemd unit, a shell profile, ...), gains its rule's labels otherwise, and gains
+those of any rule it absorbed when overlapping findings were merged. `INTEG-001` is
+labelled by which tracked file changed (`INTEG_PATHS`: `/etc/passwd` -> T1098,
+`/etc/sudoers*` -> T1548.003, cron files -> T1053.003, `sshd_config` -> T1556,
+`/etc/pam.d/*` -> T1556.003, `authorized_keys` -> T1098.004, ...); any other file is
+posture. A finding stored before labels existed is mapped when it is read
+(`attack_of`), so `/findings`, `kratos findings show` and MCP show labels for old
+records too.
+
+**What the model sees.** A tool result reaches the model through a 1500-character
+window, so labels go in as `"T1110.001 Password Guessing"` strings
+(`compact_for_model`); the transcript, the screen and MCP keep the full label (both
+tactics, url, version).
+
+| Rules | Label (v19) |
+| --- | --- |
+| AUTH-004, CORR-001, CORR-SSH-001, CORR-002 | T1110.001 Password Guessing (Credential Access) |
+| PRIV-001, PRIV-003 | T1098 Account Manipulation (Persistence, Privilege Escalation) |
+| PRIV-002 | T1136.001 Local Account (Persistence); T1098 Account Manipulation |
+| INTEG-001 | by changed file (above) |
+| LOG-001, LOG-002, LOG-004, SEAL-001 | T1685.006 Clear Linux or Mac System Logs (Defense Impairment) |
+| LOG-005 | T1685.004 Disable or Modify Linux Audit System Log (Defense Impairment) |
+| SEAL-002 | T1685 Disable or Modify Tools (Defense Impairment) |
+| PERSIST-001, -002, -007 | by the item's area (cron T1053.003, at T1053.002, systemd T1543.002 / timers T1053.006, SSH keys T1098.004, preload T1574.006, modules T1547.006, shell config T1546.004, PAM T1556.003, rc/boot T1037.004 / T1037, XDG T1547.013, udev T1546.017, package hooks T1546.016) |
+| PERSIST-003 | T1548.001 Setuid and Setgid (Privilege Escalation) |
+| PERSIST-004 | T1574.006 Dynamic Linker Hijacking (Stealth) |
+| PERSIST-005 | T1547.006 Kernel Modules and Extensions (Persistence) |
+| PERSIST-006 | T1098.004 SSH Authorized Keys (Persistence) |
+| PERSIST-008 | T1556.003 Pluggable Authentication Modules (Persistence) |
+| LIVE-001 | T1070.004 File Deletion (Stealth) |
+| LIVE-002 | T1620 Reflective Code Loading (Stealth) |
+| LIVE-003 | T1574.006 Dynamic Linker Hijacking (Stealth) |
+| LIVE-006 | T1059.004 Unix Shell (Execution); T1505.003 Web Shell (Persistence) |
+| NET-*, CTX-001, ENV-001, VULN-*, PKG-*, AUTH-001, AUTH-003, AUTH-TREND-001, COV-001, OBS-001, PRIV-004, LOG-003, LOG-006, SEAL-003, PERSIST-009, LIVE-004, LIVE-005, LIVE-007 | posture -- no label |
+
+(The `LIVE-*` and `PKG-*` entries are in the mapping ahead of the live-response and
+package checks; a test allows exactly those to be missing from the rule registry until
+they are registered.) `AUTH-001` (any sudo password failure) is posture: one failure is usually a typo;
+repeated guessing is `CORR-002`/`AUTH-004`, which carry T1110.001. `OBS-001`
+(logging looks off) is posture: usually a stripped or container system, and auditd
+stopped after it ran is `LOG-005`.
+
+**Navigator layers.** `kratos/attack/navigator.py` builds ATT&CK Navigator layer
+files (layer format 4.5, Navigator 5.3.2, domain `enterprise-attack`, ATT&CK 19,
+platform filter Linux). *Coverage*: every technique a rule this build has can carry
+(score 1, comment = the rule ids); *observed*: techniques in the open/verified
+lifecycle records of one machine or all (score = worst severity 1..5, comment =
+finding keys) -- decided and fixed findings are left out. Each cell is pinned to the
+tactic the label names, so a technique sits in its v19 column (e.g. Defense
+Impairment) rather than every column it is listed under; a sub-technique gets an
+unscored, expanded parent so it is visible. `kratos attack-layer` writes them (0600).
 
 ## Finding lifecycle
 
