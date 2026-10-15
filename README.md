@@ -24,7 +24,9 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 **Notices cleared or edited logs.** Kratos watches for logs cut short, replaced or rewritten outside normal rotation, journal files deleted from the middle of history, wiped login records and a stopped or emptied auditd — each finding labeled with its MITRE ATT&CK technique. Optionally, **seal a machine's journal**: the machine signs its own logs as it writes them, Kratos keeps the verification key on your computer only and checks the seals in the background, so even an edit by root shows up.
 
-**Checks the basics itself before answering.** Open ports, a day of sign-ins, signs of altered logs, where someone could keep access (cron jobs, services, SSH keys, SUID programs and the like), what is running right now (deleted-but-running programs, code running from memory, processes launched with an injected library, executables dropped in /tmp), who has root and the configuration are checked by Kratos — in parallel, in seconds, free, no model — so even a broad question always covers them; the model starts from that summary and digs deeper where your question needs it.
+**Checks the basics itself before answering.** Open ports, a day of sign-ins, signs of altered logs, where someone could keep access (cron jobs, services, SSH keys, SUID programs and the like), what is running right now (deleted-but-running programs, code running from memory, processes launched with an injected library, executables dropped in /tmp), which installed packages have known vulnerabilities, who has root and the configuration are checked by Kratos — in parallel, in seconds, free, no model — so even a broad question always covers them; the model starts from that summary and digs deeper where your question needs it.
+
+**Knows which packages need updating — and which don't.** Kratos reads each machine's installed packages and matches them on your computer against the distribution's own security advisories, so a fix the distribution backported without changing the version number isn't reported (and a network scan's version match that the packages already fix is marked as such). Vulnerabilities attackers are exploiting right now (CISA's KEV list) are raised to *act now*; the rest are ordered by how likely they are to be exploited (EPSS) and how serious they are (CVSS). A kernel update waiting for a reboot is flagged too. The package list never leaves your computer: `kratos vulndb-update` downloads whole public data files and matching is offline.
 
 **Remembers your decisions.** Kratos keeps each finding across checks, so you see what's new, what's still open and what got fixed — not the same list every time. Confirm a finding, accept a risk until a date, or mark it a false positive; a finding only comes back if it shows something you didn't see (a new attacker IP, a higher severity) or your acceptance runs out, and every view says how many findings your decisions hide.
 
@@ -225,6 +227,12 @@ Kratos began as a Bachelor's thesis (Tampere University of Applied Sciences, Sof
 
 Kratos is released under the [MIT License](https://github.com/TahrimWalid/kratos/blob/main/LICENSE) — use it, change it, build on
 it freely; just keep the copyright notice when you redistribute it.
+
+**Vulnerability data** (downloaded by `kratos vulndb-update`, not bundled) keeps its own terms: OSV.dev's
+exports of the distributions' advisories (Ubuntu: CC BY-SA 4.0; Red Hat: CC BY 4.0 © Red Hat, Inc.;
+Rocky Linux: BSD; AlmaLinux: MIT; Debian and Alpine: no licence stated), CISA's Known Exploited
+Vulnerabilities catalogue (CC0), FIRST's EPSS scores, and NVD CVSS scores — *this product uses data from
+the NVD API but is not endorsed or certified by the NVD.* `kratos vulndb-update --about` lists them.
 
 One exception for the bundled extras: the YARA rules under `src/kratos/yara_rules/` are
 third-party and stay under their own GPLv2 license (source in

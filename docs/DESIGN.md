@@ -747,6 +747,97 @@ collection layer; `record.run` reads, judges and writes `data_dir/live/live_resp
 mark a `LIVE-*` finding inactive. No model tool is added (A.5 is a check). Nothing is killed: a
 `kill <pid>` recommendation is shown, never run.
 
+## Package vulnerabilities
+
+**Installed packages, matched offline** (`adapters/packages.py`, `kratos/pkgvuln/`). The inventory is
+one fixed POSIX sh script (in the agent bundle) that the SSH path runs as the SSH user and the
+sub-agent runs through `sh -s` (its `package_inventory` probe, agent 0.7.0): `dpkg-query -W` with the
+source package and source version (Debian advisories are listed by source), `rpm -qa` with
+`EPOCH:VERSION-RELEASE` and the source RPM, Alpine's `/lib/apk/db/installed` (origin), plus
+`/etc/os-release`, `uname -r`, the installed module trees and `reboot-required`. One parser; names and
+versions that don't look like names and versions are dropped and counted. The list is stored in
+`kratos.db` → `pkg_inventory` (one row per distinct package set per machine — a re-check that finds the
+same set only moves `last_seen_at`) and never leaves the Kratos machine.
+
+**The index** (`pkgvuln/index.py`, `pkgvuln/update.py`) is a separate, replaceable file,
+`data_dir/vulndb/vulndb.sqlite`, built by `kratos vulndb-update` — the only code that fetches
+vulnerability data, and only when a person runs it. It holds only the releases of machines Kratos
+knows (a *selector* such as `ubuntu:22.04`, `debian:12`, `alpine:3.22`, `rocky:9`), from OSV's
+per-ecosystem exports (`<ecosystem>/all.zip`, verified against the object's MD5 from `x-goog-hash`, a
+size cap, the zip's CRCs and a JSON parse; a raw-byte prefilter skips records naming no wanted
+release, so Ubuntu's 7 GB export parses in about a minute), CISA's KEV feed, FIRST's EPSS daily file
+and NVD's yearly 2.0 feeds (the network scan's streaming parser, checked against each feed's published
+SHA-256) for CVSS. Later updates are incremental: OSV's `modified_id.csv` (with `If-None-Match`) names
+the changed advisories, fetched one by one when there are at most 2,000; NVD's 8-day "modified" feed
+replaces re-reading every year. The new index is built in `vulndb.sqlite.tmp` (a SQLite backup of the
+current one for an incremental build), checked with `PRAGMA integrity_check`, and swapped in with one
+`os.replace`; any OSV failure, a failed check or an interruption (tested with `kill -9`) leaves the
+previous file untouched, and the next update removes the leftovers. KEV/EPSS/NVD are enrichment: one
+that can't be fetched keeps its previous rows and the result names it. Only bug-fix/enhancement
+notices (RHBA/RHEA/ALBA/ALEA) and withdrawn advisories are skipped. OSV's explicit `versions` lists are
+kept only for entries with no range (elsewhere they are an expansion of the range, and Ubuntu's alone
+is gigabytes).
+
+**Matching** (`pkgvuln/match.py`, pure, `univers` 32.0.1 for Debian/RPM/Alpine version comparison —
+no hand-written comparison; a version it can't read is counted, never guessed). Each installed
+package is looked up under the name its distribution's advisories use (Debian/Ubuntu: source package
+and source version; Alpine: origin; RPM: binary; a signed kernel image, whose template source
+`linux-signed-*` no advisory names, as the kernel source it was built from with its own version).
+When several versions are installed under one name (old kernels are kept), the package is judged by
+the newest: upgrading can't fix the old copies, and a stale *running* kernel is `PKG-003`'s, whose
+severity uses the running kernel's own CVEs. Affected = in an `ECOSYSTEM` range
+(`introduced <= v < fixed`, or `<= last_affected`) or in an explicit version list. Per CVE, a
+distribution's **per-CVE record** (`DEBIAN-CVE-*`, `UBUNTU-CVE-*`, `ALPINE-CVE-*`) decides when it names
+the package; bundle notices (DSA/DLA, USN, RLSA, ALSA, RHSA) decide only otherwise — a notice fixes all
+its CVEs at one version, which can be later than a given CVE needed. And when the per-CVE data covers
+the release (at least 5,000 records name it — true for Ubuntu and Debian 12+, not for Debian 11), a
+per-CVE record that does **not** name this release means the tracker found it unaffected, so a notice
+listing that CVE among others doesn't report it (found by the cross-check below: 43 USN-only pairs on
+Ubuntu 22.04). A CVE the installed version is past the fix for is "fixed", which is what the network
+cross-check uses.
+
+**Priority and rules** (`pkgvuln/priority.py`, `pkgvuln/record.py`). Per CVE: on KEV → critical ("act
+now"); fixable with EPSS ≥ `vulndb.epss_high` (0.1, EPSS's commonly cited threshold) and CVSS ≥ 7 →
+high; fixable CVSS ≥ 7 → medium; other fixable → low. Missing CVSS falls back to the distribution's own
+rating; "negligible"/"unimportant" caps at low (KEV still wins). `PKG-001` (fixable) is one finding per
+package — the first rule with a non-empty `subject` — with the CVEs as entities, so a new CVE reopens a
+decision. `PKG-002` (no fix yet; low, info when all negligible, critical if one is on KEV) is one finding
+per machine with `package:CVE` entities: nothing can be installed, and a fully patched Ubuntu server has
+dozens of such packages, so per-package findings would be noise. `PKG-003` is a newer kernel
+installed than running (running vs newest installed kernel package, plus Debian/Ubuntu's
+`reboot-required`), entity the newest kernel; `PKG-004` is a run note for what wasn't covered (no or
+stale data, no data for the distribution, an incomplete read). All three PKG rules are conditions; an
+incomplete check (partial read, no matching data) can't close one. No ATT&CK labels (weakness, not
+behaviour). The upgrade command is shown, never run; the remediation catalogue has a
+`package.upgrade` template whose package must appear in a finding. `record.run` writes
+`data_dir/packages/packages_<content key>.json`, named by what the result depends on (inventory hash,
+index build, threshold), so repeated checks of an unchanged machine rewrite one file.
+
+**Network cross-check** (`pkgvuln/crosscheck.py`). For each CVE `VULN-001` matched by service-version
+text, if the machine's distribution lists that CVE for installed packages and every one of them is
+past the fix, the CVE is noted as "already fixed by the installed packages — a backported fix" and
+removed from `VULN-001`'s entities (it stays in the evidence); if none remain, `VULN-001` drops to info.
+Done locally at correlation time from the saved inventory and the index.
+
+**Checked against other scanners** (2026-10-15, release-day Docker images, pairs of (source
+package, CVE) that are affected and fixable; Trivy 0.76.0, OSV-Scanner 2.7.0, debsecan 0.4.20.1):
+
+| Image | Kratos | Trivy | OSV-Scanner | debsecan |
+|---|---|---|---|---|
+| `debian:12.0` (88 packages) | 94 | 100% | 100% | 79.8% — debsecan's bookworm feed lacks 19 pairs the DSAs and Debian's per-CVE records list (incl. KEV CVE-2023-4911) |
+| `ubuntu:jammy-20220428` (101) | 215 | 99.1% — 2 pairs only in Ubuntu's USNs | 84.6% — its 39 extra are USN-listed CVEs Ubuntu's per-CVE tracker marks 22.04 unaffected (Trivy agrees with Kratos) | n/a |
+| `alpine:3.17.0` / `3.22.0` | 44 / 55 | 100% / 100% | 100% / 100% | n/a |
+| `rockylinux:9.0` (157) | 260 | 70.1% — Trivy reads Rocky's own errata, which has 9.x advisories OSV's Rocky export lacks | 87.5% — its extras are PyPI wheels (out of scope) and Rocky 8/10 advisories it applies to a Rocky 9 machine | n/a |
+
+OSV-Scanner's offline mode finds nothing on Ubuntu images (it labels packages `Ubuntu:22.04`, OSV's data
+says `Ubuntu:22.04:LTS`), so its online mode was used for these public images. RHEL-family coverage is
+the weak spot: OSV's Rocky 9 data is incomplete; adding Red Hat's own data for Rocky would reach 74.5%
+against Trivy (and add 92 pairs Trivy doesn't list), so it was not adopted without a ground truth.
+
+**The check** (`pkgvuln/check.py`): `packages`, quick (one listing, local matching; ~0.1 s to match a
+few hundred packages), 6 h freshness; `kratos vulndb-update` expires it so new data is used at the next
+collection. No model tool was added.
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources
@@ -889,7 +980,7 @@ investigation conclusions. It auto-discovers the newest input file per
 category (`scans`, `logs`, `context`, `reports`, `baseline`) under the
 active `data_dir`, so a call doesn't need to be told which specific file to
 read. Finding IDs follow a fixed prefix scheme: `NET-*`, `AUTH-*`,
-`CORR-*`, `INTEG-*`, `PRIV-*`, `LOG-*`/`SEAL-*`, `PERSIST-*`. `PRIV-*` comes from `list_privileged_accounts`
+`CORR-*`, `INTEG-*`, `PRIV-*`, `LOG-*`/`SEAL-*`, `PERSIST-*`, `LIVE-*`, `PKG-*`. `PRIV-*` comes from `list_privileged_accounts`
 snapshots, and only from one that is fresh (24 h) and of the active target, so
 an old "X was just added to sudo" can't keep re-firing or leak into another
 machine's report; grants to accounts that have since lost the access are kept
@@ -1127,7 +1218,12 @@ it any more. Two notes that still apply:
 - **CVE matching is textual**: vulscan matches nmap's detected product and
   version against CVE description text. It surfaces real candidates, but
   distribution backports and loosely worded descriptions mean both false
-  matches and misses; results are leads, not a verdict.
+  matches and misses; results are leads, not a verdict. Where the package check
+  has data for the machine, matches the installed packages already fix are marked
+  and dropped (see "Package vulnerabilities").
+- **Package data covers distribution packages only**: language packages (pip,
+  npm, ...), container images and software installed outside the package manager
+  are not matched; Ubuntu Pro/ESM packages are matched against the plain release.
 - **OT/ICS coverage**: neither of `run_vuln_scan`'s two scanners
   meaningfully covers OT/ICS protocols (Modbus, DNP3, etc.) — Nuclei's
   templates are overwhelmingly HTTP/web-focused, and vulscan only

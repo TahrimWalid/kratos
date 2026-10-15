@@ -415,6 +415,8 @@ the question to the model together with a short summary of what it found:
 | log tampering | logs cut short, replaced or wiped |
 | privileged accounts | who can become root, and what changed since the last check |
 | where someone could keep access | new or backdoor-shaped cron jobs, services, startup files, SSH keys, SUID programs, preload and PAM rules |
+| what is running right now | programs that deleted their own file, code running from memory, injected libraries, executables in /tmp |
+| vulnerable packages | installed packages with known vulnerabilities, matched on your computer against the distribution's own data |
 | configuration | SSH, firewall, fail2ban and other settings |
 | log sync | new log lines are copied into Kratos's event store on your computer |
 
@@ -426,7 +428,7 @@ question such as *"check this system for anything suspicious"* now always includ
 tampering check, whatever the model would have picked.
 
 **Fresh results are reused.** Each check has a freshness limit (sign-ins 15 minutes,
-open ports and accounts 60 minutes, configuration 6 hours, log tampering only 10 minutes — new
+open ports and accounts 60 minutes, configuration and packages 6 hours, log tampering only 10 minutes — new
 tampering shouldn't hide behind an hour-old answer; `/collect --force` checks right now), so a second investigation soon after starts
 almost instantly. A reused result is never mistaken for a new one: it can't make
 a finding look "fixed".
@@ -719,6 +721,92 @@ value except the `LD_PRELOAD`/`LD_AUDIT` library path (masked), and never kills
 anything — a recommendation like `kill <pid>` is shown for you to run, never run for
 you.
 
+## Vulnerable packages
+
+Kratos reads the list of **installed packages** on each machine (`dpkg`, `rpm` or
+Alpine's `apk` — a quick, read-only listing) and checks every package against its
+distribution's own security advisories, **on your computer**. The package list is never
+sent anywhere: Kratos downloads whole public data files once in a while and matches
+offline.
+
+**Why the distribution's data matters.** Distributions often fix a vulnerability in the
+version they ship ("backporting") without changing the version number. A scanner that
+compares version numbers with CVE descriptions — like the network check `VULN-001` —
+reports those as vulnerable when they aren't. Kratos uses the distribution's own record of
+which package version fixed each CVE, so a backported fix is not reported. When the
+network check matched a CVE that the installed packages already fix, `VULN-001` says so
+("the network match is likely wrong — a backported fix") and leaves that CVE out of what
+you're asked to decide.
+
+**What you see** — for fixable vulnerabilities, one finding per package (so `openssl` with twelve CVEs is one
+finding):
+
+- `PKG-001` — **an update fixes it.** The finding lists the installed version, the
+  version that fixes it, the most urgent CVEs, and the command to upgrade (shown for you
+  to copy; Kratos never runs it). How urgent:
+  - **critical, "act now"** — a CVE is on CISA's list of vulnerabilities attackers are
+    exploiting right now (KEV). Upgrade this first.
+  - **high** — serious (CVSS 7 or more) *and* likely to be exploited soon: an EPSS score
+    of at least 10% (EPSS estimates the chance of exploitation in the next 30 days; 10% is
+    the threshold most often used in practice — change it with the setting
+    `vulndb.epss_high`).
+  - **medium** — serious (CVSS 7+), not known to be exploited.
+  - **low** — the rest. A CVE the distribution itself rates "negligible" or
+    "unimportant" never goes above low.
+- `PKG-002` — **no fix released yet.** The distribution knows about these but hasn't shipped
+  fixed packages. There is nothing to install today, so this is **one** finding for the whole
+  machine, listing each package and its most urgent CVE — visible so you know, without
+  burying the rest (low, or info when the distribution rates every one of them negligible). An unfixed CVE on the
+  exploited-now list is critical: limit who can reach that software until a fix ships.
+- `PKG-003` — **a newer kernel is installed than the one running.** The kernel fixes only
+  apply after a reboot (medium; high if the running kernel has an exploited-now CVE).
+  After the reboot the finding closes by itself.
+- `PKG-004` — what couldn't be checked: no vulnerability data downloaded yet, data older
+  than a week, a distribution Kratos has no data for. Those packages are **unknown, not
+  safe**.
+
+A package's finding names its CVEs, so if you accept the risk for `curl` and a new CVE for
+`curl` appears later, the finding comes back (the same goes for the "no fix yet" list: a new
+entry brings it back). Once you upgrade, the next package check marks
+it fixed.
+
+**Getting the data: `kratos vulndb-update`.** Run it once after you've checked your
+machines (it downloads the data for the distributions it has seen), then about once a week:
+
+```
+kratos vulndb-update                 # the releases of the machines Kratos knows
+kratos vulndb-update --ecosystems ubuntu:22.04,debian:12   # or name them
+kratos vulndb-update --status        # what the data holds and how old it is
+kratos vulndb-update --about         # the data sources and their terms
+```
+
+The first run takes a while (about 10–15 minutes: Ubuntu's data alone is ~780 MB to
+download, and NVD's CVSS scores are read year by year); after that only what changed is
+fetched (usually under a minute). The data lives in `vulndb/vulndb.sqlite` in your data
+folder — about 160 MB for one Ubuntu release, about 200 MB for six releases (Ubuntu 22.04
+and 26.04, Debian 12, Rocky 9, two Alpine) — and can be deleted at any time; the next
+update rebuilds it. A
+failed or interrupted update keeps the previous data untouched. Investigations never go
+online for this data. If the data is more than a week old (`vulndb.max_age_days`), every
+package result says so.
+
+To keep it current without thinking about it, add a weekly timer, for example a user
+crontab line: `0 4 * * 1 kratos vulndb-update >/dev/null 2>&1` (Kratos doesn't schedule
+network downloads on its own).
+
+**Supported:** Debian, Ubuntu, Alpine, Rocky Linux, AlmaLinux and Red Hat Enterprise
+Linux, by release. Other distributions (and Linux Mint, CentOS, testing/rolling releases)
+get a clear "no data for this distribution" note. Ubuntu Pro / ESM packages are matched
+against the plain release's data. Not covered: language packages (pip, npm …) and
+container images.
+
+**The data and its terms.** OSV.dev's exports of the distributions' advisories (Ubuntu:
+CC BY-SA 4.0; Red Hat: CC BY 4.0 © Red Hat, Inc.; Rocky Linux: BSD; AlmaLinux: MIT;
+Debian and Alpine: no licence stated), CISA's Known Exploited Vulnerabilities catalogue
+(CC0), FIRST's EPSS scores (published freely by Empirical Security), and CVSS scores
+from NVD — *this product uses data from the NVD API but is not endorsed or certified by
+the NVD.* `kratos vulndb-update --about` prints these notices.
+
 ## Sealing a machine's logs
 
 Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal
@@ -897,8 +985,8 @@ but here's the map. Everything starts with `/`.
 
 | Command | What it does |
 | --- | --- |
-| `/doctor` | check that your setup (model, target, tools) is healthy |
-| `/collect` | check the basics now (ports, sign-ins, altered logs, accounts, configuration); `/collect all` adds the slow checks |
+| `/doctor` | check that your setup (model, target, tools, vulnerability data) is healthy |
+| `/collect` | check the basics now (ports, sign-ins, altered logs, accounts, vulnerable packages, configuration); `/collect all` adds the slow checks |
 | `/usage` | tokens used and rough cost this session |
 | `/context` | how full the model's memory is right now (`/compact` makes room) |
 | `/model` | switch, add, or edit which model Kratos uses |
@@ -1253,6 +1341,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos events` | show the log lines Kratos has read from a machine (below); `--coverage` shows which stretches are complete |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
 | `kratos budget` | model spending limits: show today's spend, `set NAME VALUE`, `resume SOURCE` ([Keeping model costs under control](#keeping-model-costs-under-control)) |
+| `kratos vulndb-update` | download the package-vulnerability data and rebuild the local index (`--status`, `--about`, `--ecosystems`) ([Vulnerable packages](#vulnerable-packages)) |
 | `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |
 
 `kratos --help --all` lists every subcommand. Without a session, these use the
@@ -1456,6 +1545,13 @@ permission prompt, pressing Enter is always the safe "no."
   intrusion: a program that deleted its own file, code running from memory, a process
   started with an injected library, an executable dropped in /tmp, a shell under a web
   server. Kratos checks this by itself too and never kills anything.
+- **CVE** — the public ID of one known vulnerability, like `CVE-2024-6387`.
+- **KEV** — CISA's list of Known Exploited Vulnerabilities: CVEs attackers are using
+  right now. A package with one is "act now".
+- **EPSS** — a daily estimate of how likely a CVE is to be exploited in the next 30 days.
+- **CVSS** — a 0–10 score of how bad a vulnerability is if exploited (7+ is serious).
+- **Backport** — a distribution fixing a vulnerability in the version it ships, without
+  changing the version number; why Kratos uses the distribution's own data.
 - **Investigation** — one run where Kratos looks into a question.
 - **Tool** — one specific check Kratos can run (read a log, scan ports, and so on).
 - **Preset** — a saved investigation you can re-run.
