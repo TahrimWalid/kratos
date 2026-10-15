@@ -920,6 +920,26 @@ def _unstated_coverage_gaps(gaps: list[str], answer: str) -> list[str]:
     return gaps
 
 
+# correlate_findings result keys that are bookkeeping for people (where the report was
+# written, which input file each category came from): in the model's 1,500-character
+# window they came before the first finding and pushed its evidence -- e.g. the
+# attacker's IP -- to the window's edge (phase A audit).
+_MODEL_HIDDEN_RESULT_KEYS = {"correlate_findings": ("findings_json_file", "findings_md_file", "inputs_used")}
+
+
+def _for_model(tool_name: str | None, exec_result: Any) -> Any:
+    """`exec_result` as the model reads it: a copy without the keys only people use.
+    The transcript, the screen and the saved report keep everything."""
+    hidden = _MODEL_HIDDEN_RESULT_KEYS.get(str(tool_name or ""))
+    if not hidden or not isinstance(exec_result, dict):
+        return exec_result
+    out = dict(exec_result)
+    inner = out.get("result")
+    if isinstance(inner, dict):
+        out["result"] = {k: v for k, v in inner.items() if k not in hidden}
+    return {k: v for k, v in out.items() if k not in hidden}
+
+
 _SSH_LOGIN_LIMIT = "over this SSH login"
 _SSH_LOGIN_FIX = ("A normal SSH login can't read what belongs to other users or root; the machine's sub-agent "
                   "(it reads as root) covers it.")
@@ -2457,7 +2477,8 @@ def _run_agent_loop(
         # ATT&CK labels go in as 'T1110.001 Password Guessing' (kratos.attack.compact_for_model)
         # so they don't spend the observation window.
         observation_json = _untrusted.envelope(
-            _attack.compact_for_model(exec_result), run_id=run_tag, call_id=_untrusted.new_call_id(i), max_chars=OBSERVATION_CHAR_CAP)
+            _attack.compact_for_model(_for_model(tool_name, exec_result)), run_id=run_tag,
+            call_id=_untrusted.new_call_id(i), max_chars=OBSERVATION_CHAR_CAP)
         ctx.add(
             f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation_json}\n",
             tool=tool_name,

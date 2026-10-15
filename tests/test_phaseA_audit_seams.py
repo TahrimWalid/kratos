@@ -404,3 +404,28 @@ def test_the_answer_names_non_root_limits_briefly_and_the_fix_once(tmp_path, mon
     gaps = res.coverage_gaps + ["persistence: 2 place(s) only root can read were not read over this SSH login"]
     note = _coverage_note(gaps)
     assert note.count("sub-agent") == 1 and len(note) < 500, note
+
+
+# ------------------------------------------- the model's window starts with the findings
+def test_the_model_reads_correlation_findings_first_not_report_paths():
+    """A correlate_findings result reached the model through a 1,500-character window
+    that opened with report file paths and the inputs_used table (~900 characters), so
+    a finding's evidence -- the attacker's IP in a real A1 run -- sat at the edge."""
+    from kratos.agent.loop import OBSERVATION_CHAR_CAP, _for_model
+    from kratos import attack, untrusted
+
+    inputs = {f"input_{i}": f"/home/someone/data/dir/category_{i}_20261015_222031_123456.json" for i in range(12)}
+    result = {"status": "ok", "result": {
+        "findings_json_file": "/home/someone/data/reports/findings_20261015_222040.json",
+        "findings_md_file": "/home/someone/data/reports/findings_20261015_222040.md",
+        "inputs_used": inputs, "missing_inputs": ["system_context"], "input_errors": {},
+        "staleness_warning": None,
+        "findings": [{"id": "CORR-SSH-001", "severity": "high", "title": "SSH exposed with a burst",
+                      "evidence": ["Bursts of failed SSH logins: 5",
+                                   "Source IP(s) behind this activity: 10.136.28.52 (88 events)."]}]}}
+    view = untrusted.envelope(attack.compact_for_model(_for_model("correlate_findings", result)),
+                              run_id="r", call_id="3-5eed00", max_chars=OBSERVATION_CHAR_CAP)
+    assert "10.136.28.52" in view and "findings_json_file" not in view and "inputs_used" not in view
+    assert "missing_inputs" in view                       # what wasn't used still reaches the model
+    assert result["result"]["inputs_used"] == inputs      # the real result is untouched
+    assert _for_model("run_nmap_scan", result) is result
