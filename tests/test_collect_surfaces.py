@@ -152,10 +152,14 @@ def test_doctor_row_reports_last_runs_and_logs_behind(tmp_path):
     assert "ports: 10 min ago" in detail and "Still catching up: cron" in detail
 
 
-def test_doctor_has_a_collection_row(tmp_path):
+def test_doctor_has_a_collection_row(tmp_path, monkeypatch):
+    from kratos.adapters import ssh_remote
+    from kratos.adapters.ssh_remote import SSHResult
     from kratos.agent import doctor
 
     kratos_config.set_active_target(TARGET)
+    monkeypatch.setattr(ssh_remote, "run_target_probe_checks",
+                        lambda: SSHResult(ok=False, returncode=255, stdout="", stderr="ssh: unreachable"))
     rows = {r["check"]: r for r in doctor.run_diagnostics(tmp_path)}
     assert "collection" in rows and rows["collection"]["status"] in ("pass", "warn", "info")
 

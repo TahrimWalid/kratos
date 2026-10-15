@@ -218,6 +218,7 @@ def test_a_call_by_name_runs_even_when_not_listed(tmp_path, monkeypatch):
     kratos_config.set_active_target(TARGET)
     monkeypatch.setattr(T, "_fetch_host_logs", lambda *a, **k: T._SSHResult(ok=False, returncode=255, stdout="",
                                                                           stderr="ssh: unreachable"))
+    monkeypatch.setattr(T, "_measure_target_clock_offset", lambda: None)
     res = execute_tool_call("read_host_logs", {"source": "cron"}, tmp_path)
     assert "were NOT read" in json.dumps(res)            # it ran (and reported the gap), it wasn't refused
 
