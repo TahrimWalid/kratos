@@ -8,6 +8,7 @@ and records a completed turn.
 from __future__ import annotations
 
 import asyncio
+import time
 
 from textual.app import App
 
@@ -51,16 +52,29 @@ def test_run_standard_audit_end_to_end(tmp_path, monkeypatch):
 
     # The engine uses `dispatch or execute_tool_call`; patch the module global.
     monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _canned)
+    # The checks that read the machine directly (persistence, live response, packages,
+    # log sync) must not reach a real host from a unit test: their SSH fails at once.
+    from kratos.adapters.ssh_remote import SSHResult
+
+    def _no_ssh(*a, **k):
+        return SSHResult(ok=False, returncode=255, stdout="", stderr="no SSH in this test")
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_remote_script", _no_ssh)
+    monkeypatch.setattr("kratos.adapters.ssh_remote.run_remote_command", _no_ssh)
 
     async def _run():
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
             screen._dispatch_slash("/run")
-            # Wait for the thread worker to finish (it clears _busy in finally).
-            for _ in range(400):
-                await pilot.pause()
-                if not screen._busy and screen._busy_since is None:
+            # Wait for the audit's turn to be recorded AND the worker to be done. "Not
+            # busy" alone also holds BEFORE the worker has started, so the old loop could
+            # stop at once and collect nothing -- a flake that grew with every check the
+            # audit gained. Bounded by time, not by a count of pauses.
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                await pilot.pause(0.05)
+                done = any(t.get("status") == "final_answer" for t in store.get_goal_history(sid))
+                if done and not screen._busy and screen._busy_since is None:
                     break
             return screen._collect_session_findings()
 
