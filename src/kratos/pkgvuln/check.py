@@ -21,9 +21,14 @@ CHECK_NAME = "packages"
 def _run_packages(ctx: CheckContext) -> CheckResult:
     doc = record.run(ctx.data_dir, ctx.target)
     if doc.get("status") != "ok":
+        why = str(doc.get("observation") or "")
+        if "update the agent" in why or "update it from" in why:
+            # The machine's sub-agent predates this read (README §4.6): say so, with the fix.
+            return CheckResult("not_supported", "not available for this machine",
+                               ["installed packages: this machine's sub-agent is too old for this read -- update it "
+                                "(`g` in /subagent)"], detail=why[:300])
         return CheckResult("failed", "could not be checked",
-                           ["installed packages: could not be checked"],
-                           detail=str(doc.get("observation") or "")[:300])
+                           ["installed packages: could not be checked"], detail=why[:300])
     gaps = [f"packages: {g}" for g in doc.get("coverage_gaps") or []]
     status = "ok" if doc.get("complete") and not gaps else "partial"
     return CheckResult(status, record.summary_line(doc), gaps, tools=[], detail=f"{doc.get('file')}")

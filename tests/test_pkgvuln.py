@@ -1014,3 +1014,19 @@ def test_an_investigation_start_sends_no_package_list_anywhere(deb_index, monkey
     assert "openssh" in findings_text                         # the vulnerable package is named in its finding
     for text in (digest, findings_text, Path(md).read_text()):
         assert "zz-quiet-tool" not in text and "9.9-1" not in text
+
+
+def test_an_old_sub_agent_is_a_gap_that_names_the_update(tmp_path, monkeypatch):
+    """README §4.6: a machine whose agent predates package_inventory gets a coverage gap
+    naming the update -- not a crash, not 'no vulnerable packages'."""
+    import kratos.collect.checks  # noqa: F401
+    from kratos.adapters.ssh_remote import agent_result
+    from kratos.collect.registry import CheckContext, get
+
+    reply = {"status": "old_agent", "reason": "this box runs sub-agent 0.6.2; the package_inventory read needs "
+                                              "0.7.0 or newer -- update the agent (`g` in /subagent, select the box)."}
+    monkeypatch.setattr(REC, "_default_reader", lambda: agent_result(reply))
+    res = get("packages").run(CheckContext(target="10.0.0.5", target_key="10.0.0.5", data_dir=tmp_path,
+                                           transport="agent", dispatch=lambda *a, **k: {}, deadline=0.0, now=0.0))
+    assert res.status == "not_supported" and "`g` in /subagent" in res.coverage_gaps[0]
+    assert not (tmp_path / "packages").exists()
