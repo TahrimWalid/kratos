@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterable
 
 from kratos.adapters.findings_engine import input_hosts
 from kratos.lifecycle.rules import AUTH_INPUTS, rule_info
@@ -27,14 +27,24 @@ from kratos.target_key import target_key
 FRESH_SLACK_SECONDS = 10.0     # tui_mk2/finding_view._FRESH_SLACK_SECONDS
 
 
+# An input's blind spots: (rule id, entity) -> why this read could not have seen it
+# (None: it could).
+EntityBlind = Callable[[str, str], "str | None"]
+
+
 @dataclass(frozen=True)
 class Coverage:
     # input category -> None when it can cover, else why it can't
     inputs: dict[str, str | None] = field(default_factory=dict)
     no_run: bool = False
+    # input category -> its read's blind spots. A read can finish and still not look at
+    # everything (an SSH user can't open /root/.ssh or another user's /proc entry), so a
+    # finding about something in a blind spot is not "gone" just because it wasn't seen.
+    blind: dict[str, EntityBlind] = field(default_factory=dict)
 
-    def why_not(self, rule_id: str) -> str | None:
-        """None when the rule is covered, else a plain reason."""
+    def why_not(self, rule_id: str, entities: Iterable[str] = ()) -> str | None:
+        """None when the rule is covered, else a plain reason. With `entities` (the
+        finding's), also None only when this run's reads could see every one of them."""
         if self.no_run:
             return "no run context: old files can't show that something went away"
         info = rule_info(rule_id)
@@ -47,10 +57,18 @@ class Coverage:
             reason = self.inputs.get(name, f"{name} was not used by this report")
             if reason:
                 return reason
+        for name in needed:
+            blind = self.blind.get(name)
+            if blind is None:
+                continue
+            for entity in entities:
+                why = blind(rule_id, str(entity))
+                if why:
+                    return f"this run could not look at {entity}: {why}"
         return None
 
-    def covered(self, rule_id: str) -> bool:
-        return self.why_not(rule_id) is None
+    def covered(self, rule_id: str, entities: Iterable[str] = ()) -> bool:
+        return self.why_not(rule_id, entities) is None
 
 
 def nothing() -> Coverage:
@@ -74,9 +92,11 @@ def _describes(category: str, path: Path, target: str) -> bool:
 
 
 def for_report(inputs: dict[str, Path | None], *, target: str, run: RunContext | None,
-               incomplete: set[str] | frozenset[str] = frozenset()) -> Coverage:
+               incomplete: set[str] | frozenset[str] = frozenset(),
+               blind: dict[str, EntityBlind] | None = None) -> Coverage:
     """`inputs`: the report's input files by category (write_findings_report's
-    `inputs`). `incomplete`: categories whose read reached only part of its window."""
+    `inputs`). `incomplete`: categories whose read reached only part of its window.
+    `blind`: per category, what its read could not look at (Coverage.blind)."""
     if run is None:
         return nothing()
     target = target_key(target)
@@ -97,7 +117,7 @@ def for_report(inputs: dict[str, Path | None], *, target: str, run: RunContext |
             states[name] = f"{name} covered only part of its time window"
         else:
             states[name] = None
-    return Coverage(inputs=states)
+    return Coverage(inputs=states, blind=dict(blind or {}))
 
 
 def incomplete_auth_inputs(stats_by_input: dict[str, dict[str, Any] | None]) -> set[str]:

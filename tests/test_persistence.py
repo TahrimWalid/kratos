@@ -588,9 +588,9 @@ def test_an_incomplete_read_cannot_close_a_persist_finding(tmp_path, monkeypatch
     captured = {}
     orig = lc_cov.for_report
 
-    def spy(inputs, *, target, run, incomplete=frozenset()):
+    def spy(inputs, *, target, run, incomplete=frozenset(), **kw):
         captured["incomplete"] = set(incomplete)
-        return orig(inputs, target=target, run=run, incomplete=incomplete)
+        return orig(inputs, target=target, run=run, incomplete=incomplete, **kw)
     monkeypatch.setattr(lc_cov, "for_report", spy)
 
     ok_doc = {"complete": True, "ownership": {"source": "dpkg", "error": None}}

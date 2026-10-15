@@ -168,7 +168,7 @@ def _upsert_present(r: _Run, finding: dict[str, Any], coverage: Coverage) -> str
 
 def _settle_absent(r: _Run, rec: sqlite3.Row, coverage: Coverage) -> None:
     key, state = rec["finding_key"], rec["state"]
-    covered = coverage.covered(rec["rule_id"])
+    covered = coverage.covered(rec["rule_id"], json.loads(rec["entities"] or "[]"))
     if covered:
         r.conn.execute("UPDATE finding_records SET last_checked = ? WHERE finding_key = ?", (r.now, key))
     if state in S.DECIDED:

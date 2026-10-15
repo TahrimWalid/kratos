@@ -98,12 +98,74 @@ def run(data_dir: Path, target: str, *, verify: bool = False, reader: Reader | N
         "counts": _counts(inv),
         "coverage_gaps": list(judged.gaps),
         "signals": [s.as_dict() for s in judged.signals],
+        "blind": blind_spots(inv),
     }
     out_dir = data_dir / PERSISTENCE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"persistence_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
     return {**doc, "status": "ok", "file": str(path)}
+
+
+MAX_BLIND_ITEMS = 5000
+
+
+def blind_spots(inv: dict[str, Any]) -> dict[str, Any]:
+    """What this read could not look at, saved with the snapshot so the finding
+    lifecycle doesn't take "not seen" for "gone" (entity_blind)."""
+    paths = {str(g.get("path")) for g in inv.get("gaps") or [] if g.get("path")}
+    paths |= {str(t.get("path")) for t in inv.get("truncated") or [] if t.get("path")}
+    paths |= {str(o.get("path")) for o in inv.get("odd_names") or [] if o.get("path")}
+    paths.discard("None")
+    homes = {str(u): str(h) for u, h in (inv.get("users") or {}).items() if h}
+    return {
+        "unread_paths": sorted(paths)[:MAX_BLIND_ITEMS],
+        "homes": homes,
+        "modules_unread": bool(inv.get("module_error")),
+        "suid_incomplete": bool(inv.get("suid_timeouts")),
+    }
+
+
+def _under(path: str, folders: list[str]) -> str | None:
+    for d in folders:
+        d = d.rstrip("/") or "/"
+        if path == d or path.startswith(d + "/"):
+            return d
+    return None
+
+
+def entity_blind(doc: dict[str, Any]) -> Callable[[str, str], str | None] | None:
+    """For a saved snapshot: (rule, entity) -> why this read could not have seen it, or
+    None. Entities: `path#sha256` (a file), `user:fingerprint` or `user:path#line` (an
+    SSH key, baseline.key_identity), `module@taint` (a kernel module). A snapshot saved
+    before blind spots were recorded has none (None)."""
+    blind = doc.get("blind")
+    if not isinstance(blind, dict):
+        return None
+    unread = [str(x) for x in blind.get("unread_paths") or []]
+    homes = {str(u): str(h) for u, h in (blind.get("homes") or {}).items()}
+
+    def why(rule: str, entity: str) -> str | None:
+        if rule == "PERSIST-005":
+            return "the loaded kernel modules could not be read" if blind.get("modules_unread") else None
+        if rule == "PERSIST-003" and blind.get("suid_incomplete"):
+            return "the search for setuid files did not finish"
+        if entity.startswith("/"):
+            d = _under(entity.split("#", 1)[0], unread)
+            return f"this read could not open {d}" if d else None
+        user, sep, rest = entity.partition(":")
+        if rule == "PERSIST-006" and sep:
+            if rest.startswith("/"):
+                places = [rest.split("#", 1)[0]]
+            else:
+                home = homes.get(user) or ("/root" if user == "root" else "")
+                places = [home, home.rstrip("/") + "/.ssh"] if home else []
+            for place in places:
+                d = _under(place, unread)
+                if d:
+                    return f"this read could not open {d}"
+        return None
+    return why
 
 
 def summary_line(doc: dict[str, Any]) -> str:

@@ -747,9 +747,9 @@ def test_an_incomplete_package_check_cannot_close_a_pkg_finding(tmp_path, monkey
     captured = {}
     orig = lc_cov.for_report
 
-    def spy(inputs, *, target, run, incomplete=frozenset()):
+    def spy(inputs, *, target, run, incomplete=frozenset(), **kw):
         captured["incomplete"] = set(incomplete)
-        return orig(inputs, target=target, run=run, incomplete=incomplete)
+        return orig(inputs, target=target, run=run, incomplete=incomplete, **kw)
     monkeypatch.setattr(lc_cov, "for_report", spy)
     with rc.run_scope("cli", target="10.0.0.5"):
         for doc, should in (({"complete": True}, False), ({"complete": False}, True)):

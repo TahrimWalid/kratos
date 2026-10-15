@@ -498,7 +498,8 @@ def _cve_sort_key(cve: str) -> tuple[int, int]:
         return 0, 0
 
 
-def _vulnerability_findings(scan: dict[str, Any], package_fixed: dict[str, str] | None = None) -> list[Finding]:
+def _vulnerability_findings(scan: dict[str, Any], package_fixed: dict[str, str] | None = None,
+                            package_doubted: dict[str, str] | None = None) -> list[Finding]:
     """VULN-001..003 from one run_vuln_scan snapshot.
 
     VULN-001 -- vulscan's CVE matches. vulscan matches nmap's product/version
@@ -511,8 +512,11 @@ def _vulnerability_findings(scan: dict[str, Any], package_fixed: dict[str, str] 
     fix ({cve: explanation}). They stay visible in the evidence, marked as a likely
     wrong network match, and leave the finding's entities -- so a decision is not
     asked about something the distribution already fixed.
+    `package_doubted` ({cve: why}): CVEs a package fixes, but the program actually
+    listening on the matched port is not from that package -- kept, with the reason.
     """
     package_fixed = package_fixed or {}
+    package_doubted = package_doubted or {}
     findings: list[Finding] = []
     target = scan.get("target") or "the target"
     source = f"From the vulnerability scan of {target} at {_when(scan.get('scanned_at')) if scan.get('scanned_at') else 'an unknown time'}"
@@ -552,6 +556,11 @@ def _vulnerability_findings(scan: dict[str, Any], package_fixed: dict[str, str] 
             evidence += [package_fixed[c.upper()] for c in backported[:_VULN_ITEMS_SHOWN]]
             if len(backported) > _VULN_ITEMS_SHOWN:
                 evidence.append(f"... and {len(backported) - _VULN_ITEMS_SHOWN} more already fixed")
+        doubted = sorted(c for c in all_cves if c.upper() in package_doubted)
+        if doubted:
+            evidence.append(f"{len(doubted)} CVE(s) are fixed in an installed package, but that package is not "
+                            "what listens on the matched port, so they are kept:")
+            evidence += [package_doubted[c.upper()] for c in doubted[:_VULN_ITEMS_SHOWN]]
         findings.append(Finding(
             id="VULN-001",
             title=("Service versions match known CVEs (verify which apply)" if remaining
@@ -935,6 +944,7 @@ def generate_findings(
     live_response: dict[str, Any] | None = None,
     packages: dict[str, Any] | None = None,
     package_fixed_cves: dict[str, str] | None = None,
+    package_doubted_cves: dict[str, str] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
@@ -1418,7 +1428,7 @@ def generate_findings(
 
     # VULN-*: known vulnerabilities on the target's services (from run_vuln_scan)
     if vuln_scan:
-        findings.extend(_vulnerability_findings(vuln_scan, package_fixed_cves or {}))
+        findings.extend(_vulnerability_findings(vuln_scan, package_fixed_cves or {}, package_doubted_cves or {}))
 
     # LOG-* / SEAL-*: logs cleared or edited, journal sealing (from check_log_integrity)
     if log_integrity:
@@ -2122,13 +2132,22 @@ def write_findings_report(
     packages_doc = _load_recent_packages(auto.get("packages"))
     inputs["packages"] = auto.get("packages") if packages_doc else None
     package_fixed: dict[str, str] = {}
+    package_doubts: dict[str, str] = {}
     if packages_doc and vuln_scan:
         try:
             from kratos.pkgvuln import crosscheck as _pkg_crosscheck
+            from kratos.pkgvuln import inventory_store as _pkg_inventory
 
             scan_cves = {c for x in vuln_scan.get("findings") or [] if isinstance(x, dict)
                          and x.get("source") == "vulscan" for c in x.get("cve_ids") or [] if isinstance(c, str)}
-            package_fixed = _pkg_crosscheck.fixed_by_packages(data_dir, packages_doc, scan_cves)
+            fixers: dict[str, set[str]] = {}
+            package_fixed = _pkg_crosscheck.fixed_by_packages(data_dir, packages_doc, scan_cves, fixers=fixers)
+            if package_fixed and live_doc and packages_doc.get("inventory_id"):
+                package_doubts = _pkg_crosscheck.listener_doubts(
+                    packages_doc, _pkg_inventory.get(data_dir, int(packages_doc["inventory_id"])), vuln_scan,
+                    live_doc, fixers)
+                for cve in package_doubts:
+                    package_fixed.pop(cve, None)
         except Exception:  # noqa: BLE001 -- the cross-check only refines VULN-001; never lose the report
             import logging
 
@@ -2150,6 +2169,7 @@ def write_findings_report(
         live_response=live_doc,
         packages=packages_doc,
         package_fixed_cves=package_fixed,
+        package_doubted_cves=package_doubts,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target
@@ -2292,8 +2312,20 @@ def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, tar
     # (no or stale-coverage vulnerability data), cannot say a PKG-* finding is gone.
     if packages is not None and not packages.get("complete"):
         incomplete = set(incomplete) | {"packages"}
+    # A read can finish and still not have looked at everything (an SSH login can't
+    # open /root/.ssh or read another user's processes): a finding about something in
+    # such a blind spot stays open instead of being marked gone (phase A audit).
+    blind: dict[str, Any] = {}
+    if persistence is not None:
+        from kratos.persist.record import entity_blind as _persist_blind
+        if (fn := _persist_blind(persistence)) is not None:
+            blind["persistence"] = fn
+    if live_response is not None:
+        from kratos.live.record import entity_blind as _live_blind
+        if (fn := _live_blind(live_response)) is not None:
+            blind["live_response"] = fn
     run = run_context.current()
-    cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete)
+    cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete, blind=blind)
     return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)
 
 
