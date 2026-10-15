@@ -43,6 +43,7 @@ from kratos import kratos_config as _kconfig
 from kratos.subagent import reads as _reads
 from kratos.subagent import routing as _routing
 from kratos.utils import cancel as _cancel
+from kratos.utils import ssh_slots as _slots
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
     SSH_TARGET_KEY_PATH,
@@ -106,6 +107,7 @@ def _base_ssh_argv() -> list[str]:
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
         *_host_key_opts(),
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
+        *_slots.mux_options(),
         f"{_kconfig.ssh_user_for()}@{get_active_target()}",
     ]
 
@@ -189,6 +191,15 @@ def _with_remote_deadline(inner: str, seconds: float) -> str:
     return "sh -c " + shlex.quote(wrapped)
 
 
+_MUX_FALLBACK_LINE = re.compile(r"^ControlSocket .* already exists, disabling multiplexing\r?$", re.MULTILINE)
+
+
+def _clean_stderr(text: str) -> str:
+    """ssh's own notice when two sessions start at once and one connects without the
+    shared connection (_slots.mux_options) -- harmless, so it is not shown as an error."""
+    return _MUX_FALLBACK_LINE.sub("", text or "").strip("\n") if text else text
+
+
 def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
     """Run a single command string on the target over SSH (stopped on the target too
     when `timeout` runs out: _with_remote_deadline)."""
@@ -198,18 +209,33 @@ def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
         return blocked
     secs = timeout or SSH_COMMAND_TIMEOUT_SECONDS
     try:
-        result = _cancel.run(
-            # "${SHELL:-sh}": the login shell runs the command, exactly as before the wrapper
-            _base_ssh_argv() + [_with_remote_deadline('"${SHELL:-sh}" -c ' + shlex.quote(command), secs)],
-            capture_output=True,
-            text=True,
-            timeout=secs,
-        )
-        return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        with _slots.slot(get_active_target(), wait_seconds=secs):
+            result = _cancel.run(
+                # "${SHELL:-sh}": the login shell runs the command, exactly as before the wrapper
+                _base_ssh_argv() + [_with_remote_deadline('"${SHELL:-sh}" -c ' + shlex.quote(command), secs)],
+                capture_output=True,
+                text=True,
+                timeout=secs,
+            )
+        return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=_clean_stderr(result.stderr))
+    except _slots.Busy as e:
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {e}")
     except subprocess.TimeoutExpired:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH command timed out after {secs}s")
     except FileNotFoundError:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="ssh binary not found on PATH")
+
+
+def warm_connection() -> bool:
+    """Open the shared SSH connection (_slots.mux_options) to the active target now, so
+    the reads that follow -- often several at once -- reuse it instead of each starting
+    its own handshake. True when a connection is up; never raises."""
+    if not _slots.mux_options() or _no_target_result() is not None or _ssh_blocked_result() is not None:
+        return False
+    try:
+        return run_remote_command("true", timeout=SSH_CONNECT_TIMEOUT_SECONDS + 5).ok
+    except Exception:  # noqa: BLE001 -- only a warm-up: the reads themselves report problems
+        return False
 
 
 def run_remote_script(script: str, timeout: int | None = None, shell: str = "bash",
@@ -226,15 +252,18 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
         raise ValueError(f"unsupported remote shell {shell!r}")
     secs = timeout or SSH_COMMAND_TIMEOUT_SECONDS
     try:
-        result = _cancel.run(
-            _base_ssh_argv() + [_with_remote_deadline(f"{shell} -s", secs)],
-            input=script,
-            capture_output=True,
-            text=True,
-            timeout=secs,
-            **({"errors": errors} if errors else {}),
-        )
-        return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=result.stderr)
+        with _slots.slot(get_active_target(), wait_seconds=secs):
+            result = _cancel.run(
+                _base_ssh_argv() + [_with_remote_deadline(f"{shell} -s", secs)],
+                input=script,
+                capture_output=True,
+                text=True,
+                timeout=secs,
+                **({"errors": errors} if errors else {}),
+            )
+        return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=_clean_stderr(result.stderr))
+    except _slots.Busy as e:
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {e}")
     except subprocess.TimeoutExpired:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH script timed out after {secs}s")
     except FileNotFoundError:
@@ -1323,9 +1352,12 @@ def copy_journal_file(directory: str, name: str, dest: Path, max_bytes: int) -> 
             return blocked
         cmd = _journal_file_guard_sh(path) + f"[ \"$1\" -gt {max_bytes} ] && {{ echo 'too large' >&2; exit 5; }}; exec cat -- \"$F\""
         try:
-            with open(dest, "wb") as out:
+            with _slots.slot(get_active_target(), wait_seconds=JOURNAL_COPY_TIMEOUT_SECONDS), \
+                    open(dest, "wb") as out:
                 proc = subprocess.run(_base_ssh_argv() + [cmd], stdout=out, stderr=subprocess.PIPE,
                                       timeout=JOURNAL_COPY_TIMEOUT_SECONDS)
+        except _slots.Busy as e:
+            return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {e}")
         except subprocess.TimeoutExpired:
             return SSHResult(ok=False, returncode=-1, stdout="", stderr="copying the journal file timed out")
         except FileNotFoundError:

@@ -104,6 +104,27 @@ class CollectionReport:
         return any(c.usable for c in self.checks)
 
 
+WARM_WAIT_SECONDS = 3.0
+
+
+def _warm_ssh(host: str) -> None:
+    """Open the shared SSH connection before the checks start, so they reuse one
+    handshake instead of racing to open several (phase A audit: 10 logins in one
+    second from one cold collection). Waits at most WARM_WAIT_SECONDS; a slow or
+    unreachable machine just goes on as before -- the checks report what fails."""
+    def warm() -> None:
+        try:
+            from kratos.adapters import ssh_remote
+            with kratos_config.pinned_target(host):
+                ssh_remote.warm_connection()
+        except Exception:  # noqa: BLE001 -- best effort only
+            logger.debug("collect: ssh warm-up failed", exc_info=True)
+
+    t = threading.Thread(target=contextvars.copy_context().run, args=(warm,), name="collect-ssh-warm", daemon=True)
+    t.start()
+    t.join(WARM_WAIT_SECONDS)
+
+
 def _available_transports(target: str, data_dir: Path) -> tuple[set[str], str | None]:
     """(transports a check may use for this machine, the one reads go through first)."""
     from kratos.subagent import routing
@@ -198,6 +219,8 @@ def prepare(
     report.budget_seconds = float(budget)
     available, first = _available_transports(host, data_dir)
     report.transport = first
+    if first == "ssh":
+        _warm_ssh(host)
     dispatch = dispatch or _default_dispatch()
     owner = state.new_owner()
     mono_start = time.monotonic()

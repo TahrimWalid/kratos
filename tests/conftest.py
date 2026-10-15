@@ -87,6 +87,8 @@ def _no_real_collection_reads(monkeypatch: pytest.MonkeyPatch):
 
     for mod in (live_record, persist_record, pkg_record):
         monkeypatch.setattr(mod, "_default_reader", refuse)
+    from kratos.adapters import ssh_remote
+    monkeypatch.setattr(ssh_remote, "warm_connection", lambda: False)   # collection's real SSH warm-up
 
 
 @pytest.fixture(autouse=True)
