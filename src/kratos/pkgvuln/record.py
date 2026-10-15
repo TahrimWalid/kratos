@@ -32,6 +32,7 @@ from kratos.utils.timeutil import epoch_to_utc_iso
 PKG_DIR = "packages"
 FILE_GLOB = "packages_*.json"
 CVES_SHOWN = 5
+ACT_NOW_SHOWN = 3
 BINARIES_SHOWN = 8
 
 Reader = Callable[[], Any]
@@ -302,6 +303,13 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
         "unfixed_packages": sum(len(s.get("packages") or []) for s in signals if s["rule"] == "PKG-002"),
         "fixable_cves": sum(len(s["entities"]) for s in signals if s["rule"] == "PKG-001"),
     }
+    # The packages to act on now, by name, for the one-line summary the model starts
+    # from. Safe to name there: each is a package the distribution's own advisory data
+    # lists for an exploited CVE -- a name found in the vulnerability index, not free
+    # text the machine made up.
+    act_now = [s["subject"] for s in signals if s["rule"] == "PKG-001" and s.get("act_now")]
+    act_now += [p["package"] for s in signals if s["rule"] == "PKG-002" and s.get("act_now")
+                for p in s.get("packages") or [] if any(c.get("kev") for c in p.get("cves") or [])]
     complete = bool(inv.get("complete")) and matched
     doc: dict[str, Any] = {
         "target": target, "checked_at": epoch_to_utc_iso(when), "checked_at_epoch": when,
@@ -311,6 +319,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
         "index_built_at": st.built_at, "index_stale_days": stale_days, "complete": complete,
         "kernel": {"managed": ks.managed, "running": ks.running, "newest": ks.newest, "pending": ks.pending},
         "counts": counts, "coverage_gaps": gaps, "signals": signals,
+        "act_now_packages": list(dict.fromkeys(act_now)),
     }
     out_dir = data_dir / PKG_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -329,8 +338,11 @@ def summary_line(doc: dict[str, Any]) -> str:
     vul = int(c.get("vulnerable_packages") or 0)
     if doc.get("complete"):
         parts.append(f"{vul} with fixable vulnerabilities" if vul else "none with a fixable known vulnerability")
-        if c.get("act_now"):
-            parts.append(f"{c['act_now']} on CISA's exploited list (act now)")
+        names = [str(n) for n in doc.get("act_now_packages") or []]
+        if names:
+            shown = ", ".join(names[:ACT_NOW_SHOWN]) + (f" and {len(names) - ACT_NOW_SHOWN} more"
+                                                         if len(names) > ACT_NOW_SHOWN else "")
+            parts.append(f"act now: {shown} (on CISA's list of vulnerabilities exploited in the wild)")
     else:
         parts.append("not matched against vulnerability data")
     if (doc.get("kernel") or {}).get("pending"):

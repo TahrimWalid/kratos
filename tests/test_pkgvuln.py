@@ -621,7 +621,8 @@ def test_record_turns_matches_into_pkg_rules(deb_index):
     assert any(e.startswith("coreutils (2 CVEs)") for e in unfixed[0]["evidence"])
     assert doc["counts"]["unfixed_packages"] == 3
     assert doc["complete"] and Path(doc["file"]).exists()
-    assert "1 on CISA's exploited list" in REC.summary_line(doc)
+    assert doc["act_now_packages"] == ["openssh"]
+    assert "act now: openssh (on CISA's list" in REC.summary_line(doc)
 
 
 def test_record_without_an_index_is_a_gap_not_clean(tmp_path):
