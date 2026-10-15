@@ -686,7 +686,7 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "LIVE-006": "A shell or interpreter was started by a web server or database — the classic web-shell or exploited-service shape.",
     "LIVE-007": "Part of the live-response check could not be done, or a running program needs a restart after an update — context, not a finding of compromise.",
     "PKG-001": "An installed package has known vulnerabilities that an available update fixes.",
-    "PKG-002": "An installed package has known vulnerabilities its distribution has not released a fix for yet.",
+    "PKG-002": "Some installed packages have known vulnerabilities their distribution has not released a fix for yet.",
     "PKG-003": "A newer kernel is installed than the one running — the machine needs a reboot for the kernel fixes to apply.",
     "PKG-004": "Part of the package vulnerability check could not be done — those packages are unknown, not safe.",
 }
@@ -1918,7 +1918,7 @@ def _pkg_kwargs(sig: dict[str, Any]) -> dict[str, Any]:
     """The shared Finding fields for one package signal. The rule id is passed as a
     literal by each builder below (the lifecycle-completeness scan reads literal
     Finding(id=...) calls)."""
-    kind = "text" if str(sig.get("rule")) == "PKG-003" else "cve"
+    kind = "cve" if str(sig.get("rule")) == "PKG-001" else "text"   # PKG-002: package:CVE, PKG-003: a kernel
     return {"title": str(sig.get("title") or sig.get("rule")), "severity": str(sig.get("severity") or "info"),
             "evidence": [str(x) for x in sig.get("evidence") or []],
             "recommendation": [str(r) for r in sig.get("recommendation") or []],
@@ -1929,9 +1929,10 @@ def _pkg_kwargs(sig: dict[str, Any]) -> dict[str, Any]:
 def _package_findings(doc: dict[str, Any]) -> list[Finding]:
     """PKG-001..004 from one package check (A.2). Matching and scoring happened when
     the check ran (kratos.pkgvuln.record), so re-correlating the same result says
-    exactly the same thing. PKG-001/002 carry the package as their subject -- one
-    finding per package -- and its CVEs as entities, so a new CVE for an
-    already-decided package reopens it."""
+    exactly the same thing. PKG-001 carries the package as its subject -- one finding
+    per package -- and its CVEs as entities, so a new CVE for an already-decided
+    package reopens it. PKG-002 (no fix yet) is one finding per machine whose
+    entities are package:CVE pairs."""
     by_rule: dict[str, list[dict[str, Any]]] = {}
     for s in doc.get("signals") or []:
         if isinstance(s, dict) and str(s.get("rule", "")).startswith("PKG-"):

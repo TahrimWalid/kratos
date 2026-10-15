@@ -98,8 +98,7 @@ def _upgrade_command(family: str, pr: PackageResult) -> str:
     return _UPGRADE.get(family, "").format(names=" ".join(names)) if names else ""
 
 
-def _package_signals(family: str, pr: PackageResult, scored_fix: list[Scored], scored_open: list[Scored],
-                     source_line: str) -> list[dict[str, Any]]:
+def _package_signals(family: str, pr: PackageResult, scored_fix: list[Scored], source_line: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if scored_fix:
         scored_fix.sort(key=Scored.sort_key)
@@ -134,27 +133,47 @@ def _package_signals(family: str, pr: PackageResult, scored_fix: list[Scored], s
                     "entities": sorted(s.cve for s in scored_fix), "evidence": evidence, "recommendation": rec,
                     "package": pr.package, "fixed_in": fix_to, "act_now": bool(kev),
                     "cves": [_scored_dict(s) for s in scored_fix[:50]]})
-    if scored_open:
-        scored_open.sort(key=Scored.sort_key)
-        kev = [s for s in scored_open if s.kev]
-        sev = "critical" if kev else ("info" if all(s.severity == "info" for s in scored_open) else "low")
-        title = (f"{pr.package}: {_plural(len(scored_open), 'known vulnerability', 'known vulnerabilities')} "
-                 "with no fix released yet")
-        evidence = [source_line, _installed_line(pr),
-                    "The distribution has not released a fixed version yet -- there is nothing to install today."]
-        evidence += [_cve_line(s) for s in scored_open[:CVES_SHOWN]]
-        if len(scored_open) > CVES_SHOWN:
-            evidence.append(f"... and {len(scored_open) - CVES_SHOWN} more CVE(s), listed in the finding's entities")
-        rec = ["Nothing to install yet: keep vulnerability data current (`kratos vulndb-update`) so Kratos tells you "
-               "when a fix ships."]
-        if kev:
-            rec.insert(0, "An unfixed vulnerability attackers are exploiting now (" + ", ".join(s.cve for s in kev[:3])
-                       + "): limit who can reach this software, or remove it if it isn't needed, until a fix ships.")
-        out.append({"rule": "PKG-002", "severity": sev, "subject": pr.package, "title": title,
-                    "entities": sorted(s.cve for s in scored_open), "evidence": evidence, "recommendation": rec,
-                    "package": pr.package, "act_now": bool(kev),
-                    "cves": [_scored_dict(s) for s in scored_open[:50]]})
     return out
+
+
+PACKAGES_SHOWN = 10
+
+
+def _unfixed_signal(groups: list[tuple[PackageResult, list[Scored]]], source_line: str) -> dict[str, Any] | None:
+    """PKG-002: everything the distribution has not released a fix for yet, as ONE
+    finding for the machine, grouped per package in its evidence. There is nothing to
+    install, so a finding per package would only be noise (a fully patched Ubuntu
+    server has dozens); its entities are `package:CVE`, so a new unfixed CVE still
+    reopens a decision."""
+    groups = [(pr, sorted(sc, key=Scored.sort_key)) for pr, sc in groups if sc]
+    if not groups:
+        return None
+    groups.sort(key=lambda g: (g[1][0].sort_key(), -len(g[1]), g[0].package))
+    every = [s for _pr, sc in groups for s in sc]
+    kev = [s for s in every if s.kev]
+    sev = "critical" if kev else ("info" if all(s.severity == "info" for s in every) else "low")
+    total = len({s.cve for s in every})
+    title = (f"{_plural(len(groups), 'installed package has', 'installed packages have')} "
+             f"{_plural(total, 'known vulnerability', 'known vulnerabilities')} with no fix released yet")
+    if kev:
+        title += f", {len({s.cve for s in kev})} exploited in the wild"
+    evidence = [source_line,
+                "The distribution has not released fixed versions yet -- there is nothing to install today."]
+    for pr, sc in groups[:PACKAGES_SHOWN]:
+        evidence.append(f"{pr.package} ({_plural(len(sc), 'CVE', 'CVEs')}): " + _cve_line(sc[0])
+                        + (f"; and {len(sc) - 1} more" if len(sc) > 1 else ""))
+    if len(groups) > PACKAGES_SHOWN:
+        evidence.append(f"... and {len(groups) - PACKAGES_SHOWN} more package(s), listed in the finding's entities")
+    rec = ["Nothing to install yet: keep vulnerability data current (`kratos vulndb-update`) so Kratos tells you "
+           "when a fix ships."]
+    if kev:
+        rec.insert(0, "Unfixed vulnerabilities attackers are exploiting now (" + ", ".join(sorted({s.cve for s in kev})[:3])
+                   + "): limit who can reach that software, or remove it if it isn't needed, until a fix ships.")
+    return {"rule": "PKG-002", "severity": sev, "subject": "", "title": title,
+            "entities": sorted(f"{pr.package}:{s.cve}" for pr, sc in groups for s in sc),
+            "evidence": evidence, "recommendation": rec, "act_now": bool(kev),
+            "packages": [{"package": pr.package, "cves": [_scored_dict(s) for s in sc[:20]], "count": len(sc)}
+                         for pr, sc in groups[:50]]}
 
 
 def _scored_dict(s: Scored) -> dict[str, Any]:
@@ -245,10 +264,14 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
                            f"{_plural(len(packages), 'installed package', 'installed packages')} on {pretty}, "
                            f"matched on the Kratos machine against {choice.selector.key} advisory data "
                            f"(downloaded {built})")
+            unfixed: list[tuple[PackageResult, list[Scored]]] = []
             for pr in m.packages.values():
                 fix = [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.fixable.values()]
-                opn = [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.unfixed.values()]
-                signals += _package_signals(family, pr, fix, opn, source_line)
+                unfixed.append((pr, [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.unfixed.values()]))
+                signals += _package_signals(family, pr, fix, source_line)
+            open_sig = _unfixed_signal(unfixed, source_line)
+            if open_sig:
+                signals.append(open_sig)
             kev_running = sorted({c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())
                                   if (info.get(c) or {}).get("kev")})
             ks_sig = _kernel_signal(ks, kev_running, source_line)
@@ -273,7 +296,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
         "packages": len(packages),
         "vulnerable_packages": len({s["subject"] for s in signals if s["rule"] == "PKG-001"}),
         "act_now": sum(1 for s in signals if s["rule"] in ("PKG-001", "PKG-002") and s.get("act_now")),
-        "unfixed_packages": len({s["subject"] for s in signals if s["rule"] == "PKG-002"}),
+        "unfixed_packages": sum(len(s.get("packages") or []) for s in signals if s["rule"] == "PKG-002"),
         "fixable_cves": sum(len(s["entities"]) for s in signals if s["rule"] == "PKG-001"),
     }
     complete = bool(inv.get("complete")) and matched
