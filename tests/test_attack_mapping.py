@@ -156,10 +156,11 @@ def test_every_rule_has_an_entry():
     assert not missing, f"no ATT&CK entry (labels or Posture) for: {missing}"
 
 
-def test_entries_for_unknown_rules_are_only_the_documented_pending_ones():
-    assert set(M.RULE_ATTACK) - set(RULES) <= M.PENDING_RULES
-    # once a pending rule is merged and registered it is just a rule
-    assert not (M.PENDING_RULES & set(RULES)) or True
+def test_the_mapping_names_no_rule_kratos_does_not_have():
+    """Every entry is a real rule (registered in kratos.lifecycle.rules): a typo or a
+    removed rule must not leave a stale label behind."""
+    extra = sorted(set(M.RULE_ATTACK) - set(RULES))
+    assert not extra, f"ATT&CK entries for rules that don't exist: {extra}"
 
 
 def test_every_posture_says_why_and_every_behaviour_has_labels():

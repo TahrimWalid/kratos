@@ -197,8 +197,7 @@ RULE_ATTACK: dict[str, Entry] = {
     "PERSIST-007": Behaviour(PERSISTENCE_TECHNIQUES, per_item=True, why="packaged start-up file modified"),
     "PERSIST-008": Behaviour((PAM,), why="PAM rule pointing at unowned software"),
     "PERSIST-009": Posture("run note: what the persistence check could not read"),
-    # -- live response (A.5) and packages (A.2) -- merged after A.3; kept here so
-    # their merge only has to register the rules (see PENDING_RULES) -------------
+    # -- live response (A.5) and packages (A.2) ------------------------------------
     "LIVE-001": Behaviour((FILE_DELETION,), why="a running program whose file was deleted"),
     "LIVE-002": Behaviour((REFLECTIVE_CODE_LOADING,), why="code running from memory (memfd) or a deleted temp file"),
     "LIVE-003": Behaviour((DYNAMIC_LINKER,), why="LD_PRELOAD/LD_AUDIT set on a running process"),
@@ -211,15 +210,6 @@ RULE_ATTACK: dict[str, Entry] = {
     "PKG-003": Posture("a kernel update waiting for a reboot is a weakness, not an action"),
     "PKG-004": Posture("run note: what the package check could not cover"),
 }
-
-# Rules with an entry above that live on branches not merged when A.3 was built
-# (A.5 live response, A.2 packages). The completeness test allows them to be
-# absent from kratos.lifecycle.rules; once merged they are checked like any other.
-PENDING_RULES = frozenset({
-    "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-004", "LIVE-005", "LIVE-006", "LIVE-007",
-    "PKG-001", "PKG-002", "PKG-003", "PKG-004",
-})
-
 
 def entry(rule_id: str) -> Entry | None:
     return RULE_ATTACK.get(str(rule_id or ""))
