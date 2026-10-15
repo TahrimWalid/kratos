@@ -90,7 +90,9 @@ def _installed_line(pr: PackageResult) -> str:
     items = sorted(set(pr.installed))
     shown = ", ".join(f"{n} {v}" for n, v in items[:BINARIES_SHOWN])
     more = f" (+{len(items) - BINARIES_SHOWN} more)" if len(items) > BINARIES_SHOWN else ""
-    return f"Installed: {shown}{more}"
+    older = (f"; judged by the newest installed version ({', '.join(pr.versions_checked)}) -- older copies kept "
+             "alongside it (" + ", ".join(sorted(set(pr.older_versions))[:3]) + ") can't be fixed by upgrading")
+    return f"Installed: {shown}{more}" + (older if pr.older_versions else "")
 
 
 def _upgrade_command(family: str, pr: PackageResult) -> str:
@@ -255,6 +257,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
                 m = match(conn, choice.selector, packages)
                 matched = True
                 all_cves = {c for pr in m.packages.values() for c in (*pr.fixable, *pr.unfixed)}
+                all_cves |= {c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())}
                 info = _index.enrichment(conn, all_cves)
             finally:
                 conn.close()

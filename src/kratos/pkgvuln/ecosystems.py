@@ -121,12 +121,36 @@ def for_os(os_info: dict[str, Any]) -> Choice:
         return Choice(None, f"{pretty}: release {version!r} is not one Kratos can map to advisory data")
 
 
+_DEB_ARCHES = ("amd64", "arm64", "armhf", "armel", "i386", "ppc64el", "s390x", "mips64el", "riscv64", "loong64")
+
+
+def _unsigned_kernel_source(source: str) -> str | None:
+    """'linux-signed-amd64' (Debian) -> 'linux'; 'linux-signed-hwe-6.8' (Ubuntu) ->
+    'linux-hwe-6.8'. The signed kernel image is built from a template source package
+    named after the kernel, but advisories list the kernel source itself."""
+    if not source.startswith("linux-signed"):
+        return None
+    rest = source[len("linux-signed"):]
+    for arch in _DEB_ARCHES:
+        if rest == f"-{arch}" or rest.endswith(f"-{arch}"):
+            rest = rest[: -len(arch) - 1]
+            break
+    return "linux" + rest
+
+
 def lookup_name(family: str, pkg: dict[str, Any]) -> tuple[str, str]:
     """(name, version) an advisory lists this installed package under. Debian and
     Ubuntu advisories name the SOURCE package (and its version); Alpine names the
-    origin (the version is the package's own); RPM advisories name the binary."""
+    origin (the version is the package's own); RPM advisories name the binary.
+    A signed kernel image is looked up as the kernel source it was built from,
+    with the image's own version (the signed template's version is not the
+    kernel's: Debian's linux-signed-amd64 6.1.76+1 carries linux 6.1.76-1)."""
     if family == FAMILY_DEB:
-        return str(pkg.get("source") or pkg.get("name")), str(pkg.get("source_version") or pkg.get("version"))
+        src = str(pkg.get("source") or pkg.get("name"))
+        kernel = _unsigned_kernel_source(src)
+        if kernel is not None:
+            return kernel, str(pkg.get("version"))
+        return src, str(pkg.get("source_version") or pkg.get("version"))
     if family == FAMILY_APK:
         return str(pkg.get("source") or pkg.get("name")), str(pkg.get("version"))
     return str(pkg.get("name")), str(pkg.get("version"))

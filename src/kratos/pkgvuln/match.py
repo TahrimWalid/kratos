@@ -55,6 +55,7 @@ class PackageResult:
     fixable: dict[str, CveHit] = field(default_factory=dict)
     unfixed: dict[str, CveHit] = field(default_factory=dict)
     fixed: set[str] = field(default_factory=set)        # CVEs an advisory lists that this version is past
+    older_versions: list[str] = field(default_factory=list)   # older copies also installed (kept kernels), not judged
 
 
 @dataclass
@@ -93,7 +94,11 @@ def affected(family: str, version: str, e: _index.Entry) -> bool | None:
 
 
 def group_name(family: str, pkg: dict[str, Any]) -> str:
-    """The finding's subject: the package the distribution ships the fix as."""
+    """The finding's subject: the package the distribution ships the fix as -- the
+    advisory's name on Debian/Ubuntu/Alpine (so a signed kernel image joins its
+    kernel, "linux"), the source RPM on RPM systems (curl + libcurl are one)."""
+    if family in (FAMILY_DEB, FAMILY_APK):
+        return lookup_name(family, pkg)[0]
     return str(pkg.get("source") or pkg.get("name"))
 
 
@@ -123,6 +128,18 @@ def match(conn: sqlite3.Connection, selector: Selector, packages: list[dict[str,
             entries_by_name[name] = _index.entries_for(conn, eco_ids, name)
     cves_by_adv = _index.cves_for(conn, {e.advisory for es in entries_by_name.values() for e in es})
 
+    # Several installed versions under one advisory name happen when old copies are
+    # kept -- above all kernels (linux-modules-6.8.0-137 and -147 are both source
+    # "linux"). Upgrading cannot fix the old copies; the newest installed one is what
+    # an upgrade decides, and a stale RUNNING kernel is PKG-003's (a reboot). So a
+    # package is judged by its newest installed version; the older ones are still
+    # matched for lookups_affected (the running-kernel check reads it).
+    newest: dict[str, str] = {}
+    for name, ver in lookups:
+        cur = newest.get(name)
+        if cur is None or (_v.compare(family, ver, cur) or 0) > 0:
+            newest[name] = ver
+
     result = MatchResult(packages={}, lookups_affected={})
     # per group, per CVE: [(precise, affected, fixed, severity, osv_id)]
     verdicts: dict[str, dict[str, list[tuple[bool, bool, str | None, str, str]]]] = {}
@@ -133,7 +150,8 @@ def match(conn: sqlite3.Connection, selector: Selector, packages: list[dict[str,
         if pr is None:
             pr = result.packages[grp] = PackageResult(grp, [], [])
         pr.installed.extend((str(p.get("name")), str(p.get("version"))) for p in pkgs)
-        if ver not in pr.versions_checked:
+        judged = newest.get(name) == ver
+        if judged and ver not in pr.versions_checked:
             pr.versions_checked.append(ver)
         here: dict[str, list[tuple[bool, bool, str | None, str, str]]] = {}
         for e in entries_by_name.get(name, []):
@@ -147,6 +165,9 @@ def match(conn: sqlite3.Connection, selector: Selector, packages: list[dict[str,
         result.lookups_affected[(name, ver)] = {
             cve for cve, vs in here.items() if any(x[1] for x in ([y for y in vs if y[0]] or vs))}
         by_cve = verdicts.setdefault(grp, {})
+        if not judged:
+            pr.older_versions.append(ver)
+            continue
         for cve, vs in here.items():
             by_cve.setdefault(cve, []).extend(vs)
 

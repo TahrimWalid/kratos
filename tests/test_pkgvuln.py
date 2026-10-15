@@ -930,3 +930,50 @@ def test_a_rebuild_keeps_the_releases_of_an_index_it_cannot_read(tmp_path):
         c.execute("UPDATE info SET value = '0' WHERE key = 'schema_version'")
     assert IX.open_readonly(tmp_path) is None
     assert [s.key for s in U.resolve_selectors(tmp_path, None)] == ["debian:12"]
+
+
+def test_a_package_is_judged_by_its_newest_installed_version(deb_index):
+    """Old kernels stay installed next to the new one; upgrading can't fix them, and a
+    stale running kernel is PKG-003's. The newest copy decides PKG-001; older copies
+    are still matched for the running-kernel check."""
+    old = {"manager": "dpkg", "name": "openssh-client-old", "version": "1:9.2p1-2+deb12u2", "arch": "amd64",
+           "source": "openssh", "source_version": "1:9.2p1-2+deb12u2"}
+    new = dict(old, name="openssh-server", version="1:9.2p1-2+deb12u3", source_version="1:9.2p1-2+deb12u3")
+    m = _match(deb_index, [old, new])
+    assert "CVE-2024-6387" in m.packages["openssh"].fixed and not m.packages["openssh"].fixable
+    assert m.packages["openssh"].older_versions == ["1:9.2p1-2+deb12u2"]
+    assert "CVE-2024-6387" in m.lookups_affected[("openssh", "1:9.2p1-2+deb12u2")]
+    only_old = _match(deb_index, [old])
+    assert "CVE-2024-6387" in only_old.packages["openssh"].fixable
+
+
+def test_signed_kernel_images_are_looked_up_as_the_kernel_source():
+    deb = {"name": "linux-image-6.1.0-18-amd64", "version": "6.1.76-1", "source": "linux-signed-amd64",
+           "source_version": "6.1.76+1"}
+    assert E.lookup_name("deb", deb) == ("linux", "6.1.76-1")
+    ubu = {"name": "linux-image-6.8.0-138-generic", "version": "6.8.0-138.138~22.04.1",
+           "source": "linux-signed-hwe-6.8", "source_version": "6.8.0-138.138~22.04.1"}
+    assert E.lookup_name("deb", ubu) == ("linux-hwe-6.8", "6.8.0-138.138~22.04.1")
+    assert E.lookup_name("deb", {"name": "curl", "version": "1", "source": "curl", "source_version": "1"}) == ("curl", "1")
+
+
+def test_a_stale_running_kernel_with_an_exploited_cve_is_a_high_pkg003_not_an_upgrade(tmp_path):
+    """Debian: kernel 6.1.0-13 is running (affected by a KEV CVE), 6.1.0-18 is installed
+    and fixed. The fix is a reboot: PKG-003 high, and no PKG-001 for linux."""
+    recs = [_deb_cve("CVE-2024-6387", "Debian:12", "linux", "6.1.66-1")]      # a KEV CVE in the fixture feed
+    assert U.run_update(tmp_path, selectors=["debian:12"], session=FakeSession(_feeds(recs))).ok
+    kernels = [{"manager": "dpkg", "name": "linux-image-6.1.0-13-amd64", "version": "6.1.55-1", "arch": "amd64",
+                "source": "linux-signed-amd64", "source_version": "6.1.55+1"},
+               {"manager": "dpkg", "name": "linux-image-6.1.0-18-amd64", "version": "6.1.76-1", "arch": "amd64",
+                "source": "linux-signed-amd64", "source_version": "6.1.76+1"}]
+    doc = REC.run(tmp_path, "10.0.0.5", reader=lambda: _deb_inv(kernels, running_kernel="6.1.0-13-amd64"))
+    rules = {s["rule"]: s for s in doc["signals"]}
+    assert "PKG-001" not in rules
+    assert rules["PKG-003"]["severity"] == "high" and "CVE-2024-6387" in " ".join(rules["PKG-003"]["evidence"])
+    # running the fixed kernel: nothing to say about the kernel
+    doc = REC.run(tmp_path, "10.0.0.5", reader=lambda: _deb_inv(kernels, running_kernel="6.1.0-18-amd64"))
+    assert not [s for s in doc["signals"] if s["rule"] in ("PKG-001", "PKG-003")]
+    # only the old kernel installed: an upgrade fixes it -> PKG-001 critical
+    doc = REC.run(tmp_path, "10.0.0.5", reader=lambda: _deb_inv(kernels[:1], running_kernel="6.1.0-13-amd64"))
+    assert any(s["rule"] == "PKG-001" and s["subject"] == "linux" and s["severity"] == "critical"
+               for s in doc["signals"])
