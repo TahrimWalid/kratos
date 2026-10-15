@@ -331,18 +331,21 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
 
 
 def summary_line(doc: dict[str, Any]) -> str:
-    """The one plain line the collection digest shows (Kratos's own words)."""
+    """The one plain line the collection digest shows (Kratos's own words). Packages
+    to act on now lead the line: the digest shortens long lines, and that is the
+    part that must survive."""
     c = doc.get("counts") or {}
     n = int(c.get("packages") or 0)
-    parts = [f"{n} installed package(s)"]
+    parts: list[str] = []
+    names = [str(x) for x in doc.get("act_now_packages") or []] if doc.get("complete") else []
+    if names:
+        shown = ", ".join(names[:ACT_NOW_SHOWN]) + (f" +{len(names) - ACT_NOW_SHOWN} more"
+                                                     if len(names) > ACT_NOW_SHOWN else "")
+        parts.append(f"ACT NOW: {shown} (vulnerability exploited in the wild, CISA KEV)")
+    parts.append(f"{n} installed package(s)")
     vul = int(c.get("vulnerable_packages") or 0)
     if doc.get("complete"):
         parts.append(f"{vul} with fixable vulnerabilities" if vul else "none with a fixable known vulnerability")
-        names = [str(n) for n in doc.get("act_now_packages") or []]
-        if names:
-            shown = ", ".join(names[:ACT_NOW_SHOWN]) + (f" and {len(names) - ACT_NOW_SHOWN} more"
-                                                         if len(names) > ACT_NOW_SHOWN else "")
-            parts.append(f"act now: {shown} (on CISA's list of vulnerabilities exploited in the wild)")
     else:
         parts.append("not matched against vulnerability data")
     if (doc.get("kernel") or {}).get("pending"):

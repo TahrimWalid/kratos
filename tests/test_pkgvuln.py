@@ -622,7 +622,9 @@ def test_record_turns_matches_into_pkg_rules(deb_index):
     assert doc["counts"]["unfixed_packages"] == 3
     assert doc["complete"] and Path(doc["file"]).exists()
     assert doc["act_now_packages"] == ["openssh"]
-    assert "act now: openssh (on CISA's list" in REC.summary_line(doc)
+    line = REC.summary_line(doc)
+    assert line.startswith("ACT NOW: openssh (vulnerability exploited in the wild, CISA KEV)")
+    assert len("- vulnerable packages (checked just now): " + line.split(";")[0]) < 157   # survives the digest's shortening
 
 
 def test_record_without_an_index_is_a_gap_not_clean(tmp_path):
