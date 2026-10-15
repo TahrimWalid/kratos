@@ -248,7 +248,8 @@ class Judgement:
             lines = []
             for it in group[:MAX_ITEMS_SHOWN]:
                 sha = str(it.get("sha256") or "")
-                tail = f", sha256 {sha[:12]}" if sha else ""
+                tail = (f", sha256 {sha[:12]}" if sha
+                        else f", not hashed ({it['hash_skipped']})" if it.get("hash_skipped") else "")
                 lines.append(f"  {_mask(it.get('path'))} ({'ELF binary' if it.get('header') == 'elf' else 'script'}, "
                              f"mode {it.get('perm')}, owned by {_mask(it.get('owner') or '?')}{tail})")
             if len(group) > MAX_ITEMS_SHOWN:
@@ -348,6 +349,14 @@ class Judgement:
         for t in self.inv.get("truncated") or []:
             lines.append(f"  more than the limit of {t.get('what')} were found ({t.get('count')}); "
                          f"only the first were looked at")
+        if self.inv.get("hidepid") and self.inv.get("reader_uid") not in (0, None):
+            lines.append("  /proc is mounted with hidepid, so this login cannot see other users' processes at "
+                         f"all -- they are missing from this read, not absent from the machine. {AGENT_FIX}")
+        denied = sorted(set(self.inv.get("temp_denied") or []))
+        if denied:
+            lines.append(f"  {len(denied)} folder(s) under the temp directories could not be opened by this login, "
+                         "so executables inside them were not checked (e.g. "
+                         + ", ".join(_mask(d) for d in denied[:3]) + f"). {AGENT_FIX}")
         if self.inv.get("temp_timeouts"):
             lines.append("  the search for dropped executables ran out of time in: "
                          + ", ".join(sorted(set(self.inv["temp_timeouts"]))[:8]))

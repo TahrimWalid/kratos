@@ -58,6 +58,7 @@ HEADER_BYTES = 256             # read this many bytes to tell ELF/script apart
 OUTPUT_CAP_BYTES = 4 * 1024 * 1024
 DEFAULT_BUDGET_SECONDS = 40
 TEMP_FIND_SECONDS = 15
+HASH_SECONDS = 15              # all dropped-file hashes together, over SSH
 
 # The directories a dropped executable is looked for in. /run/user/* is only read
 # by the agent (as root); over SSH the user sees only its own.
@@ -184,6 +185,13 @@ kr_temp() {
     [ $? -eq 124 ] && printf 'TMPTO\t%s\n' "$_dir"
   done)
   printf '%s\n' "$_raw" | grep '^TMPTO	'
+  # folders under the temp dirs this login cannot enter: anything in them is unseen
+  for _dir in @TEMPDIRS@; do
+    [ -d @ROOT@"$_dir" ] || continue
+    $TO find @ROOT@"$_dir" -xdev -type d 2>/dev/null | head -n @MAXTEMP@ | while IFS= read -r _sd; do
+      { [ -r "$_sd" ] && [ -x "$_sd" ]; } || printf 'TDENY\t%s\n' "$_sd"
+    done
+  done
   _files=$(printf '%s\n' "$_raw" | grep '^@ROOT@/' | grep -v '	' | sort -u | head -n @MAXTEMP@)
   _n=$(printf '%s\n' "$_raw" | grep -c '^@ROOT@/')
   [ "$_n" -gt @MAXTEMP@ ] && printf 'N\tTT\ttemp\t%s\n' "$_n"
@@ -198,7 +206,11 @@ printf 'M\tnow\t%s\n' "$(date +%s)"
 printf 'M\tuid\t%s\n' "$(id -u)"
 kr_proc
 NETOUT=$(kr_net); printf '%s\n' "$NETOUT" | grep '^NET	'
-TEMPFILES=$(kr_temp | grep '^@ROOT@/')
+TEMPOUT=$(kr_temp)
+printf '%s\n' "$TEMPOUT" | grep -v '^@ROOT@/' | grep -v '^$'
+TEMPFILES=$(printf '%s\n' "$TEMPOUT" | grep '^@ROOT@/')
+# /proc mounted with hidepid: other users' processes are invisible to a non-root login
+awk '$2 == "/proc" && $3 == "proc" && $4 ~ /hidepid=(1|2|invisible|noaccess)/ { print "M\thidepid\t1"; exit }' @ROOT@/proc/mounts 2>/dev/null
 # stat + header + hash of every dropped executable found
 printf '%s\n' "$TEMPFILES" | grep -v '^$' | tr '\n' '\0' | xargs -0 -r stat -c "%n${TAB}%u${TAB}%U${TAB}%a${TAB}%s${TAB}%Y${TAB}%h${TAB}%F" 2>/dev/null | sed 's/^/S\t/'
 printf '%s\n' "$TEMPFILES" | grep -v '^$' | while IFS= read -r _f; do
@@ -211,9 +223,16 @@ printf '%s\n' "$TEMPFILES" | grep -v '^$' | while IFS= read -r _f; do
     *) printf 'HDR\t%s\tother\n' "$_f" ;;
   esac
 done
-printf '%s\n' "$TEMPFILES" | grep -v '^$' | while IFS= read -r _f; do
-  [ -f "$_f" ] && [ ! -L "$_f" ] && [ -r "$_f" ] && printf '%s\n' "$_f"
-done | tr '\n' '\0' | xargs -0 -r sha256sum 2>/dev/null | sed 's/^\\\([0-9a-f]\{64\}\)  /HE\t\1\t/; s/^\([0-9a-f]\{64\}\)  /H\t\1\t/'
+# hash only what the agent would hash too (MAXHASH bytes), and never for longer than
+# HASHT seconds: one huge executable dropped in /tmp must not use up the read's time
+HASHLIST=$(printf '%s\n' "$TEMPFILES" | grep -v '^$' | while IFS= read -r _f; do
+  [ -f "$_f" ] && [ ! -L "$_f" ] && [ -r "$_f" ] || continue
+  _sz=$(stat -c %s "$_f" 2>/dev/null) || continue
+  if [ "$_sz" -le @MAXHASH@ ]; then printf 'OK\t%s\n' "$_f"; else printf 'HBIG\t%s\n' "$_f"; fi
+done)
+printf '%s\n' "$HASHLIST" | grep '^HBIG	'
+printf '%s\n' "$HASHLIST" | awk -F'\t' '$1 == "OK" { print substr($0, 4) }' | tr '\n' '\0' \
+  | { if command -v timeout >/dev/null 2>&1; then timeout @HASHT@ xargs -0 -r sha256sum; else xargs -0 -r sha256sum; fi; } 2>/dev/null | sed 's/^\\\([0-9a-f]\{64\}\)  /HE\t\1\t/; s/^\([0-9a-f]\{64\}\)  /H\t\1\t/'
 # package ownership: every exe path, preload library and dropped-file path
 EXES=$(printf '%s\n' "$PROCEXES" | sed 's/ (deleted)$//' | grep '^@ROOT@/' | grep -v '^/memfd:' | grep -v '^@ROOT@/tmp/' | grep -v '^@ROOT@/dev/shm/' | grep -v '^@ROOT@/var/tmp/' | sort -u)
 WANT=$( { printf '%s\n' "$EXES"; printf '%s\n' "$PRELOADS" | grep '^/'; printf '%s\n' "$TEMPFILES"; } | grep '^/' | sort -u)
@@ -248,6 +267,7 @@ def build_script(root: str = "") -> str:
         ("ROOTV", (_sh_q(r) if r else "") or "''"),
         ("MAXPROCS", str(MAX_PROCS)), ("MAXCMD", str(MAX_CMDLINE_CHARS)), ("MAXFD", str(MAX_FD_PER_PROC)),
         ("MAXTEMP", str(MAX_TEMP_FILES)), ("TEMPT", str(TEMP_FIND_SECONDS)), ("TEMPDIRS", tempdirs),
+        ("MAXHASH", str(MAX_HASH_BYTES)), ("HASHT", str(HASH_SECONDS)),
         ("PRELOADVARS", " ".join(PRELOAD_VARS)), ("LDPATHVARS", " ".join(LDPATH_VARS)),
         ("AWKSTAT", _sh_q(AWK_STAT)), ("AWKNET", _sh_q(AWK_NET)),
     ):
@@ -315,6 +335,9 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
         "ownership": {"source": None, "error": None},
         "exists_again": set(), "proc_gaps": {}, "temp_timeouts": [],
         "truncated": [], "complete": False,
+        # what this read could not look at (lifecycle blind spots, kratos.live.record):
+        # pid -> what of it was unreadable; temp folders it could not enter; hidepid
+        "proc_gap_pids": {}, "temp_denied": [], "hidepid": False,
     }
     procs: dict[int, dict[str, Any]] = inv["procs"]
     temp: dict[str, dict[str, Any]] = inv["temp_files"]
@@ -335,6 +358,8 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
                 inv["now"] = _int_or_none(val)
             elif key == "uid":
                 inv["reader_uid"] = _int_or_none(val)
+            elif key == "hidepid":
+                inv["hidepid"] = val == "1"
         elif tag == "PP" and len(cols) >= 4:
             it = proc(int(cols[1])) if cols[1].isdigit() else None
             if it is not None:
@@ -363,6 +388,7 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
         elif tag == "PGAP" and len(cols) >= 3 and cols[1].isdigit():
             inv["proc_gaps"].setdefault(cols[2], 0)
             inv["proc_gaps"][cols[2]] += 1
+            inv["proc_gap_pids"].setdefault(int(cols[1]), set()).add(cols[2])
         elif tag == "NET" and len(cols) >= 6:
             laddr, lport = _hex_addr_port(cols[2])
             raddr, rport = _hex_addr_port(cols[3])
@@ -385,6 +411,8 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
             inv["exists_again"].add(p(cols[1]))
         elif tag == "TMPTO" and len(cols) >= 2:
             inv["temp_timeouts"].append(p(cols[1]))
+        elif tag == "TDENY" and len(cols) >= 2:
+            inv["temp_denied"].append(p(cols[1]))
         elif tag == "N" and len(cols) >= 3 and cols[1] in ("PT", "TT"):
             inv["truncated"].append({"what": "processes" if cols[1] == "PT" else "temp files",
                                      "count": _int_or_none(cols[-1])})
@@ -394,6 +422,8 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
             inv["ownership"]["error"] = cols[1]
         elif tag == "OWN" and len(cols) >= 3:
             owners[p(cols[1])] = cols[2]
+        elif tag == "HBIG" and len(cols) >= 2:
+            temp.setdefault(p(cols[1]), {"path": p(cols[1])})["hash_skipped"] = "too large to hash"
         elif tag == "END":
             inv["complete"] = True
     # wire the sockets' owning process in, and mark package ownership of exes/temp files
@@ -681,6 +711,9 @@ def _find_temp_files(r: str, run: Runner | None, deadline: float, out: list[str]
                 out.append(f"TMPTO\t{d}")
         else:
             found += _walk_exec(base)
+    for d in dirs:                     # folders this reader cannot enter (TDENY, as over SSH)
+        for denied in _denied_dirs(r + d):
+            out.append(f"TDENY\t{denied}")
     found = sorted(set(found))
     if len(found) > MAX_TEMP_FILES:
         out.append(f"N\tTT\ttemp\t{len(found)}")
@@ -688,6 +721,36 @@ def _find_temp_files(r: str, run: Runner | None, deadline: float, out: list[str]
     for f in found:
         out.append(f"TMP\t{f}")
     return found
+
+
+def _denied_dirs(base: str) -> list[str]:
+    """Folders under `base` this reader cannot list or enter (at most MAX_TEMP_FILES
+    folders looked at), without following symlinks or leaving the file system."""
+    if not os.path.isdir(base):
+        return []
+    try:
+        dev = os.lstat(base).st_dev
+    except OSError:
+        return []
+    denied: list[str] = []
+    seen = 0
+    for root_dir, dirs, _files in os.walk(base):
+        for name in list(dirs):
+            full = os.path.join(root_dir, name)
+            seen += 1
+            try:
+                st = os.lstat(full)
+            except OSError:
+                continue
+            if st.st_dev != dev:
+                dirs.remove(name)
+                continue
+            if not os.access(full, os.R_OK | os.X_OK):
+                denied.append(full)
+                dirs.remove(name)
+        if seen >= MAX_TEMP_FILES:
+            break
+    return sorted(denied)
 
 
 def _walk_exec(base: str) -> list[str]:
@@ -725,13 +788,18 @@ def _stat_header_hash(path: str, is_credential: Callable[[str], bool], out: list
         if fst.st_size <= MAX_HASH_BYTES:
             h = hashlib.sha256()
             off = 0
-            while True:
-                b = os.pread(fd, 1024 * 1024, off)
+            while off <= MAX_HASH_BYTES:          # a file that grows while it is read stops here
+                b = os.pread(fd, min(1024 * 1024, MAX_HASH_BYTES + 1 - off), off)
                 if not b:
                     break
                 h.update(b)
                 off += len(b)
-            out.append(f"H\t{h.hexdigest()}\t{path}")
+            if off <= MAX_HASH_BYTES:
+                out.append(f"H\t{h.hexdigest()}\t{path}")
+            else:
+                out.append(f"HBIG\t{path}")
+        else:
+            out.append(f"HBIG\t{path}")
     finally:
         os.close(fd)
 
