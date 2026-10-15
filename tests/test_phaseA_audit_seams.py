@@ -362,3 +362,45 @@ def test_hostile_cron_lines_in_persist_findings_reach_no_screen_raw(tmp_path):
     model_view = untrusted.envelope({"findings": findings}, run_id="r", call_id="7-c0ffee")
     assert "\x1b" not in model_view and model_view.rstrip().endswith("<<end id=7-c0ffee>>")
     assert model_view.count("<<end id=7-c0ffee>>") == 1     # the corpus guesses other ids; a real id is random per call
+
+
+# ------------------------------------------- what an investigation's answer says was not checked
+def _run_check(name, monkeypatch, tmp_path, module, inv):
+    import kratos.collect.checks  # noqa: F401 -- registers checks
+    from kratos.collect.registry import CheckContext, get
+
+    monkeypatch.setattr(module, "_default_reader", (lambda *_a: inv))
+    ctx = CheckContext(target=T, target_key=T, data_dir=tmp_path, transport="ssh",
+                       dispatch=lambda *a, **k: {}, deadline=0.0, now=0.0)
+    return get(name).run(ctx)
+
+
+def test_a_restart_hint_is_not_a_not_checked_gap(tmp_path, monkeypatch):
+    """A process still running an upgraded binary is housekeeping (LIVE-007's hint).
+    It used to reach every answer as '[NOTE: not checked in this investigation: live
+    response: N process(es) are still running a program file that a package update
+    replaced ...]' -- false: those processes were checked."""
+    from kratos.live import record
+
+    root_read = _inv(procs=[{"pid": 9, "exe": "/usr/sbin/agetty (deleted)", "exe_exists": True,
+                             "exe_package": "util-linux", "comm": "agetty", "starttime": 4}])
+    res = _run_check("live_response", monkeypatch, tmp_path, record, root_read)
+    assert res.coverage_gaps == [] and res.status == "ok"
+    doc = json.loads(open(res.detail).read())
+    assert any(s["rule"] == "LIVE-007" and "restart" in " ".join(s["evidence"]) for s in doc["signals"])
+
+
+def test_the_answer_names_non_root_limits_briefly_and_the_fix_once(tmp_path, monkeypatch):
+    from kratos.agent.loop import _coverage_note
+    from kratos.live import record
+
+    user_read = _inv(procs=[{"pid": 900, "exe": "/usr/bin/bash", "comm": "bash", "starttime": 3, "uid": 1000,
+                             "exe_package": "bash"}], reader_uid=1000, proc_gaps={"exe": 26, "environ": 26},
+                     proc_gap_pids={i: {"exe"} for i in range(26)}, temp_denied=["/tmp/systemd-private-a"])
+    res = _run_check("live_response", monkeypatch, tmp_path, record, user_read)
+    assert res.coverage_gaps == [
+        "live response: 26 process(es) of other users could not be read over this SSH login",
+        "live response: 1 temp folder(s) could not be opened over this SSH login"]
+    gaps = res.coverage_gaps + ["persistence: 2 place(s) only root can read were not read over this SSH login"]
+    note = _coverage_note(gaps)
+    assert note.count("sub-agent") == 1 and len(note) < 500, note

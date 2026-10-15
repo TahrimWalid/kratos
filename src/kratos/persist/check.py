@@ -46,7 +46,8 @@ def _run(ctx: CheckContext, *, verify: bool) -> CheckResult:
         return CheckResult("failed", "could not be checked",
                            ["where someone could keep access: could not be checked"],
                            detail=str(doc.get("observation") or "")[:300])
-    gaps = [f"persistence: {g}" for g in doc.get("coverage_gaps") or []]
+    # the short lines (record.answer_gaps): they become the answer's "not checked" NOTE
+    gaps = [f"persistence: {g}" for g in doc.get("answer_gaps", doc.get("coverage_gaps")) or []]
     status = "ok" if doc.get("complete") and not gaps else "partial"
     if verify and doc.get("verify", {}).get("requested") and not doc.get("verify", {}).get("done"):
         status = "partial"

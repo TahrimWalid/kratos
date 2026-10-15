@@ -920,6 +920,19 @@ def _unstated_coverage_gaps(gaps: list[str], answer: str) -> list[str]:
     return gaps
 
 
+_SSH_LOGIN_LIMIT = "over this SSH login"
+_SSH_LOGIN_FIX = ("A normal SSH login can't read what belongs to other users or root; the machine's sub-agent "
+                  "(it reads as root) covers it.")
+
+
+def _coverage_note(gaps: list[str]) -> str:
+    """The answer's "not checked" NOTE: one short line per gap, and the shared fix for
+    what a normal SSH login cannot read said once, not after every line."""
+    text = "; ".join(g.rstrip(" .") for g in gaps)
+    fix = f" {_SSH_LOGIN_FIX}" if any(_SSH_LOGIN_LIMIT in g for g in gaps) else ""
+    return f"[NOTE: not checked in this investigation: {text}. Nothing above covers it.{fix}]\n\n"
+
+
 def _cap(text: str, limit: int = OBSERVATION_CHAR_CAP) -> str:
     if len(text) <= limit:
         return text
@@ -2124,11 +2137,7 @@ def _run_agent_loop(
 
             unstated_gaps = _unstated_coverage_gaps(coverage_gaps, final_answer_text)
             if unstated_gaps:
-                final_answer_text = (
-                    "[NOTE: not checked in this investigation: "
-                    + "; ".join(g.rstrip(" .") for g in unstated_gaps)
-                    + ". Nothing above covers it.]\n\n" + final_answer_text
-                )
+                final_answer_text = _coverage_note(unstated_gaps) + final_answer_text
 
             if gap_claim is not None:
                 # Guard 8's one reminder is spent (or there is no iteration

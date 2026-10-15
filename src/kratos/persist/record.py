@@ -97,6 +97,7 @@ def run(data_dir: Path, target: str, *, verify: bool = False, reader: Reader | N
                      "items": base.item_count if base else 0},
         "counts": _counts(inv),
         "coverage_gaps": list(judged.gaps),
+        "answer_gaps": list(getattr(judged, "answer_gaps", [])),
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
     }

@@ -87,6 +87,7 @@ def _attack(*labels: dict[str, str]) -> list[dict[str, str]]:
 class Judgement:
     def __init__(self, inv: dict[str, Any]):
         self.inv = inv
+        self.answer_gaps: list[str] = []       # what the answer must say was not looked at (_coverage)
         self.procs: dict[int, dict[str, Any]] = {int(k): v for k, v in (inv.get("procs") or {}).items()}
         self.by_pid = self.procs
         self.ownership_known = bool((inv.get("ownership") or {}).get("source")) and not (inv.get("ownership") or {}).get("error")
@@ -362,6 +363,20 @@ class Judgement:
                          + ", ".join(sorted(set(self.inv["temp_timeouts"]))[:8]))
         if not self.inv.get("complete"):
             lines.append("  the read did not finish inside its time budget, so this is a partial view of what is running")
+        # The short form an investigation's answer names ("not checked"): only what was not
+        # looked at -- never the restart-needed hint, which is housekeeping (phase A audit).
+        short: list[str] = []
+        if gaps:
+            short.append(f"{max(gaps.values())} process(es) of other users could not be read over this SSH login")
+        if self.inv.get("hidepid") and self.inv.get("reader_uid") not in (0, None):
+            short.append("/proc hides other users' processes from this SSH login (hidepid)")
+        if denied:
+            short.append(f"{len(denied)} temp folder(s) could not be opened over this SSH login")
+        if self.inv.get("temp_timeouts") or self.inv.get("truncated"):
+            short.append("the search for dropped executables did not finish")
+        if not self.inv.get("complete"):
+            short.append("the read did not finish, so this check is partial")
+        self.answer_gaps = short
         if lines:
             self._say("LIVE-007", "info", "What the live-response check noted",
                       lines,

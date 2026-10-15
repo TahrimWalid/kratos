@@ -116,6 +116,7 @@ class Judgement:
         self.new_areas = tuple(a for a in areas_known if base is not None and not base.covers_area(a))
         self.first_look_paths: list[str] = []      # items the baseline could not have seen
         self.gaps: list[str] = []
+        self.answer_gaps: list[str] = []       # what the answer must say was not looked at (_coverage)
         self.signals: list[Signal] = []
         self._owner_cache: dict[str, str | None] = {}
 
@@ -544,6 +545,22 @@ class Judgement:
             gaps.append("the read did not finish inside its time budget, so this inventory is partial")
         if inv.get("truncated_output"):
             gaps.append("the read produced more than its output limit, so the end of the inventory is missing")
+        # The short form an investigation's answer names (collection gaps -> the answer's
+        # "not checked" NOTE): only what was really not looked at, one short line each.
+        # The first-look lines below are about the baseline, not coverage, so they stay
+        # in the run note only (phase A audit: they used to open every first answer).
+        short: list[str] = []
+        if root_only:
+            short.append(f"{len(root_only)} place(s) only root can read were not read over this SSH login")
+        if inv.get("suid_timeouts"):
+            short.append("the search for setuid programs ran out of time")
+        if not self.ownership_known:
+            short.append("which files came from a package could not be told (the package database was unreadable)")
+        if inv.get("module_error"):
+            short.append("loaded kernel modules could not be read")
+        if not inv.get("complete") or inv.get("truncated_output"):
+            short.append("the read did not finish, so this check is partial")
+        self.answer_gaps = short
         if self.base is None:
             gaps.append("this is Kratos's first look at this machine: everything here is the baseline, so nothing "
                         "can be called new yet")
