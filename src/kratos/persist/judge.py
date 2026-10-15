@@ -544,8 +544,6 @@ class Judgement:
             gaps.append("the read did not finish inside its time budget, so this inventory is partial")
         if inv.get("truncated_output"):
             gaps.append("the read produced more than its output limit, so the end of the inventory is missing")
-        for note in inv.get("odd_names") or []:
-            gaps.append(f"{note.get('path')} holds a file whose name contains a newline or tab; it was skipped")
         if self.base is None:
             gaps.append("this is Kratos's first look at this machine: everything here is the baseline, so nothing "
                         "can be called new yet")
@@ -554,6 +552,25 @@ class Judgement:
                         + ": items there were added to the baseline, not reported as new")
         self.gaps = gaps
         return gaps
+
+    def _odd_names(self) -> None:
+        """A file whose name holds a newline or tab, in a place that starts programs. No
+        package or admin tool names a file that way; it splits the name in two for
+        anything that reads a listing line by line -- including Kratos's own SSH read,
+        which skips it -- so it is reported as worth a look, not just as a gap (phase A
+        audit). Its content was not read."""
+        notes = [n for n in self.inv.get("odd_names") or [] if n.get("path")]
+        if not notes:
+            return
+        places = sorted({str(n["path"]) for n in notes})
+        self._say("PERSIST-001", "medium",
+                  f"{len(places)} place(s) that start programs hold a file with a newline or tab in its name",
+                  [f"  {_mask(p)}: a file name there contains a newline or tab; Kratos did not read it"
+                   for p in places[:MAX_ITEMS_SHOWN]],
+                  ["List the folder with `ls -b` (it shows the hidden characters) and find out who created the file.",
+                   "Programs in these folders run at boot, login or on a schedule; a name built to break line-by-line "
+                   "listings is a way to hide one."],
+                  [f"{p}#odd-name" for p in places], {str(n.get("area") or "") for n in notes})
 
     def run(self) -> None:
         self._coverage()
@@ -566,6 +583,7 @@ class Judgement:
         self._keys()
         self._verify()
         self._pam()
+        self._odd_names()
         if self.gaps:
             self.signals.append(Signal(
                 rule="PERSIST-009", severity="info",
