@@ -15,6 +15,8 @@ Tables:
   (kept only for an advisory entry that has no range: OSV's ``versions`` list is
   otherwise an expansion of the range, and Ubuntu's alone is gigabytes);
 - ``advisory_cves(advisory, cve)``;
+- ``precise_cves(top, osv_id, cve)`` -- every CVE that has a distribution per-CVE
+  record, whichever releases it names (its silence about a release is information);
 - ``seen(top, osv_id, modified)``      -- every advisory id the last build looked at
   (relevant or not), so an incremental update fetches only what changed;
 - ``kev(cve, date_added, due_date, known_ransomware, vendor, product, name)``;
@@ -30,7 +32,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# A release counts as covered by its distribution's per-CVE records (DEBIAN-CVE-*,
+# UBUNTU-CVE-*) when at least this many of them name it. Then a CVE that has a
+# per-CVE record which does NOT name this release+package means "not affected
+# here", and a bundle notice (USN, DSA) listing the CVE alongside others is not
+# enough to report it. Below the threshold (Debian 11 today: ~1,400 records) the
+# per-CVE data is partial and its silence proves nothing.
+PRECISE_COVERAGE_MIN = 5000
 DIR_NAME = "vulndb"
 FILE_NAME = "vulndb.sqlite"
 
@@ -53,6 +62,9 @@ CREATE INDEX IF NOT EXISTS versions_adv ON versions (advisory);
 CREATE TABLE IF NOT EXISTS advisory_cves (advisory INTEGER NOT NULL, cve TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS advisory_cves_adv ON advisory_cves (advisory);
 CREATE INDEX IF NOT EXISTS advisory_cves_cve ON advisory_cves (cve);
+CREATE TABLE IF NOT EXISTS precise_cves (top TEXT NOT NULL, osv_id TEXT NOT NULL, cve TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS precise_cves_cve ON precise_cves (top, cve);
+CREATE INDEX IF NOT EXISTS precise_cves_id ON precise_cves (top, osv_id);
 CREATE TABLE IF NOT EXISTS seen (top TEXT NOT NULL, osv_id TEXT NOT NULL, modified TEXT, PRIMARY KEY (top, osv_id));
 CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, date_added TEXT, due_date TEXT, known_ransomware TEXT,
                                 vendor TEXT, product TEXT, name TEXT);
@@ -221,4 +233,22 @@ def packages_for_advisories(conn: sqlite3.Connection, eco_ids: Iterable[int], ad
         for table in ("ranges", "versions"):
             out.update(r[0] for r in conn.execute(
                 f"SELECT DISTINCT package FROM {table} WHERE ecosystem IN ({em}) AND advisory IN ({am})", (*ecos, *part)))
+    return out
+
+
+def precise_coverage(conn: sqlite3.Connection, selector_key: str) -> int:
+    """How many per-CVE records name this release (computed when the index was built)."""
+    try:
+        return int(get_info(conn, f"precise_count:{selector_key}", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def cves_with_precise_record(conn: sqlite3.Connection, top: str, cves: Iterable[str]) -> set[str]:
+    wanted = sorted({str(c).upper() for c in cves})
+    out: set[str] = set()
+    for chunk in range(0, len(wanted), 500):
+        part = wanted[chunk:chunk + 500]
+        out.update(r[0] for r in conn.execute(
+            f"SELECT DISTINCT cve FROM precise_cves WHERE top = ? AND cve IN ({','.join('?' * len(part))})", (top, *part)))
     return out

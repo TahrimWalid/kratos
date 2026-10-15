@@ -275,6 +275,7 @@ class _Writer:
             for table in ("ranges", "versions", "advisory_cves"):
                 self.conn.execute(f"DELETE FROM {table} WHERE advisory = ?", (aid,))
             self.conn.execute("DELETE FROM advisories WHERE id = ?", (aid,))
+        self.conn.execute("DELETE FROM precise_cves WHERE top = ? AND osv_id = ?", (top, osv_id))
 
     def apply(self, top: str, rec: dict[str, Any]) -> bool:
         """Store `rec` (replacing any earlier version of it). True when it says
@@ -290,6 +291,9 @@ class _Writer:
         cves = record_cves(rec)
         if not cves:
             return False
+        if _PRECISE_RE.match(osv_id):
+            self.conn.executemany("INSERT INTO precise_cves (top, osv_id, cve) VALUES (?, ?, ?)",
+                                  [(top, osv_id, c) for c in cves])
         rec_sev = _record_severity(rec, top)
         ranges: list[tuple[Any, ...]] = []
         versions: list[tuple[Any, ...]] = []
@@ -324,6 +328,16 @@ class _Writer:
         self.conn.executemany("INSERT INTO advisory_cves (advisory, cve) VALUES (?, ?)", [(aid, c) for c in cves])
         return True
 
+    def note_unparsed(self, top: str, osv_id: str, modified: str) -> None:
+        """An advisory that names none of the wanted releases. Only remembered as seen
+        -- and, for a per-CVE record, as "this CVE has a record that skips the wanted
+        releases" (its id carries the CVE, so it need not be parsed)."""
+        self.conn.execute("INSERT OR REPLACE INTO seen (top, osv_id, modified) VALUES (?, ?, ?)", (top, osv_id, modified))
+        self.remove(top, osv_id)
+        m = _CVE_RE.match(osv_id)
+        if m and _PRECISE_RE.match(osv_id):
+            self.conn.execute("INSERT INTO precise_cves (top, osv_id, cve) VALUES (?, ?, ?)", (top, osv_id, m.group(1)))
+
     def clear_top(self, top: str) -> None:
         ids = [r[0] for r in self.conn.execute("SELECT id FROM advisories WHERE top = ?", (top,))]
         for chunk in range(0, len(ids), 500):
@@ -333,6 +347,7 @@ class _Writer:
                 self.conn.execute(f"DELETE FROM {table} WHERE advisory IN ({marks})", part)
         self.conn.execute("DELETE FROM advisories WHERE top = ?", (top,))
         self.conn.execute("DELETE FROM seen WHERE top = ?", (top,))
+        self.conn.execute("DELETE FROM precise_cves WHERE top = ?", (top,))
 
 
 def _iter_zip_records(path: Path, markers: list[bytes]) -> Iterator[tuple[str, bytes | None]]:
@@ -382,7 +397,8 @@ def _update_osv_full(conn: sqlite3.Connection, session: Any, top: str, sels: lis
     for name, raw in _iter_zip_records(dest, markers):
         osv_id = _osv_id_from_member(name)
         if raw is None:
-            conn.execute("INSERT OR REPLACE INTO seen (top, osv_id, modified) VALUES (?, ?, ?)", (top, osv_id, ""))
+            if _OSV_ID_RE.fullmatch(osv_id):
+                writer.note_unparsed(top, osv_id, "")
             continue
         rec = _parse_record(raw, f"{top}/{name}")
         parsed += 1
@@ -452,9 +468,7 @@ def _update_osv_incremental(conn: sqlite3.Connection, session: Any, top: str, se
         _fetch(session, _osv_url(top, f"{osv_id}.json"), dest, OSV_RECORD_MAX_BYTES, check_md5=True)
         raw = dest.read_bytes()
         if not any(m in raw for m in markers):
-            writer.remove(top, osv_id)
-            conn.execute("INSERT OR REPLACE INTO seen (top, osv_id, modified) VALUES (?, ?, ?)",
-                         (top, osv_id, mod[osv_id]))
+            writer.note_unparsed(top, osv_id, mod[osv_id])
             continue
         rec = _parse_record(raw, f"{top}/{osv_id}.json")
         writer.apply(top, rec)
@@ -695,7 +709,7 @@ def _build(data_dir: Path, folder: Path, sels: list[Selector], *, full: bool, se
     sources: dict[str, str] = {}
     stale: list[str] = []
     try:
-        if previous.present and not full:
+        if previous.present and not full and _index.open_readonly(data_dir) is not None:
             src = sqlite3.connect(f"file:{final}?mode=ro", uri=True)
             dst = sqlite3.connect(tmp)
             with dst:
@@ -747,6 +761,13 @@ def _build(data_dir: Path, folder: Path, sels: list[Selector], *, full: bool, se
                     conn.execute("ROLLBACK")
                     raise
                 log(f"  {name}: {sources[name]}")
+            for s in sels:
+                n = conn.execute(
+                    "SELECT COUNT(DISTINCT r.advisory) FROM ranges r JOIN advisories a ON a.id = r.advisory "
+                    "JOIN ecosystems e ON e.id = r.ecosystem WHERE a.precise = 1 AND e.selector = ?",
+                    (s.key,)).fetchone()[0]
+                conn.execute("INSERT OR REPLACE INTO info (key, value) VALUES (?, ?)",
+                             (f"precise_count:{s.key}", json.dumps(int(n))))
             conn.execute("INSERT OR REPLACE INTO info (key, value) VALUES ('built_at', ?)", (json.dumps(now),))
             conn.execute("INSERT OR REPLACE INTO info (key, value) VALUES ('selectors', ?)",
                          (json.dumps([s.key for s in sels]),))

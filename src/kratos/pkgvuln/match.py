@@ -12,7 +12,10 @@ origin, RPM the binary):
    ALPINE-CVE-*) is authoritative when there is one; only otherwise do bundle
    notices (DSA, USN, RLSA, ALSA, RHSA ...) decide. A notice fixes all of its
    CVEs at once, at the notice's version, so it can name a later fix than the CVE
-   actually needed -- the per-CVE record says when THIS CVE was fixed.
+   actually needed -- the per-CVE record says when THIS CVE was fixed. And when the
+   per-CVE data covers the release (index.PRECISE_COVERAGE_MIN) but its record for
+   a CVE doesn't name this package here, the distribution tracked the CVE and found
+   this release unaffected: a notice listing it among others doesn't override that.
 
 A CVE the installed version is past the fix for is "fixed" (that is what lets the
 network cross-check say a version match is a backport). A version univers can't
@@ -60,6 +63,7 @@ class MatchResult:
     lookups_affected: dict[tuple[str, str], set[str]]   # (lookup name, version) -> affected CVEs
     checked: int = 0                                     # installed packages compared
     uncomparable: int = 0                                # comparisons univers could not do
+    silenced: int = 0                                    # bundle-notice CVEs the per-CVE data says don't apply here
 
 
 def affected(family: str, version: str, e: _index.Entry) -> bool | None:
@@ -146,9 +150,19 @@ def match(conn: sqlite3.Connection, selector: Selector, packages: list[dict[str,
         for cve, vs in here.items():
             by_cve.setdefault(cve, []).extend(vs)
 
+    # CVEs known only from bundle notices in this release, while the distribution's
+    # per-CVE data (which covers this release) has a record for them that does not
+    # name this package here: the per-CVE record says "not affected here".
+    covered = _index.precise_coverage(conn, selector.key) >= _index.PRECISE_COVERAGE_MIN
+    bundle_only = {cve for by_cve in verdicts.values() for cve, vs in by_cve.items() if not any(x[0] for x in vs)}
+    silenced = _index.cves_with_precise_record(conn, selector.top, bundle_only) if covered and bundle_only else set()
+    result.silenced = len(silenced)
     for grp, by_cve in verdicts.items():
         pr = result.packages[grp]
         for cve, vs in by_cve.items():
+            if cve in silenced:
+                pr.fixed.add(cve)
+                continue
             use = [x for x in vs if x[0]] or vs
             hits = [x for x in use if x[1]]
             if not hits:
