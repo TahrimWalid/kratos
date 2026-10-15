@@ -64,6 +64,8 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "persistence.py": _PACKAGE_ROOT / "adapters" / "persistence.py",
     # A.5: the live-response /proc walk (reuses persistence's ownership helper)
     "live_response.py": _PACKAGE_ROOT / "adapters" / "live_response.py",
+    # A.2: the installed-packages read
+    "packages.py": _PACKAGE_ROOT / "adapters" / "packages.py",
 }
 YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 

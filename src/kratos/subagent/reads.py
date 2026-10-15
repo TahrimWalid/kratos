@@ -38,10 +38,10 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, hostfiles, live_response, logread, measure, persistence, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import live_response, persistence, privileged_accounts
+        from kratos.adapters import live_response, packages, persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover -- exercised by whichever layout is runn
         import live_response  # type: ignore[no-redef]
         import logread  # type: ignore[no-redef]
         import measure  # type: ignore[no-redef]
+        import packages  # type: ignore[no-redef]
         import persistence  # type: ignore[no-redef]
         import privileged_accounts  # type: ignore[no-redef]
 
@@ -476,6 +477,9 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
     # phase A.5: live-response /proc walk (agent 0.6.1). No params: the directories
     # and the LD_* variables are the closed constants in live_response.py.
     "live_inventory": {},
+    # phase A.2: the installed packages (agent 0.7.0). No params: the script is the
+    # fixed one in packages.py.
+    "package_inventory": {},
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -489,6 +493,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "utmp_read": 20, "audit_status": 30, "boot_history": 60, "journal_sync": 90, "file_sync": 60,
     "persistence_inventory": persistence.DEFAULT_BUDGET_SECONDS + persistence.VERIFY_EXTRA_SECONDS + 10,
     "live_inventory": live_response.DEFAULT_BUDGET_SECONDS + 15,
+    "package_inventory": packages.DEFAULT_BUDGET_SECONDS,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -499,6 +504,7 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_sync": logread.SYNC_JOURNAL_MAX_BYTES + 65536, "file_sync": logread.SYNC_CHUNK_BYTES * 3 + 65536,
     "persistence_inventory": persistence.OUTPUT_CAP_BYTES + 65536,
     "live_inventory": live_response.OUTPUT_CAP_BYTES + 65536,
+    "package_inventory": packages.OUTPUT_CAP_BYTES + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1590,6 +1596,14 @@ def _p_live_inventory(p: dict[str, Any]) -> dict[str, Any]:
         run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap))
 
 
+def _p_package_inventory(p: dict[str, Any]) -> dict[str, Any]:
+    """The installed packages -- the same fixed script the SSH path runs
+    (kratos.adapters.packages), so both transports print the same records."""
+    sh = resolve_binary("sh") or "/bin/sh"
+    return run_capped([sh, "-s"], timeout=PROBE_TIMEOUT_SECONDS["package_inventory"],
+                      cap=OUTPUT_CAP_BYTES["package_inventory"], stdin_text=packages.build_script())
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1601,6 +1615,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "journal_sync": _p_journal_sync, "file_sync": _p_file_sync,
     "persistence_inventory": _p_persistence_inventory,
     "live_inventory": _p_live_inventory,
+    "package_inventory": _p_package_inventory,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

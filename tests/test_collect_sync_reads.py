@@ -303,10 +303,12 @@ def test_the_new_probes_need_agent_0_5_0():
     assert core_server.PROBE_MIN_AGENT_VERSION["file_sync"] == (0, 5, 0)
     assert core_server.PROBE_MIN_AGENT_VERSION["persistence_inventory"] == (0, 6, 0)   # A.1
     assert core_server.PROBE_MIN_AGENT_VERSION["live_inventory"] == (0, 6, 1)          # A.5
+    assert core_server.PROBE_MIN_AGENT_VERSION["package_inventory"] == (0, 7, 0)       # A.2
     from kratos.subagent import agent
 
-    assert agent.AGENT_VERSION == "0.6.2"       # A.5: live_inventory probe (0.6.1) + kernel-thread gap fix (0.6.2)
-    assert {"journal_sync", "file_sync", "persistence_inventory", "live_inventory"} <= set(reads.READ_PROBES)
+    assert agent.AGENT_VERSION == "0.7.0"       # A.2: package_inventory probe
+    assert {"journal_sync", "file_sync", "persistence_inventory", "live_inventory",
+            "package_inventory"} <= set(reads.READ_PROBES)
 
 
 def test_the_bundle_still_imports_without_kratos():

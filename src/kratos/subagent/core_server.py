@@ -127,6 +127,7 @@ PROBE_MIN_AGENT_VERSION: dict[str, tuple[int, int, int]] = {
     **{p: (0, 5, 0) for p in ("journal_sync", "file_sync")},     # phase A.0: incremental log sync
     "persistence_inventory": (0, 6, 0),                            # phase A.1: persistence checks
     "live_inventory": (0, 6, 1),                                   # phase A.5: live-response reads
+    "package_inventory": (0, 7, 0),                                # phase A.2: installed packages
 }
 
 

@@ -1161,6 +1161,31 @@ def fetch_live_response() -> Any:
     return out
 
 
+PACKAGE_INVENTORY_TIMEOUT_SECONDS = 90
+
+
+def fetch_package_inventory() -> Any:
+    """The installed packages (phase A.2) as a dict (adapters.packages.parse_output),
+    or the failed SSHResult. Over SSH it runs AS THE SSH USER -- package databases are
+    world-readable, so no sudo; through the sub-agent it is the agent's own
+    `package_inventory` read (the same script). No package name ever leaves Kratos."""
+    from kratos.adapters import packages
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(packages.build_script(), shell="sh", errors="replace",
+                                 timeout=PACKAGE_INVENTORY_TIMEOUT_SECONDS)
+
+    result = _route("package_inventory", {}, over_ssh)
+    if not result.ok:
+        return result
+    out = packages.parse_output(result.stdout)
+    out["via"] = result.via
+    if result.truncated:
+        out["truncated"] = True
+        out["complete"] = False
+    return out
+
+
 def fetch_log_file_states() -> Any:
     """State of every tracked log file and its first rotation (tamper check §6.1)."""
     from kratos.logsources import hostfiles
