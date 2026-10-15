@@ -157,9 +157,13 @@ def test_pipeline_preset_run_records_turn_and_surfaces_findings(tmp_path, monkey
         async with app.run_test() as pilot:
             await pilot.pause()
             screen._dispatch_slash("/preset run sweep")
-            for _ in range(400):
-                await pilot.pause()
-                if not screen._busy and screen._busy_since is None and calls:
+            # Same wait as the standard-audit test: the preset's turn recorded AND the
+            # worker done (not busy also holds before it starts), bounded by time.
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                await pilot.pause(0.05)
+                done = any(t.get("status") == "final_answer" for t in store.get_goal_history(sid))
+                if done and calls and not screen._busy and screen._busy_since is None:
                     break
             return screen._collect_session_findings()
 
