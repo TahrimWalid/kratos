@@ -1,0 +1,64 @@
+# Publish kratos-security-assistant to PyPI -- manual only, and NOT run in this phase
+# (docs/phaseB/B.4 §3 decision 2). The owner runs it after Phase B and the security
+# review. It builds, attests build provenance (PEP 740), and publishes through PyPI
+# Trusted Publishing (OIDC, no stored token) on a protected `pypi` environment that
+# requires an approval. Pinned by commit SHA; the comment names the release.
+#
+# A local dry run (scripts/ci/release_dryrun.sh) exercises build + twine check + the
+# attestation subject, stopping before any upload, because the repo isn't pushed.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the version to publish (must match pyproject version)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + attest
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write          # OIDC, for the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Build and check
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          twine check --strict dist/*
+          python scripts/ci/package_check.py contents dist/*.whl
+          test "${{ github.event.inputs.confirm }}" = "$(python -c 'import tomllib,pathlib;print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
+        with:
+          subject-path: 'dist/*'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: pypi            # protected: requires a reviewer's approval
+    permissions:
+      id-token: write            # Trusted Publishing -- no API token stored anywhere
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          attestations: true

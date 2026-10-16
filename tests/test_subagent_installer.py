@@ -12,6 +12,7 @@ import base64
 import re
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -210,7 +211,7 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
         "import time; assert reads.run_probe('privileged_accounts', {'since': time.time() - 86400})['status'] == 'ok'; "
         "print(reads.yara_rule_files('bundled')[0])"
     )
-    out = subprocess.run(["/usr/bin/python3", "-I", "-c", code], cwd=tmp_path, capture_output=True, text=True,
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", code], cwd=tmp_path, capture_output=True, text=True,
                          timeout=120)
     assert out.returncode == 0, out.stderr
     statuses, rules = out.stdout.splitlines()[:2]

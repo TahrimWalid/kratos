@@ -1,0 +1,366 @@
+# GENERATED from scripts/ci/jobs.toml by `python scripts/ci/ci.py workflow --write` -- do not edit.
+# The same jobs run locally, in containers: scripts/ci/run_local.sh
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install
+        run: |
+          pip install 'ruff==0.17.1'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          ruff check src tests scripts evals
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  test-3-10:
+    name: test-3.10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.10-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  test-3-11:
+    name: test-3.11
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.11-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  test-3-12:
+    name: test-3.12
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  test-3-13:
+    name: test-3.13
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.13-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  test-tz:
+    name: test-tz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "Europe/Helsinki"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  agent-bundle:
+    name: agent-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.8-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends procps >/dev/null
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python3 scripts/ci/agent_bundle.py check
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  awk:
+    name: awk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      KRATOS_TEST_REQUIRE_AWKS: "mawk,gawk,busybox"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata mawk gawk busybox >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m pytest -q -p no:cacheprovider -rs tests/test_logsources_logread.py tests/test_logsources_parsers.py tests/test_logsources_reads.py tests/test_persistence.py tests/test_live_response.py tests/test_pkgvuln.py tests/test_collect_sync_reads.py tests/test_read_host_logs.py tests/test_timewin_classic.py > awk.out 2>&1 || { cat awk.out; exit 1; }
+          cat awk.out
+          ! grep -Ei 'SKIPPED.*awk' awk.out
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  package-3-10:
+    name: package-3.10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.10-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install 'build>=1.2' 'twine>=5'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m build -o dist
+          twine check --strict dist/*
+          python scripts/ci/package_check.py contents dist/*.whl
+          python scripts/ci/package_check.py install dist/*.whl
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  package-3-13:
+    name: package-3.13
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.13-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install 'build>=1.2' 'twine>=5'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m build -o dist
+          twine check --strict dist/*
+          python scripts/ci/package_check.py contents dist/*.whl
+          python scripts/ci/package_check.py install dist/*.whl
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  eval-replay-smoke:
+    name: eval-replay-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+      TZ: "UTC"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: System packages
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+      - name: Install
+        run: |
+          pip install -e '.[test,eval]'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m evals smoke
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh

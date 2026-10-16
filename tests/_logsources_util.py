@@ -26,10 +26,17 @@ TOOLS = ("sh", "sed", "tr", "cat", "readlink", "head", "mktemp", "rm", "stat", "
 
 
 def awks() -> list[str]:
+    """The awks present here. CI's `awk` job sets KRATOS_TEST_REQUIRE_AWKS=mawk,gawk,busybox:
+    then a missing one is an error, so the portability tests can never quietly run
+    against fewer awks than the job installed."""
     out = [a for a in ("mawk", "gawk") if shutil.which(a)]
     bb = os.environ.get("KRATOS_TEST_BUSYBOX") or shutil.which("busybox")
     if bb:
         out.append("busybox")
+    required = [a for a in os.environ.get("KRATOS_TEST_REQUIRE_AWKS", "").split(",") if a.strip()]
+    missing = [a for a in required if a.strip() not in out]
+    if missing:
+        raise RuntimeError(f"KRATOS_TEST_REQUIRE_AWKS: {', '.join(missing)} not installed (have: {', '.join(out) or 'none'})")
     return out
 
 

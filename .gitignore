@@ -114,3 +114,6 @@ data.bak*/
 
 # Repomix output
 repomix-output.xml
+
+# CI scripts are shipped despite the blanket *.sh ignore above
+!scripts/ci/*.sh

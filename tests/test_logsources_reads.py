@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import os
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -245,7 +246,7 @@ def test_new_bundle_files_import_and_run_standalone(tmp_path):
     code = ("import sys, time; sys.path.insert(0, '.'); from subagent import reads; "
             "print(reads.run_probe('log_read', {'source': 'cron', 'since': time.time() - 600})['status'], "
             "reads.run_probe('log_file_stat', {})['status'], reads.run_probe('utmp_read', {'file': 'wtmp'})['status'])")
-    out = subprocess.run(["/usr/bin/python3", "-I", "-c", code], cwd=tmp_path, capture_output=True, text=True,
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", code], cwd=tmp_path, capture_output=True, text=True,
                          timeout=120)
     assert out.returncode == 0, out.stderr
     assert out.stdout.split() == ["ok", "ok", "ok"]

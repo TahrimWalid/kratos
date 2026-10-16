@@ -58,13 +58,19 @@ Repository = "https://github.com/TahrimWalid/kratos"
 Issues = "https://github.com/TahrimWalid/kratos/issues"
 
 [project.optional-dependencies]
-# pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0).
-test = ["pytest", "pysigma>=2.0,<3"]
+# pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0). pysigma 2
+# needs Python 3.11+; on 3.10 that test skips.
+test = ["pytest", "pysigma>=2.0,<3; python_version >= '3.11'"]
 # Contributor tooling: lint, build and check the package (scripts/ci).
 dev = ["ruff>=0.15,<1", "build>=1.2", "twine>=5"]
 # otel: send a copy of each run record (timings, token counts -- never tool results or
 # prompts) to your own OpenTelemetry collector (`trace.otel_export`, OTEL_EXPORTER_OTLP_ENDPOINT).
 otel = ["opentelemetry-sdk>=1.30,<2", "opentelemetry-exporter-otlp-proto-http>=1.30,<2"]
+# eval: the regression gate (evals/). It needs nothing beyond the core today -- the
+# scenarios, scorer, replay and gate are pure Python over kratos itself. Listed so the
+# CI eval-replay-smoke job and `pip install '.[eval]'` are explicit; grows if evals/ ever
+# takes a dependency the core doesn't.
+eval = []
 
 [project.scripts]
 # Bare `kratos` launches the full-screen Textual TUI (the primary interface);
@@ -104,6 +110,8 @@ select = ["E9", "F63", "F7", "F82", "F401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# evals/ lives at the repo root (it is not shipped in the wheel); make it importable in tests.
+pythonpath = ["."]
 markers = [
     "bench: performance benchmarks (scripts/bench/) -- a minute or more. Excluded from a bare `pytest` run; opt in with -m bench.",
     "allow_ssh: the test starts an ssh/scp process on purpose (tests/conftest.py refuses it otherwise).",
