@@ -292,6 +292,43 @@ def _check_history(out: list[Check], data_dir: Path) -> None:
                         "policy; nothing is deleted automatically", "kratos snapshots prune   (preview)  /  --apply"))
 
 
+def _check_stored_data(out: list[Check], data_dir: Path) -> None:
+    """What Kratos keeps on this computer (kratos.datainv): total size, the biggest kind."""
+    from kratos import datainv
+
+    s = datainv.summary(data_dir)
+    detail = f"{datainv.human_size(s['total_bytes'])} kept (data folder {data_dir}, kept tools, CVE list)"
+    if s["biggest"]:
+        detail += f"; biggest: {s['biggest']} ({datainv.human_size(s['biggest_bytes'])})"
+    out.append(_row("stored data", "info", detail + f". {datainv.NOTHING_DELETED}",
+                    "`kratos data` lists every kind, where it is and whether it is personal data"))
+    _check_trace_export(out, data_dir)
+
+
+def _check_trace_export(out: list[Check], data_dir: Path) -> None:
+    """Whether run records leave this computer (the optional OpenTelemetry copy)."""
+    import importlib.util
+    import os
+
+    from kratos import settings_store
+    from kratos.trace import settings as TS
+
+    if not settings_store.get(TS.OTEL_EXPORT, data_dir=data_dir):
+        out.append(_row("run records", "info", "kept on this computer only (`kratos trace list`); the "
+                        "OpenTelemetry copy is off"))
+        return
+    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if importlib.util.find_spec("opentelemetry.sdk") is None:
+        out.append(_row("run records", "warn", "the OpenTelemetry copy is on but the extra isn't installed — "
+                        "nothing is sent", "pip install 'kratos[otel]', or turn it off in Settings → General"))
+    elif not endpoint:
+        out.append(_row("run records", "warn", "the OpenTelemetry copy is on but OTEL_EXPORTER_OTLP_ENDPOINT "
+                        "isn't set — nothing is sent", "set it to your collector's address, or turn the copy off"))
+    else:
+        out.append(_row("run records", "info", f"a copy of each run's timings and token counts (never tool "
+                        f"results or prompts) is sent to {endpoint}"))
+
+
 def _check_budget(out: list[Check], data_dir: Path) -> None:
     """Spending limits (kratos.budget): today's spend against them, paused sources."""
     from kratos.budget.report import doctor_row
@@ -345,6 +382,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
+        sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
     for name, fn in sections:
         try:
             fn(out)

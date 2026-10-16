@@ -438,6 +438,8 @@ class HelpModal(ModalScreen[None]):
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
                 ("/trace [id|list]", "What a run did — model calls (tokens, cost), tool calls, checks, guards, "
                  "how the answer was built"),
+                ("/data [prune ...]", "What Kratos keeps on this computer and how big; remove old data yourself "
+                 "(Kratos deletes nothing on its own)"),
                 ("/usage", "Today's spending vs your limits + this session's tokens and estimated cost (limits: Settings → Budget)"),
                 ("/context", "What's currently loaded in the context window"),
                 ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),

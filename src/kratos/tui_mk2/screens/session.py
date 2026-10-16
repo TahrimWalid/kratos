@@ -121,6 +121,7 @@ _PALETTE_COMMANDS = [
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
     ("/trace", "what the last run did — model calls, tools, checks, guards, the answer (or /trace <id>, /trace list)"),
+    ("/data", "what Kratos keeps on this computer, how big, personal or not (/data prune to remove old data)"),
     ("/collect", "check the basics now (ports, sign-ins, altered logs, vulnerable packages, ...); `/collect all` adds the slow checks"),
     ("/usage", "today's spending vs your limits + this session's tokens and cost"),
     ("/context", "what's currently loaded in the context window"),
@@ -954,6 +955,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._doctor_flow()
         elif cmd in ("/trace", "/traces"):
             self._trace_flow(rest)
+        elif cmd == "/data":
+            self._data_flow(rest)
         elif cmd == "/collect":
             self._collect_flow(rest)
         elif cmd in ("/guide", "/start", "/getting-started"):
@@ -1282,6 +1285,67 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit(Text(""))
         for n, line in enumerate(view.show_lines(info, children=kids)):
             self._emit(Text(line, style=f"bold {T.TEXT_BRIGHT}" if n == 0 else T.TEXT))
+
+    # --- /data (what Kratos keeps; prune) -----------------------
+    @work
+    async def _data_flow(self, rest: str) -> None:
+        """`/data`: the stored-data inventory. `/data prune <traces|sessions|host_events>
+        <days>`: what would go, then a confirmation -- nothing is deleted without a yes."""
+        from kratos import datainv, dataprune
+        from kratos.untrusted_rich import SafeTable as Table
+
+        args = (rest or "").split()
+        if args and args[0] == "prune":
+            usage = "Usage: /data prune <traces|sessions|host_events> <days>   e.g. /data prune traces 90"
+            if len(args) != 3 or args[1] not in dataprune.PRUNABLE:
+                self._emit(R.note_line(usage))
+                return
+            try:
+                days = int(args[2].lower().rstrip("d"))
+                plan = await asyncio.to_thread(dataprune.plan_prune, self._data_dir, args[1], days)
+            except (ValueError, dataprune.PruneError) as e:
+                self._emit(R.error_line(str(e) if isinstance(e, dataprune.PruneError) else usage))
+                return
+            if plan.empty:
+                self._emit(R.note_line(f"Nothing in {datainv.category(args[1]).name.lower()} is older than {days} "
+                                       f"day{'' if days == 1 else 's'}."))
+                return
+            body = (f"Remove {', '.join(plan.describe())} older than {days} day{'' if days == 1 else 's'}"
+                    + (f" (about {datainv.human_size(plan.bytes)})" if plan.bytes else "") + ". This cannot be undone.")
+            force = False
+            if plan.blockers:
+                body += "\n\nOther data depends on this: " + " ".join(plan.blockers)
+                force = True
+            ok = await self.app.push_screen_wait(ConfirmModal(f"Delete old {datainv.category(args[1]).name.lower()}",
+                                                              body))
+            if not ok:
+                self._emit(R.note_line("Nothing deleted."))
+                return
+            try:
+                done = await asyncio.to_thread(dataprune.apply_prune, self._data_dir, plan,
+                                               actor=dataprune.actor_name("tui"), force_orphans=force)
+            except dataprune.PruneError as e:
+                self._emit(R.error_line(f"Not removed: {e}"))
+                return
+            self._emit(R.success_line("Removed " + ", ".join(f"{n} {k}" for k, n in done.items())
+                                      + ". Recorded — `kratos data history` lists every prune."))
+            return
+        measured = await asyncio.to_thread(datainv.measure, self._data_dir)
+        table = Table(title=f"What Kratos keeps — {self._data_dir}", title_justify="left",
+                      title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
+        for col, justify in (("Kind", "left"), ("Size", "right"), ("Items", "right"), ("Oldest", "left"),
+                             ("Personal", "left")):
+            table.add_column(col, justify=justify)
+        for m in measured:
+            c = m.category
+            table.add_row(c.name, datainv.human_size(m.bytes), f"{m.items:,}", (datainv._iso(m.oldest) or "-")[:10],
+                          Text(c.personal, style=T.ATTENTION if c.personal != datainv.NOT_PERSONAL else T.TEXT_DIM))
+        table.add_row("Total", datainv.human_size(sum(m.bytes for m in measured)), "", "", "")
+        self._emit(Text(""))
+        self._emit(table)
+        self._emit(R.note_line(f"{datainv.NOTHING_DELETED} Remove old data yourself: /data prune traces 90 "
+                               "(also sessions, host_events) — you see what goes and confirm first. Run records "
+                               "(traces) are the most detailed file Kratos writes."))
 
     # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")
