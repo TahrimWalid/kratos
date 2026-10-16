@@ -1439,7 +1439,10 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
         # background: checks still running at the start budget finish while the model works,
         # and are folded in before the final answer (_settle_collection)
         report = _runner.prepare(get_active_target(), Path(data_dir), dispatch=execute_tool_call, background=True)
-        return None if report.disabled_reason else report
+        if report.disabled_reason:
+            return None
+        _trace_collection("collection", "collected before the model", report=report.to_record())
+        return report
     except InvestigationStopped:
         raise
     except Exception:  # noqa: BLE001
@@ -1459,6 +1462,25 @@ def _remediation_evidence(transcript: list[dict[str, Any]], findings: list[dict[
 
         logging.getLogger(__name__).warning("could not build the evidence for suggested commands", exc_info=True)
         return Evidence.empty()
+
+
+def _trace_collection(kind: str, name: str, **attrs: Any) -> None:
+    """The collection the model started from (and checks folded in later), in the run
+    record -- enough to replay the investigation without the machine (evals/replay)."""
+    from kratos.trace import recorder as _trace
+
+    try:
+        _trace.event(kind, name, **{k: _trace.result_for_trace(v) for k, v in attrs.items()})
+    except Exception:  # noqa: BLE001 -- the record must never affect the run
+        import logging
+
+        logging.getLogger(__name__).debug("trace: collection record failed", exc_info=True)
+
+
+def _collection_outcome_record(outcome: Any) -> dict[str, Any]:
+    from kratos.collect.runner import outcome_record
+
+    return outcome_record(outcome)
 
 
 def _collection_digest(report: Any) -> str:
@@ -1860,6 +1882,10 @@ def _run_agent_loop(
                 # running" gaps go away for the ones that finished (phase A audit).
                 before = collection.gaps()
                 finished_now = collection.settle(COLLECTION_SETTLE_SECONDS)
+                if finished_now:
+                    _trace_collection("collection_settled", "background checks finished", iteration=i,
+                                      checks={c.name: _collection_outcome_record(c) for c in collection.checks
+                                              if c.name in finished_now})
                 after = collection.gaps()
                 coverage_gaps[:] = [g for g in coverage_gaps if g not in before or g in after] + \
                     [g for g in after if g not in coverage_gaps]

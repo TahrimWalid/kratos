@@ -10,6 +10,7 @@ refreshed inputs. No model is called anywhere in here.
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import logging
 import threading
 import time
@@ -110,6 +111,18 @@ class CollectionReport:
     def still_running(self) -> list[str]:
         return [p.check.name for p in self.pending if not p.recorded.is_set()]
 
+    def to_record(self) -> dict[str, Any]:
+        """The report as plain data, for the run record (kratos.trace): what the model was
+        given at the start. The eval harness replays an investigation from it (evals/replay)."""
+        return {
+            "target": self.target, "target_key": self.target_key, "transport": self.transport,
+            "checks": [outcome_record(c) for c in self.checks],
+            "correlation": self.correlation, "correlation_error": self.correlation_error,
+            "correlation_step": self.correlation_step, "started": self.started, "finished": self.finished,
+            "budget_seconds": self.budget_seconds, "disabled_reason": self.disabled_reason,
+            "still_running": [p.check.name for p in self.pending if not p.applied],
+        }
+
     def unsettled(self) -> bool:
         """A background check whose outcome is not in `checks` yet (running, or finished
         since and waiting for settle())."""
@@ -130,6 +143,37 @@ class CollectionReport:
                 p.applied = True
                 done.append(p.check.name)
         return done
+
+
+def outcome_record(o: CheckOutcome) -> dict[str, Any]:
+    """A check's outcome as plain data (CollectionReport.to_record)."""
+    d = dataclasses.asdict(o)
+    d["inputs"] = list(o.inputs)
+    return d
+
+
+def outcome_from_record(d: dict[str, Any]) -> CheckOutcome:
+    """A CheckOutcome from outcome_record()'s data (evals/replay rebuilds a report)."""
+    names = {f.name for f in dataclasses.fields(CheckOutcome)}
+    kw = {k: v for k, v in d.items() if k in names}
+    kw["inputs"] = tuple(kw.get("inputs") or ())
+    kw["gaps"] = list(kw.get("gaps") or [])
+    kw["finding_ids"] = list(kw.get("finding_ids") or [])
+    kw["steps"] = list(kw.get("steps") or [])
+    return CheckOutcome(**kw)
+
+
+def report_from_record(rec: dict[str, Any]) -> CollectionReport:
+    """A CollectionReport from CollectionReport.to_record()'s data, with every check
+    already settled (evals/replay: the model sees what the live run collected)."""
+    return CollectionReport(
+        target=rec.get("target") or "", target_key=rec.get("target_key") or "",
+        transport=rec.get("transport"),
+        checks=[outcome_from_record(c) for c in rec.get("checks") or []],
+        correlation=rec.get("correlation"), correlation_error=rec.get("correlation_error"),
+        correlation_step=rec.get("correlation_step"), started=rec.get("started") or 0.0,
+        finished=rec.get("finished") or 0.0, budget_seconds=rec.get("budget_seconds") or 0.0,
+        disabled_reason=rec.get("disabled_reason"))
 
 
 WARM_WAIT_SECONDS = 3.0

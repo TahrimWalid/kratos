@@ -120,6 +120,15 @@ def _span_line(s: dict[str, Any]) -> str:
         if a.get("serious_left_out_of_analysis"):
             txt += " · left out of the analysis: " + _d(", ".join(map(str, a["serious_left_out_of_analysis"])), 120)
         return txt
+    if kind == "collection":
+        rep = a.get("report") if isinstance(a.get("report"), dict) else {}
+        checks = rep.get("checks") if isinstance(rep.get("checks"), list) else []
+        running = rep.get("still_running") or []
+        return (f"collected before the model · {len(checks)} check(s)"
+                + (f", still running: {_d(', '.join(map(str, running)), 100)}" if running else ""))
+    if kind == "collection_settled":
+        names = sorted((a.get("checks") or {}).keys()) if isinstance(a.get("checks"), dict) else []
+        return "finished in the background before the answer: " + _d(", ".join(names), 120)
     if kind == "child_run":
         return f"started run {_d(a.get('child_trace_id'), 40)} ({name})"
     if kind == "run":

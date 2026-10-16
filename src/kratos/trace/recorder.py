@@ -7,6 +7,8 @@ Every investigation, standard audit, pipeline, scheduled run and trigger opens
   * `tool_call`         -- agent.loop.execute_tool_call (every tool dispatch)
   * `collection_check`  -- collect.runner.prepare (each check, reused or run)
   * `guard` / `answer`  -- agent.loop (guard rejections/NOTEs, how the answer was built)
+  * `collection` / `collection_settled` -- agent.loop (the collected report the model started
+                          from, and checks folded in before the answer; what evals/replay replays)
   * `run`               -- the run itself, and a nested run kind (an audit inside a schedule)
 
 The trace being built lives in a ContextVar, never a module global: parallel runs in
@@ -49,7 +51,8 @@ FORMAT_VERSION = 1
 TRACES_DIR = "traces"
 PARTIAL_SUFFIX = ".partial"
 PARTIAL_FLUSH_SECONDS = 3.0
-KINDS = ("run", "model_call", "tool_call", "collection_check", "guard", "answer", "child_run")
+KINDS = ("run", "model_call", "tool_call", "collection_check", "collection", "collection_settled", "guard", "answer",
+         "child_run")
 
 _TRACE: contextvars.ContextVar["Trace | None"] = contextvars.ContextVar("kratos_trace", default=None)
 _SPAN: contextvars.ContextVar["Span | None"] = contextvars.ContextVar("kratos_trace_span", default=None)

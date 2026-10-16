@@ -173,6 +173,29 @@ def test_a_scripted_investigation_records_everything_under_its_run(with_collecti
     assert not any(p.name.endswith(".partial") for p in store.trace_files(dd))
 
 
+def test_the_record_holds_the_collection_the_model_started_from(with_collection, monkeypatch):
+    """B.4: the collected report (checks, correlation) and the checks folded in before the
+    answer are in the record -- what evals/replay needs to replay a run without the machine."""
+    dd = with_collection
+    monkeypatch.setattr(agent_loop, "agent_chat", MeteredScript([_tool("list_processes"), _final(GOOD)]))
+    with run_scope("interactive"):
+        agent_loop.run_agent("check the box", dd, max_iters=6)
+    data = _only_trace(dd)
+    (start,) = _spans(data, "collection")
+    rep = start["attrs"]["report"]
+    assert [c["name"] for c in rep["checks"]] == ["t_quick", "t_slow"]
+    assert rep["still_running"] == ["t_slow"] and rep["target"] == TARGET
+    assert rep["correlation"]["findings"][0]["id"] == "CORR-SSH-001"
+    quick = rep["checks"][0]
+    assert quick["status"] == "ok" and quick["summary"] == "1 process" and quick["tools"] == ["list_processes"]
+    assert isinstance(quick["steps"], list)   # the tool calls a real check made (its ctx.call), for the transcript
+    (settled,) = _spans(data, "collection_settled")
+    assert settled["attrs"]["checks"]["t_slow"]["summary"] == "slow but fine"
+    lines = view.tree_lines(store.load([p for p in store.trace_files(dd) if p.suffix == ".json"][0]))
+    assert any("collected before the model · 2 check(s), still running: t_slow" in ln for ln in lines)
+    assert any("finished in the background before the answer: t_slow" in ln for ln in lines)
+
+
 def test_the_trace_file_is_private(dd, monkeypatch):
     monkeypatch.setattr(agent_loop, "agent_chat", MeteredScript([_tool("correlate_findings"), _final(GOOD)]))
     with run_scope("cli"):
