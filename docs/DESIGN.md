@@ -685,6 +685,31 @@ the same file; the tamper check (head hash) is what catches that.
 one correlation, reported as steps; `/run`, `kratos run` and audit schedules use it, so there is one
 implementation of "look at the machine".
 
+## Adding a detection check
+
+A new read of the machine (Phase B and later) plugs in through two registries and touches no
+hand-wired code (phase A audit: A.1, A.5 and A.2 had each added the same five pieces by hand to
+`findings_engine.py`, the place every feature edited):
+
+1. **Collection** -- `kratos.collect.registry.register(Check(...))`: cost class, freshness setting,
+   the input category it writes, transports, its own time limit, priority. It runs at
+   investigation start (or in the standard audit for `slow`), in parallel, under the shared SSH
+   connection and session cap, and in the background if it outlasts the start budget.
+2. **Findings** -- `findings_engine.register_snapshot_source(SnapshotSource(...))`: the category,
+   where its files live (`folder`, `pattern`), the rules it raises (`rule_prefix`), and four
+   functions -- `load` (the snapshot if recent enough), `build` (its findings; every
+   `Finding(id="...")` a literal), `closes_findings` (is this read complete enough to say a
+   finding is gone), `blind` (what it could not look at, per entity). `find_latest_inputs`, the
+   rule-to-input map, `generate_findings`, the report loader and the lifecycle's completeness and
+   blind-spot rules all iterate the registry; sources build in registration order.
+
+Then: each rule's lifecycle kind in `lifecycle/rules.py` and its ATT&CK entry (labels or posture)
+in `attack/mapping.py` -- tests fail until both exist, and the lifecycle test scans the module each
+registered builder lives in. A rule whose title holds machine text gets a fixed description in
+`finding_facts.RULE_TEXT`, and its validated facts go in `finding_facts.safe_facts`, so the model
+and the answer's findings block can name it. Bundle-side reads follow §Sub-agents (one script and
+one probe printing the same records, a bundle version bump). The model's tool list stays frozen.
+
 ## Persistence checks
 
 **Inventory on the machine, judging on Kratos** (`adapters/persistence.py`, `kratos/persist/`).

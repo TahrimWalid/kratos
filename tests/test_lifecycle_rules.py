@@ -14,10 +14,12 @@ from kratos.lifecycle.rules import KINDS, RULES, rule_info
 def _finding_ids() -> tuple[set[str], list[int]]:
     """id= keyword values of every Finding(...) call: literals, and line numbers of
     any computed (f-string / variable) id."""
-    tree = ast.parse(inspect.getsource(FE))
+    # the engine, and every module a registered snapshot source builds its findings in
+    # (a later check may keep its builder in its own package -- FE.register_snapshot_source)
+    modules = {FE} | {inspect.getmodule(src.build) for src in FE.snapshot_sources()}
     literal: set[str] = set()
     computed: list[int] = []
-    for node in ast.walk(tree):
+    for node in (n for mod in modules for n in ast.walk(ast.parse(inspect.getsource(mod)))):
         if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Finding"):
             continue
         for kw in node.keywords:

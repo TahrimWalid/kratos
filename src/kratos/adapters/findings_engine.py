@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kratos import __version__ as KRATOS_VERSION
 from kratos.utils.latest_file import latest_file
@@ -156,12 +156,9 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         # check_log_integrity (0.3): the newest result for this machine; freshness
         # is checked by _load_recent_log_integrity.
         "log_integrity": pick(data_dir / "integrity", "log_integrity_*.json", "log_integrity"),
-        # The persistence check (A.1): freshness is checked by _load_recent_persistence.
-        "persistence": pick(data_dir / "persistence", "persistence_*.json", "persistence"),
-        # The live-response check (A.5): freshness is checked by _load_recent_live.
-        "live_response": pick(data_dir / "live", "live_response_*.json", "live_response"),
-        # The package check (A.2): freshness is checked by _load_recent_packages.
-        "packages": pick(data_dir / "packages", "packages_*.json", "packages"),
+        # The snapshot checks (persistence, live response, packages, ...): each source's
+        # own folder and pattern; its loader checks freshness (SNAPSHOT_SOURCES).
+        **{src.category: pick(data_dir / src.folder, src.pattern, src.category) for src in snapshot_sources()},
     }
 
 
@@ -345,9 +342,7 @@ _FINDING_INPUTS: dict[str, tuple[str, ...]] = {
     "VULN-": ("vuln_scan",),
     "LOG-": ("log_integrity",),
     "SEAL-": ("log_integrity",),
-    "PERSIST-": ("persistence",),
-    "LIVE-": ("live_response",),
-    "PKG-": ("packages",),
+    # snapshot sources add theirs when they register (register_snapshot_source)
 }
 
 
@@ -940,9 +935,7 @@ def generate_findings(
     vuln_scan: dict[str, Any] | None = None,
     auth_patterns_window: dict[str, Any] | None = None,
     log_integrity: dict[str, Any] | None = None,
-    persistence: dict[str, Any] | None = None,
-    live_response: dict[str, Any] | None = None,
-    packages: dict[str, Any] | None = None,
+    snapshots: dict[str, dict[str, Any] | None] | None = None,
     package_fixed_cves: dict[str, str] | None = None,
     package_doubted_cves: dict[str, str] | None = None,
 ) -> list[Finding]:
@@ -1434,17 +1427,12 @@ def generate_findings(
     if log_integrity:
         findings.extend(_log_integrity_findings(log_integrity))
 
-    # PERSIST-*: where someone could keep access (from the persistence check, A.1)
-    if persistence:
-        findings.extend(_persistence_findings(persistence))
-
-    # LIVE-*: what is running right now (from the live-response check, A.5)
-    if live_response:
-        findings.extend(_live_response_findings(live_response))
-
-    # PKG-*: vulnerable installed packages (from the package check, A.2)
-    if packages:
-        findings.extend(_package_findings(packages))
+    # The snapshot checks, in registration order: PERSIST-* (where someone could keep
+    # access, A.1), LIVE-* (what is running right now, A.5), PKG-* (vulnerable packages, A.2)
+    for src in snapshot_sources():
+        doc = (snapshots or {}).get(src.category)
+        if doc:
+            findings.extend(src.build(doc))
 
     # 4) Environment note (WSL)
     if system_context:
@@ -1977,6 +1965,70 @@ def _package_findings(doc: dict[str, Any]) -> list[Finding]:
     return out
 
 
+@dataclass(frozen=True)
+class SnapshotSource:
+    """One check that saves a judged snapshot the findings engine turns into findings
+    (phase A audit: each feature used to add the same five hand-wired pieces here).
+
+    `category`: the input category -- find_latest_inputs key, lifecycle covering input,
+    collection check input. `folder`/`pattern`: where its files live under the data
+    folder. `rule_prefix`: the rules it raises (``PERSIST-``). `load(path)`: the snapshot
+    if it is recent enough, else None. `build(doc)`: its findings -- each Finding(id=...)
+    a literal, in a module the lifecycle completeness test scans. `closes_findings(doc)`:
+    whether this read is complete enough to say one of its findings is gone.
+    `blind(doc)`: (rule, entity) -> why the read could not have seen it, or None.
+    """
+    category: str
+    folder: str
+    pattern: str
+    rule_prefix: str
+    load: Callable[[Path | None], dict[str, Any] | None]
+    build: Callable[[dict[str, Any]], list[Finding]]
+    closes_findings: Callable[[dict[str, Any]], bool]
+    blind: Callable[[dict[str, Any]], Callable[[str, str], str | None] | None] | None = None
+
+
+SNAPSHOT_SOURCES: dict[str, SnapshotSource] = {}
+
+
+def register_snapshot_source(src: SnapshotSource) -> None:
+    """Add (or replace) a snapshot source; its rules read its category."""
+    SNAPSHOT_SOURCES[src.category] = src
+    _FINDING_INPUTS[src.rule_prefix] = (src.category,)
+
+
+def snapshot_sources() -> list[SnapshotSource]:
+    """Every registered snapshot source, in registration order (findings order)."""
+    return list(SNAPSHOT_SOURCES.values())
+
+
+def _persistence_blind(doc: dict[str, Any]) -> Any:
+    from kratos.persist.record import entity_blind
+    return entity_blind(doc)
+
+
+def _live_blind(doc: dict[str, Any]) -> Any:
+    from kratos.live.record import entity_blind
+    return entity_blind(doc)
+
+
+register_snapshot_source(SnapshotSource(
+    category="persistence", folder="persistence", pattern="persistence_*.json", rule_prefix="PERSIST-",
+    load=lambda path: _load_recent_persistence(path), build=lambda doc: _persistence_findings(doc),
+    # an unfinished read, or one that could not tell which files came from a package (A.1 §7)
+    closes_findings=lambda doc: bool(doc.get("complete")) and bool((doc.get("ownership") or {}).get("source"))
+    and not (doc.get("ownership") or {}).get("error"),
+    blind=_persistence_blind))
+register_snapshot_source(SnapshotSource(
+    category="live_response", folder="live", pattern="live_response_*.json", rule_prefix="LIVE-",
+    load=lambda path: _load_recent_live(path), build=lambda doc: _live_response_findings(doc),
+    closes_findings=lambda doc: bool(doc.get("complete")), blind=_live_blind))
+register_snapshot_source(SnapshotSource(
+    category="packages", folder="packages", pattern="packages_*.json", rule_prefix="PKG-",
+    load=lambda path: _load_recent_packages(path), build=lambda doc: _package_findings(doc),
+    closes_findings=lambda doc: bool(doc.get("complete"))))
+
+
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """
     None if fewer than 2 auto-discovered inputs are present (nothing to
@@ -2125,12 +2177,13 @@ def write_findings_report(
     inputs["vuln_scan"] = vuln_scan_path
     log_integrity = _load_recent_log_integrity(auto.get("log_integrity"))
     inputs["log_integrity"] = auto.get("log_integrity") if log_integrity else None
-    persistence_doc = _load_recent_persistence(auto.get("persistence"))
-    inputs["persistence"] = auto.get("persistence") if persistence_doc else None
-    live_doc = _load_recent_live(auto.get("live_response"))
-    inputs["live_response"] = auto.get("live_response") if live_doc else None
-    packages_doc = _load_recent_packages(auto.get("packages"))
-    inputs["packages"] = auto.get("packages") if packages_doc else None
+    snapshots: dict[str, dict[str, Any] | None] = {}
+    for src in snapshot_sources():
+        doc = src.load(auto.get(src.category))
+        snapshots[src.category] = doc
+        inputs[src.category] = auto.get(src.category) if doc else None
+    live_doc = snapshots.get("live_response")      # the package cross-check reads these two by name
+    packages_doc = snapshots.get("packages")
     package_fixed: dict[str, str] = {}
     package_doubts: dict[str, str] = {}
     if packages_doc and vuln_scan:
@@ -2165,9 +2218,7 @@ def write_findings_report(
         vuln_scan=vuln_scan,
         auth_patterns_window=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats),
         log_integrity=log_integrity,
-        persistence=persistence_doc,
-        live_response=live_doc,
-        packages=packages_doc,
+        snapshots=snapshots,
         package_fixed_cves=package_fixed,
         package_doubted_cves=package_doubts,
     )
@@ -2180,7 +2231,7 @@ def write_findings_report(
     try:
         finding_dicts, lifecycle_summary = _apply_lifecycle(
             finding_dicts, data_dir=data_dir, target=report_target or "unknown", inputs=inputs,
-            auth_stats=auth_stats, persistence=persistence_doc, live_response=live_doc, packages=packages_doc,
+            auth_stats=auth_stats, snapshots=snapshots,
             patterns_stats=_paired_auth_stats(inputs["auth_patterns"], inputs["auth_stats"], auth_stats))
     except Exception as e:  # noqa: BLE001 -- a lifecycle failure must never lose the report
         import logging
@@ -2289,41 +2340,27 @@ def write_findings_report(
 def _apply_lifecycle(finding_dicts: list[dict[str, Any]], *, data_dir: Path, target: str,
                      inputs: dict[str, Path | None], auth_stats: dict[str, Any] | None,
                      patterns_stats: dict[str, Any] | None,
-                     persistence: dict[str, Any] | None = None,
-                     live_response: dict[str, Any] | None = None,
-                     packages: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                     snapshots: dict[str, dict[str, Any] | None] | None = None,
+                     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """The lifecycle layer (kratos.lifecycle) over this report's findings."""
     from kratos import run_context
     from kratos.lifecycle import apply as _lc_apply, coverage as _lc_coverage, migrate as _lc_migrate
 
     _lc_migrate.ensure_imported(data_dir)
     incomplete = _lc_coverage.incomplete_auth_inputs({"auth_stats": auth_stats, "auth_patterns": patterns_stats})
-    # A persistence read that did not finish, or one that could not tell which files
-    # came from a package, cannot say a PERSIST-* finding is gone (A.1 §7 "Budget").
-    if persistence is not None and (not persistence.get("complete")
-                                    or not (persistence.get("ownership") or {}).get("source")
-                                    or (persistence.get("ownership") or {}).get("error")):
-        incomplete = set(incomplete) | {"persistence"}
-    # A live-response read that did not finish (over budget, output truncated) saw
-    # only some of what is running, so it cannot say a LIVE-* finding is gone (A.5).
-    if live_response is not None and not live_response.get("complete"):
-        incomplete = set(incomplete) | {"live_response"}
-    # A package check that could not read the whole list, or could not match it
-    # (no or stale-coverage vulnerability data), cannot say a PKG-* finding is gone.
-    if packages is not None and not packages.get("complete"):
-        incomplete = set(incomplete) | {"packages"}
-    # A read can finish and still not have looked at everything (an SSH login can't
-    # open /root/.ssh or read another user's processes): a finding about something in
-    # such a blind spot stays open instead of being marked gone (phase A audit).
+    # A snapshot read that could not see everything it covers (did not finish, could not
+    # tell which files came from a package, no vulnerability data) cannot say one of its
+    # findings is gone; and a finding about something in its blind spots stays open
+    # (an SSH login can't open /root/.ssh or read another user's processes).
     blind: dict[str, Any] = {}
-    if persistence is not None:
-        from kratos.persist.record import entity_blind as _persist_blind
-        if (fn := _persist_blind(persistence)) is not None:
-            blind["persistence"] = fn
-    if live_response is not None:
-        from kratos.live.record import entity_blind as _live_blind
-        if (fn := _live_blind(live_response)) is not None:
-            blind["live_response"] = fn
+    for src in snapshot_sources():
+        doc = (snapshots or {}).get(src.category)
+        if doc is None:
+            continue
+        if not src.closes_findings(doc):
+            incomplete = set(incomplete) | {src.category}
+        if src.blind is not None and (fn := src.blind(doc)) is not None:
+            blind[src.category] = fn
     run = run_context.current()
     cov = _lc_coverage.for_report(inputs, target=target, run=run, incomplete=incomplete, blind=blind)
     return _lc_apply.apply_run(finding_dicts, target=target, coverage=cov, run=run, data_dir=data_dir)

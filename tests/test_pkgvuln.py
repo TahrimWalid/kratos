@@ -754,7 +754,7 @@ def test_an_incomplete_package_check_cannot_close_a_pkg_finding(tmp_path, monkey
     with rc.run_scope("cli", target="10.0.0.5"):
         for doc, should in (({"complete": True}, False), ({"complete": False}, True)):
             FE._apply_lifecycle([], data_dir=tmp_path, target="10.0.0.5", inputs={}, auth_stats=None,
-                                patterns_stats=None, packages=doc)
+                                patterns_stats=None, snapshots={"packages": doc})
             assert ("packages" in captured["incomplete"]) is should
 
 

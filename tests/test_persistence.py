@@ -601,7 +601,7 @@ def test_an_incomplete_read_cannot_close_a_persist_finding(tmp_path, monkeypatch
             captured.clear()
             FE._apply_lifecycle([], data_dir=tmp_path, target="10.0.0.5",
                                 inputs={"persistence": None}, auth_stats=None, patterns_stats=None,
-                                persistence=doc)
+                                snapshots={"persistence": doc})
             assert ("persistence" in captured["incomplete"]) is should_mark, doc
 
 
