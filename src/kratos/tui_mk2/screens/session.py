@@ -120,6 +120,7 @@ _PALETTE_COMMANDS = [
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
+    ("/trace", "what the last run did — model calls, tools, checks, guards, the answer (or /trace <id>, /trace list)"),
     ("/collect", "check the basics now (ports, sign-ins, altered logs, vulnerable packages, ...); `/collect all` adds the slow checks"),
     ("/usage", "today's spending vs your limits + this session's tokens and cost"),
     ("/context", "what's currently loaded in the context window"),
@@ -951,6 +952,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._preset_flow("import " + rest if rest else "import")
         elif cmd in ("/doctor", "/health"):
             self._doctor_flow()
+        elif cmd in ("/trace", "/traces"):
+            self._trace_flow(rest)
         elif cmd == "/collect":
             self._collect_flow(rest)
         elif cmd in ("/guide", "/start", "/getting-started"):
@@ -1240,6 +1243,45 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if report.correlation is not None:
             ids = ", ".join(f"{f.get('id')} ({f.get('severity')})" for f in report.findings) or "no findings"
             self._emit_from_worker(R.note_line(f"{ids}   [{report.elapsed:.1f}s]"))
+
+    # --- /trace (run records) --------------------------------
+    def _trace_flow(self, rest: str) -> None:
+        """The run record of this session's last run (kratos.trace), one by id, or a
+        list. Every line is cleaned for display; the file keeps the original."""
+        from kratos.trace import store, view
+
+        arg = (rest or "").strip()
+        sid = self.session_state.get("session_id")
+        if arg in ("list", "ls", "all"):
+            items = store.list_traces(self._data_dir, session_id=None if arg == "all" else sid, limit=20)
+            if not items:
+                self._emit(R.note_line("No run records yet — every investigation, /run audit, scheduled run and "
+                                       "trigger writes one."))
+                return
+            self._emit(Text(""))
+            self._emit(Text("Run records" + ("" if arg == "all" else " — this session"), style=f"bold {T.TEXT_BRIGHT}"))
+            for info in items:
+                self._emit(Text(view.list_line(info), style=T.TEXT))
+            self._emit(R.note_line("/trace <id> shows one (the first characters are enough); /trace all lists "
+                                   "every session's."))
+            return
+        try:
+            if arg:
+                info = store.find(self._data_dir, arg)
+            else:
+                found = store.list_traces(self._data_dir, session_id=sid, limit=1)
+                info = found[0] if found else None
+        except store.AmbiguousTrace as e:
+            self._emit(R.error_line(f"{e}. Give more of the id."))
+            return
+        if info is None:
+            self._emit(R.note_line(f"No run record {arg!r}." if arg else
+                                   "This session has no run record yet. /trace all lists every run."))
+            return
+        kids = store.children_of(self._data_dir, (info.data or {}).get("run_id") or "") if info.data else []
+        self._emit(Text(""))
+        for n, line in enumerate(view.show_lines(info, children=kids)):
+            self._emit(Text(line, style=f"bold {T.TEXT_BRIGHT}" if n == 0 else T.TEXT))
 
     # --- /doctor (self-diagnostic) --------------------------
     @work(thread=True, exclusive=True, group="turn")
@@ -4314,7 +4356,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         transcript = [
             {"tool": s.tool, "label": s.label, "status": s.status,
-             "detail": s.detail, "observation": _step_observation(s)}
+             "detail": s.detail, "observation": _step_observation(s),
+             **({"run_id": outcome.run_id} if getattr(outcome, "run_id", None) else {})}
             for s in outcome.steps
         ]
         transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"

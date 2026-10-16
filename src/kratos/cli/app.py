@@ -1315,6 +1315,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("[KRATOS] No findings raised by the correlation engine.")
     if outcome.lifecycle_line:
         print(f"[KRATOS] {outcome.lifecycle_line}  (kratos findings list)")
+    if outcome.run_id:
+        print(f"[KRATOS] Run record: kratos trace show {outcome.run_id[:12]}")
 
     if outcome.status != "completed":
         print(f"[KRATOS] ERROR: audit aborted — required step '{outcome.aborted_on}' did not succeed.")
@@ -1601,6 +1603,8 @@ def cmd_investigate(args: argparse.Namespace) -> int:
 
     console.print()
     lifecycle = _console.lifecycle_line(result.get("transcript"))
+    if result.get("run_id"):
+        session_events.append(f"Run record: kratos trace show {result['run_id'][:12]}")
     if result["status"] == "final_answer":
         _console.render_result_panel(console, "Investigation complete", result["final_answer"], "green")
         if lifecycle:
@@ -2003,6 +2007,10 @@ def build_parser() -> argparse.ArgumentParser:
     b_res = bsub.add_parser("resume", help="End a pause after repeated failures (e.g. schedule:nightly)")
     b_res.add_argument("source", help="The paused source, as `kratos budget` lists it")
     bud.set_defaults(func=cmd_budget)
+
+    from kratos.cli import data_cmds as _data_cmds
+
+    _data_cmds.register(sub)   # `kratos data` (stored data, prune) and `kratos trace` (run records)
 
     seal_p = sub.add_parser(
         "seal",

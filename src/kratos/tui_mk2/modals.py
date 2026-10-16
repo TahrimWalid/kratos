@@ -436,6 +436,8 @@ class HelpModal(ModalScreen[None]):
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
+                ("/trace [id|list]", "What a run did — model calls (tokens, cost), tool calls, checks, guards, "
+                 "how the answer was built"),
                 ("/usage", "Today's spending vs your limits + this session's tokens and estimated cost (limits: Settings → Budget)"),
                 ("/context", "What's currently loaded in the context window"),
                 ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),

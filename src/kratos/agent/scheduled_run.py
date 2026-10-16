@@ -475,9 +475,14 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
         del _tools.TOOL_REGISTRY[name]
     try:
         # Its own run, inside the scheduled/interactive run that fired the trigger.
-        with _run_context.run_scope("trigger"):
+        from kratos.trace import recorder as _trace
+
+        with _run_context.run_scope("trigger"), \
+                _trace.run_trace("trigger", data_dir, name="trigger investigation",
+                                 goal=_trace.result_for_trace(goal)):
             refusal = _budget_refusal(Path(data_dir), "trigger")
             if refusal is not None:
+                _trace.set_result(status=REFUSED_BY_BUDGET)
                 return {"status": REFUSED_BY_BUDGET, "findings": [], "final_answer": refusal}
             try:
                 result = run_agent_fn(goal, data_dir)
@@ -485,6 +490,7 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
                 _record_breaker_outcome(Path(data_dir), "trigger", None, error=f"the run raised {type(e).__name__}")
                 raise
             _record_breaker_outcome(Path(data_dir), "trigger", result)
+            _trace.set_result(status=str(result.get("status") or "error"))
     finally:
         _tools.TOOL_REGISTRY.update(excluded)
         _tools.set_approval_prompt_provider(prior_provider)
@@ -493,6 +499,16 @@ def run_headless_investigation(goal: str, data_dir: Path, *, run_agent_fn=None) 
         "findings": _extract_findings(result.get("transcript", [])),
         "final_answer": result.get("final_answer"),
     }
+
+
+def _append_record(data_dir: Path, name: str, record: dict[str, Any]) -> None:
+    """The schedule's run history line, naming this run's record (kratos.trace)."""
+    from kratos.trace import recorder as _trace
+
+    tid = _trace.current_trace_id()
+    if tid:
+        record["run_id"] = tid
+    _sched.append_run_record(data_dir, name, record)
 
 
 def _sent(delivered: Any) -> bool:
@@ -516,9 +532,18 @@ def run_scheduled(
     timer, "interactive" when a person pressed "run now"."""
     with _run_context.run_scope(source, target=schedule.target or _kconfig.get_active_target(),
                                 session_id=session_id):
+        from kratos.trace import recorder as _trace
+
         token = _CURRENT_SCHEDULE_NAME.set(schedule.name)
         try:
-            return _run_scheduled(schedule, data_dir, deliver=deliver, notifier=notifier)
+            with _trace.run_trace("scheduled", data_dir, name=getattr(schedule, "name", "schedule"),
+                                  schedule_kind=getattr(schedule, "kind", None)) as tr:
+                record = _run_scheduled(schedule, data_dir, deliver=deliver, notifier=notifier)
+                if tr is not None:
+                    record["run_id"] = tr.trace_id
+                    _trace.set_result(status=record.get("status"), findings_count=record.get("findings_count"),
+                                      triggers_fired=record.get("triggers_fired"), error=record.get("error"))
+                return record
         finally:
             _CURRENT_SCHEDULE_NAME.reset(token)
 
@@ -562,7 +587,7 @@ def _run_scheduled(
             record["delivered"] = notifier(
                 f"Scheduled run '{schedule.name}' did not run — {_kconfig.NO_TARGET_MESSAGE}", "warning")
             record["notified"] = _sent(record["delivered"])
-        _sched.append_run_record(data_dir, schedule.name, record)
+        _append_record(data_dir, schedule.name, record)
         return record
 
     # Concurrency (design doc §6): only one Kratos run may touch a given target at
@@ -588,7 +613,7 @@ def _run_scheduled(
                 f"Scheduled run '{schedule.name}' skipped — another run is active on "
                 f"{target}. It will run at the next scheduled time.", "info")
             record["notified"] = _sent(record["delivered"])
-        _sched.append_run_record(data_dir, schedule.name, record)
+        _append_record(data_dir, schedule.name, record)
         return record
 
     # Guardrail 1b (suspenders): exclude only tools whose PRIMARY action is gated
@@ -711,7 +736,7 @@ def _run_scheduled(
         "seal": seal_status,
         "error": error,
     }
-    _sched.append_run_record(data_dir, schedule.name, record)
+    _append_record(data_dir, schedule.name, record)
     _target_lock.release_target(lock)  # (also released by the process exiting)
     return record
 

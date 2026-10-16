@@ -27,6 +27,7 @@ from typing import Any, Callable
 from kratos.agent.tools import (
     TOOL_REGISTRY,
     render_tools_for_prompt,
+    approval_entries_since,
     approval_log_length,
     approval_was_recorded,
     request_approval,
@@ -665,6 +666,57 @@ def _parse_agent_json(text: str) -> dict[str, Any] | None:
 
 
 def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    """Dispatch one tool call (every caller -- the model, collection, pipelines, /use --
+    comes through here) and record it in the run record (kratos.trace): the arguments
+    the tool got after the dispatch guards' rewrites, whether approval was asked and
+    answered, the result (capped), duration and outcome."""
+    from kratos.trace import recorder as _trace
+
+    span = _trace.start_span("tool_call", tool_name, tool=tool_name)
+    if span is _trace.NO_SPAN:
+        return _dispatch_tool_call(tool_name, args, data_dir)
+    approval_mark = approval_log_length()
+    t0 = time.monotonic()
+    try:
+        with _trace.use_span(span):
+            out = _dispatch_tool_call(tool_name, args, data_dir)
+    except BaseException as e:
+        span.finish("error", error=f"{type(e).__name__}: {str(e)[:300]}",
+                    duration_ms=round((time.monotonic() - t0) * 1000, 1))
+        raise
+    try:
+        tool = TOOL_REGISTRY.get(tool_name)
+        given = dict(args or {})
+        sent = {k: v for k, v in given.items() if k != "data_dir"}
+        rewrites = []
+        if tool is not None and "data_dir" in tool.parameters:
+            sent["data_dir"] = str(data_dir)
+            if "data_dir" in given and str(given["data_dir"]) != str(data_dir):
+                rewrites.append("data_dir replaced by Kratos's own data folder")
+        elif "data_dir" in given:
+            rewrites.append("data_dir removed (this tool has none)")
+        approvals = approval_entries_since(approval_mark)
+        status = str(out.get("status") or "error") if isinstance(out, dict) else "error"
+        inner = out.get("result") if isinstance(out, dict) else None
+        if status == "ok" and isinstance(inner, dict) and str(inner.get("status") or "").lower() == "error":
+            status = "tool_error"
+        span.finish(status, args=_trace.result_for_trace(sent), rewrites=rewrites,
+                    approval_asked=bool(approvals),
+                    approval_answer=(None if not approvals else ("approved" if approvals[-1].get("approved")
+                                                                 else "denied")),
+                    result=_trace.result_for_trace(out),
+                    duration_ms=round((time.monotonic() - t0) * 1000, 1),
+                    **({"error": str(out.get("observation"))[:500]} if isinstance(out, dict)
+                       and status not in ("ok",) and out.get("observation") else {}))
+        _trace.note_last_tool(span)
+    except Exception:  # noqa: BLE001 -- the record must never change the call's outcome
+        import logging
+
+        logging.getLogger(__name__).debug("trace: tool span failed", exc_info=True)
+    return out
+
+
+def _dispatch_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     _kconfig.set_active_data_dir(data_dir)  # SSH/sub-agent routing reads the link + socket from here
     tool = TOOL_REGISTRY.get(tool_name)
     if tool is None:
@@ -1206,6 +1258,46 @@ class _Conversation:
         return True
 
 
+def _trace_annotate_tool(tool_name: str, **attrs: Any) -> None:
+    """Tie the model's view of a result (its envelope id) to the tool span that produced it."""
+    from kratos.trace import recorder as _trace
+
+    _trace.annotate_last_tool(expect_name=tool_name, **attrs)
+
+
+def _trace_guard(name: str, action: str, correction: str, iteration: int) -> None:
+    """A guard firing, in the run record: rejected (sent back) or noted (a NOTE added)."""
+    from kratos.trace import recorder as _trace
+
+    first = next((ln.strip() for ln in (correction or "").splitlines() if ln.strip()), "")
+    _trace.event("guard", name, guard=name, action=action, iteration=iteration, correction=first[:300])
+
+
+def _trace_answer_composition(*, i: int, model_text: str, with_notes: str, final: str,
+                              findings: list[dict[str, Any]] | None, noted: dict[str, bool],
+                              serious_left_out: list[str]) -> None:
+    """How the final answer was put together (the answer contract): Kratos's findings
+    block (its finding ids, in order), the NOTEs Kratos added, then the model's text."""
+    from kratos.trace import recorder as _trace
+
+    try:
+        for name, fired in noted.items():
+            if fired:
+                _trace_guard(name, "noted", "", i)
+        notes_text = with_notes[: max(0, len(with_notes) - len(model_text))] if model_text and \
+            with_notes.endswith(model_text) else ""
+        notes = [m.group(0)[:200] for m in re.finditer(r"\[NOTE:[^\]]*\]?", notes_text)]
+        block_ids = _finding_facts.block_finding_ids(findings) if final != with_notes else []
+        _trace.event("answer", "final answer", iteration=i, block_finding_ids=block_ids,
+                     block_chars=len(final) - len(with_notes), notes=notes, note_count=len(notes),
+                     model_text_chars=len(model_text), final_chars=len(final),
+                     serious_left_out_of_analysis=serious_left_out)
+    except Exception:  # noqa: BLE001 -- the record must never affect the answer
+        import logging
+
+        logging.getLogger(__name__).debug("trace: answer span failed", exc_info=True)
+
+
 class InvestigationStopped(Exception):
     """Raised out of run_agent when its should_stop callback says the user asked to stop."""
 
@@ -1275,12 +1367,26 @@ def run_agent(
     except _TimeIntentError as e:
         return {"status": "invalid_input", "final_answer": f"Could not start: {e}", "transcript": []}
     token = _set_time_context(time_ctx)
+    from kratos.trace import recorder as _trace
+
     try:
-        result = _run_agent_loop(
-            goal, data_dir, max_iters, on_step, prior_context,
-            time_ctx=time_ctx, time_block=_render_time_block(time_ctx),
-            should_stop=should_stop,
-        )
+        # The run record (kratos.trace): every model call, tool call, collection check,
+        # guard and the answer's composition, under this run.
+        with _trace.run_trace("investigation", data_dir, name="investigation",
+                              goal=_trace.result_for_trace(goal), max_iters=max_iters) as tr:
+            result = _run_agent_loop(
+                goal, data_dir, max_iters, on_step, prior_context,
+                time_ctx=time_ctx, time_block=_render_time_block(time_ctx),
+                should_stop=should_stop,
+            )
+            if tr is not None:
+                result["run_id"] = tr.trace_id
+                for _entry in result.get("transcript") or []:
+                    if isinstance(_entry, dict):
+                        _entry.setdefault("run_id", tr.trace_id)
+                _trace.set_result(status=result.get("status"),
+                                  final_answer_chars=len(result.get("final_answer") or ""),
+                                  token_usage=result.get("token_usage"))
     finally:
         _reset_time_context(token)
     result["time"] = {**_time_result_metadata(time_ctx), "clarifications": clarify_log}
@@ -1778,6 +1884,7 @@ def _run_agent_loop(
                 if inline_claims:
                     given = parsed.get("claims") if isinstance(parsed.get("claims"), list) else []
                     parsed["claims"] = given + [c for c in inline_claims if c not in given]
+            model_answer_text = final_answer_text if isinstance(final_answer_text, str) else ""
             # Optional structured remediation recommendations (feature 19b) --
             # sanitized here, carried through unchanged whether or not the
             # guards below NOTE-tag the prose answer. Recommendations only;
@@ -2124,6 +2231,8 @@ def _run_agent_loop(
                 # tripping multiple guards costs one retried iteration, not
                 # one per guard.
                 correction = "\n\n".join(corrections)
+                for _gi, _gname in enumerate(violations):
+                    _trace_guard(_gname, "rejected", corrections[_gi] if _gi < len(corrections) else "", i)
                 _record({
                     "iteration": i,
                     "reasoning": parsed.get("reasoning", ""),
@@ -2230,7 +2339,19 @@ def _run_agent_loop(
 
             # On top: what Kratos found, written by Kratos. Every open HIGH/CRITICAL finding
             # with the fact that matters -- whatever the analysis below says or leaves out.
+            _notes_before_block = final_answer_text
             final_answer_text = _finding_facts.answer_block(last_correlate_findings, final_answer_text) + final_answer_text
+            _trace_answer_composition(
+                i=i, model_text=model_answer_text,
+                with_notes=_notes_before_block, final=final_answer_text, findings=last_correlate_findings,
+                noted={"missing_correlation": guard1_violated, "file_integrity_contradiction": guard2_violated,
+                       "dismissive_verdict_contradiction": guard3_violated,
+                       "staleness_timeframe_contradiction": guard4_violated, "claims_uncalled_tool": guard5_violated,
+                       "time_scope_not_queried": guard6_violated, "claims_not_verified": guard7_violated,
+                       "past_state_without_record": guard9_violated,
+                       "yes_no_contradicts_comparison": yes_no is not None,
+                       "unstated_coverage_gap": bool(unstated_gaps), "ungrounded_ip": bool(invented)},
+                serious_left_out=[str(f.get("id")) for f, _m in serious_left_out])
 
 
             if gap_claim is not None:
@@ -2550,9 +2671,11 @@ def _run_agent_loop(
         # JSON-escaped and cleaned (kratos.untrusted); the transcript keeps the real result.
         # ATT&CK labels go in as 'T1110.001 Password Guessing' (kratos.attack.compact_for_model)
         # so they don't spend the observation window.
+        _call_id = _untrusted.new_call_id(i)
+        _trace_annotate_tool(tool_name, envelope_id=_call_id, iteration=i)
         observation_json = _untrusted.envelope(
             _attack.compact_for_model(_for_model(tool_name, exec_result)), run_id=run_tag,
-            call_id=_untrusted.new_call_id(i), max_chars=OBSERVATION_CHAR_CAP)
+            call_id=_call_id, max_chars=OBSERVATION_CHAR_CAP)
         ctx.add(
             f"\nAssistant: {json.dumps(parsed)}\nObservation: {observation_json}\n",
             tool=tool_name,

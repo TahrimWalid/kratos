@@ -22,6 +22,7 @@ from kratos.collect import registry, state
 from kratos.collect import settings as collect_settings
 from kratos.collect.registry import Check, CheckContext, CheckResult
 from kratos.target_key import target_key
+from kratos.trace import recorder as _trace
 from kratos.utils import cancel
 
 logger = logging.getLogger(__name__)
@@ -219,11 +220,14 @@ def _short_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
-def _thread_main(check: Check, ctx: CheckContext, scope: cancel.CancelScope, box: _Box) -> None:
+def _thread_main(check: Check, ctx: CheckContext, scope: cancel.CancelScope, box: _Box,
+                 span: Any = None) -> None:
     try:
         from kratos.adapters import nmap_scan
 
-        with cancel.bound(scope), kratos_config.pinned_target(ctx.target), nmap_scan.quiet():
+        # the check's tool calls go under its span in the run record
+        with cancel.bound(scope), kratos_config.pinned_target(ctx.target), nmap_scan.quiet(), \
+                _trace.use_span(span if span is not None else _trace.NO_SPAN):
             box.result = check.run(ctx)
     except cancel.Cancelled:
         box.cancelled = True
@@ -284,9 +288,16 @@ def prepare(
     waiting: list[tuple[Check, state.Row]] = []
     by_name: dict[str, CheckOutcome] = {}
 
+    spans: dict[str, Any] = {}
+
     def outcome(check: Check, **kw: Any) -> CheckOutcome:
         o = CheckOutcome(name=check.name, label=check.label, cost=check.cost, inputs=check.inputs, **kw)
         by_name[check.name] = o
+        if o.source in ("reused", "waited", "skipped") and check.name not in spans:
+            # a check this run did not run itself: an instant span saying why
+            _trace.event("collection_check", check.name, check=check.name, source=o.source, outcome=o.status,
+                         transport=report.transport, summary=o.summary, reason=o.reason or None,
+                         age_seconds=o.age_seconds)
         if on_outcome is not None:
             try:
                 on_outcome(o)
@@ -323,14 +334,26 @@ def prepare(
             # background: a check keeps its own limit -- the start budget only ends the wait
             dispatch=dispatch, deadline=(mono_start + check.budget_seconds if background
                                          else min(overall_deadline, mono_start + check.budget_seconds)), now=started)
+        spans[check.name] = _trace.start_span("collection_check", check.name, check=check.name, source="ran",
+                                              transport=ctx.transport, cost=check.cost)
         pycontext = contextvars.copy_context()
-        thread = threading.Thread(target=pycontext.run, args=(_thread_main, check, ctx, scope, box),
+        thread = threading.Thread(target=pycontext.run, args=(_thread_main, check, ctx, scope, box,
+                                                              spans[check.name]),
                                   name=f"collect-{check.name}", daemon=True)
         running.append((check, thread, scope, box, time.time(), ctx))
         thread.start()
 
     def record(check: Check, box: _Box, ctx: CheckContext, t_start: float, out_of_time: bool) -> CheckOutcome:
         """The outcome of one check this run started, also saved as its state row."""
+        o = _record(check, box, ctx, t_start, out_of_time)
+        sp = spans.get(check.name)
+        if sp is not None:
+            sp.finish(o.status, outcome=o.status, summary=o.summary, gaps=list(o.gaps),
+                      duration_ms=round((time.time() - t_start) * 1000, 1),
+                      **({"error": o.reason} if o.source == "skipped" else {}))
+        return o
+
+    def _record(check: Check, box: _Box, ctx: CheckContext, t_start: float, out_of_time: bool) -> CheckOutcome:
         finished = time.time()
         if box.result is not None and not box.cancelled and not out_of_time:
             res = box.result
@@ -366,6 +389,9 @@ def prepare(
             if late:
                 scope.cancel()
                 box.done.wait(timeout=CANCEL_GRACE_SECONDS)
+            sp = spans.get(pend.check.name)
+            if sp is not None:
+                sp.set(settled_later=True)
             pend.final = record(pend.check, box, ctx, t_start, late)
         except Exception:  # noqa: BLE001 -- bookkeeping in the background must never raise
             logger.warning("collect: recording %s in the background failed", pend.check.name, exc_info=True)
@@ -383,6 +409,9 @@ def prepare(
         if background and not box.done.is_set() and time.monotonic() < own_limit:
             pend = _Pending(check=check)
             report.pending.append(pend)
+            sp = spans.get(check.name)
+            if sp is not None:
+                sp.set(still_running_at_start_budget=True)
             outcome(check, status="running", source="background", summary=STILL_RUNNING,
                     reason="still running when the investigation started", gaps=[f"{check.label}: {STILL_RUNNING}"])
             threading.Thread(target=contextvars.copy_context().run,

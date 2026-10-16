@@ -73,6 +73,25 @@ def epoch_to_utc_iso(epoch_seconds: float, timespec: str = "seconds") -> str:
     return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat(timespec=timespec)
 
 
+def epoch_of(value: Any) -> float | None:
+    """A stored time as epoch seconds UTC: a number (or numeric text) as is, ISO text
+    read like `parse_stored_instant` (a naive value is legacy local time). None when
+    empty or unreadable."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        pass
+    dt = parse_stored_instant(text)
+    return dt.timestamp() if dt is not None else None
+
+
 def parse_stored_instant(value: Any) -> datetime | None:
     """Read a stored timestamp back as a tz-aware UTC datetime.
 

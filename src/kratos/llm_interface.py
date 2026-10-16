@@ -269,14 +269,29 @@ def _metered_call(
     tests/test_budget_choke_point.py fails if a request is sent anywhere else."""
     from kratos.budget import guard as _budget
     from kratos.budget.pricing import reported_cost_from_usage
+    from kratos.trace import recorder as _trace
 
-    reservation = _budget.before_call(
-        est_prompt_tokens=_budget.estimate_prompt_tokens(system_prompt, prompt),
-        max_completion_tokens=max_tokens, model=model, local=local,
-    )
+    # The run record's model-call span (kratos.trace): sizes always, the text only
+    # with trace.store_prompts. Opened before the budget check so a refused call shows.
+    span = _trace.start_span("model_call", f"chat {model}", model=model, local=bool(local),
+                             system_prompt_chars=len(system_prompt or ""), prompt_chars=len(prompt or ""),
+                             max_tokens=int(max_tokens))
+    if _trace.prompts_enabled():
+        span.set(system_prompt=_trace.result_for_trace(system_prompt), prompt=_trace.result_for_trace(prompt))
+    t0 = time.monotonic()
+    try:
+        reservation = _budget.before_call(
+            est_prompt_tokens=_budget.estimate_prompt_tokens(system_prompt, prompt),
+            max_completion_tokens=max_tokens, model=model, local=local,
+        )
+    except BaseException as e:
+        span.finish("refused_by_budget" if isinstance(e, _budget.BudgetExceeded) else "error",
+                    error=f"{type(e).__name__}: {str(e)[:300]}")
+        raise
     usage: Optional[TokenUsage] = None
     reported_cost: Optional[float] = None
     failed = True
+    error: Optional[str] = None
     try:
         body = send()
         raw_usage = body.get("usage") if isinstance(body, dict) else None
@@ -284,8 +299,18 @@ def _metered_call(
         reported_cost = reported_cost_from_usage(raw_usage)
         failed = False
         return body
+    except BaseException as e:
+        error = f"{type(e).__name__}: {str(e)[:300]}"
+        raise
     finally:
         _budget.after_call(reservation, usage=usage, reported_cost=reported_cost, failed=failed)
+        span.finish("error" if failed else "ok", latency_ms=round((time.monotonic() - t0) * 1000, 1),
+                    ledger_row_id=reservation.row_id,
+                    prompt_tokens=usage.prompt_tokens if usage else 0,
+                    completion_tokens=usage.completion_tokens if usage else 0,
+                    total_tokens=usage.total_tokens if usage else 0,
+                    cost_usd=reservation.cost_usd, cost_source=reservation.cost_source,
+                    **({"error": error} if error else {}))
 
 
 def _budget_exceeded_type() -> type:

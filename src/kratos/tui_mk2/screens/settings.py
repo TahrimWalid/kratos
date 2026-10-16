@@ -342,7 +342,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb",
                           "collect.enabled", "collect.start_budget_seconds", "collect.sync_sources",
                           "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
-                          "vulndb.max_age_days", "vulndb.epss_high"]
+                          "vulndb.max_age_days", "vulndb.epss_high",
+                          "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -742,8 +743,62 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
         gen.add_row(Text("Likely-exploited threshold (EPSS)", style=T.TEXT_MUTED),
                     Text(f"{epss:.0%}  (a serious fixable CVE at least this likely to be exploited is high)", style=T.TEXT))
+        for key, label, tail in self._trace_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
+
+    # --- Run records (kratos.trace) ---
+    def _trace_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.trace import settings as TS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("trace.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (TS.ENABLED, "Run records", "on  (each run's model calls, tools and answer; /trace)" if get(TS.ENABLED)
+             else "off  (measurement only — no record of what runs did)"),
+            (TS.MAX_RESULT_BYTES, "Most of one tool result kept", f"{get(TS.MAX_RESULT_BYTES) // 1024:,} KB  "
+             "(larger: the start + a fingerprint)"),
+            (TS.STORE_PROMPTS, "Keep the text sent to the model", "on  (large; for debugging)" if get(TS.STORE_PROMPTS)
+             else "off  (sizes only)"),
+            (TS.OTEL_EXPORT, "Copy to your OpenTelemetry collector",
+             "on  (timings and token counts only, to OTEL_EXPORTER_OTLP_ENDPOINT)" if get(TS.OTEL_EXPORT)
+             else "off  (nothing leaves this computer)"),
+        ]
+
+    @work
+    async def _set_trace_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.trace import settings as TS
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        spec = next((sp for sp in settings_store.specs() if sp.key == key), None)
+        if spec is None:
+            return
+        if key == TS.MAX_RESULT_BYTES:
+            answer = await self.app.push_screen_wait(PromptModal(spec.doc, "Bytes (1024 - 67108864)",
+                                                                 initial=str(settings_store.get(key, data_dir=dd))))
+            if answer is None:
+                return
+            value: Any = answer.strip()
+        else:
+            value = await self.app.push_screen_wait(ListPickerModal(spec.doc, [("on", "on"), ("off", "off")]))
+            if value is None:
+                return
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — applies from the next run.", T.SAFE)
 
     # --- Package vulnerabilities (kratos.pkgvuln): how old the data may get, what counts as likely exploited ---
     def _vulndb_settings(self) -> tuple[Any, Any]:
@@ -863,6 +918,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_collect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)
+        elif key and key.startswith("trace."):
+            self._set_trace_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store

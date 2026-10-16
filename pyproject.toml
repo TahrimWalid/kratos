@@ -59,6 +59,9 @@ Issues = "https://github.com/TahrimWalid/kratos/issues"
 [project.optional-dependencies]
 # pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0).
 test = ["pytest", "pysigma>=2.0,<3"]
+# otel: send a copy of each run record (timings, token counts -- never tool results or
+# prompts) to your own OpenTelemetry collector (`trace.otel_export`, OTEL_EXPORTER_OTLP_ENDPOINT).
+otel = ["opentelemetry-sdk>=1.30,<2", "opentelemetry-exporter-otlp-proto-http>=1.30,<2"]
 
 [project.scripts]
 # Bare `kratos` launches the full-screen Textual TUI (the primary interface);

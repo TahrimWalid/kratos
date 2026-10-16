@@ -200,6 +200,11 @@ def model_line(f: dict[str, Any]) -> str:
     return f"{f.get('id')} ({str(f.get('severity')).lower()}): {describe(f)}" + (f" -- {'; '.join(facts)}" if facts else "")
 
 
+def block_finding_ids(findings: Iterable[dict[str, Any]] | None) -> list[str]:
+    """The ids `answer_block` lists, in its order (for the run record)."""
+    return [str(f.get("id")) for f in serious(findings)[:BLOCK_MAX]]
+
+
 def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> str:
     """The findings block Kratos puts at the top of an answer ('' when nothing serious
     is open). Every open HIGH/CRITICAL finding with its facts; one the analysis below

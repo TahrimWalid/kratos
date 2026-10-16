@@ -195,6 +195,7 @@ class PipelineOutcome:
     steps: list[StepResult] = field(default_factory=list)
     findings: list[dict[str, Any]] = field(default_factory=list)
     aborted_on: Optional[str] = None
+    run_id: Optional[str] = None      # this run's record (kratos.trace), when one was written
 
     @property
     def ran(self) -> int:
@@ -228,6 +229,32 @@ def run_pipeline(
     on_step: Optional[Callable[[StepResult], None]] = None,
     dispatch: Optional[Dispatch] = None,
 ) -> PipelineOutcome:
+    """A pipeline run, recorded as one run record (kratos.trace): each dispatched step
+    is a tool-call span, a skipped one an instant span saying why."""
+    from kratos.trace import recorder as _trace
+
+    with _trace.run_trace("pipeline", data_dir, name="pipeline", steps=[s.tool for s in steps]) as tr:
+        outcome = _pipeline_body(steps, data_dir, on_step=on_step, dispatch=dispatch)
+        if tr is not None:
+            outcome.run_id = tr.trace_id
+            _trace.set_result(status=outcome.status, aborted_on=outcome.aborted_on,
+                              finding_ids=[str(f.get("id")) for f in outcome.findings])
+    return outcome
+
+
+def _trace_skipped_step(sr: "StepResult") -> None:
+    from kratos.trace import recorder as _trace
+
+    _trace.event("tool_call", sr.step.tool, tool=sr.step.tool, skipped=True, detail=sr.detail)
+
+
+def _pipeline_body(
+    steps: list[PipelineStep],
+    data_dir: Path,
+    *,
+    on_step: Optional[Callable[[StepResult], None]] = None,
+    dispatch: Optional[Dispatch] = None,
+) -> PipelineOutcome:
     """Run ``steps`` in order over the tool registry, threading accumulated
     results/findings into each step's ``when`` predicate, and stopping the whole
     run the moment a ``required`` step doesn't succeed (fail-fast, single
@@ -253,6 +280,7 @@ def run_pipeline(
                 skip_detail = f"condition could not be evaluated ({e}) — step skipped (fail-safe)"
             if not should_run:
                 sr = StepResult(step=step, status="skipped", detail=skip_detail)
+                _trace_skipped_step(sr)
                 ctx.results.append(sr)
                 outcome.steps.append(sr)
                 if on_step is not None:
@@ -266,6 +294,7 @@ def run_pipeline(
         resolved_args, ref_skip = _resolve_step_args(dict(step.args), ctx.results)
         if ref_skip is not None:
             sr = StepResult(step=step, status="skipped", detail=f"{ref_skip} — step skipped")
+            _trace_skipped_step(sr)
             ctx.results.append(sr)
             outcome.steps.append(sr)
             if on_step is not None:
@@ -332,7 +361,29 @@ def run_standard_audit(
     from -- then one ``correlate_findings`` over what they collected. One implementation
     of "look at the machine", not two. Each check is reported as a step (named by the tool
     it ran) so the screen, the CLI, schedules and reports read it like any pipeline.
-    ``skip_tools``: tools an unattended run must not use (the approval-gated ones)."""
+    ``skip_tools``: tools an unattended run must not use (the approval-gated ones).
+    Recorded as one run record (kratos.trace): each check a collection-check span."""
+    from kratos.trace import recorder as _trace
+
+    with _trace.run_trace("audit", data_dir, name="standard audit", skip_tools=sorted(skip_tools)) as tr:
+        outcome = _standard_audit_body(data_dir, on_step=on_step, dispatch=dispatch, skip_tools=skip_tools,
+                                      target=target, budget=budget)
+        if tr is not None:
+            outcome.run_id = tr.trace_id
+            _trace.set_result(status=outcome.status, aborted_on=outcome.aborted_on,
+                              finding_ids=[str(f.get("id")) for f in outcome.findings])
+    return outcome
+
+
+def _standard_audit_body(
+    data_dir: Path,
+    *,
+    on_step: Optional[Callable[["StepResult"], None]] = None,
+    dispatch: Optional[Dispatch] = None,
+    skip_tools: frozenset[str] = frozenset(),
+    target: Optional[str] = None,
+    budget: float = AUDIT_BUDGET_SECONDS,
+) -> PipelineOutcome:
     from kratos.collect import checks as _checks  # noqa: F401 -- registers the built-in checks
     from kratos.collect import registry as _registry
     from kratos.collect import runner as _runner

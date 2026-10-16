@@ -103,6 +103,8 @@ class Reservation:
     source: str
     run_id: str | None
     settled: bool = False
+    cost_usd: float | None = None      # what after_call recorded (the run record reads it)
+    cost_source: str | None = None
 
 
 # --- hooks (installed by the front end) ------------------------------------
@@ -371,6 +373,7 @@ def after_call(res: Reservation, *, usage: Any, reported_cost: float | None, fai
         cost, cost_source = pricing.call_cost(res.model, local=res.local, prompt_tokens=prompt,
                                               completion_tokens=completion, reported_cost=reported_cost,
                                               data_dir=res.ledger.data_dir)
+        res.cost_usd, res.cost_source = cost, cost_source
         res.ledger.settle(res.row_id, prompt_tokens=prompt, completion_tokens=completion, total_tokens=total,
                           cost_usd=cost, cost_source=cost_source, note=note)
     except Exception as e:  # noqa: BLE001 -- bookkeeping must never fail a model call

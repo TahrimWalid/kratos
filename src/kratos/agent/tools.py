@@ -182,6 +182,11 @@ def approval_log_length() -> int:
     return len(_approval_log)
 
 
+def approval_entries_since(since_index: int) -> list[dict[str, Any]]:
+    """The approvals asked since `since_index` ({"tool", "approved"}), oldest first."""
+    return [dict(e) for e in _approval_log[since_index:]]
+
+
 def approval_was_recorded(tool_name: str, since_index: int) -> bool:
     """True if request_approval(tool_name, ...) was called at least once since_index."""
     return any(entry["tool"] == tool_name for entry in _approval_log[since_index:])
