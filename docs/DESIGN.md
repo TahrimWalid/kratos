@@ -1268,6 +1268,10 @@ An investigation's answer is two things, and they are kept apart (phase A audit)
 - **The analysis** -- the model's text below it, checked by the answer guards. Guard 12: a serious
   finding the analysis leaves out, or names without its facts, is sent back once with the exact
   list (`finding_facts.left_out`); a second omission is accepted -- the block already lists it.
+  Only findings the question is about count (`finding_facts.relevant_to`, a fixed topic table): a
+  broad question ("check this system") is held to every serious finding, a narrow one ("has it been
+  tampered with?") to the findings on its topic -- in the eval, holding narrow questions to
+  everything cost a model call in most runs and added nothing the block didn't already show.
   An IP address the answer names that appears in nothing Kratos read (observations, digest, goal)
   gets a NOTE (`loop._ungrounded_ips`; whole addresses, so 10.136.28.1 is not "seen" inside
   10.136.28.168).

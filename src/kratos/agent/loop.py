@@ -1865,7 +1865,10 @@ def _run_agent_loop(
             )
 
             # --- Guard 12: a serious finding the analysis leaves out ---
-            serious_left_out = _finding_facts.left_out(final_answer_text, last_correlate_findings)
+            # Sent back only for findings the question is about (all of them for a broad
+            # question); the others are listed by Kratos at the top regardless.
+            serious_left_out = [(f, m) for f, m in _finding_facts.left_out(final_answer_text, last_correlate_findings)
+                                if _finding_facts.relevant_to(goal, f)]
             guard12_can_reject = (
                 bool(serious_left_out)
                 and not is_final_iteration

@@ -540,3 +540,27 @@ def test_collection_runs_nmap_quietly_but_the_scan_command_still_reports(tmp_pat
     assert capsys.readouterr().err == ""
     nmap_scan.run_nmap_scan(tmp_path, "10.0.0.5")
     assert "22/tcp open ssh" in capsys.readouterr().err
+
+
+def test_guard12_holds_a_narrow_question_to_its_own_topic(tmp_path, monkeypatch):
+    """'Has it been tampered with?' answered well, while the lab also has an unrelated SSH
+    brute-force finding open: no retry (the eval showed one call wasted per run, and once an
+    unavailable model on the retry); Kratos's list still names the brute force on top."""
+    from kratos.agent import loop as agent_loop
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos import finding_facts as FF, kratos_config
+    from tests.test_agent_loop_guards import ScriptedChat, _final_json, _tool_json
+
+    assert FF.relevant_to("has the system been tampered with?", {"id": "INTEG-001"})
+    assert not FF.relevant_to("has the system been tampered with?", {"id": "CORR-SSH-001"})
+    assert FF.relevant_to("check this system for anything suspicious", {"id": "CORR-SSH-001"})
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler",
+                        lambda **kw: {"findings": [_CORR], "missing_inputs": [], "input_errors": {},
+                                      "staleness_warning": None, "count": 1})
+    kratos_config.set_active_target(T)
+    answer = "Yes: /etc/crontab was changed to run a remote script."
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(answer)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("has the system been tampered with?", tmp_path, max_iters=6)
+    assert len(chat.calls) == 2 and not [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert result["final_answer"].startswith("Kratos found") and "CORR-SSH-001" in result["final_answer"]

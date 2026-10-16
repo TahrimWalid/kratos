@@ -167,6 +167,33 @@ def left_out(answer: str, findings: Iterable[dict[str, Any]] | None) -> list[tup
     return [(f, m) for f in serious(findings) if (m := missing_from(answer, f))]
 
 
+# What a narrow question is about -> the rules that answer it. A question that names none of
+# these topics is broad ("check this system", "anything suspicious?"): every serious finding
+# belongs in its answer. A narrow one ("has it been tampered with?") is held to the findings
+# on its own topic; the others are still listed by Kratos at the top (answer_block).
+_TOPICS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = tuple(
+    (re.compile(rx, re.IGNORECASE), prefixes) for rx, prefixes in (
+        (r"\b(log ?in|sign[- ]?in|ssh|brute|password|attack|attacker)", ("CORR-", "AUTH-")),
+        (r"\b(sudo|privileg|admin|root|uid ?0|account|user)", ("PRIV-", "CORR-002", "AUTH-001", "PERSIST-006")),
+        (r"\b(tamper|integrity|altered|modified|changed files?|log(s)? (cleared|deleted|edited))",
+         ("INTEG-", "LOG-", "SEAL-", "PERSIST-")),
+        (r"\b(persist|cron|startup|boot|backdoor|autostart|ssh keys?|authorized_keys)", ("PERSIST-",)),
+        (r"\b(malware|virus|yara|rootkit|infect)", ("LIVE-", "PERSIST-")),
+        (r"\b(process|running|memory|listen|service)", ("LIVE-",)),
+        (r"\b(port|exposed|network|firewall|open)", ("NET-", "LIVE-005", "CORR-SSH-001", "CORR-001")),
+        (r"\b(package|vulnerab|cve|patch|update|kernel|reboot|exploit)", ("PKG-", "VULN-")),
+    ))
+
+
+def relevant_to(goal: str, f: dict[str, Any]) -> bool:
+    """Whether finding `f` is what `goal` asks about (every finding, for a broad goal)."""
+    matched = [prefixes for rx, prefixes in _TOPICS if rx.search(goal or "")]
+    if not matched:
+        return True
+    fid = str(f.get("id") or "")
+    return any(fid.startswith(p) for prefixes in matched for p in prefixes)
+
+
 def model_line(f: dict[str, Any]) -> str:
     """One digest line: `CORR-SSH-001 (high): what it is -- validated facts`."""
     facts = safe_facts(f)
