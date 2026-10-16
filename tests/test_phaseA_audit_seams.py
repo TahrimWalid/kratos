@@ -554,6 +554,10 @@ def test_guard12_holds_a_narrow_question_to_its_own_topic(tmp_path, monkeypatch)
     assert FF.relevant_to("has the system been tampered with?", {"id": "INTEG-001"})
     assert not FF.relevant_to("has the system been tampered with?", {"id": "CORR-SSH-001"})
     assert FF.relevant_to("check this system for anything suspicious", {"id": "CORR-SSH-001"})
+    # seen in the eval: "malicious files" was taken as a broad question
+    assert not FF.relevant_to("scan the system for malicious files", {"id": "CORR-SSH-001"})
+    assert FF.relevant_to("scan the system for malicious files", {"id": "LIVE-002"})
+    assert FF.relevant_to("enable fail2ban if it's inactive", {"id": "CORR-SSH-001"})
     monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler",
                         lambda **kw: {"findings": [_CORR], "missing_inputs": [], "input_errors": {},
                                       "staleness_warning": None, "count": 1})

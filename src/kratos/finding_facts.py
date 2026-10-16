@@ -173,12 +173,12 @@ def left_out(answer: str, findings: Iterable[dict[str, Any]] | None) -> list[tup
 # on its own topic; the others are still listed by Kratos at the top (answer_block).
 _TOPICS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = tuple(
     (re.compile(rx, re.IGNORECASE), prefixes) for rx, prefixes in (
-        (r"\b(log ?in|sign[- ]?in|ssh|brute|password|attack|attacker)", ("CORR-", "AUTH-")),
+        (r"\b(log ?in|sign[- ]?in|ssh|brute|password|attack|attacker|fail2ban)", ("CORR-", "AUTH-")),
         (r"\b(sudo|privileg|admin|root|uid ?0|account|user)", ("PRIV-", "CORR-002", "AUTH-001", "PERSIST-006")),
         (r"\b(tamper|integrity|altered|modified|changed files?|log(s)? (cleared|deleted|edited))",
          ("INTEG-", "LOG-", "SEAL-", "PERSIST-")),
         (r"\b(persist|cron|startup|boot|backdoor|autostart|ssh keys?|authorized_keys)", ("PERSIST-",)),
-        (r"\b(malware|virus|yara|rootkit|infect)", ("LIVE-", "PERSIST-")),
+        (r"\b(malware|malicious|virus|yara|rootkit|infect|trojan|webshell)", ("LIVE-", "PERSIST-")),
         (r"\b(process|running|memory|listen|service)", ("LIVE-",)),
         (r"\b(port|exposed|network|firewall|open)", ("NET-", "LIVE-005", "CORR-SSH-001", "CORR-001")),
         (r"\b(package|vulnerab|cve|patch|update|kernel|reboot|exploit)", ("PKG-", "VULN-")),
