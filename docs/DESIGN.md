@@ -538,6 +538,66 @@ atomically and created 0600, since it holds API keys. `kratos init` creates it
 from the template shipped in the package, and `/doctor` warns when it's
 readable by other users.
 
+## Stored data: the inventory and the no-deletion rule
+
+`kratos/datainv.py` holds `CATEGORIES`: every kind of data Kratos keeps -- what it
+is in plain words, where (files under the data folder, `kratos.db` tables, files
+next to the code), whether it is personal data, and how it grows. `kratos data`,
+`/data` and `/doctor`'s "stored data" row read it; sizes come from the file system
+and SQLite's `dbstat`, with the database opened read-only.
+
+**A new table or data folder needs a `CATEGORIES` entry.** `tests/test_datainv.py`
+scans the source for every `CREATE TABLE` and every name joined onto the data
+folder (`data_dir / "x"`, an f-string, or a module constant named `*_DIR`) and
+fails on one no category owns. Lock files, sockets and the `tmp` scratch folder
+are listed as runtime entries, not data.
+
+**Kratos deletes nothing on its own.** `tests/test_no_automatic_deletion.py` finds
+every `unlink`, `rmtree`, `remove`, `rmdir`, `truncate` call and every SQL
+`DELETE FROM` / `DROP TABLE` / `VACUUM` statement and checks each against a
+reviewed allowlist keyed by (file, function, kind), each with a reason: a temp file
+the function just created, the person's own command, a merge of current state, a
+rebuild of public data. Three automatic, bounded cleanups predate the rule and are
+listed as owner decisions (sub-agent telemetry: newest 500 rows per machine;
+connection events: newest 200; expired unused pairing codes after a week) and
+shown in the inventory. Retention is the person's: `kratos data prune` (traces,
+sessions, host events) and `kratos snapshots prune` both plan first, delete only on
+`--apply` / a TUI confirmation, refuse inside an agent tool call, and `data prune`
+records each prune in `data_prunes`. A prune that would leave other data claiming
+something false (log-sync coverage over deleted host events) is refused unless
+`--force-orphans`, which removes that claim too.
+
+## Run records (traces)
+
+`kratos/trace/recorder.py` writes one JSON record per run to
+`data_dir/traces/<YYYY-MM-DD>/<run_id>.json` (owner-only, atomic). The record is
+built in a ContextVar -- never a module global -- so parallel runs in separate
+threads each have their own, and a thread started with a copied context (collection
+checks, `asyncio.to_thread`) records into its run. A run opened inside another run
+scope (a trigger's investigation inside a scheduled run) gets its own record with
+`parent_run_id`, and the parent notes it as a `child_run`. While the run goes, a
+`.partial` copy is refreshed every few seconds; a run that raises leaves it as its
+record. A span that ends after its run finished (a check that was still running in
+the background) rewrites the file.
+
+Where the hooks are -- one each, so every caller is covered:
+
+| Span | Hook |
+| --- | --- |
+| `run` | `run_trace(...)` in `run_agent`, `run_pipeline`, `run_standard_audit`, `run_scheduled`, `run_headless_investigation`; nested kinds become a `run` span in the same record |
+| `model_call` | `llm_interface._metered_call`, the one model choke point (sizes always; text only with `trace.store_prompts`; the budget ledger row id and cost) |
+| `tool_call` | `agent.loop.execute_tool_call` (args after the dispatch guards' rewrites, approval asked/answered, result capped at `trace.max_result_bytes` with a sha256 of the whole, the envelope call id the model saw) |
+| `collection_check` | `collect.runner.prepare` (reused / ran / skipped; a check's tool calls nest under it; still running at the start budget, settled later) |
+| `guard` / `answer` | `agent.loop`: each rejection with its correction's first line, each NOTE a guard added, and the answer's composition (the findings block's ids in order, NOTEs, the model's text length) |
+
+`kratos trace list/show` and `/trace` read records back and print every string
+through `untrusted.for_display`. The optional OpenTelemetry copy
+(`kratos/trace/otel.py`, the `otel` extra, `trace.otel_export` plus
+`OTEL_EXPORTER_OTLP_ENDPOINT`) replays a finished record into spans named by the
+GenAI semantic conventions (`invoke_agent kratos`, `chat {model}`,
+`execute_tool {tool}`) with the run id as the OTel trace id, on its own thread with
+a short timeout; it exports names, timings, token counts and statuses only.
+
 ## Session persistence
 
 Kratos stores session/turn history in SQLite (`data_dir/kratos.db`), no

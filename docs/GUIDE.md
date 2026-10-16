@@ -1068,6 +1068,8 @@ but here's the map. Everything starts with `/`.
 | `/collect` | check the basics now (ports, sign-ins, altered logs, accounts, vulnerable packages, configuration); `/collect all` adds the slow checks |
 | `/usage` | tokens used and rough cost this session |
 | `/context` | how full the model's memory is right now (`/compact` makes room) |
+| `/trace` | what the last run did, step by step (`/trace list`, `/trace <id>`) — see [Run records](#run-records) |
+| `/data` | what Kratos keeps on this computer and how big (`/data prune traces 90` removes old run records) — see [What Kratos keeps](#what-kratos-keeps) |
 | `/model` | switch, add, or edit which model Kratos uses |
 | `/settings` | models, tools, timezone, and this session's options |
 | `/timezone` | show or set the timezone times are displayed in (stored times stay UTC) |
@@ -1403,6 +1405,108 @@ ends a pause early.
 
 ---
 
+## What Kratos keeps
+
+Everything Kratos learns stays on this computer, in its data folder (`/doctor`
+shows where). **Kratos never deletes any of it on its own** — not old
+conversations, not log lines, not findings, not run records. How much to keep is
+your choice.
+
+`kratos data` (or `/data` in the app) lists every kind of stored data: what it
+is, where it lives, how big it is, the oldest and newest, and whether it is
+**personal data** — names of your machines, usernames and addresses from their
+logs, the questions you asked. `kratos data -v` adds the exact files and tables.
+`/doctor` shows the total in one line.
+
+| Kind | Personal? | What's in it |
+| --- | --- | --- |
+| Sessions and conversations | yes | your questions, the answers, each turn's steps |
+| Run records (traces) | yes — **the most detailed** | every model call, tool call and result, guard, and how each answer was built |
+| Host events | yes | the log lines Kratos read from your machines |
+| Findings and decisions | yes | what was found, its history, your accept/ignore decisions, reports |
+| Collected snapshots | yes | port scans, logs, processes, packages, persistence — what each check read |
+| Sub-agent pairing and telemetry | yes | paired machines and their live status |
+| Sub-agent installer scripts | **secret** | an install script holds a one-time pairing code |
+| Journal seal keys | **secret** | the keys that verify a machine's sealed journal |
+| Budget ledger, log-sync positions, collection bookkeeping | no | counts, times and positions |
+| Vulnerability data, threat-intel cache, vulscan CVE list | no | public data, downloaded |
+
+Two things are kept on a rolling basis rather than forever, and the list says
+so: a sub-agent's live status keeps its newest 500 telemetry readings and 200
+connection events per machine, and an unused pairing code is removed a week
+after it expired.
+
+**Removing old data yourself.** Every prune shows what would go first:
+
+```bash
+kratos data prune --category traces --older-than 90d
+```
+
+That prints how many run records (and how many MB) are older than 90 days and
+deletes nothing. Add `--apply` to remove them. The same works for `sessions`
+(old questions and answers, with their transcript files) and `host_events` (old
+log lines). In the app, `/data prune traces 90` shows the same summary and asks
+before deleting. If other data depends on what you remove — for example Kratos
+says it holds a period of a log completely, and you're deleting those lines —
+the prune says so and stops; `--force-orphans` removes the dependent part too.
+`kratos data history` lists every prune you've run. Old snapshots have their own
+command, `kratos snapshots prune`, which thins them (keeps one a day, then one a
+week, then one a month) and never removes the newest of each.
+
+## Run records
+
+Every investigation, `/run` audit, pipeline preset, scheduled run and trigger
+leaves a **run record** (a trace): one file per run in the data folder's
+`traces/` folder. It holds what the run actually did:
+
+- every model call — which model, tokens in and out, cost, how long it took;
+- every tool call — the arguments it got, whether you were asked to approve it
+  and what you said, its result (up to 256 KB; a bigger one keeps its start and
+  a fingerprint of the whole), how long it took;
+- every check Kratos ran by itself before the model started, and whether it was
+  reused, ran, or finished in the background;
+- every time an answer check sent an answer back or added a NOTE;
+- how the final answer was put together: which findings Kratos listed at the
+  top, the NOTEs it added, how long the model's own text was.
+
+```bash
+kratos trace list
+kratos trace show 3f2a91c0
+```
+
+`kratos trace show` takes the first few characters of a run's id (the end of an
+investigation prints it; `kratos trace list` lists them) and prints the steps as
+a tree with the totals. `--json` prints the whole record. In the app, `/trace`
+shows the last run of this session. A scheduled run that started a trigger
+investigation lists it under "Runs started inside this one".
+
+A run record holds everything the run read — it is the most detailed file Kratos
+writes, so treat it like the logs themselves. Text in it from your machines is
+shown safely (like everywhere else); the file keeps the original. Settings →
+General → Run records: turn them off, change the size kept per result, or keep
+the full text sent to the model as well (off by default).
+
+**Sending run records to your own tools (optional).** If you run an
+OpenTelemetry collector (Jaeger, Grafana Tempo, Phoenix, ...), Kratos can send a
+copy of each run there. Install the extra and point it at your collector:
+
+```bash
+pip install 'kratos[otel]'
+```
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+Then turn on Settings → General → "Copy to your OpenTelemetry collector". What is
+sent: the steps' names and timings, token counts and cost, model and tool names,
+guard names and finding ids. **What is never sent:** tool arguments and results,
+anything sent to the model, your question, machine names. Nothing is sent unless
+both the setting is on and that address is set. If the collector is down, the run
+is not affected — Kratos logs it once and the local record is still written.
+
+---
+
 ## Using Kratos from the command line and other tools
 
 Everything starts from `kratos`, but a few things work without the full-screen UI:
@@ -1421,6 +1525,8 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
 | `kratos attack-layer` | write an ATT&CK Navigator file of what Kratos can detect, or (`--observed`) what its open findings show ([The ATT&CK line](#understanding-findings)) |
 | `kratos budget` | model spending limits: show today's spend, `set NAME VALUE`, `resume SOURCE` ([Keeping model costs under control](#keeping-model-costs-under-control)) |
+| `kratos trace` | run records: `list` recent runs, `show ID` one run's model calls, tool calls, checks, guards and answer ([Run records](#run-records)) |
+| `kratos data` | what Kratos keeps on this computer, how big, personal or not; `prune` removes old data (preview first), `history` lists prunes ([What Kratos keeps](#what-kratos-keeps)) |
 | `kratos vulndb-update` | download the package-vulnerability data and rebuild the local index (`--status`, `--about`, `--ecosystems`) ([Vulnerable packages](#vulnerable-packages)) |
 | `kratos seal` | journal sealing: `set-key HOST` (reads the key from what you paste, never the command line), `status`, `verify HOST`, `remove-key HOST` |
 
