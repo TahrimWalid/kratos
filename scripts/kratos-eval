@@ -1,0 +1,4 @@
+#!/bin/sh
+# The regression gate's command line (docs/phaseB/B.4). A thin wrapper over `python -m evals`
+# so the documented `kratos-eval ...` works from a checkout. Usage: kratos-eval <run|gate|...>
+exec python3 -m evals "$@"

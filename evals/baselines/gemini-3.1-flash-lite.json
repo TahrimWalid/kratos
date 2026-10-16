@@ -1,0 +1,52 @@
+{
+  "model": "gemini-3.1-flash-lite",
+  "commit": "df00e5a",
+  "accepted_at": "2026-10-16T18:57:39",
+  "scenarios": {
+    "A1": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "A3": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "A6": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "A8": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "R1_live": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "C6": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "F1": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "G1_suid": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    },
+    "G1_covered": {
+      "person_pass": 5,
+      "n": 5,
+      "model_alone_pass": 5
+    }
+  }
+}

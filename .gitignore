@@ -117,3 +117,6 @@ repomix-output.xml
 
 # CI scripts are shipped despite the blanket *.sh ignore above
 !scripts/ci/*.sh
+
+# The eval command-line wrapper is shipped despite the blanket *.sh/no-extension ignores
+!scripts/kratos-eval

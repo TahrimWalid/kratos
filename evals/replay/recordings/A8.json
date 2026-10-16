@@ -1,0 +1,5762 @@
+{
+ "format": 1,
+ "scenario": "A8",
+ "goal": "check for suspicious activity",
+ "source_run_id": "3792ec56ddda48d59fe3b789491aa321",
+ "target": "10.136.28.168",
+ "collection": {
+  "target": "10.136.28.168",
+  "target_key": "10.136.28.168",
+  "transport": "ssh",
+  "checks": [
+   {
+    "name": "auth_activity",
+    "label": "sign-in activity (24 h)",
+    "cost": "quick",
+    "status": "partial",
+    "source": "ran",
+    "summary": "264 failed SSH login(s) from 1 address(es); 15 burst(s); only 99.7% of the 24 h is covered by the logs; the rest is unknown, not clean",
+    "gaps": [],
+    "finding_ids": [
+     "CORR-SSH-001",
+     "AUTH-003",
+     "COV-001"
+    ],
+    "finished_at": 1792176370.3192277,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [
+     "measure_auth_activity"
+    ],
+    "inputs": [
+     "auth_stats",
+     "auth_patterns"
+    ],
+    "steps": [
+     {
+      "tool": "measure_auth_activity",
+      "args": {
+       "window": {
+        "kind": "rolling",
+        "amount": 24,
+        "unit": "hour"
+       }
+      },
+      "observation": {
+       "status": "ok",
+       "result": {
+        "status": "ok",
+        "target": "ubuntu@10.136.28.168",
+        "measurement": "exhaustive (every matching event in the covered window, counted on the target)",
+        "window": {
+         "id": "w1",
+         "label": "last 24 hours",
+         "tz": "Etc/UTC",
+         "notes": [],
+         "chip": "w1 last 24 hours: 2026-10-15 18:45 \u2192 2026-10-16 18:45 (Etc/UTC)",
+         "since_utc": "2026-10-15T18:45:59+00:00",
+         "until_utc": "2026-10-16T18:45:59+00:00",
+         "coverage_percent": 99.7,
+         "covered_from": "2026-10-15T18:45:59+00:00",
+         "covered_to": "2026-10-16T18:45:59+00:00",
+         "problems": [
+          "no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00",
+          "no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00"
+         ],
+         "truncated": true,
+         "oldest_returned": "2026-10-15T18:45:59+00:00",
+         "coverage": "PARTIAL (99.7%): no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00; no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
+         "target_clock_offset_s": 0.0
+        },
+        "counts": {
+         "ssh_failed_login": 264,
+         "ssh_other": 22394,
+         "sudo_other": 69164,
+         "sudo_session_close": 34544,
+         "sudo_session_open": 34582
+        },
+        "failed_login_sources": [
+         {
+          "ip": "10.136.28.52",
+          "failed_logins": 264,
+          "first_seen": "2026-10-15T22:19:45+00:00",
+          "last_seen": "2026-10-16T18:45:29+00:00"
+         }
+        ],
+        "distinct_failed_login_ips": 1,
+        "top_failed_login_users": [
+         {
+          "user": "bruteforce_probe",
+          "count": 136
+         },
+         {
+          "user": "baduser_a8",
+          "count": 124
+         },
+         {
+          "user": "b5probe1",
+          "count": 1
+         },
+         {
+          "user": "b5probe2",
+          "count": 1
+         },
+         {
+          "user": "b5probe4",
+          "count": 1
+         }
+        ],
+        "bursts": [
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T22:19:45+00:00",
+          "end": "2026-10-15T22:24:22+00:00",
+          "count": 39,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 39
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 39
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T22:37:15+00:00",
+          "end": "2026-10-15T22:42:14+00:00",
+          "count": 30,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 30
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 30
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T22:42:50+00:00",
+          "end": "2026-10-15T22:44:37+00:00",
+          "count": 7,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 7
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 7
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T23:11:02+00:00",
+          "end": "2026-10-15T23:15:52+00:00",
+          "count": 30,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 30
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 30
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T23:16:30+00:00",
+          "end": "2026-10-15T23:17:29+00:00",
+          "count": 6,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 6
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 6
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T23:34:47+00:00",
+          "end": "2026-10-15T23:39:20+00:00",
+          "count": 22,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 22
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 22
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-15T23:40:03+00:00",
+          "end": "2026-10-15T23:41:20+00:00",
+          "count": 12,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 12
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 12
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T07:23:14+00:00",
+          "end": "2026-10-16T07:26:58+00:00",
+          "count": 21,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 21
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 21
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T07:28:16+00:00",
+          "end": "2026-10-16T07:32:02+00:00",
+          "count": 16,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 16
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 16
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T07:47:33+00:00",
+          "end": "2026-10-16T07:52:02+00:00",
+          "count": 24,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 24
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 24
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T07:52:49+00:00",
+          "end": "2026-10-16T07:55:15+00:00",
+          "count": 11,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 11
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 11
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T08:26:13+00:00",
+          "end": "2026-10-16T08:28:55+00:00",
+          "count": 20,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 20
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 20
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T08:39:02+00:00",
+          "end": "2026-10-16T08:42:46+00:00",
+          "count": 15,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 15
+           }
+          ],
+          "top_users": [
+           {
+            "user": "baduser_a8",
+            "count": 15
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T15:46:30+00:00",
+          "end": "2026-10-16T15:46:30+00:00",
+          "count": 4,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 4
+           }
+          ],
+          "top_users": [
+           {
+            "user": "b5probe1",
+            "count": 1
+           },
+           {
+            "user": "b5probe2",
+            "count": 1
+           },
+           {
+            "user": "b5probe3",
+            "count": 1
+           },
+           {
+            "user": "b5probe4",
+            "count": 1
+           }
+          ]
+         },
+         {
+          "event_type": "ssh_failed_login",
+          "start": "2026-10-16T18:44:10+00:00",
+          "end": "2026-10-16T18:45:29+00:00",
+          "count": 7,
+          "top_source_ips": [
+           {
+            "ip": "10.136.28.52",
+            "count": 7
+           }
+          ],
+          "top_users": [
+           {
+            "user": "bruteforce_probe",
+            "count": 4
+           },
+           {
+            "user": "baduser_a8",
+            "count": 3
+           }
+          ]
+         }
+        ],
+        "fail2ban": {
+         "bans": 0,
+         "unbans": 0,
+         "events": []
+        },
+        "sources": {
+         "used": [
+          "journald"
+         ],
+         "journald": "present",
+         "classic_logs": "skipped_covered",
+         "classic_files": [],
+         "target_timezone": null
+        },
+        "samples": {
+         "note": "SAMPLE lines only -- counts above are authoritative",
+         "newest": [
+          {
+           "time": "2026-10-16T18:46:09+00:00",
+           "ip": null,
+           "line": "sudo: pam_unix(sudo:session): session closed for user root"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo: pam_unix(sudo:session): session closed for user root"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM,_PID,_UID,_SYSTEMD_UNIT,UNIT,PRIORITY,_BOOT_ID,_TRANSPORT,SYSLO"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sshd: error: kex_exchange_identification: Connection closed by remote host"
+          },
+          {
+           "time": "2026-10-16T18:46:08+00:00",
+           "ip": null,
+           "line": "sshd: Connection closed by 10.136.28.1 port 43452"
+          }
+         ],
+         "first_line_per_failing_ip": [
+          {
+           "time": "2026-10-15T22:19:45+00:00",
+           "ip": "10.136.28.52",
+           "line": "sshd: Invalid user bruteforce_probe from 10.136.28.52 port 56258"
+          }
+         ]
+        },
+        "kratos_own_activity_excluded": {
+         "kratos_ip": "10.136.28.1",
+         "events": {
+          "ssh_success_login": 5378
+         }
+        },
+        "persisted": {
+         "stats_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_stats_w1_20261016_184610.json",
+         "patterns_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_patterns_w1_20261016_184610.json"
+        }
+       }
+      }
+     }
+    ]
+   },
+   {
+    "name": "log_integrity",
+    "label": "log tampering",
+    "cost": "quick",
+    "status": "ok",
+    "source": "ran",
+    "summary": "something looks off in: boot history",
+    "gaps": [],
+    "finding_ids": [
+     "LOG-003"
+    ],
+    "finished_at": 1792176370.479931,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [
+     "check_log_integrity"
+    ],
+    "inputs": [
+     "log_integrity"
+    ],
+    "steps": [
+     {
+      "tool": "check_log_integrity",
+      "args": {},
+      "observation": {
+       "status": "ok",
+       "result": {
+        "status": "ok",
+        "target": "10.136.28.168",
+        "checked_at": "2026-10-16T18:46:00+00:00",
+        "file_state": {
+         "status": "ok",
+         "evidence": [],
+         "coverage": "first look at 5 file(s) (auth.log, syslog, dpkg.log, wtmp, btmp): recorded as the baseline, not judged; 3 file(s) not readable by this user, so in-place edits of them can't be seen (size/inode changes still are)"
+        },
+        "journal": {
+         "status": "ok",
+         "evidence": [],
+         "coverage": "compared the sequence numbers of 18 journal file(s)"
+        },
+        "boots": {
+         "status": "suspicious",
+         "evidence": [
+          "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot 9853ace22780 ended 2026-10-15T11:42:11+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot a21f6da93550 ended 2026-10-15T11:59:27+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+          "boot 5599f23607c3 ended 2026-10-15T12:02:56+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)"
+         ],
+         "coverage": "looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly"
+        },
+        "login_records": {
+         "status": "ok",
+         "evidence": [],
+         "coverage": "read the newest 67 record(s) of wtmp (the whole file); btmp: unreadable (btmp is readable only by root and the utmp group -- read it through the sub-agent)"
+        },
+        "auditd": {
+         "status": "ok",
+         "evidence": [],
+         "coverage": "auditd is not installed -- process execution history is unavailable on this machine"
+        },
+        "sealing": {
+         "status": "not set up",
+         "note": "journal sealing is not configured for this machine (recommended: /target seal)"
+        },
+        "suspicious_checks": [
+         "boots"
+        ],
+        "next_step": "run correlate_findings to turn these results into findings (LOG-*/SEAL-*)",
+        "result_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/integrity/log_integrity_20261016_184601_568545.json"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "name": "ports",
+    "label": "open ports",
+    "cost": "quick",
+    "status": "ok",
+    "source": "ran",
+    "summary": "1 open port(s): 22/tcp ssh",
+    "gaps": [],
+    "finding_ids": [
+     "CORR-SSH-001",
+     "NET-002"
+    ],
+    "finished_at": 1792176370.529593,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [
+     "run_nmap_scan"
+    ],
+    "inputs": [
+     "nmap_parsed"
+    ],
+    "steps": [
+     {
+      "tool": "run_nmap_scan",
+      "args": {},
+      "observation": {
+       "status": "ok",
+       "result": {
+        "xml_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/scans/nmap_10.136.28.168_20261016_184600.xml",
+        "parsed_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/scans/parsed_20261016_184608.json",
+        "target": "10.136.28.168",
+        "host_count": 1,
+        "open_ports_total": 1
+       }
+      }
+     }
+    ]
+   },
+   {
+    "name": "privileged_accounts",
+    "label": "privileged accounts",
+    "cost": "quick",
+    "status": "partial",
+    "source": "ran",
+    "summary": "2 account(s) hold privileged access; first look, nothing to compare with; some account-change history is missing",
+    "gaps": [],
+    "finding_ids": [
+     "PRIV-004"
+    ],
+    "finished_at": 1792176370.7159867,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [
+     "list_privileged_accounts"
+    ],
+    "inputs": [
+     "privileged_accounts"
+    ],
+    "steps": [
+     {
+      "tool": "list_privileged_accounts",
+      "args": {
+       "lookback_days": 30
+      },
+      "observation": {
+       "status": "ok",
+       "result": {
+        "status": "ok",
+        "target": "ubuntu@10.136.28.168",
+        "checked_at": "2026-10-16T18:46:00+00:00",
+        "lookback_days": 30,
+        "privileged_accounts": [
+         {
+          "user": "root",
+          "via": [
+           "UID 0 (root)"
+          ],
+          "uid": 0,
+          "shell": "/bin/bash",
+          "login_shell": true,
+          "local_account": true
+         },
+         {
+          "user": "ubuntu",
+          "via": [
+           "member of 'sudo' (sudo group)",
+           "sudoers grant (/etc/sudoers.d/90-incus)"
+          ],
+          "uid": 1000,
+          "shell": "/bin/bash",
+          "login_shell": true,
+          "local_account": true
+         }
+        ],
+        "recent_privilege_grants": [],
+        "past_privilege_grants_no_longer_in_effect": [
+         {
+          "time": "2026-10-14T02:04:30+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:04:30+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:04:50+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:04:50+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:05:09+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:05:09+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:05:29+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:05:29+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:00+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:00+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:40+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:06:40+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:07:00+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:07:00+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:07:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-14T02:07:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:18:20+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:18:20+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:18:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:18:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:01+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:01+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:25+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:25+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:43+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:19:43+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:02+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:02+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:24+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:24+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:54+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:20:54+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:21:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:21:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:21:56+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T11:21:56+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:32:55+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:32:55+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:33:27+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:33:27+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:33:49+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:33:49+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:34:12+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:34:12+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:34:33+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:34:33+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:08+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:08+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:28+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:28+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:54+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:35:54+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:36:19+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:36:19+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:36:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T22:36:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:30:59+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:30:59+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:31:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:31:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:31:46+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:31:46+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:08+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:08+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:28+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:28+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:50+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:32:50+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:15+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:15+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:39+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:39+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:59+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:33:59+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:34:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-15T23:34:22+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:42:03+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:42:03+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:42:32+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:42:32+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:43:10+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:43:10+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:43:33+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:43:33+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:44:09+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:44:09+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:44:34+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:44:34+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:45:11+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:45:11+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:45:32+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:45:32+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:46:23+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:46:23+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:46:44+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T07:46:44+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:35:47+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:35:47+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:36:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:36:21+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:36:55+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:36:55+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:38:04+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T08:38:04+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T18:42:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         },
+         {
+          "time": "2026-10-16T18:42:42+00:00",
+          "action": "added_to_group",
+          "user": "eviladmin_eval",
+          "group": "sudo",
+          "uid": null,
+          "source": "usermod",
+          "in_effect": false,
+          "now": "account no longer exists"
+         }
+        ],
+        "other_account_changes": [
+         {
+          "time": "2026-10-16T08:36:21+00:00",
+          "action": "user_created",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:36:54+00:00",
+          "action": "user_deleted",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:36:54+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:36:54+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:36:55+00:00",
+          "action": "user_created",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "user_deleted",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:37:29+00:00",
+          "action": "user_created",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:38:02+00:00",
+          "action": "user_deleted",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:38:02+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:38:02+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:38:03+00:00",
+          "action": "user_created",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:39:01+00:00",
+          "action": "user_deleted",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T08:39:01+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T08:39:01+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T18:42:42+00:00",
+          "action": "user_created",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T18:43:24+00:00",
+          "action": "user_deleted",
+          "user": "eviladmin_eval",
+          "group": null
+         },
+         {
+          "time": "2026-10-16T18:43:24+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         },
+         {
+          "time": "2026-10-16T18:43:24+00:00",
+          "action": "removed_from_group",
+          "user": "eviladmin_eval",
+          "group": "sudo"
+         }
+        ],
+        "changed_since_last_check": {
+         "previous_snapshot_at": null,
+         "added": [],
+         "removed": []
+        },
+        "evidence_gaps": [
+         "The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+        ],
+        "sudoers_grants": [
+         {
+          "file": "/etc/sudoers",
+          "subject": "root",
+          "line": "root\tALL=(ALL:ALL) ALL"
+         },
+         {
+          "file": "/etc/sudoers",
+          "subject": "%admin",
+          "line": "%admin ALL=(ALL) ALL"
+         },
+         {
+          "file": "/etc/sudoers",
+          "subject": "%sudo",
+          "line": "%sudo\tALL=(ALL:ALL) ALL"
+         },
+         {
+          "file": "/etc/sudoers.d/90-incus",
+          "subject": "ubuntu",
+          "line": "ubuntu ALL=(ALL) NOPASSWD:ALL"
+         }
+        ],
+        "snapshot_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/context/privileged_accounts_20261016_184600_633077.json"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "name": "live_response",
+    "label": "what is running right now",
+    "cost": "quick",
+    "status": "partial",
+    "source": "ran",
+    "summary": "30 running process(es) checked; nothing unusual",
+    "gaps": [
+     "live response: 19 process(es) of other users could not be read over this SSH login",
+     "live response: 4 temp folder(s) could not be opened over this SSH login"
+    ],
+    "finding_ids": [
+     "LIVE-007"
+    ],
+    "finished_at": 1792176370.7562346,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [],
+    "inputs": [
+     "live_response"
+    ],
+    "steps": []
+   },
+   {
+    "name": "persistence",
+    "label": "where someone could keep access",
+    "cost": "quick",
+    "status": "partial",
+    "source": "ran",
+    "summary": "first look: 553 place(s) that can start programs recorded as the baseline; nothing new",
+    "gaps": [
+     "persistence: 2 place(s) only root can read were not read over this SSH login"
+    ],
+    "finding_ids": [
+     "PERSIST-009"
+    ],
+    "finished_at": 1792176370.805848,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [],
+    "inputs": [
+     "persistence"
+    ],
+    "steps": []
+   },
+   {
+    "name": "packages",
+    "label": "vulnerable packages",
+    "cost": "quick",
+    "status": "partial",
+    "source": "ran",
+    "summary": "279 installed package(s); not matched against vulnerability data",
+    "gaps": [
+     "packages: no vulnerability data has been downloaded yet -- run `kratos vulndb-update` on the Kratos machine"
+    ],
+    "finding_ids": [
+     "PKG-004"
+    ],
+    "finished_at": 1792176370.8991513,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [],
+    "inputs": [
+     "packages"
+    ],
+    "steps": []
+   },
+   {
+    "name": "config_audit",
+    "label": "configuration audit",
+    "cost": "quick",
+    "status": "ok",
+    "source": "ran",
+    "summary": "6 of 6 settings are fine",
+    "gaps": [],
+    "finding_ids": [],
+    "finished_at": 1792176371.0341475,
+    "age_seconds": 0.0,
+    "reason": "",
+    "tools": [
+     "run_config_audit"
+    ],
+    "inputs": [],
+    "steps": [
+     {
+      "tool": "run_config_audit",
+      "args": {},
+      "observation": {
+       "status": "ok",
+       "result": {
+        "status": "ok",
+        "target": "ubuntu@10.136.28.168",
+        "checks": [
+         {
+          "check": "ssh_root_login",
+          "status": "PASS",
+          "detail": "Root login only allowed via key, not password (PermitRootLogin without-password)"
+         },
+         {
+          "check": "ssh_password_auth",
+          "status": "PASS",
+          "detail": "Key-only authentication enforced (PasswordAuthentication no)"
+         },
+         {
+          "check": "firewall",
+          "status": "PASS",
+          "detail": "ufw is active (Status: active)"
+         },
+         {
+          "check": "world_writable_etc",
+          "status": "PASS",
+          "detail": "No world-writable files found under /etc"
+         },
+         {
+          "check": "unattended_upgrades",
+          "status": "PASS",
+          "detail": "unattended-upgrades installed and service enabled"
+         },
+         {
+          "check": "fail2ban_status",
+          "status": "PASS",
+          "detail": "fail2ban active with SSH jail \"sshd\" (maxretry=5, bantime=600s) -- reported as-is, not checked against any specific target values"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   },
+   {
+    "name": "log_sync",
+    "label": "log sync",
+    "cost": "quick",
+    "status": "running",
+    "source": "background",
+    "summary": "still running -- its result is added when it finishes",
+    "gaps": [
+     "log sync: still running -- its result is added when it finishes"
+    ],
+    "finding_ids": [],
+    "finished_at": null,
+    "age_seconds": null,
+    "reason": "still running when the investigation started",
+    "tools": [],
+    "inputs": [
+     "events"
+    ],
+    "steps": []
+   }
+  ],
+  "correlation": {
+   "findings_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.json",
+   "findings_md_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.md",
+   "inputs_used": {
+    "nmap_parsed": "parsed_20261016_184608.json",
+    "auth_stats": "auth_stats_w1_20261016_184610.json",
+    "auth_patterns": "auth_patterns_w1_20261016_184610.json",
+    "system_context": null,
+    "auth_trends": null,
+    "file_integrity": null,
+    "privileged_accounts": "privileged_accounts_20261016_184600_633077.json",
+    "vuln_scan": null,
+    "log_integrity": "log_integrity_20261016_184601_568545.json",
+    "persistence": "persistence_20261016_184603_129944.json",
+    "live_response": "live_response_20261016_184601_374417.json",
+    "packages": "packages_f4d5af6934290bf0.json"
+   },
+   "missing_inputs": [
+    "system_context",
+    "auth_trends",
+    "file_integrity"
+   ],
+   "input_errors": {},
+   "staleness_warning": null,
+   "findings": [
+    {
+     "id": "CORR-SSH-001",
+     "title": "SSH exposed with failed-login burst activity observed",
+     "severity": "high",
+     "evidence": [
+      "ssh exposed (nmap scan detected port 22 open)",
+      "Bursts of failed SSH logins: 15",
+      "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+      "for example, burst of failed SSH logins: 39 between 2026-10-15 22:19:45 UTC and 2026-10-15 22:24:22 UTC",
+      "Source IP(s) behind this activity: 10.136.28.52 (264 events).",
+      "Threat-intel corroboration (offline OTX cache): source IP 10.136.28.52 is KNOWN-MALICIOUS -- KRATOS-EVAL Known SSH Bruteforce Source -- this corroborates a real attack; treat with raised confidence/severity.",
+      "One finding for this burst -- also matched: CORR-001 (exposed SSH with a burst), AUTH-004 (the burst itself)",
+      "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+     ],
+     "recommendation": [
+      "Confirm SSH is required on this host.",
+      "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+      "Prefer key-based authentication; disable password auth if possible.",
+      "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban)."
+     ],
+     "playbooks": [
+      {
+       "title": "Inspect recent SSH authentication activity",
+       "commands": [
+        "journalctl _COMM=sshd --since '2 hours ago' --no-pager | tail -n 120",
+        "grep -n 'Failed password' /var/log/auth.log | tail -n 80",
+        "grep -n 'Failed publickey' /var/log/auth.log | tail -n 80"
+       ],
+       "notes": [
+        "Confirm whether failures are expected (testing) or suspicious (repeated / unknown IPs)."
+       ]
+      },
+      {
+       "title": "Verify SSH exposure and listeners",
+       "commands": [
+        "ss -lntp | grep ':22 '",
+        "sudo ufw status verbose || true",
+        "systemctl status sshd --no-pager || systemctl status ssh --no-pager"
+       ],
+       "notes": [
+        "If SSH is not needed publicly, restrict access."
+       ]
+      }
+     ],
+     "source_ips": [
+      "10.136.28.52"
+     ],
+     "also_matched": [
+      "CORR-001",
+      "AUTH-004"
+     ],
+     "collected_at": "2026-10-16T18:46:10+00:00",
+     "subject": "",
+     "entities": [
+      "10.136.28.52"
+     ],
+     "attack": [
+      {
+       "technique_id": "T1110.001",
+       "technique": "Password Guessing",
+       "tactic_id": "TA0006",
+       "tactic": "Credential Access",
+       "tactics": [
+        {
+         "id": "TA0006",
+         "name": "Credential Access",
+         "shortname": "credential-access"
+        }
+       ],
+       "version": "19.2",
+       "url": "https://attack.mitre.org/techniques/T1110/001"
+      }
+     ],
+     "finding_key": "077e6a9c3a33a4701705583e54defb8ede13eb39d527b205a434ee6ea840d238",
+     "state": "open",
+     "first_seen": "2026-10-16T18:46:14+00:00",
+     "last_seen": "2026-10-16T18:46:14+00:00",
+     "change": "new"
+    },
+    {
+     "id": "NET-002",
+     "title": "Open ports detected (attack surface present)",
+     "severity": "medium",
+     "evidence": [
+      "From the latest port scan",
+      "Open ports found: 1",
+      "Exposed endpoints:",
+      "10.136.28.168 tcp/22 (ssh)"
+     ],
+     "recommendation": [
+      "Validate each exposed service is necessary.",
+      "Restrict access using firewall rules or bind services to trusted interfaces.",
+      "Keep exposed services updated and use strong authentication (especially SSH)."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:08+00:00",
+     "subject": "",
+     "entities": [
+      "22/tcp"
+     ],
+     "attack": [],
+     "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
+     "state": "open",
+     "first_seen": "2026-10-16T18:46:14+00:00",
+     "last_seen": "2026-10-16T18:46:14+00:00",
+     "change": "new"
+    },
+    {
+     "id": "LOG-003",
+     "title": "Machine went down without a clean shutdown",
+     "severity": "low",
+     "evidence": [
+      "Checked 2026-10-16 18:46:00 UTC",
+      "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown",
+      "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown",
+      "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown",
+      "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown",
+      "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown",
+      "What was checked: looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly",
+      "This is context, not proof of tampering: a crash or power cut does the same."
+     ],
+     "recommendation": [
+      "If nobody restarted it on purpose, find out why it went down (hardware, kernel, power, or someone forcing a reboot to cut logging short)."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:01+00:00",
+     "subject": "",
+     "entities": [
+      "0907bd204ce440cc9dbd7de8f3289520",
+      "2f5bd599ff5a4180a24db87a8b4f22a0",
+      "4c75cd86a0fb4b3e8aae3a8f39647a86",
+      "5599f23607c34578aca4f5d2f00f5d43",
+      "57eb3a761c084473bc551d203f37e94b",
+      "9759ea4124464ffd94ed7add450a5099",
+      "9853ace2278046209a09c8ccbf5239b8",
+      "a21f6da935504bd6885bcdd3806ea3cb",
+      "eaa8386452b844a5bb2906a5ff99e3e7",
+      "fa6690cf3276445ba14570467f8fa7f2"
+     ],
+     "attack": [],
+     "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
+     "state": "open",
+     "first_seen": "2026-10-16T18:46:14+00:00",
+     "last_seen": "2026-10-16T18:46:14+00:00",
+     "change": "new"
+    },
+    {
+     "id": "AUTH-003",
+     "title": "Sudo session activity observed",
+     "severity": "info",
+     "evidence": [
+      "sudo sessions opened: 34582",
+      "sudo sessions closed: 34544",
+      "From the latest read of the login logs",
+      "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+      "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+     ],
+     "recommendation": [
+      "If this corresponds to expected admin tasks (updates/installs), no action needed.",
+      "If unexpected, review who initiated privileged actions and when they occurred."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:10+00:00",
+     "subject": "",
+     "entities": [],
+     "attack": [],
+     "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
+     "state": "open",
+     "first_seen": "2026-10-16T18:46:14+00:00",
+     "last_seen": "2026-10-16T18:46:14+00:00",
+     "change": "new"
+    },
+    {
+     "id": "PRIV-004",
+     "title": "2 account(s) hold privileged access on the target",
+     "severity": "info",
+     "evidence": [
+      "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-10-16 18:46:00 UTC",
+      "root: UID 0 (root)",
+      "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)",
+      "Evidence gap: The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+     ],
+     "recommendation": [
+      "Keep this list minimal; remove access nobody needs."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:00+00:00",
+     "subject": "",
+     "entities": [
+      "root",
+      "ubuntu"
+     ],
+     "attack": [],
+     "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
+     "state": "open",
+     "first_seen": "2026-10-16T18:46:14+00:00",
+     "last_seen": "2026-10-16T18:46:14+00:00",
+     "change": "new"
+    },
+    {
+     "id": "PERSIST-009",
+     "title": "What the persistence check could not see",
+     "severity": "info",
+     "evidence": [
+      "From the persistence check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+      "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+      "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
+      "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
+     ],
+     "recommendation": [
+      "A location that was not read is unknown, not clean."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:03+00:00",
+     "subject": "",
+     "entities": [],
+     "attack": [],
+     "state": "run_note",
+     "change": null
+    },
+    {
+     "id": "LIVE-007",
+     "title": "What the live-response check noted",
+     "severity": "info",
+     "evidence": [
+      "From the live-response check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+      "  Some processes could not be fully read as this user (19 could not read environ, 19 could not read exe, 19 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+      "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-Cufibh, /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-resolved.service-1gF0oy, /var/tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-UUWSIi). Read this machine through its sub-agent (it reads as root), or run the check as root."
+     ],
+     "recommendation": [
+      "A process or location that was not read is unknown, not clean.",
+      "A restart-needed note above is routine housekeeping, not a security finding."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:01+00:00",
+     "subject": "",
+     "entities": [],
+     "attack": [],
+     "state": "run_note",
+     "change": null
+    },
+    {
+     "id": "PKG-004",
+     "title": "Part of the package vulnerability check could not be done",
+     "severity": "info",
+     "evidence": [
+      "no vulnerability data has been downloaded yet -- run `kratos vulndb-update` on the Kratos machine",
+      "Vulnerabilities in what wasn't checked are unknown, not absent."
+     ],
+     "recommendation": [
+      "Fix what is listed above (most often: run `kratos vulndb-update` on the Kratos machine)."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:01+00:00",
+     "subject": "",
+     "entities": [],
+     "attack": [],
+     "state": "run_note",
+     "change": null
+    },
+    {
+     "id": "COV-001",
+     "title": "Authentication data covers only part of the requested time window",
+     "severity": "info",
+     "evidence": [
+      "Requested window start: 2026-10-15 18:45:59 UTC",
+      "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+     ],
+     "recommendation": [
+      "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
+      "Re-run with a narrower time window to analyze the uncovered part."
+     ],
+     "playbooks": [],
+     "source_ips": [],
+     "also_matched": [],
+     "collected_at": "2026-10-16T18:46:10+00:00",
+     "subject": "",
+     "entities": [],
+     "attack": [],
+     "state": "run_note",
+     "change": null
+    }
+   ],
+   "count": 9,
+   "lifecycle": "New 5 \u00b7 Still open 0 \u00b7 Fixed 0 \u00b7 Hidden by your decisions 0"
+  },
+  "correlation_error": null,
+  "correlation_step": {
+   "tool": "correlate_findings",
+   "args": {},
+   "observation": {
+    "status": "ok",
+    "result": {
+     "findings_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.json",
+     "findings_md_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.md",
+     "inputs_used": {
+      "nmap_parsed": "parsed_20261016_184608.json",
+      "auth_stats": "auth_stats_w1_20261016_184610.json",
+      "auth_patterns": "auth_patterns_w1_20261016_184610.json",
+      "system_context": null,
+      "auth_trends": null,
+      "file_integrity": null,
+      "privileged_accounts": "privileged_accounts_20261016_184600_633077.json",
+      "vuln_scan": null,
+      "log_integrity": "log_integrity_20261016_184601_568545.json",
+      "persistence": "persistence_20261016_184603_129944.json",
+      "live_response": "live_response_20261016_184601_374417.json",
+      "packages": "packages_f4d5af6934290bf0.json"
+     },
+     "missing_inputs": [
+      "system_context",
+      "auth_trends",
+      "file_integrity"
+     ],
+     "input_errors": {},
+     "staleness_warning": null,
+     "findings": [
+      {
+       "id": "CORR-SSH-001",
+       "title": "SSH exposed with failed-login burst activity observed",
+       "severity": "high",
+       "evidence": [
+        "ssh exposed (nmap scan detected port 22 open)",
+        "Bursts of failed SSH logins: 15",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "for example, burst of failed SSH logins: 39 between 2026-10-15 22:19:45 UTC and 2026-10-15 22:24:22 UTC",
+        "Source IP(s) behind this activity: 10.136.28.52 (264 events).",
+        "Threat-intel corroboration (offline OTX cache): source IP 10.136.28.52 is KNOWN-MALICIOUS -- KRATOS-EVAL Known SSH Bruteforce Source -- this corroborates a real attack; treat with raised confidence/severity.",
+        "One finding for this burst -- also matched: CORR-001 (exposed SSH with a burst), AUTH-004 (the burst itself)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Confirm SSH is required on this host.",
+        "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+        "Prefer key-based authentication; disable password auth if possible.",
+        "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban)."
+       ],
+       "playbooks": [
+        {
+         "title": "Inspect recent SSH authentication activity",
+         "commands": [
+          "journalctl _COMM=sshd --since '2 hours ago' --no-pager | tail -n 120",
+          "grep -n 'Failed password' /var/log/auth.log | tail -n 80",
+          "grep -n 'Failed publickey' /var/log/auth.log | tail -n 80"
+         ],
+         "notes": [
+          "Confirm whether failures are expected (testing) or suspicious (repeated / unknown IPs)."
+         ]
+        },
+        {
+         "title": "Verify SSH exposure and listeners",
+         "commands": [
+          "ss -lntp | grep ':22 '",
+          "sudo ufw status verbose || true",
+          "systemctl status sshd --no-pager || systemctl status ssh --no-pager"
+         ],
+         "notes": [
+          "If SSH is not needed publicly, restrict access."
+         ]
+        }
+       ],
+       "source_ips": [
+        "10.136.28.52"
+       ],
+       "also_matched": [
+        "CORR-001",
+        "AUTH-004"
+       ],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [
+        "10.136.28.52"
+       ],
+       "attack": [
+        {
+         "technique_id": "T1110.001",
+         "technique": "Password Guessing",
+         "tactic_id": "TA0006",
+         "tactic": "Credential Access",
+         "tactics": [
+          {
+           "id": "TA0006",
+           "name": "Credential Access",
+           "shortname": "credential-access"
+          }
+         ],
+         "version": "19.2",
+         "url": "https://attack.mitre.org/techniques/T1110/001"
+        }
+       ],
+       "finding_key": "077e6a9c3a33a4701705583e54defb8ede13eb39d527b205a434ee6ea840d238",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "NET-002",
+       "title": "Open ports detected (attack surface present)",
+       "severity": "medium",
+       "evidence": [
+        "From the latest port scan",
+        "Open ports found: 1",
+        "Exposed endpoints:",
+        "10.136.28.168 tcp/22 (ssh)"
+       ],
+       "recommendation": [
+        "Validate each exposed service is necessary.",
+        "Restrict access using firewall rules or bind services to trusted interfaces.",
+        "Keep exposed services updated and use strong authentication (especially SSH)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:08+00:00",
+       "subject": "",
+       "entities": [
+        "22/tcp"
+       ],
+       "attack": [],
+       "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "LOG-003",
+       "title": "Machine went down without a clean shutdown",
+       "severity": "low",
+       "evidence": [
+        "Checked 2026-10-16 18:46:00 UTC",
+        "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown",
+        "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown",
+        "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown",
+        "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown",
+        "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown",
+        "What was checked: looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly",
+        "This is context, not proof of tampering: a crash or power cut does the same."
+       ],
+       "recommendation": [
+        "If nobody restarted it on purpose, find out why it went down (hardware, kernel, power, or someone forcing a reboot to cut logging short)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [
+        "0907bd204ce440cc9dbd7de8f3289520",
+        "2f5bd599ff5a4180a24db87a8b4f22a0",
+        "4c75cd86a0fb4b3e8aae3a8f39647a86",
+        "5599f23607c34578aca4f5d2f00f5d43",
+        "57eb3a761c084473bc551d203f37e94b",
+        "9759ea4124464ffd94ed7add450a5099",
+        "9853ace2278046209a09c8ccbf5239b8",
+        "a21f6da935504bd6885bcdd3806ea3cb",
+        "eaa8386452b844a5bb2906a5ff99e3e7",
+        "fa6690cf3276445ba14570467f8fa7f2"
+       ],
+       "attack": [],
+       "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "AUTH-003",
+       "title": "Sudo session activity observed",
+       "severity": "info",
+       "evidence": [
+        "sudo sessions opened: 34582",
+        "sudo sessions closed: 34544",
+        "From the latest read of the login logs",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "If this corresponds to expected admin tasks (updates/installs), no action needed.",
+        "If unexpected, review who initiated privileged actions and when they occurred."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PRIV-004",
+       "title": "2 account(s) hold privileged access on the target",
+       "severity": "info",
+       "evidence": [
+        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-10-16 18:46:00 UTC",
+        "root: UID 0 (root)",
+        "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)",
+        "Evidence gap: The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+       ],
+       "recommendation": [
+        "Keep this list minimal; remove access nobody needs."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:00+00:00",
+       "subject": "",
+       "entities": [
+        "root",
+        "ubuntu"
+       ],
+       "attack": [],
+       "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PERSIST-009",
+       "title": "What the persistence check could not see",
+       "severity": "info",
+       "evidence": [
+        "From the persistence check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
+        "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
+       ],
+       "recommendation": [
+        "A location that was not read is unknown, not clean."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:03+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "LIVE-007",
+       "title": "What the live-response check noted",
+       "severity": "info",
+       "evidence": [
+        "From the live-response check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  Some processes could not be fully read as this user (19 could not read environ, 19 could not read exe, 19 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-Cufibh, /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-resolved.service-1gF0oy, /var/tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-UUWSIi). Read this machine through its sub-agent (it reads as root), or run the check as root."
+       ],
+       "recommendation": [
+        "A process or location that was not read is unknown, not clean.",
+        "A restart-needed note above is routine housekeeping, not a security finding."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "PKG-004",
+       "title": "Part of the package vulnerability check could not be done",
+       "severity": "info",
+       "evidence": [
+        "no vulnerability data has been downloaded yet -- run `kratos vulndb-update` on the Kratos machine",
+        "Vulnerabilities in what wasn't checked are unknown, not absent."
+       ],
+       "recommendation": [
+        "Fix what is listed above (most often: run `kratos vulndb-update` on the Kratos machine)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "COV-001",
+       "title": "Authentication data covers only part of the requested time window",
+       "severity": "info",
+       "evidence": [
+        "Requested window start: 2026-10-15 18:45:59 UTC",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
+        "Re-run with a narrower time window to analyze the uncovered part."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      }
+     ],
+     "count": 9,
+     "lifecycle": "New 5 \u00b7 Still open 0 \u00b7 Fixed 0 \u00b7 Hidden by your decisions 0"
+    }
+   }
+  },
+  "started": 1792176359.5586476,
+  "finished": 1792176375.531862,
+  "budget_seconds": 15.0,
+  "disabled_reason": null,
+  "still_running": [
+   "log_sync"
+  ]
+ },
+ "calls": [
+  {
+   "tool": "measure_auth_activity",
+   "args": {
+    "window": {
+     "kind": "rolling",
+     "amount": 24,
+     "unit": "hour"
+    },
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "target": "ubuntu@10.136.28.168",
+     "measurement": "exhaustive (every matching event in the covered window, counted on the target)",
+     "window": {
+      "id": "w1",
+      "label": "last 24 hours",
+      "tz": "Etc/UTC",
+      "notes": [],
+      "chip": "w1 last 24 hours: 2026-10-15 18:45 \u2192 2026-10-16 18:45 (Etc/UTC)",
+      "since_utc": "2026-10-15T18:45:59+00:00",
+      "until_utc": "2026-10-16T18:45:59+00:00",
+      "coverage_percent": 99.7,
+      "covered_from": "2026-10-15T18:45:59+00:00",
+      "covered_to": "2026-10-16T18:45:59+00:00",
+      "problems": [
+       "no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00",
+       "no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00"
+      ],
+      "truncated": true,
+      "oldest_returned": "2026-10-15T18:45:59+00:00",
+      "coverage": "PARTIAL (99.7%): no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00; no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
+      "target_clock_offset_s": 0.0
+     },
+     "counts": {
+      "ssh_failed_login": 264,
+      "ssh_other": 22394,
+      "sudo_other": 69164,
+      "sudo_session_close": 34544,
+      "sudo_session_open": 34582
+     },
+     "failed_login_sources": [
+      {
+       "ip": "10.136.28.52",
+       "failed_logins": 264,
+       "first_seen": "2026-10-15T22:19:45+00:00",
+       "last_seen": "2026-10-16T18:45:29+00:00"
+      }
+     ],
+     "distinct_failed_login_ips": 1,
+     "top_failed_login_users": [
+      {
+       "user": "bruteforce_probe",
+       "count": 136
+      },
+      {
+       "user": "baduser_a8",
+       "count": 124
+      },
+      {
+       "user": "b5probe1",
+       "count": 1
+      },
+      {
+       "user": "b5probe2",
+       "count": 1
+      },
+      {
+       "user": "b5probe4",
+       "count": 1
+      }
+     ],
+     "bursts": [
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:19:45+00:00",
+       "end": "2026-10-15T22:24:22+00:00",
+       "count": 39,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 39
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 39
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:37:15+00:00",
+       "end": "2026-10-15T22:42:14+00:00",
+       "count": 30,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 30
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 30
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:42:50+00:00",
+       "end": "2026-10-15T22:44:37+00:00",
+       "count": 7,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 7
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 7
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:11:02+00:00",
+       "end": "2026-10-15T23:15:52+00:00",
+       "count": 30,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 30
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 30
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:16:30+00:00",
+       "end": "2026-10-15T23:17:29+00:00",
+       "count": 6,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 6
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 6
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:34:47+00:00",
+       "end": "2026-10-15T23:39:20+00:00",
+       "count": 22,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 22
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 22
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:40:03+00:00",
+       "end": "2026-10-15T23:41:20+00:00",
+       "count": 12,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 12
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 12
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:23:14+00:00",
+       "end": "2026-10-16T07:26:58+00:00",
+       "count": 21,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 21
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 21
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:28:16+00:00",
+       "end": "2026-10-16T07:32:02+00:00",
+       "count": 16,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 16
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 16
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:47:33+00:00",
+       "end": "2026-10-16T07:52:02+00:00",
+       "count": 24,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 24
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 24
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:52:49+00:00",
+       "end": "2026-10-16T07:55:15+00:00",
+       "count": 11,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 11
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 11
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T08:26:13+00:00",
+       "end": "2026-10-16T08:28:55+00:00",
+       "count": 20,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 20
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 20
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T08:39:02+00:00",
+       "end": "2026-10-16T08:42:46+00:00",
+       "count": 15,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 15
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 15
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T15:46:30+00:00",
+       "end": "2026-10-16T15:46:30+00:00",
+       "count": 4,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 4
+        }
+       ],
+       "top_users": [
+        {
+         "user": "b5probe1",
+         "count": 1
+        },
+        {
+         "user": "b5probe2",
+         "count": 1
+        },
+        {
+         "user": "b5probe3",
+         "count": 1
+        },
+        {
+         "user": "b5probe4",
+         "count": 1
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T18:44:10+00:00",
+       "end": "2026-10-16T18:45:29+00:00",
+       "count": 7,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 7
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 4
+        },
+        {
+         "user": "baduser_a8",
+         "count": 3
+        }
+       ]
+      }
+     ],
+     "fail2ban": {
+      "bans": 0,
+      "unbans": 0,
+      "events": []
+     },
+     "sources": {
+      "used": [
+       "journald"
+      ],
+      "journald": "present",
+      "classic_logs": "skipped_covered",
+      "classic_files": [],
+      "target_timezone": null
+     },
+     "samples": {
+      "note": "SAMPLE lines only -- counts above are authoritative",
+      "newest": [
+       {
+        "time": "2026-10-16T18:46:09+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session closed for user root"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session closed for user root"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM,_PID,_UID,_SYSTEMD_UNIT,UNIT,PRIORITY,_BOOT_ID,_TRANSPORT,SYSLO"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sshd: error: kex_exchange_identification: Connection closed by remote host"
+       },
+       {
+        "time": "2026-10-16T18:46:08+00:00",
+        "ip": null,
+        "line": "sshd: Connection closed by 10.136.28.1 port 43452"
+       }
+      ],
+      "first_line_per_failing_ip": [
+       {
+        "time": "2026-10-15T22:19:45+00:00",
+        "ip": "10.136.28.52",
+        "line": "sshd: Invalid user bruteforce_probe from 10.136.28.52 port 56258"
+       }
+      ]
+     },
+     "kratos_own_activity_excluded": {
+      "kratos_ip": "10.136.28.1",
+      "events": {
+       "ssh_success_login": 5378
+      }
+     },
+     "persisted": {
+      "stats_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_stats_w1_20261016_184610.json",
+      "patterns_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_patterns_w1_20261016_184610.json"
+     }
+    }
+   }
+  },
+  {
+   "tool": "check_log_integrity",
+   "args": {
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "target": "10.136.28.168",
+     "checked_at": "2026-10-16T18:46:00+00:00",
+     "file_state": {
+      "status": "ok",
+      "evidence": [],
+      "coverage": "first look at 5 file(s) (auth.log, syslog, dpkg.log, wtmp, btmp): recorded as the baseline, not judged; 3 file(s) not readable by this user, so in-place edits of them can't be seen (size/inode changes still are)"
+     },
+     "journal": {
+      "status": "ok",
+      "evidence": [],
+      "coverage": "compared the sequence numbers of 18 journal file(s)"
+     },
+     "boots": {
+      "status": "suspicious",
+      "evidence": [
+       "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot 9853ace22780 ended 2026-10-15T11:42:11+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot a21f6da93550 ended 2026-10-15T11:59:27+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)",
+       "boot 5599f23607c3 ended 2026-10-15T12:02:56+00:00 without a clean shutdown (a crash, a power cut or a forced reboot -- context, not proof of tampering)"
+      ],
+      "coverage": "looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly"
+     },
+     "login_records": {
+      "status": "ok",
+      "evidence": [],
+      "coverage": "read the newest 67 record(s) of wtmp (the whole file); btmp: unreadable (btmp is readable only by root and the utmp group -- read it through the sub-agent)"
+     },
+     "auditd": {
+      "status": "ok",
+      "evidence": [],
+      "coverage": "auditd is not installed -- process execution history is unavailable on this machine"
+     },
+     "sealing": {
+      "status": "not set up",
+      "note": "journal sealing is not configured for this machine (recommended: /target seal)"
+     },
+     "suspicious_checks": [
+      "boots"
+     ],
+     "next_step": "run correlate_findings to turn these results into findings (LOG-*/SEAL-*)",
+     "result_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/integrity/log_integrity_20261016_184601_568545.json"
+    }
+   }
+  },
+  {
+   "tool": "run_nmap_scan",
+   "args": {
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "xml_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/scans/nmap_10.136.28.168_20261016_184600.xml",
+     "parsed_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/scans/parsed_20261016_184608.json",
+     "target": "10.136.28.168",
+     "host_count": 1,
+     "open_ports_total": 1
+    }
+   }
+  },
+  {
+   "tool": "list_privileged_accounts",
+   "args": {
+    "lookback_days": 30,
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "target": "ubuntu@10.136.28.168",
+     "checked_at": "2026-10-16T18:46:00+00:00",
+     "lookback_days": 30,
+     "privileged_accounts": [
+      {
+       "user": "root",
+       "via": [
+        "UID 0 (root)"
+       ],
+       "uid": 0,
+       "shell": "/bin/bash",
+       "login_shell": true,
+       "local_account": true
+      },
+      {
+       "user": "ubuntu",
+       "via": [
+        "member of 'sudo' (sudo group)",
+        "sudoers grant (/etc/sudoers.d/90-incus)"
+       ],
+       "uid": 1000,
+       "shell": "/bin/bash",
+       "login_shell": true,
+       "local_account": true
+      }
+     ],
+     "recent_privilege_grants": [],
+     "past_privilege_grants_no_longer_in_effect": [
+      {
+       "time": "2026-10-14T02:04:30+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:04:30+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:04:50+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:04:50+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:05:09+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:05:09+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:05:29+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:05:29+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:00+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:00+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:40+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:06:40+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:07:00+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:07:00+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:07:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-14T02:07:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:18:20+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:18:20+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:18:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:18:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:01+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:01+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:25+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:25+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:43+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:19:43+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:02+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:02+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:24+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:24+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:54+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:20:54+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:21:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:21:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:21:56+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T11:21:56+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:32:55+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:32:55+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:33:27+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:33:27+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:33:49+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:33:49+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:34:12+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:34:12+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:34:33+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:34:33+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:08+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:08+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:28+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:28+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:54+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:35:54+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:36:19+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:36:19+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:36:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T22:36:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:30:59+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:30:59+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:31:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:31:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:31:46+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:31:46+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:08+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:08+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:28+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:28+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:50+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:32:50+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:15+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:15+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:39+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:39+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:59+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:33:59+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:34:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-15T23:34:22+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:42:03+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:42:03+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:42:32+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:42:32+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:43:10+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:43:10+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:43:33+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:43:33+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:44:09+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:44:09+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:44:34+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:44:34+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:45:11+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:45:11+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:45:32+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:45:32+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:46:23+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:46:23+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:46:44+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T07:46:44+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:35:47+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:35:47+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:36:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:36:21+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:36:55+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:36:55+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:38:04+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T08:38:04+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T18:42:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      },
+      {
+       "time": "2026-10-16T18:42:42+00:00",
+       "action": "added_to_group",
+       "user": "eviladmin_eval",
+       "group": "sudo",
+       "uid": null,
+       "source": "usermod",
+       "in_effect": false,
+       "now": "account no longer exists"
+      }
+     ],
+     "other_account_changes": [
+      {
+       "time": "2026-10-16T08:36:21+00:00",
+       "action": "user_created",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:36:54+00:00",
+       "action": "user_deleted",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:36:54+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:36:54+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:36:55+00:00",
+       "action": "user_created",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "user_deleted",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:37:29+00:00",
+       "action": "user_created",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:38:02+00:00",
+       "action": "user_deleted",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:38:02+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:38:02+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:38:03+00:00",
+       "action": "user_created",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:39:01+00:00",
+       "action": "user_deleted",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T08:39:01+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T08:39:01+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T18:42:42+00:00",
+       "action": "user_created",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T18:43:24+00:00",
+       "action": "user_deleted",
+       "user": "eviladmin_eval",
+       "group": null
+      },
+      {
+       "time": "2026-10-16T18:43:24+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      },
+      {
+       "time": "2026-10-16T18:43:24+00:00",
+       "action": "removed_from_group",
+       "user": "eviladmin_eval",
+       "group": "sudo"
+      }
+     ],
+     "changed_since_last_check": {
+      "previous_snapshot_at": null,
+      "added": [],
+      "removed": []
+     },
+     "evidence_gaps": [
+      "The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+     ],
+     "sudoers_grants": [
+      {
+       "file": "/etc/sudoers",
+       "subject": "root",
+       "line": "root\tALL=(ALL:ALL) ALL"
+      },
+      {
+       "file": "/etc/sudoers",
+       "subject": "%admin",
+       "line": "%admin ALL=(ALL) ALL"
+      },
+      {
+       "file": "/etc/sudoers",
+       "subject": "%sudo",
+       "line": "%sudo\tALL=(ALL:ALL) ALL"
+      },
+      {
+       "file": "/etc/sudoers.d/90-incus",
+       "subject": "ubuntu",
+       "line": "ubuntu ALL=(ALL) NOPASSWD:ALL"
+      }
+     ],
+     "snapshot_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/context/privileged_accounts_20261016_184600_633077.json"
+    }
+   }
+  },
+  {
+   "tool": "run_config_audit",
+   "args": {},
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "target": "ubuntu@10.136.28.168",
+     "checks": [
+      {
+       "check": "ssh_root_login",
+       "status": "PASS",
+       "detail": "Root login only allowed via key, not password (PermitRootLogin without-password)"
+      },
+      {
+       "check": "ssh_password_auth",
+       "status": "PASS",
+       "detail": "Key-only authentication enforced (PasswordAuthentication no)"
+      },
+      {
+       "check": "firewall",
+       "status": "PASS",
+       "detail": "ufw is active (Status: active)"
+      },
+      {
+       "check": "world_writable_etc",
+       "status": "PASS",
+       "detail": "No world-writable files found under /etc"
+      },
+      {
+       "check": "unattended_upgrades",
+       "status": "PASS",
+       "detail": "unattended-upgrades installed and service enabled"
+      },
+      {
+       "check": "fail2ban_status",
+       "status": "PASS",
+       "detail": "fail2ban active with SSH jail \"sshd\" (maxretry=5, bantime=600s) -- reported as-is, not checked against any specific target values"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "tool": "correlate_findings",
+   "args": {
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "findings_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.json",
+     "findings_md_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184614.md",
+     "inputs_used": {
+      "nmap_parsed": "parsed_20261016_184608.json",
+      "auth_stats": "auth_stats_w1_20261016_184610.json",
+      "auth_patterns": "auth_patterns_w1_20261016_184610.json",
+      "system_context": null,
+      "auth_trends": null,
+      "file_integrity": null,
+      "privileged_accounts": "privileged_accounts_20261016_184600_633077.json",
+      "vuln_scan": null,
+      "log_integrity": "log_integrity_20261016_184601_568545.json",
+      "persistence": "persistence_20261016_184603_129944.json",
+      "live_response": "live_response_20261016_184601_374417.json",
+      "packages": "packages_f4d5af6934290bf0.json"
+     },
+     "missing_inputs": [
+      "system_context",
+      "auth_trends",
+      "file_integrity"
+     ],
+     "input_errors": {},
+     "staleness_warning": null,
+     "findings": [
+      {
+       "id": "CORR-SSH-001",
+       "title": "SSH exposed with failed-login burst activity observed",
+       "severity": "high",
+       "evidence": [
+        "ssh exposed (nmap scan detected port 22 open)",
+        "Bursts of failed SSH logins: 15",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "for example, burst of failed SSH logins: 39 between 2026-10-15 22:19:45 UTC and 2026-10-15 22:24:22 UTC",
+        "Source IP(s) behind this activity: 10.136.28.52 (264 events).",
+        "Threat-intel corroboration (offline OTX cache): source IP 10.136.28.52 is KNOWN-MALICIOUS -- KRATOS-EVAL Known SSH Bruteforce Source -- this corroborates a real attack; treat with raised confidence/severity.",
+        "One finding for this burst -- also matched: CORR-001 (exposed SSH with a burst), AUTH-004 (the burst itself)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Confirm SSH is required on this host.",
+        "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+        "Prefer key-based authentication; disable password auth if possible.",
+        "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban)."
+       ],
+       "playbooks": [
+        {
+         "title": "Inspect recent SSH authentication activity",
+         "commands": [
+          "journalctl _COMM=sshd --since '2 hours ago' --no-pager | tail -n 120",
+          "grep -n 'Failed password' /var/log/auth.log | tail -n 80",
+          "grep -n 'Failed publickey' /var/log/auth.log | tail -n 80"
+         ],
+         "notes": [
+          "Confirm whether failures are expected (testing) or suspicious (repeated / unknown IPs)."
+         ]
+        },
+        {
+         "title": "Verify SSH exposure and listeners",
+         "commands": [
+          "ss -lntp | grep ':22 '",
+          "sudo ufw status verbose || true",
+          "systemctl status sshd --no-pager || systemctl status ssh --no-pager"
+         ],
+         "notes": [
+          "If SSH is not needed publicly, restrict access."
+         ]
+        }
+       ],
+       "source_ips": [
+        "10.136.28.52"
+       ],
+       "also_matched": [
+        "CORR-001",
+        "AUTH-004"
+       ],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [
+        "10.136.28.52"
+       ],
+       "attack": [
+        {
+         "technique_id": "T1110.001",
+         "technique": "Password Guessing",
+         "tactic_id": "TA0006",
+         "tactic": "Credential Access",
+         "tactics": [
+          {
+           "id": "TA0006",
+           "name": "Credential Access",
+           "shortname": "credential-access"
+          }
+         ],
+         "version": "19.2",
+         "url": "https://attack.mitre.org/techniques/T1110/001"
+        }
+       ],
+       "finding_key": "077e6a9c3a33a4701705583e54defb8ede13eb39d527b205a434ee6ea840d238",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "NET-002",
+       "title": "Open ports detected (attack surface present)",
+       "severity": "medium",
+       "evidence": [
+        "From the latest port scan",
+        "Open ports found: 1",
+        "Exposed endpoints:",
+        "10.136.28.168 tcp/22 (ssh)"
+       ],
+       "recommendation": [
+        "Validate each exposed service is necessary.",
+        "Restrict access using firewall rules or bind services to trusted interfaces.",
+        "Keep exposed services updated and use strong authentication (especially SSH)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:08+00:00",
+       "subject": "",
+       "entities": [
+        "22/tcp"
+       ],
+       "attack": [],
+       "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "LOG-003",
+       "title": "Machine went down without a clean shutdown",
+       "severity": "low",
+       "evidence": [
+        "Checked 2026-10-16 18:46:00 UTC",
+        "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown",
+        "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown",
+        "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown",
+        "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown",
+        "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown",
+        "What was checked: looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly",
+        "This is context, not proof of tampering: a crash or power cut does the same."
+       ],
+       "recommendation": [
+        "If nobody restarted it on purpose, find out why it went down (hardware, kernel, power, or someone forcing a reboot to cut logging short)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [
+        "0907bd204ce440cc9dbd7de8f3289520",
+        "2f5bd599ff5a4180a24db87a8b4f22a0",
+        "4c75cd86a0fb4b3e8aae3a8f39647a86",
+        "5599f23607c34578aca4f5d2f00f5d43",
+        "57eb3a761c084473bc551d203f37e94b",
+        "9759ea4124464ffd94ed7add450a5099",
+        "9853ace2278046209a09c8ccbf5239b8",
+        "a21f6da935504bd6885bcdd3806ea3cb",
+        "eaa8386452b844a5bb2906a5ff99e3e7",
+        "fa6690cf3276445ba14570467f8fa7f2"
+       ],
+       "attack": [],
+       "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "AUTH-003",
+       "title": "Sudo session activity observed",
+       "severity": "info",
+       "evidence": [
+        "sudo sessions opened: 34582",
+        "sudo sessions closed: 34544",
+        "From the latest read of the login logs",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "If this corresponds to expected admin tasks (updates/installs), no action needed.",
+        "If unexpected, review who initiated privileged actions and when they occurred."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PRIV-004",
+       "title": "2 account(s) hold privileged access on the target",
+       "severity": "info",
+       "evidence": [
+        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-10-16 18:46:00 UTC",
+        "root: UID 0 (root)",
+        "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)",
+        "Evidence gap: The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+       ],
+       "recommendation": [
+        "Keep this list minimal; remove access nobody needs."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:00+00:00",
+       "subject": "",
+       "entities": [
+        "root",
+        "ubuntu"
+       ],
+       "attack": [],
+       "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:14+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PERSIST-009",
+       "title": "What the persistence check could not see",
+       "severity": "info",
+       "evidence": [
+        "From the persistence check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
+        "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
+       ],
+       "recommendation": [
+        "A location that was not read is unknown, not clean."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:03+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "LIVE-007",
+       "title": "What the live-response check noted",
+       "severity": "info",
+       "evidence": [
+        "From the live-response check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  Some processes could not be fully read as this user (19 could not read environ, 19 could not read exe, 19 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-Cufibh, /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-resolved.service-1gF0oy, /var/tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-UUWSIi). Read this machine through its sub-agent (it reads as root), or run the check as root."
+       ],
+       "recommendation": [
+        "A process or location that was not read is unknown, not clean.",
+        "A restart-needed note above is routine housekeeping, not a security finding."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "PKG-004",
+       "title": "Part of the package vulnerability check could not be done",
+       "severity": "info",
+       "evidence": [
+        "no vulnerability data has been downloaded yet -- run `kratos vulndb-update` on the Kratos machine",
+        "Vulnerabilities in what wasn't checked are unknown, not absent."
+       ],
+       "recommendation": [
+        "Fix what is listed above (most often: run `kratos vulndb-update` on the Kratos machine)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "COV-001",
+       "title": "Authentication data covers only part of the requested time window",
+       "severity": "info",
+       "evidence": [
+        "Requested window start: 2026-10-15 18:45:59 UTC",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
+        "Re-run with a narrower time window to analyze the uncovered part."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:10+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      }
+     ],
+     "count": 9,
+     "lifecycle": "New 5 \u00b7 Still open 0 \u00b7 Fixed 0 \u00b7 Hidden by your decisions 0"
+    }
+   }
+  },
+  {
+   "tool": "check_ip_reputation",
+   "args": {
+    "ip": "10.136.28.52"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "ip": "10.136.28.52",
+     "source": "cache",
+     "result": {
+      "ip": "10.136.28.52",
+      "pulses": [
+       {
+        "pulse_name": "KRATOS-EVAL Known SSH Bruteforce Source",
+        "pulse_id": "eval-a8",
+        "description": "Seeded malicious IP for A8",
+        "created": "2026-10-16T18:45:28"
+       }
+      ],
+      "cache_synced_at": "2026-10-16T18:45:28"
+     }
+    }
+   }
+  },
+  {
+   "tool": "measure_auth_activity",
+   "args": {
+    "window": {
+     "kind": "rolling",
+     "amount": 24,
+     "unit": "hour"
+    },
+    "save_as": "w1",
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "error",
+    "observation": "Bad arguments for tool 'measure_auth_activity': tool_measure_auth_activity() got an unexpected keyword argument 'save_as'"
+   }
+  },
+  {
+   "tool": "measure_auth_activity",
+   "args": {
+    "window": {
+     "kind": "rolling",
+     "amount": 24,
+     "unit": "hour"
+    },
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "status": "ok",
+     "target": "ubuntu@10.136.28.168",
+     "measurement": "exhaustive (every matching event in the covered window, counted on the target)",
+     "window": {
+      "id": "w1",
+      "label": "last 24 hours",
+      "tz": "Etc/UTC",
+      "notes": [],
+      "chip": "w1 last 24 hours: 2026-10-15 18:45 \u2192 2026-10-16 18:45 (Etc/UTC)",
+      "since_utc": "2026-10-15T18:45:59+00:00",
+      "until_utc": "2026-10-16T18:45:59+00:00",
+      "coverage_percent": 99.7,
+      "covered_from": "2026-10-15T18:45:59+00:00",
+      "covered_to": "2026-10-16T18:45:59+00:00",
+      "problems": [
+       "no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00",
+       "no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00"
+      ],
+      "truncated": true,
+      "oldest_returned": "2026-10-15T18:45:59+00:00",
+      "coverage": "PARTIAL (99.7%): no logging while the target was down/rebooting: 2026-10-15T23:08:34+00:00 -> 2026-10-15T23:10:39+00:00; no logging while the target was down/rebooting: 2026-10-16T08:23:48+00:00 -> 2026-10-16T08:25:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
+      "target_clock_offset_s": 0.0
+     },
+     "counts": {
+      "ssh_failed_login": 264,
+      "ssh_other": 22394,
+      "sudo_other": 69236,
+      "sudo_session_close": 34580,
+      "sudo_session_open": 34618
+     },
+     "failed_login_sources": [
+      {
+       "ip": "10.136.28.52",
+       "failed_logins": 264,
+       "first_seen": "2026-10-15T22:19:45+00:00",
+       "last_seen": "2026-10-16T18:45:29+00:00"
+      }
+     ],
+     "distinct_failed_login_ips": 1,
+     "top_failed_login_users": [
+      {
+       "user": "bruteforce_probe",
+       "count": 136
+      },
+      {
+       "user": "baduser_a8",
+       "count": 124
+      },
+      {
+       "user": "b5probe1",
+       "count": 1
+      },
+      {
+       "user": "b5probe2",
+       "count": 1
+      },
+      {
+       "user": "b5probe4",
+       "count": 1
+      }
+     ],
+     "bursts": [
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:19:45+00:00",
+       "end": "2026-10-15T22:24:22+00:00",
+       "count": 39,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 39
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 39
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:37:15+00:00",
+       "end": "2026-10-15T22:42:14+00:00",
+       "count": 30,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 30
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 30
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T22:42:50+00:00",
+       "end": "2026-10-15T22:44:37+00:00",
+       "count": 7,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 7
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 7
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:11:02+00:00",
+       "end": "2026-10-15T23:15:52+00:00",
+       "count": 30,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 30
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 30
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:16:30+00:00",
+       "end": "2026-10-15T23:17:29+00:00",
+       "count": 6,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 6
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 6
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:34:47+00:00",
+       "end": "2026-10-15T23:39:20+00:00",
+       "count": 22,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 22
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 22
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-15T23:40:03+00:00",
+       "end": "2026-10-15T23:41:20+00:00",
+       "count": 12,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 12
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 12
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:23:14+00:00",
+       "end": "2026-10-16T07:26:58+00:00",
+       "count": 21,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 21
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 21
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:28:16+00:00",
+       "end": "2026-10-16T07:32:02+00:00",
+       "count": 16,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 16
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 16
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:47:33+00:00",
+       "end": "2026-10-16T07:52:02+00:00",
+       "count": 24,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 24
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 24
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T07:52:49+00:00",
+       "end": "2026-10-16T07:55:15+00:00",
+       "count": 11,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 11
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 11
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T08:26:13+00:00",
+       "end": "2026-10-16T08:28:55+00:00",
+       "count": 20,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 20
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 20
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T08:39:02+00:00",
+       "end": "2026-10-16T08:42:46+00:00",
+       "count": 15,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 15
+        }
+       ],
+       "top_users": [
+        {
+         "user": "baduser_a8",
+         "count": 15
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T15:46:30+00:00",
+       "end": "2026-10-16T15:46:30+00:00",
+       "count": 4,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 4
+        }
+       ],
+       "top_users": [
+        {
+         "user": "b5probe1",
+         "count": 1
+        },
+        {
+         "user": "b5probe2",
+         "count": 1
+        },
+        {
+         "user": "b5probe3",
+         "count": 1
+        },
+        {
+         "user": "b5probe4",
+         "count": 1
+        }
+       ]
+      },
+      {
+       "event_type": "ssh_failed_login",
+       "start": "2026-10-16T18:44:10+00:00",
+       "end": "2026-10-16T18:45:29+00:00",
+       "count": 7,
+       "top_source_ips": [
+        {
+         "ip": "10.136.28.52",
+         "count": 7
+        }
+       ],
+       "top_users": [
+        {
+         "user": "bruteforce_probe",
+         "count": 4
+        },
+        {
+         "user": "baduser_a8",
+         "count": 3
+        }
+       ]
+      }
+     ],
+     "fail2ban": {
+      "bans": 0,
+      "unbans": 0,
+      "events": []
+     },
+     "sources": {
+      "used": [
+       "journald"
+      ],
+      "journald": "present",
+      "classic_logs": "skipped_covered",
+      "classic_files": [],
+      "target_timezone": null
+     },
+     "samples": {
+      "note": "SAMPLE lines only -- counts above are authoritative",
+      "newest": [
+       {
+        "time": "2026-10-16T18:46:32+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session closed for user root"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session closed for user root"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE,SYSLOG_IDENTIFIER,_COMM,_PID,_UID,_SYSTEMD_UNIT,UNIT,PRIORITY,_BOOT_ID,_TRANSPORT,SYSLO"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo: pam_unix(sudo:session): session closed for user root"
+       },
+       {
+        "time": "2026-10-16T18:46:31+00:00",
+        "ip": null,
+        "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -o json --output-fields=MESSAGE"
+       }
+      ],
+      "first_line_per_failing_ip": [
+       {
+        "time": "2026-10-15T22:19:45+00:00",
+        "ip": "10.136.28.52",
+        "line": "sshd: Invalid user bruteforce_probe from 10.136.28.52 port 56258"
+       }
+      ]
+     },
+     "kratos_own_activity_excluded": {
+      "kratos_ip": "10.136.28.1",
+      "events": {
+       "ssh_success_login": 5378
+      }
+     },
+     "persisted": {
+      "stats_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_stats_w1_20261016_184632.json",
+      "patterns_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/logs/auth_patterns_w1_20261016_184632.json"
+     }
+    }
+   }
+  },
+  {
+   "tool": "correlate_findings",
+   "args": {
+    "data_dir": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328"
+   },
+   "result": {
+    "status": "ok",
+    "result": {
+     "findings_json_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184635.json",
+     "findings_md_file": "/tmp/kratos-eval-rec-yx9ozg8m/A8_1792176328/reports/findings_20261016_184635.md",
+     "inputs_used": {
+      "nmap_parsed": "parsed_20261016_184608.json",
+      "auth_stats": "auth_stats_w1_20261016_184632.json",
+      "auth_patterns": "auth_patterns_w1_20261016_184632.json",
+      "system_context": null,
+      "auth_trends": null,
+      "file_integrity": null,
+      "privileged_accounts": "privileged_accounts_20261016_184600_633077.json",
+      "vuln_scan": null,
+      "log_integrity": "log_integrity_20261016_184601_568545.json",
+      "persistence": "persistence_20261016_184603_129944.json",
+      "live_response": "live_response_20261016_184601_374417.json",
+      "packages": "packages_f4d5af6934290bf0.json"
+     },
+     "missing_inputs": [
+      "system_context",
+      "auth_trends",
+      "file_integrity"
+     ],
+     "input_errors": {},
+     "staleness_warning": null,
+     "findings": [
+      {
+       "id": "CORR-SSH-001",
+       "title": "SSH exposed with failed-login burst activity observed",
+       "severity": "high",
+       "evidence": [
+        "ssh exposed (nmap scan detected port 22 open)",
+        "Bursts of failed SSH logins: 15",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "for example, burst of failed SSH logins: 39 between 2026-10-15 22:19:45 UTC and 2026-10-15 22:24:22 UTC",
+        "Source IP(s) behind this activity: 10.136.28.52 (264 events).",
+        "Threat-intel corroboration (offline OTX cache): source IP 10.136.28.52 is KNOWN-MALICIOUS -- KRATOS-EVAL Known SSH Bruteforce Source -- this corroborates a real attack; treat with raised confidence/severity.",
+        "One finding for this burst -- also matched: CORR-001 (exposed SSH with a burst), AUTH-004 (the burst itself)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Confirm SSH is required on this host.",
+        "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+        "Prefer key-based authentication; disable password auth if possible.",
+        "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban)."
+       ],
+       "playbooks": [
+        {
+         "title": "Inspect recent SSH authentication activity",
+         "commands": [
+          "journalctl _COMM=sshd --since '2 hours ago' --no-pager | tail -n 120",
+          "grep -n 'Failed password' /var/log/auth.log | tail -n 80",
+          "grep -n 'Failed publickey' /var/log/auth.log | tail -n 80"
+         ],
+         "notes": [
+          "Confirm whether failures are expected (testing) or suspicious (repeated / unknown IPs)."
+         ]
+        },
+        {
+         "title": "Verify SSH exposure and listeners",
+         "commands": [
+          "ss -lntp | grep ':22 '",
+          "sudo ufw status verbose || true",
+          "systemctl status sshd --no-pager || systemctl status ssh --no-pager"
+         ],
+         "notes": [
+          "If SSH is not needed publicly, restrict access."
+         ]
+        }
+       ],
+       "source_ips": [
+        "10.136.28.52"
+       ],
+       "also_matched": [
+        "CORR-001",
+        "AUTH-004"
+       ],
+       "collected_at": "2026-10-16T18:46:32+00:00",
+       "subject": "",
+       "entities": [
+        "10.136.28.52"
+       ],
+       "attack": [
+        {
+         "technique_id": "T1110.001",
+         "technique": "Password Guessing",
+         "tactic_id": "TA0006",
+         "tactic": "Credential Access",
+         "tactics": [
+          {
+           "id": "TA0006",
+           "name": "Credential Access",
+           "shortname": "credential-access"
+          }
+         ],
+         "version": "19.2",
+         "url": "https://attack.mitre.org/techniques/T1110/001"
+        }
+       ],
+       "finding_key": "077e6a9c3a33a4701705583e54defb8ede13eb39d527b205a434ee6ea840d238",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:35+00:00",
+       "change": "new"
+      },
+      {
+       "id": "NET-002",
+       "title": "Open ports detected (attack surface present)",
+       "severity": "medium",
+       "evidence": [
+        "From the latest port scan",
+        "Open ports found: 1",
+        "Exposed endpoints:",
+        "10.136.28.168 tcp/22 (ssh)"
+       ],
+       "recommendation": [
+        "Validate each exposed service is necessary.",
+        "Restrict access using firewall rules or bind services to trusted interfaces.",
+        "Keep exposed services updated and use strong authentication (especially SSH)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:08+00:00",
+       "subject": "",
+       "entities": [
+        "22/tcp"
+       ],
+       "attack": [],
+       "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:35+00:00",
+       "change": "new"
+      },
+      {
+       "id": "LOG-003",
+       "title": "Machine went down without a clean shutdown",
+       "severity": "low",
+       "evidence": [
+        "Checked 2026-10-16 18:46:00 UTC",
+        "boot 2f5bd599ff5a ended 2026-10-11T16:34:51+00:00 without a clean shutdown",
+        "boot 57eb3a761c08 ended 2026-10-11T17:17:01+00:00 without a clean shutdown",
+        "boot eaa8386452b8 ended 2026-10-13T00:04:17+00:00 without a clean shutdown",
+        "boot 9759ea412446 ended 2026-10-13T10:59:35+00:00 without a clean shutdown",
+        "boot 4c75cd86a0fb ended 2026-10-14T01:15:41+00:00 without a clean shutdown",
+        "What was checked: looked at the end of 10 previous boot(s) in the last 30 days; this machine is a container (lxc): a 'boot' is a container start, and a forced stop or a snapshot restore also ends one uncleanly",
+        "This is context, not proof of tampering: a crash or power cut does the same."
+       ],
+       "recommendation": [
+        "If nobody restarted it on purpose, find out why it went down (hardware, kernel, power, or someone forcing a reboot to cut logging short)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [
+        "0907bd204ce440cc9dbd7de8f3289520",
+        "2f5bd599ff5a4180a24db87a8b4f22a0",
+        "4c75cd86a0fb4b3e8aae3a8f39647a86",
+        "5599f23607c34578aca4f5d2f00f5d43",
+        "57eb3a761c084473bc551d203f37e94b",
+        "9759ea4124464ffd94ed7add450a5099",
+        "9853ace2278046209a09c8ccbf5239b8",
+        "a21f6da935504bd6885bcdd3806ea3cb",
+        "eaa8386452b844a5bb2906a5ff99e3e7",
+        "fa6690cf3276445ba14570467f8fa7f2"
+       ],
+       "attack": [],
+       "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:35+00:00",
+       "change": "new"
+      },
+      {
+       "id": "AUTH-003",
+       "title": "Sudo session activity observed",
+       "severity": "info",
+       "evidence": [
+        "sudo sessions opened: 34618",
+        "sudo sessions closed: 34580",
+        "From the latest read of the login logs",
+        "Time window: last 24 hours (2026-10-15 18:45:59 UTC to 2026-10-16 18:45:59 UTC)",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "If this corresponds to expected admin tasks (updates/installs), no action needed.",
+        "If unexpected, review who initiated privileged actions and when they occurred."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:32+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:35+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PRIV-004",
+       "title": "2 account(s) hold privileged access on the target",
+       "severity": "info",
+       "evidence": [
+        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-10-16 18:46:00 UTC",
+        "root: UID 0 (root)",
+        "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)",
+        "Evidence gap: The target's logs only go back to 2026-09-28T04:28:01+00:00, so account changes before then are not visible."
+       ],
+       "recommendation": [
+        "Keep this list minimal; remove access nobody needs."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:00+00:00",
+       "subject": "",
+       "entities": [
+        "root",
+        "ubuntu"
+       ],
+       "attack": [],
+       "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
+       "state": "open",
+       "first_seen": "2026-10-16T18:46:14+00:00",
+       "last_seen": "2026-10-16T18:46:35+00:00",
+       "change": "new"
+      },
+      {
+       "id": "PERSIST-009",
+       "title": "What the persistence check could not see",
+       "severity": "info",
+       "evidence": [
+        "From the persistence check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
+        "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
+       ],
+       "recommendation": [
+        "A location that was not read is unknown, not clean."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:03+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "LIVE-007",
+       "title": "What the live-response check noted",
+       "severity": "info",
+       "evidence": [
+        "From the live-response check of 10.136.28.168 at 2026-10-16 18:46:00 UTC (read over SSH as uid 1000)",
+        "  Some processes could not be fully read as this user (19 could not read environ, 19 could not read exe, 19 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
+        "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-Cufibh, /tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-resolved.service-1gF0oy, /var/tmp/systemd-private-230962337f81471890303ae20f7cd467-systemd-logind.service-UUWSIi). Read this machine through its sub-agent (it reads as root), or run the check as root."
+       ],
+       "recommendation": [
+        "A process or location that was not read is unknown, not clean.",
+        "A restart-needed note above is routine housekeeping, not a security finding."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "PKG-004",
+       "title": "Part of the package vulnerability check could not be done",
+       "severity": "info",
+       "evidence": [
+        "no vulnerability data has been downloaded yet -- run `kratos vulndb-update` on the Kratos machine",
+        "Vulnerabilities in what wasn't checked are unknown, not absent."
+       ],
+       "recommendation": [
+        "Fix what is listed above (most often: run `kratos vulndb-update` on the Kratos machine)."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:01+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      },
+      {
+       "id": "COV-001",
+       "title": "Authentication data covers only part of the requested time window",
+       "severity": "info",
+       "evidence": [
+        "Requested window start: 2026-10-15 18:45:59 UTC",
+        "Coverage: partial -- the target's logs only go back to 2026-10-15 18:45:59 UTC, so nothing earlier could be counted"
+       ],
+       "recommendation": [
+        "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
+        "Re-run with a narrower time window to analyze the uncovered part."
+       ],
+       "playbooks": [],
+       "source_ips": [],
+       "also_matched": [],
+       "collected_at": "2026-10-16T18:46:32+00:00",
+       "subject": "",
+       "entities": [],
+       "attack": [],
+       "state": "run_note",
+       "change": null
+      }
+     ],
+     "count": 9,
+     "lifecycle": "New 5 \u00b7 Still open 0 \u00b7 Fixed 0 \u00b7 Hidden by your decisions 0"
+    }
+   }
+  }
+ ]
+}
