@@ -6,12 +6,29 @@ The thin wrapper around invoking nmap itself: scan a target, drop the XML under
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Iterator
 
 from kratos.utils import cancel as _cancel
+
+
+_QUIET: contextvars.ContextVar[bool] = contextvars.ContextVar("kratos_nmap_quiet", default=False)
+
+
+@contextlib.contextmanager
+def quiet() -> Iterator[None]:
+    """Don't print nmap's report -- for scans run as one of several collection checks,
+    whose own progress lines it would land in the middle of (`kratos collect`)."""
+    token = _QUIET.set(True)
+    try:
+        yield
+    finally:
+        _QUIET.reset(token)
 
 
 def run_nmap_scan(data_dir: Path, target: str) -> Path:
@@ -43,7 +60,8 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     #    the report then went straight to the real terminal, over the interface.
     # Printing through sys.stderr keeps it visible on the command line, on stderr
     # for MCP, and swallowed by the TUI. Only the -oX XML is consumed downstream.
-    print(f"[KRATOS] Running: {' '.join(cmd)}", file=sys.stderr)
+    if not _QUIET.get():
+        print(f"[KRATOS] Running: {' '.join(cmd)}", file=sys.stderr)
     try:
         proc = _cancel.run(cmd, check=True, capture_output=True, text=True, errors="replace")
     except FileNotFoundError as e:
@@ -52,7 +70,7 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
         detail = (e.stderr or "").strip().splitlines()[-1:] or [""]
         raise RuntimeError(f"nmap failed with exit code {e.returncode}" + (f": {detail[0]}" if detail[0] else "")) from e
     report = (proc.stdout or "") + (proc.stderr or "")
-    if report.strip():
+    if report.strip() and not _QUIET.get():
         print(report.rstrip(), file=sys.stderr)
 
     return out_xml

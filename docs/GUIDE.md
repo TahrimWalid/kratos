@@ -751,7 +751,9 @@ basics and in the standard audit:
   restart-needed note below).
 - **a program running from memory or a just-deleted temporary file** (`LIVE-002`):
   a `memfd:` executable, or an executable deleted out of `/tmp` or `/dev/shm`.
-  Running code that never touched disk is a common way to hide a payload.
+  Running code that never touched disk is a common way to hide a payload. (A program
+  copied into a temp folder, started and then deleted is reported here, as `LIVE-002`,
+  rather than as `LIVE-001`.)
 - **a process started with `LD_PRELOAD` or `LD_AUDIT`** pointing at a library no
   package owns (`LIVE-003`) — how a userspace rootkit loads itself into everything.
   A library a package *does* own is shown as "worth a look", not high.

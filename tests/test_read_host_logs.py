@@ -79,7 +79,8 @@ def test_family_gap_is_stated(tmp_path, target, monkeypatch):
 def test_nothing_on_the_machine_says_so(tmp_path, target, monkeypatch):
     monkeypatch.setattr(tools, "_fetch_host_logs", _fake_fetch(tmp_path, "debian", {}))
     out = _call(tmp_path, "web")
-    assert out["events"] == 0 and "no log for this source exists" in out["coverage_gap"]
+    assert out["events"] == 0 and "no such log at the usual place" in out["coverage_gap"]
+    assert "somewhere else" in out["coverage_gap"]           # says what was really not looked at
 
 
 def test_old_agent_is_a_coverage_gap_not_a_crash(tmp_path, target, monkeypatch):

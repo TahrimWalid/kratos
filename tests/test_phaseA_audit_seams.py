@@ -526,3 +526,17 @@ def test_guard12_never_blocks_a_stubborn_answer_the_block_still_lists_it(tmp_pat
     result = agent_loop.run_agent("anything new?", tmp_path, max_iters=6)
     assert result["status"] == "final_answer" and len(chat.calls) == 3          # one retry, then accepted
     assert "LIVE-002" in result["final_answer"] and "(not discussed below)" in result["final_answer"]
+
+
+def test_collection_runs_nmap_quietly_but_the_scan_command_still_reports(tmp_path, monkeypatch, capsys):
+    import subprocess
+
+    from kratos.adapters import nmap_scan
+
+    monkeypatch.setattr(nmap_scan._cancel, "run",
+                        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "PORT STATE SERVICE\n22/tcp open ssh\n", ""))
+    with nmap_scan.quiet():
+        nmap_scan.run_nmap_scan(tmp_path, "10.0.0.5")
+    assert capsys.readouterr().err == ""
+    nmap_scan.run_nmap_scan(tmp_path, "10.0.0.5")
+    assert "22/tcp open ssh" in capsys.readouterr().err

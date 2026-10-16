@@ -98,7 +98,8 @@ def coverage(read: Any, source: str) -> dict[str, Any]:
     nothing = not present and not read.journal_counts and not read.journal_errors
     complete = not problems and not gaps and not nothing
     if nothing and not gaps:
-        gaps.append("no log for this source exists on the machine (" + (", ".join(missing) or "no paths") + ")")
+        gaps.append("no such log at the usual place (" + (", ".join(missing) or "no known path") + ") -- "
+                    "if this machine writes it somewhere else, Kratos did not read it")
     return {
         "complete": complete,
         "files_read": files_read,

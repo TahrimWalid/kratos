@@ -221,7 +221,9 @@ def _short_error(exc: BaseException) -> str:
 
 def _thread_main(check: Check, ctx: CheckContext, scope: cancel.CancelScope, box: _Box) -> None:
     try:
-        with cancel.bound(scope), kratos_config.pinned_target(ctx.target):
+        from kratos.adapters import nmap_scan
+
+        with cancel.bound(scope), kratos_config.pinned_target(ctx.target), nmap_scan.quiet():
             box.result = check.run(ctx)
     except cancel.Cancelled:
         box.cancelled = True
