@@ -1,0 +1,19 @@
+# The lab the live evaluations run against -- the ONE place its names and addresses
+# live. Scenarios never hard-code a container name or an address; they read this.
+# Point KRATOS_EVAL_LAB at another file to run against a different lab.
+
+[target]                      # the monitored machine every scenario investigates
+host = "10.136.28.168"
+user = "ubuntu"
+key = "~/.ssh/id_ed25519"     # Kratos's SSH key for the target (also used by setups)
+incus = "kratos-target"       # its Incus name, for setups that need the console (C2 stops sshd)
+
+[attacker]                    # where attack traffic comes from -- never the Kratos host
+incus = "attacker-box"
+ip = "10.136.28.52"
+
+[recordings]
+# Recordings may hold only lab data. tests/test_eval_recordings.py fails on any address
+# outside private, loopback, link-local and documentation ranges unless it is listed
+# here with the reason, and on anything shaped like a key or token.
+allowed_public_addresses = {}
