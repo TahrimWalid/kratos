@@ -678,8 +678,12 @@ def _run_scheduled(
     triggers_fired: list[dict[str, Any]] = []
     try:
         from kratos.agent.trigger_eval import evaluate_triggers
-        triggers_fired = evaluate_triggers(data_dir, findings, target,
-                                           notifier=notifier, deliver=deliver)
+        # The schedule's machine, pinned: the active target was restored above, and a
+        # trigger's investigation must look at THIS run's machine (seen in a B.5 run
+        # record: it ran with no target -- or would have used the default machine).
+        with _kconfig.pinned_target(target):
+            triggers_fired = evaluate_triggers(data_dir, findings, target,
+                                               notifier=notifier, deliver=deliver)
     except Exception as e:  # noqa: BLE001
         error = (error + "; " if error else "") + f"trigger evaluation failed: {e}"
 

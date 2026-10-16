@@ -269,3 +269,39 @@ def test_investigate_action_does_not_recurse(tmp_path):
     fired = TE.evaluate_triggers(tmp_path, _findings(), "10.0.0.1", now=_NOW, notifier=_Spy(),
                                  investigate_fn=re_matching_investigate)
     assert len([f for f in fired if f["trigger"] == "inv"]) == 1
+
+
+def test_a_trigger_investigation_looks_at_the_schedules_machine(tmp_path, monkeypatch):
+    """B.5 run record of a real scheduled run: the schedule pins its own machine, restores
+    the active target when its work is done, and only THEN evaluates triggers -- so a
+    trigger's investigation ran with no target (or the person's default machine)."""
+    from kratos import kratos_config
+    from kratos.agent import schedules as S
+    from kratos.agent import scheduled_run as W
+    from kratos.budget import limits as L
+    from kratos import settings_store
+
+    kratos_config.set_active_target("default-box.example")      # the person's default machine
+    S.save_schedule(tmp_path, name="other", kind="audit", target="10.0.0.77", cadence="weekly", deliver=[])
+    TR.save_trigger(tmp_path, name="dig", action="investigate", finding_id="CORR-SSH-001")
+    settings_store.set(L.TRIGGER_INVESTIGATIONS, True, data_dir=tmp_path, actor="test")
+    findings = [{"id": "CORR-SSH-001", "severity": "high", "title": "SSH"}]
+
+    def _dispatch(tool, args, data_dir):
+        if tool == "correlate_findings":
+            return {"status": "ok", "result": {"findings": findings}}
+        return {"status": "ok", "result": {}}
+
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _dispatch)
+    seen = []
+
+    def fake_run_agent(goal, data_dir, *a, **kw):
+        seen.append(kratos_config.get_active_target())
+        return {"status": "final_answer", "final_answer": "ok", "transcript": []}
+
+    monkeypatch.setattr("kratos.agent.loop.run_agent", fake_run_agent)
+    rec = W.run_scheduled(S.load_schedule(tmp_path, "other"), tmp_path, deliver=False,
+                          notifier=lambda m, s: {"status": "sent"})
+    assert "dig" in (rec.get("triggers_fired") or [])
+    assert seen == ["10.0.0.77"]
+    assert kratos_config.get_active_target() == "default-box.example"   # restored afterwards
