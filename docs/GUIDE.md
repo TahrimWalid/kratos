@@ -400,19 +400,24 @@ Other things you can ask, to get a feel for it:
 You don't have to phrase these a special way. If your request is unclear or could
 go several directions, Kratos asks you first (see below) rather than guessing.
 
-**Notes at the top of an answer.** Kratos checks the model's write-up against what it
-actually found before showing it. Anything the write-up gets wrong or leaves out comes
-first, in a `[NOTE: …]` written by Kratos itself, not by the model:
+**How to read an answer.** When something serious is open on the machine, an answer starts
+with **Kratos found** — a list written by Kratos itself, not by the model: every HIGH or
+CRITICAL finding with the fact that matters (the attacker's address and whether it is a known
+bad one, the program and its process id, the file, the package). Nothing the model writes can
+leave one out; an item the write-up below doesn't discuss is marked *(not discussed below)*.
 
-- *serious findings the answer above leaves out* — a HIGH or CRITICAL finding the
-  write-up skipped, or named without the fact that matters (the attacker's address, a
-  known-malicious match, the program or file involved);
-- *not checked in this investigation* — what could not be looked at this time, one short
-  line each (for example processes of other users over a normal SSH login);
-- and a few others when the write-up's claims about time periods or past state don't
-  match what Kratos measured.
+Below that comes the model's analysis — what it means and what to do. Kratos checks it against
+what it actually found, and anything it gets wrong comes first as a `[NOTE: …]`, also written by
+Kratos:
 
-Read the notes first: they are the parts Kratos is sure about.
+- *not checked in this investigation* — what could not be looked at this time, one short line
+  each (for example processes of other users over a normal SSH login);
+- *this answer mentions an address … which appears in nothing Kratos read* — an address the model
+  made up;
+- and a few others when the write-up's claims about time periods or past state don't match what
+  Kratos measured.
+
+The list and the notes are the parts Kratos is sure about; read them first.
 
 ---
 
@@ -436,8 +441,12 @@ the question to the model together with a short summary of what it found:
 
 You see one line above the answer, for example
 `Checked first: ports (12 min ago) · auth 24 h (now) · tampering (now) · config: not this time`.
-"Not this time" means a check didn't finish in its time budget (15 seconds by default); the
-answer says so rather than guessing. Because the basics are checked by Kratos itself, a broad
+Kratos waits at most 15 seconds (the default) before the model starts. A check that needs
+longer — on a distant machine the port scan takes a couple of minutes — keeps running in the
+background and shows as *still running*; Kratos waits for it briefly again before the answer, so
+its findings usually make it in, and its result is reused by the next investigation either way.
+"Not this time" means a check ran past its own limit or failed; the answer says so rather than
+guessing. Because the basics are checked by Kratos itself, a broad
 question such as *"check this system for anything suspicious"* now always includes the
 tampering check, whatever the model would have picked.
 

@@ -623,15 +623,41 @@ gone); a stale one is *claimed* inside `BEGIN IMMEDIATE`, so the TUI and a sched
 run the same check on the same machine at once -- the loser waits for the winner's result. A
 claim older than twice the budget belongs to a dead process and is taken over. A reused result
 does not touch the input files, so the lifecycle's "collected in this run" rule still holds: it
-can't mark a finding fixed. Checks run in parallel threads, each pinned to its machine. At the
-start budget (`collect.start_budget_seconds`, 15) the rest is cancelled: `utils/cancel.py`
-registers every `ssh`/`nmap` a check starts and kills them, so nothing keeps running on this host
-or, through the closed channel, on the target. The digest says "NOT checked: ...".
+can't mark a finding fixed. Checks run in parallel threads, each pinned to its machine.
+
+**The start budget ends the wait, not the work** (phase A audit). At the start budget
+(`collect.start_budget_seconds`, 15 s, the SSH warm-up included) an investigation starts. A check
+still inside its own limit keeps running in the background (`prepare(background=True)`), records
+its result when it finishes, and shows as "still running" in the digest; before the final answer
+the loop waits for such checks for at most 20 s (`CollectionReport.settle`) and re-correlates, so
+their findings reach the answer and their "still running" gap disappears. A check past its *own*
+limit is cancelled: `utils/cancel.py` kills every `ssh`/`nmap` it started, and the remote side stops
+too (`ssh_remote._with_remote_deadline`). Measured on a real VPS over the internet: before, every
+investigation started without log tampering, open ports, what is running and persistence (cut and
+thrown away at 15 s every time); now all nine checks complete -- the port scan (nmap -sV, ~2 min over
+the internet, own limit 180 s) finishes in the background and is reused for an hour. `kratos collect`
+and `/collect` wait for every check's own limit (`runner.full_budget`): nobody is waiting to ask the
+model anything.
+
+**SSH connections** (`utils/ssh_slots.py`). All sessions to one machine share one authenticated
+connection (`ControlMaster=auto`, `ControlPersist=60`, `ServerAliveInterval=15`; the socket in a
+private 0700 runtime folder, named `%C`) -- the way Ansible handles many commands to one host -- and
+collection opens it before the checks start (at most 3 s). At most four sessions per machine run at
+once, across every Kratos process (`flock` on per-machine slot files; a crashed process frees its
+slot; a waiter stops at its own time limit or when its check is cancelled). Measured: 19 logins per
+cold collection and up to 9 in one second became 1, well under sshd's `MaxStartups` (10:30:100) and
+`MaxSessions` (10); cold start 4.8 → 4.1 s. A stale or killed master is replaced on the next read;
+an unusable runtime folder turns sharing and the cap off with a warning, never fails a read.
+`KRATOS_SSH_MUX=off`, `KRATOS_SSH_MAX_SESSIONS` (1–10) override.
 
 **What the model receives.** A digest in the first message (`collect/digest.py`), built only
 from Kratos-written text: each check's one-line summary (made from structured results, never raw
-log lines), finding IDs and severities, and the titles of rules whose titles hold no data from
-the machine (PRIV-* titles name accounts, so they stay out). The correlation Kratos ran is
+log lines), finding IDs and severities, what each finding is -- the title of rules whose titles
+hold no data from the machine, else a fixed description (`finding_facts.RULE_TEXT`: PRIV-*,
+PERSIST-*, LIVE-*, PKG-*) -- and facts that were validated on the way in (source addresses and a
+known-malicious match, process ids, CVE ids, package names; never a path, command line or account
+name written on the machine). Before the audit, LIVE-002 reached the model as "LIVE-002 (high)"
+and nothing more, and the model ignored it. The correlation Kratos ran is
 *seeded* into the loop (`last_correlate_findings`, the staleness warning, coverage gaps), so
 Guards 1/3/4 judge the answer against it exactly as if the model had called it first. If the
 model's own tools refresh an input afterwards, Kratos re-runs `correlate_findings` by code before
@@ -1202,6 +1228,31 @@ detection logic is untouched.
   report: it is written without lifecycle fields plus `lifecycle_error`. Old
   `reports/findings_*.json` are imported once (machine taken from the report, its
   input files, the session that produced it, else "unknown") and never modified.
+
+## What an answer guarantees
+
+An investigation's answer is two things, and they are kept apart (phase A audit):
+
+- **What Kratos found** -- written by Kratos, at the top (`finding_facts.answer_block`): every open
+  HIGH/CRITICAL finding (not decided by a person) with the fact that matters -- the attacker's
+  address and a known-malicious match, the program and pid, the file, the package. An item the
+  analysis below doesn't discuss is marked "(not discussed below)", one whose fact is missing names
+  it. It appears on every surface the answer reaches (TUI, CLI, MCP, report, notification) and
+  nothing the model writes can remove it. No serious finding open: no block, so a narrow question
+  ("how many sudo events yesterday") gets a plain answer.
+- **The analysis** -- the model's text below it, checked by the answer guards. Guard 12: a serious
+  finding the analysis leaves out, or names without its facts, is sent back once with the exact
+  list (`finding_facts.left_out`); a second omission is accepted -- the block already lists it.
+  An IP address the answer names that appears in nothing Kratos read (observations, digest, goal)
+  gets a NOTE (`loop._ungrounded_ips`; whole addresses, so 10.136.28.1 is not "seen" inside
+  10.136.28.168).
+
+Why: in the audit's eval the detection was right every time (the finding was in the correlation in
+5/5 runs) while the model's answer named it 0–3 times in 5 -- leaving out the attacker's address,
+the threat-intel match, or a HIGH process running from memory, and once naming the wrong address.
+Prompt and context changes moved those numbers only within noise. Making the findings part of the
+answer by construction is what makes the answer trustworthy; the model explains, it doesn't decide
+what the person gets to see.
 
 ## Untrusted input
 
