@@ -301,8 +301,11 @@ def test_guard2_and_guard3_stubborn_model_force_accepts_with_both_notes(
 
     rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert len(rejected_steps) == 2, f"Expected 2 rejected attempts, got {len(rejected_steps)}"
-    for step in rejected_steps:
-        assert set(step["violations"]) == {"file_integrity_contradiction", "dismissive_verdict_contradiction"}, (
+    for n, step in enumerate(rejected_steps):
+        # Guard 12 (the HIGH finding left out) joins the first rejection only: its budget is one
+        expected = {"file_integrity_contradiction", "dismissive_verdict_contradiction"} | (
+            {"serious_finding_left_out"} if n == 0 else set())
+        assert set(step["violations"]) == expected, (
             "Expected BOTH guard2 and guard3 combined into one rejection observation "
             f"(not one gate at a time), got: {step['violations']}"
         )
@@ -341,7 +344,9 @@ def test_guard2_and_guard3_self_correcting_model_converges_cleanly(
 
     rejected_steps = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
     assert len(rejected_steps) == 1
-    assert set(rejected_steps[0]["violations"]) == {"file_integrity_contradiction", "dismissive_verdict_contradiction"}
+    # the dismissive draft also leaves the HIGH finding out (Guard 12): one combined rejection
+    assert set(rejected_steps[0]["violations"]) == {"file_integrity_contradiction", "dismissive_verdict_contradiction",
+                                                    "serious_finding_left_out"}
 
     final_answer = result["final_answer"]
     assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
@@ -575,7 +580,9 @@ def test_guard4_no_friction_when_no_staleness_warning(
     """
     chat = ScriptedChat([
         _tool_json("correlate_findings"),
-        _final_json(TIMEFRAME_CLAIM_ANSWER),  # states a timeframe, but no staleness_warning exists
+        # states a timeframe, but no staleness_warning exists; it also covers the mocked
+        # HIGH finding, so Guard 12 has nothing to say and this stays a Guard 4 test
+        _final_json(TIMEFRAME_CLAIM_ANSWER + " The SSH brute-force burst (CORR-SSH-001) is still open."),
     ])
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
 
@@ -589,10 +596,9 @@ def test_guard4_no_friction_when_no_staleness_warning(
     assert rejected_steps == [], f"Expected zero rejections when there's no staleness_warning, got {rejected_steps}"
 
     final_answer = result["final_answer"]
-    # No Guard 4 note. (The mocked correlation holds a HIGH CORR-SSH-001 this sudo answer
-    # never mentions, so Guard 12's serious-findings note is expected and correct here.)
-    assert "timeframe" not in final_answer, f"Guard 4 fired with no staleness_warning: {final_answer!r}"
-    assert final_answer.count("[NOTE:") == 1 and "serious findings" in final_answer
+    assert "[NOTE:" not in final_answer, f"Expected a clean accepted answer, got NOTE tag(s): {final_answer!r}"
+    # Kratos's own findings block lists the open HIGH finding on top of the model's text
+    assert final_answer.startswith("Kratos found") and "CORR-SSH-001" in final_answer.split("\n\n")[0]
 
 
 
@@ -713,7 +719,8 @@ def test_guard8_asks_only_once_and_never_tags_the_answer(
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
     result = agent_loop.run_agent("find SUID binaries", data_dir, max_iters=10)
     assert len([s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]) == 1
-    assert result["final_answer"] == GAP_ANSWER  # accepted as-is: advisory, not a correctness guard
+    # accepted as-is: advisory, not a correctness guard (under Kratos's own findings block)
+    assert result["final_answer"].endswith(GAP_ANSWER) and "[NOTE:" not in result["final_answer"]
     # ...but the gap still reaches the human, as a suggestion derived from the answer's own sentence
     [derived] = [s["tool_proposal"] for s in result["transcript"] if s.get("tool_proposal")]
     assert derived["derived_from_answer"] is True and derived["name"] == ""
@@ -1070,7 +1077,7 @@ def test_guard3_accepts_an_answer_that_names_the_high_finding(
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
     result = agent_loop.run_agent("is there any malware?", data_dir, max_iters=10)
     assert not [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
-    assert result["final_answer"] == answer
+    assert result["final_answer"].endswith(answer) and "[NOTE:" not in result["final_answer"]
 
 
 def test_guard3_still_fires_when_the_high_finding_is_not_named(

@@ -39,11 +39,23 @@ def _sorted_findings(report: CollectionReport) -> list[dict]:
 
 
 def _finding_tag(f: dict, with_title: bool) -> str:
+    """`ID (severity[, decided])`, then -- with_title -- what it is: the title for rules
+    whose titles are Kratos's own words, else a fixed description (finding_facts.RULE_TEXT),
+    and the facts validated on the way in (addresses, pids, packages, CVEs). Without a
+    title (over the cap) a serious finding still keeps its facts."""
+    from kratos import finding_facts
+
     fid = str(f.get("id") or "?")
     text = f"{fid} ({f.get('severity') or '?'}" + (f", {_DECIDED[f['state']]}" if f.get("state") in _DECIDED else "") + ")"
     title = str(f.get("title") or "")
-    if with_title and title and not fid.startswith(_TITLE_UNSAFE_PREFIXES):
-        text += f" {title}"
+    if with_title:
+        what = title if title and not fid.startswith(_TITLE_UNSAFE_PREFIXES) else finding_facts.RULE_TEXT.get(fid, "")
+        if what:
+            text += f" {what}"
+    facts = finding_facts.safe_facts(f)
+    serious = str(f.get("severity") or "").lower() in finding_facts.SERIOUS
+    if facts and (with_title or serious):
+        text += " -- " + "; ".join(facts)
     return text
 
 

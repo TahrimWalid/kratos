@@ -444,26 +444,48 @@ _R1_ANSWER = ("This system shows signs of a persistent brute-force attack (156 f
 _A8_ANSWER = "The target is under an SSH brute-force attack from 10.136.28.52; fail2ban should ban it."
 
 
-def test_guard12_adds_what_a_real_answer_left_out():
-    from kratos.agent.loop import _serious_findings_left_out, _serious_findings_note
+def test_guard12_finds_what_a_real_answer_left_out_and_the_block_lists_it():
+    from kratos import finding_facts as FF
 
-    left = _serious_findings_left_out(_R1_ANSWER, [_CORR, dict(_LIVE)])
-    note = _serious_findings_note(left)
-    assert "LIVE-002" in note and "/memfd:stage" in note and "pid 353191" in note
-    assert "source 10.136.28.52" in note                    # the answer named the wrong address
-    a8 = _serious_findings_note(_serious_findings_left_out(_A8_ANSWER, [_CORR]))
-    assert "known-malicious" in a8 and "source 10.136.28.52" not in a8   # the IP was there, the match wasn't
+    left = dict((f["id"], m) for f, m in FF.left_out(_R1_ANSWER, [_CORR, _LIVE]))
+    assert left["LIVE-002"] == ["not discussed"]
+    assert "source 10.136.28.52" in left["CORR-SSH-001"]          # the answer named the wrong address
+    block = FF.answer_block([_CORR, _LIVE], _R1_ANSWER)
+    assert block.startswith("Kratos found (checked by Kratos itself")
+    assert "/memfd:stage (pid 353191) (not discussed below)" in block
+    assert "source 10.136.28.52, known-malicious in the threat-intel cache" in block
+    a8 = dict((f["id"], m) for f, m in FF.left_out(_A8_ANSWER, [_CORR]))
+    assert a8["CORR-SSH-001"] == ["known-malicious in the threat-intel cache"]   # the IP was there, the match wasn't
 
 
 def test_guard12_stays_quiet_for_a_complete_answer_or_a_decided_finding():
-    from kratos.agent.loop import _serious_findings_left_out
+    from kratos import finding_facts as FF
 
     complete = ("Brute force from 10.136.28.52, which the threat-intel cache lists as malicious; and a process "
                 "(pid 353191) runs from memory.")
-    assert _serious_findings_left_out(complete, [_CORR, _LIVE]) == []
-    decided = dict(_LIVE, state="risk_accepted")
-    assert _serious_findings_left_out("nothing", [decided]) == []
-    assert _serious_findings_left_out("nothing", [dict(_LIVE, severity="medium")]) == []
+    assert FF.left_out(complete, [_CORR, _LIVE]) == []
+    assert "not discussed" not in FF.answer_block([_CORR, _LIVE], complete)
+    assert FF.left_out("nothing", [dict(_LIVE, state="risk_accepted")]) == []
+    assert FF.answer_block([dict(_LIVE, severity="medium")], "nothing") == ""
+
+
+def test_the_digest_tells_the_model_what_a_finding_is_without_machine_text():
+    """LIVE-002 used to reach the model as 'LIVE-002 (high)' and nothing more (its title is
+    kept out of the digest), so the model ignored it. Now: a fixed description and the
+    validated facts -- never the program path, which the machine wrote."""
+    from kratos.collect.digest import _finding_tag
+
+    tag = _finding_tag(_LIVE, True)
+    assert "process running from memory" in tag and "pid 353191" in tag and "memfd:stage" not in tag
+    assert "source 10.136.28.52 (known-malicious" in _finding_tag(_CORR, True)
+
+
+def test_an_address_the_answer_invents_is_flagged():
+    from kratos.agent.loop import _ungrounded_ips
+
+    tx = [{"observation": {"result": {"findings": [_CORR]}}}, {"digest": "target 10.136.28.168"}]
+    assert _ungrounded_ips(_R1_ANSWER, "check", tx) == ["10.136.28.1"]
+    assert _ungrounded_ips("brute force from 10.136.28.52", "check", tx) == []
 
 
 def test_guard12_reaches_the_final_answer(tmp_path, monkeypatch):
@@ -477,9 +499,30 @@ def test_guard12_reaches_the_final_answer(tmp_path, monkeypatch):
                 "input_errors": {}, "staleness_warning": None, "findings": [_CORR, _LIVE], "count": 2}
     monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler", correlate)
     kratos_config.set_active_target(T)
-    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(_R1_ANSWER)])
+    better = _R1_ANSWER + " A process (pid 353191) is running from memory (LIVE-002)."
+    chat = ScriptedChat([_tool_json("correlate_findings"), _final_json(_R1_ANSWER), _final_json(better)])
     monkeypatch.setattr(agent_loop, "agent_chat", chat)
     result = agent_loop.run_agent("check this system for anything suspicious", tmp_path, max_iters=6)
+    rejected = [s for s in result["transcript"] if s.get("status") == "final_answer_rejected"]
+    assert len(rejected) == 1 and rejected[0]["violations"] == ["serious_finding_left_out"]   # asked once
     answer = result["final_answer"]
-    assert answer.startswith("[NOTE: serious findings the answer above leaves out")
-    assert "LIVE-002" in answer and _R1_ANSWER in answer
+    assert answer.startswith("Kratos found") and better in answer
+    assert "source 10.136.28.52" in answer.split("\n\n")[0]                        # the block names the right address
+    assert "[NOTE: this answer mentions 10.136.28.1" in answer                      # the invented one is flagged
+
+
+def test_guard12_never_blocks_a_stubborn_answer_the_block_still_lists_it(tmp_path, monkeypatch):
+    from kratos.agent import loop as agent_loop
+    from kratos.agent.tools import TOOL_REGISTRY
+    from kratos import kratos_config
+    from tests.test_agent_loop_guards import ScriptedChat, _final_json, _tool_json
+
+    monkeypatch.setattr(TOOL_REGISTRY["correlate_findings"], "handler",
+                        lambda **kw: {"findings": [_LIVE], "missing_inputs": [], "input_errors": {},
+                                      "staleness_warning": None, "count": 1})
+    kratos_config.set_active_target(T)
+    chat = ScriptedChat([_tool_json("correlate_findings")] + [_final_json("All good.")] * 3)
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("anything new?", tmp_path, max_iters=6)
+    assert result["status"] == "final_answer" and len(chat.calls) == 3          # one retry, then accepted
+    assert "LIVE-002" in result["final_answer"] and "(not discussed below)" in result["final_answer"]
