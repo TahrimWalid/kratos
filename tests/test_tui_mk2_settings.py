@@ -16,7 +16,7 @@ import asyncio
 from pathlib import Path
 
 from textual.app import App
-from textual.widgets import Button, DataTable, Input, Static, TabbedContent
+from textual.widgets import DataTable, Input, Static, TabbedContent
 
 from kratos.tui_mk2.screens.settings import (
     AddModelModal, EditWindowModal, SettingsScreen, _validate_window,

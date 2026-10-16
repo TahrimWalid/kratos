@@ -15,7 +15,7 @@ from kratos.collect.sync import settings as _register_sync_settings  # noqa: F40
 from kratos import kratos_config, settings_store
 from kratos.collect import registry, runner, state
 from kratos.collect.digest import DIGEST_CAP, build_digest, summary_line
-from kratos.collect.registry import Check, CheckContext, CheckResult
+from kratos.collect.registry import Check, CheckResult
 from kratos.utils import cancel
 
 TARGET = "10.9.9.9"

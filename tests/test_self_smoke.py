@@ -13,7 +13,6 @@ from unittest.mock import patch
 
 import pytest
 
-from kratos.agent import self_smoke as S
 from kratos.agent.self_smoke import (
     is_target_facing, smoke_test_available, run_live_smoke_test, SmokeResult,
 )

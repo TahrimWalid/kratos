@@ -13,7 +13,7 @@ from kratos.collect.sync import settings as _register_sync_settings  # noqa: F40
 from kratos import kratos_config, settings_store
 from kratos.agent import pipeline
 from kratos.collect import registry, runner, state
-from kratos.collect.registry import Check, CheckResult
+from kratos.collect.registry import CheckResult
 from kratos.collect.sync import cursors
 from kratos.target_key import target_key
 from tests.test_collect_loop import make_report

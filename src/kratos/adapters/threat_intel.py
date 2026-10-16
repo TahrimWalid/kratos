@@ -23,6 +23,7 @@ established "adapters do mechanism, tools.py does policy" convention.
 from __future__ import annotations
 
 import json
+import sys
 from kratos.utils.timeutil import utc_now_iso
 from typing import Any
 
@@ -152,5 +153,5 @@ def lookup_ip_live_abuseipdb(ip: str) -> dict[str, Any] | None:
             "is_whitelisted": data.get("isWhitelisted"),
         }
     except Exception as e:
-        print(f"[KRATOS] AbuseIPDB lookup failed: {redact_secrets(str(e), ABUSEIPDB_API_KEY)}")
+        print(f"[KRATOS] AbuseIPDB lookup failed: {redact_secrets(str(e), ABUSEIPDB_API_KEY)}", file=sys.stderr)
         return None

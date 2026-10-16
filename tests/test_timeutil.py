@@ -14,7 +14,6 @@ from __future__ import annotations
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-import pytest
 
 from kratos.utils import timeutil as t
 

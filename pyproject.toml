@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
     "Topic :: System :: Monitoring",
     "Topic :: System :: Systems Administration",
@@ -59,6 +60,8 @@ Issues = "https://github.com/TahrimWalid/kratos/issues"
 [project.optional-dependencies]
 # pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0).
 test = ["pytest", "pysigma>=2.0,<3"]
+# Contributor tooling: lint, build and check the package (scripts/ci).
+dev = ["ruff>=0.15,<1", "build>=1.2", "twine>=5"]
 # otel: send a copy of each run record (timings, token counts -- never tool results or
 # prompts) to your own OpenTelemetry collector (`trace.otel_export`, OTEL_EXPORTER_OTLP_ENDPOINT).
 otel = ["opentelemetry-sdk>=1.30,<2", "opentelemetry-exporter-otlp-proto-http>=1.30,<2"]
@@ -86,6 +89,18 @@ where = ["src"]
 [tool.setuptools.package-data]
 kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example", "attack/*.json",
           "events/schema/*.json"]
+
+# Lint (B.4): narrow on purpose -- real problems, not style. Syntax errors (E9),
+# invalid comparisons and statements (F63, F7), undefined names (F82), unused imports
+# (F401). The codebase keeps its own formatting; no formatter is enforced. A print to
+# stdout in library code is checked by tests/test_no_stdout_print_in_library.py
+# instead of ruff's T201, which can't tell stdout from stderr.
+[tool.ruff]
+target-version = "py310"
+extend-exclude = ["build", "data", "kept_tools", "sandbox_staging", "vulscan", "llm"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "F401"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

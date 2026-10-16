@@ -41,7 +41,7 @@ from kratos.adapters.findings_engine import FINDING_SUMMARY_TEMPLATES, GENERIC_F
 # Text from a monitored machine is untrusted (kratos.untrusted, A.4): Text here is the
 # cleaning kind, markup strings escape what they interpolate, and the console scrubs
 # whatever it finally draws.
-from kratos.untrusted import annotate_lookalikes, display_text, for_display, markup_safe  # noqa: E402
+from kratos.untrusted import annotate_lookalikes, for_display, markup_safe  # noqa: E402
 from kratos.untrusted_rich import (  # noqa: E402
     SafePanel as Panel, SafeSyntax as Syntax, SafeTable as Table, SafeText as Text, scrub_segments)
 

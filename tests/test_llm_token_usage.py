@@ -9,7 +9,7 @@ be thrown away) and exposed via the accessors WITHOUT changing agent_chat's
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

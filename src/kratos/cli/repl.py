@@ -25,7 +25,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
@@ -36,13 +36,12 @@ from prompt_toolkit.styles import Style
 
 from kratos import paths as _paths
 from kratos.agent import console as _console
-from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
+from kratos.agent.loop import run_agent
 from kratos.agent.tools import request_approval
 from kratos import kratos_config as _kconfig
 from kratos.llm_config import (
     LLM_OPENAI_MODEL,
     LLAMA_N_CTX,
-    LLM_BACKEND,
     ENV_FILE_PATH,
     get_active_llm_model,
     get_active_llm_backend,
@@ -53,7 +52,7 @@ from kratos.llm_interface import agent_chat, check_endpoint_reachable
 from kratos.run_context import run_scope
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil as _timeutil
-from kratos.untrusted import for_model as _for_model, safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
+from kratos.untrusted import for_model as _for_model  # text from a machine is cleaned before a terminal sees it (A.4)
 
 # ---------------------------------------------------------------------------
 # Display timezone (UTC-storage / local-display split, see utils/timeutil.py).
@@ -1177,10 +1176,8 @@ def _cmd_rename(console, session_state: dict[str, Any], store: SessionStore, arg
 # _resolve_evolve_test_file) and the existing tests that patch
 # `kratos.cli.repl.<name>` keep resolving unchanged.
 from kratos.agent.guided_evolve import (  # noqa: E402
-    _EVOLVE_SLUG_MAX_WORDS,
     _slugify_name_hint,
     _build_evolve_harness_template,
-    _EVOLVE_HARNESS_DRAFT_SYSTEM_PROMPT,
     _draft_evolve_harness,
     _suggest_evolve_tool_name,
 )

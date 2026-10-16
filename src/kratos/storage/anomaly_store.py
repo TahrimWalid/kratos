@@ -11,7 +11,7 @@ import sqlite3
 import json
 from pathlib import Path
 from datetime import timedelta
-from typing import Any, Optional
+from typing import Any
 
 # UTC-storage / local-display split -- every timestamp written and every
 # relative-time cutoff computed here is an absolute UTC instant, so a

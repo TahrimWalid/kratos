@@ -7,13 +7,11 @@ HTML output suitable for stakeholders.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Any, Optional
-import json
 
 from kratos.storage.anomaly_store import AnomalyStore
-from kratos.utils.latest_file import latest_file
 
 
 def generate_daily_report(
@@ -141,7 +139,7 @@ def generate_daily_report(
     """
     
     report_path.write_text(html, encoding="utf-8")
-    print(f"[KRATOS-REPORT] Daily report written -> {report_path}", flush=True)
+    print(f"[KRATOS-REPORT] Daily report written -> {report_path}", flush=True, file=sys.stderr)
     
     return report_path
 
@@ -320,6 +318,6 @@ def generate_weekly_report(
     """
     
     report_path.write_text(html, encoding="utf-8")
-    print(f"[KRATOS-REPORT] Weekly report written -> {report_path}", flush=True)
+    print(f"[KRATOS-REPORT] Weekly report written -> {report_path}", flush=True, file=sys.stderr)
     
     return report_path

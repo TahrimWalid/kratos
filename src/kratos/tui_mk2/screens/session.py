@@ -3320,7 +3320,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
     async def _trigger_test(self, args: list[str]) -> None:
         """Show what a trigger WOULD do on a matching finding — no delivery, no
         real investigation, no cooldown side effects."""
-        from kratos.agent import triggers as _T
         from kratos.agent.trigger_eval import preview_trigger
 
         tg = await self._trigger_resolve(args, "test")

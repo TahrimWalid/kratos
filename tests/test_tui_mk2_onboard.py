@@ -12,7 +12,6 @@ import io
 from rich.console import Console
 from textual.app import App
 
-from kratos.tui_mk2.screens import onboard as ob_mod
 from kratos.tui_mk2.screens.onboard import OnboardTargetScreen, needs_onboarding
 
 

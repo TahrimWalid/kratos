@@ -24,10 +24,8 @@ clarify prompt), since each word is individually a legal hostname label.
 """
 from __future__ import annotations
 
-import ipaddress
-import re
 
-from kratos.utils.hostnames import MAX_LEN as _MAX_TARGET_LEN, is_ip_or_hostname
+from kratos.utils.hostnames import is_ip_or_hostname
 
 # "Monitor the Kratos host itself" as a first-class TARGET (distinct from the
 # per-turn /investigate-host override): a session whose target IS the local

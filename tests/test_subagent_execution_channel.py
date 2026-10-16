@@ -20,7 +20,6 @@ import asyncio
 import contextlib
 import socket
 
-import pytest
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.storage.whitelist_store import WhitelistStore

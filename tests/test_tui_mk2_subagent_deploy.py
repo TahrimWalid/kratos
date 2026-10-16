@@ -14,7 +14,6 @@ from textual.app import App
 
 from kratos.storage.subagent_store import SubAgentStore, _expiry_iso
 from kratos.tui_mk2.modals import CommandModal
-from kratos.tui_mk2.screens import subagent as sa_mod
 from kratos.tui_mk2.screens.subagent import SubAgentScreen
 from kratos.utils import ssh_keys
 

@@ -6,7 +6,6 @@ follow-up chat memory built on the same shape) forgets what was discussed.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from kratos.cli.repl import _build_light_resume_context, _final_reply_from_transcript
 

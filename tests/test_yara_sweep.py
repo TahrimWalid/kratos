@@ -5,10 +5,8 @@ end to end without SSH."""
 from __future__ import annotations
 
 import os
-import stat
 import subprocess
 import textwrap
-from pathlib import Path
 
 import pytest
 

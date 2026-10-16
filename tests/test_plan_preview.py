@@ -7,10 +7,8 @@ degenerate handling, and that building a preview NEVER dispatches a tool.
 """
 from __future__ import annotations
 
-import pytest
 
 from kratos.agent.plan_preview import (
-    PlanPreview,
     preview_agentic,
     preview_pipeline,
 )

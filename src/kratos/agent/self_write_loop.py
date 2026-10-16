@@ -89,7 +89,7 @@ from typing import Any, Literal
 
 from kratos import paths as _paths
 from kratos.agent import console as _console
-from kratos.agent.self_write import write_candidate_tool, WriteRequest, WriteResult
+from kratos.agent.self_write import write_candidate_tool, WriteRequest
 from kratos.agent.self_test import run_sandbox_test, SandboxTestResult
 from kratos.agent.self_approve import request_keep_approval, KeepDecision, AttemptRecord
 

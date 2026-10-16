@@ -4,7 +4,6 @@ run_remote_command, the candidate called run_remote_script, the sandbox test fai
 real SSH attempt, and the retry came back byte-identical -- the loop stalled."""
 from __future__ import annotations
 
-from pathlib import Path
 
 from kratos.agent import self_write as SW
 

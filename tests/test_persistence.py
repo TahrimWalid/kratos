@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import stat
 import subprocess
 from pathlib import Path
 
@@ -616,7 +615,7 @@ def test_persistence_checks_are_registered_quick_and_slow():
 
 
 def test_persistence_check_runs_through_the_collection_layer(tmp_path, monkeypatch):
-    from kratos.collect import registry, runner
+    from kratos.collect import registry
     from kratos.collect.registry import CheckContext
     import kratos.persist.check as pc
 

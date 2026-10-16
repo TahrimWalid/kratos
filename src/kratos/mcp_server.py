@@ -150,7 +150,7 @@ from kratos import paths as _paths
 from kratos import kratos_config as _kconfig
 from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
 from kratos.agent.notify import send_notification
-from kratos.agent.tools import TOOL_REGISTRY, Tool, tool_reaches_approval
+from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
 from kratos.llm_config import get_active_llm_model
 from kratos.storage.session_store import SessionStore
 from kratos.run_context import run_scope

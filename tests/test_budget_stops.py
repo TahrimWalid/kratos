@@ -4,9 +4,7 @@ they start (recorded + notified); MCP returns a clear status; the CLI and the TU
 show one plain message."""
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any
 
 import pytest
 

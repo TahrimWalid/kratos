@@ -1,7 +1,6 @@
 """SQLite persistence tests for the sub-agent telemetry store (capability 1)."""
 from __future__ import annotations
 
-import time
 
 import pytest
 

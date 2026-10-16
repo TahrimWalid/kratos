@@ -15,7 +15,7 @@ from kratos.agent import loop as agent_loop
 from kratos.agent.tools import TOOL_REGISTRY, Tool
 from kratos.collect.runner import CheckOutcome, CollectionReport
 from tests.test_agent_loop_guards import (
-    CORRECTED_ANSWER, DISMISSIVE_AND_FILE_CLEAN_ANSWER, HIGH_FINDING, MOCK_STALENESS_WARNING,
+    CORRECTED_ANSWER, HIGH_FINDING, MOCK_STALENESS_WARNING,
     RAW_OBSERVATIONS_ANSWER, TIMEFRAME_CLAIM_ANSWER, TIMEFRAME_CORRECTED_ANSWER, _final_json, _tool_json,
 )
 

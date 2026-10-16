@@ -6,7 +6,6 @@ newest inputs" behaviour — nearly every stage that reads "the latest scan" or
 "the latest findings" goes through here rather than tracking paths by hand.
 """
 from pathlib import Path
-from datetime import datetime
 
 def latest_file(dir_path: Path, pattern: str) -> Path | None:
     files = sorted(dir_path.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)

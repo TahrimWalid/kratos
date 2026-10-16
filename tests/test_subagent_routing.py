@@ -3,7 +3,6 @@ explicit target links behind that choice, and how the result says so
 (docs/subagent_read_routing.md §3, §5)."""
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

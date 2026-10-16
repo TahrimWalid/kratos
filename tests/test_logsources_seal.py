@@ -9,7 +9,6 @@ import os
 import stat
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,6 @@ from typing import Any
 import pytest
 
 from kratos import kratos_config
-from kratos.adapters.ssh_remote import SSHResult
 from kratos.logsources import seal, state_store
 
 KEY = "a1b2c3-d4e5f6-a7b8c9-d0e1f2/1a2b3c-35a4e900"

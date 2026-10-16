@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from textual.app import App
 
 from kratos.agent import presets as P
@@ -730,7 +732,7 @@ def test_preset_import_command(tmp_path, monkeypatch):
 
 def test_pipeline_step_editor_adds_and_saves(tmp_path, monkeypatch):
     """The in-place editor adds a step to an existing pipeline and saves it."""
-    from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+    from kratos.tui_mk2.modals import ListPickerModal
 
     _store, _sid, screen = _make_screen(tmp_path, monkeypatch)
     P.save_preset(tmp_path, name="ed", kind="pipeline",

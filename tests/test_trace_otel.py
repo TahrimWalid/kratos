@@ -6,18 +6,17 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-import threading
 import time
 
 import pytest
 
 pytest.importorskip("opentelemetry.sdk")
 
-from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult  # noqa: E402
+from opentelemetry.sdk.trace.export import SpanExporter  # noqa: E402
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter  # noqa: E402
 from opentelemetry.trace import SpanKind  # noqa: E402
 
-from kratos import kratos_config, settings_store  # noqa: E402
+from kratos import settings_store  # noqa: E402
 from kratos.agent import loop as agent_loop  # noqa: E402
 from kratos.run_context import run_scope  # noqa: E402
 from kratos.trace import otel, recorder  # noqa: E402

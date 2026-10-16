@@ -17,7 +17,6 @@ import multiprocessing
 import sqlite3
 from pathlib import Path
 
-import pytest
 
 from kratos.storage.session_store import SessionStore
 

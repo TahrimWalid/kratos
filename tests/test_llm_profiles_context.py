@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from kratos.adapters import llm_profiles as P
 from kratos import llm_config as C

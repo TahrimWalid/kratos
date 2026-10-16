@@ -692,7 +692,6 @@ def test_multiselect_modal_refuses_an_empty_choice(tmp_path):
 def test_real_keys_reach_the_screen_actions(tmp_path):
     """The table has focus; enter/space/a/i must still reach the screen (the
     checklist modal's own Enter was once swallowed by its list widget)."""
-    from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal
 
     sa, wl = _make_stores(tmp_path)
     tid = _pair(sa)

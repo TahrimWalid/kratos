@@ -13,10 +13,8 @@ here.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 from kratos import kratos_config as _kconfig
 from kratos.adapters import target_setup

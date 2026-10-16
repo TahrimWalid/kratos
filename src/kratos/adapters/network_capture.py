@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import re
+import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Any
@@ -72,7 +73,7 @@ def capture_traffic(
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = logs_dir / f"conn_summary_{ts}.json"
     
-    print(f"[KRATOS-NET] Capturing traffic for {duration_seconds}s on {interface}...", flush=True)
+    print(f"[KRATOS-NET] Capturing traffic for {duration_seconds}s on {interface}...", flush=True, file=sys.stderr)
     
     try:
         # Run tcpdump: capture packets, write to file instead of stdout
@@ -104,14 +105,15 @@ def capture_traffic(
         # in a security tool -- worse than surfacing the failure.
         if result.returncode != 0 or not temp_pcap.exists():
             stderr = result.stderr.strip()
-            print(f"[KRATOS-NET] Capture failed (exit {result.returncode}): {stderr}", flush=True)
+            print(f"[KRATOS-NET] Capture failed (exit {result.returncode}): {stderr}", flush=True, file=sys.stderr)
             if "command not found" in stderr.lower():
-                print(f"[KRATOS-NET] Install with: sudo apt-get install tcpdump", flush=True)
+                print(f"[KRATOS-NET] Install with: sudo apt-get install tcpdump", flush=True, file=sys.stderr)
             elif "password is required" in stderr.lower() or "no tty present" in stderr.lower():
                 print(
                     "[KRATOS-NET] sudo needs a password/TTY to run tcpdump. "
                     "Configure passwordless sudo for tcpdump, or run kratos with sufficient privileges.",
                     flush=True,
+                    file=sys.stderr,
                 )
             return None
 
@@ -120,7 +122,7 @@ def capture_traffic(
         
         # Write summary JSON
         output_file.write_text(json.dumps(conn_summary, indent=2), encoding="utf-8")
-        print(f"[KRATOS-NET] Connection summary written -> {output_file}", flush=True)
+        print(f"[KRATOS-NET] Connection summary written -> {output_file}", flush=True, file=sys.stderr)
         
         # Clean up pcap file
         if temp_pcap.exists():
@@ -128,10 +130,10 @@ def capture_traffic(
         
         return output_file
     except subprocess.TimeoutExpired:
-        print(f"[KRATOS-NET] tcpdump timeout (expected after {duration_seconds}s)", flush=True)
+        print(f"[KRATOS-NET] tcpdump timeout (expected after {duration_seconds}s)", flush=True, file=sys.stderr)
         return None
     except Exception as e:
-        print(f"[KRATOS-NET] Error capturing traffic: {e}", flush=True)
+        print(f"[KRATOS-NET] Error capturing traffic: {e}", flush=True, file=sys.stderr)
         return None
 
 
@@ -164,7 +166,7 @@ def _parse_pcap_to_summary(pcap_file: Path) -> list[dict[str, Any]]:
         
         return list(connections.values())
     except Exception as e:
-        print(f"[KRATOS-NET] Warning: failed to parse captured pcap ({e}); reporting zero connections.", flush=True)
+        print(f"[KRATOS-NET] Warning: failed to parse captured pcap ({e}); reporting zero connections.", flush=True, file=sys.stderr)
         return []
 
 

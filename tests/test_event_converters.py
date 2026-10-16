@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from kratos.adapters import auth_log_parse, privileged_accounts
-from kratos.adapters.auth_log_parse import AuthEvent, classify_auth_message, iter_auth_events
+from kratos.adapters.auth_log_parse import classify_auth_message, iter_auth_events
 from kratos.events import converters as C
 from kratos.events.model import Event
 

@@ -3,11 +3,9 @@ LLM interface: one OpenAI-compatible query path (hosted or self-hosted), plus an
 optional in-process GGUF load (llama-cpp-python).
 """
 from __future__ import annotations
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 try:
@@ -17,8 +15,6 @@ except ImportError:
 
 from kratos.llm_config import (
     MODEL_PATH,
-    LLAMA_SERVER_HOST,
-    LLAMA_SERVER_PORT,
     LLAMA_SERVER_URL,
     LLAMA_N_CTX,
     get_active_llm_context_window,
@@ -30,9 +26,7 @@ from kratos.llm_config import (
     LLAMA_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
     MAX_TOKENS,
-    MAX_TOKENS_QUESTION,
     FALLBACK_TO_DIRECT_LOAD,
-    STARTUP_TIMEOUT_SECONDS,
     SYSTEM_PROMPT_ANALYST,
     PROMPT_SUMMARIZE_FINDINGS,
     PROMPT_DEEP_ANALYSIS,

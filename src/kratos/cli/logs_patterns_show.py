@@ -5,7 +5,6 @@ Display-only view of the most recent `auth_patterns_*.json` (produced by
 what the pattern pass found without re-running it.
 """
 import json
-from pathlib import Path
 from kratos.utils.latest_file import latest_file
 from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 

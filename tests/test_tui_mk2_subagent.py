@@ -318,7 +318,6 @@ def test_every_column_stays_on_screen_at_80_columns(tmp_path):
     """A long status detail used to push nothing but itself off-screen -- but at
     80 columns the table scrolled sideways and hid the end of every row. The
     detail is now shortened with an ellipsis (full text under i) so the row fits."""
-    from rich.cells import cell_len
 
     sa = SubAgentStore(tmp_path / "kratos.db")
     _pair(sa, name="a-rather-long-server-name")

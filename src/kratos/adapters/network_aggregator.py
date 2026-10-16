@@ -13,9 +13,10 @@ Example:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 from kratos.utils.latest_file import latest_file
 
 
@@ -172,11 +173,11 @@ def build_anomaly_report(
     }
     
     if not nmap_file or not nmap_file.exists():
-        print(f"[KRATOS-NET] No Nmap file found. Run: kratos scan first", flush=True)
+        print(f"[KRATOS-NET] No Nmap file found. Run: kratos scan first", flush=True, file=sys.stderr)
         return None, metadata
     
     if not conn_summary_file or not conn_summary_file.exists():
-        print(f"[KRATOS-NET] No connection summary found. Run network capture first", flush=True)
+        print(f"[KRATOS-NET] No connection summary found. Run network capture first", flush=True, file=sys.stderr)
         return None, metadata
     
     # Load data
@@ -184,7 +185,7 @@ def build_anomaly_report(
         nmap_data = json.loads(nmap_file.read_text(encoding="utf-8", errors="replace"))
         connections = json.loads(conn_summary_file.read_text(encoding="utf-8", errors="replace"))
     except Exception as e:
-        print(f"[KRATOS-NET] Error reading files: {e}", flush=True)
+        print(f"[KRATOS-NET] Error reading files: {e}", flush=True, file=sys.stderr)
         return None, metadata
     
     # Map IPs to device types
@@ -251,7 +252,7 @@ def build_anomaly_report(
     }
     
     out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"[KRATOS-NET] Anomaly report written -> {out_json}", flush=True)
-    print(f"[KRATOS-NET] Found {metadata['anomaly_count']} anomalies ({metadata['high_severity']} HIGH)", flush=True)
+    print(f"[KRATOS-NET] Anomaly report written -> {out_json}", flush=True, file=sys.stderr)
+    print(f"[KRATOS-NET] Found {metadata['anomaly_count']} anomalies ({metadata['high_severity']} HIGH)", flush=True, file=sys.stderr)
     
     return out_json, report

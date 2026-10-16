@@ -16,7 +16,6 @@ import asyncio
 from textual.app import App
 
 from kratos.tui_mk2.guided import TextualGuidedPrompter
-from kratos.tui_mk2 import render as R
 
 
 class _Host(App):

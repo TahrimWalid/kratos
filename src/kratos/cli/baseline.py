@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 from kratos.untrusted import safe_print as print  # text from a machine is cleaned before a terminal sees it (A.4)
 from kratos.adapters.baseline import (

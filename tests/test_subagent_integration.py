@@ -13,7 +13,6 @@ import contextlib
 import json
 import socket
 
-import pytest
 
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import protocol as proto

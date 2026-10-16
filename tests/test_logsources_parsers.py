@@ -14,7 +14,7 @@ from kratos.events import converters as C
 from kratos.events.model import Event
 from kratos.logsources import catalog, logread
 from kratos.logsources.logread import LogRead, Record
-from kratos.logsources.parsers import Parsed, auditd, parse_read, web
+from kratos.logsources.parsers import Parsed, parse_read, web
 from tests._logsources_util import FIX, awks, bindir, make_root, run_sh
 
 NOW = datetime(2026, 10, 11, 18, 0, tzinfo=timezone.utc).timestamp()

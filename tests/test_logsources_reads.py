@@ -4,7 +4,6 @@ hard links and credential paths, accept only closed parameters, and an older
 agent gets a clear "update the agent" answer with nothing sent to it."""
 from __future__ import annotations
 
-import asyncio
 import base64
 import os
 import time

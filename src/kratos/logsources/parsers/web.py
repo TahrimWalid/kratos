@@ -13,7 +13,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import urlsplit
 
 from kratos.logsources.parsers import Parsed
 

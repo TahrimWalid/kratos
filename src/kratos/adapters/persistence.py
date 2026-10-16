@@ -39,7 +39,7 @@ import re
 import shlex
 import stat
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules

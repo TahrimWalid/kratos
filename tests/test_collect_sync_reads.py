@@ -15,7 +15,7 @@ import pytest
 
 from kratos.logsources import catalog, logread
 from kratos.subagent import reads
-from tests._logsources_util import awks, bindir, make_root, run_sh
+from tests._logsources_util import awks, bindir, make_root
 
 NOW = datetime(2026, 10, 11, 18, 0, tzinfo=timezone.utc).timestamp()
 AUTH = "/var/log/auth.log"

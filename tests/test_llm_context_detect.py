@@ -8,7 +8,6 @@ degrades to a clean "enter manually" rather than raising.
 """
 from __future__ import annotations
 
-import pytest
 import requests
 
 from kratos.adapters import llm_context_detect as D
