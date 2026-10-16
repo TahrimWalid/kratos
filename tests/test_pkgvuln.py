@@ -655,11 +655,16 @@ def test_a_failed_read_saves_nothing(tmp_path):
 
 
 def test_same_inputs_rewrite_the_same_file_and_dedupe_the_inventory(deb_index):
-    a = REC.run(deb_index, "10.0.0.5", reader=lambda: _deb_inv(), now=1_800_000_000.0)
-    b = REC.run(deb_index, "10.0.0.5", reader=lambda: _deb_inv(), now=1_800_000_100.0)
+    # Times anchored to the index's own build time, mid-day: the "data is N days old" gap is
+    # part of the file's content key, so two runs that straddle a day boundary of the index's
+    # age are rightly different results (with fixed epochs this failed ~1 run in 860).
+    built = IX.status(deb_index).built_at
+    t1, t2 = built + 10 * 86400 + 43200, built + 10 * 86400 + 43300
+    a = REC.run(deb_index, "10.0.0.5", reader=lambda: _deb_inv(), now=t1)
+    b = REC.run(deb_index, "10.0.0.5", reader=lambda: _deb_inv(), now=t2)
     assert a["file"] == b["file"] and len(list((deb_index / "packages").glob("*.json"))) == 1
     assert INV.counts(deb_index) == {"rows": 1, "machines": 1}
-    assert INV.latest(deb_index, "10.0.0.5").last_seen_at == 1_800_000_100.0
+    assert INV.latest(deb_index, "10.0.0.5").last_seen_at == t2
 
 
 DEB_KERNEL = [
