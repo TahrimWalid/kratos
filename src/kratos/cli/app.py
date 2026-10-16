@@ -25,7 +25,6 @@ from pathlib import Path
 from kratos.untrusted_rich import SafePanel as Panel
 from kratos.untrusted_rich import SafeTable as Table
 from kratos import paths as _paths
-from kratos.adapters.log_window import write_event_excerpt_from_events_file
 from kratos.utils.latest_file import latest_file
 
 from kratos.adapters.nmap_parse import (
@@ -252,6 +251,25 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """`kratos doctor`: the same self-check as /doctor in the app -- the model endpoint,
+    the settings file, the machine you investigate, the vulnerability data, stored
+    data -- as plain text. Exit status 1 when a check fails."""
+    from kratos.agent import doctor
+    from kratos.untrusted import safe_print
+
+    checks = doctor.run_diagnostics(Path(args.data_dir))
+    passes, warns, fails = doctor.summarize(checks)
+    width = max((len(c["check"]) for c in checks), default=10)
+    for c in checks:
+        safe_print(f"{c['status'].upper():<5} {c['check']:<{width}}  {c['detail']}")
+        if c.get("fix") and c["status"] in ("warn", "fail"):
+            safe_print(f"{'':<5} {'':<{width}}  -> {c['fix']}")
+    verdict = "ready" if not fails else "not ready"
+    safe_print(f"\n{verdict}: {passes} passed, {warns} warning(s), {fails} failed")
+    return 1 if fails else 0
+
+
 def cmd_vulscan_install(args: argparse.Namespace) -> int:
     """Download nmap's vulscan script and CVE list into Kratos's data home."""
     from kratos.adapters import vuln_scan
@@ -362,7 +380,7 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
 
     from kratos.storage.subagent_store import SubAgentStore
     from kratos.storage.whitelist_store import WhitelistStore
-    from kratos.subagent.core_server import RESTART_EXIT_CODE, CoreServer, DEFAULT_PORT
+    from kratos.subagent.core_server import RESTART_EXIT_CODE, CoreServer
     from kratos.subagent.local_reads import socket_path
 
     store = SubAgentStore(args.data_dir / "kratos.db")
@@ -444,7 +462,7 @@ def cmd_collect(args: argparse.Namespace) -> int:
     (no model). A fresh result is reused unless --force; --all adds the slow checks."""
     from kratos.collect import checks as _checks  # noqa: F401 -- registers the checks
     from kratos.collect import runner as _runner
-    from kratos.collect.digest import ago, build_digest
+    from kratos.collect.digest import ago
     from kratos.kratos_config import pinned_target, set_active_data_dir
     from kratos.run_context import run_scope
 
@@ -1840,6 +1858,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init_p.set_defaults(func=cmd_init)
 
+    doctor_p = sub.add_parser(
+        "doctor",
+        help="Check your setup: model endpoint, settings, the machine you investigate, data (same as /doctor)",
+    )
+    doctor_p.set_defaults(func=cmd_doctor)
+
     vulscan_p = sub.add_parser(
         "vulscan-install",
         help="Install or refresh the CVE list the vulnerability scan matches services against (built from NVD)",
@@ -2206,7 +2230,7 @@ def main(argv: list[str] | None = None) -> int:
         global_args, unknown = global_only_parser.parse_known_args(argv)
         if unknown:
             # A word or flag Kratos doesn't know used to be dropped here, opening the
-            # app as if nothing was wrong (`kratos doctor`, a typo'd `kratos investgate`).
+            # app as if nothing was wrong (`kratos doctr`, a typo'd `kratos investgate`).
             return _unknown_command(unknown[0], sorted(subcommand_names))
         # Bare `kratos` launches the full-screen TUI -- the primary interface.
         # The classic prompt_toolkit REPL (cli/repl.py) is retired as the default

@@ -1,5 +1,5 @@
 """`kratos <word>` with a word that isn't a command used to open the full-screen app
-silently (the leftover word was dropped), so `kratos doctor` or a typo like
+silently (the leftover word was dropped), so `kratos doctr` or a typo like
 `kratos investgate "..."` looked like it worked and then sat in the TUI. A word or
 flag Kratos doesn't know is now an error that names it and suggests the closest
 command; bare `kratos` (and its real global options) still opens the app."""
@@ -24,7 +24,7 @@ def test_bare_kratos_and_its_global_options_open_the_app(opened, tmp_path):
 
 
 @pytest.mark.parametrize("argv, named, suggested", [
-    (["doctor"], "doctor", None),
+    (["doctr"], "doctr", "doctor"),
     (["investgate", "is the box ok?"], "investgate", "investigate"),
     (["--dta-dir", "/tmp/x"], "--dta-dir", None),
 ])
