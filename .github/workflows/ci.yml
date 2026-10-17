@@ -61,7 +61,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -93,7 +93,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -125,7 +125,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -157,7 +157,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -189,7 +189,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -250,7 +250,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata mawk gawk busybox >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 mawk gawk busybox >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -283,7 +283,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install 'build>=1.2' 'twine>=5'
@@ -317,7 +317,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install 'build>=1.2' 'twine>=5'
@@ -352,7 +352,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
       - name: Install
         run: |
           pip install -e '.[test,eval]'

@@ -321,6 +321,7 @@ def test_offset_measured_once_per_target_then_cached(monkeypatch):
     assert len(calls) == 1
 
 
+@pytest.mark.skipif(__import__("shutil").which("journalctl") is None, reason="the measure script runs journalctl")
 def test_measure_script_leaves_no_temp_files_finished_or_stopped(tmp_path):
     """Security review 2026-10-05, finding 5: scratch files used a predictable /tmp
     name when mktemp was missing and stayed behind when a timed-out read was

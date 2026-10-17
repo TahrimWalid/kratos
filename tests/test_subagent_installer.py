@@ -217,7 +217,11 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
     statuses, rules = out.stdout.splitlines()[:2]
     import json
 
-    assert set(json.loads(statuses).values()) == {"ok"}
+    got = json.loads(statuses)
+    # the bundle ran standalone and every probe answered; a probe whose host tool is
+    # absent (journalctl in a minimal container) answers "not_installed", not a crash.
+    assert set(got.values()) <= {"ok", "not_installed"}, got
+    assert got["clock"] == "ok" and got["file_hashes"] == "ok"
     assert "MALW_Eicar.yar" in rules
 
 
