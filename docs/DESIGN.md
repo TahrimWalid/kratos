@@ -589,6 +589,7 @@ Where the hooks are -- one each, so every caller is covered:
 | `tool_call` | `agent.loop.execute_tool_call` (args after the dispatch guards' rewrites, approval asked/answered, result capped at `trace.max_result_bytes` with a sha256 of the whole, the envelope call id the model saw) |
 | `collection_check` | `collect.runner.prepare` (reused / ran / skipped; a check's tool calls nest under it; still running at the start budget, settled later) |
 | `guard` / `answer` | `agent.loop`: each rejection with its correction's first line, each NOTE a guard added, and the answer's composition (the findings block's ids in order, NOTEs, the model's text length) |
+| `collection` / `collection_settled` | `agent.loop`: the collected report the model started from (every check's status/summary/finding ids, the correlation, what was still running) and the checks folded in before the answer -- enough to replay a run without the machine |
 
 `kratos trace list/show` and `/trace` read records back and print every string
 through `untrusted.for_display`. The optional OpenTelemetry copy
@@ -1456,6 +1457,60 @@ it any more. Two notes that still apply:
   running on top of the blocking read can eat keystrokes before they reach
   it — `agent/console.py` tracks the active spinner and stops it before
   any approval prompt renders, for exactly this reason.
+
+## Packaging, CI and the regression gate
+
+The package is `kratos-security-assistant` on PyPI (the import name and command
+stay `kratos`); `requires-python >= 3.10`. Non-Python data (the starter YARA
+rules, the settings template, the ATT&CK table, the event schema) ships as
+package data, and `scripts/ci/package_check.py` keeps the wheel honest: it reads
+the source for every path the code opens from its own location
+(`files("kratos.attack")...`, `Path(__file__).parents[1] / "yara_rules"`, ...),
+resolves each to a package file, and fails if one is missing from the built
+wheel or if a referenced path doesn't exist. Its `install` mode installs the
+wheel into a fresh venv and runs `kratos --help --all`, `init`, `doctor`,
+`subagent-install` + `sh -n`, `attack-layer`, and imports every module, so a
+forgotten dependency surfaces in CI, not on a user's first run.
+
+CI is one job list, `scripts/ci/jobs.toml`: `.github/workflows/ci.yml` is
+generated from it (`tests/test_ci_jobs.py` fails if they drift) and
+`scripts/ci/run_local.sh` runs the same jobs here in containers, because the
+repository isn't pushed. The jobs: ruff (narrow -- syntax errors, undefined
+names, unused imports; the codebase keeps its own formatting, so no formatter is
+enforced, and a stdout `print` in library code is caught by a test rather than
+ruff because it would corrupt `mcp-serve`'s JSON-RPC channel); the full suite on
+Python 3.10-3.13 and under `Europe/Helsinki`; the sub-agent bundle's own tests on
+`python:3.8-slim` with nothing installed (the bundle must run on a monitored
+machine's own old Python); the awk-portability tests with mawk, gawk and BusyBox
+all present so none silently skips; a package build + the checks above on 3.10
+and 3.13; and the gate's replay smoke with a scripted model. The suite runs as an
+unprivileged user, since several tests check file permissions. CI sends nothing
+anywhere -- no keys, no model calls, no lab. `release.yml` is manual-only
+(`workflow_dispatch`), builds, attests provenance (PEP 740), and publishes
+through PyPI Trusted Publishing on a protected environment; a local dry run
+(`scripts/ci/release_dryrun.sh`) exercises it up to the upload.
+
+The **regression gate** (`evals/`) measures the part Phase A found fragile: not
+whether detection works (the rule engine is deterministic) but whether the
+answer *carries* what was found. A scenario is a goal, a `kind`, and a scorer;
+the scorer reads a run's payload and returns a verdict two ways -- *person sees*
+(the whole answer) and *model alone* (the analysis with Kratos's findings block
+and NOTEs removed, so a drop in the model's own reasoning shows even when the
+block covers for it). It runs *live* (the lab, real model) or in *replay*
+(recorded tool results from a run record, real model, no machine): replay patches
+`agent.loop`'s collection and tool dispatch to return the recording's results, and
+a call that isn't recorded is marked "left the recording", neither pass nor fail.
+The drop rule (`evals/gate.py`): hard scenarios -- prompt injection, the approval
+and boundary cases -- must pass every run; scored scenarios are compared to a
+committed baseline (`evals/baselines/<model>.json`), a scenario more than two runs
+below is re-run at N=10 and fails if still 20 points down, and the scored total
+may not drop more than 5 points. The gate decides on *person sees*; a *model
+alone* drop is a warning. The lab setups themselves are kept out of the
+repository (Phase A's "never vendor offensive tooling"): live mode delegates each
+scenario's setup to the external durable harness, replay needs no lab, and a test
+scans every committed recording for non-lab addresses and key-shaped strings. The
+gate must be run for any change to the prompt, the digest, the model's tool list,
+or the shape of an answer.
 
 ## Known limitations
 

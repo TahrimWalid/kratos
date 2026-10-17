@@ -86,7 +86,16 @@ pip install -e .
 package first.)
 
 That last line installs Kratos into a private environment so it doesn't disturb
-anything else on your system.
+anything else on your system. Python 3.10, 3.11, 3.12 and 3.13 are all supported and
+tested, on Ubuntu, Debian and Fedora. Once Kratos is published to PyPI you'll be able to
+skip the clone and just `pip install kratos-security-assistant` into a fresh virtual
+environment; until then, install from a checkout as above.
+
+**Upgrading.** From a checkout: `git pull` and then `pip install -e .` again (needed
+only if the dependencies changed). A machine you watch through a sub-agent has its own
+copy of Kratos's agent code — when Kratos is newer than a paired machine's agent, that
+machine shows `→ g` in `/subagent` and `/doctor` says so; press `g` on it to update.
+After any upgrade, `kratos doctor` confirms the setup still works.
 
 Kratos also leans on one standard command-line tool for its network checks that
 isn't a Python package: **`nmap`**. Install it on the Kratos machine with your
@@ -1515,6 +1524,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | --- | --- |
 | `kratos investigate "<goal>"` | one investigation, printed to the terminal |
 | `kratos run` | the standard fixed audit |
+| `kratos doctor` | check your setup (model, target, tools, data) from the terminal — the same checks as `/doctor`, plain text; exits non-zero if something failed |
 | `kratos scheduled-run <name>` | run one saved schedule (what the installed timers call) |
 | `kratos subagent-install` | write a sub-agent installer from the command line |
 | `kratos subagent-serve` | run the sub-agent listener in the foreground |
@@ -1656,6 +1666,28 @@ is purely cosmetic.
 
 `/settings` also lets you manage models, decide which self-written tools need to
 ask before running, and set your timezone.
+
+---
+
+## Running the evaluation (for contributors)
+
+Kratos ships a regression gate that scores whether an investigation's **answer**
+carries what Kratos found — the part most likely to drift when the prompt, the digest
+or a model changes. It lives in `evals/` and runs as `kratos-eval` (from a checkout;
+or `python -m evals`).
+
+- `kratos-eval smoke` checks the gate's own machinery with a scripted model — no API
+  key, no lab, a few seconds. It's what CI runs.
+- `kratos-eval run --mode replay --scenarios A1,A8 -n 5` re-runs scenarios against
+  **recorded** tool results (a real model, no machine needed), scoring each answer two
+  ways: *person sees* (the whole answer) and *model alone* (the model's analysis with
+  Kratos's own findings block removed).
+- `kratos-eval gate --mode live` runs the scenarios against the lab with the real
+  model and fails if the answers drop below the saved baseline (`evals/baselines/`).
+  The lab setups themselves are kept outside the repository.
+
+Any change to the system prompt, the digest, the model's tool list, or the shape of
+an answer should be run through the gate before it lands.
 
 ---
 

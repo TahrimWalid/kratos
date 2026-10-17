@@ -101,7 +101,16 @@ One optional feature, threat-intel enrichment, is **off by default** and, when y
 
 ## Install
 
-You'll need Linux, Python 3.10 or newer, and a way to reach the machine you want to watch (SSH, or a sub-agent you install on it).
+You'll need Linux, Python 3.10, 3.11, 3.12 or 3.13, and a way to reach the machine you want to watch (SSH, or a sub-agent you install on it). Ubuntu, Debian and Fedora are tested.
+
+Once Kratos is on PyPI, installing is one line into a fresh virtual environment:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install kratos-security-assistant   # the command and import name stay `kratos`
+```
+
+Until then, install from a checkout:
 
 ```bash
 git clone https://github.com/TahrimWalid/kratos.git
@@ -135,6 +144,8 @@ Start it:
 ```bash
 kratos
 ```
+
+At any point, `kratos doctor` checks your setup from the terminal — the model endpoint, the settings file, the machine you watch, the vulnerability data — and tells you what to fix. From a fresh install, most people get from nothing to Kratos's first finding about a real machine in under ten minutes.
 
 ---
 
