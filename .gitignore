@@ -120,3 +120,4 @@ repomix-output.xml
 
 # The eval command-line wrapper is shipped despite the blanket *.sh/no-extension ignores
 !scripts/kratos-eval
+!scripts/ci/first_finding.sh
