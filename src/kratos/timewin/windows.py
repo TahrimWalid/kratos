@@ -163,6 +163,10 @@ def _parse_local(value: str, what: str, tz: tzinfo | None = None) -> tuple[datet
     if not isinstance(value, str) or not value.strip():
         raise TimeIntentError(f"{what} must be a local date/time string like '2026-07-05' or '2026-07-05T14:00'")
     v = value.strip().replace(" ", "T", 1)
+    # Python 3.10's fromisoformat rejects a trailing "Z"; normalise it to +00:00 so the
+    # offset-equals-the-zone check below (not the parser) decides accept-vs-refuse.
+    if v.endswith(("Z", "z")):
+        v = v[:-1] + "+00:00"
     try:
         if re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
             return datetime.fromisoformat(v), True

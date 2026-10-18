@@ -291,6 +291,10 @@ def test_the_key_appears_on_no_outbound_or_stored_surface(keyed, monkeypatch, ca
 
     monkeypatch.setattr(requests, "post", fake_post)
     monkeypatch.setattr(requests.Session, "post", lambda self, *a, **k: fake_post(*a, **k))
+    # Don't depend on a real reachable LLM endpoint (there is none in CI): the request
+    # path is what this test exercises, and fake_post captures it.
+    import kratos.llm_interface as _llm
+    monkeypatch.setattr(_llm, "check_endpoint_reachable", lambda *a, **k: (True, None))
     kratos_config.set_active_target(TARGET)
     seal.verify(data_dir, TARGET, reader=FakeSealReader([_f(A1)]), now=time.time())
     from kratos.logsources import integrity

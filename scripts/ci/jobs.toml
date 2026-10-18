@@ -15,11 +15,12 @@
 # tests/conftest.py refuses any test that starts ssh.
 
 [defaults]
-# procps (ps), iproute2 (ss) and python3 (/usr/bin/python3, for a stand-in scanner's
-# shebang) are what the suite's real-read tests expect on a Linux host. journalctl
-# (systemd) can't run in a container, so the handful of tests that need it skip
-# themselves when it is absent.
-apt = ["git", "tzdata", "procps", "iproute2", "python3"]
+# The suite's real-read tests expect a Linux host's userland: procps (ps), iproute2
+# (ss), python3 (/usr/bin/python3, for a stand-in scanner's shebang), gawk (the
+# read-script tests default to it) and openssh-client (the onboarding tests look for
+# Kratos's own key, created in the run step below). journalctl (systemd) can't run in a
+# container, so the handful of tests that need it skip themselves when it is absent.
+apt = ["git", "tzdata", "procps", "iproute2", "python3", "gawk", "openssh-client"]
 user = "ci"
 env = { PIP_DISABLE_PIP_VERSION_CHECK = "1", PIP_ROOT_USER_ACTION = "ignore", PYTHONDONTWRITEBYTECODE = "1" }
 
@@ -35,35 +36,50 @@ name = "test-3.10"
 image = "python:3.10-slim"
 env = { TZ = "UTC" }
 setup = ["pip install -e '.[test]'"]
-run = ["python -m pytest -q -p no:cacheprovider"]
+run = [
+    "mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N \"\" -f $HOME/.ssh/id_ed25519 -q",
+    "python -m pytest -q -p no:cacheprovider",
+]
 
 [[job]]
 name = "test-3.11"
 image = "python:3.11-slim"
 env = { TZ = "UTC" }
 setup = ["pip install -e '.[test]'"]
-run = ["python -m pytest -q -p no:cacheprovider"]
+run = [
+    "mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N \"\" -f $HOME/.ssh/id_ed25519 -q",
+    "python -m pytest -q -p no:cacheprovider",
+]
 
 [[job]]
 name = "test-3.12"
 image = "python:3.12-slim"
 env = { TZ = "UTC" }
 setup = ["pip install -e '.[test]'"]
-run = ["python -m pytest -q -p no:cacheprovider"]
+run = [
+    "mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N \"\" -f $HOME/.ssh/id_ed25519 -q",
+    "python -m pytest -q -p no:cacheprovider",
+]
 
 [[job]]
 name = "test-3.13"
 image = "python:3.13-slim"
 env = { TZ = "UTC" }
 setup = ["pip install -e '.[test]'"]
-run = ["python -m pytest -q -p no:cacheprovider"]
+run = [
+    "mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N \"\" -f $HOME/.ssh/id_ed25519 -q",
+    "python -m pytest -q -p no:cacheprovider",
+]
 
 [[job]]
 name = "test-tz"
 image = "python:3.12-slim"
 env = { TZ = "Europe/Helsinki" }
 setup = ["pip install -e '.[test]'"]
-run = ["python -m pytest -q -p no:cacheprovider"]
+run = [
+    "mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N \"\" -f $HOME/.ssh/id_ed25519 -q",
+    "python -m pytest -q -p no:cacheprovider",
+]
 
 # The sub-agent runs on a monitored machine's own python3 -- as old as 3.8, nothing
 # installed. Nothing is pip-installed here: the bundle must import and pass its tests

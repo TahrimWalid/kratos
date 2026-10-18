@@ -87,6 +87,9 @@ def test_onboarding_offers_sealing_after_ssh_works(tmp_path, monkeypatch):
         return True
 
     monkeypatch.setattr(OnboardTargetScreen, "_ask_login", given)
+    # Kratos's SSH key exists on a real install; make the test independent of ambient host
+    # state (without this, a machine with no key opens an unanswered "create key?" modal).
+    monkeypatch.setattr("kratos.utils.ssh_keys.read_local_pubkey", lambda: "ssh-ed25519 AAAATEST test@kratos")
     monkeypatch.setattr("kratos.adapters.ssh_remote.run_target_probe_checks",
                         lambda: [{"check": "ssh_reachable", "status": "PASS", "detail": "ok"}])
     out: dict = {}

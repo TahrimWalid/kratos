@@ -59,7 +59,10 @@ def test_index_columns_are_store_columns():
 
 
 def test_schema_ships_as_package_data():
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib
 
     pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
     assert "events/schema/*.json" in pyproject["tool"]["setuptools"]["package-data"]["kratos"]

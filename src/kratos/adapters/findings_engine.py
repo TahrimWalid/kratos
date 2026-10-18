@@ -1511,10 +1511,12 @@ VULN_SCAN_MAX_AGE_HOURS = 24
 _VULN_SCAN_GLOB = "vuln_scan_*.json"
 _VULN_SCAN_FILES_CONSIDERED = 200
 def _snapshot_time(data: dict[str, Any], key: str, path: Path) -> float:
-    try:
-        return datetime.fromisoformat(str(data.get(key))).timestamp()
-    except ValueError:
-        return path.stat().st_mtime
+    # epoch_of handles a trailing "Z" (Python 3.10's fromisoformat does not), so an old
+    # snapshot is not mistaken for a fresh one by falling back to the file's mtime.
+    from kratos.utils.timeutil import epoch_of
+
+    e = epoch_of(data.get(key))
+    return e if e is not None else path.stat().st_mtime
 
 
 def _load_recent_vuln_scan(scans_dir: Path) -> tuple[dict[str, Any] | None, Path | None]:

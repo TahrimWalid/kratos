@@ -61,7 +61,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -69,6 +69,7 @@ jobs:
         run: |
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N "" -f $HOME/.ssh/id_ed25519 -q
           python -m pytest -q -p no:cacheprovider
           CI_RUN_EOF
           chown -R ci .
@@ -93,7 +94,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -101,6 +102,7 @@ jobs:
         run: |
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N "" -f $HOME/.ssh/id_ed25519 -q
           python -m pytest -q -p no:cacheprovider
           CI_RUN_EOF
           chown -R ci .
@@ -125,7 +127,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -133,6 +135,7 @@ jobs:
         run: |
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N "" -f $HOME/.ssh/id_ed25519 -q
           python -m pytest -q -p no:cacheprovider
           CI_RUN_EOF
           chown -R ci .
@@ -157,7 +160,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -165,6 +168,7 @@ jobs:
         run: |
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N "" -f $HOME/.ssh/id_ed25519 -q
           python -m pytest -q -p no:cacheprovider
           CI_RUN_EOF
           chown -R ci .
@@ -189,7 +193,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test]'
@@ -197,6 +201,7 @@ jobs:
         run: |
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          mkdir -p $HOME/.ssh && chmod 700 $HOME/.ssh && ssh-keygen -t ed25519 -N "" -f $HOME/.ssh/id_ed25519 -q
           python -m pytest -q -p no:cacheprovider
           CI_RUN_EOF
           chown -R ci .
@@ -283,7 +288,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install 'build>=1.2' 'twine>=5'
@@ -317,7 +322,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install 'build>=1.2' 'twine>=5'
@@ -352,7 +357,7 @@ jobs:
       - name: System packages
         run: |
           apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 >/dev/null
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git tzdata procps iproute2 python3 gawk openssh-client >/dev/null
       - name: Install
         run: |
           pip install -e '.[test,eval]'

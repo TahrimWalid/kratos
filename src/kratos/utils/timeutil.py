@@ -107,8 +107,13 @@ def parse_stored_instant(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         dt = value
     else:
+        text = str(value)
+        # Python 3.10's fromisoformat rejects a trailing "Z" (added in 3.11); accept it
+        # so stored/legacy UTC timestamps parse on every supported version.
+        if text.endswith(("Z", "z")):
+            text = text[:-1] + "+00:00"
         try:
-            dt = datetime.fromisoformat(str(value))
+            dt = datetime.fromisoformat(text)
         except (ValueError, TypeError):
             return None
     if dt.tzinfo is None:
