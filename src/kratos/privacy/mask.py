@@ -65,22 +65,24 @@ _EMAIL_RE = re.compile(r"(?<![\w.%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-
                        r"(?![\w-])")
 _N = r"""(?P<n>[^\s"'\\(),;:]+?)"""
 # (pattern, what it says about the name): "exists", "absent" (sshd: invalid user), "unknown"
-_NAME_CONTEXTS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(rf"\b[Ii]nvalid user {_N} from\b"), "absent"),
-    (re.compile(rf"\bFailed [\w/-]+ for invalid user {_N} from\b"), "absent"),
-    (re.compile(rf"\bFailed [\w/-]+ for (?!invalid user ){_N} from\b"), "exists"),
-    (re.compile(rf"\bAccepted [\w/-]+ for {_N} from\b"), "exists"),
-    (re.compile(rf"\bsession (?:opened|closed) for user {_N}(?=[\s(\\\"',]|$)"), "exists"),
-    (re.compile(rf"\bsudo(?:\[\d+\])?:\s+{_N}\s+:"), "exists"),
-    (re.compile(rf"\bnew user: name={_N}(?=,)"), "exists"),
-    (re.compile(rf"\b(?:user|account) '{_N}'"), "exists"),
-    (re.compile(rf"\badd '{_N}' to (?:shadow )?group\b"), "exists"),
-    (re.compile(rf"/home/{_N}(?=[/\s\"'\\]|$)"), "exists"),
-    (re.compile(rf"\({_N}\) CMD \("), "exists"),
-    (re.compile(rf"\b(?:r?user|logname)={_N}(?=[\s;,\\\"']|$)"), "unknown"),
+# (pattern, what it says about the name, a literal the pattern needs -- skipped when absent):
+# "exists", "absent" (sshd: invalid user), "unknown"
+_NAME_CONTEXTS: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(rf"\b[Ii]nvalid user {_N} from\b"), "absent", "nvalid user"),
+    (re.compile(rf"\bFailed [\w/-]+ for invalid user {_N} from\b"), "absent", "Failed "),
+    (re.compile(rf"\bFailed [\w/-]+ for (?!invalid user ){_N} from\b"), "exists", "Failed "),
+    (re.compile(rf"\bAccepted [\w/-]+ for {_N} from\b"), "exists", "Accepted "),
+    (re.compile(rf"\bsession (?:opened|closed) for user {_N}(?=[\s(\\\"',]|$)"), "exists", "for user "),
+    (re.compile(rf"\bsudo(?:\[\d+\])?:\s+{_N}\s+:"), "exists", "sudo"),
+    (re.compile(rf"\bnew user: name={_N}(?=,)"), "exists", "new user"),
+    (re.compile(rf"\b(?:user|account) '{_N}'"), "exists", " '"),
+    (re.compile(rf"\badd '{_N}' to (?:shadow )?group\b"), "exists", "add '"),
+    (re.compile(rf"/home/{_N}(?=[/\s\"'\\]|$)"), "exists", "/home/"),
+    (re.compile(rf"\({_N}\) CMD \("), "exists", ") CMD ("),
+    (re.compile(rf"\b(?:r?user|logname)={_N}(?=[\s;,\\\"']|$)"), "unknown", "="),
     (re.compile(r"""(?P<q>\\?")(?:user|username|user_name|user\.name|login|owner|sudo_user|account_name)(?P=q)"""
-                r"""\s*:\s*\\?"(?P<n>[^"\\]{1,64})\\?\""""), "unknown"),
-    (re.compile(r"(?<![\w.%+-])(?P<n>[A-Za-z_][A-Za-z0-9_.-]{0,31})@(?=[A-Za-z0-9\[])" + _NOT_A_UNIT), "unknown"),
+                r"""\s*:\s*\\?"(?P<n>[^"\\]{1,64})\\?\""""), "unknown", '"'),
+    (re.compile(r"(?<![\w.%+-])(?P<n>[A-Za-z_][A-Za-z0-9_.-]{0,31})@(?=[A-Za-z0-9\[])" + _NOT_A_UNIT), "unknown", "@"),
 )
 _NAME_LIST_RE = re.compile(r"""(?P<q>\\?")(?:members|users|accounts)(?P=q)\s*:\s*\[(?P<list>[^\]]{0,8000})\]""")
 _LIST_ITEM_RE = re.compile(r'\\?"(?P<n>[^"\\]{1,64})\\?"')
@@ -90,7 +92,6 @@ _HOST_CONTEXTS: tuple[re.Pattern[str], ...] = (
     re.compile(r"""(?P<q>\\?")(?:hostname|host_name|host\.name|host|fqdn)(?P=q)\s*:\s*\\?"(?P<h>[^"\\]{1,253})\\?\""""),
 )
 _HOSTNAME_RE = re.compile(r"^(?=.*[A-Za-z])[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9-]{1,63})*$")
-_TOKEN_RE = re.compile(r"[A-Za-z0-9_$][A-Za-z0-9_.$-]*")
 _IPV4_RE = re.compile(r"(?<![\w.])(?<!\d:)(?P<ip>\d{1,3}(?:\.\d{1,3}){3})(?![\w-]|\.\d|[+~])")
 _IPV6_RE = re.compile(r"(?<![\w:.])(?P<ip>[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7})(?![\w:.])")
 _VERSION_CONTEXT_RE = re.compile(r"(?:version|installed|fixed|candidate|available|release)\w*\\?\"?\s*[:=]\s*\\?\"?$",
@@ -165,6 +166,17 @@ class _Plan:
     hosts: dict[str, str] = field(default_factory=dict)      # trusted machine names (lower-case) -> kind
     host_kinds: dict[str, str] = field(default_factory=dict)  # kinds already issued in this conversation
     short_left: set[str] = field(default_factory=set)
+    whole_re: "re.Pattern[str] | None" = None    # one alternation of `whole`, longest first
+    hosts_re: "re.Pattern[str] | None" = None    # the same for `hosts`, any case
+
+    def compile(self) -> None:
+        if self.whole:
+            alt = "|".join(re.escape(n) for n in sorted(self.whole, key=len, reverse=True))
+            self.whole_re = re.compile(rf"(?<![A-Za-z0-9_.$-])(?:{alt})(?![A-Za-z0-9_$-]|\.[A-Za-z0-9])")
+        if self.hosts:
+            alt = "|".join(re.escape(h) for h in sorted(self.hosts, key=len, reverse=True))
+            # a known host name alone, or as the first label of a longer name (host.example.com)
+            self.hosts_re = re.compile(rf"(?<![A-Za-z0-9_.$-])(?:{alt})(?![A-Za-z0-9_$-])", re.IGNORECASE)
 
 
 class Masker:
@@ -248,7 +260,9 @@ class Masker:
             if _acct.plausible_name(name) and rank[how] >= rank[seen.get(name, "unknown")]:
                 seen[name] = how
 
-        for pattern, how in _NAME_CONTEXTS:
+        for pattern, how, needle in _NAME_CONTEXTS:
+            if needle not in text:
+                continue
             for m in pattern.finditer(text):
                 note(m.group("n"), how)
         for m in _NAME_LIST_RE.finditer(text):
@@ -288,6 +302,7 @@ class Masker:
                 continue
             if host.split(".", 1)[0] not in self._vocabulary:
                 plan.hosts[host] = kind
+        plan.compile()
         return plan
 
     def _map_names(self, kind: str) -> set[str]:
@@ -341,11 +356,16 @@ class Masker:
             return seg
         seg = _EMAIL_RE.sub(self._email, seg)
         if plan.context:
-            for pattern, _how in _NAME_CONTEXTS:
-                seg = pattern.sub(lambda m: self._context_name(m, plan), seg)
-        for pattern in _HOST_CONTEXTS:
-            seg = pattern.sub(lambda m: self._context_host(m, plan), seg)
-        seg = _TOKEN_RE.sub(lambda m: self._token(m.group(0), plan), seg)
+            for pattern, _how, needle in _NAME_CONTEXTS:
+                if needle in seg:
+                    seg = pattern.sub(lambda m: self._context_name(m, plan), seg)
+        if "@" in seg or "host" in seg or "fqdn" in seg:
+            for pattern in _HOST_CONTEXTS:
+                seg = pattern.sub(lambda m: self._context_host(m, plan), seg)
+        if plan.whole_re is not None:
+            seg = plan.whole_re.sub(lambda m: self._label(plan.whole[m.group(0)], m.group(0), account=True), seg)
+        if plan.hosts_re is not None:
+            seg = plan.hosts_re.sub(lambda m: self._label(plan.hosts[m.group(0).lower()], m.group(0).lower()), seg)
         seg = _IPV4_RE.sub(self._ip, seg)
         seg = _IPV6_RE.sub(self._ip, seg)
         return seg
@@ -378,25 +398,6 @@ class Masker:
         start = m.start("h") - m.start()
         whole = m.group(0)
         return whole[:start] + self._label(kind, host) + whole[start + len(host):]
-
-    def _token(self, token: str, plan: _Plan) -> str:
-        core = token.rstrip(".-")
-        tail = token[len(core):]
-        if not core:
-            return token
-        kind = plan.whole.get(core)
-        if kind is not None:
-            return self._label(kind, core, account=True) + tail
-        lower = core.lower()
-        hkind = plan.hosts.get(lower)
-        if hkind is not None:
-            return self._label(hkind, lower) + tail
-        if "." in core and not core[0].isdigit():
-            head, dot, rest = core.partition(".")
-            hkind = plan.hosts.get(head.lower())
-            if hkind is not None and not rest[:1].isdigit():
-                return self._label(hkind, head.lower()) + dot + rest + tail
-        return token
 
     def _ip(self, m: re.Match[str]) -> str:
         text = m.group("ip")

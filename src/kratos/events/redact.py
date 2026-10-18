@@ -84,8 +84,10 @@ def mask(text: str) -> tuple[str, bool]:
     masked = _ASSIGN.sub(lambda m: f"{m['key']}={MASK}", masked)
     masked = _URL_USERINFO.sub(lambda m: f"{m['pre']}{MASK}", masked)
     masked = _AUTH_HEADER.sub(lambda m: f"{m['pre']}{MASK}", masked)
-    masked = _mask_client_p(masked, _MYSQL_LIKE, _MYSQL_P)
-    masked = _mask_client_p(masked, _SSHPASS, _SSHPASS_P)
+    if "mysql" in masked or "mariadb" in masked:      # cheap pre-check: the slow scan only where it can match
+        masked = _mask_client_p(masked, _MYSQL_LIKE, _MYSQL_P)
+    if "sshpass" in masked:
+        masked = _mask_client_p(masked, _SSHPASS, _SSHPASS_P)
     masked = redact_secrets(masked, *_known_secrets())
     return masked, masked != text
 
