@@ -1026,7 +1026,8 @@ def _for_model(tool_name: str | None, exec_result: Any) -> Any:
     return {k: v for k, v in out.items() if k not in hidden}
 
 
-_IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
+# not inside a longer dotted number; a sentence-ending "." after the address is fine
+_IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
 
 
 def _ungrounded_ips(answer: str, goal: str, transcript: list[dict[str, Any]]) -> list[str]:

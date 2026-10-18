@@ -488,6 +488,16 @@ def test_an_address_the_answer_invents_is_flagged():
     assert _ungrounded_ips("brute force from 10.136.28.52", "check", tx) == []
 
 
+def test_an_invented_address_at_the_end_of_a_sentence_is_flagged():
+    """`... involve 198.51.100.77.` -- the sentence's full stop used to hide the address."""
+    from kratos.agent.loop import _ungrounded_ips
+
+    tx = [{"observation": {"line": "from 203.0.113.7"}}]
+    assert _ungrounded_ips("It may also involve 198.51.100.77.", "check", tx) == ["198.51.100.77"]
+    assert _ungrounded_ips("Seen from 203.0.113.7.", "check", tx) == []
+    assert _ungrounded_ips("version 1.2.3.4.5 here", "check", tx) == []
+
+
 def test_guard12_reaches_the_final_answer(tmp_path, monkeypatch):
     from kratos.agent import loop as agent_loop
     from kratos.agent.tools import TOOL_REGISTRY
