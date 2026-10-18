@@ -103,3 +103,15 @@ def test_replay_summary_survives_a_step_with_no_tool_name():
     out = replay_summary(tracker)
     assert set(out["not_recorded"]) == {None, "run_yara_scan"}
     assert set(out["arg_mismatches"]) == {None, "list_processes"}
+
+
+def test_a_results_file_reads_as_a_baseline():
+    """masking off vs standard on one commit: one run's results compare as the other's baseline."""
+    from evals.run import as_baseline
+
+    doc = {"model": "m", "scenarios": {"A1": [{"person_sees": "pass", "model_alone": "pass"},
+                                              {"person_sees": "fail", "model_alone": "pass"},
+                                              {"person_sees": "incomplete", "model_alone": "incomplete"}]}}
+    assert as_baseline(doc)["scenarios"]["A1"] == {"person_pass": 1, "n": 2, "model_alone_pass": 2}
+    already = {"scenarios": {"A1": {"person_pass": 5, "n": 5, "model_alone_pass": 5}}}
+    assert as_baseline(already)["scenarios"] == already["scenarios"]

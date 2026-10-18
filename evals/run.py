@@ -70,14 +70,19 @@ def replay_summary(tracker: Any) -> dict[str, Any]:
             "left_recording": tracker.left_recording}
 
 
-def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path) -> dict[str, Any]:
+def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str | None = None) -> dict[str, Any]:
     """Run one investigation (live or replay) and return its payload (status,
-    final_answer, tools_called, transcript, run_id)."""
-    from kratos import kratos_config
+    final_answer, tools_called, transcript, run_id). `mask_mode`: what the model
+    is sent (kratos.privacy) for this run, set in its own data folder; None keeps
+    the default ('auto')."""
+    from kratos import kratos_config, settings_store
     from kratos.agent.loop import run_agent
     from kratos.run_context import run_scope
 
     kratos_config.set_active_data_dir(data_dir)
+    if mask_mode:
+        from kratos.privacy.mode import MODE_KEY
+        settings_store.set(MODE_KEY, mask_mode, data_dir=data_dir, actor="kratos-eval")
     if mode == "replay":
         rec_path = RECORDINGS / f"{sc.id}.json"
         if not rec_path.is_file():
@@ -131,7 +136,7 @@ def _read_trace(data_dir: Path, run_id: str | None) -> dict[str, Any] | None:
 
 # --------------------------------------------------------------------------- commands
 
-def cmd_run(mode: str, scenarios: str | None, n: int, out: Path | None) -> int:
+def cmd_run(mode: str, scenarios: str | None, n: int, out: Path | None, mask_mode: str | None = None) -> int:
     import tempfile
 
     sel = _select(scenarios)
@@ -146,7 +151,7 @@ def cmd_run(mode: str, scenarios: str | None, n: int, out: Path | None) -> int:
                 dd = base / f"{sc.id}_{k}"
                 dd.mkdir(parents=True, exist_ok=True)
                 t0 = time.time()
-                payload = _run_once(sc, mode=mode, data_dir=dd)
+                payload = _run_once(sc, mode=mode, data_dir=dd, mask_mode=mask_mode)
                 scored = score.score_payload(sc, payload)
                 scored.update(id=sc.id, run=k + 1, elapsed=round(time.time() - t0, 1),
                               status=payload.get("status"), replay=payload.get("replay"))
@@ -154,20 +159,34 @@ def cmd_run(mode: str, scenarios: str | None, n: int, out: Path | None) -> int:
                 print(f"  {sc.id:<16} run {k + 1}/{n}  person={scored['person_sees']} "
                       f"model_alone={scored['model_alone']}  {scored['elapsed']}s", flush=True)
                 if out:
-                    _write_results(out, mode, runs)
+                    _write_results(out, mode, runs, mask_mode)
     finally:
         import shutil
         shutil.rmtree(base, ignore_errors=True)
     if out:
-        _write_results(out, mode, runs)
+        _write_results(out, mode, runs, mask_mode)
         print(f"\nwrote {out}")
     return 0
 
 
-def _write_results(out: Path, mode: str, runs: dict[str, list[dict]]) -> None:
+def _write_results(out: Path, mode: str, runs: dict[str, list[dict]], mask_mode: str | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps({"model": _model(), "mode": mode, "commit": _commit(),
-                               "scenarios": runs}, indent=2), encoding="utf-8")
+    out.write_text(json.dumps({"model": _model(), "mode": mode, "mask_mode": mask_mode or "auto",
+                               "commit": _commit(), "scenarios": runs}, indent=2), encoding="utf-8")
+
+
+def as_baseline(doc: dict[str, Any]) -> dict[str, Any]:
+    """A baseline file as is, or a results file (`kratos-eval run --out`) read as one --
+    so two runs on the same commit (masking off vs standard) compare directly."""
+    rows = {}
+    for sid, value in (doc.get("scenarios") or {}).items():
+        if isinstance(value, dict):
+            rows[sid] = value
+            continue
+        rows[sid] = {"person_pass": sum(1 for s in value if s["person_sees"] == "pass"),
+                     "n": sum(1 for s in value if s["person_sees"] in ("pass", "fail")),
+                     "model_alone_pass": sum(1 for s in value if s["model_alone"] == "pass")}
+    return {**doc, "scenarios": rows}
 
 
 def cmd_record(scenarios: str | None, n: int) -> int:
@@ -220,7 +239,7 @@ def _print_report(rep: gate.GateReport) -> None:
 
 
 def cmd_compare(base_file: Path, branch_file: Path, *, reran: bool = False) -> int:
-    baseline = json.loads(base_file.read_text(encoding="utf-8"))
+    baseline = as_baseline(json.loads(base_file.read_text(encoding="utf-8")))
     branch = json.loads(branch_file.read_text(encoding="utf-8"))
     kinds = {sid: sc.kind for sid, sc in score.SCENARIOS.items()}
     results = gate.results_from_runs(branch.get("scenarios", {}), kinds)
@@ -229,16 +248,16 @@ def cmd_compare(base_file: Path, branch_file: Path, *, reran: bool = False) -> i
     return 0 if rep.passed else 1
 
 
-def cmd_gate(mode: str, scenarios: str | None, n: int) -> int:
+def cmd_gate(mode: str, scenarios: str | None, n: int, mask_mode: str | None = None) -> int:
     baseline = _load_baseline()
     out = results_dir() / f"branch_{mode}_{int(time.time())}.json"
-    cmd_run(mode, scenarios, n, out)
+    cmd_run(mode, scenarios, n, out, mask_mode)
     branch = json.loads(out.read_text(encoding="utf-8"))
     kinds = {sid: sc.kind for sid, sc in score.SCENARIOS.items()}
     rep = gate.decide(gate.results_from_runs(branch["scenarios"], kinds), baseline)
     if rep.needs_rerun:
         print(f"\nre-running at N={gate.RERUN_N}: {', '.join(rep.needs_rerun)}")
-        cmd_run(mode, ",".join(rep.needs_rerun), gate.RERUN_N, out)
+        cmd_run(mode, ",".join(rep.needs_rerun), gate.RERUN_N, out, mask_mode)
         branch = json.loads(out.read_text(encoding="utf-8"))
         rep = gate.decide(gate.results_from_runs(branch["scenarios"], kinds), baseline, reran=True)
     _print_report(rep)
@@ -282,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--mode", choices=["replay", "live"], default="replay")
         p.add_argument("--scenarios", default="ALL")
         p.add_argument("-n", type=int, default=5)
+        p.add_argument("--mask-mode", choices=["auto", "off", "standard", "strict"], default=None,
+                       help="What the model is sent (privacy.mask_mode) in each run; default: auto")
         if name == "run":
             p.add_argument("--out", type=Path, default=None)
     rec = sub.add_parser("record")
@@ -299,9 +320,9 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "smoke":
         return cmd_smoke()
     if a.cmd == "run":
-        return cmd_run(a.mode, a.scenarios, a.n, a.out)
+        return cmd_run(a.mode, a.scenarios, a.n, a.out, a.mask_mode)
     if a.cmd == "gate":
-        return cmd_gate(a.mode, a.scenarios, a.n)
+        return cmd_gate(a.mode, a.scenarios, a.n, a.mask_mode)
     if a.cmd == "record":
         return cmd_record(a.scenarios, a.n)
     if a.cmd == "compare":
