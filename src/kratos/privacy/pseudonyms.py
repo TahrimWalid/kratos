@@ -181,6 +181,25 @@ class PseudonymMap:
             self._pending.append((kind, machine, value, label))
         return label
 
+    def refresh(self) -> None:
+        """Re-read the stored map (another request of this conversation -- in this
+        process or another -- may have issued placeholders since this one loaded it)."""
+        if not self.persist or self.data_dir is None:
+            return
+        try:
+            conn = self._db()
+            try:
+                rows = conn.execute("SELECT kind, machine, value, label FROM pseudonym_map WHERE scope = ? "
+                                    "AND kind != ?", (self.scope, _TAG_KIND)).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error as e:
+            self._fall_back(e)
+            return
+        for kind, machine, value, label in rows:
+            if label not in self.by_label:
+                self._remember(kind, machine, value, label)
+
     def lookup(self, kind: str, value: str, machine: str = "") -> str | None:
         return self.by_key.get((kind, machine, value))
 

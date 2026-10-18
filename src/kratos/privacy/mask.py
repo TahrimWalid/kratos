@@ -416,6 +416,8 @@ class Masker:
             return text
         t0 = time.perf_counter()
         own = _ps.label_re(self.tag)
+        if any(self._map.value_for(m.group(0)) is None for m in own.finditer(text)):
+            self._map.refresh()                 # issued by another request of this conversation since
 
         def back(m: re.Match[str]) -> str:
             value = self._map.value_for(m.group(0)) if self._map else None
