@@ -62,6 +62,14 @@ def _select(names: str | None) -> list[score.Scenario]:
 
 # --------------------------------------------------------------------------- one run
 
+def replay_summary(tracker: Any) -> dict[str, Any]:
+    """What a replay run hit, as stored with its payload. A model step with no tool
+    name is recorded as None, so the lists are sorted as text."""
+    return {"hits": tracker.hits, "arg_mismatches": sorted(set(tracker.arg_mismatches), key=str),
+            "not_recorded": sorted(set(tracker.not_recorded), key=str),
+            "left_recording": tracker.left_recording}
+
+
 def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path) -> dict[str, Any]:
     """Run one investigation (live or replay) and return its payload (status,
     final_answer, tools_called, transcript, run_id)."""
@@ -78,9 +86,7 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path) -> dict[str, Any
         kratos_config.set_active_target(recording.get("target") or "10.0.0.0")
         with replay.install(recording) as tracker, run_scope("cli"):
             payload = run_agent(sc.goal, data_dir, max_iters=sc.max_iters or 8)
-        payload["replay"] = {"hits": tracker.hits, "arg_mismatches": sorted(set(tracker.arg_mismatches)),
-                             "not_recorded": sorted(set(tracker.not_recorded)),
-                             "left_recording": tracker.left_recording}
+        payload["replay"] = replay_summary(tracker)
         return payload
     # live
     from evals import harness_bridge

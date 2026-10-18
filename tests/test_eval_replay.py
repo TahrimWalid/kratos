@@ -89,3 +89,17 @@ def test_documentation_and_private_addresses_are_allowed_in_a_recording():
     ok = dict(RECORDING, calls=RECORDING["calls"] + [
         {"tool": "x", "args": {}, "result": {"note": "attacker 203.0.113.66 and host 10.0.0.5"}}])
     assert replay.scan_recording(ok) == []
+
+
+def test_replay_summary_survives_a_step_with_no_tool_name():
+    """A model step with no tool name reaches the replay as None; the summary used to
+    crash sorting it next to real names, ending the whole gate run."""
+    from evals.replay import ReplayTracker
+    from evals.run import replay_summary
+
+    tracker = ReplayTracker()
+    tracker.not_recorded += ["run_yara_scan", None]
+    tracker.arg_mismatches += [None, "list_processes"]
+    out = replay_summary(tracker)
+    assert set(out["not_recorded"]) == {None, "run_yara_scan"}
+    assert set(out["arg_mismatches"]) == {None, "list_processes"}
