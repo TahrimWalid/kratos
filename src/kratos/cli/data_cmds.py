@@ -147,6 +147,10 @@ def cmd_trace(args: argparse.Namespace) -> int:
                 return 1
             sys.stdout.write(json.dumps(info.data, indent=1, ensure_ascii=True) + "\n")
             return 0
+        if getattr(args, "sent", False):
+            for line in view.sent_lines(info):
+                print(line)
+            return 0
         kids = store.children_of(data_dir, (info.data or {}).get("run_id") or "") if info.data else []
         for line in view.show_lines(info, children=kids):
             print(line)
@@ -198,4 +202,6 @@ def register(sub: argparse._SubParsersAction) -> None:
     ts = tsub.add_parser("show", help="One run: model calls, tool calls, checks, guards and the answer")
     ts.add_argument("run", help="The run id (or its first characters)")
     ts.add_argument("--json", action="store_true", help="The whole record as JSON")
+    ts.add_argument("--sent", action="store_true",
+                    help="Each model request as it was sent (masked; the text itself only with trace.store_prompts)")
     tr.set_defaults(func=cmd_trace)

@@ -1702,6 +1702,8 @@ def _cmd_model(console, session_state: dict[str, Any], **_: Any) -> None:
     )
     if ctx_note:
         _console.render_note(console, ctx_note)
+    from kratos.privacy import describe_mode
+    _console.render_note(console, "Sent to this model: " + describe_mode(base_url=values.get("LLM_BASE_URL")) + ".")
 
 
 def _cmd_shortcut(console, subcommand: str, rest: str, data_dir: Path) -> None:

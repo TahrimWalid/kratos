@@ -120,7 +120,8 @@ _PALETTE_COMMANDS = [
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
-    ("/trace", "what the last run did — model calls, tools, checks, guards, the answer (or /trace <id>, /trace list)"),
+    ("/trace", "what the last run did — model calls, tools, checks, guards, the answer (or /trace <id>, /trace list; "
+               "/trace sent: what was sent to the model, masked)"),
     ("/data", "what Kratos keeps on this computer, how big, personal or not (/data prune to remove old data)"),
     ("/collect", "check the basics now (ports, sign-ins, altered logs, vulnerable packages, ...); `/collect all` adds the slow checks"),
     ("/usage", "today's spending vs your limits + this session's tokens and cost"),
@@ -1254,6 +1255,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.trace import store, view
 
         arg = (rest or "").strip()
+        sent = arg == "sent" or arg.endswith(" sent") or arg.startswith("sent ")
+        if sent:
+            arg = " ".join(w for w in arg.split() if w != "sent")
         sid = self.session_state.get("session_id")
         if arg in ("list", "ls", "all"):
             items = store.list_traces(self._data_dir, session_id=None if arg == "all" else sid, limit=20)
@@ -1283,7 +1287,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         kids = store.children_of(self._data_dir, (info.data or {}).get("run_id") or "") if info.data else []
         self._emit(Text(""))
-        for n, line in enumerate(view.show_lines(info, children=kids)):
+        lines = view.sent_lines(info) if sent else view.show_lines(info, children=kids)
+        for n, line in enumerate(lines):
             self._emit(Text(line, style=f"bold {T.TEXT_BRIGHT}" if n == 0 else T.TEXT))
 
     # --- /data (what Kratos keeps; prune) -----------------------
@@ -4732,6 +4737,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit_from_worker(R.success_line(f"Switched to {target.model} — active now, saved to .env."))
         if ctx_note:
             self._emit_from_worker(R.note_line(ctx_note))
+        from kratos.privacy import describe_mode
+        self._emit_from_worker(R.note_line("Sent to this model: " + describe_mode(base_url=values.get("LLM_BASE_URL"))
+                                           + "."))
 
     @work
     async def _conversational_target(self, args: str) -> None:

@@ -328,6 +328,25 @@ def _check_trace_export(out: list[Check], data_dir: Path) -> None:
                         f"results or prompts) is sent to {endpoint}"))
 
 
+def _check_privacy(out: list[Check], data_dir: Path) -> None:
+    """What reaches the model (kratos.privacy): masked or not, and why."""
+    from kratos.privacy import mode as PM
+
+    mode = PM.current_mode(data_dir=data_dir)
+    detail = "sent to the model: " + PM.describe_mode(data_dir=data_dir)
+    if mode == "off" and PM.stored_mode(data_dir=data_dir) == "off" and \
+            not PM.endpoint_is_local(_active_base_url(), data_dir=data_dir):
+        out.append(_row("model privacy", "warn", detail, "Settings → General → What the model sees"))
+    else:
+        out.append(_row("model privacy", "info", detail))
+
+
+def _active_base_url() -> str:
+    from kratos.llm_config import get_active_llm_base_url
+
+    return get_active_llm_base_url()
+
+
 def _check_budget(out: list[Check], data_dir: Path) -> None:
     """Spending limits (kratos.budget): today's spend against them, paused sources."""
     from kratos.budget.report import doctor_row
@@ -377,6 +396,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     out: list[Check] = []
     sections = list(_SECTIONS)
     if data_dir is not None:
+        sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))

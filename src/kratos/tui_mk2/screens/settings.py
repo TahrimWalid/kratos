@@ -343,7 +343,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "collect.enabled", "collect.start_budget_seconds", "collect.sync_sources",
                           "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
                           "vulndb.max_age_days", "vulndb.epss_high",
-                          "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export"]
+                          "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
+                          "privacy.mask_mode", "privacy.local_model_hosts"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -745,6 +746,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{epss:.0%}  (a serious fixable CVE at least this likely to be exploited is high)", style=T.TEXT))
         for key, label, tail in self._trace_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._privacy_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
 
@@ -768,6 +771,54 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              "on  (timings and token counts only, to OTEL_EXPORTER_OTLP_ENDPOINT)" if get(TS.OTEL_EXPORT)
              else "off  (nothing leaves this computer)"),
         ]
+
+    # --- What the model sees (kratos.privacy) ---
+    def _privacy_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.privacy import mode as PM
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("privacy.")]
+        chosen = settings_store.get(PM.MODE_KEY, data_dir=dd)
+        hosts = settings_store.get(PM.LOCAL_HOSTS_KEY, data_dir=dd)
+        return [
+            (PM.MODE_KEY, "What the model sees", f"{chosen}  — {PM.describe_mode(data_dir=dd)}"),
+            (PM.LOCAL_HOSTS_KEY, "Your own model machines", ", ".join(hosts) if hosts
+             else "none  (only this machine counts as local)"),
+        ]
+
+    @work
+    async def _set_privacy_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.privacy import mode as PM
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        if key == PM.MODE_KEY:
+            value = await self.app.push_screen_wait(ListPickerModal(
+                "What the model sees", [
+                    ("auto", "auto — masked for a hosted model, not for one on your own machine"),
+                    ("standard", "standard — names, machines, addresses and emails replaced with placeholders"),
+                    ("strict", "strict — also short names, image logins and attackers' guesses"),
+                    ("off", "off — sent as they are")]))
+        else:
+            current = ", ".join(settings_store.get(key, data_dir=dd))
+            value = await self.app.push_screen_wait(PromptModal(
+                "Your own model machines", "Host names or addresses, separated by commas (empty: none).",
+                initial=current))
+        if value is None:
+            return
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — " + PM.describe_mode(data_dir=dd) + ".", T.SAFE)
 
     @work
     async def _set_trace_setting_flow(self, key: str) -> None:
@@ -920,6 +971,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_vulndb_setting_flow(key)
         elif key and key.startswith("trace."):
             self._set_trace_setting_flow(key)
+        elif key and key.startswith("privacy."):
+            self._set_privacy_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store
@@ -1565,7 +1618,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         self.app.call_from_thread(self._reload)
         self.app.call_from_thread(
             self._set_status,
-            f"Switched to {target.model} — active now, saved to .env." + (f" {ctx_note}" if ctx_note else ""),
+            f"Switched to {target.model} — active now, saved to .env." + (f" {ctx_note}" if ctx_note else "")
+            + " Sent to it: " + _describe_mode(values) + ".",
             T.SAFE)
 
     @staticmethod
@@ -1582,3 +1636,10 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 # Backwards-compatible alias: /settings imported ModelSettingsScreen before the
 # general hub existed.
 ModelSettingsScreen = SettingsScreen
+
+
+def _describe_mode(values: dict[str, str]) -> str:
+    """What a just-chosen model profile is sent (kratos.privacy): masked or not."""
+    from kratos.privacy import describe_mode
+
+    return describe_mode(base_url=values.get("LLM_BASE_URL"))

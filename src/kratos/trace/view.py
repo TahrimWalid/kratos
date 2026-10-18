@@ -77,6 +77,9 @@ def _span_line(s: dict[str, Any]) -> str:
         txt = (f"model {_d(a.get('model'), 60)}{' (local)' if a.get('local') else ''} · "
                f"{_tokens(a.get('prompt_tokens'))} in / {_tokens(a.get('completion_tokens'))} out · "
                f"{_money(a.get('cost_usd'))} · {dur} · {status}")
+        mask = _mask_summary(a)
+        if mask:
+            txt += f" · {mask}"
         if a.get("error"):
             txt += f" · {_d(a.get('error'), 120)}"
         return txt
@@ -188,3 +191,51 @@ def list_line(info: TraceInfo) -> str:
     return (f"{_d(info.trace_id[:12], 12)}  {_when(d.get('started'))}  {_d(d.get('kind') or '?', 13):13s} "
             f"{_d(d.get('target') or '-', 24):24s} {status:28s} {t.get('model_calls', 0):>3} model / "
             f"{t.get('tool_calls', 0):>3} tool · {_money(t.get('cost_usd'))}")
+
+
+def _mask_summary(a: dict[str, Any]) -> str:
+    """What masking (kratos.privacy) did to one model request: counts, never values."""
+    mode = a.get("mask_mode")
+    if not mode:
+        return ""
+    if mode == "off":
+        return "not masked"
+    masked = a.get("masked") if isinstance(a.get("masked"), dict) else {}
+    parts = [f"{int(n)} {_d(k, 20).replace('_', ' ')}" for k, n in masked.items() if n]
+    txt = f"masked ({_d(mode, 10)}): " + (", ".join(parts) if parts else "nothing to mask")
+    if a.get("secrets_removed"):
+        txt += f", {int(a['secrets_removed'])} secret(s) removed"
+    if a.get("unknown_placeholders"):
+        txt += f" · reply had {len(a['unknown_placeholders'])} placeholder(s) Kratos never issued (left as written)"
+    return txt
+
+
+def _stored_text(value: Any) -> tuple[str, str]:
+    """(text, note) of a stored prompt -- a long one keeps its start."""
+    if isinstance(value, dict) and value.get("truncated"):
+        return str(value.get("head") or ""), f" (first part of {int(value.get('bytes') or 0):,} bytes)"
+    return ("" if value is None else str(value)), ""
+
+
+def sent_lines(info: TraceInfo) -> list[str]:
+    """`kratos trace show <run> --sent`: each model request as it was sent -- masked
+    text when `trace.store_prompts` was on, else what masking replaced (counts)."""
+    if info.data is None:
+        return [f"Run {_d(info.trace_id, 40)}: could not read {_d(str(info.path), 200)} ({_d(info.error, 200)})"]
+    calls = [s for s in info.data.get("spans") or [] if isinstance(s, dict) and s.get("kind") == "model_call"]
+    out = header_lines(info) + [""]
+    if not calls:
+        return out + ["(no model calls in this run)"]
+    stored = any("prompt" in (c.get("attrs") or {}) for c in calls)
+    if not stored:
+        out.append("The text sent is not kept (trace.store_prompts is off) -- what masking replaced in each request:")
+    for n, c in enumerate(calls, 1):
+        a = c.get("attrs") or {}
+        out.append(f"── model call {n}: {_d(a.get('model'), 60)} · {_mask_summary(a) or 'masking not recorded'}")
+        if "prompt" in a:
+            for label, key in (("system", "system_prompt"), ("prompt", "prompt")):
+                text, note = _stored_text(a.get(key))
+                out.append(f"[{label}{note}]")
+                out.extend(_d(line, None) for line in text.splitlines())
+        out.append("")
+    return out
