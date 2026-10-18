@@ -17,19 +17,20 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 12. [Sealing a machine's logs](#sealing-a-machines-logs)
 13. [When Kratos asks you a question](#when-kratos-asks-you-a-question)
 14. [When Kratos asks permission](#when-kratos-asks-permission)
-15. [Two ways to analyze](#two-ways-to-analyze)
-16. [The commands](#the-commands)
-17. [Questions about time](#questions-about-time)
-18. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
-19. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
-20. [Saving and repeating work](#saving-and-repeating-work)
-21. [Keeping model costs under control](#keeping-model-costs-under-control)
-22. [Keeping an eye on things](#keeping-an-eye-on-things)
-23. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
-24. [The experimental fix channel](#the-experimental-fix-channel)
-25. [Making it yours](#making-it-yours)
-26. [When something goes wrong](#when-something-goes-wrong)
-27. [Words you'll see](#words-youll-see)
+15. [What the model sees](#what-the-model-sees)
+16. [Two ways to analyze](#two-ways-to-analyze)
+17. [The commands](#the-commands)
+18. [Questions about time](#questions-about-time)
+19. [Machines you reach through a sub-agent](#machines-you-reach-through-a-sub-agent)
+20. [Building a new tool with /evolve](#building-a-new-tool-with-evolve)
+21. [Saving and repeating work](#saving-and-repeating-work)
+22. [Keeping model costs under control](#keeping-model-costs-under-control)
+23. [Keeping an eye on things](#keeping-an-eye-on-things)
+24. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
+25. [The experimental fix channel](#the-experimental-fix-channel)
+26. [Making it yours](#making-it-yours)
+27. [When something goes wrong](#when-something-goes-wrong)
+28. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -161,8 +162,9 @@ the `# ` in front of its four lines. Three of those lines are the ones that matt
 offers an OpenAI-compatible API, get an API key, and put its address, your key,
 and a model name into those three settings. This is the fastest way to get going.
 Be aware: with a hosted model, the things Kratos looks at (log lines, scan
-results) are sent to that provider to be analyzed. That's normal for a cloud
-service, but it's worth knowing. It also costs a small amount per investigation.
+results) are sent to that provider to be analyzed — with account names, machine
+names, addresses and secrets replaced by placeholders first (see [What the model
+sees](#what-the-model-sees)). It also costs a small amount per investigation.
 
 A worked example with Google Gemini (any other provider works the same way):
 
@@ -1002,6 +1004,76 @@ was offered to copy.
 
 ---
 
+## What the model sees
+
+With a hosted model, what Kratos reasons over is sent to that provider. Before anything
+leaves your computer, Kratos replaces the names in it with placeholders, and puts the real
+names back in what the model answers. You always read real names; the tools always act on
+real names; the provider sees placeholders.
+
+What is replaced:
+
+| Real value | Becomes |
+| --- | --- |
+| the machine you are investigating (name or address) | `TARGET_…`, `TARGET_IP_…` |
+| an account on the machine (`alice`) | `USER_1_…` |
+| a name an attacker tried that doesn't exist on the machine | `INVALID_USER_1_…` |
+| other machines' names | `HOST_1_…` |
+| addresses, by kind | `PRIVATE_IP_1_…` (your network), `PUBLIC_IP_1_…` (the internet) |
+| email addresses | `EMAIL_1_…` |
+| passwords, keys and tokens | `[REDACTED]` — removed, never put back |
+
+The `…` is a short random tag, different for each conversation (`USER_1_k7qm`), so text an
+attacker writes into a log can't pretend to be one of Kratos's placeholders. Within one
+conversation the same name always gets the same placeholder, also after you resume it, so
+the model can follow "the same attacker" across questions.
+
+What is **not** replaced, on purpose: Kratos's own words and findings descriptions,
+system accounts (`root`, `sshd`, `www-data`), loopback and other special addresses, port
+numbers, CVE numbers, package names and versions, file paths apart from the names in them
+(`/home/USER_1_k7qm/.ssh/authorized_keys`), and times.
+
+**Modes** (Settings → General → *What the model sees*):
+
+- **auto** (the default) — **standard** for a hosted model, **off** for a model on your own
+  machine. A model on another machine you own (a GPU box on your network) counts as local
+  if you list it under *Your own model machines*.
+- **standard** — as above. Two things stay readable because they aren't about a person:
+  the login an OS image creates for everyone (**`ubuntu`**, `ec2-user`, `centos`, …), and the
+  common names attackers guess (`admin`, `oracle`, `test`, …) **when that account doesn't
+  exist** on the machine. Names shorter than 3 letters are left too (they hide inside other
+  words).
+- **strict** — those are replaced as well.
+- **off** — everything is sent as written, secrets included.
+
+`/doctor` says which applies right now ("sent to the model: names and addresses masked
+(standard; automatic: hosted model)"), and so does `/model` when you switch.
+
+**What masking doesn't hide.** Timestamps, package names, command lines and file contents
+a tool read are sent as they are, unless a name Kratos knows is in them. Kratos knows the
+names it read from the machine itself (its account list), the machines you configured and
+your sub-agents — those are replaced wherever they appear. A name Kratos only *saw* in a
+log line (a login someone tried, a key comment) might be an attacker's text, so it is
+replaced only where it appeared as a name, not everywhere: if that same word turns up
+elsewhere in free text, it is sent as is. A machine name Kratos was never told about is
+replaced only where it appears as one (`user@host`, a host-name field).
+
+**Seeing exactly what was sent.** `kratos trace show <run> --sent` (or `/trace sent` in a
+conversation) lists each request to the model and what was replaced in it. To keep the full
+text sent, turn on Settings → General → *Keep the text sent to the model* first; what is kept
+is the masked text, because that is what was sent.
+
+**The placeholder map is personal data.** The table that remembers which placeholder
+stood for which real name stays on your computer (`kratos data` lists it as *Placeholder
+map*). A conversation's map is removed when you prune that conversation; `kratos data prune
+--category pseudonyms --older-than 90d` removes the maps of old unattended runs.
+
+**Threat-intel lookups use real addresses.** If you turn on the live reputation check, the
+real IP address is sent to that service — a lookup needs it. That is separate from the model
+and asks you first every time.
+
+---
+
 ## Two ways to analyze
 
 There are two styles, and you'll use both:
@@ -1433,7 +1505,8 @@ logs, the questions you asked. `kratos data -v` adds the exact files and tables.
 | Run records (traces) | yes — **the most detailed** | every model call, tool call and result, guard, and how each answer was built |
 | Host events | yes | the log lines Kratos read from your machines |
 | Findings and decisions | yes | what was found, its history, your accept/ignore decisions, reports |
-| Collected snapshots | yes | port scans, logs, processes, packages, persistence — what each check read |
+| Collected snapshots | yes | port scans, logs, processes, packages, persistence, each machine's account list — what each check read |
+| Placeholder map (masking) | yes | which placeholder stood for which real name or address in each conversation ([What the model sees](#what-the-model-sees)) |
 | Sub-agent pairing and telemetry | yes | paired machines and their live status |
 | Sub-agent installer scripts | **secret** | an install script holds a one-time pairing code |
 | Journal seal keys | **secret** | the keys that verify a machine's sealed journal |
@@ -1453,8 +1526,9 @@ kratos data prune --category traces --older-than 90d
 
 That prints how many run records (and how many MB) are older than 90 days and
 deletes nothing. Add `--apply` to remove them. The same works for `sessions`
-(old questions and answers, with their transcript files) and `host_events` (old
-log lines). In the app, `/data prune traces 90` shows the same summary and asks
+(old questions and answers, with their transcript files and placeholder maps),
+`host_events` (old log lines) and `pseudonyms` (placeholder maps of old runs that
+had no conversation, and of conversations already removed). In the app, `/data prune traces 90` shows the same summary and asks
 before deleting. If other data depends on what you remove — for example Kratos
 says it holds a period of a log completely, and you're deleting those lines —
 the prune says so and stops; `--force-orphans` removes the dependent part too.
@@ -1746,6 +1820,8 @@ permission prompt, pressing Enter is always the safe "no."
   their model. Keep it secret.
 - **`.env`** — Kratos's settings file. `kratos init` creates it and tells you where.
 - **Target** — the machine Kratos is watching.
+- **Placeholder** — what the model reads instead of a real name or address
+  (`USER_1_k7qm`, `PUBLIC_IP_2_k7qm`); Kratos puts the real value back in the answer.
 - **Finding** — a titled result Kratos reached, with evidence and a severity. Kratos
   remembers each one across checks, with a state (open, fixed, risk accepted, …).
 - **Event** — one log line Kratos read, kept in `kratos.db` with its time, machine,

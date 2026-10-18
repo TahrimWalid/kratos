@@ -41,6 +41,7 @@ from kratos.llm_config import (
     is_local_base_url,
 )
 from kratos.utils.redact import redact_secrets
+from kratos.privacy import mode as _privacy_mode  # noqa: F401 -- registers the privacy.* settings
 
 
 # ---------------------------------------------------------------------------

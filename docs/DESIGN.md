@@ -266,7 +266,7 @@ per-request, per-agent and per-period budgets that throttle, reject or ask a
 human when they run out. `kratos.budget` is that layer.
 
 **One choke point.** `llm_interface._metered_call` is the only place a request
-is sent to a model: the three request sites (the OpenAI-compatible HTTP call,
+is sent to a model (and, since B.2, where it is masked -- see "Masking what the model sees"): the three request sites (the OpenAI-compatible HTTP call,
 the llama.cpp server call, the in-process llama.cpp call) each hand their
 request to it as a `send` function. Before sending it asks the budget guard to
 check every cap and reserve the call's worst case; afterwards it records what
@@ -1400,6 +1400,62 @@ neutralised at the **exits**, and `kratos/untrusted.py` is the one module that o
   the envelope in the real loop, and the rule engine (findings must be byte-identical except for
   the payload value itself). The full corpus is injected for real into lab machines from
   `attacker-box` by the eval harness (scenarios F1, F2, F3) outside the repo.
+
+## Masking what the model sees
+
+Since the hosted-model pivot every investigation sends logs, findings and conversation to a
+third party. `kratos/privacy/` (OWASP LLM02:2025; reversible pseudonymisation in the manner of
+Presidio's, without the NER dependency) replaces real values with placeholders before a request
+leaves, and puts them back in what returns.
+
+- **One place.** `llm_interface._metered_call` takes the two texts, masks them with a `Masker`
+  and hands only the masked ones to `send(system, prompt)`; the budget estimate and the stored
+  prompt (`trace.store_prompts`) are the masked text, since that is what was sent and billed. The
+  three request sites build their payload only from the texts they are handed and return
+  `masker.restore(reply)`. `tests/test_privacy_choke_point.py` scans for both, and that nothing
+  else masks or restores. A masking error sends nothing.
+- **Field-aware first, patterns second.** Value sources (`privacy/values.py`, a registry like
+  the collection checks: `register_value_source`) supply what Kratos already typed: the
+  privileged-account read's full local account list (saved in its snapshot, never shown to the
+  model), privileged-account findings, the configured target and SSH login, sub-agent names,
+  Kratos's own host name, and names in stored events. Patterns then find IPv4/IPv6, emails,
+  `user@host`, and account names in their fields and log phrases (`Invalid user X from`,
+  `"user": "X"`, `/home/X/`, cron `(X) CMD`).
+- **Trust decides how widely.** Values from trusted sources (the account list, config,
+  sub-agents) are replaced as whole words everywhere. Values only seen in logs or fields may be
+  attacker text, so they are replaced only where they appeared as a name — an attacker who logs
+  in as `severity` cannot blank out that word across the request. No word of Kratos's own fixed
+  model-facing text is ever replaced as a free word (`privacy/vocabulary.py`: every non-docstring
+  string literal of the modules that write prompts, tool descriptions, finding titles and
+  `RULE_TEXT`, read once per process, plus the request's own field names). Frame markers and the
+  A.4 "this is data" line are skipped entirely.
+- **Placeholders keep the class.** `TARGET`/`TARGET_IP` for the machine under investigation,
+  `USER_n`, `INVALID_USER_n` (a name sshd says doesn't exist), `HOST_n`, `PRIVATE_IP_n`
+  (RFC 1918, CGNAT, link-local, ULA), `PUBLIC_IP_n` (documentation ranges count as public),
+  `EMAIL_n`. Never replaced: loopback, unspecified, multicast, reserved and broadcast addresses;
+  system accounts (UID < 1000 from the account list, else a fixed list); in standard mode an
+  image's default login (`ubuntu`, `ec2-user`) and dictionary guesses that don't exist; anything
+  in version position (`1.2.3.4-1`, `"version": "1.2.3.4"`, part of a longer dotted number).
+- **Stable per scope, unpredictable to the machine.** The scope is the session id, else the run
+  id (`run_context`). `pseudonym_map (scope, kind, machine, value, label, first_seen)` holds the
+  map (personal data, in the stored-data inventory, pruned with its conversation); accounts are
+  keyed by machine, so two machines' `alice` are two people. Each scope draws a random 4-character
+  tag (`USER_1_k7qm`): a log line cannot name a real placeholder, so text an attacker plants is
+  never restored into a real value. Allocation happens in memory and is written in one
+  transaction; a value another process issued first wins and the request is masked again with
+  its label.
+- **Restore before anything checks.** Only labels this scope issued are restored (exact match;
+  the map is re-read once if one is unknown); an invented or untagged look-alike is left as
+  written and counted on the model-call span; `[REDACTED]` is never restored. Because restore
+  happens inside `llm_interface`, the agent loop parses real values: the guards, the dispatch
+  guards, remediation checks, the findings block and storage never see a placeholder. A
+  placeholder still in a tool argument was never issued, and `execute_tool_call` refuses it.
+- **Secrets first** (`privacy/secrets.py`): `events.redact` plus key blocks, `"password": "…"`
+  pairs, bearer tokens and AWS/Google/GitHub/GitLab/Slack/JWT shapes become `[REDACTED]` before
+  any placeholder is issued.
+- **Modes**: `privacy.mask_mode` = auto (standard for a hosted endpoint, off for loopback or a
+  host in `privacy.local_model_hosts`) / standard / strict / off; off sends byte-identical text.
+  The model is told one line about placeholders, and only when the request carries one.
 
 ## MCP server surface
 

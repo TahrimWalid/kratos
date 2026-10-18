@@ -508,7 +508,7 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             screen.query_one(TabbedContent).active = "tab-general"
             await pilot.pause()
             gen = screen.query_one("#gen-table", DataTable)
-            assert gen.row_count == 19           # name / theme / timezone / two finding + two sealing + six collection + two vulnerability-data + four run-record settings
+            assert gen.row_count == 21           # name / theme / timezone / two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy settings
             for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
@@ -569,7 +569,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 19     # name / theme / timezone + two finding + two sealing + six collection + two vulnerability-data + four run-record settings
+    assert gen == 21     # name / theme / timezone + two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy settings
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
