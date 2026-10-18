@@ -124,12 +124,12 @@ def test_storm_of_400_matches(tmp_path, monkeypatch):
 
     def metered_investigation(goal, data_dir):
         """A one-call investigation through the real budget guard."""
-        def send():
+        def send(_system, _prompt):
             return {"choices": [{"message": {"content": "{}"}}],
                     "usage": {"prompt_tokens": 10, "completion_tokens": 100, "total_tokens": 110}}
         try:
             llm_interface._metered_call(send, system_prompt="s", prompt=goal, max_tokens=512,
-                                        model="priced-model", local=False)
+                                        model="priced-model", local=False, masker=llm_interface._masker(local=False))
         except guard.BudgetExceeded as e:
             return {"status": "stopped_by_budget", "final_answer": e.user_message(), "transcript": []}
         return {"status": "final_answer", "final_answer": "looked", "transcript": []}

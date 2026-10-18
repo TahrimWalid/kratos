@@ -12,6 +12,12 @@ from pathlib import Path
 from kratos.untrusted import safe_print as print  # noqa: A001 -- every line cleaned (A.4)
 
 
+def _prunable() -> tuple[str, ...]:
+    from kratos.dataprune import PRUNABLE
+
+    return PRUNABLE
+
+
 def cmd_data(args: argparse.Namespace) -> int:
     action = getattr(args, "data_action", None) or "list"
     if action == "prune":
@@ -175,7 +181,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     dsub = data_p.add_subparsers(dest="data_action")
     dsub.add_parser("list", help="The inventory (the default)")
     pr = dsub.add_parser("prune", help="Remove old run records, conversations or host events (preview unless --apply)")
-    pr.add_argument("--category", required=True, choices=("traces", "sessions", "host_events"))
+    pr.add_argument("--category", required=True, choices=_prunable())
     pr.add_argument("--older-than", required=True, type=_days, metavar="DAYS", help="e.g. 90d")
     pr.add_argument("--apply", action="store_true", help="Actually delete (default: a preview)")
     pr.add_argument("--force-orphans", action="store_true",

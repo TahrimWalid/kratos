@@ -1160,7 +1160,12 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     snap_dir = data_dir / "context"
     snap_dir.mkdir(parents=True, exist_ok=True)
     snap = snap_dir / f"privileged_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
-    snap.write_text(json.dumps({**result, "accounts": inv.accounts}, indent=2, default=str), encoding="utf-8")
+    # Every local account (UID where the read gave one): not shown to the model -- the
+    # snapshot keeps it so masking (kratos.privacy) can tell a real account from a name
+    # an attacker tried.
+    local_accounts = {u: (inv.accounts.get(u) or {}).get("uid") for u in sorted(inv.local_users)}
+    snap.write_text(json.dumps({**result, "accounts": inv.accounts, "local_accounts": local_accounts},
+                               indent=2, default=str), encoding="utf-8")
     result["snapshot_file"] = str(snap)
     return result
 

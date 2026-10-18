@@ -29,7 +29,7 @@ from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 
 COMPONENT = "data_prunes"
-PRUNABLE = ("traces", "sessions", "host_events")
+PRUNABLE = ("traces", "sessions", "host_events", "pseudonyms")
 
 
 class PruneError(ValueError):
@@ -219,7 +219,37 @@ def _plan_host_events(plan: Plan, data_dir: Path) -> None:
         conn.close()
 
 
-_PLANNERS = {"traces": _plan_traces, "sessions": _plan_sessions, "host_events": _plan_host_events}
+def _plan_pseudonyms(plan: Plan, data_dir: Path) -> None:
+    """Placeholder maps (kratos.privacy) older than the cutoff: a run's map (scope
+    `run:<id>`), and a conversation's map whose conversation is already gone. A kept
+    conversation keeps its map -- resuming it shows the model the same placeholders."""
+    conn = _open_ro(data_dir)
+    scopes: list[str] = []
+    rows = 0
+    try:
+        if conn is not None and _table_exists(conn, "pseudonym_map"):
+            live = {r[0] for r in conn.execute("SELECT session_id FROM sessions")} \
+                if _table_exists(conn, "sessions") else set()
+            for r in conn.execute("SELECT scope, MAX(first_seen) AS newest, COUNT(*) AS n FROM pseudonym_map "
+                                  "GROUP BY scope"):
+                scope, newest = str(r["scope"]), to_epoch(r["newest"])
+                if newest is None or newest >= plan.cutoff:
+                    continue
+                if scope.startswith("session:") and scope.split(":", 1)[1] in live:
+                    continue
+                scopes.append(scope)
+                rows += int(r["n"])
+    finally:
+        if conn is not None:
+            conn.close()
+    plan.rows["pseudonym_map"] = scopes
+    plan.counts["placeholder maps"] = len(scopes)
+    plan.counts["masked values"] = rows
+    plan.bytes = rows * 120
+
+
+_PLANNERS = {"traces": _plan_traces, "sessions": _plan_sessions, "host_events": _plan_host_events,
+             "pseudonyms": _plan_pseudonyms}
 
 
 def plan_prune(data_dir: Path, category: str, older_than_days: int, *, now: float | None = None) -> Plan:
@@ -288,7 +318,15 @@ def apply_prune(data_dir: Path, plan: Plan, *, actor: str, force_orphans: bool =
                         conn.execute("DELETE FROM session_usage WHERE session_id = ?", (sid,))
                     conn.execute("DELETE FROM sessions WHERE session_id = ? AND NOT EXISTS "
                                  "(SELECT 1 FROM goal_history WHERE session_id = ?)", (sid, sid))
+                    if _table_exists(conn, "pseudonym_map"):   # the conversation's placeholder map goes with it
+                        conn.execute("DELETE FROM pseudonym_map WHERE scope = ? AND NOT EXISTS "
+                                     "(SELECT 1 FROM sessions WHERE session_id = ?)", (f"session:{sid}", sid))
                 done["conversations with nothing newer"] = len(sids)
+            elif plan.category == "pseudonyms":
+                scopes = plan.rows.get("pseudonym_map") or []
+                for scope in scopes:
+                    conn.execute("DELETE FROM pseudonym_map WHERE scope = ?", (scope,))
+                done["placeholder maps"] = len(scopes)
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")

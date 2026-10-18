@@ -53,12 +53,12 @@ class MeteredScript:
             reply = self.replies.pop(0)
         time.sleep(self.delay)
 
-        def send() -> dict:
+        def send(_system: str, _prompt: str) -> dict:
             return {"choices": [{"message": {"content": reply}}],
                     "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100}}
 
         body = llm_interface._metered_call(send, system_prompt=system_prompt, prompt=user_prompt,
-                                           max_tokens=max_tokens or 512, model="priced-model", local=False)
+                                           max_tokens=max_tokens or 512, model="priced-model", local=False, masker=llm_interface._masker(local=False))
         return body["choices"][0]["message"]["content"]
 
 

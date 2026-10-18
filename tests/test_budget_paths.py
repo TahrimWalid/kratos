@@ -54,7 +54,7 @@ def model(tmp_path, monkeypatch):
     def post(url, headers=None, json=None, timeout=None):
         state["calls"] += 1
         system = json["messages"][0]["content"]
-        return _Resp(state["route"] if system == command_intent._system_prompt() else FINAL)
+        return _Resp(state["route"] if system[:120] == command_intent._system_prompt()[:120] else FINAL)
 
     monkeypatch.setattr(llm_interface.requests, "post", post)
     state["dir"] = tmp_path

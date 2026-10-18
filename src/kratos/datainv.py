@@ -81,6 +81,16 @@ CATEGORIES: tuple[Category, ...] = (
         prunable=True,
     ),
     Category(
+        "pseudonyms", "Placeholder map (masking)",
+        "Which placeholder (USER_1, PUBLIC_IP_2, TARGET, ...) stood for which real account name, machine "
+        "name, address or email in each conversation, so the model sees the same placeholder every time "
+        "and Kratos can put the real value back.",
+        PERSONAL, "one row per name or address masked, per conversation or run",
+        tables=(TableRef(DB, ("pseudonym_map",), ("pseudonym_map", "first_seen")),),
+        prunable=True,
+        note="a conversation's map goes when you prune that conversation; maps of runs without one by age",
+    ),
+    Category(
         "findings", "Findings and decisions",
         "What Kratos found, each finding's history, your accept/ignore decisions and the findings reports.",
         PERSONAL, "one record per finding, one history row per change, one report per correlation",
@@ -92,7 +102,9 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "snapshots", "Collected snapshots",
         "What Kratos read from your machines: port scans, logs, system context, baselines, log integrity, "
-        "persistence, running processes and installed packages.",
+        "persistence, running processes, installed packages, and each machine's account list (every "
+        "local account name, kept with the privileged-account read so masking can tell a real account "
+        "from a name an attacker tried).",
         PERSONAL, "one file per check per machine each time it runs",
         files=("scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages"),
         tables=(TableRef(DB, ("persistence_baseline", "pkg_inventory"), ("pkg_inventory", "taken_at")),),

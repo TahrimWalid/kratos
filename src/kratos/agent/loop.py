@@ -665,6 +665,22 @@ def _parse_agent_json(text: str) -> dict[str, Any] | None:
         return None
 
 
+def _unissued_placeholders(value: Any, depth: int = 0) -> list[str]:
+    """Placeholder-shaped text in tool arguments (`USER_3_k7qm`, `PUBLIC_IP_2`): left
+    there only when masking did not issue it (restoring already replaced the rest)."""
+    from kratos.privacy.pseudonyms import ANY_LABEL_RE, UNTAGGED_RE
+
+    if depth > 8:
+        return []
+    if isinstance(value, str):
+        return ANY_LABEL_RE.findall(value) + UNTAGGED_RE.findall(value)
+    if isinstance(value, dict):
+        return [hit for v in value.values() for hit in _unissued_placeholders(v, depth + 1)]
+    if isinstance(value, (list, tuple)):
+        return [hit for v in value for hit in _unissued_placeholders(v, depth + 1)]
+    return []
+
+
 def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     """Dispatch one tool call (every caller -- the model, collection, pipelines, /use --
     comes through here) and record it in the run record (kratos.trace): the arguments
@@ -748,6 +764,20 @@ def _dispatch_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) ->
         # Kratos owns data_dir; a model that adds it to a tool without one (seen live:
         # run_config_audit(data_dir='.')) would otherwise burn a step on a TypeError.
         call_args.pop("data_dir", None)
+
+    unissued = _unissued_placeholders(call_args)
+    if unissued:
+        # Masking (kratos.privacy) restored every placeholder Kratos issued before this
+        # point, so one that is still here was never issued: invented by the model (or
+        # copied from text an attacker wrote). Never pass it to a tool as if it were real.
+        return {
+            "status": "error",
+            "observation": (
+                f"{', '.join(unissued[:3])} is not a value Kratos gave you -- it looks like a placeholder "
+                "that was never issued. Use a placeholder exactly as it appears in the results you "
+                "received, or the real value, or omit the argument."
+            ),
+        }
 
     if "target" in tool.parameters and call_args.get("target") is not None:
         # The model can also invent a placeholder target (e.g.

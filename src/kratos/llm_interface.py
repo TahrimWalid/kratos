@@ -242,40 +242,55 @@ def _resolved_backend() -> str:
 
 
 def _metered_call(
-    send: Callable[[], Any],
+    send: Callable[[str, str], Any],
     *,
     system_prompt: str,
     prompt: str,
     max_tokens: int,
     model: str,
     local: bool,
+    masker: Any,
 ) -> Any:
     """THE one place a request reaches a model (docs/phase0/0.4 §3.1) -- every
-    request site hands its request to this function as `send` (a no-argument
-    callable returning the response body). Around it:
+    request site hands its request to this function as `send(system_prompt,
+    prompt)` (a callable that builds the request from the two texts it is handed
+    and returns the response body). Around it:
 
+      * masking (kratos.privacy, B.2): both texts are masked with `masker` and
+        `send` gets only the masked ones -- real names, addresses and secrets never
+        leave. The caller restores the reply with the same `masker`;
       * before: the budget guard checks every cap and reserves this call's worst
-        case (raises budget.guard.BudgetExceeded -- callers let it propagate,
-        never turn it into "the model is unavailable");
+        case on the masked text (what is billed; raises budget.guard.BudgetExceeded
+        -- callers let it propagate, never turn it into "the model is unavailable");
       * after: the actual usage (and the provider's own cost, if reported) is
         recorded in the usage ledger, also when the request failed.
 
-    tests/test_budget_choke_point.py fails if a request is sent anywhere else."""
+    tests/test_budget_choke_point.py fails if a request is sent anywhere else, and
+    tests/test_privacy_choke_point.py if one is built from unmasked text or a
+    caller returns the reply without restoring it."""
     from kratos.budget import guard as _budget
     from kratos.budget.pricing import reported_cost_from_usage
     from kratos.trace import recorder as _trace
 
     # The run record's model-call span (kratos.trace): sizes always, the text only
-    # with trace.store_prompts. Opened before the budget check so a refused call shows.
+    # with trace.store_prompts -- the MASKED text, since that is what was sent.
+    # Opened before masking and the budget check so a refused call shows.
     span = _trace.start_span("model_call", f"chat {model}", model=model, local=bool(local),
-                             system_prompt_chars=len(system_prompt or ""), prompt_chars=len(prompt or ""),
-                             max_tokens=int(max_tokens))
+                             max_tokens=int(max_tokens), mask_mode=masker.mode)
+    try:
+        sent_system, sent_prompt = masker.mask_request(system_prompt, prompt)
+    except BaseException as e:
+        span.finish("error", error=f"masking failed, nothing sent: {type(e).__name__}: {str(e)[:300]}")
+        raise
+    masker.span = span
+    span.set(system_prompt_chars=len(sent_system or ""), prompt_chars=len(sent_prompt or ""),
+             **(masker.stats.as_trace() if masker.active else {}))
     if _trace.prompts_enabled():
-        span.set(system_prompt=_trace.result_for_trace(system_prompt), prompt=_trace.result_for_trace(prompt))
+        span.set(system_prompt=_trace.result_for_trace(sent_system), prompt=_trace.result_for_trace(sent_prompt))
     t0 = time.monotonic()
     try:
         reservation = _budget.before_call(
-            est_prompt_tokens=_budget.estimate_prompt_tokens(system_prompt, prompt),
+            est_prompt_tokens=_budget.estimate_prompt_tokens(sent_system, sent_prompt),
             max_completion_tokens=max_tokens, model=model, local=local,
         )
     except BaseException as e:
@@ -287,7 +302,7 @@ def _metered_call(
     failed = True
     error: Optional[str] = None
     try:
-        body = send()
+        body = send(sent_system, sent_prompt)
         raw_usage = body.get("usage") if isinstance(body, dict) else None
         usage = _record_usage(raw_usage)
         reported_cost = reported_cost_from_usage(raw_usage)
@@ -307,6 +322,14 @@ def _metered_call(
                     **({"error": error} if error else {}))
 
 
+def _masker(*, local: Optional[bool] = None, base_url: Optional[str] = None) -> Any:
+    """The masker for one request (kratos.privacy) -- the mode for this endpoint, the
+    current run's conversation map."""
+    from kratos.privacy import request_masker
+
+    return request_masker(local=local, base_url=base_url)
+
+
 def _budget_exceeded_type() -> type:
     from kratos.budget.guard import BudgetExceeded
 
@@ -318,14 +341,14 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
     if requests is None:
         return None
 
-    def _send() -> Any:
+    def _send(sent_system: str, sent_prompt: str) -> Any:
         resp = requests.post(
             f"{LLAMA_SERVER_URL}/v1/chat/completions",
             json={
                 "model": MODEL_PATH.stem,
                 "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user",   "content": prompt},
+                    {"role": "system", "content": sent_system},
+                    {"role": "user",   "content": sent_prompt},
                 ],
                 "max_tokens": max_tokens,
                 "temperature": LLAMA_TEMP,
@@ -338,9 +361,11 @@ def _query_server(prompt: str, system_prompt: str, max_tokens: int) -> Optional[
         return resp.json()
 
     try:
+        local = is_local_base_url(LLAMA_SERVER_URL)
+        masker = _masker(local=local)
         body = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
-                             model=MODEL_PATH.stem, local=is_local_base_url(LLAMA_SERVER_URL))
-        return body["choices"][0]["message"]["content"].strip()
+                             model=MODEL_PATH.stem, local=local, masker=masker)
+        return masker.restore(body["choices"][0]["message"]["content"].strip())
     except _budget_exceeded_type():
         raise
     except Exception as e:
@@ -440,15 +465,15 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
         )
         return None
 
-    def _send() -> Any:
+    def _send(sent_system: str, sent_prompt: str) -> Any:
         resp = requests.post(
             f"{base_url.rstrip('/')}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
                 "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": sent_system},
+                    {"role": "user", "content": sent_prompt},
                 ],
                 "max_tokens": max_tokens,
             },
@@ -458,14 +483,16 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
         return resp.json()
 
     local = is_local_base_url(base_url)
+    masker = None
     for attempt in range(_MAX_LLM_ATTEMPTS):
         try:
             # Each attempt is its own metered request: a retried request can
             # consume tokens too. Usage is recorded regardless of whether
             # content came back -- a length-truncated reasoning response
             # (content is None, below) still consumed real tokens.
+            masker = _masker(base_url=base_url)
             body = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
-                                 model=model, local=local)
+                                 model=model, local=local, masker=masker)
             choice = body["choices"][0]
             content = choice.get("message", {}).get("content")
             if content is None:
@@ -497,7 +524,7 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
                         file=sys.stderr,
                     )
                 return None
-            return content.strip()
+            return masker.restore(content.strip())
         except _budget_exceeded_type():
             raise
         except Exception as e:
@@ -589,16 +616,15 @@ class LLMServer:
 
         print(MSG_THINKING, file=sys.stderr)
 
-        # Qwen2.5 chat format
-        full_prompt = (
-            f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-
         llama = self._llama
 
-        def _send() -> Any:
+        def _send(sent_system: str, sent_prompt: str) -> Any:
+            # Qwen2.5 chat format
+            full_prompt = (
+                f"<|im_start|>system\n{sent_system}<|im_end|>\n"
+                f"<|im_start|>user\n{sent_prompt}<|im_end|>\n"
+                f"<|im_start|>assistant\n"
+            )
             return llama(
                 full_prompt,
                 max_tokens=max_tokens,
@@ -609,9 +635,10 @@ class LLMServer:
             )
 
         try:
+            masker = _masker(local=True)
             response = _metered_call(_send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
-                                     model=MODEL_PATH.stem, local=True)
-            return response["choices"][0]["text"].strip()
+                                     model=MODEL_PATH.stem, local=True, masker=masker)
+            return masker.restore(response["choices"][0]["text"].strip())
         except _budget_exceeded_type():
             raise
         except Exception as e:

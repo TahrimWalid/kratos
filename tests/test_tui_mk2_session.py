@@ -1275,7 +1275,7 @@ def _metered(model: str, prompt: int, completion: int, *, local: bool = False) -
 
     body = {"choices": [{"message": {"content": "x"}}],
             "usage": {"prompt_tokens": prompt, "completion_tokens": completion}}
-    llm_interface._metered_call(lambda: body, system_prompt="", prompt="", max_tokens=1, model=model, local=local)
+    llm_interface._metered_call(lambda _s, _p: body, system_prompt="", prompt="", max_tokens=1, model=model, local=local, masker=llm_interface._masker(local=local))
 
 
 def _usage_text(screen, monkeypatch) -> str:
