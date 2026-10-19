@@ -45,7 +45,7 @@ def test_auto_verify_attaches_and_stores(tmp_path):
 def test_auto_verify_reuse_mode_issues_no_fresh_read(tmp_path):
     # the automatic pass re-uses the collection Kratos just ran (report=) -- it must not
     # call recollect or dispatch (no second read on the target), and a present finding is
-    # "reproduced by a fresh read".
+    # "seen in this run's read" (never "reproduced": that read raised it).
     f = _finding(entities=["10.136.28.52"])
     report = _report([dict(f)], checks=(("auth_activity", "ok"),))
     calls = {"recollect": 0, "dispatch": 0}
@@ -61,8 +61,8 @@ def test_auto_verify_reuse_mode_issues_no_fresh_read(tmp_path):
     got = R.auto_verify([f], data_dir=tmp_path, target=TARGET, budget_seconds=10, report=report,
                         recollect=boom_recollect, dispatch=boom_dispatch)
     assert calls == {"recollect": 0, "dispatch": 0}
-    assert f["verdict"]["verdict"] == "reproduced"
-    assert "fresh read" in f["verdict"]["tag"]
+    assert f["verdict"]["verdict"] == "seen"
+    assert "this run's read" in f["verdict"]["tag"] and "reproduced" not in f["verdict"]["tag"]
     assert f["finding_key"] in got
 
 

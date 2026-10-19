@@ -22,7 +22,7 @@ from kratos.triage import settings as _triage_settings
 from kratos.triage import store as _store
 from kratos.triage.context import VerifyContext
 from kratos.triage.registry import NoVerifier, Verifier, verifier_for
-from kratos.triage.verdict import Verdict
+from kratos.triage.verdict import Verdict, from_this_run
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +75,10 @@ def verify_finding(finding: dict[str, Any], *, data_dir: Path, target: str, run:
             logger.warning("triage: verifier for %s failed", finding.get("id"), exc_info=True)
             verdict = Verdict("couldnt_check", "The re-check hit an error.",
                               detail=f"{type(e).__name__}: {str(e)[:120]}")
+        if reuse:
+            # Judged against the read that raised the finding -- not a second look, so
+            # it never says "reproduced" (it says "seen in this run's read").
+            verdict = from_this_run(verdict)
     duration = time.monotonic() - started
     if record and key:
         try:
@@ -145,8 +149,10 @@ def auto_verify(findings: list[dict[str, Any]] | None, *, data_dir: Path, target
     # In reuse mode the "fresh read" IS the collection Kratos just ran. Judge presence
     # against the findings as they stand now (a re-correlation may have refreshed them
     # after collection), while keeping the collection's checks/transport for display and
-    # the completeness test. A finding currently present is "reproduced by a fresh read";
-    # "not reproduced" is a /retest-after-fix outcome, not an auto one.
+    # the completeness test. That read is the one that raised the finding, so a finding
+    # currently present is "seen in this run's read -- not re-checked yet", never
+    # "reproduced": only a genuine second read (recheck, retest, the slow verifiers) may
+    # say reproduced / not reproduced.
     reuse_report = _reuse_report(report, findings) if report is not None else None
     leftover: list[dict[str, Any]] = []
     for i, f in enumerate(todo):

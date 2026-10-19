@@ -7,6 +7,6 @@ lifecycle state or severity -- a verdict is a separate thing a person reads.
 """
 from __future__ import annotations
 
-from kratos.triage.verdict import VERDICTS, Verdict, VerifyCheck, verdict_tag
+from kratos.triage.verdict import VERDICTS, Verdict, VerifyCheck, from_this_run, verdict_tag
 
-__all__ = ["VERDICTS", "Verdict", "VerifyCheck", "verdict_tag"]
+__all__ = ["VERDICTS", "Verdict", "VerifyCheck", "from_this_run", "verdict_tag"]

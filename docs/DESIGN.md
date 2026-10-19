@@ -1322,7 +1322,7 @@ a thing a person reads, separate from the lifecycle state. Models are weak at
 triage, so rules and evidence decide and the model only annotates.
 
 - **Verdict** (`triage/verdict.py`): one of `reproduced | partly | not_reproduced |
-  couldnt_check`, a short list of the reads it ran, Kratos-written evidence lines,
+  couldnt_check | seen`, with a `basis` (`second_read` or `this_run`), a short list of the reads it ran, Kratos-written evidence lines,
   and one sentence. It is **never** a lifecycle state and never changes severity —
   `verified` stays the person's "confirmed real" (a source scan + behaviour test
   enforce that triage imports neither `lifecycle.decide` nor writes `finding_records`).
@@ -1341,10 +1341,14 @@ triage, so rules and evidence decide and the model only annotates.
   public internet's.
 - **When it runs** (`triage/run.py`): quick verifiers run automatically for every new
   or reopened HIGH/CRITICAL finding, bounded by `triage.auto_seconds` (default 20). The
-  automatic pass **re-uses the collection Kratos just ran** (seconds old — a real fresh
-  read) rather than issuing a second read, so it adds no target load and keeps every
-  loop/scheduled test off the machine; the richer fresh-read verifiers (nmap
-  reachability, a re-hash) run on demand via `/verify`. Unfinished ones say "verifying…"
+  automatic pass **re-uses the collection Kratos just ran** — the read that raised the
+  finding — rather than issuing a second read, so it adds no target load and keeps every
+  loop/scheduled test off the machine. Because that is not a second look, its verdicts
+  carry `basis="this_run"` and may never be `reproduced`/`not_reproduced`
+  (`Verdict` refuses it; `from_this_run` maps reproduced → `seen` "seen in this run's
+  read — not re-checked yet", pointing to recheck/retest). Only a genuine second read —
+  recheck, retest, the richer verifiers (nmap reachability, a re-hash) run on demand —
+  says reproduced. Unfinished ones say "verifying…"
   and finish in the background. Unattended runs (schedule, trigger, MCP) run quick only.
 - **Where the verdict shows**: the answer's findings block (`finding_facts.answer_block`
   — still Kratos-written, the answer contract holds) and the model's digest as a `[tag]`;

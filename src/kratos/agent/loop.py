@@ -602,7 +602,7 @@ PREFER a template when one fits: Kratos checks your values against the Observati
 {_remediation_templates()}
 Write a plain "command" only when no template fits; those are shown as written by you, with warnings, so keep them simple and never fetch or decode anything.
 
-Some findings carry a verdict in [square brackets] that KRATOS reached by re-reading the evidence ("reproduced by a fresh read", "partly: ...", "not reproduced -- retest?", "couldn't check: ..."). Treat it as Kratos's own check -- don't argue with a reproduced finding, and note any Kratos couldn't check. If you have a reason to think a finding is a false positive or less serious, you MAY add finding_notes (your SUGGESTION only -- a person decides, nothing changes from it):
+Some findings carry a verdict in [square brackets] that KRATOS reached by checking the evidence ("seen in this run's read -- not re-checked yet", "reproduced by a fresh read" = a second read confirmed it, "partly: ...", "not reproduced -- retest?", "couldn't check: ..."). Treat it as Kratos's own check -- don't argue with a seen or reproduced finding, never call a "seen" finding re-checked or confirmed, and note any Kratos couldn't check. If you have a reason to think a finding is a false positive or less serious, you MAY add finding_notes (your SUGGESTION only -- a person decides, nothing changes from it):
 {{"reasoning": "...", "final_answer": "...", "finding_notes": [{{"finding": "<finding id or key>", "suggest": "false_positive" | "lower_severity" | "needs_person", "why": "<one sentence>"}}]}}
 
 To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
@@ -998,9 +998,10 @@ def _sanitize_recommended_commands(raw: Any, evidence: Any = None) -> list[dict[
 def _auto_verify_serious(findings: list[dict[str, Any]] | None, data_dir: Path, collection: Any) -> None:
     """B.1: re-check the serious new/reopened findings by code, in the auto budget,
     and attach each verdict to its finding dict so the block, the digest and every
-    other surface show it. Reuses the collection Kratos JUST ran (seconds old -- a real
-    fresh read) instead of issuing a second one, so it adds no target load and the rich
-    fresh-read verifiers stay on /verify. Quick verifiers only; unfinished ones say
+    other surface show it. Reuses the collection Kratos JUST ran -- the read that raised
+    the finding -- instead of issuing a second one, so it adds no target load; its
+    verdicts therefore say "seen in this run's read -- not re-checked yet", never
+    "reproduced" (a genuine second read is recheck / retest). Quick verifiers only; unfinished ones say
     'verifying…' and finish in the background. Never fails the investigation."""
     try:
         from kratos.run_context import current as _run_current
@@ -1589,8 +1590,9 @@ def _run_agent_loop(
     """
     collection = _collect_first(data_dir, should_stop)
     if collection is not None:
-        # B.1: a verdict already on record (a recent run, a prior /verify) rides into the
-        # digest so the model reads "reproduced by a fresh read" next to the finding.
+        # B.1: a verdict already on record (a recent run, a prior recheck) rides into the
+        # digest so the model reads it ("seen in this run's read", "reproduced by a fresh
+        # read", ...) next to the finding.
         try:
             from kratos.triage.run import attach_stored_verdicts
 

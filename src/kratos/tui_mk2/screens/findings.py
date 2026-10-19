@@ -240,7 +240,7 @@ class FindingsScreen(Screen):
         if not isinstance(v, dict):
             return Text("-", style=T.TEXT_DIM)
         verdict = str(v.get("verdict") or "")
-        color = {"reproduced": T.CRITICAL, "partly": T.ATTENTION, "not_reproduced": T.SAFE,
+        color = {"reproduced": T.CRITICAL, "seen": T.ATTENTION, "partly": T.ATTENTION, "not_reproduced": T.SAFE,
                  "couldnt_check": T.TEXT_MUTED, "verifying": T.TEXT_DIM}.get(verdict, T.TEXT)
         return Text(str(v.get("tag") or verdict), style=color)
 

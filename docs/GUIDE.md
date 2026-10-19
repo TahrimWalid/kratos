@@ -653,7 +653,8 @@ see a short tag next to the finding:
 
 | Tag | What it means |
 | --- | --- |
-| reproduced by a fresh read | Kratos looked again and it's still there |
+| seen in this run's read — not re-checked yet | the automatic check after an investigation: the finding is in the read Kratos just made — the same read that raised it — so nothing has looked a second time yet. Press `k` in `/findings` (or `kratos findings recheck KEY`) to re-check it |
+| reproduced by a fresh read | a second read (re-check, retest) looked again and it's still there |
 | partly: *…* | still true, but with something that lowers the risk (e.g. *filtered from Kratos*, *source now banned by fail2ban*, *distro backported the fix*) |
 | not reproduced — retest? | a fresh, complete read no longer finds it; it may be fixed |
 | couldn't check: *…* | no safe fresh read was possible, and why (e.g. *the logs for that time are no longer there*) |
@@ -671,10 +672,13 @@ it probes from **Kratos's own machine** — not from the public internet. The an
 says so: "reachable from here". A port that's open to the world but blocked between
 Kratos and the target shows *partly: filtered from Kratos*.
 
-Serious findings are re-checked automatically after every investigation (and every
-scheduled run), reusing the fresh data Kratos just collected — it doesn't read the
-machine twice. The slower checks (an nmap probe, re-hashing a big file) run when you
-ask.
+Serious findings are checked automatically after every investigation (and every
+scheduled run) against the data Kratos just collected — it doesn't read the machine
+twice. Because that is the same read that raised the finding, the tag says **seen in
+this run's read — not re-checked yet**, never *reproduced*. Only a genuine second read
+— a re-check (`k`, `kratos findings recheck`) or a retest after a fix — can say
+*reproduced* or *not reproduced*. The slower checks (an nmap probe, re-hashing a big
+file) run when you ask.
 
 **Did my fix work? — /retest.** After you change something, run **`/retest`** (in
 the TUI, on the selected finding) or `kratos findings retest KEY`. Kratos

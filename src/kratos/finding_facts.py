@@ -98,6 +98,7 @@ def known_malicious(f: dict[str, Any]) -> bool:
 
 def verdict_tag(f: dict[str, Any]) -> str | None:
     """The triage verdict tag (B.1) attached to this finding, if any:
+    "seen in this run's read -- not re-checked yet" (the automatic pass),
     'reproduced by a fresh read', 'partly: ...', 'not reproduced -- retest?',
     "couldn't check: ...", or 'verifying…' while a background re-check runs."""
     v = f.get("verdict")

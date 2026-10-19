@@ -37,7 +37,7 @@ def _step_1(conn: sqlite3.Connection) -> None:
           finding_key TEXT NOT NULL,
           run_id TEXT,
           at REAL NOT NULL,
-          verdict TEXT NOT NULL,                     -- reproduced | partly | not_reproduced | couldnt_check
+          verdict TEXT NOT NULL,                     -- reproduced | partly | not_reproduced | couldnt_check | seen
           cost TEXT NOT NULL,                        -- quick | slow
           verifier TEXT NOT NULL,                    -- the verifier's label
           detail TEXT,                               -- the partly condition / couldnt_check reason
@@ -73,7 +73,17 @@ def _step_1(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS finding_suggestions_state ON finding_suggestions(state, at)")
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    # What the verdict was judged against: 'second_read' (recheck, retest, a slow
+    # verifier) or 'this_run' (the automatic pass, against the read that raised it --
+    # never "reproduced"). Rows before this step came from either; second_read is the
+    # conservative default only because a this_run row could never hold that word now.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(finding_verdicts)")}
+    if "basis" not in cols:
+        conn.execute("ALTER TABLE finding_verdicts ADD COLUMN basis TEXT NOT NULL DEFAULT 'second_read'")
+
+
+STEPS = (_step_1, _step_2)
 
 
 def _connect(data_dir: Path) -> sqlite3.Connection:
@@ -98,9 +108,9 @@ def record_verdict(data_dir: Path, *, finding_key: str, verdict: Verdict, verifi
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO finding_verdicts (finding_key, run_id, at, verdict, cost, verifier, detail, sentence, "
-            "checks, evidence, duration) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "checks, evidence, duration, basis) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (finding_key, run_id, now, verdict.verdict, cost, verifier, verdict.detail or None, verdict.sentence,
-             checks, json.dumps(list(verdict.evidence)), float(duration)),
+             checks, json.dumps(list(verdict.evidence)), float(duration), verdict.basis),
         )
         conn.execute("COMMIT")
     finally:
@@ -111,8 +121,10 @@ def _verdict_from_row(row: sqlite3.Row) -> VerdictResult:
     checks = tuple(VerifyCheck(name=str(c.get("name") or ""), transport=str(c.get("transport") or ""),
                                read_seconds=float(c.get("read_seconds") or 0.0))
                    for c in json.loads(row["checks"] or "[]"))
+    basis = row["basis"] if "basis" in row.keys() else "second_read"
     v = Verdict(verdict=row["verdict"], sentence=row["sentence"] or "", checks=checks,
-                evidence=tuple(json.loads(row["evidence"] or "[]")), detail=row["detail"] or "")
+                evidence=tuple(json.loads(row["evidence"] or "[]")), detail=row["detail"] or "",
+                basis=basis or "second_read")
     return VerdictResult(finding_key=row["finding_key"], verdict=v, verifier=row["verifier"],
                          cost=row["cost"], run_id=row["run_id"], at=float(row["at"]),
                          duration=float(row["duration"]))

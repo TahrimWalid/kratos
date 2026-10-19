@@ -151,7 +151,7 @@ def _build_message(*, schedule_name: str, target: str, status: str,
 
         for f in top:
             note = f"  ({decided[f['state']]} — hidden)" if f.get("state") in decided else ""
-            tag = verdict_tag(f)                           # B.1: "reproduced by a fresh read", ...
+            tag = verdict_tag(f)                           # B.1: "seen in this run's read -- not re-checked yet", ...
             verdict = f"  [{tag}]" if tag else ""
             lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}{verdict}")
     else:
@@ -683,15 +683,16 @@ def _run_scheduled(
 
     # B.1: re-check this run's serious new/reopened findings by code (quick verifiers
     # only -- an unattended run, decision 4), pinned to the schedule's target so the
-    # reads reach the right machine, so the notification can say "reproduced" /
-    # "not reproduced". Bounded by triage.auto_seconds; never fails the run.
+    # reads reach the right machine. It reuses the audit's own read, so the
+    # notification says "seen in this run's read -- not re-checked yet" (never
+    # "reproduced"; that needs a second read). Bounded by triage.auto_seconds.
     try:
         from types import SimpleNamespace
 
         from kratos.triage.run import auto_verify
 
-        # Reuse mode: the audit's findings are the fresh read; verifiers judge against
-        # them rather than issuing a second one. A minimal report (no checks) is enough.
+        # Reuse mode: verifiers judge against the audit's own findings rather than
+        # issuing a second read (so the verdicts are "seen", not "reproduced"). A minimal report (no checks) is enough.
         reuse = SimpleNamespace(checks=[], transport="", disabled_reason=None, findings=list(findings))
         with _kconfig.pinned_target(target):
             auto_verify(findings, data_dir=data_dir, target=target, run=_run_context.current(), report=reuse)
