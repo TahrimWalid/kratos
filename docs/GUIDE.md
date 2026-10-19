@@ -644,6 +644,64 @@ start your history (`kratos findings import-reports` repeats that safely).
 
 ---
 
+## How Kratos double-checks a finding
+
+Models are weak at deciding whether a finding is real, so Kratos doesn't ask the
+model — it **checks each serious finding again by code**, with a fresh, narrow read
+of just the evidence that matters for that finding, and tells you what it found. You
+see a short tag next to the finding:
+
+| Tag | What it means |
+| --- | --- |
+| reproduced by a fresh read | Kratos looked again and it's still there |
+| partly: *…* | still true, but with something that lowers the risk (e.g. *filtered from Kratos*, *source now banned by fail2ban*, *distro backported the fix*) |
+| not reproduced — retest? | a fresh, complete read no longer finds it; it may be fixed |
+| couldn't check: *…* | no safe fresh read was possible, and why (e.g. *the logs for that time are no longer there*) |
+| verifying… | the re-check is still running; it finishes in the background |
+
+**Conditions vs. things that happened.** A *condition* (a vulnerable package, an
+open port, a setuid file) is re-read *now* — is it still there? Something that
+*happened* in a window (a failed-login burst at 03:14) is re-checked against the
+logs **for the time it happened**: if the burst is still in the logs for that
+window it is *reproduced*, even though it's over. Only if the logs for that time
+are gone does Kratos say *couldn't check*.
+
+**Where reachability is tested.** When Kratos re-checks whether a port is exposed,
+it probes from **Kratos's own machine** — not from the public internet. The answer
+says so: "reachable from here". A port that's open to the world but blocked between
+Kratos and the target shows *partly: filtered from Kratos*.
+
+Serious findings are re-checked automatically after every investigation (and every
+scheduled run), reusing the fresh data Kratos just collected — it doesn't read the
+machine twice. The slower checks (an nmap probe, re-hashing a big file) run when you
+ask.
+
+**Did my fix work? — /retest.** After you change something, run **`/retest`** (in
+the TUI, on the selected finding) or `kratos findings retest KEY`. Kratos
+re-collects exactly what covers that finding, updates its state, and tells you
+whether it's gone:
+
+```bash
+kratos findings retest 3f9c2a1b7d4e
+```
+
+If the re-collection couldn't look at everything (an unreachable machine, a read
+that needs more access), Kratos leaves the finding open and says why — it never
+calls something fixed on a read that couldn't see it. **`/verify`** (TUI: `v`… no —
+press `k` on a finding) / `kratos findings recheck KEY` runs the full re-check,
+including the slower reads, on demand. A retest is also offered right after you
+apply a fix Kratos recommended.
+
+**The model's suggestions.** The model may add a note that a finding looks like a
+false positive, is less serious, or needs a person to judge — shown labelled **"the
+model suggests"**, never as a state and never in Kratos's own findings block. Only
+you act on one: accept it through the normal decision (`a`/`f`/`o`, with the reason
+prefilled from the suggestion) or dismiss it (`n` in `/findings`, or
+`kratos findings suggestions --dismiss ID`). `kratos findings suggestions` lists
+them. The model can suggest; it can never decide.
+
+---
+
 ## Reading more of a machine's logs
 
 Besides logins and sudo, Kratos can read seven more kinds of log on a machine, in

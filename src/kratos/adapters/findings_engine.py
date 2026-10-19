@@ -2068,6 +2068,28 @@ def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set
     )
 
 
+def _report_verdicts(data_dir: Path, finding_dicts: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
+    """{(rule id, normalised subject): latest triage verdict dict} for the report's
+    findings (B.1). Best-effort: a verdict lookup never breaks a report."""
+    from kratos.lifecycle.keys import normalise_subject
+
+    try:
+        from kratos.triage import store as _ts
+    except Exception:  # noqa: BLE001
+        return {}
+    keys = [str(f.get("finding_key") or "") for f in finding_dicts if f.get("finding_key")]
+    try:
+        stored = _ts.latest_verdicts(Path(data_dir), keys)
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[tuple[str, str], dict[str, Any]] = {}
+    for f in finding_dicts:
+        vr = stored.get(str(f.get("finding_key") or ""))
+        if vr is not None:
+            out[(str(f.get("id") or ""), normalise_subject(f.get("subject") or ""))] = vr.verdict.as_dict()
+    return out
+
+
 # ---------------------------
 # Report writing
 # ---------------------------
@@ -2302,12 +2324,17 @@ def write_findings_report(
     if not findings:
         md_lines.append("_No findings generated._")
     else:
+        verdicts = _report_verdicts(data_dir, finding_dicts)
+        from kratos.lifecycle.keys import normalise_subject as _ns_md
         for f in findings:
             md_lines.append(f"### [{f.severity.upper()}] {f.id} — {f.title}\n")
             if f.attack:
                 from kratos.attack import format_label
                 md_lines.append("**ATT&CK**: " + "; ".join(f"[{format_label(a)}]({a.get('url')})" for a in f.attack)
                                 + "\n")
+            vr = verdicts.get((f.id, _ns_md(getattr(f, "subject", "") or "")))
+            if vr is not None:   # B.1: the latest triage verdict on record for this finding
+                md_lines.append(f"**Verdict** (Kratos re-check): {vr['tag']} — {vr['sentence']}\n")
             md_lines.append("**Evidence**")
             for e in f.evidence:
                 md_lines.append(f"- {e}")

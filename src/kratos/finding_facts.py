@@ -96,6 +96,17 @@ def known_malicious(f: dict[str, Any]) -> bool:
     return any(MALICIOUS_MARK in str(ev) for ev in f.get("evidence") or [])
 
 
+def verdict_tag(f: dict[str, Any]) -> str | None:
+    """The triage verdict tag (B.1) attached to this finding, if any:
+    'reproduced by a fresh read', 'partly: ...', 'not reproduced -- retest?',
+    "couldn't check: ...", or 'verifying…' while a background re-check runs."""
+    v = f.get("verdict")
+    if not isinstance(v, dict):
+        return None
+    tag = str(v.get("tag") or "")
+    return tag or None
+
+
 def safe_facts(f: dict[str, Any]) -> list[str]:
     """Validated facts only -- for the model's digest."""
     facts = [f"source {ip}" + (" (known-malicious in the threat-intel cache)" if known_malicious(f) else "")
@@ -227,8 +238,10 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
         mark = " (not discussed below)" if "not discussed" in missing else \
             (" (" + ", ".join(m for m in missing) + " -- not in the analysis below)" if missing else "")
         title = untrusted.for_display(str(f.get("title") or describe(f)))[:110]
+        tag = verdict_tag(f)
+        verdict = f"  [{untrusted.for_display(tag)[:90]}]" if tag else ""
         lines.append(f"  - {str(f.get('severity')).upper()} {f.get('id')} {title}"
-                     + (f" -- {detail}" if detail else "") + mark)
+                     + (f" -- {detail}" if detail else "") + mark + verdict)
     if len(items) > BLOCK_MAX:
         lines.append(f"  - and {len(items) - BLOCK_MAX} more serious finding(s): /findings lists them all")
     return "\n".join(lines) + "\n\n"

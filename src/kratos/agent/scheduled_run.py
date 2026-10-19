@@ -147,9 +147,13 @@ def _build_message(*, schedule_name: str, target: str, status: str,
         top = [f for f in findings if str(f.get("severity", "")).lower() in ("critical", "high")][:5]
         decided = {"risk_accepted": "risk accepted", "false_positive": "marked false positive",
                    "out_of_scope": "marked out of scope"}
+        from kratos.finding_facts import verdict_tag
+
         for f in top:
             note = f"  ({decided[f['state']]} — hidden)" if f.get("state") in decided else ""
-            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}")
+            tag = verdict_tag(f)                           # B.1: "reproduced by a fresh read", ...
+            verdict = f"  [{tag}]" if tag else ""
+            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}{verdict}")
     else:
         lines.append("findings: none raised")
     if report_path:
@@ -676,6 +680,23 @@ def _run_scheduled(
         report_json, report_md = str(j), str(m)
     except Exception as e:  # noqa: BLE001 -- a report-write failure shouldn't sink the run record
         error = (error + "; " if error else "") + f"report write failed: {e}"
+
+    # B.1: re-check this run's serious new/reopened findings by code (quick verifiers
+    # only -- an unattended run, decision 4), pinned to the schedule's target so the
+    # reads reach the right machine, so the notification can say "reproduced" /
+    # "not reproduced". Bounded by triage.auto_seconds; never fails the run.
+    try:
+        from types import SimpleNamespace
+
+        from kratos.triage.run import auto_verify
+
+        # Reuse mode: the audit's findings are the fresh read; verifiers judge against
+        # them rather than issuing a second one. A minimal report (no checks) is enough.
+        reuse = SimpleNamespace(checks=[], transport="", disabled_reason=None, findings=list(findings))
+        with _kconfig.pinned_target(target):
+            auto_verify(findings, data_dir=data_dir, target=target, run=_run_context.current(), report=reuse)
+    except Exception:  # noqa: BLE001
+        pass
 
     lifecycle = _lifecycle_for_message(data_dir, report_json)
 

@@ -96,8 +96,10 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one record per finding, one history row per change, one report per correlation",
         files=("reports",),
         tables=(TableRef(DB, ("finding_records", "finding_events", "finding_exceptions", "finding_imports",
+                              "finding_verdicts", "finding_suggestions",
                               "anomalies", "daily_summary", "findings"), ("finding_events", "at")),),
-        note="open decisions point at findings history; kept unless you delete it yourself",
+        note="open decisions point at findings history; code verdicts and the model's suggestions sit "
+             "alongside; kept unless you delete it yourself",
     ),
     Category(
         "snapshots", "Collected snapshots",

@@ -86,7 +86,10 @@ def test_mcp_finding_states_match_the_cli_view(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "_data_dir", tmp_path)
     out = mcp_server.kratos_finding_states(target=T)
     assert {f["rule_id"]: f["state"] for f in out["findings"]} == {"NET-002": "open", "AUTH-003": "out_of_scope"}
-    assert out["findings"] == Q.list_findings(tmp_path, target=T, state="all")
+    # MCP shows exactly the lifecycle view plus B.1's read-only verdict/suggestion enrichment
+    # (which only a person can act on) -- the same as /findings and the CLI, nothing privileged.
+    from kratos.triage.run import enrich_rows
+    assert out["findings"] == enrich_rows(Q.list_findings(tmp_path, target=T, state="all"), tmp_path)
     assert out["hidden_by_user_decisions"]["out_of_scope"] == 1
     assert [f["rule_id"] for f in mcp_server.kratos_finding_states(state="decided")["findings"]] == ["AUTH-003"]
     with pytest.raises(ValueError):

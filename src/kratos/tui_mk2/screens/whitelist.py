@@ -523,6 +523,21 @@ class WhitelistScreen(Screen):
             else:
                 note.append(".", style=T.TEXT_FAINT)
             self._log(note)
+            self._offer_retest(spec)
+
+    def _offer_retest(self, spec: Any) -> None:
+        """B.1: if this action was recommended for a finding, offer /retest once it
+        takes effect. The fix channel is off, so this only fires on a real dispatch."""
+        try:
+            from kratos.triage.offers import retest_offer, retest_offer_text
+
+            from kratos.kratos_config import get_active_target
+            offer = retest_offer(self._data_dir, getattr(spec, "source_recommendation", ()),
+                                 get_active_target() or None)
+            if offer is not None:
+                self._log(Text(retest_offer_text(offer), style=T.TEXT_FAINT))
+        except Exception:  # noqa: BLE001 -- an offer must never break a dispatch
+            pass
 
     # ------------------------------------------------------------------
     # Telemetry-confirmed undo window.

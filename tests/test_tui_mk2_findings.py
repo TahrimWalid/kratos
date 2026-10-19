@@ -215,3 +215,42 @@ def test_decided_findings_fold_into_one_line_whatever_their_severity():
     assert [f["id"] for f, _ in full] == ["PRIV-002"]
     assert FV.folded_summary(folded) == \
         "Hidden by your decisions: CORR-SSH-001 (risk accepted until 12 Nov) — /findings shows them."
+
+
+# --- B.1: verdicts and model suggestions in /findings -------------------------------
+def test_verdicts_and_suggestions_show_and_dismiss(tmp_path):
+    asyncio.run(_verdicts_and_suggestions_show_and_dismiss(tmp_path))
+
+
+async def _verdicts_and_suggestions_show_and_dismiss(tmp_path):
+    from kratos.triage import store as TS
+    from kratos.triage.verdict import Verdict, VerifyCheck
+
+    _seed(tmp_path)
+    key = finding_key("CORR-SSH-001", T, "")
+    TS.record_verdict(tmp_path, finding_key=key, verifier="re-measured sign-in activity", cost="quick",
+                      run_id=None, duration=0.3,
+                      verdict=Verdict("reproduced", "The burst is still in the logs.",
+                                      checks=(VerifyCheck("measure_auth_activity", "ssh"),),
+                                      evidence=("40 failed SSH logins",)))
+    sid = TS.record_suggestion(tmp_path, finding_key=key, rule_id="CORR-SSH-001", target=T, run_id=None,
+                               kind="false_positive", why="our own pentest box")
+    screen = FindingsScreen(tmp_path, target=T)
+    app = _Host(screen)
+    async with app.run_test(size=(180, 40)) as pilot:
+        await pilot.pause()
+        row = next(r for r in screen._rows if r["rule_id"] == "CORR-SSH-001")
+        assert row["verdict"]["verdict"] == "reproduced"
+        assert row["suggestions"] and row["suggestions"][0]["id"] == sid
+        # the detail modal opens without error and shows the verdict + suggestion
+        screen.action_details()
+        await pilot.pause()
+        detail = "".join(_text(s) for s in app.screen.query("Static"))
+        assert "reproduced by a fresh read" in detail and "our own pentest box" in detail
+        app.pop_screen()
+        await pilot.pause()
+        # dismiss the suggestion via the n binding (CORR-SSH-001 is the first row)
+        screen.action_dismiss_suggestion()
+        await pilot.pause()
+        assert TS.suggestions_for(tmp_path, key, state="new") == []
+        assert "Dismissed the model's suggestion" in _notes(screen)

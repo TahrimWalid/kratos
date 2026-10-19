@@ -826,6 +826,13 @@ def cmd_findings(args: argparse.Namespace) -> int:
                   f"{d['decided_by']}" + (f", owner {d['owner']}" if d.get("owner") else "")
                   + (f", until {_findings_when(d['expires_at'], tz)}" if d.get("expires_at") else "")
                   + f": {d['reason']}")
+        from kratos.triage import store as _ts
+        vr = _ts.latest_verdict(data_dir, rec["finding_key"])
+        if vr is not None:
+            print(f"  verdict: {vr.verdict.tag()} ({_findings_when(epoch_to_utc_iso(vr.at), tz)}) -- "
+                  f"{vr.verdict.sentence}")
+        for s in _ts.suggestions_for(data_dir, rec["finding_key"], state="new"):
+            print(f"  the model suggests ({s['kind'].replace('_', ' ')}): {s['why']}  [#{s['id']} -- you decide]")
         for line in (latest.get("evidence") or [])[:12]:
             print(f"  - {line}")
         print("  history:")
@@ -834,6 +841,16 @@ def cmd_findings(args: argparse.Namespace) -> int:
             print(f"    {_findings_when(e['at'], tz)}  {e['kind']:<17} {move:<26} by {e['actor']} "
                   f"({e['interface'] or '-'}): {e['reason'] or ''}")
         return 0
+    if action in ("recheck", "retest", "suggestions"):
+        # recheck/retest reach the collection runner and tools, so run inside a run_scope
+        # like every other path to a tool (tests/_run_scope_scan.py).
+        from kratos.run_context import run_scope
+        from kratos.target_key import target_key as _tk
+
+        tgt = None if getattr(args, "target", None) == "all" else (getattr(args, "target", None)
+                                                                   or get_active_target() or None)
+        with run_scope("cli", target=_tk(tgt) if tgt else None):
+            return _cmd_findings_triage(args, data_dir, tz)
     actor = D.Actor.current("cli")
     try:
         if action == "verify":
@@ -865,6 +882,100 @@ def cmd_findings(args: argparse.Namespace) -> int:
     if out.get("scope") and out["scope"] != "key":
         extra += f" ({D.SCOPE_WORDS[out['scope']]}; {len(out.get('changed') or [])} finding(s) changed now)"
     print(f"[KRATOS] {short(out['finding_key'])}: {_STATE_WORDS.get(state, state)}{extra}.")
+    return 0
+
+
+def _cmd_findings_triage(args: argparse.Namespace, data_dir: Path, tz) -> int:
+    """B.1: `kratos findings recheck|retest|suggestions`. recheck = a fresh-read verdict
+    (not the 'verify' decision); retest = re-collect + say if a finding is gone;
+    suggestions = the model's notes, which only a person acts on."""
+    from kratos.lifecycle import query as Q
+    from kratos.lifecycle import store as LS
+    from kratos.lifecycle.keys import short
+    from kratos.target_key import target_key
+    from kratos.triage import run as TR
+    from kratos.triage import store as TS
+
+    action = args.findings_action
+    target = args.target or get_active_target() or None
+
+    if action == "suggestions":
+        if args.dismiss is not None:
+            s = TS.get_suggestion(data_dir, args.dismiss)
+            if s is None:
+                print(f"[KRATOS] no suggestion #{args.dismiss}", file=sys.stderr)
+                return 1
+            TS.resolve_suggestion(data_dir, args.dismiss, state="dismissed", by="cli")
+            print(f"[KRATOS] dismissed suggestion #{args.dismiss}.")
+            return 0
+        rows = TS.open_suggestions(data_dir, target=(target_key(target) if target else None))
+        if args.json:
+            print(json.dumps(rows, indent=2, sort_keys=True))
+            return 0
+        if not rows:
+            print("[KRATOS] no open suggestions from the model.")
+            return 0
+        print("[KRATOS] the model suggests (only you decide):")
+        for s in rows:
+            print(f"  #{s['id']}  {s['rule_id']:<14} {s['kind'].replace('_', ' '):<16} "
+                  f"{short(s['finding_key'] or ''):<12}  {s['why']}")
+        print("  accept one by acting on the finding (kratos findings fp/accept <key>); "
+              "dismiss with kratos findings suggestions --dismiss <id>.")
+        return 0
+
+    if action == "recheck" and getattr(args, "all", False):
+        rows = Q.list_findings(data_dir, target=(None if not target else target), state="open_verified")
+        serious = [r for r in rows if str(r.get("severity", "")).lower() in ("high", "critical")]
+        if not serious:
+            print("[KRATOS] no open HIGH/CRITICAL findings to re-check.")
+            return 0
+        out = []
+        for r in serious:
+            _rec, latest, _ev = Q.get_finding(data_dir, r["finding_key"])
+            latest.setdefault("first_seen", r.get("first_seen"))   # so an occurrence re-measure uses its real window
+            v = TR.verify_finding(latest, data_dir=data_dir, target=target or r["target"])
+            out.append((r, v))
+            print(f"  {short(r['finding_key'])}  {r['rule_id']:<14} {v.tag()}")
+        if args.json:
+            print(json.dumps([{"finding_key": r["finding_key"], "verdict": v.as_dict()} for r, v in out],
+                             indent=2, sort_keys=True))
+        return 0
+
+    # recheck <key> or retest <key>
+    try:
+        with LS.opened(data_dir) as conn:
+            full = LS.resolve_key(conn, args.key)
+    except LookupError as e:
+        print(f"[KRATOS] {e}", file=sys.stderr)
+        return 1
+    if action == "recheck":
+        _rec, latest, _ev = Q.get_finding(data_dir, full)
+        latest.setdefault("first_seen", _rec.get("first_seen"))
+        v = TR.verify_finding(latest, data_dir=data_dir, target=target or _rec["target"])
+        if args.json:
+            print(json.dumps({"finding_key": full, "verdict": v.as_dict()}, indent=2, sort_keys=True))
+            return 0
+        print(f"[KRATOS] {short(full)} {_rec['rule_id']}: {v.tag()}")
+        print(f"  {v.sentence}")
+        for c in v.checks:
+            print(f"  - checked: {c.name}" + (f" (over {c.transport})" if c.transport else ""))
+        for e in v.evidence[:6]:
+            print(f"  - {e}")
+        return 0
+
+    # retest
+    out = TR.retest(full, data_dir=data_dir, target=target)
+    if args.json:
+        print(json.dumps(out, indent=2, sort_keys=True))
+        return 0
+    moved = f"{_STATE_WORDS.get(out['before_state'], out['before_state'])} -> " \
+            f"{_STATE_WORDS.get(out['after_state'], out['after_state'])}"
+    print(f"[KRATOS] {short(out['finding_key'])} {out['rule_id']}: {moved}")
+    print(f"  re-collected: {', '.join(out['rechecked']) or 'nothing'}")
+    if out.get("incomplete"):
+        print(f"  the re-collection was incomplete ({out['incomplete']}) -- left open.")
+    v = out["verdict"]
+    print(f"  verdict: {v['tag']} -- {v['sentence']}")
     return 0
 
 
@@ -2015,6 +2126,23 @@ def build_parser() -> argparse.ArgumentParser:
         f_dec.add_argument("--scope", default="key", choices=scopes, help=scope_help)
         f_dec.add_argument("--days", type=float, default=None, help="Optional: for this many days")
         f_dec.add_argument("--until", default=None, help="Optional: until this date")
+    # B.1: re-check a finding by a fresh read (a verdict, NOT the 'verify' decision above);
+    # retest after a fix; and the model's suggestions, which only a person acts on.
+    f_recheck = fsub.add_parser("recheck", help="Re-check a finding by a fresh read (verdict); --all for every "
+                                                "open serious finding")
+    g = f_recheck.add_mutually_exclusive_group(required=True)
+    g.add_argument("key", nargs="?", help="Finding key (the 12 characters shown are enough)")
+    g.add_argument("--all", action="store_true", help="Re-check every open HIGH/CRITICAL finding")
+    f_recheck.add_argument("--target", default=None, help="Machine (default: the active target)")
+    f_recheck.add_argument("--json", action="store_true")
+    f_retest = fsub.add_parser("retest", help="After a fix: re-collect what covers a finding and say if it is gone")
+    f_retest.add_argument("key")
+    f_retest.add_argument("--target", default=None, help="Machine (default: the active target)")
+    f_retest.add_argument("--json", action="store_true")
+    f_sug = fsub.add_parser("suggestions", help="The model's suggestions about findings (only you act on them)")
+    f_sug.add_argument("--target", default=None, help="Machine (default: every machine)")
+    f_sug.add_argument("--dismiss", type=int, default=None, metavar="ID", help="Dismiss suggestion ID")
+    f_sug.add_argument("--json", action="store_true")
     fsub.add_parser("import-reports", help="Import findings from report files written before this version (safe to repeat)")
     fnd.set_defaults(func=cmd_findings)
 

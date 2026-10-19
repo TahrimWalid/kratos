@@ -45,6 +45,8 @@ def test_audit_run_excludes_gated_and_notifies(tmp_path, monkeypatch):
     sch = S.save_schedule(tmp_path, name="wk", kind="audit", cadence="weekly", deliver=["ntfy"])
     findings = [{"id": "CORR-SSH-001", "severity": "high", "title": "SSH exposed"}]
     monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _audit_dispatch(findings))
+    # B.1 auto-verification re-reads through this same dispatch; the stub keeps it off SSH.
+    monkeypatch.setattr("kratos.agent.loop.execute_tool_call", _audit_dispatch(findings))
     spy = _Spy()
 
     rec = W.run_scheduled(sch, tmp_path, notifier=spy)
@@ -139,6 +141,8 @@ def test_preset_run_excludes_gated_from_registry(tmp_path, monkeypatch):
         ]}
 
     monkeypatch.setattr("kratos.agent.loop.run_agent", fake_run_agent)
+    # B.1 auto-verification of the serious finding re-reads through execute_tool_call; keep it off SSH.
+    monkeypatch.setattr("kratos.agent.loop.execute_tool_call", _audit_dispatch([]))
     before = set(T.TOOL_REGISTRY.keys())
     rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
 
@@ -228,6 +232,9 @@ def test_pipeline_preset_scheduled_runs_via_engine(tmp_path, monkeypatch):
     monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", dispatch)
     monkeypatch.setattr("kratos.agent.loop.run_agent",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("run_agent must not run for a pipeline preset")))
+    # B.1 auto-verification re-reads through loop.execute_tool_call -- a separate no-SSH stub
+    # (not `dispatch`, so it doesn't perturb the pipeline's exact call-order assertion below).
+    monkeypatch.setattr("kratos.agent.loop.execute_tool_call", lambda tool, args, dd: {"status": "ok", "result": {}})
 
     rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
 

@@ -30,13 +30,14 @@ from kratos.attack import format_label
 from kratos.lifecycle import decide as D
 from kratos.lifecycle import query as Q
 from kratos.lifecycle import settings as LS
+from kratos.triage import run as TR
 from kratos.target_key import target_key
 from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils.timeutil import format_for_display, resolve_display_tz
 
-COLUMNS = ("state", "severity", "rule", "title", "machine", "first seen", "last seen", "until")
+COLUMNS = ("state", "severity", "rule", "title", "verdict", "machine", "first seen", "last seen", "until")
 STATE_WORDS = {"open": "open", "verified": "verified", "mitigated": "fixed", "inactive": "no recurrence",
                "risk_accepted": "risk accepted", "false_positive": "not a problem", "out_of_scope": "out of scope"}
 STATE_COLOR = {"open": T.ATTENTION, "verified": T.CRITICAL, "mitigated": T.SAFE, "inactive": T.SAFE,
@@ -175,6 +176,9 @@ class FindingsScreen(Screen):
         Binding("f", "false_positive", "not a problem", show=True),
         Binding("o", "out_of_scope", "out of scope", show=True),
         Binding("r", "reopen", "reopen", show=True),
+        Binding("k", "recheck", "re-check", show=True),
+        Binding("t", "retest", "retest", show=True),
+        Binding("n", "dismiss_suggestion", "dismiss note", show=False),
         Binding("h", "history", "history", show=True),
         Binding("s", "cycle_state", "which", show=True),
         Binding("p", "cycle_severity", "severity", show=True),
@@ -208,8 +212,9 @@ class FindingsScreen(Screen):
             yield DataTable(id="fd-table", cursor_type="row")
             yield VerticalScroll(id="fd-log")
             yield Static(Text(
-                "↑↓ select · enter details · h history · v verify · a accept the risk\n"
-                "f not a real problem · o out of scope · r reopen · c copy ATT&CK link\n"
+                "↑↓ select · enter details · h history · c copy ATT&CK\n"
+                "v verify · a accept risk · f not a real problem · o out of scope · r reopen\n"
+                "k re-check · t retest · n dismiss note\n"
                 "s which findings · p severity · m machine · / search · esc back",
                 style=T.TEXT_DIM), id="fd-hints")
 
@@ -230,8 +235,18 @@ class FindingsScreen(Screen):
     def _when(self, value: str | None) -> str:
         return format_for_display(value, "%Y-%m-%d %H:%M", tz=self._tz) if value else "-"
 
+    def _verdict_cell(self, row: dict[str, Any]) -> Text:
+        v = row.get("verdict")
+        if not isinstance(v, dict):
+            return Text("-", style=T.TEXT_DIM)
+        verdict = str(v.get("verdict") or "")
+        color = {"reproduced": T.CRITICAL, "partly": T.ATTENTION, "not_reproduced": T.SAFE,
+                 "couldnt_check": T.TEXT_MUTED, "verifying": T.TEXT_DIM}.get(verdict, T.TEXT)
+        return Text(str(v.get("tag") or verdict), style=color)
+
     def visible_rows(self) -> list[dict[str, Any]]:
         rows = Q.list_findings(self._data_dir, target=self._target, state=self._state)
+        TR.enrich_rows(rows, self._data_dir)
         floor = _RANK.get(self._floor, 0)
         rows = [r for r in rows if _RANK.get(str(r["severity"]).lower(), 0) >= floor]
         if self._search:
@@ -251,11 +266,12 @@ class FindingsScreen(Screen):
             cells.append([
                 Text(STATE_WORDS.get(r["state"], r["state"]), style=STATE_COLOR.get(r["state"], T.TEXT)),
                 Text(r["severity"], style=T.SEVERITY_COLOR.get(r["severity"], T.TEXT)),
-                r["rule_id"], r["title"], r["target"], self._when(r["first_seen"]), self._when(r["last_seen"]),
+                r["rule_id"], r["title"], self._verdict_cell(r), r["target"],
+                self._when(r["first_seen"]), self._when(r["last_seen"]),
                 self._when(until) if until else "",
             ])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 16), (4, 10), (5, 10)], headers=COLUMNS)):
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 14), (4, 16), (5, 10), (6, 10)], headers=COLUMNS)):
             table.add_row(*row, key=self._rows[i]["finding_key"])
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
@@ -345,6 +361,18 @@ class FindingsScreen(Screen):
         body.add_row("seen", f"{row['times_seen']} time(s), first {self._when(row['first_seen'])}, "
                               f"last {self._when(row['last_seen'])}")
         body.add_row("last re-checked", self._when(row["last_checked"]))
+        v = row.get("verdict")
+        if isinstance(v, dict):
+            body.add_row("verdict", f"{v.get('tag')}\n{v.get('sentence') or ''}")
+            for i, c in enumerate(v.get("checks") or []):
+                where = f" (over {c.get('transport')})" if c.get("transport") else ""
+                body.add_row("re-read" if i == 0 else "", f"{c.get('name')}{where}")
+            for i, line in enumerate((v.get("evidence") or [])[:6]):
+                body.add_row("verdict evidence" if i == 0 else "", annotate_lookalikes(line))
+        for i, s in enumerate(row.get("suggestions") or []):
+            label = "the model suggests" if i == 0 else ""
+            body.add_row(label, f"{s['kind'].replace('_', ' ')}: {annotate_lookalikes(s['why'])}  "
+                                f"(#{s['id']} -- you decide; n dismisses)")
         d = row.get("decision")
         if d:
             body.add_row("decision", f"{STATE_WORDS.get(d['kind'])} — {D.SCOPE_WORDS.get(d['scope'])}, by "
@@ -433,6 +461,71 @@ class FindingsScreen(Screen):
                        "reopened")
         except D.DecisionError as e:
             self._refused(e)
+
+    @work(thread=True)
+    def action_recheck(self) -> None:
+        """B.1: re-check the selected finding by a fresh read (a verdict, not the 'verify'
+        decision). The read can touch SSH, so it runs off the UI thread."""
+        row = self._need_row()
+        if row is None:
+            return
+        from kratos.kratos_config import get_active_target
+        from kratos.run_context import run_scope
+
+        self.app.call_from_thread(self.note, Text(f"Re-checking {row['rule_id']}…", style=T.TEXT_DIM))
+        _rec, latest, _ev = Q.get_finding(self._data_dir, row["finding_key"])
+        latest.setdefault("first_seen", row.get("first_seen"))   # occurrence re-measure window
+        tgt = get_active_target() or row["target"]
+        try:
+            with run_scope("interactive", target=tgt):   # a thread worker opens its own scope
+                v = TR.verify_finding(latest, data_dir=self._data_dir, target=tgt)
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.note, Text(f"Could not re-check: {e}", style=T.ATTENTION))
+            return
+        self.app.call_from_thread(self.note, Text(f"✓ {row['rule_id']}: {v.tag()} — {v.sentence}", style=T.SAFE))
+        self.app.call_from_thread(self.refresh_rows)
+
+    @work(thread=True)
+    def action_retest(self) -> None:
+        """B.1: after a fix, re-collect what covers this finding and say if it is gone."""
+        row = self._need_row()
+        if row is None:
+            return
+        from kratos.kratos_config import get_active_target
+        from kratos.run_context import run_scope
+
+        self.app.call_from_thread(self.note, Text(f"Retesting {row['rule_id']}… (re-collecting)", style=T.TEXT_DIM))
+        try:
+            with run_scope("interactive", target=get_active_target() or None):
+                out = TR.retest(row["finding_key"], data_dir=self._data_dir, target=get_active_target() or None)
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self.note, Text(f"Could not retest: {e}", style=T.ATTENTION))
+            return
+        moved = f"{STATE_WORDS.get(out['before_state'], out['before_state'])} → " \
+                f"{STATE_WORDS.get(out['after_state'], out['after_state'])}"
+        v = out["verdict"]
+        msg = f"✓ {out['rule_id']}: {moved}; {v['tag']} — {v['sentence']}"
+        if out.get("incomplete"):
+            msg += f"  (re-collection incomplete: {out['incomplete']} — left open)"
+        self.app.call_from_thread(self.note, Text(msg, style=T.SAFE if out.get("fixed") else T.TEXT))
+        self.app.call_from_thread(self.refresh_rows)
+
+    def action_dismiss_suggestion(self) -> None:
+        """Dismiss the newest open model suggestion on the selected finding (the model
+        suggests; a person decides -- dismissing is not a finding decision)."""
+        row = self._need_row()
+        if row is None:
+            return
+        from kratos.triage import store as TS
+
+        open_suggestions = TS.suggestions_for(self._data_dir, row["finding_key"], state="new")
+        if not open_suggestions:
+            self.note(Text("No model suggestion to dismiss on this finding.", style=T.TEXT_DIM))
+            return
+        s = open_suggestions[0]
+        TS.resolve_suggestion(self._data_dir, s["id"], state="dismissed", by=D.Actor.current("tui").user)
+        self.note(Text(f"Dismissed the model's suggestion (#{s['id']}).", style=T.TEXT))
+        self.refresh_rows()
 
     def action_accept(self) -> None:
         self._decide_flow("risk_accepted")

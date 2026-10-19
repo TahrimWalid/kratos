@@ -408,6 +408,11 @@ def kratos_finding_states(target: str | None = None, state: str | None = None, l
     limit = max(1, min(int(limit or 100), 1000))
     _lc_migrate.ensure_imported(_data_dir)
     rows = _lc_query.list_findings(_data_dir, target=target or None, state=state, limit=limit)
+    # B.1: each finding's latest verdict (reproduced / partly / not reproduced / couldn't
+    # check) and the model's open suggestions about it, read-only.
+    from kratos.triage.run import enrich_rows
+
+    enrich_rows(rows, _data_dir)
     hidden = _lc_query.hidden_counts(_data_dir, target or None)
     return {"target": target or None, "state": state, "count": len(rows), "findings": rows,
             "hidden_by_user_decisions": hidden}

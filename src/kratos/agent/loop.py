@@ -602,6 +602,9 @@ PREFER a template when one fits: Kratos checks your values against the Observati
 {_remediation_templates()}
 Write a plain "command" only when no template fits; those are shown as written by you, with warnings, so keep them simple and never fetch or decode anything.
 
+Some findings carry a verdict in [square brackets] that KRATOS reached by re-reading the evidence ("reproduced by a fresh read", "partly: ...", "not reproduced -- retest?", "couldn't check: ..."). Treat it as Kratos's own check -- don't argue with a reproduced finding, and note any Kratos couldn't check. If you have a reason to think a finding is a false positive or less serious, you MAY add finding_notes (your SUGGESTION only -- a person decides, nothing changes from it):
+{{"reasoning": "...", "final_answer": "...", "finding_notes": [{{"finding": "<finding id or key>", "suggest": "false_positive" | "lower_severity" | "needs_person", "why": "<one sentence>"}}]}}
+
 To propose a NEW tool Kratos doesn't have yet -- use ONLY when you hit a genuine capability gap during THIS investigation that no existing tool covers, never speculatively and never instead of using an existing tool that already fits:
 {{"reasoning": "<one sentence: what gap this fills and why you hit it just now>", "tool_proposal": {{"name": "<snake_case tool name>", "description": "<one or two sentences: what it does and what gap it fills>"}}}}
 This does NOT end the investigation -- after proposing, continue with a tool call or a final_answer as normal. The proposal is surfaced to a human; you never build it yourself and never need to mention it again.
@@ -990,6 +993,41 @@ def _sanitize_recommended_commands(raw: Any, evidence: Any = None) -> list[dict[
     from kratos.remediation.build import build_recommendations
 
     return build_recommendations(raw, evidence)
+
+
+def _auto_verify_serious(findings: list[dict[str, Any]] | None, data_dir: Path, collection: Any) -> None:
+    """B.1: re-check the serious new/reopened findings by code, in the auto budget,
+    and attach each verdict to its finding dict so the block, the digest and every
+    other surface show it. Reuses the collection Kratos JUST ran (seconds old -- a real
+    fresh read) instead of issuing a second one, so it adds no target load and the rich
+    fresh-read verifiers stay on /verify. Quick verifiers only; unfinished ones say
+    'verifying…' and finish in the background. Never fails the investigation."""
+    try:
+        from kratos.run_context import current as _run_current
+        from kratos.triage.run import attach_stored_verdicts, auto_verify
+
+        auto_verify(findings, data_dir=Path(data_dir), target=get_active_target() or "", run=_run_current(),
+                    report=collection)
+        # A still-open serious finding isn't re-verified every run (only new/reopened are),
+        # so carry its most recent stored verdict onto the block too -- without overwriting
+        # one produced just now.
+        attach_stored_verdicts(findings, Path(data_dir))
+    except Exception:  # noqa: BLE001 -- verification is an aid; an investigation never fails because of it
+        import logging
+
+        logging.getLogger(__name__).debug("triage: auto-verification failed", exc_info=True)
+
+
+def _finding_notes(parsed: dict[str, Any], findings: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """B.1: the model's optional `finding_notes` suggestions, sanitised like
+    recommended_commands (bounded, the finding must exist in this run, `why` cleaned
+    for display). The model SUGGESTS; only a person acts (triage.suggestions)."""
+    try:
+        from kratos.triage.suggestions import sanitize_finding_notes
+
+        return sanitize_finding_notes(parsed.get("finding_notes"), findings)
+    except Exception:  # noqa: BLE001
+        return []
 
 
 _GAP_ACKNOWLEDGED_RE = re.compile(
@@ -1550,6 +1588,15 @@ def _run_agent_loop(
     None preserves the exact prior behavior for every other caller (CLI, MCP).
     """
     collection = _collect_first(data_dir, should_stop)
+    if collection is not None:
+        # B.1: a verdict already on record (a recent run, a prior /verify) rides into the
+        # digest so the model reads "reproduced by a fresh read" next to the finding.
+        try:
+            from kratos.triage.run import attach_stored_verdicts
+
+            attach_stored_verdicts(collection.findings, Path(data_dir))
+        except Exception:  # noqa: BLE001 -- the digest never fails for a verdict lookup
+            pass
     digest_block = _collection_digest(collection)
     system_prompt = build_system_prompt(goal, with_digest=bool(digest_block))
     # Bound prior_context to a window-aware budget (see the constants above) so a
@@ -1933,6 +1980,13 @@ def _run_agent_loop(
                 _record({"iteration": i, "reasoning": "re-correlated by Kratos: new data arrived after the last correlation",
                          "collected": True, "tool": "correlate_findings", "args": {}, "observation": _re})
                 _absorb_correlation(_re)
+            if collection is not None:
+                # B.1: re-check the serious new/reopened findings by code before the answer
+                # (bounded by triage.auto_seconds), so a verdict rides on each finding dict
+                # into the block, the digest and /findings. Once per final-answer attempt,
+                # and already-verified findings are skipped, so a rejected-and-retried
+                # answer doesn't re-read the target.
+                _auto_verify_serious(last_correlate_findings, data_dir, collection)
             final_answer_text = parsed["final_answer"]
             if isinstance(final_answer_text, str):
                 # A claims list written into the prose never reaches the reader, even
@@ -1949,6 +2003,9 @@ def _run_agent_loop(
             recommended_commands = _sanitize_recommended_commands(
                 parsed.get("recommended_commands"),
                 _remediation_evidence(transcript, last_correlate_findings, goal))
+            # B.1: the model's optional finding_notes suggestions, sanitised. Stored only
+            # at the return (not on a rejected-and-retried attempt).
+            finding_notes = _finding_notes(parsed, last_correlate_findings)
 
             # Each guard's violated/can-reject condition is computed up front
             # (against the model's raw answer) before any rejection or
@@ -2426,16 +2483,30 @@ def _run_agent_loop(
                     "tool_proposal": {"name": "", "description": _gap_sentence(final_answer_text, gap_now),
                                       "derived_from_answer": True},
                 })
+            if finding_notes:
+                # Store the model's suggestions (labelled "the model suggests" wherever
+                # shown; a person accepts or dismisses -- triage.suggestions).
+                try:
+                    from kratos.run_context import current as _run_current
+                    from kratos.triage.suggestions import record_notes
+
+                    record_notes(data_dir, finding_notes, target=get_active_target(), run=_run_current())
+                except Exception:  # noqa: BLE001 -- a suggestion must never fail the run
+                    import logging
+
+                    logging.getLogger(__name__).debug("triage: could not store finding_notes", exc_info=True)
             _record({
                 "iteration": i,
                 "reasoning": parsed.get("reasoning", ""),
                 "final_answer": final_answer_text,
                 "recommended_commands": recommended_commands,
+                "finding_notes": finding_notes,
             })
             return _with_usage({
                 "status": "final_answer",
                 "final_answer": final_answer_text,
                 "recommended_commands": recommended_commands,
+                "finding_notes": finding_notes,
                 "claims": verified_claims,
                 "transcript": transcript,
             })

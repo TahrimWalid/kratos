@@ -56,6 +56,9 @@ def _finding_tag(f: dict, with_title: bool) -> str:
     serious = str(f.get("severity") or "").lower() in finding_facts.SERIOUS
     if facts and (with_title or serious):
         text += " -- " + "; ".join(facts)
+    tag = finding_facts.verdict_tag(f)   # the triage verdict (B.1), as Kratos's words
+    if tag and (with_title or serious):
+        text += f" [{tag}]"
     return text
 
 

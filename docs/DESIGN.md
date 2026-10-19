@@ -1315,6 +1315,55 @@ detection logic is untouched.
   `reports/findings_*.json` are imported once (machine taken from the report, its
   input files, the session that produced it, else "unknown") and never modified.
 
+## Evidence-first triage (verdicts and retest)
+
+`kratos.triage` re-checks a serious finding **by code** and attaches a *verdict* —
+a thing a person reads, separate from the lifecycle state. Models are weak at
+triage, so rules and evidence decide and the model only annotates.
+
+- **Verdict** (`triage/verdict.py`): one of `reproduced | partly | not_reproduced |
+  couldnt_check`, a short list of the reads it ran, Kratos-written evidence lines,
+  and one sentence. It is **never** a lifecycle state and never changes severity —
+  `verified` stays the person's "confirmed real" (a source scan + behaviour test
+  enforce that triage imports neither `lifecycle.decide` nor writes `finding_records`).
+- **A third registry** (`triage/registry.py`), alongside the collection and
+  snapshot-source registries: `register_verifier(Verifier(rules=…, cost=…, verify=fn))`,
+  or `register_no_verifier(NoVerifier(rules=…, reason=…))` for a rule with no safe
+  fresh re-read. A completeness test requires every condition/occurrence rule to have
+  one or the other — same shape as `attack/mapping.py`.
+- **A verifier re-reads; it never reaches further** (`triage/context.py`): an existing
+  collection check run with `force`, a tool's fetcher, or a local computation — no new
+  remote command, nothing written on the target, same transports and SSH slots. A
+  verifier with no safe read returns *couldn't check* with the reason. Conditions are
+  re-read now; occurrences are re-checked against the logs for the window they happened
+  (an ended burst still in the logs is *reproduced*; gone logs → *couldn't check*).
+  Reachability (NET) is probed from Kratos's own vantage, said plainly, never the
+  public internet's.
+- **When it runs** (`triage/run.py`): quick verifiers run automatically for every new
+  or reopened HIGH/CRITICAL finding, bounded by `triage.auto_seconds` (default 20). The
+  automatic pass **re-uses the collection Kratos just ran** (seconds old — a real fresh
+  read) rather than issuing a second read, so it adds no target load and keeps every
+  loop/scheduled test off the machine; the richer fresh-read verifiers (nmap
+  reachability, a re-hash) run on demand via `/verify`. Unfinished ones say "verifying…"
+  and finish in the background. Unattended runs (schedule, trigger, MCP) run quick only.
+- **Where the verdict shows**: the answer's findings block (`finding_facts.answer_block`
+  — still Kratos-written, the answer contract holds) and the model's digest as a `[tag]`;
+  `/findings` (a column + the detail view with checks and evidence), `kratos findings
+  show`, the Markdown report, MCP `kratos_finding_states`, and scheduled-run
+  notifications. Stored append-only in `finding_verdicts` (newest per finding shown).
+- **Retest** (`triage/run.retest`, `/retest`, `kratos findings retest`): force-run the
+  collection checks whose input categories cover the finding's rule, one correlation and
+  the lifecycle update, then the finding's verifier — before/after state plus the
+  verdict, no model call. An incomplete covering read leaves the finding open and says
+  so (the Phase A blind-spot rule). Offered after a fix the recommend channel surfaced
+  (`triage/offers.py` maps an action's `source_recommendation` back to the open finding).
+- **The model's suggestions** (`finding_notes` in the final-answer JSON, sanitised like
+  `recommended_commands`): `[{finding, suggest: false_positive|lower_severity|needs_person,
+  why}]`. Bounded count/length, the finding must exist in this run, `why` cleaned for
+  display (A.4). Stored in `finding_suggestions`, shown labelled "the model suggests",
+  accepted through the people-only decision path or dismissed — never a state, never
+  acted on by the model. No agent/MCP tool can create a verdict or a decision.
+
 ## What an answer guarantees
 
 An investigation's answer is two things, and they are kept apart (phase A audit):
