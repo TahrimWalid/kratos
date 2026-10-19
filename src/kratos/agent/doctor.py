@@ -341,6 +341,31 @@ def _check_privacy(out: list[Check], data_dir: Path) -> None:
         out.append(_row("model privacy", "info", detail))
 
 
+def _check_chat_server(out: list[Check], data_dir: Path) -> None:
+    """`kratos serve`: running or not, where, how many tokens; a warning when it listens
+    beyond this machine (tokens in clear text without a TLS proxy)."""
+    from kratos.serve import status as _status
+
+    st = _status.read(data_dir)
+    detail = "chat server: " + _status.summary(data_dir)
+    host = str(st.get("host") or "")
+    if st.get("running") and host and not _loopback(host):
+        out.append(_row("chat server", "warn", detail + " -- reachable beyond this machine; tokens travel in "
+                        "clear text unless a TLS reverse proxy is in front", "GUIDE \"Remote access\""))
+    else:
+        out.append(_row("chat server", "info", detail))
+
+
+def _loopback(host: str) -> bool:
+    import ipaddress
+
+    h = host.strip().strip("[]").lower()
+    try:
+        return h == "localhost" or ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
 def _active_base_url() -> str:
     from kratos.llm_config import get_active_llm_base_url
 
@@ -397,6 +422,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     sections = list(_SECTIONS)
     if data_dir is not None:
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
+        sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))

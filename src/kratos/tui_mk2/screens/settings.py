@@ -344,7 +344,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
                           "vulndb.max_age_days", "vulndb.epss_high",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
-                          "privacy.mask_mode", "privacy.local_model_hosts"]
+                          "privacy.mask_mode", "privacy.local_model_hosts",
+                          "serve.port", "serve.allow_non_loopback", "serve.allowed_hosts", "serve.max_parallel",
+                          "serve.requests_per_hour", "serve.link_hosts"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -748,6 +750,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._privacy_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._serve_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
 
@@ -787,6 +791,68 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             (PM.LOCAL_HOSTS_KEY, "Your own model machines", ", ".join(hosts) if hosts
              else "none  (only this machine counts as local)"),
         ]
+
+    # --- Chat-client server (kratos serve) ---
+    _SERVE_LABELS = {
+        "serve.port": "Chat server port",
+        "serve.allow_non_loopback": "Chat server may listen beyond this machine",
+        "serve.allowed_hosts": "Chat server: extra Host names",
+        "serve.max_parallel": "Chat server: investigations at once",
+        "serve.requests_per_hour": "Chat server: messages per token per hour",
+        "serve.link_hosts": "Chat answers: clickable link sites",
+    }
+
+    def _serve_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.serve import settings as SS  # noqa: F401 -- registers serve.*
+
+        dd = self._data_dir()
+        keys = [k for k in self._gen_rows if k.startswith("serve.")]
+        if dd is None:
+            return [(k, self._SERVE_LABELS[k], "unavailable here") for k in keys]
+        out = []
+        for k in keys:
+            v = settings_store.get(k, data_dir=dd)
+            if isinstance(v, bool):
+                tail = ("yes  (with --host; use a TLS reverse proxy)" if v
+                        else "no  (127.0.0.1 only)") if k == SS.ALLOW_NON_LOOPBACK else ("yes" if v else "no")
+            elif isinstance(v, list):
+                tail = ", ".join(v) if v else ("none  (every link shown as text)" if k == SS.LINK_HOSTS else "none")
+            else:
+                tail = str(v)
+            out.append((k, self._SERVE_LABELS[k], tail))
+        return out
+
+    @work
+    async def _set_serve_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.tui_mk2.modals import ListPickerModal, PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        spec = next((sp for sp in settings_store.specs() if sp.key == key), None)
+        if spec is None:
+            return
+        current = settings_store.get(key, data_dir=dd)
+        if isinstance(current, bool):
+            value = await self.app.push_screen_wait(ListPickerModal(self._SERVE_LABELS.get(key, key), [
+                ("no", "no"), ("yes", "yes")]))
+        else:
+            shown = ", ".join(current) if isinstance(current, list) else str(current)
+            value = await self.app.push_screen_wait(PromptModal(self._SERVE_LABELS.get(key, key), spec.doc,
+                                                                initial=shown))
+        if value is None:
+            return
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved -- the chat server reads it on the next request (the port on its next start).",
+                             T.SAFE)
 
     @work
     async def _set_privacy_setting_flow(self, key: str) -> None:
@@ -973,6 +1039,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_trace_setting_flow(key)
         elif key and key.startswith("privacy."):
             self._set_privacy_setting_flow(key)
+        elif key and key.startswith("serve."):
+            self._set_serve_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store

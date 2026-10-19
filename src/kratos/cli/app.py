@@ -203,6 +203,117 @@ def cmd_mcp_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_loopback_host(host: str) -> bool:
+    import ipaddress
+
+    h = host.strip().strip("[]").lower()
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    """`kratos serve [--host H] [--port P]`, `kratos serve token create|list|revoke`,
+    `kratos serve status` (docs/phaseB/B.3). Localhost by default; any other address
+    needs --host AND the setting serve.allow_non_loopback, and warns that tokens travel
+    in clear text without a TLS reverse proxy in front."""
+    from kratos import settings_store
+    from kratos.serve import settings as _ss  # noqa: F401 -- registers serve.* settings
+
+    data_dir = Path(args.data_dir)
+    sub = getattr(args, "serve_cmd", None)
+    if sub == "token":
+        return _cmd_serve_token(args, data_dir)
+    if sub == "set":
+        key = str(args.key or "").strip()
+        if not key.startswith("serve."):
+            print("kratos serve set: only serve.* settings (see Settings -> General for the rest)", file=sys.stderr)
+            return 2
+        try:
+            settings_store.set(key, args.value, data_dir=data_dir, actor="cli")
+        except (settings_store.SettingError, KeyError) as e:
+            print(f"kratos serve set: {e}", file=sys.stderr)
+            return 2
+        print(f"{key} = {settings_store.get(key, data_dir=data_dir)!r}")
+        return 0
+    if sub == "status":
+        from kratos.serve import status as _status
+
+        print(f"chat server: {_status.summary(data_dir)}")
+        st = _status.read(data_dir)
+        if st.get("running"):
+            print(f"  OpenAI-compatible: http://{st.get('host')}:{st.get('port')}/v1   "
+                  f"MCP: http://{st.get('host')}:{st.get('port')}/mcp")
+        return 0
+
+    host = (args.host or "127.0.0.1").strip()
+    port = int(args.port or settings_store.get(_ss.PORT, data_dir=data_dir))
+    if not _is_loopback_host(host):
+        if not settings_store.get(_ss.ALLOW_NON_LOOPBACK, data_dir=data_dir):
+            print(f"kratos serve: refusing to listen on {host}: only this machine's own address (127.0.0.1) is "
+                  "allowed unless you turn on serve.allow_non_loopback (Settings -> General, or "
+                  "`kratos serve set serve.allow_non_loopback yes`). Put a TLS reverse proxy in front "
+                  "(GUIDE \"Remote access\").", file=sys.stderr)
+            return 2
+        print(f"WARNING: listening on {host}:{port}. Tokens travel in CLEAR TEXT unless a TLS reverse proxy "
+              "(e.g. Caddy) is in front, and anyone who can reach this address can try them.", file=sys.stderr)
+    from kratos.serve import store as _sstore
+
+    tokens = [t for t in _sstore.list_tokens(data_dir) if not t.get("revoked_at")]
+    if not tokens:
+        print("No chat-client token yet: make one with `kratos serve token create --name owui`.", file=sys.stderr)
+    import uvicorn
+
+    from kratos.serve.app import create_app
+
+    app = create_app(data_dir, bind_host=host, port=port)
+    print(f"Kratos chat server on http://{host}:{port} -- OpenAI-compatible: /v1 · MCP: /mcp "
+          f"({len(tokens)} token{'s' if len(tokens) != 1 else ''}). Ctrl+C stops it.", file=sys.stderr)
+    uvicorn.run(app, host=host, port=port, log_level="warning", lifespan="on", access_log=False,
+                proxy_headers=False, server_header=False, date_header=False)
+    return 0
+
+
+def _cmd_serve_token(args: argparse.Namespace, data_dir: Path) -> int:
+    from kratos.serve import auth as _auth
+    from kratos.serve import store as _sstore
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    action = getattr(args, "token_cmd", None)
+    try:
+        if action == "create":
+            targets = [t for t in (args.targets or "").replace(" ", ",").split(",") if t.strip()]
+            token, row = _auth.create_token(data_dir, name=args.name, targets=targets, mcp=bool(args.mcp),
+                                            created_by="cli")
+            scope = ", ".join(row["targets"]) or "the default machine only"
+            print(token)
+            print(f"\nThat is the token for {row['name']!r} -- copy it now, Kratos keeps only a hash of it.\n"
+                  f"Machines: {scope}.  Doors: {', '.join(row['doors'])}.\n"
+                  "In Open WebUI: Admin Settings -> Connections -> OpenAI -> add "
+                  "http://127.0.0.1:<port>/v1 with this token as the API key.", file=sys.stderr)
+            return 0
+        if action == "revoke":
+            row = _auth.revoke(data_dir, args.ref)
+            print(f"revoked {row['token_id']} ({row['name']})")
+            return 0
+    except _auth.TokenError as e:
+        print(f"kratos serve token: {e}", file=sys.stderr)
+        return 2
+    rows = _sstore.list_tokens(data_dir)
+    if not rows:
+        print("no tokens (kratos serve token create --name owui)")
+        return 0
+    for r in rows:
+        state = f"revoked {epoch_to_utc_iso(r['revoked_at'])}" if r.get("revoked_at") else "active"
+        used = epoch_to_utc_iso(r["last_used_at"]) if r.get("last_used_at") else "never"
+        print(f"{r['token_id']}  {r['name']:<20} {state:<28} machines: {', '.join(r['targets']) or 'default'}  "
+              f"doors: {', '.join(r['doors'])}  last used: {used}")
+    return 0
+
+
 def cmd_subagent_pair(args: argparse.Namespace) -> int:
     """
     Generate a one-time pairing code for a new sub-agent (capability 1 --
@@ -1963,6 +2074,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
+    serve_p = sub.add_parser(
+        "serve",
+        help="Use Kratos from Open WebUI or any OpenAI-compatible chat app (and MCP over HTTP) -- localhost by default",
+    )
+    serve_p.add_argument("--host", default=None, help="Address to listen on (default 127.0.0.1; others need "
+                                                      "serve.allow_non_loopback)")
+    serve_p.add_argument("--port", type=int, default=None, help="Port (default: the serve.port setting, 8765)")
+    serve_sub = serve_p.add_subparsers(dest="serve_cmd")
+    tok_p = serve_sub.add_parser("token", help="Chat-client tokens: create, list, revoke")
+    tok_sub = tok_p.add_subparsers(dest="token_cmd")
+    tok_create = tok_sub.add_parser("create", help="Make a token (printed once)")
+    tok_create.add_argument("--name", required=True, help="A name for the client, e.g. owui")
+    tok_create.add_argument("--targets", default="", help="Comma-separated machines it may investigate "
+                                                          "(default: the default machine only)")
+    tok_create.add_argument("--mcp", action="store_true", help="Also allow the MCP door (/mcp)")
+    tok_sub.add_parser("list", help="List tokens (never shows a token)")
+    tok_revoke = tok_sub.add_parser("revoke", help="Revoke a token by id or name")
+    tok_revoke.add_argument("ref")
+    serve_sub.add_parser("status", help="Is the chat server running, on which port, how many investigations")
+    serve_set = serve_sub.add_parser("set", help="Change a serve.* setting (e.g. serve.port 8766)")
+    serve_set.add_argument("key")
+    serve_set.add_argument("value")
+    serve_p.set_defaults(func=cmd_serve)
+
     init_p = sub.add_parser(
         "init",
         help="Create your settings file if missing; show where Kratos keeps its data",
@@ -2297,7 +2432,7 @@ def _render_investigate_help(investigate_parser: argparse.ArgumentParser) -> Non
     console.print()
 
 
-_SELF_SCOPED_COMMANDS = frozenset({"scheduled-run", "mcp-serve", "subagent-serve", "llm-serve"})
+_SELF_SCOPED_COMMANDS = frozenset({"scheduled-run", "mcp-serve", "serve", "subagent-serve", "llm-serve"})
 
 
 def _unknown_command(word: str, commands: list[str]) -> int:

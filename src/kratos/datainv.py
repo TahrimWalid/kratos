@@ -66,6 +66,18 @@ CATEGORIES: tuple[Category, ...] = (
         prunable=True,
     ),
     Category(
+        "chat_server", "Chat-client server (kratos serve)",
+        "The tokens chat clients use (stored only as scrypt hashes, with the machines and doors each may "
+        "use), which Kratos session holds each client chat, and one audit row per request: when, which "
+        "token, which door and model, the client's address and the user name it forwarded (for the record "
+        "only), how it ended. Never the message text -- that is in the session. Plus the server's status "
+        "file (address, port, investigations running).",
+        PERSONAL, "one audit row per request a chat client sends; one row per token and per client chat",
+        files=("serve",),
+        tables=(TableRef(DB, ("serve_tokens", "serve_sessions", "serve_audit"), ("serve_audit", "at")),),
+        note="revoke a token with `kratos serve token revoke`; nothing here is pruned automatically",
+    ),
+    Category(
         "traces", "Run records (traces)",
         "One file per investigation, audit, scheduled run and trigger: every model call, tool call and its "
         "result, guard and how the answer was put together. The most detailed file Kratos writes.",

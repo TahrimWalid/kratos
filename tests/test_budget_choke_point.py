@@ -93,13 +93,24 @@ def _docstrings(tree: ast.AST) -> set[int]:
     return ids
 
 
+def _served_paths(path: Path, tree: ast.AST) -> set[int]:
+    """`kratos serve` SERVES /v1/chat/completions (Kratos is the model there): the one
+    `COMPLETIONS_PATH = "..."` assignment in serve/openai_routes.py is allowed -- nothing
+    else in that file, and nothing anywhere else."""
+    if path.relative_to(SRC).as_posix() != "serve/openai_routes.py":
+        return set()
+    return {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Assign) and len(n.targets) == 1
+            and isinstance(n.targets[0], ast.Name) and n.targets[0].id == "COMPLETIONS_PATH"
+            and isinstance(n.value, ast.Constant)}
+
+
 def test_nothing_else_talks_to_a_model_directly():
     offenders = []
     for path in sorted(SRC.rglob("*.py")):
         if path == LLM:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        docs = _docstrings(tree)
+        docs = _docstrings(tree) | _served_paths(path, tree)
         rel = path.relative_to(SRC)
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str) and id(node) not in docs:

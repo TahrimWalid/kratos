@@ -145,6 +145,12 @@ def get_active_target() -> str:
     return (_pinned_target.get() or _active_target_override or SSH_TARGET_HOST or "").strip()
 
 
+def process_target() -> str:
+    """This process's own default machine (set at startup / by /target), ignoring any
+    per-run pin -- what `kratos serve` offers as the model `kratos`."""
+    return (_active_target_override or SSH_TARGET_HOST or "").strip()
+
+
 # A background job (e.g. a seal verification) pins the machine it works on: the
 # process-wide active target can change under it while it runs (the user switches
 # machines), and its reads must not follow. Per thread/context, default unset.
