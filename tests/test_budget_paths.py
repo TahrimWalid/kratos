@@ -99,7 +99,7 @@ def test_trigger_investigation_records_trigger_rows_under_their_parent(model):
 def test_mcp_investigation_records_mcp_rows_with_its_session(model):
     from kratos import mcp_server
 
-    out = mcp_server._run_locked_investigation("is ssh exposed?", "10.0.0.1", 3, model["dir"])
+    out = mcp_server._mcp_investigation("is ssh exposed?", "10.0.0.1", 3, model["dir"])
     rows = [r for r in BudgetLedger(model["dir"]).rows() if r["status"] == "settled"]
     assert {r["source"] for r in rows} == {"mcp"} and {r["session_id"] for r in rows} == {out["session_id"]}
 

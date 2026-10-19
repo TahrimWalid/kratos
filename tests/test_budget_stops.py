@@ -182,9 +182,9 @@ def test_mcp_returns_a_clear_refusal_without_creating_a_session(setup, monkeypat
 
     monkeypatch.setattr("kratos.llm_config.get_active_llm_model", lambda: "priced-model")
     monkeypatch.setattr("kratos.llm_config._active_backend_is_local", lambda: False)
-    monkeypatch.setattr(mcp_server, "run_agent", lambda *a, **k: pytest.fail("must not start"))
+    monkeypatch.setattr("kratos.agent.loop.run_agent", lambda *a, **k: pytest.fail("must not start"))
     _set(setup, L.UNATTENDED_DAILY_COST, 0)
-    out = mcp_server._run_locked_investigation("goal", "10.0.0.9", 3, setup)
+    out = mcp_server._mcp_investigation("goal", "10.0.0.9", 3, setup)
     assert out["status"] == "refused_by_budget" and out["session_id"] is None
     assert out["budget"]["scope"] == L.SCOPE_UNATTENDED_COST and "Settings -> Budget" in out["final_answer"]
     assert SessionStore(setup / "kratos.db").list_recent_sessions() == []
@@ -195,7 +195,7 @@ def test_mcp_stopped_mid_run_reports_the_budget(setup, monkeypatch):
 
     _set(setup, L.RUN_MODEL_CALLS, 1)
     monkeypatch.setattr(agent_loop, "agent_chat", MeteredScript([_tool("list_processes"), _final("x")]))
-    out = mcp_server._run_locked_investigation("goal", "10.0.0.9", 3, setup)
+    out = mcp_server._mcp_investigation("goal", "10.0.0.9", 3, setup)
     assert out["status"] == "stopped_by_budget" and out["budget"]["scope"] == L.SCOPE_RUN_CALLS
 
 

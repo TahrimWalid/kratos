@@ -17,6 +17,8 @@ continues until a final_answer is produced or max_iters is reached.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import inspect
 import json
 import re
@@ -116,6 +118,66 @@ def set_clarify_provider(provider: "Callable[[str, list[dict[str, Any]]], str | 
     'proceed with best judgment' observation, so existing callers are unaffected."""
     global _clarify_provider
     _clarify_provider = provider
+
+
+# Per-run state (docs/phaseB/README §4.3): `kratos serve` runs several investigations at
+# once in one process, so what one run may use or ask is a contextvar for that run, not a
+# module global. Each defaults to "no override" -- the TUI, CLI and scheduled runs see
+# exactly the behaviour they had.
+_UNSET: Any = object()
+_run_clarify_provider: "contextvars.ContextVar[Any]" = contextvars.ContextVar(
+    "kratos_run_clarify_provider", default=_UNSET)
+# A predicate over tool names: False = not offered to the model and refused at dispatch,
+# for this run only (and every thread started from it with a copied context). Replaces
+# the MCP server's old delete-from-TOOL_REGISTRY-under-a-lock.
+_run_tool_filter: "contextvars.ContextVar[Callable[[str], bool] | None]" = contextvars.ContextVar(
+    "kratos_run_tool_filter", default=None)
+# Kratos-written progress lines for a headless door ("checked ports: ok"); None = nobody listens.
+_run_progress: "contextvars.ContextVar[Callable[[str], None] | None]" = contextvars.ContextVar(
+    "kratos_run_progress", default=None)
+
+
+@contextlib.contextmanager
+def clarify_provider_scope(provider: "Callable[[str, list[dict[str, Any]]], str | None] | None"):
+    """Inside this block the clarify action asks `provider` (None = nobody is there: the
+    model is told not to ask) instead of the process-wide provider -- for this run only."""
+    token = _run_clarify_provider.set(provider)
+    try:
+        yield
+    finally:
+        _run_clarify_provider.reset(token)
+
+
+def _active_clarify_provider() -> "Callable[[str, list[dict[str, Any]]], str | None] | None":
+    override = _run_clarify_provider.get()
+    return _clarify_provider if override is _UNSET else override
+
+
+def tool_allowed(name: str) -> bool:
+    """False when this run's tool filter leaves `name` out (fails closed on a filter error)."""
+    flt = _run_tool_filter.get()
+    if flt is None:
+        return True
+    try:
+        return bool(flt(name))
+    except Exception:  # noqa: BLE001 -- a broken filter must not open a tool up
+        return False
+
+
+def _filtered_out_tools() -> frozenset[str]:
+    if _run_tool_filter.get() is None:
+        return frozenset()
+    return frozenset(n for n in TOOL_REGISTRY if not tool_allowed(n))
+
+
+def _progress(line: str) -> None:
+    cb = _run_progress.get()
+    if cb is None:
+        return
+    try:
+        cb(line)
+    except Exception:  # noqa: BLE001 -- a progress reader never affects the run
+        pass
 
 
 # Keep each tool result bounded before it's fed back into the conversation —
@@ -507,7 +569,7 @@ def _clarify_guidance() -> str:
     same as the rest of this prompt), so a headless run's prompt never even
     offers the clarify action, and an interactive mk2 run's prompt is
     unchanged."""
-    if _clarify_provider is None:
+    if _active_clarify_provider() is None:
         return (
             "No interactive user is available to answer questions during this run (a headless/"
             "API/scheduled investigation, not an interactive session). Do NOT emit a "
@@ -552,9 +614,9 @@ def build_system_prompt(goal: str | None = None, *, with_digest: bool = False) -
     """`goal`: the investigation goal (kept for callers; the tool list no longer depends on it). `with_digest`: Kratos collected the basics first
     (kratos.collect), so the prompt says where to find them."""
     hidden = _agent_hidden_tools()
-    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS)
+    tools_desc = render_tools_for_prompt(exclude=hidden | _UNLISTED_AGENT_TOOLS | _filtered_out_tools())
     local_tools = [t for t in ("parse_auth_log", "collect_system_context", "capture_traffic", "run_linux_command")
-                   if t not in hidden]
+                   if t not in hidden and tool_allowed(t)]
     local_note = (f"{len(local_tools)} of the tools listed above are the exception and inspect Kratos's OWN local host "
                   f"instead, never the target: {', '.join(local_tools)}.")
     host_mode = _is_host_mode()
@@ -738,8 +800,15 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
 def _dispatch_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
     _kconfig.set_active_data_dir(data_dir)  # SSH/sub-agent routing reads the link + socket from here
     tool = TOOL_REGISTRY.get(tool_name)
+    if tool is not None and not tool_allowed(tool_name):
+        # This run's tool filter left it out (a headless door: nothing that could stop to
+        # ask a person) -- refused like a tool that doesn't exist here, never run.
+        return {"status": "error", "observation": (
+            f"{tool_name} is not available in this investigation (it can stop to ask a person, and "
+            "nobody is there to answer). Use another tool, or say in the final_answer what you could "
+            "not check.")}
     if tool is None:
-        valid_names = ", ".join(sorted(TOOL_REGISTRY.keys()))
+        valid_names = ", ".join(sorted(n for n in TOOL_REGISTRY if tool_allowed(n)))
         return {
             "status": "error",
             "observation": (
@@ -1418,6 +1487,8 @@ def run_agent(
     now: float | None = None,
     named_windows: dict[str, tuple[float, float, str]] | None = None,
     should_stop: Callable[[], bool] | None = None,
+    tool_filter: Callable[[str], bool] | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Runs one investigation. Time handling (docs/time_window_design.md) wraps the loop:
     the goal's time expressions are resolved by code BEFORE the model starts, exposed as
@@ -1428,11 +1499,30 @@ def run_agent(
     `should_stop` is polled before every model call and every tool dispatch; once it
     returns True the run raises InvestigationStopped, so a stop never lets one more
     tool reach the target.
+    `tool_filter` (a predicate over tool names) leaves tools out for this run only: not
+    listed to the model, refused at dispatch -- including the collection Kratos runs
+    first. `on_progress` receives Kratos-written progress lines (a headless door's
+    "thinking" view). Both are per-run (contextvars), so concurrent runs don't see each
+    other's.
     The result gains a `time` block (windows, queried ids, anything left unresolved)."""
+    filter_token = _run_tool_filter.set(tool_filter)
+    progress_token = _run_progress.set(on_progress)
+    try:
+        return _run_agent_scoped(goal, data_dir, max_iters, on_step, prior_context, timezone=timezone,
+                                 session_id=session_id, now=now, named_windows=named_windows,
+                                 should_stop=should_stop)
+    finally:
+        _run_progress.reset(progress_token)
+        _run_tool_filter.reset(filter_token)
+
+
+def _run_agent_scoped(goal: str, data_dir: Path, max_iters: int, on_step: Any, prior_context: str | None, *,
+                      timezone: str | None, session_id: str | None, now: float | None,
+                      named_windows: Any, should_stop: Callable[[], bool] | None) -> dict[str, Any]:
     try:
         time_ctx, clarify_log = _prepare_time_context(
             goal, Path(data_dir), timezone_name=timezone, session_id=session_id, now=now,
-            clarify=_clarify_provider, named_windows=named_windows,
+            clarify=_active_clarify_provider(), named_windows=named_windows,
         )
     except _TimeIntentError as e:
         return {"status": "invalid_input", "final_answer": f"Could not start: {e}", "transcript": []}
@@ -1508,7 +1598,9 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
             raise InvestigationStopped()
         # background: checks still running at the start budget finish while the model works,
         # and are folded in before the final answer (_settle_collection)
-        report = _runner.prepare(get_active_target(), Path(data_dir), dispatch=execute_tool_call, background=True)
+        _progress("collecting the basics (open ports, sign-ins, logs, accounts, persistence, what's running)…")
+        report = _runner.prepare(get_active_target(), Path(data_dir), dispatch=execute_tool_call, background=True,
+                                 on_outcome=_collection_progress if _run_progress.get() is not None else None)
         if report.disabled_reason:
             return None
         _trace_collection("collection", "collected before the model", report=report.to_record())
@@ -1518,6 +1610,14 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
     except Exception:  # noqa: BLE001
         logging.getLogger(__name__).warning("collection before the investigation failed", exc_info=True)
         return None
+
+
+def _collection_progress(outcome: Any) -> None:
+    """One Kratos-written line per finished collection check: its name and status only."""
+    name = str(getattr(outcome, "name", "") or "")
+    status = str(getattr(outcome, "status", "") or "")
+    if name:
+        _progress(f"checked {name}: {status or 'done'}")
 
 
 def _remediation_evidence(transcript: list[dict[str, Any]], findings: list[dict[str, Any]] | None, goal: str) -> Any:
@@ -2359,6 +2459,12 @@ def _run_agent_loop(
                 ctx.add(f"\nAssistant: {json.dumps(parsed)}\nObservation: {correction}\n")
                 continue
 
+            # The model's analysis as it stands before Kratos adds any NOTE (every NOTE
+            # below is a prefix): kept so a display can show each part by its own rule
+            # (kratos serve: the block and NOTEs verbatim in code blocks, the analysis
+            # as sanitized prose) -- see `answer_parts` on the result.
+            _analysis_text = final_answer_text if isinstance(final_answer_text, str) else ""
+
             # No guard rejected this attempt (either none were violated, or
             # the final iteration/rejection budget forecloses rejecting) --
             # the visibility requirement still applies regardless, so any
@@ -2456,7 +2562,13 @@ def _run_agent_loop(
             # On top: what Kratos found, written by Kratos. Every open HIGH/CRITICAL finding
             # with the fact that matters -- whatever the analysis below says or leaves out.
             _notes_before_block = final_answer_text
-            final_answer_text = _finding_facts.answer_block(last_correlate_findings, final_answer_text) + final_answer_text
+            _block_text = _finding_facts.answer_block(last_correlate_findings, final_answer_text)
+            final_answer_text = _block_text + final_answer_text
+            _answer_parts = None
+            if isinstance(_notes_before_block, str) and _notes_before_block.endswith(_analysis_text):
+                _answer_parts = {"block": _block_text,
+                                 "notes": _notes_before_block[: len(_notes_before_block) - len(_analysis_text)],
+                                 "analysis": _analysis_text}
             _trace_answer_composition(
                 i=i, model_text=model_answer_text,
                 with_notes=_notes_before_block, final=final_answer_text, findings=last_correlate_findings,
@@ -2510,6 +2622,9 @@ def _run_agent_loop(
                 "recommended_commands": recommended_commands,
                 "finding_notes": finding_notes,
                 "claims": verified_claims,
+                # final_answer == block + notes + analysis (None if a later step broke that):
+                # Kratos's findings block, its NOTEs, the model's own analysis.
+                "answer_parts": _answer_parts,
                 "transcript": transcript,
             })
 
@@ -2677,7 +2792,8 @@ def _run_agent_loop(
 
             clarify_count += 1
             answer: str | None = None
-            if _clarify_provider is None:
+            provider = _active_clarify_provider()
+            if provider is None:
                 observation = (
                     "No interactive user is available to answer clarifying questions. Proceed with "
                     "your best interpretation of the goal and state any assumptions explicitly in "
@@ -2685,7 +2801,7 @@ def _run_agent_loop(
                 )
             else:
                 try:
-                    answer = _clarify_provider(question, options)
+                    answer = provider(question, options)
                 except Exception:  # noqa: BLE001 -- a broken provider must not crash the run
                     answer = None
                 if answer is not None and str(answer).strip():

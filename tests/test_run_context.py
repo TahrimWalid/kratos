@@ -184,8 +184,8 @@ def test_mcp_investigation_is_an_mcp_run(tmp_path, monkeypatch):
         seen["ctx"] = current()
         return {"status": "final_answer", "final_answer": "ok", "transcript": []}
 
-    monkeypatch.setattr(mcp_server, "run_agent", fake_run_agent)
-    out = mcp_server._run_locked_investigation("goal", "root@10.0.0.7", 3, tmp_path)
+    monkeypatch.setattr("kratos.agent.loop.run_agent", fake_run_agent)
+    out = mcp_server._mcp_investigation("goal", "root@10.0.0.7", 3, tmp_path)
     ctx = seen["ctx"]
     assert ctx.source == "mcp" and ctx.target == "10.0.0.7" and ctx.session_id == out["session_id"]
 

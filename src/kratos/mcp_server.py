@@ -28,24 +28,21 @@ This is a materially different (and worse) risk than "no human answers in
 time" -- confirmed by reading request_approval's real implementation, not
 assumed from its docstring.
 
-Given that, kratos_investigate() runs every investigation with every tool
-that can reach request_approval TEMPORARILY removed from TOOL_REGISTRY (see
-_investigation_lock / _tool_reaches_approval below) -- the model literally
-cannot select one, so nothing in this module ever calls, patches, or
-otherwise touches agent/self_approve.py or request_approval itself. This is
-prevention (the tool is never offered), not mitigation (letting it be
-picked, then intercepting the call) -- deliberately, since the latter would
-mean touching the approval call path in some way. Real call-graph trace
-(2026-07-19), not assumed from the tool list: grep confirmed exactly 4
-tools' handlers ever call request_approval() -- capture_traffic and
-run_linux_command (both requires_approval=True at the registry level,
-already excluded by that flag alone) plus run_vuln_scan and
-check_ip_reputation (both requires_approval=False at the registry level,
-calling request_approval() CONDITIONALLY from inside their own handler --
-a stale local CVE database, or an opt-in live threat-intel escalation,
-respectively). The registry flag alone would have silently missed the
-latter two -- _tool_reaches_approval scans each handler's actual source
-text instead of trusting that flag as a complete signal.
+Given that, kratos_investigate() runs every investigation through the shared headless
+runner (kratos/serve/runs.py::run_investigation, also used by `kratos serve`) with a
+per-run tool filter -- run_agent(tool_filter=headless_tool_filter) -- that leaves out every
+tool that can reach request_approval: the model is never offered one, and dispatch refuses
+one, for that run only. TOOL_REGISTRY itself is never mutated (B.3 retired the old
+delete-from-the-registry-under-a-lock). This is prevention (the tool is never offered),
+not mitigation -- nothing in this module calls, patches, or otherwise touches
+agent/self_approve.py or request_approval itself; the runner also installs a per-run
+"deny" approval provider and "no clarify", so even a path the filter missed could only
+ever be refused. Real call-graph trace (2026-07-19), not assumed from the tool list: grep
+confirmed exactly 4 tools' handlers ever call request_approval() -- capture_traffic and
+run_linux_command (both requires_approval=True at the registry level) plus run_vuln_scan
+and check_ip_reputation (requires_approval=False, calling request_approval()
+CONDITIONALLY from inside their own handler). The registry flag alone would have missed
+the latter two -- tool_reaches_approval scans each handler's source text too.
 
 Evo-loop (agent/self_write_loop.py::run_self_write_loop) needs no special
 exclusion here: it isn't in TOOL_REGISTRY at all and has exactly one caller
@@ -57,45 +54,13 @@ tool loop" section) -- this module
 doesn't pass an on_step callback at all, so a proposal surfaces in the
 returned transcript exactly like any other step and is never acted on.
 
-Concurrency, corrected 2026-07-19 (a real audit + live test found the
-previous version of this paragraph wrong, not just imprecise): execution
-on a given stdio connection is SERIAL, not thread-pooled. A long-running
-kratos_investigate call blocks every OTHER MCP call on that same
-connection -- including kratos_list_sessions/kratos_get_findings, which
-touch none of the state below -- for its full duration (10-40+ minutes on
-the local backend). Confirmed both by live testing and by reading the
-installed `mcp` SDK's own source: the low-level server does spawn a
-separate anyio task per incoming request (mcp/server/lowlevel/server.py's
-run() loop, tg.start_soon), but a SYNC tool function (kratos_investigate/
-etc. are plain `def`, not `async def`) is invoked directly inline
-(func_metadata.py::call_fn_with_arg_validation -- `return fn(**args)`, no
-anyio.to_thread.run_sync, no thread pool anywhere in this SDK version).
-Every spawned task still shares ONE single-threaded event loop, so a
-long-blocking sync call monopolizes that thread and stalls every other
-task on the connection, not just ones touching the same state. A future
-OpenWebUI/client integration needs to design around this directly -- e.g.
-don't expect to poll kratos_list_sessions while a kratos_investigate call
-is in flight on the same connection; issue investigate on its own
-connection/process if the client needs to stay responsive meanwhile.
-
-_investigation_lock (kept as-is, this correction changes no behavior) is
-still real and still correct to keep despite the above: it protects
-kratos_config.py's active-target override and the TOOL_REGISTRY exclusion
-below -- both plain mutable module globals, safe for one investigation at
-a time (the same assumption kratos_config.py's own docstring already
-states for /target) -- from a hypothetical future where either changes:
-these tool functions becoming `async def` (which WOULD make FastMCP await
-them concurrently rather than blocking the loop), a future SDK version
-offloading sync tools to a real thread pool, or a transport other than
-stdio (mcp.run() also supports streamable-http, which can genuinely serve
-multiple concurrent client connections to one process). None of those are
-true today, but the lock costs nothing to keep and removes a landmine for
-whichever one happens first. It serializes the whole "exclude tools -> set
-target -> run_agent -> restore tools" critical section into one atomic
-unit per call, rather than threading an explicit target/registry
-parameter through run_agent()/execute_tool_call() (an 8-call-chain
-refactor kratos_config.py already explicitly scoped out for the same
-reason /target doesn't do it).
+Concurrency: execution on a given stdio connection is SERIAL (the SDK invokes a sync
+tool inline on its one event loop), so a long kratos_investigate call blocks every other
+call on that connection for its full duration -- use a separate connection, or `kratos
+serve`'s MCP-over-HTTP door (start-then-poll), to stay responsive meanwhile. Nothing here
+depends on that any more: the machine is pinned per run (kratos_config.pinned_target, a
+contextvar), the tool filter and providers are per run, so concurrent runs in one process
+(as `kratos serve` has) cannot see each other's.
 
 kratos_notify_findings (2026-07-19, replaces an earlier free-form
 kratos_notify(message, severity) that shipped, then was found to have a
@@ -140,23 +105,18 @@ from __future__ import annotations
 
 import functools
 import json
-import threading
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from kratos import paths as _paths
-from kratos import kratos_config as _kconfig
-from kratos.agent.loop import run_agent, DEFAULT_MAX_ITERS
+from kratos.agent.loop import DEFAULT_MAX_ITERS
 from kratos.agent.notify import send_notification
-from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
-from kratos.llm_config import get_active_llm_model
+from kratos.agent.tools import tool_reaches_approval
 from kratos.storage.session_store import SessionStore
-from kratos.run_context import run_scope
 from kratos import untrusted as _untrusted
-from kratos.budget import breaker as _budget_breaker
-from kratos.budget import guard as _budget_guard
+from kratos.serve import runs as _runs
 
 # Must match cli/repl.py::TRANSCRIPTS_DIRNAME -- both write into the SAME
 # data_dir/kratos.db + data_dir/sessions/ store, deliberately: an
@@ -164,9 +124,7 @@ from kratos.budget import guard as _budget_guard
 # storage from one started via the REPL, so kratos_list_sessions/
 # kratos_get_findings and the REPL's own chooser see the same data either
 # way, not two silently separate stores.
-_TRANSCRIPTS_DIRNAME = "sessions"
-
-_investigation_lock = threading.Lock()
+_TRANSCRIPTS_DIRNAME = _runs.TRANSCRIPTS_DIRNAME
 
 _data_dir: Path = _paths.default_data_dir()
 
@@ -194,91 +152,20 @@ def _clean_for_client(fn):
 _tool_reaches_approval = tool_reaches_approval
 
 
-def _unwrap_tool_result(observation: Any) -> Any:
-    """Same unwrapping agent/console.py::unwrap_tool_result does (execute_tool_call
-    always wraps a tool's real return as {"status": "ok", "result": <real
-    return>}) -- reimplemented here, not imported, so this module never
-    pulls in the Rich-based rendering layer for a headless MCP server."""
-    if not isinstance(observation, dict):
-        return observation
-    if str(observation.get("status", "")).lower() == "error":
-        return observation
-    inner = observation.get("result")
-    return inner if isinstance(inner, dict) else observation
-
-
 def _extract_findings(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    findings: list[dict[str, Any]] = []
-    for step in transcript:
-        if step.get("tool") != "correlate_findings":
-            continue
-        result = _unwrap_tool_result(step.get("observation"))
-        if isinstance(result, dict) and result.get("findings"):
-            findings.extend(result["findings"])
-    return findings
+    return _runs.extract_findings(transcript)
 
 
-def _run_locked_investigation(goal: str, target: str, max_iters: int, data_dir: Path,
-                              timezone: str | None = None) -> dict[str, Any]:
-    with _investigation_lock:
-        _kconfig.set_active_target(target)
-
-        excluded = {name: tool for name, tool in TOOL_REGISTRY.items() if _tool_reaches_approval(tool)}
-        for name in excluded:
-            del TOOL_REGISTRY[name]
-        try:
-            # Budget (docs/phase0/0.4 §5.5): an MCP client spends with nobody
-            # watching. Refuse before starting when the source is paused or a
-            # cap is already used up -- a clear status, never a hang.
-            with run_scope("mcp", target=target):
-                refusal = _budget_guard.precheck("mcp", data_dir_=data_dir)
-            if refusal is not None:
-                return {"session_id": None, "status": "refused_by_budget", "final_answer": refusal.user_message(),
-                        "findings": [], "recommended_commands": [], "token_usage": None, "time": None,
-                        "budget": refusal.as_dict()}
-
-            store = SessionStore(data_dir / "kratos.db")
-            session_id = store.create_session([target], get_active_llm_model())
-            turn_id = store.start_turn(session_id, goal)
-
-            with run_scope("mcp", target=target, session_id=session_id):
-                try:
-                    result = run_agent(goal, data_dir, max_iters=max_iters, timezone=timezone,
-                                       session_id=session_id)
-                except Exception as e:
-                    _budget_breaker.record_outcome(data_dir, "mcp", failure=f"the run raised {type(e).__name__}")
-                    raise
-            if result.get("status") != "stopped_by_budget":
-                _budget_breaker.record_outcome(data_dir, "mcp", failure=_budget_breaker.run_failure_reason(result))
-
-            status = result["status"]
-            transcript = result.get("transcript", [])
-            transcripts_dir = data_dir / _TRANSCRIPTS_DIRNAME
-            transcripts_dir.mkdir(parents=True, exist_ok=True)
-            transcript_path = transcripts_dir / f"{session_id}_turn{turn_id}.json"
-            transcript_path.write_text(json.dumps(transcript, indent=2, default=str), encoding="utf-8")
-            store.complete_turn(turn_id, status, transcript_ref=str(transcript_path))
-
-            return {
-                "session_id": session_id,
-                "status": status,
-                "final_answer": result.get("final_answer"),
-                "findings": _extract_findings(transcript),
-                # Additive (features 7c/19b): recommended_commands are
-                # recommendations for a human only -- Kratos never executes
-                # them, and neither should an MCP client auto-run them.
-                # token_usage is real per-run accounting for a client-side meter.
-                "recommended_commands": result.get("recommended_commands", []),
-                "token_usage": result.get("token_usage"),
-                # Every time window this investigation resolved and queried, in UTC and
-                # in `timezone_used` (docs/time_window_design.md §15) -- a client should
-                # show these rather than re-deriving periods from the answer text.
-                "time": result.get("time"),
-                # Set when a spending limit stopped the run (status "stopped_by_budget").
-                "budget": result.get("budget"),
-            }
-        finally:
-            TOOL_REGISTRY.update(excluded)
+def _mcp_investigation(goal: str, target: str, max_iters: int, data_dir: Path,
+                       timezone: str | None = None) -> dict[str, Any]:
+    """One stdio-MCP investigation through the shared headless runner: budget precheck
+    (source "mcp"), a new session, the machine pinned for this run, the per-run tool
+    filter / deny approval / no clarify, transcript saved. Same result shape as before."""
+    outcome = _runs.run_investigation(_runs.RunRequest(goal=goal, target=target, data_dir=Path(data_dir),
+                                                       source="mcp", max_iters=max_iters, timezone=timezone))
+    out = outcome.as_dict()
+    out.pop("run_id", None)
+    return out
 
 
 @mcp.tool()
@@ -319,7 +206,7 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
         raise ValueError("target is required (no implicit session state exists over MCP)")
     if not goal or not goal.strip():
         raise ValueError("goal is required")
-    return _run_locked_investigation(goal.strip(), target.strip(), max_iters, _data_dir, timezone=timezone)
+    return _mcp_investigation(goal.strip(), target.strip(), max_iters, _data_dir, timezone=timezone)
 
 
 def _load_session_turns(store: SessionStore, session_id: str) -> list[dict[str, Any]]:
@@ -400,23 +287,32 @@ def kratos_finding_states(target: str | None = None, state: str | None = None, l
     risk_accepted, false_positive, out_of_scope, decided, open_verified, fixed, all
     (default: all). Changing a finding's state is a person-only action -- there is no
     MCP tool for it."""
+    from kratos.lifecycle import query as _lc_query
+
+    state = (state or "all").strip().lower().replace("-", "_")
+    rows = _finding_states_for(_data_dir, target or None, state, limit)
+    hidden = _lc_query.hidden_counts(_data_dir, target or None)
+    return {"target": target or None, "state": state, "count": len(rows), "findings": rows,
+            "hidden_by_user_decisions": hidden}
+
+
+def _finding_states_for(data_dir: Path, target: str | None, state: str | None, limit: int) -> list[dict[str, Any]]:
+    """The remembered findings (one machine, or every machine with None) with each one's
+    latest verdict and open suggestions -- shared with `kratos serve`'s MCP door."""
     from kratos.lifecycle import migrate as _lc_migrate, query as _lc_query
+    from kratos.triage.run import enrich_rows
 
     state = (state or "all").strip().lower().replace("-", "_")
     if state not in _lc_query.STATE_FILTERS:
         raise ValueError(f"state must be one of: {', '.join(_lc_query.STATE_FILTERS)}")
     limit = max(1, min(int(limit or 100), 1000))
-    _lc_migrate.ensure_imported(_data_dir)
-    rows = _lc_query.list_findings(_data_dir, target=target or None, state=state, limit=limit)
+    _lc_migrate.ensure_imported(data_dir)
+    rows = _lc_query.list_findings(data_dir, target=target or None, state=state, limit=limit)
     # B.1: each finding's latest verdict (seen in this run's read / reproduced / partly /
     # not reproduced / couldn't check; `basis` says whether a second read made it) and
     # the model's open suggestions about it, read-only.
-    from kratos.triage.run import enrich_rows
-
-    enrich_rows(rows, _data_dir)
-    hidden = _lc_query.hidden_counts(_data_dir, target or None)
-    return {"target": target or None, "state": state, "count": len(rows), "findings": rows,
-            "hidden_by_user_decisions": hidden}
+    enrich_rows(rows, data_dir)
+    return rows
 
 
 _TERMINAL_COMPLETION_STATUSES = {"final_answer", "max_iters_reached"}

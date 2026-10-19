@@ -118,21 +118,21 @@ def test_scheduled_failures_trip_that_schedules_breaker(dd, monkeypatch):
 def test_mcp_failures_trip_the_mcp_breaker(dd, monkeypatch):
     from kratos import mcp_server
 
-    monkeypatch.setattr(mcp_server, "run_agent", lambda *a, **k: {"status": "llm_unavailable", "transcript": []})
+    monkeypatch.setattr("kratos.agent.loop.run_agent", lambda *a, **k: {"status": "llm_unavailable", "transcript": []})
     for _ in range(3):
-        mcp_server._run_locked_investigation("goal", "10.0.0.9", 3, dd)
-    out = mcp_server._run_locked_investigation("goal", "10.0.0.9", 3, dd)
+        mcp_server._mcp_investigation("goal", "10.0.0.9", 3, dd)
+    out = mcp_server._mcp_investigation("goal", "10.0.0.9", 3, dd)
     assert out["status"] == "refused_by_budget" and "paused" in out["final_answer"]
 
 
 def test_a_budget_stop_is_not_a_failure(dd, monkeypatch):
     from kratos import mcp_server
 
-    monkeypatch.setattr(mcp_server, "run_agent",
+    monkeypatch.setattr("kratos.agent.loop.run_agent",
                         lambda *a, **k: {"status": "stopped_by_budget", "final_answer": "x", "transcript": [],
                                          "budget": {"scope": "daily_cost"}})
     for _ in range(4):
-        mcp_server._run_locked_investigation("goal", "10.0.0.9", 3, dd)
+        mcp_server._mcp_investigation("goal", "10.0.0.9", 3, dd)
     assert breaker.active_pause(BudgetLedger(dd), "mcp") is None
 
 

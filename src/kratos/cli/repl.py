@@ -125,7 +125,7 @@ _ROUTING_SYSTEM_PROMPT = (
 _ROUTING_MAX_TOKENS = 200
 
 
-def _route_input(goal: str, resume_context: str = "") -> tuple[bool | None, str | None]:
+def _route_input(goal: str, resume_context: str = "", *, capture_stderr: bool = True) -> tuple[bool | None, str | None]:
     """Returns (should_investigate, second_value). should_investigate is
     None if the routing call itself failed (LLM unreachable) -- distinct
     from False (LLM reached, decided this is not an investigation) so the
@@ -158,13 +158,21 @@ def _route_input(goal: str, resume_context: str = "") -> tuple[bool | None, str 
     import contextlib
     import io
 
-    captured = io.StringIO()
-    with contextlib.redirect_stderr(captured):
+    # capture_stderr=False (kratos serve): redirect_stderr swaps sys.stderr for the WHOLE
+    # process, which is unsafe while other requests run on other threads -- the failure
+    # reason is then a fixed phrase instead of the captured line.
+    if not capture_stderr:
         response = agent_chat(_ROUTING_SYSTEM_PROMPT, full_prompt, max_tokens=_ROUTING_MAX_TOKENS)
-    if response is None:
-        detail = captured.getvalue().strip().splitlines()
-        reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
-        return None, reason
+        if response is None:
+            return None, "the model did not answer"
+    else:
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            response = agent_chat(_ROUTING_SYSTEM_PROMPT, full_prompt, max_tokens=_ROUTING_MAX_TOKENS)
+        if response is None:
+            detail = captured.getvalue().strip().splitlines()
+            reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
+            return None, reason
     # Strict, unambiguous check per the fix's own requirement -- not a
     # substring match, which could false-positive on a real conversational
     # reply that happens to mention the word. Tolerates case and a trailing

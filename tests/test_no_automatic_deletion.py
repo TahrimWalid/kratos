@@ -20,6 +20,7 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     # in-memory lists
     ("adapters/findings_engine.py", "_merge_overlapping", "remove"): LIST,
     ("adapters/live_response.py", "_denied_dirs", "remove"): LIST + " (os.walk's dirs list)",
+    ("serve/runs.py", "RunSlots.acquire", "remove"): LIST + " (the chat server's queue of waiting runs)",
     ("pkgvuln/update.py", "_Writer.apply", "remove"): "calls _Writer.remove (its DELETE is listed)",
     ("pkgvuln/update.py", "_Writer.note_unparsed", "remove"): "calls _Writer.remove (its DELETE is listed)",
     ("pkgvuln/update.py", "_update_osv_incremental", "remove"): "calls _Writer.remove (its DELETE is listed)",

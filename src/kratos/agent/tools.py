@@ -8,6 +8,8 @@ or later by an LLM-driven agent loop.
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import inspect
 import json
@@ -182,14 +184,31 @@ def approval_log_length() -> int:
     return len(_approval_log)
 
 
+def _current_run_id() -> str | None:
+    from kratos.run_context import current_run_id
+
+    return current_run_id()
+
+
+def _record_approval(tool_name: str, approved: bool) -> None:
+    # Tagged with the run that asked: several investigations can run at once in one
+    # process (kratos serve), and one run's approval must never satisfy another run's
+    # backstop check.
+    _approval_log.append({"tool": tool_name, "approved": approved, "run_id": _current_run_id()})
+
+
 def approval_entries_since(since_index: int) -> list[dict[str, Any]]:
-    """The approvals asked since `since_index` ({"tool", "approved"}), oldest first."""
-    return [dict(e) for e in _approval_log[since_index:]]
+    """The approvals this run asked since `since_index` ({"tool", "approved"}), oldest first."""
+    run_id = _current_run_id()
+    return [{"tool": e["tool"], "approved": e["approved"]} for e in _approval_log[since_index:]
+            if e.get("run_id") == run_id]
 
 
 def approval_was_recorded(tool_name: str, since_index: int) -> bool:
-    """True if request_approval(tool_name, ...) was called at least once since_index."""
-    return any(entry["tool"] == tool_name for entry in _approval_log[since_index:])
+    """True if request_approval(tool_name, ...) was called at least once since_index, by this run."""
+    run_id = _current_run_id()
+    return any(entry["tool"] == tool_name and entry.get("run_id") == run_id
+               for entry in _approval_log[since_index:])
 
 
 # Swappable presentation/decision provider for request_approval (2026-09-03,
@@ -204,6 +223,30 @@ def approval_was_recorded(tool_name: str, since_index: int) -> bool:
 # depends on) both stay HERE, so no gate can bypass them by supplying a
 # provider. See src/kratos/tui_mk2/approvals.py for the TUI's provider.
 _approval_prompt_provider: "Callable[[str, dict[str, Any]], bool] | None" = None
+
+
+# A per-run override of the provider above (kratos serve runs several investigations at
+# once; each installs "deny" for itself only). _UNSET = no override: use the process one.
+_UNSET: Any = object()
+_run_approval_provider: "contextvars.ContextVar[Any]" = contextvars.ContextVar(
+    "kratos_run_approval_provider", default=_UNSET)
+
+
+@contextlib.contextmanager
+def approval_provider_scope(provider: "Callable[[str, dict[str, Any]], bool] | None"):
+    """Inside this block (and every thread started from it with a copied context),
+    request_approval asks `provider` instead of the process-wide one -- for this run
+    only. The fail-safe and the approval log below still apply."""
+    token = _run_approval_provider.set(provider)
+    try:
+        yield
+    finally:
+        _run_approval_provider.reset(token)
+
+
+def _active_approval_provider() -> "Callable[[str, dict[str, Any]], bool] | None":
+    override = _run_approval_provider.get()
+    return _approval_prompt_provider if override is _UNSET else override
 
 
 def set_approval_prompt_provider(provider: "Callable[[str, dict[str, Any]], bool] | None") -> None:
@@ -243,14 +286,15 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     recording below still happen here unconditionally, so the invariants hold
     regardless of provider.
     """
-    if _approval_prompt_provider is not None:
+    provider = _active_approval_provider()
+    if provider is not None:
         try:
-            approved = bool(_approval_prompt_provider(tool_name, details))
+            approved = bool(provider(tool_name, details))
         except (EOFError, KeyboardInterrupt):
             approved = False
         except Exception:  # noqa: BLE001 -- a broken provider must fail safe, never force-accept
             approved = False
-        _approval_log.append({"tool": tool_name, "approved": approved})
+        _record_approval(tool_name, approved)
         return approved
 
     _console.render_approval_situation(_console.get_console(), tool_name, details)
@@ -262,7 +306,7 @@ def request_approval(tool_name: str, details: dict[str, Any]) -> bool:
     except (EOFError, KeyboardInterrupt):
         approved = False
 
-    _approval_log.append({"tool": tool_name, "approved": approved})
+    _record_approval(tool_name, approved)
     return approved
 
 

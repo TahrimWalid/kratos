@@ -106,39 +106,48 @@ def test_extract_findings_handles_domain_level_error_shape():
 
 
 # ---------------------------------------------------------------------------
-# _run_locked_investigation -- exclusion + restore behavior
+# _run_investigation -- the per-run tool filter (B.3 retired the registry mutation)
 # ---------------------------------------------------------------------------
-def test_investigation_excludes_approval_reaching_tools_during_the_call(tmp_path, monkeypatch):
-    seen_registry_keys_during_call = {}
+def test_investigation_filters_approval_reaching_tools_without_touching_the_registry(tmp_path, monkeypatch):
+    from kratos.agent import loop as agent_loop
 
-    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, **_time_kwargs):
-        seen_registry_keys_during_call["keys"] = set(TOOL_REGISTRY.keys())
+    seen = {}
+
+    def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, *, tool_filter=None, **_kw):
+        seen["registry"] = set(TOOL_REGISTRY.keys())
+        seen["filter"] = tool_filter
+        # what the model would be offered / dispatch would allow, under this run's filter
+        token = agent_loop._run_tool_filter.set(tool_filter)
+        try:
+            seen["allowed"] = {n for n in TOOL_REGISTRY if agent_loop.tool_allowed(n)}
+        finally:
+            agent_loop._run_tool_filter.reset(token)
         return {"status": "final_answer", "final_answer": "ok", "transcript": []}
 
-    monkeypatch.setattr(mcp_server, "run_agent", _fake_run_agent)
+    monkeypatch.setattr("kratos.agent.loop.run_agent", _fake_run_agent)
 
-    before = set(TOOL_REGISTRY.keys())
-    result = mcp_server._run_locked_investigation("goal", "10.0.0.1", 5, tmp_path)
-    after = set(TOOL_REGISTRY.keys())
-
-    assert before == after  # fully restored
-    during = seen_registry_keys_during_call["keys"]
+    before = dict(TOOL_REGISTRY)
+    mcp_server._mcp_investigation("goal", "10.0.0.1", 5, tmp_path)
+    assert dict(TOOL_REGISTRY) == before          # never mutated, not even during the call
+    assert seen["registry"] == set(before)
+    assert seen["filter"] is not None
     for risky in ("capture_traffic", "run_linux_command", "run_vuln_scan", "check_ip_reputation"):
-        assert risky not in during
-        assert risky in after  # confirmed restored, not just "still missing"
-    assert "run_nmap_scan" in during  # safe tools remain available
+        assert risky not in seen["allowed"]
+    assert "run_nmap_scan" in seen["allowed"]      # safe tools remain available
+    # and outside the run nothing is filtered
+    assert all(agent_loop.tool_allowed(n) for n in TOOL_REGISTRY)
 
 
-def test_investigation_restores_registry_even_if_run_agent_raises(tmp_path, monkeypatch):
+def test_investigation_that_raises_reports_an_error_and_leaves_the_registry_alone(tmp_path, monkeypatch):
     def _fake_run_agent(goal, data_dir, max_iters=10, on_step=None, **_time_kwargs):
         raise RuntimeError("simulated crash mid-investigation")
 
-    monkeypatch.setattr(mcp_server, "run_agent", _fake_run_agent)
+    monkeypatch.setattr("kratos.agent.loop.run_agent", _fake_run_agent)
 
-    before = set(TOOL_REGISTRY.keys())
-    with pytest.raises(RuntimeError):
-        mcp_server._run_locked_investigation("goal", "10.0.0.1", 5, tmp_path)
-    assert set(TOOL_REGISTRY.keys()) == before
+    before = dict(TOOL_REGISTRY)
+    out = mcp_server._mcp_investigation("goal", "10.0.0.1", 5, tmp_path)
+    assert out["status"] == "error" and "could not finish" in out["final_answer"]
+    assert dict(TOOL_REGISTRY) == before
 
 
 def test_investigation_writes_transcript_and_session_records(tmp_path, monkeypatch):
@@ -154,9 +163,9 @@ def test_investigation_writes_transcript_and_session_records(tmp_path, monkeypat
             ],
         }
 
-    monkeypatch.setattr(mcp_server, "run_agent", _fake_run_agent)
+    monkeypatch.setattr("kratos.agent.loop.run_agent", _fake_run_agent)
 
-    result = mcp_server._run_locked_investigation("check things", "10.0.0.5", 5, tmp_path)
+    result = mcp_server._mcp_investigation("check things", "10.0.0.5", 5, tmp_path)
 
     assert result["status"] == "final_answer"
     assert result["final_answer"] == "no issues found"
