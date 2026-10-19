@@ -18,6 +18,7 @@ import logging
 import os
 import sqlite3
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,25 @@ def connect_private(db_path: Path | str, *, create: bool = True, **kwargs: Any) 
 BUSY_TIMEOUT_MS = 5000
 
 
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Switch to WAL, waiting out another connection doing the same. Turning a NEW
+    database to WAL needs an exclusive lock and SQLite answers "database is locked" at
+    once, without its busy handler, when a second connection is opening the same new file
+    (two requests of `kratos serve` on a fresh data folder). Retried within the busy
+    timeout; once the file is in WAL mode the pragma takes no lock."""
+    deadline = time.monotonic() + BUSY_TIMEOUT_MS / 1000
+    delay = 0.01
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            return
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.2)
+
+
 def connect_store(db_path: Path | str) -> sqlite3.Connection:
     """The connection every store on `kratos.db` uses: owner-only file, WAL (the
     TUI, `kratos scheduled-run`, `kratos mcp-serve` and the listener share it from
@@ -81,7 +101,7 @@ def connect_store(db_path: Path | str) -> sqlite3.Connection:
     own `BEGIN IMMEDIATE` around read-modify-write sequences."""
     conn = connect_private(db_path, timeout=BUSY_TIMEOUT_MS / 1000, isolation_level=None)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+    _enable_wal(conn)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
