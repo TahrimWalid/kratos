@@ -131,3 +131,17 @@ def test_unclosed_fence_is_closed():
 def test_control_and_hidden_characters_are_cleaned_first():
     out = untrusted.for_markdown("ok\x1b]52;c;ZXZpbA==\x07 ‮done")
     assert "\x1b" not in out and "‮" not in out
+
+
+@pytest.mark.parametrize("name", sorted(CORPUS))
+def test_prose_never_carries_latex_delimiters_open_webui_would_eat(name):
+    """Open WebUI renders \\[ ... \\] and \\( ... \\) as LaTeX: an escape built from them
+    garbles the text (seen live). The prose exit uses plain-bracket defanging instead."""
+    out = untrusted.for_markdown(CORPUS[name] + " see https://attacker.example/x and admin@attacker.example")
+    outside_code = re.sub(r"(`+)[^`]*?\\1", "", out)
+    for seq in ("\\[", "\\]", "\\(", "\\)"):
+        assert seq not in outside_code, (seq, out)
+
+
+def test_defanged_address_stays_readable():
+    assert untrusted.for_markdown("go to https://evil.example/a?b=1") == "go to hxxps[:]//evil[.]example/a?b=1"

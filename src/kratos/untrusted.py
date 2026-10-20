@@ -309,7 +309,7 @@ def annotate_lookalikes(s: Any) -> str:
 # * `md_block(s)`  -- machine text as a block: a fence longer than any backtick run inside;
 # * `for_markdown(s, link_hosts=())` -- prose (the model's analysis): Markdown formatting
 #   kept, but every image removed, every link shown as text with its address defanged
-#   (`hxxps://evil\[.\]example/...`, never clickable, never fetched) unless its host is
+#   (`hxxps[:]//evil[.]example/...`, never clickable, never fetched) unless its host is
 #   on `link_hosts`, raw HTML escaped, and the model's own code blocks re-fenced so
 #   nothing inside can close them early.
 _MD_FENCE_OPEN_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})(.*)$")
@@ -354,13 +354,17 @@ def _md_host(url: str) -> str:
 
 
 def _md_defang(url: str) -> str:
-    """`https://evil.example/x` -> `hxxps://evil\\[.\\]example/x`: readable, copyable by a
-    person who means it, and no Markdown renderer turns it into a link or fetches it."""
+    """`https://evil.example/x` -> `hxxps[:]//evil[.]example/x` (the usual defanged form):
+    readable, copyable by a person who means it, and no Markdown renderer turns it into a
+    link or fetches it. Plain brackets, never backslash-escaped ones: Open WebUI reads
+    `\\[ ... \\]` as LaTeX. A `[.]` is always followed by a letter or digit, so it can't
+    open a link; with no reference definitions left, it can't be one either."""
     out = re.sub(r"(?i)^(h)tt(ps?)", r"\1xx\2", url)
-    out = re.sub(r"(?i)^(ftps?|file|wss?|data|javascript|mailto):", lambda m: m.group(1) + "[:]", out)
-    out = out.replace("://", "[:]//") if out.lower().startswith(("hxxp", "ftp")) else out
-    out = re.sub(r"(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])", r"\\[.\\]", out, count=0)
-    return out.replace("[:]", "\\[:\\]")
+    if out.lower().startswith(("hxxp", "ftp")) and "://" in out:
+        out = out.replace("://", "[:]//", 1)
+    else:
+        out = re.sub(r"(?i)^(ftps?|file|wss?|data|javascript|mailto):", lambda m: m.group(1) + "[:]", out)
+    return re.sub(r"(?<=[A-Za-z0-9])\.(?=[A-Za-z0-9])", "[.]", out)
 
 
 def _md_inline(line: str, link_hosts: frozenset[str]) -> str:
@@ -390,13 +394,13 @@ def _md_inline(line: str, link_hosts: frozenset[str]) -> str:
         return _md_defang(raw)
 
     def email(m: "re.Match[str]") -> str:
-        return f"{m.group(1)}\\[at\\]{m.group(2)}"
+        return f"{m.group(1)}[at]{m.group(2)}"
 
     line = _MD_IMAGE_RE.sub(image, line)
-    line = line.replace("![", "!\\[")                 # an image form the pattern above missed
+    line = line.replace("![", "! [")                  # an image form the pattern above missed
     line = _MD_LINK_RE.sub(link, line)
-    line = _MD_REF_DEF_RE.sub(lambda m: m.group(1) + "\\[" + m.group(2) + "\\]:", line)
-    line = line.replace("](", "\\](")                 # any link form the pattern above missed
+    line = _MD_REF_DEF_RE.sub(lambda m: m.group(1) + "[" + m.group(2) + "] :", line)   # no definitions
+    line = line.replace("](", "] (")                  # any link form the pattern above missed
     line = _MD_URL_RE.sub(url, line)
     line = _MD_EMAIL_RE.sub(email, line)
     line = line.replace("<", "&lt;")                  # raw HTML and <autolinks>
@@ -408,7 +412,7 @@ def for_markdown(s: Any, *, link_hosts: Any = ()) -> str:
 
     Formatting (paragraphs, lists, emphasis, headings, code) is kept. What a renderer
     would fetch or let a person click is not: images are removed (`(image removed: alt)`),
-    links become `label (hxxps://host\\[.\\]tld/...)` and bare addresses are defanged the
+    links become `label (hxxps[:]//host[.]tld/...)` and bare addresses are defanged the
     same way, unless the host is on `link_hosts` (`serve.link_hosts`, empty by default);
     raw HTML is escaped; each code block is re-fenced with a fence no line inside can
     close, so text after it can't hide in what a renderer thinks is still code (or the
