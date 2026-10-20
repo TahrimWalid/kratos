@@ -179,6 +179,21 @@ Kratos never guesses which machine a target is: choosing Sub-agent links the box
 
 ---
 
+## Use Kratos from Open WebUI or any chat app
+
+Kratos can sit behind the chat app you already use — Open WebUI, LibreChat, AnythingLLM or anything that speaks the OpenAI API — as a model named after a machine:
+
+```bash
+kratos serve token create --name owui --targets 192.0.2.10   # prints a token once
+kratos serve                                                   # listens on 127.0.0.1:8770
+```
+
+Then add `http://127.0.0.1:8770/v1` as an OpenAI connection in the chat app with that token, pick the model `kratos/192.0.2.10` and ask in plain words ("has anyone been trying to log in?"). Kratos runs the same investigation the app would — same checks, answer checks, masking and spending limits — and the chat shows **only the checked answer**: Kratos's findings block, its notes, then the model's analysis, with progress in the "thinking" panel while it works and the chat's stop button stopping the run. Anything an answer quotes from a machine is shown as inert text: no image loads, no link is clickable. Agent hosts can use **MCP over HTTP** at `/mcp` (start an investigation, poll for the result).
+
+It listens only on this machine by default, every request needs a token, and a token only reaches the machines it names. Nothing reachable from a chat app can change a machine: no approvals, no fix channel, no `/evolve`, no accepting or dismissing findings. It is for **one person's own** chat app for now — not a shared one for several people. Details: [Using Kratos from a chat app](docs/GUIDE.md#using-kratos-from-a-chat-app).
+
+---
+
 ## It grows with you
 
 <p align="center">

@@ -27,10 +27,11 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 22. [Keeping model costs under control](#keeping-model-costs-under-control)
 23. [Keeping an eye on things](#keeping-an-eye-on-things)
 24. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
-25. [The experimental fix channel](#the-experimental-fix-channel)
-26. [Making it yours](#making-it-yours)
-27. [When something goes wrong](#when-something-goes-wrong)
-28. [Words you'll see](#words-youll-see)
+25. [Using Kratos from a chat app](#using-kratos-from-a-chat-app)
+26. [The experimental fix channel](#the-experimental-fix-channel)
+27. [Making it yours](#making-it-yours)
+28. [When something goes wrong](#when-something-goes-wrong)
+29. [Words you'll see](#words-youll-see)
 
 ---
 
@@ -1569,6 +1570,7 @@ logs, the questions you asked. `kratos data -v` adds the exact files and tables.
 | Findings and decisions | yes | what was found, its history, your accept/ignore decisions, reports |
 | Collected snapshots | yes | port scans, logs, processes, packages, persistence, each machine's account list — what each check read |
 | Placeholder map (masking) | yes | which placeholder stood for which real name or address in each conversation ([What the model sees](#what-the-model-sees)) |
+| Chat-client server | yes | chat-app tokens (only a hash of each), which session holds each chat, one audit row per request ([Using Kratos from a chat app](#using-kratos-from-a-chat-app)) |
 | Sub-agent pairing and telemetry | yes | paired machines and their live status |
 | Sub-agent installer scripts | **secret** | an install script holds a one-time pairing code |
 | Journal seal keys | **secret** | the keys that verify a machine's sealed journal |
@@ -1666,6 +1668,7 @@ Everything starts from `kratos`, but a few things work without the full-screen U
 | `kratos subagent-serve` | run the sub-agent listener in the foreground |
 | `kratos subagent-status` | list paired machines and whether they're connected |
 | `kratos mcp-serve` | start the MCP server (below) |
+| `kratos serve` | the chat-app server: Kratos as a model in Open WebUI or any OpenAI-compatible app, plus MCP over HTTP; `token create/list/revoke`, `status`, `set` ([Using Kratos from a chat app](#using-kratos-from-a-chat-app)) |
 | `kratos collect` | check the basics on a machine now (`--all` adds the slow checks, `--force` re-runs fresh ones) |
 | `kratos events` | show the log lines Kratos has read from a machine (below); `--coverage` shows which stretches are complete |
 | `kratos findings` | list remembered findings and record your decisions ([Keeping track of findings](#keeping-track-of-findings)) |
@@ -1693,7 +1696,7 @@ and run:
 `sqlite3 ~/.local/share/kratos/data/kratos.db "DELETE FROM host_events WHERE ts < strftime('%s','now','-90 days');"`
 (in a source checkout the file is `data/kratos.db` instead).
 
-**MCP.** `kratos mcp-serve` lets other AI tools that speak the
+**MCP.** `kratos mcp-serve` (stdio; for MCP over HTTP see [Using Kratos from a chat app](#using-kratos-from-a-chat-app)) lets other AI tools that speak the
 [Model Context Protocol](https://modelcontextprotocol.io) — Claude Desktop,
 OpenWebUI and others — ask Kratos to investigate a machine, fetch a session's
 findings, list sessions, and send a notification built from real findings. It's
@@ -1701,6 +1704,153 @@ read/investigate-only on purpose (`kratos_finding_states` reads finding states;
 nothing over MCP can change one): every tool that would need a yes/no from you is
 left out, and the other tool never picks Kratos's internal steps — Kratos's own
 loop does, with all its checks.
+
+---
+
+## Using Kratos from a chat app
+
+`kratos serve` lets you talk to Kratos from the chat app you already use —
+Open WebUI, LibreChat, AnythingLLM, or anything that speaks the OpenAI API. In
+the app, Kratos is a **model named after a machine**: pick `kratos/web-01` and ask
+"has anyone been trying to log in?". Kratos investigates **web-01** — the machine
+comes from the model you picked, never from the words in your message — with the
+same checks, answer checks, masking and spending limits as in the Kratos app.
+
+It is meant for **your own** chat app. Several people sharing one Open WebUI
+through one Kratos isn't supported yet: there are no per-person permissions or
+budgets.
+
+### Setting it up
+
+1. **Make a token** for the chat app. It is printed once; Kratos keeps only a
+   hash of it.
+
+   ```bash
+   kratos serve token create --name owui --targets 192.0.2.10,192.0.2.11
+   ```
+
+   `--targets` lists the machines this token may investigate (each becomes a
+   model). Without it, the token reaches only your default machine. Add `--mcp`
+   if an agent host should use the MCP door too.
+
+2. **Start the server.** It listens on `127.0.0.1:8770` — this computer only:
+
+   ```bash
+   kratos serve
+   ```
+
+   (8770, not 8765: that one is the sub-agent listener's.) `kratos serve status`
+   says whether it's running; `/doctor` shows a "chat server" row.
+
+3. **Add the connection in your chat app.** In Open WebUI: *Admin Settings →
+   Connections → OpenAI → +*, URL `http://127.0.0.1:8770/v1`, the token as the
+   API key. The models `kratos`, `kratos/192.0.2.10`, … appear in the model list.
+   If Open WebUI runs in Docker, start it with `--network host` (or point it at
+   an address of this machine the container can reach, and see *Remote access*
+   below).
+
+Settings that help in Open WebUI (environment variables of the Open WebUI
+container):
+
+| Variable | Why |
+| --- | --- |
+| `ENABLE_FORWARD_USER_INFO_HEADERS=true` | Open WebUI then sends the chat's id, so each chat in Open WebUI is one Kratos session (follow-up questions keep their context). The user name it sends is written to Kratos's audit log only — never used for permissions. |
+| `AIOHTTP_CLIENT_TIMEOUT=900` | Open WebUI gives up on a reply after 300 s by default; a slow investigation can take longer. |
+
+Open WebUI also asks the selected model for a chat title and tags after each
+message. Kratos answers those itself without calling its model ("Kratos chat"),
+so they cost nothing.
+
+### What you see
+
+- **While it works**, the "thinking" panel shows what Kratos is doing:
+  "collecting the basics…", "checked ports: ok", "running read_host_logs". These
+  lines are Kratos's own; the model's draft is never streamed, because an answer
+  check can still send it back.
+- **The answer** is the checked answer — the same one the app shows: Kratos's
+  *found* list (written by Kratos, with each finding's verdict), its notes, then
+  the model's analysis, then any suggested commands, each labelled with where it
+  came from (Kratos's template or the model) and any warnings above it. Kratos
+  never runs them.
+- **Text from your machines can't do anything in the chat.** Chat apps render
+  Markdown, and a log line could carry an image that loads the moment it's shown
+  (leaking whatever its address carries) or a link. Kratos shows anything it quotes
+  from a machine as inert code text, removes images from the model's analysis,
+  shows links and addresses as plain text in the usual "defanged" form —
+  `hxxps[:]//example[.]com/...` — and escapes HTML. To keep links to sites you
+  trust clickable, list them: `kratos serve set serve.link_hosts ubuntu.com,nvd.nist.gov`.
+  (Your own message is rendered by the chat app itself: an image you type there
+  is loaded by the app, not by Kratos.)
+- **The stop button** stops the investigation before its next model call or
+  tool call; checks already running finish (they only read), nothing new starts.
+  The turn is saved as stopped.
+
+### What works in a chat — and what doesn't
+
+These work without using the model: `/findings` (open findings for the
+machine), `/usage` (today's spending), `/retest <key>` (re-collect and re-check a
+finding), `/help`. **Not available from a chat app** — use the Kratos app:
+`/evolve`, `/whitelist`, `/run-fix`, accepting or dismissing findings, settings,
+target setup, presets, and anything that would ask for your approval. Tools that
+could stop to ask you are left out of investigations started from a chat app, so
+nothing there can change a machine.
+
+### Limits and spending
+
+Investigations from a chat app count as **unattended** runs (like schedules and
+MCP): `budget.unattended_daily_cost_usd` applies, and when a limit is reached the
+chat reply says which one. On top of that:
+
+| Setting | Default | |
+| --- | --- | --- |
+| `serve.max_parallel` | 2 | investigations at once; more wait ("waiting for another investigation to finish…") |
+| `serve.requests_per_hour` | 30 | messages that use the model, per token per hour (commands and the app's title requests don't count) |
+| `serve.port` | 8770 | |
+
+Change them in *Settings → General* or with `kratos serve set serve.max_parallel 3`.
+
+### MCP over HTTP
+
+A token made with `--mcp` can also use `http://127.0.0.1:8770/mcp`
+(Streamable HTTP, bearer token). Its tools: `kratos_start_investigation` (returns
+an id at once), `kratos_get_investigation` (progress lines, then the checked
+answer and findings), `kratos_get_findings`, `kratos_list_sessions`,
+`kratos_finding_states` — all limited to the token's machines. In Open WebUI:
+*Admin Settings → External Tools → +*, type **MCP (Streamable HTTP)**, the URL, auth
+**Bearer** with the token. Note that in this mode the chat app's own model reads
+Kratos's result and writes its own reply, so it can drop or reword what Kratos
+found — use the model connection above when you want Kratos's checked answer as
+the reply.
+
+### Remote access
+
+Keep `kratos serve` on `127.0.0.1` unless you need the chat app on another
+computer. If you do, put a TLS reverse proxy in front — never send tokens over
+plain HTTP across a network. With Caddy on the Kratos machine:
+
+```
+kratos.example.internal {
+    reverse_proxy 127.0.0.1:8770
+}
+```
+
+and tell Kratos the name the proxy uses: `kratos serve set serve.allowed_hosts
+kratos.example.internal`. (Kratos refuses requests whose Host header it doesn't
+expect, so a web page can't reach your local server through a name it controls.)
+Listening on another address directly needs both `kratos serve --host <address>`
+and `kratos serve set serve.allow_non_loopback yes`, and Kratos warns that tokens
+then travel in clear text.
+
+### Tokens and the audit log
+
+`kratos serve token list` shows each token's machines, doors and last use (never
+the token). `kratos serve token revoke owui` stops it on the next request. After
+ten wrong tokens in a minute from one address, that address is refused for a
+while. Every request is recorded in the audit log in `kratos.db`
+(`serve_audit`): time, token, door, model and machine, the client's address, the
+user name the app forwarded, the run it started, how it ended (ok, refused,
+stopped, error, budget) and how much was sent back — never your message; that is
+in the session. Nothing in it is deleted automatically.
 
 ---
 

@@ -1510,6 +1510,122 @@ leaves, and puts them back in what returns.
   host in `privacy.local_model_hosts`) / standard / strict / off; off sends byte-identical text.
   The model is told one line about placeholders, and only when the request carries one.
 
+## Chat clients (`kratos serve`)
+
+`kratos serve` (`src/kratos/serve/`) is a small Starlette server with two doors.
+Starlette and uvicorn are what the MCP SDK already depends on; no web framework is
+added on top.
+
+- **OpenAI-compatible, Kratos is the model** (`/v1/models`, `/v1/chat/completions`).
+  This is the primary door because the reply *is* Kratos's checked answer. In MCP
+  tool mode the host's own model reads Kratos's result and writes its own reply, so
+  it can drop or reword a finding and bypass the answer checks. A model id names a
+  machine (`kratos/<target>`, `kratos` = the default); the target comes from the
+  model name only, never from the message, and the dispatch target guard holds the
+  run to it. The last user message is routed by the TUI's own router
+  (`command_intent.route_message`, metered and masked like any call): chat →
+  a reply; investigate (or "this machine") → an investigation of the model's
+  machine; app controls, presets, Kratos's own host → "use the Kratos app". Earlier
+  messages become prior context, capped (8 messages / 6,000 chars) and framed as
+  data by the loop. Chat clients' own background prompts (`### Task: … <chat_history>`
+  — title, tags, follow-ups) are answered by code with no model call.
+- **MCP over Streamable HTTP, stateless, start-then-poll** (`/mcp`, official SDK,
+  `stateless_http=True, json_response=True`). `kratos_start_investigation` returns
+  a random id at once (bound to the token; another token gets "no investigation");
+  `kratos_get_investigation` returns progress lines, then the checked answer and
+  findings. The read tools are the stdio server's, limited to the token's machines.
+  No approvals, no `input_required`.
+
+**One runner for every headless door** (`serve/runs.py::run_investigation`, also
+used by `kratos mcp-serve`): budget `precheck` before anything starts → session →
+`run_agent` inside `pinned_target(target)`, `approval_provider_scope(deny)`,
+`clarify_provider_scope(None)` and `run_scope(source)`, with
+`tool_filter=headless_tool_filter` (drops every `tool_reaches_approval` tool) and
+`should_stop` → transcript saved, turn completed (`cancelled` when stopped).
+
+**Per-run state, not process globals** (Phase B README §4.3). Several investigations
+run at once in one process, so what a run may use is a contextvar for that run:
+the tool filter and progress callback (`agent/loop.py`), the approval and clarify
+providers (scopes that override the process-wide ones the TUI installs), the
+machine (`pinned_target`). Approval-log entries carry the run id, so one run's
+approval can never satisfy another run's backstop. The router runs without
+`redirect_stderr` (it swaps `sys.stderr` process-wide). `serve.max_parallel`
+(default 2) bounds concurrent investigations in arrival order; SSH slots and
+collection claims already make runs on one machine share work. Two connections
+opening a brand-new `kratos.db` at once used to fail on `PRAGMA journal_mode=WAL`
+("database is locked", returned without the busy handler); `connect_store` now
+retries it within the busy timeout.
+
+**Streaming only the checked answer.** While the run works: Kratos-written
+progress lines in `delta.reasoning_content` (Open WebUI shows it as "thinking"; it
+also reads `reasoning` / `thinking`) and an SSE comment `: keep-alive` after 10 s
+of silence. When the run has finished — every answer check done — the whole
+answer goes out as one `content` delta, then `finish_reason: stop` with `usage`,
+then `[DONE]`. The model's tokens are never streamed. An error after streaming
+started is a plain-words content chunk. A client that disconnects (the stream is
+cancelled, or `is_disconnected()`) sets the run's stop flag:
+`InvestigationStopped` before the next model call or tool dispatch; the run
+record ends as `stopped` (not a crash `.partial`).
+
+**Markdown is a display, and an exfiltration path** (`untrusted.md_code`,
+`md_block`, `for_markdown`; `serve/render.py`). `run_agent` reports
+`answer_parts` (block + notes + analysis, which add up to `final_answer` exactly).
+The block and NOTEs — Kratos's text quoting machine values — go out line by line
+in inline code spans (inert, and they wrap). The model's analysis keeps its
+formatting but: images removed; links shown as `label (hxxps[:]//host[.]tld/…)`
+unless the host is on `serve.link_hosts`; bare URLs, `www.` and e-mail addresses
+defanged; `<` escaped (raw HTML, autolinks); reference definitions broken; its code
+blocks re-fenced with a fence no line inside can close. Defanging uses plain
+brackets — Open WebUI reads `\[ … \]` as LaTeX. Suggested commands are fenced
+blocks under a Kratos-written label (template or model) with the A.4 flags above.
+The A.4 corpus has 22 Markdown/HTML cases; the test renders every exit with a real
+CommonMark+GFM renderer (markdown-it, linkify on) and checks the HTML for images,
+links, `src=` and raw tags.
+
+**Security model** (single owner — PRD decision 2; several people sharing one
+Kratos waits for D.7):
+
+- *Bind*: `127.0.0.1` by default. Any other address needs `--host` **and** the
+  people-only setting `serve.allow_non_loopback`, and prints a clear-text warning;
+  remote use goes through a TLS reverse proxy.
+- *Host / Origin*: a request whose `Host` isn't the bind address, `127.0.0.1`,
+  `localhost` or `[::1]` (with or without the port) or on `serve.allowed_hosts` gets
+  421 (DNS-rebinding defence); any `Origin` header gets 403 (no browser talks to
+  this server). No CORS headers, no cookies, no pages. The MCP app also gets the
+  SDK's `TransportSecuritySettings` with the same hosts and no origins.
+- *Tokens*: `krt_<12 hex id>_<43-char secret>`, 256-bit secret, stored as scrypt
+  (n=2^14, r=8, p=1, 16-byte salt; parameters per row), compared with
+  `hmac.compare_digest`; a malformed or unknown id costs the same scrypt work.
+  Verified tokens are cached per process by SHA-256 of the presented token, and the
+  row is re-read on every request so a revoke applies at once. Created and revoked
+  only on the command line or in the app (refused inside a `web`/`mcp` run); no
+  endpoint touches them. Scope: listed machines (none = the default machine) and
+  doors (`openai`; `mcp` only with `--mcp`). Failed attempts are throttled per
+  address by the sub-agent listener's `AuthFailureLimiter` (10 per minute).
+- *Limits*: body size (`serve.max_body_bytes`), `serve.requests_per_hour` per token
+  (counted from the audit log's metered rows), `serve.max_parallel`; budget source
+  `web` (unattended caps; `precheck` refuses before routing).
+- *Audit* (`serve_audit`, append-only by trigger): one row per request — time,
+  token id, door, endpoint, model/target, client address, the forwarded user name
+  (record only, never trusted), run id, status, metered, duration, bytes out —
+  never the message text. In the stored-data inventory; nothing pruned
+  automatically.
+- *Unreachable*: approval-reaching tools (per-run filter), `/evolve`,
+  `/whitelist`, `/run-fix`, finding decisions, settings, target setup, presets,
+  the fix channel. The read-only chat commands are `/findings`, `/usage`,
+  `/retest`, `/help`.
+
+Notes for the security review: the new surface is an HTTP listener (uvicorn) on
+loopback; token storage and timing; DNS rebinding (Host allow-list, Origin refusal,
+the MCP app's own check); Markdown exfiltration (images/links/HTML in machine text
+and the model's analysis — a chat app still renders the *person's own* typed
+Markdown, outside Kratos); concurrency (per-run contextvars; the approval log is a
+process list tagged by run id); an MCP investigation id is a bearer secret within
+its token. Known limits: rate limiting reads the audit log, so simultaneous
+requests can exceed the hourly count by the number in flight; investigations
+started over MCP live in memory (the last 200 are kept) and are lost on restart
+(their sessions and transcripts stay).
+
 ## MCP server surface
 
 `kratos mcp-serve` exposes five tools over stdio — `investigate`,
@@ -1520,7 +1636,10 @@ never exposes the internal tool registry directly, so an external client's
 own model can't pick which internal tool runs or in what order.
 
 Any tool whose handler can reach the interactive approval prompt is
-excluded from the set available during an MCP-triggered investigation.
+excluded from the set available during an MCP-triggered investigation --
+per run, through `run_agent(tool_filter=...)` (not listed to the model,
+refused at dispatch, the collection included); `TOOL_REGISTRY` itself is
+never changed (the old delete-under-a-lock is gone, B.3).
 This is checked by scanning each handler's source for the approval call
 directly, not by trusting the registry's `requires_approval` flag alone —
 a couple of tools call the prompt conditionally from inside their own
