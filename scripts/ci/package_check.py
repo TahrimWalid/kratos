@@ -265,6 +265,17 @@ def installed_checks(python: str, scratch: Path) -> list[Step]:
         ("starter YARA rules ship", [python, "-c",
             "from kratos.agent.tools import DEFAULT_YARA_RULES_DIR as d; n = sorted(p.name for p in d.glob('*.yar')); "
             "assert n, f'no rules in {d}'; print('yara rules:', n)"], env, ok),
+        ("kratos serve token create", [kratos, "serve", "token", "create", "--name", "ci"], env, ok),
+        # the chat server's app is built and answers in-process (Starlette/uvicorn are imported
+        # lazily, so "import every module" alone would not catch them missing from the wheel)
+        ("kratos serve app answers", [python, "-c",
+            "import os, pathlib; from starlette.testclient import TestClient; "
+            "from kratos.serve.app import create_app; "
+            "d = pathlib.Path(os.environ['KRATOS_HOME']) / 'data'; d.mkdir(parents=True, exist_ok=True); "
+            "c = TestClient(create_app(d), base_url='http://127.0.0.1:8770'); "
+            "r = c.get('/v1/models'); assert r.status_code == 401, r.status_code; print('serve app ok: 401 without a token')"],
+         env, ok),
+        ("kratos serve status", [kratos, "serve", "status"], env, ok),
         ("installed, not the checkout", [python, "-c",
             "import kratos, sys; p = kratos.__file__; assert 'site-packages' in p, p; print(p)"], env, ok),
     ]

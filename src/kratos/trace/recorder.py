@@ -396,17 +396,22 @@ def run_trace(kind: str, data_dir: Path | str | None, *, name: str = "", **attrs
     s_token = _SPAN.set(tr.root)
     tr.maybe_flush(force=True)
     crashed = False
+    ended_as: str | None = None
     try:
         yield tr
     except BaseException as e:
-        crashed = True
-        tr.root.set(error=f"{type(e).__name__}: {str(e)[:300]}")
+        # A run the person deliberately stopped (agent.loop.InvestigationStopped says so
+        # with `trace_status`) is a finished record with status "stopped", not a crash.
+        ended_as = getattr(e, "trace_status", None)
+        crashed = ended_as is None
+        tr.root.set(error=f"{type(e).__name__}: {str(e)[:300]}") if crashed else tr.root.set(stopped=True)
         raise
     finally:
         _SPAN.reset(s_token)
         _TRACE.reset(t_token)
         try:
-            tr.finish("error" if crashed else (tr.status if tr.status != "running" else "ok"), crashed=crashed)
+            tr.finish(ended_as or ("error" if crashed else (tr.status if tr.status != "running" else "ok")),
+                      crashed=crashed)
         finally:
             with _IN_FLIGHT_LOCK:
                 _IN_FLIGHT.discard(tr.trace_id)

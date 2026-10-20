@@ -1440,6 +1440,8 @@ def _trace_answer_composition(*, i: int, model_text: str, with_notes: str, final
 class InvestigationStopped(Exception):
     """Raised out of run_agent when its should_stop callback says the user asked to stop."""
 
+    trace_status = "stopped"   # the run record ends as "stopped", not as a crash (kratos.trace)
+
 
 STOPPED_BY_BUDGET = "stopped_by_budget"
 

@@ -51,7 +51,7 @@ SCOPE_LABEL = {
     SCOPE_RUN_CALLS: "this run's model-call limit",
     SCOPE_DAILY_COST: "today's model budget",
     SCOPE_DAILY_TOKENS: "today's token limit (local or unpriced models)",
-    SCOPE_UNATTENDED_COST: "today's budget for unattended runs (schedules, triggers, MCP)",
+    SCOPE_UNATTENDED_COST: "today's budget for unattended runs (schedules, triggers, MCP, chat clients)",
     SCOPE_PAUSED: "a pause after repeated failures",
 }
 
@@ -116,7 +116,7 @@ _SPECS = (
     SettingSpec(DAILY_TOKENS, 3_000_000, _whole(0, _MAX_TOKENS_LIMIT, "tokens"),
                 "The most tokens per day on models with no price on file or served from this machine."),
     SettingSpec(UNATTENDED_DAILY_COST, 0.50, _dollars,
-                "The most schedules, triggers and MCP clients may spend per day, with nobody watching (USD)."),
+                "The most schedules, triggers, MCP and chat clients may spend per day, with nobody watching (USD)."),
     SettingSpec(TRIGGER_FIRES_PER_DAY, 10, _whole(0, 10_000, "fires"),
                 "How many times one trigger may fire per day; after that it waits for the next day."),
     SettingSpec(TRIGGER_INVESTIGATIONS, False, _on_off,

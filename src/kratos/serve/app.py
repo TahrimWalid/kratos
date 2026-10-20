@@ -228,9 +228,11 @@ class _BodyTooLarge(Exception):
     pass
 
 
-def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8765) -> Any:
-    """The ASGI app: the gate around FastAPI (OpenAI routes) + the MCP endpoint."""
-    from fastapi import FastAPI
+def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770) -> Any:
+    """The ASGI app: the gate around one Starlette app holding the OpenAI routes and the
+    MCP endpoint."""
+    from starlette.applications import Starlette
+    from starlette.responses import JSONResponse
 
     from kratos.serve import mcp_http, openai_routes
 
@@ -246,17 +248,15 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8765
         finally:
             state.note_runs(running=False)
 
-    api = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    api.state.kratos = state
-    openai_routes.install(api, state)
-    for route in mcp_app.routes:
-        api.router.routes.append(route)
-
-    @api.exception_handler(_BodyTooLarge)
-    async def _too_large(request: Any, exc: Exception) -> Any:
-        from fastapi.responses import JSONResponse
-
+    async def too_large(request: Any, exc: Exception) -> Any:
         status, body = _json_error(413, "the request is too large", kind="invalid_request_error")
         return JSONResponse(json.loads(body), status_code=status)
 
+    async def not_found(request: Any, exc: Exception) -> Any:
+        status, body = _json_error(404, "not found", kind="invalid_request_error")
+        return JSONResponse(json.loads(body), status_code=getattr(exc, "status_code", 404))
+
+    api = Starlette(routes=openai_routes.routes(state) + list(mcp_app.routes), lifespan=lifespan,
+                    exception_handlers={_BodyTooLarge: too_large, 404: not_found, 405: not_found})
+    api.state.kratos = state
     return KratosGate(api, state)

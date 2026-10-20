@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-pytest.importorskip("fastapi")
+pytest.importorskip("starlette")
 from starlette.testclient import TestClient  # noqa: E402
 
 from kratos import kratos_config, settings_store  # noqa: E402
@@ -44,16 +44,20 @@ def env(tmp_path, monkeypatch):
     kratos_config.set_active_target(T1)
     calls = {"route": [], "agent": []}
 
+    from kratos.tui_mk2 import command_intent as _ci
+
     def route(message, context="", *, capture_stderr=True):
         calls["route"].append((message, context, capture_stderr))
         if message.lower().startswith("hello"):
-            return False, "Hi -- ask me about the machine."
-        return True, None
+            return _ci.RouteResult(kind="chat", reply="Hi -- ask me about the machine.")
+        if message.lower().startswith("rename"):
+            return _ci.RouteResult(kind="command", command="rename", args="x")
+        if message.lower().startswith("look at yourself"):
+            return _ci.RouteResult(kind="investigate_host")
+        return _ci.RouteResult(kind="investigate")
 
-    from kratos.cli import repl as _repl
-
-    real_route = _repl._route_input
-    monkeypatch.setattr("kratos.cli.repl._route_input", route)
+    real_route = _ci.route_message
+    monkeypatch.setattr("kratos.tui_mk2.command_intent.route_message", route)
     state = {"result": _answer(), "sleep": 0.0, "raise": None, "step": None}
 
     def fake_agent(goal, data_dir, max_iters=10, on_step=None, *, tool_filter=None, on_progress=None,
@@ -250,7 +254,7 @@ def test_client_background_tasks_are_answered_without_the_model(env):
             'JSON format: { "title": "your concise title here" }\n### Chat History:\n<chat_history>\nUSER: hi\n'
             "</chat_history>")
     r = _chat(env, task)
-    assert json.loads(r.json()["choices"][0]["message"]["content"]) == {"title": "Kratos investigation"}
+    assert json.loads(r.json()["choices"][0]["message"]["content"]) == {"title": "Kratos chat"}
     assert env["calls"]["route"] == [] and env["calls"]["agent"] == []
     assert _audit_rows(env["dir"])[-1]["status"] == "task"
 
@@ -479,8 +483,10 @@ def test_forwarded_user_is_in_the_audit_only(env):
 
 
 def test_a_chat_reply_is_rendered_safely_and_recorded(env, monkeypatch):
-    monkeypatch.setattr("kratos.cli.repl._route_input",
-                        lambda m, c="", capture_stderr=True: (False, "hi ![x](https://attacker.example/q)"))
+    from kratos.tui_mk2 import command_intent as _ci
+
+    monkeypatch.setattr("kratos.tui_mk2.command_intent.route_message", lambda m, c="", capture_stderr=True:
+                        _ci.RouteResult(kind="chat", reply="hi ![x](https://attacker.example/q)"))
     r = _chat(env, "hello there")
     content = r.json()["choices"][0]["message"]["content"]
     assert "![x](" not in content and "image removed" in content
@@ -596,7 +602,7 @@ def test_a_served_investigation_sends_no_real_values_to_the_model(env, monkeypat
     attacker, user, secret = "203.0.113.7", "alice", "AKIA" + "X" * 16
     d = env["dir"]
     monkeypatch.setattr("kratos.agent.loop.run_agent", env["real_agent"])
-    monkeypatch.setattr("kratos.cli.repl._route_input", env["real_route"])
+    monkeypatch.setattr("kratos.tui_mk2.command_intent.route_message", env["real_route"])
     monkeypatch.setattr(llm_interface, "_running_backend", lambda: "openai_compatible")
     monkeypatch.setattr(llm_interface, "get_active_llm_base_url", lambda: "https://api.example.com/v1")
     monkeypatch.setattr(llm_interface, "get_active_llm_api_key", lambda: "k")
@@ -677,3 +683,38 @@ def test_doctor_when_never_run(tmp_path):
     out = []
     _check_chat_server(out, tmp_path)
     assert out[0]["detail"].startswith("chat server: not running")
+
+
+def test_the_default_port_is_not_the_subagent_listeners():
+    from kratos.subagent.core_listener import DEFAULT_PORT as LISTENER_PORT
+
+    spec = next(s for s in settings_store.specs() if s.key == SS.PORT)
+    assert spec.default != LISTENER_PORT
+
+
+def test_routed_app_controls_and_own_host_requests_are_not_acted_on(env):
+    r = _chat(env, "rename this session to x")
+    assert "not available from a chat client" in r.json()["choices"][0]["message"]["content"]
+    r = _chat(env, "look at yourself, kratos")
+    assert "not the machine Kratos runs on" in r.json()["choices"][0]["message"]["content"]
+    assert env["calls"]["agent"] == []
+
+
+def test_the_router_is_called_without_redirecting_stderr(env):
+    _chat(env)
+    assert env["calls"]["route"][0][2] is False
+
+
+def test_a_stopped_run_is_recorded_as_stopped_not_as_a_crash(tmp_path, monkeypatch):
+    from kratos.agent import loop as agent_loop
+    from kratos.run_context import run_scope
+
+    kratos_config.set_active_data_dir(tmp_path)
+    kratos_config.set_active_target(T1)
+    monkeypatch.setattr(agent_loop, "agent_chat", lambda *a, **k: pytest.fail("no model call after a stop"))
+    with run_scope("web", target=T1):
+        with pytest.raises(agent_loop.InvestigationStopped):
+            agent_loop.run_agent("anything", tmp_path, should_stop=lambda: True)
+    files = list((tmp_path / "traces").rglob("*.json"))
+    assert len(files) == 1 and not list((tmp_path / "traces").rglob("*.partial"))
+    assert json.loads(files[0].read_text())["status"] == "stopped"

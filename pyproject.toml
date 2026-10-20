@@ -40,6 +40,9 @@ dependencies = [
     # changes its API between majors. Raise each after testing on the new major.
     "textual>=8.2,<9",
     "mcp>=1.10,<2",
+    # `kratos serve` (the chat-client server) uses these directly; mcp already needs them.
+    "starlette>=0.27",
+    "uvicorn>=0.31",
     # IANA tz database for zoneinfo on hosts without /usr/share/zoneinfo (containers,
     # Windows) -- time-window resolution must never silently fall back to UTC.
     "tzdata",

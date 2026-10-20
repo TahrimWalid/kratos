@@ -2997,7 +2997,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         summary = (
             f"A {what} runs with nobody watching, so Kratos caps what it may spend on the model:\n"
-            f"• schedules, triggers and MCP together: {money(lim.unattended_daily_cost_usd)} per day\n"
+            f"• schedules, triggers, MCP and chat clients together: {money(lim.unattended_daily_cost_usd)} per day\n"
             f"• everything, you included: {money(lim.daily_cost_usd)} per day\n"
             f"• each run: at most {lim.run_model_calls} model calls and {lim.run_tokens:,} tokens\n"
             f"• each trigger: at most {lim.trigger_fires_per_day} fires per day\n"

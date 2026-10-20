@@ -265,9 +265,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     tokens = [t for t in _sstore.list_tokens(data_dir) if not t.get("revoked_at")]
     if not tokens:
         print("No chat-client token yet: make one with `kratos serve token create --name owui`.", file=sys.stderr)
+    import logging
+
     import uvicorn
 
     from kratos.serve.app import create_app
+
+    logging.getLogger("mcp").setLevel(logging.WARNING)   # the SDK's per-start INFO lines
 
     app = create_app(data_dir, bind_host=host, port=port)
     print(f"Kratos chat server on http://{host}:{port} -- OpenAI-compatible: /v1 · MCP: /mcp "
@@ -2080,7 +2084,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve_p.add_argument("--host", default=None, help="Address to listen on (default 127.0.0.1; others need "
                                                       "serve.allow_non_loopback)")
-    serve_p.add_argument("--port", type=int, default=None, help="Port (default: the serve.port setting, 8765)")
+    serve_p.add_argument("--port", type=int, default=None, help="Port (default: the serve.port setting, 8770)")
     serve_sub = serve_p.add_subparsers(dest="serve_cmd")
     tok_p = serve_sub.add_parser("token", help="Chat-client tokens: create, list, revoke")
     tok_sub = tok_p.add_subparsers(dest="token_cmd")

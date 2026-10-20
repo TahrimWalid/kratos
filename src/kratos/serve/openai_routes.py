@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from fastapi import Request  # module level: FastAPI resolves route annotations here
+from starlette.requests import Request
 
 from kratos.serve import render as _render
 from kratos.serve import store as _store
@@ -58,7 +58,7 @@ _ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/help")
 
 # --------------------------------------------------------------------------- helpers
 def _error(status: int, message: str, *, kind: str = "invalid_request_error", code: str | None = None) -> Any:
-    from fastapi.responses import JSONResponse
+    from starlette.responses import JSONResponse
 
     return JSONResponse({"error": {"message": message, "type": kind, "param": None, "code": code}},
                         status_code=status)
@@ -149,7 +149,7 @@ def client_task_reply(text: str) -> str | None:
     if not _TASK_RE.match(text or "") or "<chat_history>" not in text:
         return None
     if '"title"' in text:
-        return json.dumps({"title": "Kratos investigation"})
+        return json.dumps({"title": "Kratos chat"})
     if '"tags"' in text:
         return json.dumps({"tags": ["Security"]})
     if '"follow_ups"' in text:
@@ -270,42 +270,52 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
     """Route the message (the same router as the TUI) and answer it: a chat reply, or an
     investigation in a bounded slot. Fills `handle`."""
     from kratos import settings_store, untrusted
-    from kratos.cli.repl import _route_input
     from kratos.run_context import run_scope
     from kratos.serve import settings as _s
     from kratos.serve.runs import RunRequest, run_investigation
-    from kratos.storage.session_store import SessionStore
+    from kratos.tui_mk2.command_intent import route_message
 
     link_hosts = settings_store.get(_s.LINK_HOSTS, data_dir=state.data_dir) or []
     history = history_text(earlier)
     try:
+        # The same router as the TUI (one model call, masked, metered under source "web").
+        # route_message frames the earlier conversation as data itself.
         with run_scope("web", target=target, session_id=session_id):
-            framed = untrusted.frame_text(history, kind="session_context", run_id=untrusted.new_run_tag(),
-                                          call_id=untrusted.new_call_id(0)) if history else ""
-            investigate, value = _route_input(message, framed, capture_stderr=False)
+            route = route_message(message, history, capture_stderr=False)
     except Exception as e:  # noqa: BLE001
         from kratos.budget.guard import BudgetExceeded
 
         if isinstance(e, BudgetExceeded):
-            handle.finish({"status": "budget", "content": _render.kratos_text_markdown(e.user_message())})
+            handle.finish({"status": "budget", "content": _render.kratos_note_markdown(e.user_message())})
             return
         logger.warning("serve: routing failed", exc_info=True)
         handle.finish({"status": "error", "content": "Kratos could not reach its model to read the message."})
         return
-    if investigate is None:
+    kind = route.kind
+    if kind == "failed":
         handle.finish({"status": "error", "content": "Kratos could not reach its model: "
-                       + untrusted.md_code(value or "no detail", max_len=200)})
+                       + untrusted.md_code(route.reason or "no detail", max_len=200)})
         return
-    if investigate is False:
-        reply = str(value or "")
-        store = SessionStore(state.data_dir / "kratos.db")
-        turn_id = store.start_turn(session_id, message)
-        d = state.data_dir / "sessions"
-        d.mkdir(parents=True, exist_ok=True)
-        path = d / f"{session_id}_turn{turn_id}.json"
-        path.write_text(json.dumps([{"final_answer": reply}], indent=2), encoding="utf-8")
-        store.complete_turn(turn_id, "chat_reply", transcript_ref=str(path))
+    if kind == "chat":
+        reply = str(route.reply or "")
+        _record_chat_turn(state.data_dir, session_id, message, reply)
         handle.finish({"status": "ok", "content": _render.chat_markdown(reply, link_hosts=link_hosts)})
+        return
+    if kind != "investigate" and kind != "clarify_host":
+        # investigate_host (Kratos's own machine), app controls (model, target, rename, ...),
+        # presets: not from a chat client. "This machine" in a served chat is the model's
+        # machine -- clarify_host is investigated as that.
+        if route.command in ("help",):
+            text = _render.kratos_text_markdown(HELP_TEXT)
+        elif route.command == "report":
+            text = _render.kratos_text_markdown(_findings_text(target, state.data_dir))
+        elif kind == "investigate_host":
+            text = ("From a chat client Kratos investigates the machine named by the model you picked ("
+                    + untrusted.md_code(target) + "), not the machine Kratos runs on. Use the Kratos app for that.")
+        else:
+            text = "That is not available from a chat client -- use the Kratos app. Type /help for what works here."
+        _record_chat_turn(state.data_dir, session_id, message, text)
+        handle.finish({"status": "ok", "content": text})
         return
 
     if not state.slots.acquire(should_stop=handle.stop.is_set,
@@ -328,19 +338,28 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
 
 
 # --------------------------------------------------------------------------- routes
-def install(api: Any, state: Any) -> None:
-    from fastapi.responses import JSONResponse, StreamingResponse
+def routes(state: Any) -> list[Any]:
+    """The OpenAI-door routes (Starlette -- no extra web framework on top of what the MCP
+    SDK already brings)."""
+    from starlette.routing import Route
 
-    @api.get(MODELS_PATH)
+    handlers = _handlers(state)
+    return [Route(MODELS_PATH, handlers["models"], methods=["GET"]),
+            Route(COMPLETIONS_PATH, handlers["chat"], methods=["POST"])]
+
+
+def _handlers(state: Any) -> dict[str, Any]:
+    from starlette.responses import JSONResponse, StreamingResponse
+
     async def list_models(request: Request) -> Any:
         client = request.scope["kratos.client"]
         now = int(state.started_at)
         data = [{"id": mid, "object": "model", "created": now, "owned_by": "kratos"} for mid, _t in models_for(client)]
+        body = {"object": "list", "data": data}
         await asyncio.to_thread(_store.audit, state.data_dir, door="openai", endpoint=MODELS_PATH, status="ok",
-                                token_id=client.token_id, client_addr=_peer(request))
-        return JSONResponse({"object": "list", "data": data})
+                                token_id=client.token_id, client_addr=_peer(request), bytes_out=len(json.dumps(body)))
+        return JSONResponse(body)
 
-    @api.post(COMPLETIONS_PATH)
     async def chat_completions(request: Request) -> Any:
         client = request.scope["kratos.client"]
         started = time.monotonic()
@@ -380,12 +399,12 @@ def install(api: Any, state: Any) -> None:
 
         task = client_task_reply(message)
         if task is not None:
-            await asyncio.to_thread(audit, "task", model=model, target=target)
+            await asyncio.to_thread(audit, "task", model=model, target=target, bytes_out=len(task))
             return _respond_text(task, model=model, stream=stream, reasoning=False)
         cmd = await asyncio.to_thread(command_reply, message, target=target, data_dir=state.data_dir) \
             if message.startswith("/") else None
         if cmd is not None:
-            await asyncio.to_thread(audit, "ok", model=model, target=target, detail="command")
+            await asyncio.to_thread(audit, "ok", model=model, target=target, detail="command", bytes_out=len(cmd))
             return _respond_text(cmd, model=model, stream=stream)
 
         limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
@@ -398,7 +417,7 @@ def install(api: Any, state: Any) -> None:
         refusal = await asyncio.to_thread(_precheck, target, state.data_dir)
         if refusal is not None:
             await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
-            return _respond_text(_render.kratos_text_markdown(refusal), model=model, stream=stream)
+            return _respond_text(_render.kratos_note_markdown(refusal), model=model, stream=stream)
 
         convo = [*earlier, ("user", message)]
         key = chat_key(headers, client.token_id, model, convo, message)
@@ -417,6 +436,21 @@ def install(api: Any, state: Any) -> None:
                                      media_type="text/event-stream",
                                      headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
         return await _complete(handle, worker, request, model=model, on_done=finished)
+
+
+    return {"models": list_models, "chat": chat_completions}
+
+def _record_chat_turn(data_dir: Path, session_id: str, message: str, reply: str) -> None:
+    """A turn that answered without investigating, saved like the TUI's chat turns."""
+    from kratos.storage.session_store import SessionStore
+
+    store = SessionStore(data_dir / "kratos.db")
+    turn_id = store.start_turn(session_id, message)
+    d = data_dir / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{session_id}_turn{turn_id}.json"
+    path.write_text(json.dumps([{"final_answer": reply}], indent=2), encoding="utf-8")
+    store.complete_turn(turn_id, "chat_reply", transcript_ref=str(path))
 
 
 def _peer(request: Any) -> str:
@@ -473,7 +507,7 @@ def _chunk(cid: str, created: int, model: str, delta: dict[str, Any], finish: st
 
 
 def _respond_text(text: str, *, model: str, stream: bool, reasoning: bool = True) -> Any:
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from starlette.responses import JSONResponse, StreamingResponse
 
     cid, created = _completion_id(), int(time.time())
     if not stream:
@@ -562,7 +596,7 @@ async def _audit_when_done(handle: TurnHandle, worker: "asyncio.Task[Any]",
 
 async def _complete(handle: TurnHandle, worker: "asyncio.Task[Any]", request: Any, *, model: str,
                     on_done: Callable[[dict[str, Any], int], None]) -> Any:
-    from fastapi.responses import JSONResponse
+    from starlette.responses import JSONResponse
 
     while not worker.done():
         if await request.is_disconnected():

@@ -56,8 +56,9 @@ def _host_list(value: Any) -> list[str]:
 
 
 for _spec in (
-    SettingSpec(PORT, 8765, _int_range(1024, 65535, "a port number"),
-                "The port `kratos serve` listens on (on 127.0.0.1 unless you start it with --host)."),
+    SettingSpec(PORT, 8770, _int_range(1024, 65535, "a port number"),
+                "The port `kratos serve` listens on (on 127.0.0.1 unless you start it with --host). Not 8765: "
+                "that is the sub-agent listener's."),
     SettingSpec(ALLOW_NON_LOOPBACK, False, _bool,
                 "Allow `kratos serve --host <address>` to listen on an address other than this machine's own "
                 "(127.0.0.1). Tokens then travel in clear text unless a TLS reverse proxy is in front."),

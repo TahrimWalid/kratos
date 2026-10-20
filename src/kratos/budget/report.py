@@ -54,7 +54,7 @@ def today(data_dir: Path, now: float | None = None) -> Today:
     lim = L.read(data_dir)
     scopes = (
         ScopeStatus(L.SCOPE_DAILY_COST, "Today, everything", totals.cost_usd, lim.daily_cost_usd),
-        ScopeStatus(L.SCOPE_UNATTENDED_COST, "Today, unattended (schedules, triggers, MCP)",
+        ScopeStatus(L.SCOPE_UNATTENDED_COST, "Today, unattended (schedules, triggers, MCP, chat clients)",
                     totals.unattended_cost_usd, lim.unattended_daily_cost_usd),
         ScopeStatus(L.SCOPE_DAILY_TOKENS, "Today, local or unpriced models", totals.unpriced_tokens, lim.daily_tokens),
     )

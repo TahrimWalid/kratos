@@ -239,7 +239,7 @@ def _parse(response: str) -> RouteResult:
     return RouteResult(kind="chat", reply=text)
 
 
-def route_message(message: str, resume_context: str = "") -> RouteResult:
+def route_message(message: str, resume_context: str = "", *, capture_stderr: bool = True) -> RouteResult:
     """One no-tools LLM call classifying the user's message into a control
     request, an investigation, or a chat reply (kind == 'failed' with a reason
     when the LLM itself is unreachable, matching cli/repl._route_input's own
@@ -254,13 +254,20 @@ def route_message(message: str, resume_context: str = "") -> RouteResult:
         framed = untrusted.frame_text(resume_context, kind="session_context", run_id=untrusted.new_run_tag(),
                                       call_id=untrusted.new_call_id(0))
         full = f"[Recent session context:]\n{framed}\n\n[User's new message:] {message}"
-    captured = io.StringIO()
-    with contextlib.redirect_stderr(captured):
+    if not capture_stderr:
+        # kratos serve: redirect_stderr swaps sys.stderr for the whole process, unsafe while
+        # other requests run on other threads.
         response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
-    if response is None:
-        detail = captured.getvalue().strip().splitlines()
-        reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
-        return RouteResult(kind="failed", reason=reason)
+        if response is None:
+            return RouteResult(kind="failed", reason="the model did not answer")
+    else:
+        captured = io.StringIO()
+        with contextlib.redirect_stderr(captured):
+            response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
+        if response is None:
+            detail = captured.getvalue().strip().splitlines()
+            reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
+            return RouteResult(kind="failed", reason=reason)
     result = _parse(response)
     if result.kind == "investigate_host" and not explicit_self_reference(message):
         return RouteResult(kind="clarify_host")  # "this machine" could be either: ask

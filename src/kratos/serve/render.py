@@ -5,8 +5,8 @@ analysis -- in that order, none dropped or reworded. Markdown is a display that 
 images and makes links clickable, so each part goes out by the rule for what it is:
 
 * the findings block and the NOTEs are Kratos's own text, but they quote machine text
-  (titles, accounts, file names): each goes out as a fenced code block, verbatim -- the
-  same characters the TUI shows, nothing rendered;
+  (titles, accounts, file names): each line goes out verbatim in an inline code span --
+  the same characters the TUI shows, nothing rendered, and it wraps in a chat window;
 * the model's analysis is prose: `untrusted.for_markdown` -- formatting kept, images
   removed, links and bare addresses defanged unless their host is on `serve.link_hosts`,
   raw HTML escaped, code blocks re-fenced;
@@ -31,6 +31,27 @@ def _split_answer(final_answer: str, parts: dict[str, str] | None) -> tuple[str,
     if block + notes + analysis != final_answer:
         return None
     return block, notes, analysis
+
+
+def _kratos_lines(text: str, *, quote: bool = False) -> str:
+    """Kratos's own text that quotes machine values, line by line: each line's characters
+    exactly as the TUI shows them, inside an inline code span (nothing in it renders, and
+    unlike a code block it wraps in a chat window). A "- item" line stays a list item;
+    `quote` puts each paragraph (a NOTE) in a block quote."""
+    out: list[str] = []
+    for para in [p for p in text.split("\n\n") if p.strip()]:
+        lines = []
+        for line in para.split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("- "):
+                lines.append("- " + untrusted.md_code(stripped[2:]))
+            else:
+                lines.append(untrusted.md_code(stripped) + "  ")
+        chunk = "\n".join(lines)
+        out.append("\n".join("> " + x for x in chunk.split("\n")) if quote else chunk)
+    return "\n\n".join(out)
 
 
 def command_markdown(cmd: dict[str, Any]) -> str:
@@ -68,9 +89,9 @@ def answer_markdown(final_answer: str, parts: dict[str, str] | None = None,
     else:
         block, notes, analysis = split
         if block.strip():
-            out.append(untrusted.md_block(block.strip("\n")))
+            out.append(_kratos_lines(block))
         if notes.strip():
-            out.append(untrusted.md_block(notes.strip("\n")))
+            out.append(_kratos_lines(notes, quote=True))
         if analysis.strip():
             out.append(untrusted.for_markdown(analysis.strip("\n"), link_hosts=link_hosts))
     cmds = [c for c in (recommended_commands or []) if isinstance(c, dict)]
@@ -86,8 +107,13 @@ def chat_markdown(reply: str, *, link_hosts: Any = ()) -> str:
 
 
 def kratos_text_markdown(text: str) -> str:
-    """Kratos-written text that quotes machine values (a /findings list): one code block."""
+    """Kratos-written text that quotes machine values (a /findings list, /help): one code block."""
     return untrusted.md_block(text)
+
+
+def kratos_note_markdown(text: str) -> str:
+    """A short Kratos-written message (a refusal, a limit): inert, and it wraps."""
+    return _kratos_lines(text)
 
 
 def progress_markdown(line: str) -> str:

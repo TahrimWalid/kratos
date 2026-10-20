@@ -52,7 +52,7 @@ def read(data_dir: Path) -> dict[str, Any]:
 
 
 def summary(data_dir: Path) -> str:
-    """One plain line: "running on 127.0.0.1:8765, 1 investigation running, 2 tokens"."""
+    """One plain line: "running on 127.0.0.1:8770, 1 investigation running, 2 tokens"."""
     from kratos.serve import store as _store
 
     st = read(data_dir)
