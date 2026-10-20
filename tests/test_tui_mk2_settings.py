@@ -508,8 +508,10 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             screen.query_one(TabbedContent).active = "tab-general"
             await pilot.pause()
             gen = screen.query_one("#gen-table", DataTable)
-            assert gen.row_count == 21           # name / theme / timezone / two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy settings
-            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, "")]:
+            monkeypatch.setattr(screen, "_set_serve_setting_flow", lambda key: fired.append(key))
+            assert gen.row_count == 27           # name / theme / timezone / two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy + six chat-server settings
+            for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, ""),
+                                  (26, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
                 await pilot.pause()
@@ -517,7 +519,7 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
 
     assert asyncio.run(_run()) == ["theme", "timezone", "name", "findings.accept_max_days",
                                    "findings.default_view", "logs.seal_verify_interval_minutes",
-                                   "logs.seal_copy_budget_mb"]
+                                   "logs.seal_copy_budget_mb", "serve.link_hosts"]
 
 
 def test_general_tab_saves_the_longest_risk_acceptance(tmp_path, monkeypatch):
@@ -569,7 +571,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 21     # name / theme / timezone + two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy settings
+    assert gen == 27     # name / theme / timezone + two finding + two sealing + six collection + two vulnerability-data + four run-record + two privacy + six chat-server settings
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
@@ -679,3 +681,32 @@ def test_this_session_tab_log_sealing_row_dispatches(tmp_path, monkeypatch):
             return fake.calls
 
     assert asyncio.run(_run()) == [("seal",)]
+
+
+def test_general_tab_saves_a_chat_server_setting(tmp_path, monkeypatch):
+    from kratos import settings_store
+    from kratos.serve import settings as SS
+
+    _write_env(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _ScreenHost(SettingsScreen(data_dir=tmp_path))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            screen.query_one(TabbedContent).active = "tab-general"
+            await pilot.pause()
+            screen._set_serve_setting_flow(SS.MAX_PARALLEL)
+            await pilot.pause()
+            app.screen.query_one("#prompt-input").value = "99"     # refused: 1-8
+            await pilot.press("enter")
+            await pilot.pause()
+            refused = settings_store.get(SS.MAX_PARALLEL, data_dir=tmp_path)
+            screen._set_serve_setting_flow(SS.MAX_PARALLEL)
+            await pilot.pause()
+            app.screen.query_one("#prompt-input").value = "3"
+            await pilot.press("enter")
+            await pilot.pause()
+            return refused, settings_store.get(SS.MAX_PARALLEL, data_dir=tmp_path)
+
+    assert asyncio.run(_run()) == (2, 3)
