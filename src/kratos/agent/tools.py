@@ -88,6 +88,7 @@ from kratos.adapters.ssh_remote import (
 from kratos.adapters.baseline import (
     save_file_integrity_baseline as _save_file_integrity_baseline,
     load_file_integrity_baseline as _load_file_integrity_baseline,
+    baseline_is_for as _baseline_is_for,
     diff_file_integrity as _diff_file_integrity,
     save_file_integrity_diff as _save_file_integrity_diff,
 )
@@ -1241,14 +1242,16 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
     if isinstance(current, _SSHResult):
         return {"status": "error", "observation": f"File integrity check {_remote_failure(current)}"}
 
-    existing = _load_file_integrity_baseline(data_dir, baseline_name)
+    existing = _load_file_integrity_baseline(data_dir, baseline_name, target)
     fell_back_from: str | None = None
     if existing is None:
         # A fresh baseline_name must NOT silently establish a new baseline on a
         # possibly-tampered system (that always returns "no diff" and misses real
         # changes -- a confirmed detection gap). Fall back to the most recent
-        # EXISTING baseline of ANY name and diff against it; only establish a
-        # brand-new baseline if truly none exists yet.
+        # EXISTING baseline of ANY name taken on THIS machine and diff against it;
+        # only establish a brand-new baseline if this machine has none yet. (Another
+        # machine's baseline would make every file look changed -- seen live with two
+        # machines in one data folder, B.3.)
         bdir = Path(data_dir) / "baseline"
         if bdir.exists():
             candidates = sorted(
@@ -1258,11 +1261,13 @@ def tool_check_file_integrity(data_dir: Path, baseline_name: str = "default") ->
             )
             for cand in candidates:
                 try:
-                    existing = json.loads(cand.read_text(encoding="utf-8"))
-                    fell_back_from = cand.stem.replace("file_integrity_", "", 1)
-                    break
+                    snap = json.loads(cand.read_text(encoding="utf-8"))
                 except Exception:  # noqa: BLE001
                     continue
+                if _baseline_is_for(snap, target):
+                    existing = snap
+                    fell_back_from = str(snap.get("baseline_name") or cand.stem.replace("file_integrity_", "", 1))
+                    break
     if existing is None:
         baseline_path = _save_file_integrity_baseline(data_dir, baseline_name, target, current)
         return {

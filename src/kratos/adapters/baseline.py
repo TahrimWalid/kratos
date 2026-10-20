@@ -275,9 +275,30 @@ def diff_baseline(baseline: dict[str, Any], current: BaselineSnapshot) -> dict[s
 # transitioned between present and missing, not that the tracked path list
 # itself changed (it's a fixed set of critical paths).
 # ---------------------------------------------------------------------------
-def _integrity_baseline_path(data_dir: Path, baseline_name: str) -> Path:
-    safe_name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in baseline_name) or "default"
+def _safe(text: str) -> str:
+    return "".join(c if (c.isalnum() or c in "-_") else "_" for c in text)
+
+
+def _integrity_baseline_path(data_dir: Path, baseline_name: str, target: str | None = None) -> Path:
+    """`file_integrity_<machine>__<name>.json`, one baseline per machine and name. Without a
+    target: the pre-B.3 single file per name (read only when its stored machine matches)."""
+    safe_name = _safe(baseline_name) or "default"
+    if target:
+        from kratos.target_key import target_key
+
+        return data_dir / "baseline" / f"file_integrity_{_safe(target_key(target))}__{safe_name}.json"
     return data_dir / "baseline" / f"file_integrity_{safe_name}.json"
+
+
+def baseline_is_for(snapshot: dict[str, Any] | None, target: str | None) -> bool:
+    """Whether a stored baseline was taken on `target` (compared as target keys). A
+    baseline of another machine must never be diffed against this one: every file would
+    look changed."""
+    if not isinstance(snapshot, dict) or not target:
+        return False
+    from kratos.target_key import target_key
+
+    return target_key(str(snapshot.get("target") or "")) == target_key(target)
 
 
 def save_file_integrity_baseline(
@@ -286,7 +307,7 @@ def save_file_integrity_baseline(
     target: str,
     hashes: dict[str, str | None],
 ) -> Path:
-    path = _integrity_baseline_path(data_dir, baseline_name)
+    path = _integrity_baseline_path(data_dir, baseline_name, target)
     path.parent.mkdir(parents=True, exist_ok=True)
     snapshot = {
         "baseline_name": baseline_name,
@@ -298,11 +319,19 @@ def save_file_integrity_baseline(
     return path
 
 
-def load_file_integrity_baseline(data_dir: Path, baseline_name: str) -> dict[str, Any] | None:
-    path = _integrity_baseline_path(data_dir, baseline_name)
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+def load_file_integrity_baseline(data_dir: Path, baseline_name: str,
+                                 target: str | None = None) -> dict[str, Any] | None:
+    """The baseline `baseline_name` taken on `target` -- its own file, else a pre-B.3 file of
+    that name whose stored machine is `target`. With no target, the legacy file as before."""
+    paths = [_integrity_baseline_path(data_dir, baseline_name, target)] if target else []
+    paths.append(_integrity_baseline_path(data_dir, baseline_name))
+    for path in paths:
+        if not path.exists():
+            continue
+        snapshot = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        if target is None or baseline_is_for(snapshot, target):
+            return snapshot
+    return None
 
 
 def diff_file_integrity(
