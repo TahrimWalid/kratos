@@ -805,3 +805,14 @@ def test_simultaneous_mcp_starts_never_exceed_the_hourly_limit(env):
     outs = [_mcp_call(env, "kratos_start_investigation", {"goal": f"g{i}", "target": T1}) for i in range(4)]
     started = [o for o in outs if "investigation_id" in o]
     assert len(started) == 2 and all("hour" in o["error"] for o in outs if "error" in o)
+
+
+def test_stopping_the_server_stops_and_joins_running_mcp_investigations(env):
+    env["state"]["sleep"] = 30.0                      # would run for 30 s
+    out = _mcp_call(env, "kratos_start_investigation", {"goal": "long", "target": T1})
+    job = env["app"].state.investigations.get(env["token"].split("_")[1], out["investigation_id"])
+    assert job.thread.is_alive()
+    t0 = time.monotonic()
+    env["client"].__exit__(None, None, None)          # lifespan shutdown
+    assert not job.thread.is_alive() and time.monotonic() - t0 < 5
+    assert job.status == "stopped"

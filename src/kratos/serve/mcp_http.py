@@ -52,6 +52,7 @@ class Job:
     finished: float | None = None
     stop: threading.Event = field(default_factory=threading.Event)
     session_id: str | None = None
+    thread: threading.Thread | None = None
 
     def view(self) -> dict[str, Any]:
         out: dict[str, Any] = {"investigation_id": self.investigation_id, "status": self.status,
@@ -100,6 +101,21 @@ class Investigations:
     def running(self) -> int:
         with self._lock:
             return sum(1 for j in self._jobs.values() if j.finished is None)
+
+    def shutdown(self, timeout: float = 10.0) -> int:
+        """The server is stopping: ask every running investigation to stop (it ends before
+        its next model call or tool dispatch) and wait for its thread, up to `timeout` in
+        all. Returns how many were still running afterwards (their turn then reads
+        `interrupted` after the restart)."""
+        with self._lock:
+            live = [j for j in self._jobs.values() if j.finished is None]
+        for job in live:
+            job.stop.set()
+        deadline = time.monotonic() + timeout
+        for job in live:
+            if job.thread is not None:
+                job.thread.join(max(0.0, deadline - time.monotonic()))
+        return sum(1 for j in live if j.thread is not None and j.thread.is_alive())
 
 
 _TURN_STATUS = {"final_answer": "done", "max_iters_reached": "done", "stopped_by_budget": "done",
@@ -249,8 +265,9 @@ def build(state: Any) -> tuple[Any, Any]:
             raise ValueError(f"this token has used its {limit} investigations for this hour (serve.requests_per_hour)")
         try:
             job = state.investigations.new(client.token_id, resolved, goal)
-            threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
-                             name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True).start()
+            job.thread = threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
+                                          name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True)
+            job.thread.start()
         except BaseException:
             state.release_metered(client.token_id)
             raise

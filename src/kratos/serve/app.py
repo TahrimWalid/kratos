@@ -271,6 +271,9 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
             async with session_manager.run():
                 yield
         finally:
+            # Stopping: running MCP investigations are told to stop and waited for (off the
+            # event loop), so nothing keeps reading a machine after the server is gone.
+            await asyncio.to_thread(state.investigations.shutdown)
             state.note_runs(running=False)
 
     async def too_large(request: Any, exc: Exception) -> Any:
