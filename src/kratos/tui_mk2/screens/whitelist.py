@@ -531,11 +531,14 @@ class WhitelistScreen(Screen):
         try:
             from kratos.triage.offers import retest_offer, retest_offer_text
 
-            from kratos.kratos_config import get_active_target
-            offer = retest_offer(self._data_dir, getattr(spec, "source_recommendation", ()),
-                                 get_active_target() or None)
-            if offer is not None:
-                self._log(Text(retest_offer_text(offer), style=T.TEXT_FAINT))
+            # The machine the action ran on: the investigated host(s) linked to this
+            # sub-agent -- not whichever machine happens to be active (Phase B audit).
+            hosts = [link["host"] for link in self._sa_store.list_links() if link.get("target_id") == self._target_id]
+            for host in hosts:
+                offer = retest_offer(self._data_dir, getattr(spec, "source_recommendation", ()), host)
+                if offer is not None:
+                    self._log(Text(retest_offer_text(offer), style=T.TEXT_FAINT))
+                    break
         except Exception:  # noqa: BLE001 -- an offer must never break a dispatch
             pass
 

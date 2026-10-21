@@ -1048,7 +1048,7 @@ def _cmd_findings_triage(args: argparse.Namespace, data_dir: Path, tz) -> int:
         for r in serious:
             _rec, latest, _ev = Q.get_finding(data_dir, r["finding_key"])
             latest.setdefault("first_seen", r.get("first_seen"))   # so an occurrence re-measure uses its real window
-            v = TR.verify_finding(latest, data_dir=data_dir, target=target or r["target"])
+            v = TR.verify_finding(latest, data_dir=data_dir, target=TR.machine_of(r["target"], target))
             out.append((r, v))
             print(f"  {short(r['finding_key'])}  {r['rule_id']:<14} {v.tag()}")
         if args.json:
@@ -1066,7 +1066,7 @@ def _cmd_findings_triage(args: argparse.Namespace, data_dir: Path, tz) -> int:
     if action == "recheck":
         _rec, latest, _ev = Q.get_finding(data_dir, full)
         latest.setdefault("first_seen", _rec.get("first_seen"))
-        v = TR.verify_finding(latest, data_dir=data_dir, target=target or _rec["target"])
+        v = TR.verify_finding(latest, data_dir=data_dir, target=TR.machine_of(_rec["target"], target))
         if args.json:
             print(json.dumps({"finding_key": full, "verdict": v.as_dict()}, indent=2, sort_keys=True))
             return 0

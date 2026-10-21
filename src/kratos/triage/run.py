@@ -245,7 +245,7 @@ def retest(finding_key: str, *, data_dir: Path, target: str | None = None,
         rec = _lc.get_record(conn, full)
         before_state = rec["state"]
         rule_id, rec_target = rec["rule_id"], rec["target"]
-    tgt = target or _target_for(rec_target)
+    tgt = machine_of(rec_target, target)
     check_names = _covering_check_names(rule_id)
     report = _recollect(tgt, data_dir, check_names, run=run) if check_names else None
     # The forced collection + correlation already ran the lifecycle update (write_findings_report
@@ -264,11 +264,17 @@ def retest(finding_key: str, *, data_dir: Path, target: str | None = None,
     }
 
 
-def _target_for(rec_target: str) -> str:
-    from kratos import kratos_config
+def machine_of(rec_target: str, wanted: str | None = None) -> str:
+    """The machine a finding is re-checked on: always its OWN machine. `wanted` (the
+    caller's active or chosen machine) is used only when it names that same machine (its
+    spelling may carry more, e.g. a host name's case) -- a finding on one machine is never
+    judged against another machine's reads (Phase B audit: /findings lists every machine,
+    and k/t on another machine's row re-read the active one)."""
+    from kratos.target_key import target_key
 
-    active = (kratos_config.get_active_target() or "").strip()
-    return active or rec_target
+    if wanted and target_key(wanted) == target_key(rec_target):
+        return str(wanted).strip()
+    return rec_target
 
 
 def _covering_check_names(rule_id: str) -> list[str]:

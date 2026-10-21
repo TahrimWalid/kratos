@@ -57,3 +57,26 @@ def test_retest_incomplete_read_leaves_it_open(tmp_path, monkeypatch):
     assert out["after_state"] == "open"
     assert out["fixed"] is False
     assert out["incomplete"] and "SSH down" in out["incomplete"]
+
+
+def test_a_finding_is_retested_on_its_own_machine_not_the_active_one(tmp_path, monkeypatch):
+    """Phase B audit: /findings lists every machine; retest/re-check of another machine's
+    finding used the ACTIVE machine and judged the finding against that machine's reads."""
+    key = _seed_open(tmp_path)
+    seen = {}
+
+    def fake_recollect(target, data_dir, names, *, run):
+        seen["recollect"] = target
+        return _report(ok=True)
+
+    def fake_verify(finding, **kw):
+        seen["verify"] = kw["target"]
+        return Verdict("reproduced", "still there")
+
+    monkeypatch.setattr(R, "_recollect", fake_recollect)
+    monkeypatch.setattr(R, "verify_finding", fake_verify)
+    R.retest(key, data_dir=tmp_path, target="10.0.0.99")          # the active machine is another one
+    assert seen == {"recollect": TARGET, "verify": TARGET}
+    assert R.machine_of(TARGET, None) == TARGET
+    assert R.machine_of(TARGET, "10.0.0.99") == TARGET
+    assert R.machine_of("web-01.example", "Web-01.Example") == "Web-01.Example"   # same machine, its spelling

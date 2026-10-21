@@ -475,7 +475,7 @@ class FindingsScreen(Screen):
         self.app.call_from_thread(self.note, Text(f"Re-checking {row['rule_id']}…", style=T.TEXT_DIM))
         _rec, latest, _ev = Q.get_finding(self._data_dir, row["finding_key"])
         latest.setdefault("first_seen", row.get("first_seen"))   # occurrence re-measure window
-        tgt = get_active_target() or row["target"]
+        tgt = TR.machine_of(row["target"], get_active_target() or None)   # the finding's own machine
         try:
             with run_scope("interactive", target=tgt):   # a thread worker opens its own scope
                 v = TR.verify_finding(latest, data_dir=self._data_dir, target=tgt)
@@ -495,9 +495,10 @@ class FindingsScreen(Screen):
         from kratos.run_context import run_scope
 
         self.app.call_from_thread(self.note, Text(f"Retesting {row['rule_id']}… (re-collecting)", style=T.TEXT_DIM))
+        tgt = TR.machine_of(row["target"], get_active_target() or None)   # the finding's own machine
         try:
-            with run_scope("interactive", target=get_active_target() or None):
-                out = TR.retest(row["finding_key"], data_dir=self._data_dir, target=get_active_target() or None)
+            with run_scope("interactive", target=tgt):
+                out = TR.retest(row["finding_key"], data_dir=self._data_dir, target=tgt)
         except Exception as e:  # noqa: BLE001
             self.app.call_from_thread(self.note, Text(f"Could not retest: {e}", style=T.ATTENTION))
             return
