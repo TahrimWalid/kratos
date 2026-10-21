@@ -421,3 +421,19 @@ def test_a_decided_high_finding_is_marked_in_the_notification_list():
                                      {"id": "PRIV-002", "severity": "high", "title": "UID 0", "state": "open"}])
     assert "[HIGH] CORR-SSH-001 — SSH exposed  (risk accepted — hidden)" in msg
     assert "[HIGH] PRIV-002 — UID 0" in msg and "PRIV-002 — UID 0  (" not in msg
+
+
+def test_the_report_is_about_the_schedules_machine_not_the_processes(tmp_path, monkeypatch):
+    """C.1 audit of the lab path: the run restored the process's own target before writing
+    its report, so a schedule for another machine recorded its findings under "unknown"."""
+    import json
+
+    sch = S.save_schedule(tmp_path, name="other", kind="audit", target="198.51.100.30", cadence="daily",
+                          deliver=["ntfy"])
+    monkeypatch.setattr("kratos.agent.pipeline.execute_tool_call", _audit_dispatch([]))
+    monkeypatch.setattr("kratos.agent.loop.execute_tool_call", _audit_dispatch([]))
+    rec = W.run_scheduled(sch, tmp_path, notifier=_Spy())
+    report = json.loads(open(rec["report_json"], encoding="utf-8").read())
+    assert report["lifecycle"]["target"] == "198.51.100.30"
+    from kratos import kratos_config
+    assert kratos_config.get_active_target() == "10.136.28.168"          # and the process's own is restored

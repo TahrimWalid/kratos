@@ -676,11 +676,14 @@ def _run_scheduled(
         if prior_target is not None:
             _kconfig.set_active_target(prior_target)
 
-    # Persist the report to disk FIRST (never lose it to a delivery failure).
+    # Persist the report to disk FIRST (never lose it to a delivery failure). Pinned to the
+    # schedule's machine: the process's own target was restored above, and a report written
+    # for no machine put this run's findings under "unknown" (each one "new" every run).
     report_json: Optional[str] = None
     report_md: Optional[str] = None
     try:
-        j, m = write_findings_report(data_dir)
+        with _kconfig.pinned_target(target):
+            j, m = write_findings_report(data_dir)
         report_json, report_md = str(j), str(m)
     except Exception as e:  # noqa: BLE001 -- a report-write failure shouldn't sink the run record
         error = (error + "; " if error else "") + f"report write failed: {e}"
