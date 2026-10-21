@@ -41,7 +41,11 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
     unchecked = [f"{c.label} ({c.rules})" for c in report.coverage if c.state == "not_checked"]
     partial = [f"{c.label} ({c.rules}): {c.note.split(' -- ')[0]}" for c in report.coverage if c.state == "partial"]
     if unchecked or partial:
-        gaps.append("detection rules not checked here (the machine doesn't give their logs): "
+        from kratos import settings_store
+        from kratos.detect import settings as DS
+
+        days = settings_store.get(DS.COVERAGE_DAYS, data_dir=ctx.data_dir)
+        gaps.append(f"detection rules with no log to read on this machine in the last {days} days: "
                     + "; ".join([", ".join(unchecked)] if unchecked else []) + ("; " if unchecked and partial else "")
                     + "; ".join(partial))
     if report.behind:

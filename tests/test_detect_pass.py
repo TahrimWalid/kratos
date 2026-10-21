@@ -413,3 +413,20 @@ def test_coverage_is_exact_even_when_one_program_floods_the_log(tmp_path):
     _store(tmp_path, *events)
     cov = {c.key: c for c in R.run_pass(A, tmp_path, now=NOW).coverage}
     assert cov["linux/sshd"].state == "checked"
+
+
+def test_the_check_tells_the_digest_on_schedule_and_what_it_could_not_read(tmp_path):
+    import time as _t
+
+    from kratos.collect.registry import CheckContext
+    from kratos.detect.check import SCHEDULE_NOTE, _run_detect
+
+    _store(tmp_path, exec_event(A, NOW - 60, "/usr/sbin/userdel", "userdel", "bob"))
+    ctx = CheckContext(target=A, target_key=A, data_dir=tmp_path, transport="local", dispatch=lambda *a: {},
+                       deadline=_t.monotonic() + 30, now=NOW)
+    res = _run_detect(ctx)
+    assert res.status == "ok" and SCHEDULE_NOTE in res.summary and USERDEL in res.summary
+    [gap] = res.coverage_gaps
+    assert gap.startswith("detection rules with no log to read on this machine in the last 7 days: ")
+    assert "file creation (5)" in gap and "SSH server log (1)" in gap and "program starts" not in gap
+    assert all(ch.isprintable() for ch in res.summary)       # Kratos-written words, rule ids and counts only
