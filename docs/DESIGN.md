@@ -1132,6 +1132,20 @@ start and file rules "not checked", never "nothing found"), a pass that fell beh
 refused imported pack. Matched log text never reaches a title; finding entities are validated
 values only. Alerts go through the existing triggers and notifier.
 
+**Kratos's own commands are not attacks.** With an execve audit rule, every program Kratos runs
+over SSH is in the audit log (a persistence read is thousands of `readlink`/`find` calls, and
+`find / -perm -4000` is exactly what SigmaHQ calls reconnaissance). `detect/own.py` sets those
+events aside -- and only those: sshd logs each login with the key's fingerprint and its pid; the
+audit login records of that pid carry the kernel's session id (`ses`), which every program of the
+login inherits and no other login can take on. A login made with Kratos's own key (fingerprint
+computed from `SSH_TARGET_KEY_PATH.pub`) is Kratos's. Because a first collection's log sync can
+start after the login record, the `detect` check also reads `/proc/self/sessionid` over Kratos's
+shared connection (only for machines whose audit log Kratos holds) and records it
+(`detect_own_sessions`). Session ids restart at boot and sshd pids are reused, so an id counts only
+inside that login's lifetime (login to logout, at most an hour; a directly read id ±10 minutes).
+Someone holding Kratos's private key would be treated as Kratos -- that key is the credential
+Kratos is trusted with. Through a sub-agent (root, no SSH session) this doesn't apply yet (C.2).
+
 **People decide the noise.** `detect_rule_overrides` holds a person's on/off per rule, per
 machine or everywhere, with who and why (refused inside an agent tool call, like every decision
 about findings). A single false alarm goes through the finding lifecycle instead.

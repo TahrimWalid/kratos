@@ -1042,11 +1042,20 @@ kratos detect import my-rules/       # compile your own Sigma rules (needs the '
 the rules not shipped (`s`), when the rules last ran here and what they could not check, and
 `r` to run them now. `/doctor` shows the pack version and when each machine was last checked.
 
+**Kratos's own commands don't count.** On a machine that records every program start, the
+audit log also holds the commands Kratos itself runs to check the machine (a search for setuid
+programs looks just like an attacker's reconnaissance). Kratos recognises its own SSH logins — by
+its key, in the machine's own logs — and leaves those commands out; another login on the same
+account is still checked. `kratos collect` says how many it set aside.
+
 **Your own rules.** `kratos detect import <file or folder>` compiles Sigma rules you wrote
 or picked (it needs pySigma: `pip install 'kratos-security-assistant[sigma]'`, Python 3.11+).
 Each is checked like the shipped ones: a rule that needs something Kratos can't do exactly is
 listed and left out. Counting rules (Sigma `event_count` correlations — "5 failed logins from
-one address within 5 minutes") are supported, grouped by one field. Imported rules live in
+one address within 5 minutes") are supported, grouped by one field — for SSH logs, `SourceIp`.
+Each group is its own finding: on a server open to the internet a per-address rule finds many
+scanners (27 addresses in one day on a real one), so mark the rule "not a real problem" for that
+machine in `/findings`, or keep it for machines that shouldn't see any. Imported rules live in
 `detect/packs/` in your data folder and run from the next pass on.
 
 ## Sealing a machine's logs
