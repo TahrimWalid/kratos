@@ -33,6 +33,6 @@ def test_nothing_under_evals_is_key_or_token_shaped():
 
 
 def test_the_scan_rejects_a_planted_recording(tmp_path):
-    bad = {"calls": [{"result": {"x": "reached 9.9.9.9 with AIza" + "SyA0123456789abcdefghijklmnopqrstuv"}}]}
+    bad = {"calls": [{"result": {"x": "reached 9.9.9.9 with " + "AIza" + "SyA0123456789abcdefghijklmnopqrstuv"}}]}
     probs = replay.scan_recording(bad)
     assert any("9.9.9.9" in p for p in probs) and any("key" in p.lower() for p in probs)
