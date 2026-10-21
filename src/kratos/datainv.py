@@ -139,7 +139,8 @@ CATEGORIES: tuple[Category, ...] = (
         "matches themselves are host events (dataset kratos.detect).",
         PERSONAL, "one row per detection pass per machine, one result file per pass, one row per rule change",
         files=("detect",),
-        tables=(TableRef(DB, ("detect_runs", "detect_rule_overrides"), ("detect_runs", "started_at")),),
+        tables=(TableRef(DB, ("detect_runs", "detect_rule_overrides", "detect_own_sessions"),
+                         ("detect_runs", "started_at")),),
         note="kept unless you delete it yourself; the matches are pruned with host events",
     ),
     Category(

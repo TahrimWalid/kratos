@@ -210,6 +210,8 @@ def to_parsed(ev: dict[str, Any]) -> Parsed:
     key = decode(sc_raw.get("key")) if sc_raw else None
     fields["audit_key"] = key or decode(fr.get("key"))
     fields["audit_syscall"] = (sc_enr.get("SYSCALL") or None) if sc_enr else None
+    ses = fr.get("ses") if fr.get("ses") is not None else (sc_raw.get("ses") if sc_raw else None)
+    fields["audit_session"] = ses if ses not in _UNSET and ses is not None and ses.isdigit() else None
     euid = sc_raw.get("euid") if sc_raw else None
     fields["user_effective_id"] = euid if euid not in _UNSET and euid is not None else None
     if action == "sudo_command":

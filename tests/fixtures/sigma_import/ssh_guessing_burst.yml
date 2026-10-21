@@ -1,0 +1,35 @@
+# A Sigma event_count correlation as a person would write it (Kratos test fixture, not a SigmaHQ rule).
+title: Failed SSH login
+id: 5a1f0c3e-1111-4c1a-9f00-c1c1c1c1c101
+name: kratos_test_failed_ssh_login
+status: test
+author: Kratos test fixture
+description: One failed SSH password or invalid-user attempt.
+logsource:
+    product: linux
+    service: sshd
+detection:
+    keywords:
+        - 'Failed password for'
+        - 'Invalid user'
+    condition: keywords
+level: low
+---
+title: SSH password guessing from one address
+id: 5a1f0c3e-2222-4c1a-9f00-c1c1c1c1c102
+status: test
+author: Kratos test fixture
+description: Four or more failed SSH logins from one address within five minutes.
+correlation:
+    type: event_count
+    rules:
+        - kratos_test_failed_ssh_login
+    group-by:
+        - SourceIp
+    timespan: 5m
+    condition:
+        gte: 4
+tags:
+    - attack.credential-access
+    - attack.t1110.001
+level: high

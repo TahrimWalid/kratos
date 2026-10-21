@@ -15,8 +15,14 @@ SCHEDULE_NOTE = "rules run on the logs Kratos collected (on schedule, not contin
 
 
 def _run_detect(ctx: CheckContext) -> CheckResult:
+    from kratos.detect import own
     from kratos.detect import run as detect_run
 
+    if ctx.transport == "ssh" and own.audited(ctx.data_dir, ctx.target):   # only where auditd records programs
+        try:
+            own.read_current_session(ctx.target, ctx.data_dir)   # so Kratos's own reads are never matches
+        except Exception:  # noqa: BLE001 -- the logs still tell Kratos's logins apart once synced
+            pass
     report = detect_run.run_pass(ctx.target, ctx.data_dir, deadline=ctx.deadline - 1.0)
     if report.status == "failed":
         reason = "; ".join(p.reason for p in report.packs if p.reason)[:300]
@@ -29,6 +35,8 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
         parts.append(f"{len(report.matches)} new match(es) of {len(rules_hit)} rule(s): {shown}")
     else:
         parts.append(f"no new matches in {report.events:,} new log event(s)")
+    if report.own_events:
+        parts.append(f"{report.own_events:,} of them Kratos's own commands, set aside")
     gaps: list[str] = []
     unchecked = [f"{c.label} ({c.rules})" for c in report.coverage if c.state == "not_checked"]
     partial = [f"{c.label} ({c.rules}): {c.note.split(' -- ')[0]}" for c in report.coverage if c.state == "partial"]

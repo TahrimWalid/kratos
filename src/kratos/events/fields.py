@@ -175,6 +175,8 @@ FIELDS: tuple[Field, ...] = (
           doc="Every PATH record's name, in record order, at most 32."),
     Field("kratos.audit.created_paths", "audit_created_paths", "keyword[]", max_len=4096,
           doc="The PATH names auditd recorded as created (nametype=CREATE)."),
+    Field("kratos.audit.session", "audit_session", "keyword", max_len=16,
+          doc="The login session auditd recorded (ses): every program started in one SSH login shares it."),
     # C.1: a detection (dataset kratos.detect, event.kind alert).
     Field("kratos.detect.matched", "detect_matched", "keyword[]", max_len=64,
           doc="The IDs of the stored events a detection matched, at most 100."),

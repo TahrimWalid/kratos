@@ -18,15 +18,20 @@ AUTH_PROGRAMS = frozenset({"sshd", "sshd-session", "sudo"})
 def to_auth_event(rec: Any, target: str) -> Any | None:
     from kratos.adapters.auth_log_parse import classify_auth_message
 
-    prog, _pid, msg, _orig, _cursor = record_parts(rec)
+    import dataclasses
+
+    prog, pid, msg, _orig, _cursor = record_parts(rec)
     if prog not in AUTH_PROGRAMS or not msg:
         return None
     ts = datetime.fromtimestamp(rec.ts, timezone.utc).isoformat()
     if prog == "sudo":
         from kratos.logsources.parsers.sudo import _with_tty
 
-        return classify_auth_message(ts, target, prog, _with_tty(msg), msg)
-    return classify_auth_message(ts, target, prog, msg, msg)
+        ev = classify_auth_message(ts, target, prog, _with_tty(msg), msg)
+    else:
+        ev = classify_auth_message(ts, target, prog, msg, msg)
+    # the journal gives the pid apart from the message (C.1: an sshd login's pid ties it to its audit session)
+    return dataclasses.replace(ev, pid=pid) if pid is not None else ev
 
 
 def parse(read: Any, target: str = "") -> list[Any]:

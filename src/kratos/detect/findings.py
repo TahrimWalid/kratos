@@ -177,6 +177,7 @@ def write_snapshot(data_dir: Path | str, target: str, report: Any, loaded: Any, 
         "coverage": [{"key": c.key, "label": c.label, "state": c.state, "rules": c.rules, "note": c.note}
                      for c in report.coverage],
         "disabled": list(report.disabled),
+        "kratos_own_events": int(getattr(report, "own_events", 0)),
         "detections": summarize(data_dir, target, now=now, loaded=loaded),
     }
     folder = data_dir / RESULTS_DIR

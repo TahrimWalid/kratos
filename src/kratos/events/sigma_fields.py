@@ -45,6 +45,10 @@ def _eq(f: str, v: str) -> dict[str, Any]:
 _SYSLOGISH = ("kratos.auth", "kratos.journal", "kratos.privileged_accounts", "kratos.cron", "kratos.systemd",
               "kratos.firewall")
 
+# Sign-in logs carry no Sigma fields of their own (SigmaHQ's sshd rules are keyword searches);
+# these let a person's counting rule group by the address a login came from (C.1).
+_AUTH = {"SourceIp": "source.ip"}
+
 # Process-start fields shared by the process and file rules.
 _PROCESS = {
     "Image": "process.executable",
@@ -59,10 +63,10 @@ LOGSOURCES: dict[LogsourceKey, Logsource] = {ls.key: ls for ls in (
               (*_SYSLOGISH, "kratos.auditd", "kratos.package"),
               needs="logs Kratos collects (log sync)"),
     Logsource(("linux", "auth", None), "sign-in and account logs", ("kratos.auth", "kratos.privileged_accounts"),
-              needs="the SSH/sudo log (log sync)"),
+              fields=dict(_AUTH), needs="the SSH/sudo log (log sync)"),
     Logsource(("linux", "sshd", None), "SSH server log", ("kratos.auth",),
               where={"op": "in", "field": "event.provider", "values": ["sshd", "sshd-session"], "cased": True},
-              needs="the SSH server's log (log sync)"),
+              fields=dict(_AUTH), needs="the SSH server's log (log sync)"),
     Logsource(("linux", "sudo", None), "sudo log", ("kratos.auth",), where=_eq("event.provider", "sudo"),
               needs="sudo's log (log sync)"),
     Logsource(("linux", "syslog", None), "system log", _SYSLOGISH, needs="the system log (log sync)"),
@@ -109,7 +113,7 @@ UNMAPPED: dict[str, str] = {
     "ParentImage": "needs the parent program's path; auditd records only the parent's process ID",
     "ParentCommandLine": "needs the parent program's command line; auditd records only the parent's process ID",
     "User": "needs the user each program runs as for every start; Kratos keeps the login user (auditd auid)",
-    "LogonId": "needs the audit session ID, which Kratos doesn't keep",
+    "LogonId": "Sysmon for Linux's logon id (0 for root logins); auditd's session number is a different thing",
     "OriginalFileName": "Windows file metadata; no Linux equivalent",
     "Hashes": "needs a hash of every program started; auditd doesn't record one",
     "nametype": "needs each PATH record's name and type together; Kratos keeps the names, and the created ones",

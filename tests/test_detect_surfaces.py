@@ -65,6 +65,7 @@ def test_answer_block_shows_the_author_and_never_says_package(tmp_path, monkeypa
     finding, _data, _md = _report(tmp_path, monkeypatch, severity_high=True)
     block = finding_facts.answer_block([finding], analysis="")
     assert CHATTR_AUDITD in block and f"rule by {AUTHOR}" in block
+    assert "checked on schedule, not continuously" in block
     assert "package" not in block
     assert "package" not in finding_facts.model_line(finding)
 

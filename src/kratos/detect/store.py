@@ -72,7 +72,21 @@ def _step_1(conn: sqlite3.Connection) -> None:
     )
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS detect_own_sessions (
+          target TEXT NOT NULL,              -- target_key
+          session TEXT NOT NULL,             -- the machine's audit session id of Kratos's own SSH login
+          first_seen REAL NOT NULL,
+          last_seen REAL NOT NULL,
+          PRIMARY KEY (target, session)
+        )
+        """
+    )
+
+
+STEPS = (_step_1, _step_2)
 
 
 def _connect(data_dir: Path | str) -> sqlite3.Connection:
@@ -261,3 +275,38 @@ def disabled_rules(data_dir: Path | str, target: str) -> set[str]:
 def disabled_everywhere(data_dir: Path | str) -> set[str]:
     """Rules turned off for every machine ('*')."""
     return {o.rule_id for o in overrides(data_dir) if o.target == EVERYWHERE and not o.enabled}
+
+
+def record_own_session(data_dir: Path | str, target: str, session: str, *, now: float | None = None) -> None:
+    """Kratos's own SSH login on `target` has audit session id `session` (read on the machine
+    from /proc/self/sessionid over Kratos's own connection: detect/own.py)."""
+    now = time.time() if now is None else now
+    conn = _connect(data_dir)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO detect_own_sessions (target, session, first_seen, last_seen) VALUES (?,?,?,?) "
+                     "ON CONFLICT(target, session) DO UPDATE SET last_seen = excluded.last_seen",
+                     (target_key(target), str(session), now, now))
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+def own_sessions_recorded(data_dir: Path | str, target: str, *, since: float,
+                          slack: float = 600.0) -> dict[str, list[tuple[float, float]]]:
+    """{session: [(from, to)]} -- when each recorded id was Kratos's, widened by `slack` (the
+    ids were read on Kratos's clock; events carry the machine's)."""
+    conn = _connect(data_dir)
+    try:
+        rows = conn.execute("SELECT session, first_seen, last_seen FROM detect_own_sessions WHERE target = ? "
+                            "AND last_seen >= ?", (target_key(target), since)).fetchall()
+    finally:
+        conn.close()
+    out: dict[str, list[tuple[float, float]]] = {}
+    for ses, first, last in rows:
+        out.setdefault(str(ses), []).append((float(first) - slack, float(last) + slack))
+    return out

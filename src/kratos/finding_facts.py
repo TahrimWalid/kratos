@@ -249,4 +249,7 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
                      + (f" ({untrusted.for_display(credit)[:160]})" if credit else "") + verdict)
     if len(items) > BLOCK_MAX:
         lines.append(f"  - and {len(items) - BLOCK_MAX} more serious finding(s): /findings lists them all")
+    if any(str(f.get("id") or "").startswith("SIGMA-") for f in items[:BLOCK_MAX]):
+        lines.append("  (SIGMA-* are detection rules run over the logs Kratos collected -- checked on schedule, "
+                     "not continuously)")
     return "\n".join(lines) + "\n\n"

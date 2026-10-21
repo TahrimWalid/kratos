@@ -4,6 +4,8 @@
     (root) CMDEND (run-parts /etc/cron.hourly)       cronie: it finished
     pam_unix(cron:session): session opened for user root(uid=0) by (uid=0)
     USER root pid 48302 cmd run-parts /etc/periodic/15min      BusyBox crond
+    (root) REPLACE (ubuntu)                          crontab: root replaced ubuntu's table (also DELETE,
+                                                     BEGIN EDIT / END EDIT, LIST)
 """
 from __future__ import annotations
 
@@ -16,7 +18,10 @@ _CMD = re.compile(r"^\((?P<user>[^)\s]+)\) (?P<kind>CMD|CMDEND) \((?P<cmd>.*)\)\
 _SESSION = re.compile(r"pam_unix\(cron[^)]*:session\): session (?P<state>opened|closed) for user "
                       r"(?P<user>[^\s(]+)")
 _BUSYBOX = re.compile(r"^USER (?P<user>\S+) pid (?P<pid>\d+) cmd (?P<cmd>.*)$", re.DOTALL)
-_CRON_PROGS = {"cron", "CRON", "crond", "CROND"}
+_TABLE = re.compile(r"^\((?P<by>[^)\s]+)\) (?P<op>REPLACE|DELETE|BEGIN EDIT|END EDIT|LIST) \((?P<owner>[^)\s]+)\)\s*$")
+_TABLE_ACTIONS = {"REPLACE": "crontab_replaced", "DELETE": "crontab_deleted", "BEGIN EDIT": "crontab_edit_started",
+                  "END EDIT": "crontab_edited", "LIST": "crontab_listed"}
+_CRON_PROGS = {"cron", "CRON", "crond", "CROND", "crontab"}
 
 
 def _first_word(cmd: str) -> str | None:
@@ -39,6 +44,10 @@ def to_parsed(rec: Any) -> Parsed | None:
         fields.update(user_name=m.group("user"), process_command_line=m.group("cmd"),
                       process_name=_first_word(m.group("cmd")), process_pid=int(m.group("pid")),
                       process_parent_pid=pid)
+    elif m := _TABLE.match(msg):
+        action = _TABLE_ACTIONS[m.group("op")]
+        fields.update(user_name=m.group("by"), user_target_name=m.group("owner"), process_pid=pid,
+                      process_name="crontab")
     elif m := _SESSION.search(msg):
         action = "cron_session_opened" if m.group("state") == "opened" else "cron_session_closed"
         fields.update(user_name=m.group("user"), process_pid=pid)

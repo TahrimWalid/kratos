@@ -31,6 +31,7 @@ class AuthEvent:
     user: str | None             # target user (e.g., root) or invoking user (sudo)
     source_ip: str | None        # where it came from, if available
     raw: str                     # original log line (useful for debugging & traceability)
+    pid: int | None = None       # the logging program's pid, when the source gives it apart from the line
 
 
 # --- Prefix formats ---

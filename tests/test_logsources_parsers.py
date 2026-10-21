@@ -282,3 +282,16 @@ def test_auditd_argv_is_kept_in_order_masked_and_capped():
     assert evs[13].audit_types == ("SYSCALL", "EXECVE", "PATH")
     assert evs[14].process_args == ("x",) * 64 and evs[14].truncated     # repeats kept, capped at 64
     assert Event.from_ecs(evs[14].to_ecs()) == evs[14]
+
+
+def test_crontab_table_changes_are_cron_events():
+    # C.1: `crontab` logs under its own name; real line from kratos-tt-skew (Ubuntu 22.04)
+    from kratos.logsources import catalog as CAT
+
+    assert "SYSLOG_IDENTIFIER=crontab" in CAT.JOURNAL_MATCHES["cron"]
+    entry = {"MESSAGE": "(root) REPLACE (ubuntu)", "SYSLOG_IDENTIFIER": "crontab", "_COMM": "crontab",
+             "__REALTIME_TIMESTAMP": "1792595349601764", "__CURSOR": "s=1;i=ca1d"}
+    read = LogRead(source="cron", records=[Record(kind="journal", ts=1792595349.6, entry=entry, match="x")])
+    [ev] = _events(read)
+    assert ev.action == "crontab_replaced" and ev.user_name == "root" and ev.user_target_name == "ubuntu"
+    assert ev.category == ("configuration",) and ev.message == "(root) REPLACE (ubuntu)"

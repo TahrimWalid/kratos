@@ -301,3 +301,115 @@ def test_a_fresh_data_folder_is_a_quiet_pass_not_a_failure(tmp_path):
     rep = R.run_pass(A, tmp_path / "fresh", now=NOW)
     assert rep.status == "ok" and rep.events == 0 and rep.matches == []
     assert all(c.state == "not_checked" for c in rep.coverage)       # and it says so: nothing was there to check
+
+
+# ---------------------------------------------------------------------------- Kratos's own logins
+RECON = "SIGMA-0CF7A157"           # Linux Recon Indicators: matches the persistence check's own SUID search
+
+
+def _audit(target, ts, action, *, pid, ses, exe=None, args=()):
+    fields = {"process_pid": pid, "audit_session": str(ses), "user_name": "ubuntu",
+              "audit_types": ["SYSCALL", "EXECVE"] if exe else ["USER_START"]}
+    if exe:
+        fields.update(process_executable=exe, process_name=exe.rsplit("/", 1)[-1],
+                      process_command_line=" ".join(args), process_args=list(args))
+    p = Parsed(ts=ts, action=action, provider="auditd", outcome="success", message=action,
+               original=f"type=X msg=audit({ts:.3f}:{pid}): ses={ses}", fields=fields)
+    return C.from_parsed(p, ctx=_ctx(target), dataset="kratos.auditd")
+
+
+def _accepted(target, ts, pid, fp):
+    import dataclasses
+
+    iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(ts))
+    msg = f"Accepted publickey for ubuntu from 192.0.2.1 port 50000 ssh2: ED25519 {fp}"
+    ev = dataclasses.replace(classify_auth_message(iso, target, "sshd", msg, msg), pid=pid)
+    return C.from_auth_event(ev, ctx=_ctx(target))
+
+
+def test_kratos_own_ssh_commands_are_set_aside_and_another_logins_are_not(tmp_path, monkeypatch):
+    import base64
+    import os
+
+    from kratos.detect import own
+
+    key_line = "ssh-ed25519 " + base64.b64encode(os.urandom(51)).decode() + " kratos@test"   # built at runtime
+    fp = own.fingerprint(key_line)
+    monkeypatch.setattr(own, "kratos_fingerprint", lambda: fp)
+    find = ("find", "/", "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f")
+    t0 = NOW - 300
+    _store(tmp_path,
+           _accepted(A, t0, 5180, fp),                                              # Kratos logs in ...
+           _audit(A, t0 + 0.3, "session_started", pid=5180, ses=168),
+           _audit(A, t0 + 1, "process_started", pid=5201, ses=168, exe="/usr/bin/find", args=find),  # ... its read
+           _accepted(A, t0 + 60, 6000, "SHA256:" + "A" * 43),                       # someone else, same account
+           _audit(A, t0 + 60.3, "session_started", pid=6000, ses=169),
+           _audit(A, t0 + 61, "process_started", pid=6100, ses=169, exe="/usr/bin/find", args=find))
+    rep = R.run_pass(A, tmp_path, now=NOW)
+    hits = [m for m in rep.matches if m["rule_id"] == RECON]
+    assert len(hits) == 1 and rep.own_events == 2          # its login record and its find
+    [det] = [d for d in _detections(tmp_path, A) if d.rule_id == RECON]
+    assert det.process_pid is None or det.process_pid == 6100
+    assert json.loads(Path(rep.snapshot).read_text())["kratos_own_events"] == 2
+
+
+def test_a_reused_sshd_pid_long_after_does_not_mark_a_login_as_kratos(tmp_path, monkeypatch):
+    from kratos.detect import own
+
+    fp = "SHA256:" + "B" * 43
+    monkeypatch.setattr(own, "kratos_fingerprint", lambda: fp)
+    t0 = NOW - 3600
+    _store(tmp_path, _accepted(A, t0, 5180, fp), _audit(A, t0 + 0.3, "session_started", pid=5180, ses=10),
+           _audit(A, t0 + 1800, "session_started", pid=5180, ses=11))      # the same pid, half an hour later
+    conn = __import__("sqlite3").connect(tmp_path / "kratos.db")
+    try:
+        assert set(own.own_sessions(conn, A, since=0, fp=fp)) == {"10"}
+    finally:
+        conn.close()
+
+
+def test_fingerprint_matches_ssh_keygen_format():
+    from kratos.detect import own
+
+    blob = bytes(range(51))
+    import base64
+    import hashlib
+
+    line = "ssh-ed25519 " + base64.b64encode(blob).decode() + " x"
+    want = "SHA256:" + base64.b64encode(hashlib.sha256(blob).digest()).decode().rstrip("=")
+    assert own.fingerprint(line) == want and own.fingerprint("garbage") is None
+
+
+def test_a_session_id_counts_as_kratos_only_while_that_login_lasted(tmp_path, monkeypatch):
+    """Audit session ids restart at every boot: an id Kratos once had can be someone else's later."""
+    from kratos.detect import own
+    from kratos.detect import store as ST2
+
+    fp = "SHA256:" + "C" * 43
+    monkeypatch.setattr(own, "kratos_fingerprint", lambda: fp)
+    find = ("find", "/", "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f")
+    t0 = NOW - 6 * 3600
+    _store(tmp_path,
+           _accepted(A, t0, 700, fp), _audit(A, t0 + 0.2, "session_started", pid=700, ses=5),
+           _audit(A, t0 + 30, "session_ended", pid=700, ses=5),
+           # after a reboot someone else's login gets session 5 too, hours later
+           _audit(A, NOW - 120, "process_started", pid=900, ses=5, exe="/usr/bin/find", args=find))
+    rep = R.run_pass(A, tmp_path, now=NOW)
+    assert [m["rule_id"] for m in rep.matches if m["rule_id"] == RECON] == [RECON] and rep.own_events == 2
+    # an id read directly over Kratos's connection counts only around when Kratos saw it
+    ST2.record_own_session(tmp_path, B, "9", now=NOW - 3 * 3600)
+    assert own.is_own("9", NOW - 3 * 3600 + 30, ST2.own_sessions_recorded(tmp_path, B, since=0))
+    assert not own.is_own("9", NOW - 60, ST2.own_sessions_recorded(tmp_path, B, since=0))
+
+
+def test_coverage_is_exact_even_when_one_program_floods_the_log(tmp_path):
+    """Kratos's own `sudo -n journalctl` lines must not hide that sshd's log is there."""
+    sudo = "ubuntu : TTY=unknown ; PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl -n 50"
+    events = [failed_login(A, NOW - 3000, "203.0.113.7")]
+    for i in range(700):
+        iso = time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(NOW - 2000 + i))
+        events.append(C.from_auth_event(classify_auth_message(iso, A, "sudo", sudo + f" {i}", sudo + f" {i}"),
+                                        ctx=_ctx(A)))
+    _store(tmp_path, *events)
+    cov = {c.key: c for c in R.run_pass(A, tmp_path, now=NOW).coverage}
+    assert cov["linux/sshd"].state == "checked"

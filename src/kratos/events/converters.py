@@ -219,6 +219,8 @@ def from_auth_event(ev: AuthEvent, *, ctx: ReadContext) -> Event:
         if "mon" in prefix.groupdict():
             timestamp, assumed = syslog_time(prefix["mon"], int(prefix["day"]), prefix["time"],
                                              zone=ctx.time_zone, now=ctx.created)
+    if pid is None and isinstance(getattr(ev, "pid", None), int):
+        pid = ev.pid
     if timestamp is None and ev.event_type != "unparsed_auth_line":
         timestamp = _parse_any_time(ev.timestamp)
     if timestamp is None:
@@ -357,6 +359,11 @@ LOG_ACTIONS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str | None]] = {
     "cron_session_opened": (("session",), ("start",), "success"),
     "cron_session_closed": (("session",), ("end",), "success"),
     "cron_other": ((), ("info",), "unknown"),
+    "crontab_replaced": (("configuration",), ("change",), "success"),
+    "crontab_deleted": (("configuration",), ("change", "deletion"), "success"),
+    "crontab_edit_started": (("configuration",), ("info",), "success"),
+    "crontab_edited": (("configuration",), ("change",), "success"),
+    "crontab_listed": (("configuration",), ("access",), "success"),
     # systemd
     "unit_started": (("process",), ("start",), "success"),
     "unit_starting": (("process",), ("info",), "unknown"),

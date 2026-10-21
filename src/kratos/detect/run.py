@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from kratos import run_context, settings_store
+from kratos.detect import own as own_mod
 from kratos.detect import pack as packs_mod
 from kratos.detect import settings as S
 from kratos.detect import store
@@ -85,6 +86,7 @@ class PassReport:
     matches: list[dict[str, Any]] = field(default_factory=list)   # this pass's matches: rule, event id, group
     disabled: list[str] = field(default_factory=list)
     snapshot: str | None = None
+    own_events: int = 0         # events from Kratos's own SSH logins, set aside (detect/own.py)
 
     @property
     def status(self) -> str:
@@ -220,18 +222,7 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
                 out.append(SourceCoverage(name, name, "not_checked", len(rules),
                                           "Kratos doesn't read this log source"))
                 continue
-            where = D._Node(ls.where) if ls.where is not None else None
-            seen = False
-            for dataset in ls.datasets:
-                rows = conn.execute("SELECT doc FROM host_events WHERE target = ? AND dataset = ? AND ts >= ? "
-                                    "ORDER BY ts DESC LIMIT ?", (key, dataset, since, COVERAGE_SAMPLE)).fetchall()
-                for (doc,) in rows:
-                    ev = _event(doc)
-                    if ev is not None and (where is None or where.test(flat(ev))):
-                        seen = True
-                        break
-                if seen:
-                    break
+            seen = _source_seen(conn, key, since, ls)
             if seen and ls.partial:
                 full = _full_source_seen(conn, key, since, ls_key)
                 state = "checked" if full else "partial"
@@ -247,6 +238,47 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
     finally:
         conn.close()
     return out
+
+
+def _where_sql(node: dict[str, Any] | None) -> tuple[str, list[Any]] | None:
+    """A log source's condition (closed operators) as SQL over the stored documents, for the
+    shapes log sources use: eq / in (case-sensitive), exists, all_of / any_of. None if it
+    can't be said exactly in SQL."""
+    if node is None:
+        return "1", []
+    op = node["op"]
+    if op in ("all_of", "any_of"):
+        parts = [_where_sql(c) for c in node["args"]]
+        if any(p is None for p in parts):
+            return None
+        joiner = " AND " if op == "all_of" else " OR "
+        return "(" + joiner.join(p[0] for p in parts) + ")", [x for p in parts for x in p[1]]   # type: ignore[index]
+    path = "$." + node.get("field", "")
+    if op == "eq" and node.get("cased"):
+        return "json_extract(doc, ?) = ?", [path, node["value"]]
+    if op == "in" and node.get("cased"):
+        return (f"json_extract(doc, ?) IN ({', '.join('?' for _ in node['values'])})",
+                [path, *node["values"]])
+    if op == "exists":
+        return ("json_extract(doc, ?) IS NOT NULL" if node["value"] else "json_extract(doc, ?) IS NULL"), [path]
+    return None
+
+
+def _source_seen(conn: Any, key: str, since: float, ls: Any) -> bool:
+    """Does the store hold an event of log source `ls` for this machine since `since`?"""
+    marks = ",".join("?" for _ in ls.datasets)
+    sql = _where_sql(ls.where)
+    if sql is not None:
+        r = conn.execute(f"SELECT 1 FROM host_events WHERE target = ? AND dataset IN ({marks}) AND ts >= ? "
+                         f"AND {sql[0]} LIMIT 1", (key, *ls.datasets, since, *sql[1])).fetchone()
+        return r is not None
+    where = D._Node(ls.where)
+    for (doc,) in conn.execute(f"SELECT doc FROM host_events WHERE target = ? AND dataset IN ({marks}) AND ts >= ? "
+                               "ORDER BY ts DESC LIMIT ?", (key, *ls.datasets, since, COVERAGE_SAMPLE)):
+        ev = _event(doc)
+        if ev is not None and where.test(flat(ev)):
+            return True
+    return False
 
 
 def _full_source_seen(conn: Any, key: str, since: float, ls_key: tuple) -> bool:
@@ -269,7 +301,7 @@ def _partial_source_seen(conn: Any, key: str, since: float, ls_key: tuple) -> bo
 # ---------------------------------------------------------------------------- the pass
 def _pass_one(lp: packs_mod.LoadedPack, target: str, data_dir: Path, *, now: float, deadline: float,
               max_events: int, disabled: set[str], created: datetime, run_id: str | None,
-              report: PassReport) -> PackPass:
+              report: PassReport, own: own_mod.Intervals | None = None) -> PackPass:
     pp = PackPass(pack_id=lp.pack_id, version=lp.version, origin=lp.origin)
     key = target_key(target)
     last = store.last_run(data_dir, target, lp.pack_id)
@@ -325,6 +357,11 @@ def _pass_one(lp: packs_mod.LoadedPack, target: str, data_dir: Path, *, now: flo
             batch.sort(key=lambda b: (b[0], b[1]))
             detections: list[Event] = []
             for ts, _id, ev, is_history in batch:
+                if own and ev.dataset == "kratos.auditd" and own_mod.is_own(ev.audit_session, ts, own):
+                    if not is_history:          # Kratos's own read, not something that happened on the machine
+                        pp.events += 1
+                        report.own_events += 1
+                    continue
                 if not is_history:
                     pp.events += 1
                     first_ts = ts if first_ts is None else min(first_ts, ts)
@@ -374,10 +411,22 @@ def run_pass(target: str, data_dir: Path | str, *, now: float | None = None, dea
     report.disabled = sorted(disabled)
     ctx = run_context.current()
     created = datetime.now(timezone.utc)
+    own: own_mod.Intervals = {}
+    try:
+        conn = connect_store(data_dir / "kratos.db")
+        try:
+            since = now - own_mod.WINDOW_DAYS * 86400
+            own = own_mod.own_sessions(conn, target_key(target), since=since, fp=own_mod.kratos_fingerprint())
+            own = own_mod.merge(own, store.own_sessions_recorded(data_dir, target, since=since,
+                                                                 slack=own_mod.RECORDED_SLACK_SECONDS))
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 -- without it Kratos's own reads may show up as matches; never a failure
+        logger.warning("detect: could not tell Kratos's own logins on %s apart", target, exc_info=True)
     for lp in loaded.loaded:
         report.packs.append(_pass_one(lp, target, data_dir, now=now, deadline=deadline, max_events=max_events,
                                       disabled=disabled, created=created, run_id=ctx.run_id if ctx else None,
-                                      report=report))
+                                      report=report, own=own))
     try:
         report.coverage = coverage(data_dir, target, loaded, now=now)
     except Exception:  # noqa: BLE001

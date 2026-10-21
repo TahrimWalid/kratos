@@ -185,6 +185,9 @@ def add_samples(rule: dict[str, Any]) -> str | None:
     match = propose_match(rule)
     if match is None:
         return "no matching sample could be built for its condition"
+    group = (rule.get("count") or {}).get("group_by")
+    if group and group not in match:          # a counting rule counts events per group value
+        match[group] = "192.0.2.1" if group.endswith(".ip") else "sample-group"
     no_match = propose_no_match(rule, match)
     if no_match is None:
         return "no non-matching sample differs from the matching one by a single value"

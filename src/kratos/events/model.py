@@ -94,6 +94,7 @@ class Event:
     audit_syscall: str | None = None
     audit_paths: tuple[str, ...] = ()
     audit_created_paths: tuple[str, ...] = ()
+    audit_session: str | None = None
     detect_matched: tuple[str, ...] = ()
     detect_level: str | None = None
     detect_group: str | None = None

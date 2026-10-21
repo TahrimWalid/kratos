@@ -640,6 +640,11 @@
               },
               "uniqueItems": true,
               "description": "The PATH names auditd recorded as created (nametype=CREATE)."
+            },
+            "session": {
+              "type": "string",
+              "maxLength": 16,
+              "description": "The login session auditd recorded (ses): every program started in one SSH login shares it."
             }
           },
           "additionalProperties": false

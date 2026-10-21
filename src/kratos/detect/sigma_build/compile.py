@@ -137,6 +137,8 @@ def _condition(rule: SigmaRule) -> dict[str, Any]:
     backend = KratosBackend(kratos_pipeline())
     try:
         nodes = backend.convert_rule(rule)
+        if not nodes:            # a rule that only feeds a correlation keeps its result on itself
+            nodes = list(rule.get_conversion_result() or [])
     except SigmaError as e:
         reason = str(e).split(" (while ")[0].strip() or type(e).__name__
         raise Skip(reason, "condition") from None

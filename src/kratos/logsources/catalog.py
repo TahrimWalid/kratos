@@ -60,7 +60,7 @@ JOURNAL_MATCHES: dict[str, tuple[str, ...]] = {
     "sudo": ("_COMM=sudo",),
     "auth": ("_COMM=sshd", "_COMM=sshd-session", "_COMM=sudo"),
     "cron": ("SYSLOG_IDENTIFIER=CRON", "SYSLOG_IDENTIFIER=cron", "SYSLOG_IDENTIFIER=CROND",
-             "SYSLOG_IDENTIFIER=crond"),
+             "SYSLOG_IDENTIFIER=crond", "SYSLOG_IDENTIFIER=crontab"),   # crontab: a user's table changed (C.1)
     "systemd_pid1": ("_PID=1",),
     "kernel": ("_TRANSPORT=kernel",),
 }
