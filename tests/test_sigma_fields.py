@@ -141,11 +141,9 @@ def test_sshd_and_sudo_sources_select_their_programs():
 
 
 # ---------------------------------------------------------------------------- vendored SigmaHQ rules
-sigma_collection = pytest.importorskip("sigma.collection")
-from sigma.rule import SigmaDetection  # noqa: E402
-
-
 def _items(det):
+    from sigma.rule import SigmaDetection
+
     for d in det.detection_items:
         if isinstance(d, SigmaDetection):
             yield from _items(d)
@@ -154,6 +152,7 @@ def _items(det):
 
 
 def _rules():
+    sigma_collection = pytest.importorskip("sigma.collection")      # pySigma needs Python 3.11+
     for path in RULES:
         for rule in sigma_collection.SigmaCollection.from_yaml(path.read_text(encoding="utf-8")).rules:
             yield path.name, rule
@@ -169,6 +168,7 @@ def test_enough_real_rules_vendored_with_attribution():
 
 
 def test_every_vendored_rule_is_fed_or_explained_field_by_field():
+    pytest.importorskip("sigma.collection")
     seen: set[str] = set()
     for name, rule in _rules():
         ls_key = (rule.logsource.product, rule.logsource.service, rule.logsource.category)

@@ -211,7 +211,10 @@ def check_contents(wheel: Path) -> int:
 # --------------------------------------------------------------------------- install check
 
 # Modules that need an optional extra -- imported only when that extra is installed.
-EXTRA_MODULES = {"kratos.trace.otel": "otel"}
+EXTRA_MODULES = {"kratos.trace.otel": "otel",
+                 # C.1: the Sigma compiler (kratos detect import, the pack build script) needs pySigma
+                 "kratos.detect.sigma_build.pipeline": "sigma", "kratos.detect.sigma_build.backend": "sigma",
+                 "kratos.detect.sigma_build.compile": "sigma"}
 
 
 def import_all_modules_code() -> str:
@@ -265,6 +268,16 @@ def installed_checks(python: str, scratch: Path) -> list[Step]:
         ("starter YARA rules ship", [python, "-c",
             "from kratos.agent.tools import DEFAULT_YARA_RULES_DIR as d; n = sorted(p.name for p in d.glob('*.yar')); "
             "assert n, f'no rules in {d}'; print('yara rules:', n)"], env, ok),
+        # C.1: the Sigma rule pack, its rules' sources and the licence text, as package data
+        ("detection rule pack ships", [python, "-c",
+            "from importlib import resources; from kratos.detect import pack; p = pack.shipped(); "
+            "d = resources.files('kratos.detect').joinpath('packs'); "
+            "assert d.joinpath('LICENSE.DRL').read_text().startswith('# Detection Rule License'), 'no DRL text'; "
+            "assert 'SigmaHQ' in d.joinpath('NOTICE').read_text(), 'no NOTICE'; "
+            "n = sum(1 for r in p.pack.rules if d.joinpath('sigma', r.meta['source']['path']).is_file()); "
+            "assert n == len(p.pack.rules) >= 50, (n, len(p.pack.rules)); print('rules:', n, p.pack_id, p.version)"],
+         env, ok),
+        ("kratos detect rules", [kratos, "detect", "rules"], env, ok),
         ("kratos serve token create", [kratos, "serve", "token", "create", "--name", "ci"], env, ok),
         # the chat server's app is built and answers in-process (Starlette/uvicorn are imported
         # lazily, so "import every module" alone would not catch them missing from the wheel)

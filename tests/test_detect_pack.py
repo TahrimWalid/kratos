@@ -103,10 +103,8 @@ def test_attack_tags_are_current_v19_techniques(raw):
 
 
 # ---------------------------------------------------------------------------- rebuilt from the vendored sources
-sigma_collection = pytest.importorskip("sigma.collection")
-
-
 def test_the_pack_is_what_the_compiler_makes_from_its_vendored_sources(raw):
+    pytest.importorskip("sigma.collection")         # pySigma needs Python 3.11+
     from kratos.detect.sigma_build.compile import Source, compile_sources, select_for_shipping
     from kratos.detect.sigma_build.samples import add_samples
 
@@ -124,7 +122,6 @@ def test_the_pack_is_what_the_compiler_makes_from_its_vendored_sources(raw):
 
 
 # ---------------------------------------------------------------------------- the SQLite backend's second opinion
-sqlite_backend = pytest.importorskip("sigma.backends.sqlite")
 FULLTEXT = "kratos_fulltext"
 
 
@@ -168,13 +165,15 @@ def _columns_in(query: str) -> list[str]:
 
 
 def test_every_sample_agrees_with_pysigmas_sqlite_backend(raw):
+    pytest.importorskip("sigma.backends.sqlite")     # the test extra; pySigma needs Python 3.11+
     from sigma.backends.sqlite import sqliteBackend
+    from sigma.collection import SigmaCollection
 
     checked = scope_only = 0
     disagreements = []
     for r in raw["rules"]:
         text = (PACKS / "sigma" / r["source"]["path"]).read_text(encoding="utf-8")
-        query = sqliteBackend(fulltext_field=FULLTEXT).convert(sigma_collection.SigmaCollection.from_yaml(text))[0]
+        query = sqliteBackend(fulltext_field=FULLTEXT).convert(SigmaCollection.from_yaml(text))[0]
         match = r["samples"]["match"][0]
         for kind, ev, want in (("match", match, True), ("no_match", r["samples"]["no_match"][0], False)):
             changed = {k for k in set(ev) | set(match) if ev.get(k) != match.get(k)} - {"event.id"}
