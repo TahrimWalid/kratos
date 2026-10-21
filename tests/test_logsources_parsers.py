@@ -260,3 +260,25 @@ def test_read_journalctl_keys_events_by_cursor_but_never_shows_it_to_the_model(t
     assert all("cursor" not in e for e in result["entries"])
     stored = EventStore(tmp_path / "kratos.db").query("10.136.28.168", dataset="kratos.journal")
     assert sorted(e.event_id for e in stored) == sorted(cursor_event_id("10.136.28.168", e["cursor"]) for e in entries)
+
+
+def test_auditd_argv_is_kept_in_order_masked_and_capped():
+    # C.1: Sigma's auditd rules look at a0, a1, ... -> process.args, credentials masked like the command line
+    lines = [
+        'type=SYSCALL msg=audit(1791738803.000:13): arch=c000003e syscall=59 success=yes exit=0 ppid=1 pid=5 '
+        'auid=1000 uid=0 euid=0 comm="sshpass" exe="/usr/bin/sshpass" key="kratos_exec"',
+        'type=EXECVE msg=audit(1791738803.000:13): argc=6 a0="sshpass" a1="-p" a2="hunter2xyz" a3="ssh" '
+        'a4="-p" a5="22"',
+        'type=PATH msg=audit(1791738803.000:13): item=0 name="/usr/bin/sshpass" nametype=NORMAL',
+        'type=SYSCALL msg=audit(1791738804.000:14): arch=c000003e syscall=59 success=yes exit=0 ppid=1 pid=6 '
+        'auid=1000 uid=0 comm="echo" exe="/usr/bin/echo"',
+        'type=EXECVE msg=audit(1791738804.000:14): argc=70 ' + " ".join(f'a{i}="x"' for i in range(70)),
+    ]
+    recs = [Record(kind="file", ts=0, text=t, path="/var/log/audit/audit.log") for t in reversed(lines)]
+    evs = {e.sequence: e for e in _events(LogRead(source="auditd", records=recs))}
+    assert evs[13].process_args == ("sshpass", "-p", "***REDACTED***", "ssh", "-p", "22")
+    assert "hunter2xyz" not in json.dumps(evs[13].to_ecs()) and evs[13].redacted
+    assert evs[13].audit_key == "kratos_exec" and evs[13].audit_paths == ("/usr/bin/sshpass",)
+    assert evs[13].audit_types == ("SYSCALL", "EXECVE", "PATH")
+    assert evs[14].process_args == ("x",) * 64 and evs[14].truncated     # repeats kept, capped at 64
+    assert Event.from_ecs(evs[14].to_ecs()) == evs[14]

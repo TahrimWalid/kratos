@@ -176,6 +176,11 @@
               "type": "string",
               "maxLength": 256,
               "description": "Who a command ran as (sudo -u)."
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "The user ID a program ran as (auditd euid)."
             }
           },
           "additionalProperties": false
@@ -263,6 +268,14 @@
           "type": "string",
           "maxLength": 1024,
           "description": "The directory a program ran in (auditd CWD)."
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          },
+          "description": "The program's arguments in order, argv[0] first (auditd EXECVE), credentials masked, at most 64."
         }
       },
       "additionalProperties": false
@@ -425,6 +438,56 @@
       },
       "additionalProperties": false
     },
+    "rule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The detection rule that matched (kratos.detect events), e.g. SIGMA-1a2b3c4d."
+        },
+        "uuid": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The rule's own upstream id (the SigmaHQ rule id)."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The rule's title."
+        },
+        "author": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "uniqueItems": true,
+          "description": "Who wrote the rule -- shown with every alert it raises (Detection Rule License 1.1)."
+        },
+        "reference": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Where the rule comes from: its source file at the pinned commit."
+        },
+        "license": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The rule's licence, e.g. DRL-1.1."
+        },
+        "ruleset": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The rule pack, e.g. sigma-linux."
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "The rule pack's version."
+        }
+      },
+      "additionalProperties": false
+    },
     "related": {
       "type": "object",
       "properties": {
@@ -538,6 +601,83 @@
         "truncated": {
           "type": "boolean",
           "description": "True when a text field was cut to its byte cap."
+        },
+        "audit": {
+          "type": "object",
+          "properties": {
+            "types": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 32
+              },
+              "uniqueItems": true,
+              "description": "The auditd record types of this event (SYSCALL, EXECVE, PATH, ...)."
+            },
+            "key": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "The audit rule key that recorded it (-k)."
+            },
+            "syscall": {
+              "type": "string",
+              "maxLength": 64,
+              "description": "The system call's name (auditd's ENRICHED log format only)."
+            },
+            "paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "description": "Every PATH record's name, in record order, at most 32."
+            },
+            "created_paths": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "uniqueItems": true,
+              "description": "The PATH names auditd recorded as created (nametype=CREATE)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "detect": {
+          "type": "object",
+          "properties": {
+            "matched": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "uniqueItems": true,
+              "description": "The IDs of the stored events a detection matched, at most 100."
+            },
+            "level": {
+              "type": "string",
+              "enum": [
+                "info",
+                "low",
+                "medium",
+                "high",
+                "critical"
+              ],
+              "description": "The rule's level: info, low, medium, high, critical."
+            },
+            "group": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "For a counting rule: the value its events were grouped by (e.g. the source address)."
+            },
+            "count": {
+              "type": "integer",
+              "description": "For a counting rule: how many events fell in its window."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

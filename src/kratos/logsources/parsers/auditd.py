@@ -126,13 +126,26 @@ def group(lines: list[tuple[str, str | None, bool]]) -> list[dict[str, Any]]:
     return list(events.values())
 
 
+MAX_PATHS = 32
+
+
 def to_parsed(ev: dict[str, Any]) -> Parsed:
     by_type: dict[str, tuple[dict[str, str], dict[str, str]]] = {}
     paths: list[str] = []
+    all_paths: list[str] = []          # every PATH name in record order (Sigma's auditd `name`)
+    created: list[str] = []            # PATH names with nametype=CREATE (Sigma's file_event)
     for rtype, fr, fe in ev["records"]:
         by_type.setdefault(rtype, (fr, fe))
-        if rtype == "PATH" and fr.get("item") == "0" and decode(fr.get("name")):
-            paths.append(decode(fr.get("name")) or "")
+        if rtype == "PATH":
+            name = decode(fr.get("name"))
+            if not name:
+                continue
+            if fr.get("item") == "0":
+                paths.append(name)
+            if len(all_paths) < MAX_PATHS:
+                all_paths.append(name)
+            if (decode(fr.get("nametype")) or "").upper() == "CREATE" and name not in created:
+                created.append(name)
     types = [t for t, _, _ in ev["records"]]
     main = types[0] if types else "UNKNOWN"
     fr, fe = by_type.get(main, ({}, {}))
@@ -146,6 +159,7 @@ def to_parsed(ev: dict[str, Any]) -> Parsed:
             title = decode(by_type["PROCTITLE"][0].get("proctitle")) or ""
             args = [a for a in title.split("\x00") if a]
         fields["process_command_line"] = " ".join(args) if args else None
+        fields["process_args"] = args or None          # capped (and flagged) at conversion
         fr, fe = sc_raw or fr, sc_enr or fe
         outcome = {"yes": "success", "no": "failure"}.get(sc_raw.get("success", ""))
     elif main == "CONFIG_CHANGE":
@@ -190,6 +204,14 @@ def to_parsed(ev: dict[str, Any]) -> Parsed:
         fields["process_working_directory"] = decode(by_type["CWD"][0].get("cwd"))
     if paths:
         fields["file_path"] = paths[0]
+    fields["audit_types"] = list(dict.fromkeys(types)) or None
+    fields["audit_paths"] = all_paths or None
+    fields["audit_created_paths"] = created or None
+    key = decode(sc_raw.get("key")) if sc_raw else None
+    fields["audit_key"] = key or decode(fr.get("key"))
+    fields["audit_syscall"] = (sc_enr.get("SYSCALL") or None) if sc_enr else None
+    euid = sc_raw.get("euid") if sc_raw else None
+    fields["user_effective_id"] = euid if euid not in _UNSET and euid is not None else None
     if action == "sudo_command":
         cmd = decode(fr.get("cmd"))
         fields["process_command_line"] = cmd

@@ -1,58 +1,135 @@
-"""Sigma -> ECS field mapping for the log sources Kratos can feed (data only).
+"""Sigma -> Kratos event mapping for the log sources Kratos feeds (data only).
 
-C.1 (Sigma rule evaluation) turns this into a pySigma processing pipeline;
-here it is only the table, checked by tests/test_sigma_fields.py against real
-SigmaHQ Linux rules: every field those rules reference is either mapped to an
-ECS field Kratos's events carry, or listed as unmapped with the reason.
+The rule compiler (kratos.detect.sigma_build, build time only) reads this table: a
+Sigma rule is compiled only when its log source is listed in LOGSOURCES and every
+field it references has a mapping there; anything else is skipped with the reason
+recorded (UNSUPPORTED, UNMAPPED) -- never approximated. tests/test_sigma_fields.py
+checks the table against the real parsers' output and the vendored SigmaHQ rules.
+
+Each log source names the datasets that feed it (events/fields.py `event.dataset`),
+an optional extra condition in the evaluator's closed-operator form
+(kratos.subagent.detect), and its Sigma field -> event field map. Keyword searches
+(Sigma's unnamed search terms) look in the log message and the raw line.
 """
 from __future__ import annotations
 
-# Sigma's unnamed search terms ("keywords") match the log message text. The
-# SigmaHQ linux/auth, sshd, sudo, syslog and cron rules are keyword searches;
-# the field names below are Sigma's Linux process_creation taxonomy.
-KEYWORDS = "keywords"
+import re
+from dataclasses import dataclass, field
+from typing import Any
 
-# Sigma field -> ECS field, every target present in events/fields.py.
-SIGMA_TO_ECS: dict[str, str] = {
-    KEYWORDS: "message",
-    # process_creation (Linux taxonomy). Today only sudo-run commands are
-    # process events (event.action sudo_command); 0.3's auditd EXECVE adds the rest.
+KEYWORDS = "keywords"
+# Where a keyword is looked for: the message, and the raw line it came from.
+KEYWORD_FIELDS: tuple[str, ...] = ("message", "event.original")
+
+# auditd's EXECVE arguments a0, a1, ... -> process.args[N] (argv, in order).
+AUDITD_ARG = re.compile(r"^a(\d{1,2})$")
+
+LogsourceKey = tuple[str, "str | None", "str | None"]
+
+
+@dataclass(frozen=True)
+class Logsource:
+    key: LogsourceKey                      # Sigma (product, service, category)
+    label: str                             # plain words, for coverage lines ("program starts")
+    datasets: tuple[str, ...]              # the Kratos datasets that feed it
+    where: dict[str, Any] | None = None    # extra condition (closed operators) an event must meet
+    fields: dict[str, str] = field(default_factory=dict)   # Sigma field -> event field
+    needs: str = ""                        # what a machine needs for these rules to see anything
+    partial: str = ""                      # what is seen when that need is not met (if anything)
+
+
+def _eq(f: str, v: str) -> dict[str, Any]:
+    return {"op": "eq", "field": f, "value": v, "cased": True}
+
+
+_SYSLOGISH = ("kratos.auth", "kratos.journal", "kratos.privileged_accounts", "kratos.cron", "kratos.systemd",
+              "kratos.firewall")
+
+# Process-start fields shared by the process and file rules.
+_PROCESS = {
     "Image": "process.executable",
     "CommandLine": "process.command_line",
+    "CurrentDirectory": "process.working_directory",
     "ProcessId": "process.pid",
     "ParentProcessId": "process.parent.pid",
-    # The user the process runs as. For a sudo-run command that is sudo's target
-    # user (user.effective.name); user.name stays the person who ran sudo.
-    "User": "user.effective.name",
 }
 
-# Sigma fields Kratos's events can't answer yet, and why -- no silent gaps.
+LOGSOURCES: dict[LogsourceKey, Logsource] = {ls.key: ls for ls in (
+    Logsource(("linux", None, None), "Linux logs",
+              (*_SYSLOGISH, "kratos.auditd", "kratos.package"),
+              needs="logs Kratos collects (log sync)"),
+    Logsource(("linux", "auth", None), "sign-in and account logs", ("kratos.auth", "kratos.privileged_accounts"),
+              needs="the SSH/sudo log (log sync)"),
+    Logsource(("linux", "sshd", None), "SSH server log", ("kratos.auth",),
+              where={"op": "in", "field": "event.provider", "values": ["sshd", "sshd-session"], "cased": True},
+              needs="the SSH server's log (log sync)"),
+    Logsource(("linux", "sudo", None), "sudo log", ("kratos.auth",), where=_eq("event.provider", "sudo"),
+              needs="sudo's log (log sync)"),
+    Logsource(("linux", "syslog", None), "system log", _SYSLOGISH, needs="the system log (log sync)"),
+    Logsource(("linux", "cron", None), "cron log", ("kratos.cron",), needs="cron's log (log sync)"),
+    Logsource(("linux", "auditd", None), "audit log", ("kratos.auditd",),
+              fields={
+                  "type": "kratos.audit.types",
+                  "key": "kratos.audit.key",
+                  "SYSCALL": "kratos.audit.syscall",
+                  "exe": "process.executable",
+                  "comm": "process.name",
+                  "name": "kratos.audit.paths",
+                  "euid": "user.effective.id",
+                  "unit": "service.name",
+                  # a0, a1, ... : AUDITD_ARG -> process.args[N], only beside type EXECVE
+              },
+              needs="auditd running with its log readable (log sync)"),
+    Logsource(("linux", None, "process_creation"), "program starts", ("kratos.auditd", "kratos.auth"),
+              where={"op": "any_of", "args": [
+                  {"op": "all_of", "args": [_eq("event.dataset", "kratos.auditd"),
+                                            _eq("event.action", "process_started")]},
+                  {"op": "all_of", "args": [_eq("event.dataset", "kratos.auth"),
+                                            _eq("event.action", "sudo_command")]}]},
+              fields=dict(_PROCESS),
+              needs="auditd recording every program start (an execve audit rule)",
+              partial="only commands run through sudo are checked"),
+    Logsource(("linux", None, "file_event"), "file creation", ("kratos.auditd",),
+              where={"op": "exists", "field": "kratos.audit.created_paths", "value": True},
+              fields={"TargetFilename": "kratos.audit.created_paths", "Image": "process.executable"},
+              needs="auditd watching the files (audit watch rules recording creation)"),
+)}
+
+# Log sources Kratos can't feed, and why -- a rule for one of these is skipped.
+UNSUPPORTED: dict[LogsourceKey, str] = {
+    ("linux", None, "network_connection"):
+        "needs every outgoing connection with the destination's name; Kratos reads no connection log",
+    ("linux", "clamav", None): "Kratos doesn't collect ClamAV's log",
+    ("linux", "guacamole", None): "Kratos doesn't collect Apache Guacamole's log",
+    ("linux", "vsftpd", None): "Kratos doesn't collect vsftpd's log",
+}
+
+# Sigma fields Kratos's events can't answer, and why -- a rule naming one is skipped.
 UNMAPPED: dict[str, str] = {
-    "ParentImage": "needs the parent process's executable: auditd EXECVE records with PPID resolution (0.3)",
-    "ParentCommandLine": "needs the parent process's command line: auditd EXECVE (0.3)",
-    "CurrentDirectory": "needs the process's working directory: auditd CWD records (0.3); "
-                        "sudo's PWD= is the invoking shell's, not recorded as an ECS field",
-    "LogonId": "needs the audit session (auid/ses): auditd (0.3)",
-    "OriginalFileName": "Windows PE metadata; no Linux equivalent",
-    "Hashes": "process image hashes need auditd + hashing on the target (0.3 or later)",
+    "ParentImage": "needs the parent program's path; auditd records only the parent's process ID",
+    "ParentCommandLine": "needs the parent program's command line; auditd records only the parent's process ID",
+    "User": "needs the user each program runs as for every start; Kratos keeps the login user (auditd auid)",
+    "LogonId": "needs the audit session ID, which Kratos doesn't keep",
+    "OriginalFileName": "Windows file metadata; no Linux equivalent",
+    "Hashes": "needs a hash of every program started; auditd doesn't record one",
+    "nametype": "needs each PATH record's name and type together; Kratos keeps the names, and the created ones",
+    "DestinationHostname": "needs the destination's name for each connection",
+    "DestinationIp": "needs a connection log",
+    "DestinationPort": "needs a connection log",
+    "Initiated": "needs a connection log",
 }
 
-# Sigma logsource (product, service, category) -> the Kratos datasets that feed it.
-LOGSOURCES: dict[tuple[str, str | None, str | None], tuple[str, ...]] = {
-    ("linux", None, None): ("kratos.auth", "kratos.journal", "kratos.privileged_accounts"),
-    ("linux", "auth", None): ("kratos.auth", "kratos.privileged_accounts"),
-    ("linux", "sshd", None): ("kratos.auth",),       # process.name sshd / sshd-session
-    ("linux", "sudo", None): ("kratos.auth",),       # event.provider sudo
-    ("linux", "syslog", None): ("kratos.journal",),
-    ("linux", "cron", None): ("kratos.journal",),    # service.name cron.service / crond.service
-    ("linux", None, "process_creation"): ("kratos.auth",),  # sudo_command events only, see UNSUPPORTED
-}
 
-# Logsources (or partial coverage) Kratos can't feed yet, and why.
-UNSUPPORTED: dict[tuple[str, str | None, str | None], str] = {
-    ("linux", None, "process_creation"):
-        "partial: only commands run through sudo are seen today; every exec needs auditd EXECVE (0.3)",
-    ("linux", "auditd", None): "auditd is 0.3",
-    ("linux", None, "file_event"): "needs auditd PATH records or a file-watch read (0.3)",
-    ("linux", None, "network_connection"): "needs auditd connect() records (0.3)",
-}
+def logsource_for(product: str | None, service: str | None, category: str | None) -> Logsource | None:
+    return LOGSOURCES.get((product or "", service, category))
+
+
+def map_field(ls: Logsource, sigma_field: str) -> tuple[str, int | None] | None:
+    """(event field, index or None) for a Sigma field under log source `ls`, or None."""
+    if sigma_field in ls.fields:
+        return ls.fields[sigma_field], None
+    if ls.key == ("linux", "auditd", None):
+        m = AUDITD_ARG.match(sigma_field)
+        if m and int(m.group(1)) < 64:
+            return "process.args", int(m.group(1))
+    return None

@@ -351,6 +351,40 @@
    ],
    "type": "keyword"
   },
+  "rule.author": {
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "rule.id": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.license": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.reference": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.ruleset": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.uuid": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "rule.version": {
+   "normalize": [],
+   "type": "keyword"
+  },
   "service.name": {
    "normalize": [],
    "type": "keyword"
@@ -368,6 +402,10 @@
    "type": "wildcard"
   },
   "user.domain": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "user.effective.id": {
    "normalize": [],
    "type": "keyword"
   },

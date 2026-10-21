@@ -11,3 +11,7 @@ kratos-tt-*) and lab addresses (10.136.28.0/24, 127.0.0.1) appear.
   journal_cron.jsonl, journal_systemd.jsonl   kratos-target, journalctl -o json --output-fields=...
   dnf.rpm.log, dnf.log, rhel_cron.log         kratos-tt-rhel (Rocky 9.8 container)
   alpine_messages.log                         kratos-tt-alpine (Alpine 3.22, BusyBox syslogd)
+  audit_c1.log.sample                         kratos-tt-skew, 2026-10-21 (C.1): auditd 3.0.7 ENRICHED with an execve
+                                              rule (-k kratos_exec) and -w watches (-k kratos_watch) on /etc/cron.d,
+                                              /etc/sudoers.d, /etc/profile.d, /etc/ld.so.preload, /etc/systemd/system;
+                                              then a cron file and a profile.d file created, chattr, whoami, uname

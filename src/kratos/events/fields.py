@@ -43,8 +43,9 @@ class Field:
     type: str                 # datetime | keyword | text | ip | long | boolean | window, "[]" suffix = array
     required: bool = False
     indexed: str | None = None    # host_events column holding it, if any
-    max_len: int | None = None    # UTF-8 bytes
+    max_len: int | None = None    # UTF-8 bytes (per element, for an array)
     doc: str = ""
+    ordered: bool = False         # an array whose order means something and may repeat a value (process.args)
 
     @property
     def is_array(self) -> bool:
@@ -129,6 +130,22 @@ FIELDS: tuple[Field, ...] = (
     Field("http.response.status_code", "http_response_status_code", "long", doc="The HTTP status returned."),
     Field("user_agent.original", "user_agent_original", "keyword", max_len=1024,
           doc="The client's User-Agent, capped at 1024 bytes."),
+    # Added in C.1 (detection rules). Optional and additive, so the schema stays v1.
+    Field("process.args", "process_args", "keyword[]", max_len=1024, ordered=True,
+          doc="The program's arguments in order, argv[0] first (auditd EXECVE), credentials masked, at most 64."),
+    Field("user.effective.id", "user_effective_id", "keyword", max_len=64,
+          doc="The user ID a program ran as (auditd euid)."),
+    Field("rule.id", "rule_id", "keyword", max_len=64,
+          doc="The detection rule that matched (kratos.detect events), e.g. SIGMA-1a2b3c4d."),
+    Field("rule.uuid", "rule_uuid", "keyword", max_len=64, doc="The rule's own upstream id (the SigmaHQ rule id)."),
+    Field("rule.name", "rule_name", "keyword", max_len=256, doc="The rule's title."),
+    Field("rule.author", "rule_author", "keyword[]", max_len=256,
+          doc="Who wrote the rule -- shown with every alert it raises (Detection Rule License 1.1)."),
+    Field("rule.reference", "rule_reference", "keyword", max_len=1024,
+          doc="Where the rule comes from: its source file at the pinned commit."),
+    Field("rule.license", "rule_license", "keyword", max_len=64, doc="The rule's licence, e.g. DRL-1.1."),
+    Field("rule.ruleset", "rule_ruleset", "keyword", max_len=64, doc="The rule pack, e.g. sigma-linux."),
+    Field("rule.version", "rule_version", "keyword", max_len=32, doc="The rule pack's version."),
     Field("related.ip", "related_ip", "ip[]", doc="Every IP in the event, for pivoting."),
     Field("related.user", "related_user", "keyword[]", doc="Every user name in the event, for pivoting."),
     Field("ecs.version", "ecs_version", "keyword", required=True, doc="The ECS version the event follows."),
@@ -148,6 +165,23 @@ FIELDS: tuple[Field, ...] = (
           doc="True when the source time had no zone and UTC was assumed."),
     Field("kratos.redacted", "redacted", "boolean", doc="True when credential masking changed anything."),
     Field("kratos.truncated", "truncated", "boolean", doc="True when a text field was cut to its byte cap."),
+    # C.1: what auditd recorded that Sigma's auditd rules look at.
+    Field("kratos.audit.types", "audit_types", "keyword[]", max_len=32,
+          doc="The auditd record types of this event (SYSCALL, EXECVE, PATH, ...)."),
+    Field("kratos.audit.key", "audit_key", "keyword", max_len=256, doc="The audit rule key that recorded it (-k)."),
+    Field("kratos.audit.syscall", "audit_syscall", "keyword", max_len=64,
+          doc="The system call's name (auditd's ENRICHED log format only)."),
+    Field("kratos.audit.paths", "audit_paths", "keyword[]", max_len=4096, ordered=True,
+          doc="Every PATH record's name, in record order, at most 32."),
+    Field("kratos.audit.created_paths", "audit_created_paths", "keyword[]", max_len=4096,
+          doc="The PATH names auditd recorded as created (nametype=CREATE)."),
+    # C.1: a detection (dataset kratos.detect, event.kind alert).
+    Field("kratos.detect.matched", "detect_matched", "keyword[]", max_len=64,
+          doc="The IDs of the stored events a detection matched, at most 100."),
+    Field("kratos.detect.level", "detect_level", "keyword", doc="The rule's level: info, low, medium, high, critical."),
+    Field("kratos.detect.group", "detect_group", "keyword", max_len=256,
+          doc="For a counting rule: the value its events were grouped by (e.g. the source address)."),
+    Field("kratos.detect.count", "detect_count", "long", doc="For a counting rule: how many events fell in its window."),
 )
 
 BY_NAME = {f.name: f for f in FIELDS}
@@ -157,7 +191,7 @@ INDEXED = {f.indexed: f for f in FIELDS if f.indexed}
 _ENUMS = {
     "event.kind": KIND_VALUES, "event.category": CATEGORY_VALUES, "event.type": TYPE_VALUES,
     "event.outcome": OUTCOME_VALUES, "kratos.transport": TRANSPORT_VALUES,
-    "kratos.coverage": COVERAGE_VALUES,
+    "kratos.coverage": COVERAGE_VALUES, "kratos.detect.level": ("info", "low", "medium", "high", "critical"),
 }
 
 
@@ -188,7 +222,7 @@ def _leaf_schema(f: Field) -> dict[str, Any]:
     if values:
         s["enum"] = list(values)
     if f.is_array:
-        s = {"type": "array", "items": s, "uniqueItems": True}
+        s = {"type": "array", "items": s} if f.ordered else {"type": "array", "items": s, "uniqueItems": True}
     s["description"] = f.doc
     return s
 

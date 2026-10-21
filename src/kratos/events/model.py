@@ -66,6 +66,16 @@ class Event:
     http_request_method: str | None = None
     http_response_status_code: int | None = None
     user_agent_original: str | None = None
+    process_args: tuple[str, ...] = ()
+    user_effective_id: str | None = None
+    rule_id: str | None = None
+    rule_uuid: str | None = None
+    rule_name: str | None = None
+    rule_author: tuple[str, ...] = ()
+    rule_reference: str | None = None
+    rule_license: str | None = None
+    rule_ruleset: str | None = None
+    rule_version: str | None = None
     related_ip: tuple[str, ...] = ()
     related_user: tuple[str, ...] = ()
     ecs_version: str = F.ECS_VERSION
@@ -79,6 +89,15 @@ class Event:
     time_zone_assumed: bool = False
     redacted: bool = False
     truncated: bool = False
+    audit_types: tuple[str, ...] = ()
+    audit_key: str | None = None
+    audit_syscall: str | None = None
+    audit_paths: tuple[str, ...] = ()
+    audit_created_paths: tuple[str, ...] = ()
+    detect_matched: tuple[str, ...] = ()
+    detect_level: str | None = None
+    detect_group: str | None = None
+    detect_count: int | None = None
 
     def __post_init__(self) -> None:
         _replace_lone_surrogates(self)
@@ -195,7 +214,7 @@ def _validate(e: Event) -> None:
         if f.is_array:
             if not isinstance(value, tuple) or not all(isinstance(v, str) for v in value):
                 raise EventError(f"{f.name} must be a tuple of strings")
-            if len(set(value)) != len(value):
+            if not f.ordered and len(set(value)) != len(value):
                 raise EventError(f"{f.name} has duplicates")
             items = value
         else:

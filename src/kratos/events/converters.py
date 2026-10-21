@@ -25,7 +25,7 @@ from kratos import run_context
 from kratos.adapters.auth_log_parse import AuthEvent, _ISO_PREFIX, _PROGRAM_PREFIX, _SYSLOG_PREFIX
 from kratos.events import fields as F
 from kratos.events.model import UTC, Event, cursor_event_id, event_id
-from kratos.events.redact import clean
+from kratos.events.redact import MASK, cap, clean, mask
 from kratos.target_key import target_key
 
 PARSER_AUTH = "auth_log/1"
@@ -389,6 +389,42 @@ _FIELD_CAPS = {"url_original": 2048, "user_agent_original": 1024, "process_worki
                "package_name": 256, "package_version": 128}
 
 
+_LIST_CAPS = {"process_args": (64, 1024), "audit_types": (32, 32), "audit_paths": (32, 4096),
+              "audit_created_paths": (32, 4096)}
+
+
+def _scrub(original: str | None, secrets: list[str]) -> str | None:
+    """The raw line(s) with each masked argument removed, as written and as auditd's
+    hex encoding (EXECVE aN=..., PROCTITLE), before the usual masking and cap."""
+    if not original or not secrets:
+        return original
+    for secret in sorted(set(secrets), key=len, reverse=True):
+        if len(secret) < 2:
+            continue
+        original = original.replace(secret, MASK)
+        hexed = secret.encode("utf-8", "surrogatepass").hex().upper()
+        original = original.replace(hexed, MASK.encode().hex().upper())
+    return original
+
+
+def mask_args(args: list[str]) -> tuple[list[str], bool]:
+    """argv with credentials masked, argument by argument. An argument is masked as
+    masking it alone does, or -- when its secret only shows in context (`--password x`,
+    `sshpass -p x`, `mysql -px`) -- replaced whole when masking the command line up to
+    and including it changes it. Returns (args, whether anything was masked)."""
+    out: list[str] = []
+    changed = False
+    for i, arg in enumerate(args):
+        masked, red = mask(arg)
+        if not red and i:
+            prefix, _ = mask(" ".join(args[:i + 1]))
+            if not prefix.endswith(" " + arg):
+                masked, red = MASK, True
+        out.append(masked)
+        changed = changed or red
+    return out, changed
+
+
 def from_parsed(p: Any, *, ctx: ReadContext, dataset: str) -> Event:
     """A logsources.parsers.Parsed -> Event. Masks command lines, messages and the
     raw line (events.redact) and the URL's query (already masked by the web
@@ -396,10 +432,32 @@ def from_parsed(p: Any, *, ctx: ReadContext, dataset: str) -> Event:
     category, etype, default_outcome = LOG_ACTIONS.get(p.action, ((), ("info",), "unknown"))
     f = dict(p.fields)
     command = f.pop("process_command_line", None)
-    text = _text_fields(p.original, p.message, command)
-    if getattr(p, "redacted", False):
-        text["redacted"] = True
     values: dict[str, Any] = {}
+    flags = {"redacted": False, "truncated": False}
+    secrets: list[str] = []
+    for key in _LIST_CAPS:
+        items = f.pop(key, None)
+        if not items:
+            continue
+        max_items, max_bytes = _LIST_CAPS[key]
+        items = [str(v) for v in items]
+        if key == "process_args":
+            masked, red = mask_args(items)
+            secrets = [old for old, new in zip(items, masked) if old != new]
+            items, flags["redacted"] = masked, red
+        if len(items) > max_items:
+            items, flags["truncated"] = items[:max_items], True
+        capped = []
+        for v in items:
+            c, cut = cap(v, max_bytes)
+            flags["truncated"] = flags["truncated"] or cut
+            capped.append(c)
+        if key != "process_args" and key != "audit_paths":       # unordered: unique values only
+            capped = list(dict.fromkeys(capped))
+        values[key] = tuple(capped)
+    text = _text_fields(_scrub(p.original, secrets), p.message, command)
+    text["redacted"] = text["redacted"] or flags["redacted"] or bool(getattr(p, "redacted", False))
+    text["truncated"] = text["truncated"] or flags["truncated"]
     for key, value in f.items():
         if key in ("source_ip", "destination_ip"):
             value = _ip(str(value))

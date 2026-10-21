@@ -23,7 +23,12 @@ FIELDS: frozenset[str] = frozenset({
     "process_working_directory", "file_path", "service_name", "destination_ip", "destination_port",
     "network_transport", "package_name", "package_version", "url_original", "http_request_method",
     "http_response_status_code", "user_agent_original", "sequence", "log_syslog_priority",
+    # C.1: what Sigma's auditd and process rules look at
+    "process_args", "user_effective_id", "audit_types", "audit_key", "audit_syscall", "audit_paths",
+    "audit_created_paths",
 })
+# The fields above that hold a list (in order) rather than one value.
+LIST_FIELDS: frozenset[str] = frozenset({"process_args", "audit_types", "audit_paths", "audit_created_paths"})
 
 
 @dataclass
