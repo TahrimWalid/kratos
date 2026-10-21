@@ -964,6 +964,91 @@ Debian and Alpine: no licence stated), CISA's Known Exploited Vulnerabilities ca
 from NVD — *this product uses data from the NVD API but is not endorsed or certified by
 the NVD.* `kratos vulndb-update --about` prints these notices.
 
+## Detection rules
+
+Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**
+([github.com/SigmaHQ/sigma](https://github.com/SigmaHQ/sigma)) over the logs it collects
+from each machine. Sigma is a shared, open format for describing suspicious log entries —
+"someone cleared the system log", "a new account with UID 0", "a shell started by a web
+server", "`chattr -i` on a system file" — written and reviewed by security people around
+the world. Each rule keeps its **author**, and every finding, alert and report entry a rule
+raises names that author (the rules are under the Detection Rule License 1.1, which asks for
+exactly that).
+
+**How it runs.** Each time Kratos collects from a machine (an investigation, `/run`,
+`/collect`, a schedule), log sync stores the new log lines and the rules then check those
+lines, on your computer — nothing extra is read from or sent to the machine, and no model
+is involved. A match becomes a finding named `SIGMA-` plus the first 8 characters of the
+rule's SigmaHQ id (for example `SIGMA-08F26069`, *User Has Been Deleted Via Userdel*), with
+the rule's own level (info, low, medium, high, critical) and its ATT&CK labels. The finding
+lists the stored log lines it matched; `kratos events --rule SIGMA-08F26069` prints them.
+A match stays an open finding for 24 hours (`detect.finding_window_hours`); after that, with
+no new match, it is marked "no recurrence".
+
+> **On schedule, not continuously.** The rules see a machine's logs when Kratos collects
+> from it. Between collections nothing is checked — answers and `/detect` say so. Live,
+> second-by-second detection on the machine's sub-agent is planned.
+
+**What the rules need.** Many rules look at **program starts** and **file changes**, which
+only **auditd** records. Without auditd, those rules can't see anything — Kratos says so
+plainly, in the investigation's notes, in `/detect` and as an `info` finding
+`DETECT-001` ("what could not be checked on this machine"), never as "nothing found":
+
+| The rules read | Kratos gets it from | Without it |
+| --- | --- | --- |
+| Linux logs, SSH, sudo, cron, system log (17 rules) | log sync (on by default) | — |
+| the audit log (23 rules) | auditd's log (`/var/log/audit/audit.log`) | not checked |
+| program starts (53 rules) | auditd with a rule recording every `execve` | only commands run through sudo are checked |
+| file creation (5 rules) | auditd watch rules (`-w <path> -p wa`) | not checked |
+
+To give Kratos program starts on a Debian/Ubuntu machine: `sudo apt install auditd`, then add
+`-a always,exit -F arch=b64 -S execve -k exec` (and, for file rules, watches such as
+`-w /etc/sudoers.d -p wa -k sudoers`) to a file in `/etc/audit/rules.d/` and run
+`sudo augenrules --load`. Kratos reads the audit log the same way as the others (see
+[Reading more of a machine's logs](#reading-more-of-a-machines-logs) for read access).
+
+**Which rules ship, and why not the others.** Kratos takes SigmaHQ's Linux rules at a pinned
+version and keeps the ones it can run **exactly as written**: rules that are stable or tested,
+whose every field Kratos's logs have, with no regular expressions (a rule needing one is
+left out, never approximated), at level medium or above (lower levels are "notable only in
+numbers" — Kratos raises a finding per match), not for VMware ESXi, and not routine
+discovery commands that admins run every day. `kratos detect rules --skipped` lists every rule
+left out, with why.
+
+**Turning a rule off.** A rule that is noisy on one machine (a backup script that toggles
+immutable flags, a tool that deletes test users) can be turned off for that machine, or
+everywhere — with a reason, recorded with your name:
+
+```
+kratos detect rules disable SIGMA-34979410 --target web-01 --reason "backup job uses chattr"
+kratos detect rules enable SIGMA-34979410 --target web-01 --reason "backup job gone"
+```
+
+or in the TUI: `/detect`, select the rule, `x` (this machine) or `e` (every machine). A
+single false alarm is better marked in `/findings` ("not a real problem", scope "this rule
+on this machine"); turning the rule off stops it from looking at all.
+
+**The commands**
+
+```
+kratos detect rules                  # every rule: level, what it reads, title, author, on/off here
+kratos detect rules --skipped        # the SigmaHQ rules not shipped, with why
+kratos detect run --target web-01    # run the rules now over the logs Kratos holds
+kratos events --target web-01 --rule SIGMA-08F26069   # the log lines a rule matched
+kratos detect import my-rules/       # compile your own Sigma rules (needs the 'sigma' extra)
+```
+
+`/detect` in the TUI shows the same: the rules with their authors, on/off for this machine,
+the rules not shipped (`s`), when the rules last ran here and what they could not check, and
+`r` to run them now. `/doctor` shows the pack version and when each machine was last checked.
+
+**Your own rules.** `kratos detect import <file or folder>` compiles Sigma rules you wrote
+or picked (it needs pySigma: `pip install 'kratos-security-assistant[sigma]'`, Python 3.11+).
+Each is checked like the shipped ones: a rule that needs something Kratos can't do exactly is
+listed and left out. Counting rules (Sigma `event_count` correlations — "5 failed logins from
+one address within 5 minutes") are supported, grouped by one field. Imported rules live in
+`detect/packs/` in your data folder and run from the next pass on.
+
 ## Sealing a machine's logs
 
 Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal
@@ -1198,6 +1283,7 @@ but here's the map. Everything starts with `/`.
 | `/plan` | preview exactly which steps a run will take; fixed audits show this preview and ask first by default (`/plan gate off` skips it) |
 | `/report` | this session's findings: new, still open, fixed, not rechecked, hidden |
 | `/findings` (or `/f`) | findings remembered across checks — verify, accept a risk, mark false positive or out of scope |
+| `/detect` | the detection rules (SigmaHQ, with their authors): which run, on/off for this machine, what couldn't be checked, run them now — see [Detection rules](#detection-rules) |
 | `/investigate-host` | investigate the Kratos machine itself, not the target |
 | `/use <tool>` | run one specific tool directly |
 | `/tools` | list every tool Kratos can use, built-in and self-written |

@@ -28,6 +28,8 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 **Knows which packages need updating — and which don't.** Kratos reads each machine's installed packages and matches them on your computer against the distribution's own security advisories, so a fix the distribution backported without changing the version number isn't reported (and a network scan's version match that the packages already fix is marked as such). Vulnerabilities attackers are exploiting right now (CISA's KEV list) are raised to *act now*; the rest are ordered by how likely they are to be exploited (EPSS) and how serious they are (CVSS). A kernel update waiting for a reboot is flagged too. The package list never leaves your computer: `kratos vulndb-update` downloads whole public data files and matching is offline.
 
+**Runs SigmaHQ's detection rules.** 98 community-written [Sigma](https://github.com/SigmaHQ/sigma) rules for Linux — cleared logs, new root accounts, reverse shells, kernel modules loaded, shells spawned by web servers — run over the logs Kratos collects, on your computer, with no model. Each finding names the rule's author; rules that need logs a machine doesn't give (program starts need auditd) say they couldn't check rather than "nothing found". Turn a noisy rule off per machine, or import your own Sigma rules. They run when Kratos collects, not continuously.
+
 **Speaks ATT&CK.** Every finding about something an attacker did names its [MITRE ATT&CK](https://attack.mitre.org) v19 technique, from one table built from MITRE's own data, and `kratos attack-layer` writes an [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) map of what Kratos can detect — or of what it has actually seen on a machine.
 
 **Remembers your decisions.** Kratos keeps each finding across checks, so you see what's new, what's still open and what got fixed — not the same list every time. Confirm a finding, accept a risk until a date, or mark it a false positive; a finding only comes back if it shows something you didn't see (a new attacker IP, a higher severity) or your acceptance runs out, and every view says how many findings your decisions hide.
@@ -267,3 +269,8 @@ third-party and stay under their own GPLv2 license (source in
 [`src/kratos/yara_rules/README.md`](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/yara_rules/README.md),
 full text in [`LICENSE`](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/yara_rules/LICENSE) next to them).
 They're included as separate data files the scanner reads, not part of Kratos's own code.
+Likewise the Sigma detection rules in `src/kratos/detect/packs/` are SigmaHQ's, under the
+[Detection Rule License 1.1](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/detect/packs/LICENSE.DRL):
+each keeps its author, which Kratos shows with everything a rule raises; the
+[`NOTICE`](https://github.com/TahrimWalid/kratos/blob/main/src/kratos/detect/packs/NOTICE) there lists the
+SigmaHQ commit and every rule's author and source.

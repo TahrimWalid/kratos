@@ -1068,6 +1068,74 @@ the background after an investigation of a sealed machine (at most every
 newest first, on a thread pinned to its machine), in scheduled runs and on demand,
 and never blocks an investigation.
 
+## Detection rules (Sigma)
+
+**What ships.** `src/kratos/detect/packs/sigma-linux-<N>.json` is a **rule pack**: SigmaHQ's
+Linux rules (`rules/linux/**`) at a pinned commit, compiled into Kratos's own rule format by
+`scripts/dev/build_sigma_pack.py`, committed like the ATT&CK table (deterministic: the same
+inputs give the same bytes; the SigmaHQ commit, the pySigma version and the DRL text's hash are
+recorded in the pack). Beside it: each shipped rule's source file unmodified (`packs/sigma/`),
+the Detection Rule License text (`LICENSE.DRL`) and a NOTICE naming every rule's author. Kratos
+itself never needs pySigma; the `sigma` extra only serves `kratos detect import`.
+
+**The rule format: closed operators, no regular expressions.** A rule is JSON data: id, title,
+level, author and the Sigma provenance; a *scope* (the datasets of its log source, plus a closed
+condition such as "an auditd `process_started` event"); a condition tree over `eq`, `contains`,
+`startswith`, `endswith`, `wildcard` (only `*` and `?`), `in`, `cidr`, `exists`,
+`all_of`/`any_of`/`not`; and optionally `count` (events in a window, grouped by at most one
+identity field). Matching is case-insensitive unless a value is `cased`. A rule that needs a
+regular expression, a numeric comparison, a field reference, or a field Kratos's events don't
+carry is **skipped and listed with the reason** -- never approximated. Every pack carries its
+SHA-256 and a monotonically increasing version; a pack that fails validation is refused whole.
+
+**One evaluator, both sides.** `src/kratos/subagent/detect.py` is standard-library Python 3.8,
+ships in the agent bundle (0.7.2) and is imported by core as `kratos.subagent.detect` -- the
+`protocol.py` pattern, so core and an agent can never judge an event differently. It validates a
+pack against size caps (1,000 rules, 512 nodes and depth 32 per rule, 1 KB per value, 32
+wildcards per pattern, windows up to a day, a closed set of group-by fields) and evaluates in
+bounded time: plain string tests, or a wildcard match that never backtracks (literal pieces by
+`str.find`, pieces with `?` by a bit-parallel scan), over values cut at 64 Ki characters.
+Counting windows keep at most `threshold` (time, id) pairs per group, at most 10,000 groups and
+200,000 pairs per rule; a group fires once per window.
+
+**Field mapping.** `events/sigma_fields.py` maps Sigma's log sources onto Kratos datasets and
+Sigma fields onto event fields, checked against the real parsers' output. To answer the auditd
+rules, audit events keep their record types (`kratos.audit.types`), rule key, system-call name
+(ENRICHED format), every PATH name and the created ones, argv in order (`process.args`,
+credentials masked argument by argument -- and now also in the raw audit lines) and the
+effective uid. Sigma `aN` maps to `process.args[N]` only beside `type: EXECVE` (in a SYSCALL
+record it is a raw system-call argument, which Kratos doesn't keep). Sigma's `file_event`
+maps to auditd PATH records with `nametype=CREATE`. Keywords are looked for in the message
+and the raw line.
+
+**Where it runs.** The `detect` collection check (quick, after `log_sync` -- `Check.after`
+makes the runner wait for it) runs `detect/run.run_pass`: per pack, the events stored for the
+machine since that pack's last pass, **by row id** (log sync stores late lines; time is not a
+position), in chunks each evaluated in time order. Counting rules are re-fed the earlier events
+of their window as *history* (counted, never raising anything), and the last fire per group is
+saved, so a burst straddling two passes is reported once. A new or changed pack looks back
+`detect.lookback_hours` once. The pass stops at `detect.pass_budget_seconds` /
+`detect.max_events_per_pass` and says it is behind. Bookkeeping: `detect_runs` (what was
+evaluated, by row id and time span). Nothing is sent to the machine; no model is called.
+
+**Detections become findings through one path.** Each match is a **detection event** in the
+event store (dataset `kratos.detect`, `event.kind: alert`, `rule.id/name/author/...`, the
+matched events' ids) with an id derived from rule + machine + matched event, so evaluating the
+same events again stores nothing new. `detect/findings.py` summarises the machine's detection
+events of the finding window into a snapshot (`detect/results/`), which the findings engine
+turns into `SIGMA-<8 hex>` findings (a snapshot source): one per rule and subject (the count
+group, else the validated source address, user or program), severity = the rule's level, ATT&CK
+from its tags through the v19 table (a rejected tag was dropped at build time and recorded),
+**occurrence** in the lifecycle, a `detection_rule` credit that every surface shows, and
+`DETECT-001`, a run note listing the log sources the machine doesn't give (no auditd: program-
+start and file rules "not checked", never "nothing found"), a pass that fell behind, or a
+refused imported pack. Matched log text never reaches a title; finding entities are validated
+values only. Alerts go through the existing triggers and notifier.
+
+**People decide the noise.** `detect_rule_overrides` holds a person's on/off per rule, per
+machine or everywhere, with who and why (refused inside an agent tool call, like every decision
+about findings). A single false alarm goes through the finding lifecycle instead.
+
 ## Presets and pipelines
 
 Saved presets (`/preset`) let a user name and re-run an
