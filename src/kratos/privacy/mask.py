@@ -270,8 +270,11 @@ class Masker:
                 note(item.group("n"), "unknown")
 
         plan = _Plan()
-        names = set(values.accounts) | set(seen) | values.seen_names | self._map_names("user") \
-            | self._map_names("invalid_user")
+        # A name this conversation already gave a placeholder was judged a name where it
+        # appeared; later turns carry it in prose (the earlier answer, replayed as context),
+        # so it is replaced as a whole word too -- still never a word of Kratos's own text.
+        issued = self._map_names("user") | self._map_names("invalid_user")
+        names = set(values.accounts) | set(seen) | values.seen_names | issued
         for name in names:
             # a name this conversation already gave a placeholder keeps it, whatever is learned later
             kind = self._existing_kind(name, ("user", "invalid_user"), account=True) \
@@ -282,7 +285,7 @@ class Masker:
                 if name in text:
                     plan.short_left.add(name)
                 continue
-            if name in values.accounts and name.lower() not in self._vocabulary:
+            if (name in values.accounts or name in issued) and name.lower() not in self._vocabulary:
                 plan.whole[name] = kind
             else:
                 plan.context[name] = kind
@@ -292,6 +295,7 @@ class Masker:
             for kind, _m, value, _label in self._map.entries():
                 if kind in ("target", "host"):
                     plan.host_kinds[value] = kind
+                    trusted_hosts.setdefault(value.lower(), kind)   # issued earlier: whole word now
         for name in values.target_names:
             trusted_hosts.setdefault(name.lower(), "target")
         for name in values.hosts:

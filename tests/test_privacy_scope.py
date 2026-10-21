@@ -147,3 +147,21 @@ def test_prune_removes_old_run_maps_and_maps_of_deleted_conversations_only(tmp_p
     dataprune.apply_prune(tmp_path, plan, actor="test")
     left = {r[0] for r in conn.execute("SELECT DISTINCT scope FROM pseudonym_map")}
     assert left == {"session:kept"}
+
+
+def test_a_name_from_a_log_stays_masked_when_a_later_turn_replays_it_in_prose(tmp_path):
+    """Phase B audit: a name Kratos only SAW in a log line (an attacker's guess, or a login
+    with no account list) was masked where it appeared, but the next turn of the same
+    conversation sent the earlier answer -- prose -- back with the real name in it."""
+    first = _m(tmp_path, "session:s1").mask(
+        "Failed password for invalid user zelda from 203.0.113.5 port 22 ssh2\n"
+        "Accepted publickey for carol from 198.51.100.7 port 22 ssh2")
+    assert "zelda" not in first and "carol" not in first
+    later = _m(tmp_path, "session:s1").mask(
+        "Earlier in this conversation -- Kratos: zelda tried 4 times; carol logged in. Is zelda real?")
+    assert "zelda" not in later and "carol" not in later
+    # Kratos's own words still never change, even if an attacker used one as a login name.
+    planted = _m(tmp_path, "session:s2")
+    planted.mask("Failed password for invalid user finding from 203.0.113.5 port 22 ssh2")
+    again = _m(tmp_path, "session:s2").mask("Each finding below was checked.")
+    assert "Each finding below was checked." in again
