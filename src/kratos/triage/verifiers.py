@@ -207,8 +207,14 @@ def _verify_auth(ctx: VerifyContext) -> Verdict:
                        {"window": {"kind": "rolling", "amount": hours, "unit": "hour"}})
     inner = res.get("result") if isinstance(res, dict) else None
     checks = (VerifyCheck(name="measure_auth_activity", transport=""),)
-    if not isinstance(inner, dict) or res.get("status") != "ok":
-        reason = str((res or {}).get("observation") or "the measurement did not run")[:160]
+    # The dispatch wrapper says "ok" when the tool ran; the measurement's own status says
+    # whether it read anything. A failed read is "couldn't check" -- never "not reproduced"
+    # (Phase B audit: an SSH failure used to read as "no burst -- looks fixed").
+    failed_read = (not isinstance(inner, dict) or res.get("status") != "ok"
+                   or str(inner.get("status") or "ok").lower() == "error" or not isinstance(inner.get("counts"), dict))
+    if failed_read:
+        reason = str((inner if isinstance(inner, dict) and inner.get("observation") else res or {}).get("observation")
+                     or "the measurement did not run")[:160]
         return Verdict("couldnt_check", "Kratos could not re-measure the sign-in activity for that window.",
                        detail=reason, checks=checks)
     window = inner.get("window") if isinstance(inner.get("window"), dict) else {}

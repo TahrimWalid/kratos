@@ -173,3 +173,37 @@ def test_vuln001_couldnt_check_without_a_cve():
     ctx = _ctx(f)
     v = V._verify_vuln001(ctx)
     assert v.verdict == "couldnt_check"
+
+
+def test_auth_a_failed_measurement_is_couldnt_check_never_not_reproduced():
+    """Phase B audit: the dispatch wrapper said "ok" while the measurement inside said
+    "error" (no machine / SSH down); the verifier read it as an empty window and answered
+    "no burst -- looks fixed"."""
+    f = {"id": "CORR-SSH-001", "severity": "high", "entities": ["10.136.28.52"]}
+    failed = {"status": "ok", "result": {"status": "error", "observation": "measurement over SSH failed: no route"}}
+    v = V._verify_auth(_ctx(f, dispatch=lambda t, a: failed))
+    assert v.verdict == "couldnt_check" and "SSH failed" in v.detail
+
+
+def test_a_verifier_reads_the_findings_own_machine(tmp_path, monkeypatch):
+    """Phase B audit: the reads a verifier makes resolved their machine from whichever one
+    was active (none in the chat server; possibly another in the TUI)."""
+    from kratos import kratos_config
+    from kratos.triage import registry
+    from kratos.triage import run as TR
+
+    seen = []
+
+    def spy(ctx):
+        seen.append(kratos_config.get_active_target())
+        return V.Verdict("reproduced", "x")
+
+    monkeypatch.setattr(registry, "verifier_for", lambda rule: registry.Verifier(rules=("X-001",), cost="quick", verify=spy))
+    monkeypatch.setattr(TR, "verifier_for", lambda rule: registry.Verifier(rules=("X-001",), cost="quick", verify=spy))
+    kratos_config.set_active_target("10.0.0.99")
+    try:
+        TR.verify_finding({"id": "X-001", "severity": "high"}, data_dir=tmp_path, target="10.0.0.11",
+                          dispatch=lambda t, a: {}, recollect=lambda names: None, record=False)
+    finally:
+        kratos_config.set_active_target(None)
+    assert seen == ["10.0.0.11"]

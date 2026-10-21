@@ -70,7 +70,11 @@ def verify_finding(finding: dict[str, Any], *, data_dir: Path, target: str, run:
                             reuse=reuse, report=report)
         label = entry.label or entry.verify.__name__
         try:
-            verdict = entry.verify(ctx)
+            # Every read a verifier makes goes to the finding's machine: tool calls resolve
+            # their host from the pinned machine, never whichever one is active (Phase B
+            # audit: the chat server has none active, and the TUI may have another).
+            with _pinned(target):
+                verdict = entry.verify(ctx)
         except Exception as e:  # noqa: BLE001 -- a verifier crash is "couldn't check", never a failed run
             logger.warning("triage: verifier for %s failed", finding.get("id"), exc_info=True)
             verdict = Verdict("couldnt_check", "The re-check hit an error.",
@@ -89,6 +93,14 @@ def verify_finding(finding: dict[str, Any], *, data_dir: Path, target: str, run:
             logger.debug("triage: could not store verdict for %s", finding.get("id"), exc_info=True)
     finding["verdict"] = verdict.as_dict()
     return verdict
+
+
+def _pinned(target: str | None) -> Any:
+    import contextlib
+
+    from kratos import kratos_config
+
+    return kratos_config.pinned_target(target) if target else contextlib.nullcontext()
 
 
 class _ReuseReport:
