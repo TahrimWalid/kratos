@@ -223,6 +223,10 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
                                           "Kratos doesn't read this log source"))
                 continue
             seen = _source_seen(conn, key, since, ls)
+            held_note = _held_note(data_dir, key, ls_key, now) if seen else None
+            if held_note:
+                out.append(SourceCoverage(name, ls.label, "partial", len(rules), held_note))
+                continue
             if seen and ls.partial:
                 full = _full_source_seen(conn, key, since, ls_key)
                 state = "checked" if full else "partial"
@@ -238,6 +242,43 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
     finally:
         conn.close()
     return out
+
+
+# The log a log source's rules mostly read, as log sync names it (collect/sync). Sources
+# mixing several logs (Linux logs, system log) are not judged by one of them.
+_PRIMARY_SYNC = {
+    ("linux", "auditd", None): "auditd", ("linux", None, "process_creation"): "auditd",
+    ("linux", None, "file_event"): "auditd", ("linux", "sshd", None): "auth", ("linux", "sudo", None): "auth",
+    ("linux", "auth", None): "auth", ("linux", "cron", None): "cron",
+}
+HELD_ENOUGH = 0.95
+
+
+def _held_note(data_dir: Path | str, key: str, ls_key: tuple, now: float) -> str | None:
+    """Why the rules of this log source could only look at part of the finding window, or None.
+    From log sync's own record of what it holds completely (sync_coverage) -- never inferred from
+    the store being quiet (a first sync of a busy audit log can hold only seconds of the day)."""
+    source = _PRIMARY_SYNC.get(ls_key)
+    if source is None:
+        return None
+    from kratos.collect.sync import cursors
+
+    if not cursors.spans(data_dir, key, source):
+        return None                       # not kept by log sync here (read another way): nothing to judge
+    hours = int(settings_store.get(S.FINDING_WINDOW_HOURS, data_dir=data_dir))
+    held_s, first = cursors.held(data_dir, key, source, now - hours * 3600, now)
+    if held_s >= HELD_ENOUGH * hours * 3600:
+        return None
+    if held_s < 120:
+        amount = f"{held_s:.0f} s"
+    elif held_s < 7200:
+        amount = f"{held_s / 60:.0f} min"
+    else:
+        amount = f"{held_s / 3600:.1f} h"
+    since = (f" (from {datetime.fromtimestamp(first, timezone.utc).strftime('%Y-%m-%d %H:%M UTC')})"
+             if first is not None else "")
+    return (f"only {amount} of the last {hours} h of the {source} log could be read{since}; "
+            "the rest was not checked")
 
 
 def _where_sql(node: dict[str, Any] | None) -> tuple[str, list[Any]] | None:

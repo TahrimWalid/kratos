@@ -430,3 +430,19 @@ def test_the_check_tells_the_digest_on_schedule_and_what_it_could_not_read(tmp_p
     assert gap.startswith("detection rules with no log to read on this machine in the last 7 days: ")
     assert "file creation (5)" in gap and "SSH server log (1)" in gap and "program starts" not in gap
     assert all(ch.isprintable() for ch in res.summary)       # Kratos-written words, rule ids and counts only
+
+
+def test_a_log_held_for_only_part_of_the_window_is_said_never_clean(tmp_path):
+    """C.1 lab finding: a first sync of a busy audit log held 2 s of the day; the rules then
+    looked at 2 s, and coverage must say so (sync_coverage), not 'checked'."""
+    from kratos.collect.sync import cursors
+
+    _store(tmp_path, exec_event(A, NOW - 1, "/usr/bin/true", "true"))
+    cursors.add_span(tmp_path, A, "auditd", NOW - 2, NOW, complete=True)
+    cov = {c.key: c for c in R.run_pass(A, tmp_path, now=NOW).coverage}
+    for key in ("linux/auditd", "linux/process_creation"):
+        assert cov[key].state == "partial", key
+        assert cov[key].note.startswith("only 2 s of the last 24 h of the auditd log could be read")
+    cursors.add_span(tmp_path, A, "auditd", NOW - 24 * 3600, NOW - 2, complete=True)
+    cov = {c.key: c for c in R.run_pass(A, tmp_path, now=NOW).coverage}
+    assert cov["linux/auditd"].state == "checked"

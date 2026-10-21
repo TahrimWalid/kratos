@@ -39,15 +39,18 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
         parts.append(f"{report.own_events:,} of them Kratos's own commands, set aside")
     gaps: list[str] = []
     unchecked = [f"{c.label} ({c.rules})" for c in report.coverage if c.state == "not_checked"]
-    partial = [f"{c.label} ({c.rules}): {c.note.split(' -- ')[0]}" for c in report.coverage if c.state == "partial"]
+    partial = [f"{c.label} ({c.rules}): {c.note.split(' -- ')[0].split('; the rest')[0]}" for c in report.coverage
+               if c.state == "partial"]
     if unchecked or partial:
         from kratos import settings_store
         from kratos.detect import settings as DS
 
         days = settings_store.get(DS.COVERAGE_DAYS, data_dir=ctx.data_dir)
-        gaps.append(f"detection rules with no log to read on this machine in the last {days} days: "
-                    + "; ".join([", ".join(unchecked)] if unchecked else []) + ("; " if unchecked and partial else "")
-                    + "; ".join(partial))
+        if unchecked:
+            gaps.append(f"detection rules with no log to read on this machine in the last {days} days: "
+                        + ", ".join(unchecked))
+        if partial:
+            gaps.append("detection rules that could look at only part of their log: " + "; ".join(partial))
     if report.behind:
         parts.append("still catching up on older stored logs")
     for r in report.refused:

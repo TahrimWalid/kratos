@@ -214,3 +214,25 @@ def covered(data_dir: Path, target: str, source: str, start: float, end: float) 
         if reach >= end - MERGE_SLACK_SECONDS:
             return True
     return reach >= end - MERGE_SLACK_SECONDS
+
+
+def held(data_dir: Path, target: str, source: str, start: float, end: float) -> tuple[float, float | None]:
+    """(seconds of [start, end] the store holds `source` completely, the earliest such moment or
+    None) -- complete spans merged, holes not counted. Never more than end - start."""
+    if end < start:
+        start, end = end, start
+    conn = connect(data_dir)
+    try:
+        rows = conn.execute(
+            "SELECT start_ts, end_ts FROM sync_coverage WHERE target = ? AND source = ? AND complete = 1 "
+            "AND end_ts >= ? AND start_ts <= ? ORDER BY start_ts", (target, source, start, end)).fetchall()
+    finally:
+        conn.close()
+    total, reach, first = 0.0, start, None
+    for r in rows:
+        lo, hi = max(start, float(r["start_ts"]), reach), min(end, float(r["end_ts"]))
+        if hi > lo:
+            total += hi - lo
+            first = lo if first is None else first
+            reach = hi
+    return total, first
