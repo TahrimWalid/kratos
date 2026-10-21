@@ -585,7 +585,7 @@ Where the hooks are -- one each, so every caller is covered:
 | Span | Hook |
 | --- | --- |
 | `run` | `run_trace(...)` in `run_agent`, `run_pipeline`, `run_standard_audit`, `run_scheduled`, `run_headless_investigation`; nested kinds become a `run` span in the same record |
-| `model_call` | `llm_interface._metered_call`, the one model choke point (sizes always; text only with `trace.store_prompts`; the budget ledger row id and cost) |
+| `model_call` | `llm_interface._metered_call`, the one model choke point (sizes always; text only with `trace.store_prompts`; the budget ledger row id and cost). A request made with no record open (the message router, a plain chat reply, drafts, compaction, `kratos chat`) gets one of its own (`recorder.standalone_record`): same run (budget and masking unchanged), file `<run>-<purpose>` (`recorder.purpose("route message")` names it), so every request to the model leaves a record and none takes the investigation record's name; `trace list` shows `<12 chars>-route`, and a bare id means the run's main record |
 | `tool_call` | `agent.loop.execute_tool_call` (args after the dispatch guards' rewrites, approval asked/answered, result capped at `trace.max_result_bytes` with a sha256 of the whole, the envelope call id the model saw) |
 | `collection_check` | `collect.runner.prepare` (reused / ran / skipped; a check's tool calls nest under it; still running at the start budget, settled later) |
 | `guard` / `answer` | `agent.loop`: each rejection with its correction's first line, each NOTE a guard added, and the answer's composition (the findings block's ids in order, NOTEs, the model's text length) |

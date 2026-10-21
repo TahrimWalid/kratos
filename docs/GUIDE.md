@@ -661,6 +661,10 @@ see a short tag next to the finding:
 | couldn't check: *…* | no safe fresh read was possible, and why (e.g. *the logs for that time are no longer there*) |
 | verifying… | the re-check is still running; it finishes in the background |
 
+A verdict more than an hour old says how old it is — *reproduced by a fresh read, 2 days
+ago* — wherever it is shown, so an old check doesn't read like a new one. An automatic check
+from an earlier investigation reads *seen in a read 2 days ago — not re-checked yet*.
+
 **Conditions vs. things that happened.** A *condition* (a vulnerable package, an
 open port, a setuid file) is re-read *now* — is it still there? Something that
 *happened* in a window (a failed-login burst at 03:14) is re-checked against the
@@ -1124,7 +1128,9 @@ machine name Kratos was never told about is replaced only where it appears as on
 (`user@host`, a host-name field).
 
 **Seeing exactly what was sent.** `kratos trace show <run> --sent` (or `/trace sent` in a
-conversation) lists each request to the model and what was replaced in it. To keep the full
+conversation) lists each request to the model and what was replaced in it. Every request has
+a record, including the short one that decides whether a message is a question or a request
+for an investigation: it is listed as its own record (`…-route` in `kratos trace list`). To keep the full
 text sent, turn on Settings → General → *Keep the text sent to the model* first; what is kept
 is the masked text, because that is what was sent.
 
