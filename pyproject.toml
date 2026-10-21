@@ -9,9 +9,10 @@ description = "Kratos — a self-hostable, self-growing security assistant"
 readme = "README.md"
 requires-python = ">=3.10"
 # Kratos itself is MIT; the starter YARA rules shipped as package data are
-# GPL-2.0 (Yara-Rules project), with their licence text alongside them.
-license = "MIT AND GPL-2.0-only"
-license-files = ["LICENSE", "src/kratos/yara_rules/LICENSE"]
+# GPL-2.0 (Yara-Rules project) and the Sigma detection rules DRL 1.1 (SigmaHQ),
+# each with its licence text alongside it.
+license = "MIT AND GPL-2.0-only AND DRL-1.1"
+license-files = ["LICENSE", "src/kratos/yara_rules/LICENSE", "src/kratos/detect/packs/LICENSE.DRL"]
 authors = [{ name = "Tahrim Walid" }]
 keywords = ["security", "intrusion detection", "incident response", "linux", "llm", "agent", "ssh", "yara", "nmap"]
 classifiers = [
@@ -62,8 +63,13 @@ Issues = "https://github.com/TahrimWalid/kratos/issues"
 
 [project.optional-dependencies]
 # pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0). pysigma 2
-# needs Python 3.11+; on 3.10 that test skips.
-test = ["pytest", "pysigma>=2.0,<3; python_version >= '3.11'"]
+# needs Python 3.11+; on 3.10 those tests skip. pysigma-backend-sqlite is the independent
+# second opinion on every shipped Sigma rule's samples (tests/test_detect_pack.py), never shipped.
+test = ["pytest", "pysigma>=2.0,<3; python_version >= '3.11'",
+        "pysigma-backend-sqlite==2.1.1; python_version >= '3.11'"]
+# sigma: compile your own Sigma rules into a Kratos rule pack (`kratos detect import`). The
+# shipped pack is already compiled; detection itself never needs pySigma. Python 3.11+.
+sigma = ["pysigma>=2.0,<3; python_version >= '3.11'"]
 # Contributor tooling: lint, build and check the package (scripts/ci).
 dev = ["ruff>=0.15,<1", "build>=1.2", "twine>=5"]
 # otel: send a copy of each run record (timings, token counts -- never tool results or
@@ -94,10 +100,13 @@ where = ["src"]
 # read by run_yara_scan and bundled into every sub-agent installer; the settings
 # template is what `kratos init` writes; the event JSON Schema (generated from
 # kratos/events/fields.py) documents what `kratos events --json` prints; the ATT&CK
-# table (generated from MITRE's official bundle) labels findings.
+# table (generated from MITRE's official bundle) labels findings; the Sigma rule pack
+# (generated from a pinned SigmaHQ commit) ships with its rules' source files, the
+# Detection Rule License text and its NOTICE.
 [tool.setuptools.package-data]
 kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example", "attack/*.json",
-          "events/schema/*.json"]
+          "events/schema/*.json", "detect/packs/*.json", "detect/packs/NOTICE", "detect/packs/LICENSE.DRL",
+          "detect/packs/sigma/**/*.yml"]
 
 # Lint (B.4): narrow on purpose -- real problems, not style. Syntax errors (E9),
 # invalid comparisons and statements (F63, F7), undefined names (F82), unused imports
