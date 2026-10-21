@@ -249,6 +249,17 @@ def test_app_only_commands_are_refused_without_a_model_call(env, cmd):
     assert env["calls"]["route"] == [] and env["calls"]["agent"] == []
 
 
+def test_an_oversized_body_without_a_length_is_413_not_bad_json(env):
+    settings_store.set(SS.MAX_BODY_BYTES, 10_000, data_dir=env["dir"], actor="test")
+
+    def chunks():
+        for _ in range(5):
+            yield b"x" * 4096
+
+    r = env["client"].post("/v1/chat/completions", content=chunks(), headers=_h(env["token"]))
+    assert r.status_code == 413
+
+
 def test_help_and_findings_work_without_a_model_call(env):
     assert "Commands that work here" in _chat(env, "/help").json()["choices"][0]["message"]["content"]
     assert "No open findings" in _chat(env, "/findings").json()["choices"][0]["message"]["content"]

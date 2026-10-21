@@ -412,8 +412,13 @@ def _handlers(state: Any) -> dict[str, Any]:
             except Exception:  # noqa: BLE001
                 logger.debug("serve: audit failed", exc_info=True)
 
+        from kratos.serve.app import _BodyTooLarge
+
         try:
             body = await request.json()
+        except _BodyTooLarge:          # a body sent without a length that grew past the limit
+            await asyncio.to_thread(audit, "refused", detail="body too large")
+            return _error(413, "the request is too large")
         except Exception:  # noqa: BLE001
             await asyncio.to_thread(audit, "refused", detail="body is not JSON")
             return _error(400, "the request body must be JSON")
