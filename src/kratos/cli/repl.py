@@ -48,7 +48,7 @@ from kratos.llm_config import (
     set_active_llm_profile,
 )
 from kratos.adapters import llm_profiles as _llm_profiles
-from kratos.llm_interface import agent_chat, check_endpoint_reachable
+from kratos.llm_interface import check_endpoint_reachable
 from kratos.run_context import run_scope
 from kratos.storage.session_store import SessionStore
 from kratos.utils import timeutil as _timeutil
@@ -109,20 +109,7 @@ REPL_MAX_ITERS = 7
 # real investigate loop's own safety properties (mandatory tool-calling,
 # mandatory correlation, guards) are completely untouched, since this
 # routing decision happens strictly before that loop is ever entered.
-_INVESTIGATE_SENTINEL = "INVESTIGATE"
-_ROUTING_SYSTEM_PROMPT = (
-    "You are Kratos, a cybersecurity assistant. You can have a normal "
-    "conversation, AND you can investigate/scan/analyze a monitored target for "
-    "security issues when genuinely asked to.\n\n"
-    "Decide: is the user's message a genuine request for you to investigate, scan, "
-    "check, or analyze the target/system for security issues right now?\n\n"
-    f"If YES: respond with exactly this one word and nothing else: {_INVESTIGATE_SENTINEL}\n\n"
-    "If NO (greetings, thanks, small talk, questions about what you are or what you "
-    "can do, or anything that isn't actually asking you to go check something right "
-    "now): respond normally and conversationally, as Kratos would -- helpful, brief, "
-    "no markdown, no tool-calling talk."
-)
-_ROUTING_MAX_TOKENS = 200
+# (The routing call itself now lives in tui_mk2/command_intent.route_message -- see _route_input.)
 
 
 def _route_input(goal: str, resume_context: str = "") -> tuple[bool | None, str | None]:
@@ -132,49 +119,33 @@ def _route_input(goal: str, resume_context: str = "") -> tuple[bool | None, str 
     caller can report the real failure instead of silently treating it as
     chat. second_value is overloaded by design, matching should_investigate:
     the chat reply text when should_investigate is False, or the real
-    underlying failure reason (e.g. "openai_compatible query error: 503
-    Server Error...") when should_investigate is None -- never both.
+    underlying failure reason when should_investigate is None -- never both.
 
-    resume_context (the same running session summary _run_investigate_turn
-    already prepends to the real goal) is threaded through here too -- real
-    testing found a routing false-positive on a context-dependent follow-up
-    ("ok cool, what about now?") when the router saw only the bare message
-    with no session history to disambiguate it against."""
-    full_prompt = goal
-    if resume_context:
-        full_prompt = f"[Recent session context:]\n{resume_context}\n\n[User's new message:] {goal}"
+    Uses the TUI's router (tui_mk2/command_intent.route_message), so every face
+    of Kratos routes a message the same way. This REPL's own one-sentinel prompt
+    used to answer "has anyone been trying to log in?" as small talk ("no
+    suspicious activity") without investigating -- found live during B.3. The
+    classic REPL has no conversational controls, so a control request is answered
+    with a pointer to the matching slash command; anything about a machine
+    ("this machine", Kratos's own host) is investigated in the session's target,
+    as this REPL always did.
 
-    # Real, reported bug: llm_interface.py's own internal diagnostic prints
-    # (e.g. "[KRATOS-LLM] openai_compatible query error: 503 Server Error:
-    # Service Unavailable...") go straight to stderr and, in a real
-    # terminal, land right above this function's own clean render_error --
-    # an ugly, inconsistent stack of raw log text next to styled Rich
-    # output. Not touching llm_interface.py itself (it's a shared,
-    # lower-level module other callers -- `kratos chat`, `kratos
-    # investigate` from the shell -- still rely on seeing raw); instead,
-    # capture stderr narrowly around just this one call and fold the real
-    # underlying reason into the caller's own clean error message instead
-    # of discarding it.
-    import contextlib
-    import io
+    resume_context (the running session summary) is framed as data by the router
+    -- real testing found a routing false-positive on a context-dependent
+    follow-up ("ok cool, what about now?") when the router saw only the bare
+    message with no session history to disambiguate it against."""
+    from kratos.tui_mk2.command_intent import route_message
 
-    captured = io.StringIO()
-    with contextlib.redirect_stderr(captured):
-        response = agent_chat(_ROUTING_SYSTEM_PROMPT, full_prompt, max_tokens=_ROUTING_MAX_TOKENS)
-    if response is None:
-        detail = captured.getvalue().strip().splitlines()
-        reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"
-        return None, reason
-    # Strict, unambiguous check per the fix's own requirement -- not a
-    # substring match, which could false-positive on a real conversational
-    # reply that happens to mention the word. Tolerates case and a trailing
-    # period/whitespace (real, observed model output variance during
-    # testing -- see the implementation report), but the ENTIRE response
-    # must reduce to just the sentinel, nothing more.
-    normalized = response.strip().rstrip(".").strip().upper()
-    if normalized == _INVESTIGATE_SENTINEL:
+    route = route_message(goal, resume_context)
+    if route.kind == "failed":
+        return None, route.reason or "no detail available"
+    if route.kind == "chat":
+        return False, (route.reply or "").strip()
+    if route.kind in ("investigate", "investigate_host", "clarify_host"):
         return True, None
-    return False, response.strip()
+    if route.kind == "command" and route.command:
+        return False, (f"That sounds like a setting -- use /{route.command} (type /help for every command).")
+    return False, "That isn't available in this prompt -- type /help for what is, or use the full-screen app (`kratos`)."
 
 
 SLASH_COMMAND_NAMES = [

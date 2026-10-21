@@ -718,3 +718,90 @@ def test_a_stopped_run_is_recorded_as_stopped_not_as_a_crash(tmp_path, monkeypat
     files = list((tmp_path / "traces").rglob("*.json"))
     assert len(files) == 1 and not list((tmp_path / "traces").rglob("*.partial"))
     assert json.loads(files[0].read_text())["status"] == "stopped"
+
+
+# --------------------------------------------------------------------------- MCP: long-poll, no id, restarts
+def test_mcp_start_with_wait_returns_the_answer_in_one_call(env):
+    env["state"]["sleep"] = 0.4
+    out = _mcp_call(env, "kratos_start_investigation", {"goal": "logins?", "target": T1, "wait_seconds": 10})
+    assert out["status"] == "done" and "The analysis." in out["final_answer"]
+    assert out["session_id"]
+
+
+def test_mcp_wait_is_bounded_and_validated(env):
+    env["state"]["sleep"] = 3.0
+    t0 = time.monotonic()
+    out = _mcp_call(env, "kratos_start_investigation", {"goal": "x", "target": T1, "wait_seconds": 0.5})
+    assert out["status"] in ("waiting", "running") and time.monotonic() - t0 < 2.5
+    assert "wait_seconds" in _mcp_call(env, "kratos_get_investigation",
+                                       {"investigation_id": out["investigation_id"], "wait_seconds": "soon"})["error"]
+
+
+def test_mcp_get_without_an_id_is_this_tokens_newest(env):
+    first = _mcp_call(env, "kratos_start_investigation", {"goal": "a", "target": T1, "wait_seconds": 10})
+    second = _mcp_call(env, "kratos_start_investigation", {"goal": "b", "target": T2, "wait_seconds": 10})
+    got = _mcp_call(env, "kratos_get_investigation", {})
+    assert got["investigation_id"] == second["investigation_id"] != first["investigation_id"]
+    other, _ = auth.create_token(env["dir"], name="other2", targets=[T1], mcp=True)
+    assert "no investigation" in _mcp_call(env, "kratos_get_investigation", {}, token=other)["error"]
+
+
+def test_mcp_investigation_is_found_after_a_restart(env):
+    res = env["state"]["result"]
+    res["transcript"] = [{"tool": "correlate_findings", "observation": {"status": "ok", "result": {
+        "findings": [{"id": "CORR-SSH-001", "severity": "high"}]}}},
+                         {"final_answer": res["final_answer"], "recommended_commands": [], "run_id": "r" * 32}]
+    done = _mcp_call(env, "kratos_start_investigation", {"goal": "logins?", "target": T1, "wait_seconds": 10})
+    env["client"].__exit__(None, None, None)                       # stop the server
+    app2 = create_app(env["dir"], port=8765)
+    with TestClient(app2, base_url=BASE) as c2:
+        env2 = dict(env, client=c2)
+        got = _mcp_call(env2, "kratos_get_investigation", {"investigation_id": done["investigation_id"]})
+        assert got["status"] == "done" and "The analysis." in got["final_answer"]
+        assert got["session_id"] == done["session_id"]
+        assert got["findings"] == [{"id": "CORR-SSH-001", "severity": "high"}] and got["run_id"] == "r" * 32
+        other, _ = auth.create_token(env["dir"], name="other3", targets=[T1], mcp=True)
+        assert "no investigation" in _mcp_call(env2, "kratos_get_investigation",
+                                               {"investigation_id": done["investigation_id"]}, token=other)["error"]
+
+
+def test_an_investigation_cut_off_by_a_restart_reads_as_interrupted(env):
+    from kratos.serve import mcp_http
+    from kratos.storage.session_store import SessionStore
+
+    store = SessionStore(Path(env["dir"]) / "kratos.db")
+    sid = store.create_session([T1], "m")
+    store.start_turn(sid, "logins?")                              # never completed
+    token_id = env["token"].split("_")[1]
+    S.remember_session(env["dir"], token_id, "mcp:inv_cutoff", T1, sid)
+    got = mcp_http.view_from_store(env["dir"], token_id, "inv_cutoff")
+    assert got["status"] == "interrupted" and got["session_id"] == sid
+
+
+def test_hourly_limit_holds_under_simultaneous_requests(env):
+    """Requests arriving together all used to pass the same audit count; the in-process
+    reservation counts the ones still running."""
+    st = env["app"].state
+    results: list[bool] = []
+    barrier = threading.Barrier(10)
+
+    def go():
+        barrier.wait()
+        results.append(st.reserve_metered("tok", 3))
+
+    threads = [threading.Thread(target=go) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(True) == 3
+    st.release_metered("tok")
+    assert st.reserve_metered("tok", 3) is True and st.reserve_metered("tok", 3) is False
+
+
+def test_simultaneous_mcp_starts_never_exceed_the_hourly_limit(env):
+    settings_store.set(SS.REQUESTS_PER_HOUR, 2, data_dir=env["dir"], actor="test")
+    env["state"]["sleep"] = 1.0
+    outs = [_mcp_call(env, "kratos_start_investigation", {"goal": f"g{i}", "target": T1}) for i in range(4)]
+    started = [o for o in outs if "investigation_id" in o]
+    assert len(started) == 2 and all("hour" in o["error"] for o in outs if "error" in o)

@@ -199,6 +199,17 @@ def remember_session(data_dir: Path, token_id: str, chat_key: str, target: str, 
         conn.close()
 
 
+def sessions_with_prefix(data_dir: Path, token_id: str, prefix: str) -> list[dict[str, Any]]:
+    """This token's client-chat rows whose key starts with `prefix`, newest first."""
+    conn = connect(data_dir)
+    try:
+        rows = conn.execute("SELECT * FROM serve_sessions WHERE token_id = ? AND substr(client_chat_key, 1, ?) = ? "
+                            "ORDER BY created DESC", (token_id, len(prefix), prefix)).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
 def sessions_of_token(data_dir: Path, token_id: str) -> list[str]:
     conn = connect(data_dir)
     try:

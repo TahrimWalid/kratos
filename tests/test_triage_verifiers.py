@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from kratos.lifecycle.keys import finding_key
 from kratos.target_key import target_key

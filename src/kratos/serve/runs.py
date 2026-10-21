@@ -57,6 +57,7 @@ class RunRequest:
     timezone: str | None = None
     should_stop: Callable[[], bool] | None = None
     on_progress: Callable[[str], None] | None = None
+    on_session: Callable[[str], None] | None = None   # told the session id as soon as it exists
 
 
 @dataclass
@@ -144,6 +145,11 @@ def run_investigation(req: RunRequest) -> RunOutcome:
     store = SessionStore(data_dir / "kratos.db")
     session_id = req.session_id or store.create_session([target], get_active_llm_model())
     turn_id = store.start_turn(session_id, req.goal)
+    if req.on_session is not None:
+        try:
+            req.on_session(session_id)
+        except Exception:  # noqa: BLE001 -- bookkeeping never stops the run
+            logger.debug("on_session callback failed", exc_info=True)
 
     def on_step(step: dict[str, Any]) -> None:
         line = _progress_for_step(step)

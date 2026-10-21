@@ -1723,6 +1723,11 @@ def _run_agent_loop(
     last_context_tokens = 0
 
     def _with_usage(result: dict[str, Any]) -> dict[str, Any]:
+        if "answer_parts" not in result and isinstance(result.get("final_answer"), str) and \
+                result.get("status") in ("max_iters_reached", STOPPED_BY_BUDGET):
+            # Built by code from what the run gathered (raw tool results included) -- Kratos's
+            # own text, so a display shows it like the findings block, not as model prose.
+            result["answer_parts"] = {"block": result["final_answer"], "notes": "", "analysis": ""}
         result["token_usage"] = run_usage.as_dict()
         result["context_tokens"] = last_context_tokens
         result["context_window"] = get_context_window_tokens()

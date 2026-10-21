@@ -20,6 +20,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,30 @@ class ServeState:
         self.started_at = time.time()
         self._verified: dict[str, tuple[str, float]] = {}   # sha256(token) -> (token_id, when)
         self.investigations: Any = None                      # mcp_http.Investigations, set by create_app
+        self._metered_lock = threading.Lock()
+        self._in_flight: dict[str, int] = {}                 # token id -> metered requests not yet audited
+
+    def reserve_metered(self, token_id: str, limit: int) -> bool:
+        """Take one of this token's hourly model-using requests, or False when the hour's
+        limit is used. Counts the audit log's metered rows AND the requests of this process
+        still running (their row is written when they end), under one lock -- so requests
+        arriving together can't all pass the same check. Pair with release_metered."""
+        since = time.time() - 3600
+        with self._metered_lock:
+            used = _store.metered_requests_since(self.data_dir, token_id, since) + self._in_flight.get(token_id, 0)
+            if used >= limit:
+                return False
+            self._in_flight[token_id] = self._in_flight.get(token_id, 0) + 1
+            return True
+
+    def release_metered(self, token_id: str) -> None:
+        """The request's metered audit row is written (or it never used the model)."""
+        with self._metered_lock:
+            left = self._in_flight.get(token_id, 0) - 1
+            if left > 0:
+                self._in_flight[token_id] = left
+            else:
+                self._in_flight.pop(token_id, None)
 
     def note_runs(self, *, running: bool = True) -> None:
         """Refresh the status file (`kratos serve status`, /doctor read it)."""

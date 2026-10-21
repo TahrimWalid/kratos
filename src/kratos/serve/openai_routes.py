@@ -51,7 +51,11 @@ Commands that work here (no model call):
   /help              this text
 
 Not available from a chat client -- use the Kratos app: /evolve, /whitelist, /run-fix,
-accepting or dismissing findings, settings, target setup, presets."""
+accepting or dismissing findings, settings, target setup, presets.
+
+Text Kratos quotes from a machine is shown inert: no image loads, no link is clickable.
+Your OWN messages are drawn by the chat app itself -- an image link you type there is
+loaded by the app, not by Kratos."""
 
 _ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/help")
 
@@ -408,35 +412,41 @@ def _handlers(state: Any) -> dict[str, Any]:
             return _respond_text(cmd, model=model, stream=stream)
 
         limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
-        used = await asyncio.to_thread(_store.metered_requests_since, state.data_dir, client.token_id,
-                                       time.time() - 3600)
-        if used >= limit:
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
             await asyncio.to_thread(audit, "refused", model=model, target=target, detail="hourly limit")
             return _error(429, f"This token has used its {limit} messages for this hour (serve.requests_per_hour).",
                           kind="rate_limit_exceeded", code="rate_limit_exceeded")
-        refusal = await asyncio.to_thread(_precheck, target, state.data_dir)
-        if refusal is not None:
-            await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
-            return _respond_text(_render.kratos_note_markdown(refusal), model=model, stream=stream)
-
-        convo = [*earlier, ("user", message)]
-        key = chat_key(headers, client.token_id, model, convo, message)
-        session_id = await asyncio.to_thread(_session_for, state, client.token_id, key, target)
+        # From here the request holds one of the hour's slots: it is given back once the
+        # metered audit row is written, or at once if the request ends before using the model.
+        try:
+            refusal = await asyncio.to_thread(_precheck, target, state.data_dir)
+            if refusal is not None:
+                await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
+                state.release_metered(client.token_id)
+                return _respond_text(_render.kratos_note_markdown(refusal), model=model, stream=stream)
+            convo = [*earlier, ("user", message)]
+            key = chat_key(headers, client.token_id, model, convo, message)
+            session_id = await asyncio.to_thread(_session_for, state, client.token_id, key, target)
+        except BaseException:
+            state.release_metered(client.token_id)
+            raise
         handle = TurnHandle()
         worker = asyncio.create_task(asyncio.to_thread(
             serve_turn, handle, state=state, client=client, target=target, model=model, message=message,
             earlier=earlier, session_id=session_id))
 
         def finished(result: dict[str, Any], sent: int) -> None:
-            audit(result.get("status") or "error", model=model, target=target, run_id=result.get("run_id"),
-                  metered=True, bytes_out=sent)
+            try:
+                audit(result.get("status") or "error", model=model, target=target, run_id=result.get("run_id"),
+                      metered=True, bytes_out=sent)
+            finally:
+                state.release_metered(client.token_id)
 
         if stream:
             return StreamingResponse(_sse(handle, worker, model=model, on_done=finished, request=request),
                                      media_type="text/event-stream",
                                      headers={"cache-control": "no-cache", "x-accel-buffering": "no"})
         return await _complete(handle, worker, request, model=model, on_done=finished)
-
 
     return {"models": list_models, "chat": chat_completions}
 

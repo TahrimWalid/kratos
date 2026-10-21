@@ -12,7 +12,6 @@ import threading
 import time
 from pathlib import Path
 
-import pytest
 
 from kratos import kratos_config
 from kratos.agent import loop as agent_loop
@@ -224,3 +223,20 @@ def test_answer_parts_add_up_to_the_final_answer(tmp_path, monkeypatch):
     assert parts["block"] + parts["notes"] + parts["analysis"] == out["final_answer"]
     assert parts["analysis"] == "Looks quiet."
     assert "[NOTE:" in parts["notes"]          # correlate_findings never ran -> Guard 1's note
+
+
+def test_a_code_built_answer_is_reported_as_kratos_text(tmp_path, monkeypatch):
+    """The iteration-limit fallback is built from raw tool results: its parts say so, so a
+    chat client shows it inert, like the findings block."""
+    kratos_config.set_active_data_dir(tmp_path)
+    kratos_config.set_active_target("10.0.0.5")
+    monkeypatch.setattr(agent_loop, "agent_chat", lambda *a, **k: _reply({"reasoning": "r", "tool": "list_processes", "args": {}}))
+    monkeypatch.setattr(TOOL_REGISTRY["list_processes"], "handler", lambda **kw: {"processes": ["![x](https://e.test/q)"]})
+    with run_scope("cli", target="10.0.0.5"):
+        out = agent_loop.run_agent("check it", tmp_path, max_iters=2)
+    assert out["status"] == "max_iters_reached"
+    assert out["answer_parts"] == {"block": out["final_answer"], "notes": "", "analysis": ""}
+    from kratos.serve import render
+
+    md = render.answer_markdown(out["final_answer"], out["answer_parts"])
+    assert "<img" not in __import__("markdown_it").MarkdownIt("commonmark").render(md)

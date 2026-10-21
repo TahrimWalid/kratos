@@ -1,11 +1,17 @@
 """MCP over Streamable HTTP, stateless, start-then-poll (docs/phaseB/B.3 §3.2).
 
-An investigation takes minutes; an MCP tool call should not. So
-`kratos_start_investigation(goal, target)` returns an investigation id at once and the
-run goes on in the background; `kratos_get_investigation(id)` reports its progress lines
-and, when it has finished, the checked answer and the findings. The id is random and
-bound to the token that started it -- another token asking for it is told it does not
-exist. Works with clients on MCP 2025-11-25 (the SDK's newest) and with the stateless
+An investigation takes seconds to minutes; an MCP tool call should not hang on it. So
+`kratos_start_investigation(goal, target)` returns an investigation id and the run goes
+on in the background; `kratos_get_investigation(id)` reports its progress lines and, when
+it has finished, the checked answer and the findings. Both take an optional
+`wait_seconds` (up to 120): they return as soon as the run is done, or when the wait is
+up -- a host that makes one tool call per turn gets the answer in that call. Without an
+id, `kratos_get_investigation` reports this token's newest investigation (hosts that
+lose the id between turns -- seen with Open WebUI's prompt-based tool calling). The id is
+random and bound to the token that started it -- another token asking for it is told it
+does not exist. Each investigation is also recorded in `serve_sessions`
+(`mcp:<id>` -> its session), so after a restart it is still found: its state is rebuilt
+from the session's turn and transcript ("interrupted" if the server stopped mid-run). Works with clients on MCP 2025-11-25 (the SDK's newest) and with the stateless
 2026-07-28 model: no server-side MCP session, nothing to resume.
 
 Read tools (`kratos_get_findings`, `kratos_list_sessions`, `kratos_finding_states`) are
@@ -29,6 +35,8 @@ logger = logging.getLogger(__name__)
 
 MAX_KEPT = 200
 PROGRESS_KEPT = 60
+MAX_WAIT_SECONDS = 120
+_KEY_PREFIX = "mcp:"
 
 
 @dataclass
@@ -43,6 +51,16 @@ class Job:
     outcome: dict[str, Any] | None = None
     finished: float | None = None
     stop: threading.Event = field(default_factory=threading.Event)
+    session_id: str | None = None
+
+    def view(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"investigation_id": self.investigation_id, "status": self.status,
+                               "target": self.target, "progress": list(self.progress),
+                               "session_id": self.session_id}
+        if self.outcome is not None:
+            out.update({k: self.outcome.get(k) for k in ("final_answer", "findings", "recommended_commands",
+                                                         "session_id", "run_id", "token_usage", "budget")})
+        return out
 
 
 class Investigations:
@@ -74,9 +92,70 @@ class Investigations:
             return None
         return job
 
+    def newest(self, token_id: str) -> Job | None:
+        with self._lock:
+            mine = [j for j in self._jobs.values() if j.token_id == token_id]
+        return max(mine, key=lambda j: j.created) if mine else None
+
     def running(self) -> int:
         with self._lock:
             return sum(1 for j in self._jobs.values() if j.finished is None)
+
+
+_TURN_STATUS = {"final_answer": "done", "max_iters_reached": "done", "stopped_by_budget": "done",
+                "cancelled": "stopped", "error": "error"}
+
+
+def view_from_store(data_dir: Any, token_id: str, investigation_id: str | None) -> dict[str, Any] | None:
+    """An investigation this token started, rebuilt from kratos.db and its transcript (after
+    a restart, or once it left the in-memory list). `investigation_id` None = the newest."""
+    import json
+    from pathlib import Path
+
+    from kratos.serve import store as _store
+    from kratos.serve.runs import extract_findings
+    from kratos.storage.session_store import SessionStore
+
+    rows = _store.sessions_with_prefix(data_dir, token_id, _KEY_PREFIX)
+    if investigation_id:
+        rows = [r for r in rows if r["client_chat_key"] == _KEY_PREFIX + investigation_id]
+    if not rows:
+        return None
+    row = rows[0]                                   # newest first
+    inv = row["client_chat_key"][len(_KEY_PREFIX):]
+    out: dict[str, Any] = {"investigation_id": inv, "target": row["target"], "session_id": row["session_id"],
+                           "progress": [], "status": "interrupted"}
+    turns = SessionStore(Path(data_dir) / "kratos.db").get_goal_history(row["session_id"])
+    if not turns:
+        return out
+    turn = turns[-1]
+    status = turn.get("status")
+    if turn.get("completed_at") is None or status in (None, "", "in_progress"):
+        out["status"] = "interrupted"               # the server stopped while it ran
+        return out
+    out["status"] = _TURN_STATUS.get(str(status), "done")
+    ref = turn.get("transcript_ref")
+    try:
+        transcript = json.loads(Path(ref).read_text(encoding="utf-8")) if ref else []
+    except (OSError, ValueError):
+        transcript = []
+    final = next((e for e in reversed(transcript) if isinstance(e, dict) and e.get("final_answer")), {})
+    out.update({"final_answer": final.get("final_answer"), "findings": extract_findings(transcript),
+                "recommended_commands": final.get("recommended_commands") or [],
+                "run_id": next((e.get("run_id") for e in transcript if isinstance(e, dict) and e.get("run_id")), None)})
+    return out
+
+
+async def _wait_for(job: Job, wait_seconds: Any) -> None:
+    import asyncio
+
+    try:
+        wait = max(0.0, min(float(wait_seconds or 0), float(MAX_WAIT_SECONDS)))
+    except (TypeError, ValueError):
+        raise ValueError(f"wait_seconds must be a number from 0 to {MAX_WAIT_SECONDS}") from None
+    deadline = time.monotonic() + wait
+    while job.finished is None and time.monotonic() < deadline:
+        await asyncio.sleep(0.25)
 
 
 def _client(ctx: Any) -> Any:
@@ -132,7 +211,8 @@ def build(state: Any) -> tuple[Any, Any]:
                 state.note_runs()
                 outcome = run_investigation(RunRequest(goal=goal, target=job.target, data_dir=state.data_dir,
                                                        source="mcp", should_stop=job.stop.is_set,
-                                                       on_progress=job.progress.append))
+                                                       on_progress=job.progress.append,
+                                                       on_session=lambda sid: _remember(state, job, sid)))
             finally:
                 state.slots.release()
                 state.note_runs()
@@ -147,43 +227,57 @@ def build(state: Any) -> tuple[Any, Any]:
             _audit(state, job)
 
     @mcp.tool()
-    def kratos_start_investigation(goal: str, target: str, ctx: Context) -> dict[str, Any]:
+    async def kratos_start_investigation(goal: str, target: str, ctx: Context,
+                                         wait_seconds: float = 0) -> dict[str, Any]:
         """Starts a Kratos investigation of `target` (a machine this token may reach -- an
-        address or name, or a model id like "kratos/web-01") for `goal`, and returns at once
-        with an `investigation_id`. Poll kratos_get_investigation for progress and, when it
-        has finished, the checked answer and findings. Kratos's own agent picks which checks
-        run; read-only -- nothing reachable here changes the machine."""
+        address or name, or a model id like "kratos/web-01") for `goal`, and returns its
+        `investigation_id`. With `wait_seconds` (0-120) it waits that long for the result and
+        returns it as soon as it is done (most investigations take 5-30 s); otherwise poll
+        kratos_get_investigation. Kratos's own agent picks which checks run; read-only --
+        nothing reachable here changes the machine. When done, `final_answer` is Kratos's
+        checked answer: show it as it is, it already says what Kratos found."""
+        import asyncio
+
         client = _client(ctx)
         if not goal or not goal.strip():
             raise ValueError("goal is required")
         resolved = _resolve_target(client, target)
-        from kratos.serve import store as _store
         from kratos.serve.openai_routes import _hourly_limit
 
-        limit = _hourly_limit(state.data_dir)
-        if _store.metered_requests_since(state.data_dir, client.token_id, time.time() - 3600) >= limit:
+        limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
             raise ValueError(f"this token has used its {limit} investigations for this hour (serve.requests_per_hour)")
-        job = state.investigations.new(client.token_id, resolved, goal)
-        threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
-                         name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True).start()
-        return {"investigation_id": job.investigation_id, "status": job.status, "target": resolved}
+        try:
+            job = state.investigations.new(client.token_id, resolved, goal)
+            threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
+                             name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True).start()
+        except BaseException:
+            state.release_metered(client.token_id)
+            raise
+        await _wait_for(job, wait_seconds)
+        return untrusted.for_model(job.view(), field_cap=None)
 
     @mcp.tool()
-    def kratos_get_investigation(investigation_id: str, ctx: Context) -> dict[str, Any]:
-        """The state of an investigation this token started: `status` (waiting, running,
-        done, stopped, refused, error), recent `progress` lines, and when done the checked
-        `final_answer` (Kratos's findings block, its notes, then the model's analysis),
-        `findings` and `recommended_commands` (for a person -- never run them automatically)."""
+    async def kratos_get_investigation(ctx: Context, investigation_id: str = "",
+                                       wait_seconds: float = 0) -> dict[str, Any]:
+        """The state of an investigation this token started (its newest one if
+        `investigation_id` is empty): `status` (waiting, running, done, stopped, refused,
+        error, or interrupted when Kratos restarted while it ran), recent `progress` lines,
+        and when done the checked `final_answer` (Kratos's findings block, its notes, then
+        the model's analysis), `findings` and `recommended_commands` (for a person -- never
+        run them automatically). `wait_seconds` (0-120) waits for the result first."""
+        import asyncio
+
         client = _client(ctx)
-        job = state.investigations.get(client.token_id, investigation_id)
-        if job is None:
-            raise ValueError("no investigation with that id")
-        out: dict[str, Any] = {"investigation_id": job.investigation_id, "status": job.status,
-                               "target": job.target, "progress": list(job.progress)}
-        if job.outcome is not None:
-            out.update({k: job.outcome.get(k) for k in ("final_answer", "findings", "recommended_commands",
-                                                         "session_id", "run_id", "token_usage", "budget")})
-        return untrusted.for_model(out, field_cap=None)
+        inv = str(investigation_id or "").strip()
+        job = state.investigations.get(client.token_id, inv) if inv else state.investigations.newest(client.token_id)
+        if job is not None:
+            await _wait_for(job, wait_seconds)
+            return untrusted.for_model(job.view(), field_cap=None)
+        stored = await asyncio.to_thread(view_from_store, state.data_dir, client.token_id, inv or None)
+        if stored is None:
+            raise ValueError("no investigation with that id" if inv else "this token has started no investigation")
+        return untrusted.for_model(stored, field_cap=None)
 
     @mcp.tool()
     def kratos_get_findings(ctx: Context, session_id: str | None = None) -> dict[str, Any]:
@@ -240,6 +334,14 @@ def build(state: Any) -> tuple[Any, Any]:
     return app, mcp.session_manager
 
 
+def _remember(state: Any, job: Job, session_id: str) -> None:
+    """Record mcp:<id> -> session, so the investigation is still found after a restart."""
+    from kratos.serve import store as _store
+
+    job.session_id = session_id
+    _store.remember_session(state.data_dir, job.token_id, _KEY_PREFIX + job.investigation_id, job.target, session_id)
+
+
 def _audit(state: Any, job: Job) -> None:
     from kratos.serve import store as _store
 
@@ -252,3 +354,5 @@ def _audit(state: Any, job: Job) -> None:
                      duration=(job.finished or time.time()) - job.created)
     except Exception:  # noqa: BLE001
         logger.debug("serve: audit failed", exc_info=True)
+    finally:
+        state.release_metered(job.token_id)
