@@ -39,6 +39,9 @@ def _row(conn, rec, now: float) -> dict[str, Any]:
         latest = {}
     d["attack"] = attack_of({**(latest if isinstance(latest, dict) else {}), "id": rec["rule_id"],
                              "entities": d["entities"]})
+    rule = latest.get("detection_rule") if isinstance(latest, dict) else None
+    if isinstance(rule, dict) and rule:
+        d["detection_rule"] = rule        # C.1: the Sigma rule and its author (DRL 1.1), on every surface
     d["short_key"] = short(rec["finding_key"])
     for k in ("first_seen", "last_seen", "last_checked"):
         d[k] = _iso(rec[k])

@@ -132,6 +132,17 @@ CATEGORIES: tuple[Category, ...] = (
                          ("collect_state", "started_at")),),
     ),
     Category(
+        "detection", "Detection rules: passes, results and your rule changes",
+        "Which stored log lines each detection pass checked and how far it got, the newest detection results "
+        "per machine (each matched rule, the stored log lines it matched, the addresses, users and programs "
+        "they name), your on/off changes to rules with who and why, and the rule packs you imported. The "
+        "matches themselves are host events (dataset kratos.detect).",
+        PERSONAL, "one row per detection pass per machine, one result file per pass, one row per rule change",
+        files=("detect",),
+        tables=(TableRef(DB, ("detect_runs", "detect_rule_overrides"), ("detect_runs", "started_at")),),
+        note="kept unless you delete it yourself; the matches are pruned with host events",
+    ),
+    Category(
         "log_sync", "Log-sync positions and coverage",
         "Where Kratos stopped reading each log, and which periods it has read completely.",
         NOT_PERSONAL, "one row per log source per machine, plus one per gap",

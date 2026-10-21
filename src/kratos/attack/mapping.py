@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from functools import lru_cache
 from typing import Any, Iterable
 
 from kratos.attack.table import label
@@ -209,10 +210,37 @@ RULE_ATTACK: dict[str, Entry] = {
     "PKG-002": Posture("a vulnerable installed package is a weakness, not an action"),
     "PKG-003": Posture("a kernel update waiting for a reboot is a weakness, not an action"),
     "PKG-004": Posture("run note: what the package check could not cover"),
+    "DETECT-001": Posture("run note: what the detection rules could not check"),
 }
 
+
+@lru_cache(maxsize=4096)
+def sigma_entry(rule_id: str) -> Entry | None:
+    """C.1: a SIGMA-* rule's entry, from the shipped pack: its ATT&CK tags through the v19
+    table (a tag the table rejects was dropped when the pack was built), or posture when
+    it names no technique. An imported rule's finding carries its own labels."""
+    from kratos.detect import pack as _packs
+    from kratos.detect.findings import labels as _sigma_labels
+
+    found = _packs.load(None).rule(rule_id)
+    if found is None:
+        return Behaviour((), per_item=True, why="an imported detection rule: its findings carry its own labels")
+    meta = found[1].meta
+    labs = tuple(_sigma_labels({"attack": meta.get("attack") or [], "tags": meta.get("tags") or []}))
+    if not labs:
+        return Posture("this Sigma rule names no current ATT&CK technique")
+    return Behaviour(labs, why=f"the Sigma rule's own tags ({meta.get('sigma_id')})")
+
+
 def entry(rule_id: str) -> Entry | None:
-    return RULE_ATTACK.get(str(rule_id or ""))
+    rid = str(rule_id or "")
+    found = RULE_ATTACK.get(rid)
+    if found is None and rid.startswith("SIGMA-"):
+        from kratos.lifecycle.rules import SIGMA_ID
+
+        if SIGMA_ID.match(rid):
+            return sigma_entry(rid)
+    return found
 
 
 def labels(rule_id: str) -> list[dict[str, Any]]:

@@ -15,6 +15,7 @@ has to declare its lifecycle behaviour before it ships.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -121,11 +122,22 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PERSIST-009", "run_note"),     # what the persistence check could not read
     _r("LIVE-007", "run_note"),        # the restart-needed hint + what could not be read
     _r("PKG-004", "run_note"),         # what the package check could not cover (no data, stale data, ...)
+    _r("DETECT-001", "run_note"),      # C.1: log sources the detection rules need that the machine doesn't give
 ])
+
+# C.1: the detection rules' findings, SIGMA-<8 hex digits>. Their ids come from the rule
+# packs (generated, not written here); each is a match in a time window -- an occurrence:
+# once the window passes with no new match, a run that checked it marks it inactive.
+SIGMA_ID = re.compile(r"^SIGMA-[0-9A-F]{8}$")
+_SIGMA = RuleInfo(kind="occurrence", inputs=rule_inputs("SIGMA-00000000"))
 
 
 def rule_info(rule_id: str) -> RuleInfo | None:
-    return RULES.get(str(rule_id or ""))
+    rid = str(rule_id or "")
+    info = RULES.get(rid)
+    if info is None and SIGMA_ID.match(rid):
+        return _SIGMA
+    return info
 
 
 def is_sticky(rule_id: str) -> bool:

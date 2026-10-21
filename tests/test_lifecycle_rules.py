@@ -16,20 +16,32 @@ def _finding_ids() -> tuple[set[str], list[int]]:
     any computed (f-string / variable) id."""
     # the engine, and every module a registered snapshot source builds its findings in
     # (a later check may keep its builder in its own package -- FE.register_snapshot_source)
+    from kratos.detect import findings as detect_findings
+
     modules = {FE} | {inspect.getmodule(src.build) for src in FE.snapshot_sources()}
     literal: set[str] = set()
     computed: list[int] = []
-    for node in (n for mod in modules for n in ast.walk(ast.parse(inspect.getsource(mod)))):
-        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Finding"):
-            continue
-        for kw in node.keywords:
-            if kw.arg != "id":
+    for mod in modules:
+        for node in ast.walk(ast.parse(inspect.getsource(mod))):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Finding"):
                 continue
-            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                literal.add(kw.value.value)
-            else:
-                computed.append(node.lineno)
+            for kw in node.keywords:
+                if kw.arg != "id":
+                    continue
+                if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                    literal.add(kw.value.value)
+                elif mod is not detect_findings:
+                    computed.append(node.lineno)
+    # C.1: the detection rules' ids are generated with the rule pack (README §4.2): the
+    # one computed id is in kratos.detect.findings, and every id it can carry is a rule
+    # in the shipped pack (an imported pack's rules follow the same SIGMA-* pattern).
     return literal, computed
+
+
+def _sigma_ids() -> set[str]:
+    from kratos.detect import pack
+
+    return {r.id for r in pack.shipped().pack.rules}
 
 
 def test_every_engine_rule_has_a_lifecycle_entry():
@@ -37,6 +49,15 @@ def test_every_engine_rule_has_a_lifecycle_entry():
     assert len(ids) >= 20, ids   # the scan itself works
     assert computed == [], f"computed finding ids at lines {computed}: list each possible id in lifecycle/rules.py"
     assert sorted(ids - set(RULES)) == []
+
+
+def test_every_shipped_detection_rule_is_an_occurrence():
+    ids = _sigma_ids()
+    assert 50 <= len(ids) <= 100
+    for rid in ids:
+        info = rule_info(rid)
+        assert info is not None and info.kind == "occurrence" and info.inputs == ("detections",), rid
+    assert rule_info("SIGMA-1234") is None and rule_info("SIGMA-0000000G") is None
 
 
 def test_no_stale_entries():
@@ -47,7 +68,7 @@ def test_no_stale_entries():
 def test_classification_matches_the_spec():
     kinds = {rid: info.kind for rid, info in RULES.items()}
     assert {r for r, k in kinds.items() if k == "run_note"} == {
-        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004"}
+        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004", "DETECT-001"}
     assert {r for r, k in kinds.items() if k == "occurrence"} == {
         "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001", "LOG-003",
         "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-005", "LIVE-006"}

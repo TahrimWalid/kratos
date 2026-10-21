@@ -425,3 +425,28 @@ def test_without_background_the_budget_still_cancels(fake_registry, tmp_path):
 def test_collect_commands_wait_for_every_check():
     import kratos.collect.checks  # noqa: F401
     assert runner.full_budget(("quick",)) >= max(c.budget_seconds for c in registry.checks() if c.cost == "quick")
+
+
+def test_a_check_runs_after_the_checks_it_reads(tmp_path, fake_registry):
+    """C.1: `after` -- the detection pass waits for log sync in the same collection."""
+    import dataclasses
+
+    order: list[str] = []
+
+    def slow_sync(ctx):
+        time.sleep(0.4)
+        order.append("sync")
+        return CheckResult("ok", "synced")
+
+    def detect(ctx):
+        order.append("detect")
+        return CheckResult("ok", "evaluated")
+
+    fake_registry.register(make_check("t_sync", run=slow_sync, order=70))
+    fake_registry.register(dataclasses.replace(make_check("t_detect", run=detect, order=72, ttl=1), after=("t_sync",)))
+    rep = prepare(tmp_path)
+    assert order == ["sync", "detect"] and [c.status for c in rep.checks] == ["ok", "ok"]
+    # a fresh sync result is reused: the dependent check does not wait for anything
+    order.clear()
+    rep = prepare(tmp_path, now=time.time() + 120, only=("t_detect",))
+    assert order == ["detect"]

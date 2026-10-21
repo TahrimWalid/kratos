@@ -290,3 +290,5 @@ from kratos.persist import check as _persistence_checks  # noqa: E402,F401
 from kratos.live import check as _live_response_check  # noqa: E402,F401
 # A.2: the installed packages, matched offline against the vulnerability index.
 from kratos.pkgvuln import check as _packages_check  # noqa: E402,F401
+# C.1: the detection rules, run over what log sync just stored (reads the event store only).
+from kratos.detect import check as _detect_check  # noqa: E402,F401

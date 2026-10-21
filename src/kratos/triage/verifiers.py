@@ -340,6 +340,10 @@ register_no_verifier(NoVerifier(
     reason="describes Kratos's own host context; re-read it by investigating the Kratos host again, not by a "
            "narrow per-finding re-check"))
 register_no_verifier(NoVerifier(
+    rules=("SIGMA-",),
+    reason="a detection-rule match is on log lines Kratos already stored, which the finding names (kratos events "
+           "--rule); re-reading the logs can't make the event happen again -- look at the matched lines instead"))
+register_no_verifier(NoVerifier(
     rules=("PRIV-004",),
     reason="an inventory of who holds privileged access, not a risk in itself; re-read it on demand with /verify "
            "(the PRIV-001/002/003 findings it summarises are each verified)"))

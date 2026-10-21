@@ -785,10 +785,23 @@ class Evaluator:
                 out[rid] = keep
         return out
 
-    def evaluate(self, event: Dict[str, Any], ts: float) -> List[Match]:
+    @property
+    def has_counting_rules(self) -> bool:
+        return bool(self.counts)
+
+    @property
+    def longest_window(self) -> int:
+        return max((st.window for st in self.counts.values()), default=0)
+
+    def evaluate(self, event: Dict[str, Any], ts: float, history: bool = False) -> List[Match]:
+        """The detections `event` raises. `history=True`: an event already evaluated in an
+        earlier pass, fed again only so counting windows see it -- it raises nothing
+        itself, and a group it carries over its threshold is treated as already reported."""
         out: List[Match] = []
         eid = str(event.get("event.id") or "")
         for rule in self.active:
+            if history and rule.count is None:
+                continue
             if not rule.matches(event):
                 continue
             if rule.count is None:
@@ -798,7 +811,7 @@ class Evaluator:
             if group is None:
                 continue
             hit = self.counts[rule.id].add(group, ts, eid)
-            if hit is not None:
+            if hit is not None and not history:
                 n, ids, first = hit
                 out.append(Match(rule.id, eid, ts, group=group or None, count=n, event_ids=ids, first_ts=first))
         return out

@@ -369,3 +369,21 @@ def test_a_pathological_but_valid_pack_evaluates_an_event_within_budget():
     elapsed = _time_once(pack, _ev(message=value))
     # 20 rules x 255 hostile leaves x 4 KiB: a fixed, generous ceiling for one event
     assert elapsed < 20.0, elapsed
+
+
+def test_history_events_count_but_raise_nothing_themselves():
+    pack = _count_pack()
+    ev = D.Evaluator(pack)
+    # two events from an earlier pass, re-fed as history, then one new event crosses the threshold
+    assert ev.evaluate(*_failed(0, "192.0.2.1"), history=True) == []
+    assert ev.evaluate(*_failed(1, "192.0.2.1"), history=True) == []
+    hits = ev.evaluate(*_failed(2, "192.0.2.1"))
+    assert len(hits) == 1 and hits[0].event_ids == ["e0-192.0.2.1", "e1-192.0.2.1", "e2-192.0.2.1"]
+    # a burst already complete in history is treated as reported: later events in its window raise nothing
+    ev2 = D.Evaluator(pack)
+    for i in range(3):
+        assert ev2.evaluate(*_failed(i, "192.0.2.7"), history=True) == []
+    assert ev2.evaluate(*_failed(3, "192.0.2.7")) == []
+    # single-event rules ignore history entirely
+    single = D.Evaluator(D.load_pack(_pack(_rule(_leaf("eq", "user.name", value="root")))))
+    assert single.evaluate(_ev(user__name="root"), 1.0, history=True) == []

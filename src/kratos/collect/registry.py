@@ -65,6 +65,9 @@ class Check:
     label: str                                     # plain words for the digest ("open ports")
     order: int = 50                                # lower runs / is listed first (value order)
     short: str = ""                                # the screen's one-line summary word ("ports"); default: label
+    # Checks this one must run after, when the same collection runs them too (the
+    # detection pass reads what log sync just stored). It waits within its own deadline.
+    after: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not _NAME_RE.fullmatch(self.name):

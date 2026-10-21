@@ -295,6 +295,19 @@ class Finding:
     # [{technique_id, technique, tactic_id, tactic, tactics, version, url}]. Set for
     # every behaviour rule (kratos.attack.mapping); posture rules carry none.
     attack: list[dict[str, Any]] = field(default_factory=list)
+    # C.1: the detection rule behind a SIGMA-* finding -- {id, title, author, sigma_id,
+    # source_url, license, pack, pack_version}. Every surface shows its author
+    # (Detection Rule License 1.1). Empty for Kratos's own rules, and then left out of
+    # the finding's dict.
+    detection_rule: dict[str, Any] = field(default_factory=dict)
+
+
+def finding_dict(f: "Finding") -> dict[str, Any]:
+    """A finding as a dict (dataclasses.asdict), without an empty detection_rule."""
+    d = asdict(f)
+    if not d.get("detection_rule"):
+        d.pop("detection_rule", None)
+    return d
 
 
 def _normal_ip(value: Any) -> str:
@@ -2031,6 +2044,17 @@ register_snapshot_source(SnapshotSource(
     closes_findings=lambda doc: bool(doc.get("complete"))))
 
 
+# C.1: SIGMA-* findings from the detection pass (kratos.detect), and DETECT-001, its
+# note of what the rules could not check on the machine.
+from kratos.detect import findings as _detect_findings  # noqa: E402
+
+register_snapshot_source(SnapshotSource(
+    category="detections", folder="detect/results", pattern="detections_*.json", rule_prefix="SIGMA-",
+    load=_detect_findings.load_recent, build=_detect_findings.build,
+    closes_findings=_detect_findings.closes_findings))
+_FINDING_INPUTS["DETECT-"] = ("detections",)
+
+
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """
     None if fewer than 2 auto-discovered inputs are present (nothing to
@@ -2251,7 +2275,7 @@ def write_findings_report(
     from kratos.kratos_config import get_active_target
 
     report_target = _host_key(get_active_target()) or None
-    finding_dicts = [asdict(f) for f in findings]
+    finding_dicts = [finding_dict(f) for f in findings]
     lifecycle_summary, lifecycle_error = None, None
     try:
         finding_dicts, lifecycle_summary = _apply_lifecycle(
@@ -2262,7 +2286,7 @@ def write_findings_report(
         import logging
 
         logging.getLogger(__name__).exception("finding lifecycle failed; writing the report without it")
-        finding_dicts = [asdict(f) for f in findings]
+        finding_dicts = [finding_dict(f) for f in findings]
         lifecycle_error = f"{type(e).__name__}: {e}"
 
     # Environment detection
@@ -2333,6 +2357,10 @@ def write_findings_report(
                 from kratos.attack import format_label
                 md_lines.append("**ATT&CK**: " + "; ".join(f"[{format_label(a)}]({a.get('url')})" for a in f.attack)
                                 + "\n")
+            if f.detection_rule:   # C.1: the Sigma rule's author goes with its finding (DRL 1.1)
+                dr = f.detection_rule
+                md_lines.append(f"**Rule**: {dr.get('title')} by {dr.get('author')} — SigmaHQ "
+                                f"[{dr.get('sigma_id')}]({dr.get('source_url')}), {dr.get('license') or 'DRL-1.1'}\n")
             vr = verdicts.get((f.id, _ns_md(getattr(f, "subject", "") or "")))
             if vr is not None:   # B.1: the latest triage verdict on record for this finding
                 from kratos.triage.verdict import aged_tag

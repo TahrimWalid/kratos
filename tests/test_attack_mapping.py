@@ -456,9 +456,12 @@ def test_coverage_layer_lists_exactly_the_labelled_techniques():
     scored = {(t["techniqueID"], t["tactic"]) for t in layer["techniques"] if "score" in t}
     expected = {(lab["technique_id"], tac["shortname"]) for rid, e in M.RULE_ATTACK.items()
                 if rid in RULES and isinstance(e, Behaviour) for lab in e.labels for tac in lab["tactics"]}
-    assert scored == expected
+    from kratos.detect import pack as P      # C.1: the shipped Sigma rules count too
+    sigma = {(lab["technique_id"], tac["shortname"]) for r in P.shipped().pack.rules
+             for lab in M.labels(r.id) for tac in lab["tactics"]}
+    assert sigma and scored == expected | sigma
     cell = [t for t in layer["techniques"] if t["techniqueID"] == "T1110.001"][0]
-    assert cell["comment"] == "Kratos rules: AUTH-004, CORR-001, CORR-002, CORR-SSH-001" and cell["score"] == 1
+    assert cell["comment"].startswith("Kratos rules: AUTH-004, CORR-001, CORR-002, CORR-SSH-001") and cell["score"] == 1
     # an unscored parent so the sub-technique is shown expanded
     assert {"techniqueID": "T1110", "tactic": "credential-access", "showSubtechniques": True,
             "enabled": True} in layer["techniques"]

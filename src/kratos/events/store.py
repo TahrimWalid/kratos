@@ -126,9 +126,17 @@ class EventStore:
 
     @staticmethod
     def _where(target: str, *, start=None, end=None, source_ip=None, user=None, process=None,
-               sha256=None, dataset=None, action=None) -> tuple[str, list]:
-        """Filters, all parameterised. Time is half-open: start <= @timestamp < end."""
+               sha256=None, dataset=None, action=None, event_ids=None, rule_id=None) -> tuple[str, list]:
+        """Filters, all parameterised. Time is half-open: start <= @timestamp < end.
+        `event_ids`: only these events. `rule_id`: only detections (kratos.detect) by this rule."""
         clauses, params = ["target = ?"], [target_key(target)]
+        if event_ids is not None:
+            ids = [str(i) for i in event_ids][:MAX_LIMIT]
+            clauses.append(f"event_id IN ({', '.join('?' for _ in ids) or 'NULL'})")
+            params.extend(ids)
+        if rule_id is not None:
+            clauses.append("dataset = 'kratos.detect' AND json_extract(doc, '$.rule.id') = ?")
+            params.append(str(rule_id))
         for column, value in (("source_ip", source_ip), ("user_name", user), ("process_name", process),
                               ("file_sha256", sha256), ("dataset", dataset), ("action", action)):
             if value is not None:
@@ -143,9 +151,11 @@ class EventStore:
         return " AND ".join(clauses), params
 
     def query(self, target: str, *, start=None, end=None, source_ip=None, user=None, process=None,
-              sha256=None, dataset=None, action=None, limit: int = 1000, newest_first: bool = True) -> list[Event]:
+              sha256=None, dataset=None, action=None, event_ids=None, rule_id=None, limit: int = 1000,
+              newest_first: bool = True) -> list[Event]:
         where, params = self._where(target, start=start, end=end, source_ip=source_ip, user=user, process=process,
-                                    sha256=sha256, dataset=dataset, action=action)
+                                    sha256=sha256, dataset=dataset, action=action, event_ids=event_ids,
+                                    rule_id=rule_id)
         limit = max(0, min(int(limit), MAX_LIMIT))
         order = "DESC" if newest_first else "ASC"
         conn = self._connect()
@@ -157,9 +167,10 @@ class EventStore:
         return [Event.from_ecs(json.loads(r[0])) for r in rows]
 
     def count(self, target: str, *, start=None, end=None, source_ip=None, user=None, process=None,
-              sha256=None, dataset=None, action=None) -> int:
+              sha256=None, dataset=None, action=None, event_ids=None, rule_id=None) -> int:
         where, params = self._where(target, start=start, end=end, source_ip=source_ip, user=user, process=process,
-                                    sha256=sha256, dataset=dataset, action=action)
+                                    sha256=sha256, dataset=dataset, action=action, event_ids=event_ids,
+                                    rule_id=rule_id)
         conn = self._connect()
         try:
             return int(conn.execute(f"SELECT COUNT(*) FROM host_events WHERE {where}", params).fetchone()[0])

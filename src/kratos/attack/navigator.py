@@ -19,7 +19,8 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from kratos.attack import attack_of
-from kratos.attack.mapping import Behaviour, RULE_ATTACK
+from kratos.attack.mapping import RULE_ATTACK, Behaviour
+from kratos.attack.mapping import entry as _entry
 from kratos.attack.table import major_version, table
 
 LAYER_FORMAT = "4.5"
@@ -97,12 +98,14 @@ def coverage_layer(rule_ids: Iterable[str] | None = None) -> dict[str, Any]:
     """Techniques Kratos has a rule for. `rule_ids`: the rules this build has
     (default: kratos.lifecycle.rules.RULES)."""
     if rule_ids is None:
+        from kratos.detect import pack as _packs
         from kratos.lifecycle.rules import RULES
-        rule_ids = RULES
+        rule_ids = [*RULES, *(r.id for r in _packs.shipped().pack.rules)]   # + the shipped Sigma rules (C.1)
     wanted = set(rule_ids)
     cells: dict[tuple[str, str], set[str]] = {}
-    for rid, entry in RULE_ATTACK.items():
-        if rid in wanted and isinstance(entry, Behaviour):
+    for rid in sorted(wanted):
+        entry = RULE_ATTACK.get(rid) or _entry(rid)
+        if isinstance(entry, Behaviour):
             for cell in _cells(entry.labels):
                 cells.setdefault(cell, set()).add(rid)
     techniques = [{"techniqueID": tid, "tactic": tac, "score": 1, "enabled": True,

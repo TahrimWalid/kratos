@@ -265,9 +265,12 @@ def _short_error(exc: BaseException) -> str:
 
 
 def _thread_main(check: Check, ctx: CheckContext, scope: cancel.CancelScope, box: _Box,
-                 span: Any = None) -> None:
+                 span: Any = None, waits: tuple[threading.Event, ...] = ()) -> None:
     try:
         from kratos.adapters import nmap_scan
+
+        for done in waits:          # Check.after: the checks this one reads the results of
+            done.wait(timeout=max(0.0, ctx.deadline - time.monotonic()))
 
         # the check's tool calls go under its span in the run record
         with cancel.bound(scope), kratos_config.pinned_target(ctx.target), nmap_scan.quiet(), \
@@ -381,8 +384,9 @@ def prepare(
         spans[check.name] = _trace.start_span("collection_check", check.name, check=check.name, source="ran",
                                               transport=ctx.transport, cost=check.cost)
         pycontext = contextvars.copy_context()
+        waits = tuple(b.done for c, _t, _s, b, _ts, _ctx in running if c.name in check.after)
         thread = threading.Thread(target=pycontext.run, args=(_thread_main, check, ctx, scope, box,
-                                                              spans[check.name]),
+                                                              spans[check.name], waits),
                                   name=f"collect-{check.name}", daemon=True)
         running.append((check, thread, scope, box, time.time(), ctx))
         thread.start()
