@@ -32,6 +32,10 @@ from kratos.serve import store as _store
 logger = logging.getLogger(__name__)
 
 _LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
+# Chat turns open at once (running + waiting for a slot): beyond this a new message is
+# answered "busy" (429) instead of piling up threads. Each turn holds one thread of the
+# server's own pool, never the shared pool request handling needs.
+MAX_OPEN_TURNS = 16
 
 
 def _json_error(status: int, message: str, *, kind: str, code: str | None = None) -> tuple[int, bytes]:
@@ -56,6 +60,52 @@ class ServeState:
         self.investigations: Any = None                      # mcp_http.Investigations, set by create_app
         self._metered_lock = threading.Lock()
         self._in_flight: dict[str, int] = {}                 # token id -> metered requests not yet audited
+        from concurrent.futures import ThreadPoolExecutor
+
+        self.max_open_turns = MAX_OPEN_TURNS
+        self.turn_pool = ThreadPoolExecutor(max_workers=MAX_OPEN_TURNS, thread_name_prefix="kratos-turn")
+        self._turns_lock = threading.Lock()
+        self._open_turns = 0
+        self._handles: set[Any] = set()
+
+    # -- chat turns
+    def open_turn(self) -> bool:
+        """Admit one more chat turn, or False when MAX_OPEN_TURNS are already open."""
+        with self._turns_lock:
+            if self._open_turns >= self.max_open_turns:
+                return False
+            self._open_turns += 1
+            return True
+
+    def close_turn(self) -> None:
+        with self._turns_lock:
+            self._open_turns = max(0, self._open_turns - 1)
+
+    @property
+    def open_turns(self) -> int:
+        return self._open_turns
+
+    def track_turn(self, handle: Any) -> None:
+        with self._turns_lock:
+            self._handles.add(handle)
+
+    def untrack_turn(self, handle: Any) -> None:
+        with self._turns_lock:
+            self._handles.discard(handle)
+
+    def shutdown_turns(self, timeout: float = 10.0) -> int:
+        """The server is stopping: tell every open chat turn to stop (its run ends before
+        the next model call or tool dispatch) and wait for them, up to `timeout`. Returns
+        how many were still open."""
+        with self._turns_lock:
+            handles = list(self._handles)
+        for h in handles:
+            h.stop.set()
+        deadline = time.monotonic() + timeout
+        while self._open_turns and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.turn_pool.shutdown(wait=False, cancel_futures=True)
+        return self._open_turns
 
     def reserve_metered(self, token_id: str, limit: int) -> bool:
         """Take one of this token's hourly model-using requests, or False when the hour's
@@ -100,6 +150,16 @@ class ServeState:
         return out
 
     # -- tokens
+    def live_token_id(self, presented: str | None) -> bool:
+        """Whether a presented token NAMES a live (unrevoked) token -- a cheap row lookup,
+        no secret check. Used only to let such a request past the failed-auth throttle;
+        the secret is still checked in full afterwards."""
+        m = _auth._TOKEN_RE.match(str(presented or "").strip())
+        if not m:
+            return False
+        row = _store.get_token(self.data_dir, m.group(1))
+        return bool(row) and not row.get("revoked_at")
+
     def verify(self, presented: str | None) -> _auth.Client | None:
         """Verify a bearer token. The scrypt check runs once per token per process; later
         requests re-read the row (so a revoke applies on the next request) and compare a
@@ -164,11 +224,15 @@ class KratosGate:
         except ValueError:
             await self._refuse(send, 400, "bad content-length", door, path, peer, "bad content-length")
             return
-        if self.state.limiter.source_blocked(peer):
+        presented = _auth.bearer_from(headers.get("authorization"))
+        if self.state.limiter.source_blocked(peer) and not await asyncio.to_thread(self.state.live_token_id,
+                                                                                    presented):
+            # A throttled address is refused without the (slow) secret check -- unless the
+            # token names a live token: behind a reverse proxy every client shares one
+            # address, and a stranger's wrong tokens must not lock the owner out.
             await self._refuse(send, 429, "too many failed attempts from this address; try again later",
                                door, path, peer, "auth throttled", kind="rate_limit_exceeded")
             return
-        presented = _auth.bearer_from(headers.get("authorization"))
         client = await asyncio.to_thread(self.state.verify, presented)
         if client is None:
             self.state.limiter.note_failure(peer)
@@ -274,6 +338,7 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
             # Stopping: running MCP investigations are told to stop and waited for (off the
             # event loop), so nothing keeps reading a machine after the server is gone.
             await asyncio.to_thread(state.investigations.shutdown)
+            await asyncio.to_thread(state.shutdown_turns)
             state.note_runs(running=False)
 
     async def too_large(request: Any, exc: Exception) -> Any:

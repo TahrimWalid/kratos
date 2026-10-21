@@ -138,8 +138,14 @@ def test_repeated_failures_from_one_address_are_throttled(env):
     c = env["client"]
     for _ in range(AUTH_FAILURE_LIMIT):
         assert c.get("/v1/models", headers=_h("wrong")).status_code == 401
-    r = c.get("/v1/models", headers=_h(env["token"]))     # even the right token waits now
-    assert r.status_code == 429
+    # A stranger's next guess is refused without the secret check ...
+    assert c.get("/v1/models", headers=_h("wrong")).status_code == 429
+    assert c.get("/v1/models", headers=_h("krt_" + "0" * 12 + "_" + "x" * 43)).status_code == 429
+    # ... but a token naming a live token is still checked: behind a reverse proxy every
+    # client shares one address, and wrong guesses must not lock the owner out.
+    assert c.get("/v1/models", headers=_h(env["token"])).status_code == 200
+    tid = env["token"].split("_")[1]
+    assert c.get("/v1/models", headers=_h(f"krt_{tid}_" + "x" * 43)).status_code == 401
 
 
 def test_only_an_scrypt_hash_is_stored_never_the_token(env):
@@ -816,3 +822,86 @@ def test_stopping_the_server_stops_and_joins_running_mcp_investigations(env):
     env["client"].__exit__(None, None, None)          # lifespan shutdown
     assert not job.thread.is_alive() and time.monotonic() - t0 < 5
     assert job.status == "stopped"
+
+
+# --------------------------------------------------------------------------- open turns (Phase B audit)
+def test_many_open_chats_never_stall_the_server(env):
+    """Each open chat used to hold a thread of the shared pool while it waited for its next
+    line (and the turn itself took another): with a few chats open on a 4-core machine the
+    pool ran dry and the server answered nothing -- not even /v1/models -- until runs ended."""
+    settings_store.set(SS.MAX_PARALLEL, 1, data_dir=env["dir"], actor="test")
+    env["state"]["sleep"] = 3.0
+    errors: list[str] = []
+
+    def one(i):
+        try:
+            _chat(env, f"check logins {i}", stream=True)
+        except Exception as e:  # noqa: BLE001
+            errors.append(type(e).__name__)
+
+    threads = [threading.Thread(target=one, args=(i,), daemon=True) for i in range(10)]
+    for t in threads:
+        t.start()
+    time.sleep(0.8)
+    t0 = time.monotonic()
+    r = env["client"].get("/v1/models", headers=_h(env["token"]))
+    assert r.status_code == 200 and time.monotonic() - t0 < 2.0
+    env["state"]["sleep"] = 0.0
+    for t in threads:
+        t.join(60)
+    assert not errors
+
+
+def test_more_open_turns_than_the_cap_are_answered_busy(env):
+    env["app"].state.max_open_turns = 1
+    env["state"]["sleep"] = 2.0
+    t = threading.Thread(target=lambda: _chat(env, "first", stream=True), daemon=True)
+    t.start()
+    time.sleep(0.5)
+    r = _chat(env, "second")
+    assert r.status_code == 429 and r.json()["error"]["code"] == "server_busy"
+    assert env["client"].get("/v1/models", headers=_h(env["token"])).status_code == 200
+    t.join(30)
+    env["state"]["sleep"] = 0.0
+    assert env["app"].state.open_turns == 0
+    assert _chat(env, "third").status_code == 200
+
+
+def test_a_retest_from_a_chat_counts_in_the_hourly_limit_and_takes_a_slot(env, monkeypatch):
+    """/retest re-collects from the machine: it used to run inline with no slot and outside
+    the hourly limit, so a chat client could re-read a machine without bound."""
+    import kratos.serve.openai_routes as R
+
+    seen = []
+
+    def fake_retest(arg, target, data_dir):
+        seen.append(env["app"].state.slots.active)
+        return f"Retest of X on {target}: open -> open"
+
+    monkeypatch.setattr(R, "_retest_text", fake_retest)
+    settings_store.set(SS.REQUESTS_PER_HOUR, 1, data_dir=env["dir"], actor="test")
+    r = _chat(env, "/retest abcdef")
+    assert r.status_code == 200 and "Retest of X" in r.json()["choices"][0]["message"]["content"]
+    assert seen == [1]                                   # it held a slot while it ran
+    assert _chat(env, "/retest abcdef").status_code == 429
+
+
+def test_stopping_the_server_stops_open_chat_turns(tmp_path):
+    from kratos.serve.app import ServeState
+
+    st = ServeState(tmp_path, bind_host="127.0.0.1", port=8770)
+
+    class H:
+        stop = threading.Event()
+
+    h = H()
+    assert st.open_turn()
+    st.track_turn(h)
+
+    def worker():
+        h.stop.wait(5)
+        st.untrack_turn(h)
+        st.close_turn()
+
+    threading.Thread(target=worker, daemon=True).start()
+    assert st.shutdown_turns(timeout=5) == 0 and h.stop.is_set()

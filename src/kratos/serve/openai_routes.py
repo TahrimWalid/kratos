@@ -10,10 +10,11 @@ answer check has had its say -- the model's own tokens are never streamed.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import json
 import logging
-import queue
 import re
 import secrets
 import threading
@@ -182,9 +183,12 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
     if word == "/findings":
         return _render.kratos_text_markdown(_findings_text(target, data_dir))
     if word == "/retest":
-        arg = text.split(maxsplit=1)[1].strip() if len(text.split(maxsplit=1)) > 1 else ""
-        return _render.kratos_text_markdown(_retest_text(arg, target, data_dir))
+        return None          # it reads the machine: a turn of its own (slots, hourly limit) -- _serve_turn
     return None
+
+
+def is_retest(text: str) -> bool:
+    return bool(text) and text.split(maxsplit=1)[0].lower() == "/retest"
 
 
 def _usage_text(br: Any, data_dir: Path) -> str:
@@ -243,19 +247,31 @@ def _retest_text(key: str, target: str, data_dir: Path) -> str:
 
 # --------------------------------------------------------------------------- the turn
 class TurnHandle:
-    """One chat turn running on a worker thread: its progress queue, stop flag, result."""
+    """One chat turn running on a worker thread: its progress events, stop flag, result.
 
-    def __init__(self) -> None:
-        self.events: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+    Made on the event loop; the worker thread hands events back with
+    call_soon_threadsafe, so a stream waiting for the next line holds no thread (it used to
+    block one pool thread per open chat in queue.get -- with a few chats open the shared
+    pool ran dry and the server stopped answering anything, even /v1/models)."""
+
+    def __init__(self, loop: "asyncio.AbstractEventLoop | None" = None) -> None:
+        self._loop = loop or asyncio.get_running_loop()
+        self.events: "asyncio.Queue[tuple[str, Any]]" = asyncio.Queue()
         self.stop = threading.Event()
         self.result: dict[str, Any] | None = None
 
+    def _put(self, item: tuple[str, Any]) -> None:
+        try:
+            self._loop.call_soon_threadsafe(self.events.put_nowait, item)
+        except RuntimeError:          # the loop is closed: the server stopped, nobody is reading
+            pass
+
     def progress(self, line: str) -> None:
-        self.events.put(("progress", line))
+        self._put(("progress", line))
 
     def finish(self, result: dict[str, Any]) -> None:
         self.result = result
-        self.events.put(("done", result))
+        self._put(("done", result))
 
 
 def serve_turn(handle: TurnHandle, **kw: Any) -> None:
@@ -280,6 +296,21 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
     from kratos.tui_mk2.command_intent import route_message
 
     link_hosts = settings_store.get(_s.LINK_HOSTS, data_dir=state.data_dir) or []
+    if is_retest(message):
+        # A retest re-collects from the machine like an investigation does: it waits for a
+        # slot, so chat clients can't put more load on a machine than serve.max_parallel.
+        if not state.slots.acquire(should_stop=handle.stop.is_set,
+                                   on_wait=lambda: handle.progress("waiting for another investigation to finish…")):
+            handle.finish({"status": "stopped", "content": "Stopped before the retest started."})
+            return
+        try:
+            arg = message.split(maxsplit=1)[1].strip() if len(message.split(maxsplit=1)) > 1 else ""
+            handle.progress("re-collecting what the finding depends on…")
+            text = _retest_text(arg, target, state.data_dir)
+        finally:
+            state.slots.release()
+        handle.finish({"status": "ok", "content": _render.kratos_text_markdown(text)})
+        return
     history = history_text(earlier)
     try:
         # The same router as the TUI (one model call, masked, metered under source "web").
@@ -411,29 +442,52 @@ def _handlers(state: Any) -> dict[str, Any]:
             await asyncio.to_thread(audit, "ok", model=model, target=target, detail="command", bytes_out=len(cmd))
             return _respond_text(cmd, model=model, stream=stream)
 
-        limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
+        if not state.open_turn():
+            await asyncio.to_thread(audit, "refused", model=model, target=target, detail="too many open turns")
+            return _error(429, f"Kratos is already answering {state.max_open_turns} messages; try again shortly.",
+                          kind="rate_limit_exceeded", code="server_busy")
+        try:
+            limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
+        except BaseException:
+            state.close_turn()
+            raise
         if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
+            state.close_turn()
             await asyncio.to_thread(audit, "refused", model=model, target=target, detail="hourly limit")
             return _error(429, f"This token has used its {limit} messages for this hour (serve.requests_per_hour).",
                           kind="rate_limit_exceeded", code="rate_limit_exceeded")
         # From here the request holds one of the hour's slots: it is given back once the
         # metered audit row is written, or at once if the request ends before using the model.
         try:
-            refusal = await asyncio.to_thread(_precheck, target, state.data_dir)
+            # A retest makes no model call: the spending limits don't stop it.
+            refusal = None if is_retest(message) else await asyncio.to_thread(_precheck, target, state.data_dir)
             if refusal is not None:
                 await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
                 state.release_metered(client.token_id)
+                state.close_turn()
                 return _respond_text(_render.kratos_note_markdown(refusal), model=model, stream=stream)
             convo = [*earlier, ("user", message)]
             key = chat_key(headers, client.token_id, model, convo, message)
             session_id = await asyncio.to_thread(_session_for, state, client.token_id, key, target)
         except BaseException:
             state.release_metered(client.token_id)
+            state.close_turn()
             raise
         handle = TurnHandle()
-        worker = asyncio.create_task(asyncio.to_thread(
-            serve_turn, handle, state=state, client=client, target=target, model=model, message=message,
-            earlier=earlier, session_id=session_id))
+        # The turn runs on the server's own bounded pool (state.turn_pool), never the shared
+        # default pool the request handling itself needs; the context is copied like to_thread.
+        call = functools.partial(contextvars.copy_context().run, serve_turn, handle, state=state, client=client,
+                                 target=target, model=model, message=message, earlier=earlier,
+                                 session_id=session_id)
+        state.track_turn(handle)
+        try:
+            worker = asyncio.get_running_loop().run_in_executor(state.turn_pool, call)
+        except BaseException:
+            state.untrack_turn(handle)
+            state.release_metered(client.token_id)
+            state.close_turn()
+            raise
+        worker.add_done_callback(lambda _f: (state.untrack_turn(handle), state.close_turn()))
 
         def finished(result: dict[str, Any], sent: int) -> None:
             try:
@@ -540,12 +594,12 @@ def _completion_body(cid: str, created: int, model: str, text: str, usage: Any) 
 
 async def _next_event(handle: TurnHandle, timeout: float) -> tuple[str, Any] | None:
     try:
-        return await asyncio.to_thread(handle.events.get, True, timeout)
-    except queue.Empty:
+        return await asyncio.wait_for(handle.events.get(), timeout)
+    except asyncio.TimeoutError:
         return None
 
 
-async def _sse(handle: TurnHandle, worker: "asyncio.Task[Any]", *, model: str,
+async def _sse(handle: TurnHandle, worker: "asyncio.Future[Any]", *, model: str,
                on_done: Callable[[dict[str, Any], int], None], request: Any):
     """The stream: role chunk, progress in `reasoning_content`, keep-alive comments every
     KEEPALIVE_SECONDS of silence, then the whole checked answer as content, then [DONE].
@@ -592,7 +646,7 @@ async def _sse(handle: TurnHandle, worker: "asyncio.Task[Any]", *, model: str,
             asyncio.get_running_loop().create_task(asyncio.to_thread(on_done, result, sent))
 
 
-async def _audit_when_done(handle: TurnHandle, worker: "asyncio.Task[Any]",
+async def _audit_when_done(handle: TurnHandle, worker: "asyncio.Future[Any]",
                            on_done: Callable[[dict[str, Any], int], None], sent: int) -> None:
     try:
         await worker
@@ -604,7 +658,7 @@ async def _audit_when_done(handle: TurnHandle, worker: "asyncio.Task[Any]",
     await asyncio.to_thread(on_done, result, sent)
 
 
-async def _complete(handle: TurnHandle, worker: "asyncio.Task[Any]", request: Any, *, model: str,
+async def _complete(handle: TurnHandle, worker: "asyncio.Future[Any]", request: Any, *, model: str,
                     on_done: Callable[[dict[str, Any], int], None]) -> Any:
     from starlette.responses import JSONResponse
 
