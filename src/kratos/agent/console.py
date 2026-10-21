@@ -347,6 +347,11 @@ def render_finding(console: Console, finding: dict[str, Any]) -> None:
     attack = attack_line(finding)
     if attack:
         body.append(f"\n{attack}", style="dim")
+    from kratos.detect.findings import credit_line
+
+    credit = credit_line(finding)      # C.1: a Sigma rule's author goes with every finding it raises
+    if credit:
+        body.append(f"\n{credit}", style="dim")
 
     evidence = finding.get("evidence") or []
     if evidence:

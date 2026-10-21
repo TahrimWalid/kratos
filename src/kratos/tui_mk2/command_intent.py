@@ -80,6 +80,8 @@ CAPABILITIES: list[tuple[str, str]] = [
     ("/usage, /context", "show token usage/cost against the spending limits, and what's in the context window"),
     ("/report", "show the findings gathered so far"),
     ("/findings", "list remembered findings and let the user verify/accept/dismiss them (the user decides)"),
+    ("/detect", "the detection rules (SigmaHQ Linux rules) Kratos runs over collected logs: list them, turn one "
+                "off for a machine, run them now"),
 ]
 
 

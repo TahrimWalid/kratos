@@ -214,8 +214,11 @@ def _findings_text(target: str, data_dir: Path) -> str:
     for r in rows:
         aged = finding_facts.verdict_tag(r)
         tag = f"  [{aged}]" if aged else ""
+        from kratos.detect.findings import credit_line
+
+        credit = credit_line(r)            # C.1: a Sigma rule's author (DRL 1.1)
         lines.append(f"- {short(r['finding_key'])}  {str(r.get('severity') or '').upper():<8} {r.get('rule_id')}  "
-                     f"{str(r.get('title') or '')[:100]}{tag}")
+                     f"{str(r.get('title') or '')[:100]}" + (f" ({credit})" if credit else "") + tag)
     lines.append("Re-check one: /retest <key>. Decide on one (accept, false positive): in the Kratos app.")
     return "\n".join(lines)
 

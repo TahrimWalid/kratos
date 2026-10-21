@@ -232,6 +232,18 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     header = (f"Trigger '{trigger.name}' fired on {target} — {trigger.condition_text}\n"
               f"matched: {', '.join(matched_ids) or '(finding)'}  ·  worst: {worst}\n"
               f"as of {stamp}")
+    from kratos.detect.findings import credit_line
+
+    credits = []                     # C.1: each detection rule's matches, grouped, with its author (DRL 1.1)
+    for rid in matched_ids:
+        same = [f for f in matched if f.get("id") == rid]
+        credit = next((c for c in (credit_line(f) for f in same) if c), None)
+        if credit:
+            n = sum(int((f.get("detection_rule") or {}).get("matches") or 0) for f in same)
+            credits.append(f"{rid} {same[0].get('title', '')}: {n} match(es) in {len(same)} finding(s); "
+                           + "rule by " + credit.split("rule by ", 1)[-1])
+    if credits:
+        header += "\n" + "\n".join(credits)
     action = trigger.action
     investigation: Optional[dict[str, Any]] = None
     if action == "notify":

@@ -233,6 +233,11 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     attack = attack_line(finding)
     if attack:
         body.append(f"\n{attack}", style=T.TEXT_DIM)
+    from kratos.detect.findings import credit_line
+
+    credit = credit_line(finding)      # C.1: a Sigma rule's author goes with every finding it raises
+    if credit:
+        body.append(f"\n{credit}", style=T.TEXT_DIM)
 
     evidence = finding.get("evidence") or []
     content: Any = body

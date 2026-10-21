@@ -414,6 +414,32 @@ def _check_vulndb(out: list[Check], data_dir: Path) -> None:
         out.append(_row("vulnerability data", "pass", detail))
 
 
+def _check_detection(out: list[Check], data_dir: Path) -> None:
+    """C.1: the rule pack, the rules on, and when each machine was last checked by them."""
+    from kratos.detect import pack as P
+    from kratos.detect import store as ST
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    loaded = P.load(data_dir)
+    rules = sum(len(lp.pack.rules) for lp in loaded.loaded)
+    off = ST.disabled_everywhere(data_dir)
+    packs = ", ".join(f"{lp.pack_id} v{lp.version}" for lp in loaded.loaded)
+    runs = ST.last_runs_by_target(data_dir)
+    if runs:
+        when = "; ".join(f"{t} {epoch_to_utc_iso(r.finished_at or r.started_at)}"
+                         + ("" if r.status == "ok" else f" ({r.status})") for t, r in sorted(runs.items())[:5])
+        detail = f"{packs}: {rules - len(off)} of {rules} rules on; last run per machine: {when}"
+    else:
+        detail = f"{packs}: {rules - len(off)} of {rules} rules on; not run on any machine yet"
+    detail += " -- on collected logs, on schedule (not continuously)"
+    if loaded.refused:
+        out.append(_row("detection rules", "warn", detail + f"; {len(loaded.refused)} imported pack(s) refused: "
+                        + "; ".join(r.reason for r in loaded.refused)[:200],
+                        fix="re-import the rules (kratos detect import) or remove the file from detect/packs"))
+        return
+    out.append(_row("detection rules", "pass" if runs else "info", detail))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -425,6 +451,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
+        sections.append(("detection rules", lambda o: _check_detection(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))

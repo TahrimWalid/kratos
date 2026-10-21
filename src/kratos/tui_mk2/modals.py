@@ -433,6 +433,8 @@ class HelpModal(ModalScreen[None]):
                 ("/report", "Investigation summary — new, still open, fixed, hidden by your decisions"),
                 ("/findings", "Findings remembered across checks — verify, accept a risk until a date, "
                  "mark false positive / out of scope (alias /f)"),
+                ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
+                 "checked, run them now"),
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),

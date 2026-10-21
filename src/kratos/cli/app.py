@@ -677,6 +677,16 @@ def cmd_events(args: argparse.Namespace) -> int:
     store = EventStore(Path(args.data_dir) / "kratos.db")
     filters = dict(start=start, end=end, source_ip=args.ip, user=args.user, process=args.process,
                    dataset=args.dataset, action=args.action)
+    if getattr(args, "ids", None):
+        filters["event_ids"] = args.ids
+    if getattr(args, "rule", None):
+        # a detection rule's matches: the log lines it matched (the detections name them)
+        detections = store.query(target, rule_id=args.rule.strip().upper(), start=start, end=end, limit=MAX_LIMIT)
+        matched = list(dict.fromkeys(i for d in detections for i in d.detect_matched))
+        if not detections:
+            print(f"[KRATOS] No stored detections by {args.rule} for {target_key(target)}.")
+            return 0
+        filters = dict(event_ids=matched)
     events = store.query(target, **filters, limit=min(args.limit, MAX_LIMIT), newest_first=not args.oldest_first)
     if args.json:
         for e in events:
@@ -935,6 +945,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
         from kratos.attack import format_label
         for lab in rec.get("attack") or []:
             print(f"  ATT&CK: {format_label(lab)}  {lab.get('url')}")
+        rule = (latest or {}).get("detection_rule") or {}
+        if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
+            print(f"  rule: {rule.get('title')} by {rule.get('author')} -- {rule.get('license') or 'DRL-1.1'} "
+                  f"{rule.get('source_url') or ''}")
         d = rec.get("decision")
         if d:
             print(f"  decision: {_STATE_WORDS.get(d['kind'])} ({D.SCOPE_WORDS.get(d['scope'])}) by "
@@ -2194,13 +2208,21 @@ def build_parser() -> argparse.ArgumentParser:
     events_p.add_argument("--action", default=None, help="e.g. ssh_failed_login, sudo_command")
     events_p.add_argument("--dataset", default=None,
                           choices=("kratos.auth", "kratos.journal", "kratos.privileged_accounts", "kratos.auditd",
-                                   "kratos.cron", "kratos.systemd", "kratos.firewall", "kratos.package", "kratos.web"))
+                                   "kratos.cron", "kratos.systemd", "kratos.firewall", "kratos.package", "kratos.web",
+                                   "kratos.detect"))
+    events_p.add_argument("--id", dest="ids", action="append", default=None, metavar="EVENT_ID",
+                          help="Only this event (repeat for more)")
+    events_p.add_argument("--rule", default=None, metavar="SIGMA-XXXXXXXX",
+                          help="The log lines a detection rule matched on this machine")
     events_p.add_argument("--limit", type=int, default=50, help="How many (newest first; max 10000)")
     events_p.add_argument("--oldest-first", action="store_true", help="Oldest first instead")
     events_p.add_argument("--json", action="store_true", help="One ECS JSON document per line")
     events_p.add_argument("--coverage", action="store_true",
                           help="Instead of events: which stretches of each log Kratos holds completely, and the gaps")
     events_p.set_defaults(func=cmd_events)
+
+    from kratos.cli import detect_cmd
+    detect_cmd.add_parser(sub)
 
     attack_p = sub.add_parser(
         "attack-layer",

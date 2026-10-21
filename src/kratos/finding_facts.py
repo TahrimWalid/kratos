@@ -114,7 +114,8 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
     if pids:
         facts.append("pid " + ", ".join(pids[:3]))
     subject = str(f.get("subject") or "")
-    if subject and _PACKAGE_RE.match(subject):
+    sigma = str(f.get("id") or "").startswith("SIGMA-")      # C.1: its subject is an address, user or program
+    if subject and _PACKAGE_RE.match(subject) and not sigma:
         facts.append(f"package {subject}")
     cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
     if cves:
@@ -231,7 +232,8 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
         if not ips(f):
             shown = [_display_entity(str(e))[0] for e in (f.get("entities") or [])[:2]]
             subject = str(f.get("subject") or "")
-            facts += shown or ([f"package {subject}"] if subject else [])
+            sigma = str(f.get("id") or "").startswith("SIGMA-")
+            facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
         detail = "; ".join(untrusted.for_display(x)[:120] for x in facts)
         missing = missing_from(analysis, f)
         mark = " (not discussed below)" if "not discussed" in missing else \
@@ -239,8 +241,12 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
         title = untrusted.for_display(str(f.get("title") or describe(f)))[:110]
         tag = verdict_tag(f)
         verdict = f"  [{untrusted.for_display(tag)[:90]}]" if tag else ""
+        from kratos.detect.findings import credit_line
+
+        credit = credit_line(f)          # C.1: a Sigma rule's author goes with its finding (DRL 1.1)
         lines.append(f"  - {str(f.get('severity')).upper()} {f.get('id')} {title}"
-                     + (f" -- {detail}" if detail else "") + mark + verdict)
+                     + (f" -- {detail}" if detail else "") + mark
+                     + (f" ({untrusted.for_display(credit)[:160]})" if credit else "") + verdict)
     if len(items) > BLOCK_MAX:
         lines.append(f"  - and {len(items) - BLOCK_MAX} more serious finding(s): /findings lists them all")
     return "\n".join(lines) + "\n\n"

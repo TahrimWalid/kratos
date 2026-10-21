@@ -117,6 +117,7 @@ _PALETTE_COMMANDS = [
     ("/preset-import", "import a preset from a .toml file"),
     ("/report", "investigation summary — new, still open, fixed, hidden by your decisions"),
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
+    ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
@@ -1006,6 +1007,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             target = _kconfig.get_active_target()
             self.app.push_screen(SubAgentScreen(self._data_dir, offer_link_for=target if target and target.lower()
                                                 not in ("127.0.0.1", "localhost", "::1") else None))
+        elif cmd in ("/detect", "/rules"):
+            from kratos.tui_mk2.screens.detect import DetectScreen
+
+            self.app.push_screen(DetectScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd in ("/findings", "/f"):
             from kratos.tui_mk2.screens.findings import FindingsScreen
 

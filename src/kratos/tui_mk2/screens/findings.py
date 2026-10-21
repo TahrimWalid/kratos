@@ -354,6 +354,10 @@ class FindingsScreen(Screen):
         body.add_column(style=T.TEXT_DIM)
         body.add_column()
         body.add_row("rule", f"{row['rule_id']} — {annotate_lookalikes(row['title'])}")
+        credit = latest.get("detection_rule") or {}
+        if credit:   # C.1: a Sigma rule's author goes with every finding it raises (DRL 1.1)
+            body.add_row("rule by", f"{credit.get('author')} — {credit.get('license') or 'DRL-1.1'}\n"
+                                    f"{credit.get('source_url') or ''}")
         body.add_row("state", f"{STATE_WORDS.get(row['state'], row['state'])}  ({row['state']})")
         body.add_row("severity", row["severity"])
         body.add_row("machine", row["target"])

@@ -342,6 +342,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "logs.seal_verify_interval_minutes", "logs.seal_copy_budget_mb",
                           "collect.enabled", "collect.start_budget_seconds", "collect.sync_sources",
                           "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
+                          "detect.lookback_hours", "detect.finding_window_hours", "detect.pass_budget_seconds",
+                          "detect.max_events_per_pass", "detect.coverage_days",
                           "vulndb.max_age_days", "vulndb.epss_high",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -741,6 +743,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{budget} MB  (newest files first; the rest next time)", style=T.TEXT))
         for key, label, tail in self._collection_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._detect_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
@@ -975,6 +979,50 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             ("collect.ttl", "Results stay fresh (minutes)", ttls),
         ]
 
+    # --- Detection rules (kratos.detect, C.1) ---
+    def _detect_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.detect import settings as DS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("detect.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (DS.LOOKBACK_HOURS, "Detection rules: a new rule pack looks back", f"{get(DS.LOOKBACK_HOURS)} hours"),
+            (DS.FINDING_WINDOW_HOURS, "Detection rules: a match stays open for",
+             f"{get(DS.FINDING_WINDOW_HOURS)} hours without a new one"),
+            (DS.PASS_BUDGET, "Detection rules: most time per machine", f"{get(DS.PASS_BUDGET)} seconds a pass"),
+            (DS.MAX_EVENTS, "Detection rules: most log events per pass", f"{get(DS.MAX_EVENTS):,}"),
+            (DS.COVERAGE_DAYS, "Detection rules: a log counts as collected if seen in",
+             f"the last {get(DS.COVERAGE_DAYS)} days"),
+        ]
+
+    @work
+    async def _set_detect_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.detect import settings as _DS  # noqa: F401 -- registers the detect.* settings
+        from kratos.tui_mk2.modals import PromptModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        spec = next((sp for sp in settings_store.specs() if sp.key == key), None)
+        if spec is None:
+            return
+        answer = await self.app.push_screen_wait(PromptModal(spec.doc, "Enter the new value",
+                                                             initial=str(settings_store.get(key, data_dir=dd))))
+        if answer is None:
+            return
+        try:
+            settings_store.set(key, answer.strip(), data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved — applies on the next detection pass.", T.SAFE)
+
     @work
     async def _set_collect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1033,6 +1081,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
+        elif key and key.startswith("detect."):
+            self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)
         elif key and key.startswith("trace."):

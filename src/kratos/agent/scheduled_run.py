@@ -153,7 +153,11 @@ def _build_message(*, schedule_name: str, target: str, status: str,
             note = f"  ({decided[f['state']]} — hidden)" if f.get("state") in decided else ""
             tag = verdict_tag(f)                           # B.1: "seen in this run's read -- not re-checked yet", ...
             verdict = f"  [{tag}]" if tag else ""
-            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}{verdict}")
+            from kratos.detect.findings import credit_line
+
+            credit = credit_line(f)                        # C.1: a Sigma rule's author (DRL 1.1)
+            lines.append(f"  [{str(f.get('severity','')).upper()}] {f.get('id')} — {f.get('title','')}{note}"
+                         + (f" ({credit})" if credit else "") + verdict)
     else:
         lines.append("findings: none raised")
     if report_path:
