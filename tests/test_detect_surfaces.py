@@ -230,3 +230,19 @@ async def _detect_screen(tmp_path):
         await pilot.press("s")
         await pilot.pause()
         assert screen._skipped_view and len(screen._rows) == len(P.skipped(P.shipped()))
+
+
+def test_importing_a_counting_correlation_groups_by_the_attackers_address(tmp_path, capsys):
+    import pytest
+    pytest.importorskip("sigma.collection")
+    from kratos.cli import app
+    from tests.test_detect_pass import failed_login
+
+    fixture = Path(__file__).parent / "fixtures" / "sigma_import" / "ssh_guessing_burst.yml"
+    assert app.main(["--data-dir", str(tmp_path), "detect", "import", str(fixture), "--name", "burst"]) == 0
+    rule = P.load(tmp_path).rule("SIGMA-5A1F0C3E")[1].meta
+    assert rule["count"] == {"window_seconds": 300, "group_by": "source.ip", "op": "gte", "threshold": 4}
+    assert rule["samples"]["match"][0]["source.ip"] == "192.0.2.1"
+    EventStore(tmp_path / "kratos.db").add([failed_login(A, NOW - 200 + i, "203.0.113.66") for i in range(4)])
+    hits = [m for m in R.run_pass(A, tmp_path, now=NOW).matches if m["rule_id"] == "SIGMA-5A1F0C3E"]
+    assert [m["group"] for m in hits] == ["203.0.113.66"]

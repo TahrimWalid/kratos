@@ -542,6 +542,18 @@ class _Leaf:
         self.nets = [ipaddress.ip_network(v, strict=False) for v in node["values"]] if self.op == "cidr" else None
         self.want = bool(node["value"]) if self.op == "exists" else None
 
+    def _texts(self, event: Dict[str, Any], cache: Optional[Dict[Any, List[Optional[str]]]]) -> List[Optional[str]]:
+        """The field's values as normalised text, computed once per event and case rule."""
+        key = (self.field, self.index, self.cased)
+        if cache is not None:
+            got = cache.get(key)
+            if got is not None:
+                return got
+        texts = [_norm(v, self.cased) for v in self._items(event)]
+        if cache is not None:
+            cache[key] = texts
+        return texts
+
     def _items(self, event: Dict[str, Any]) -> List[Any]:
         raw = event.get(self.field)
         if raw is None:
@@ -554,13 +566,13 @@ class _Leaf:
             return []
         return [raw]
 
-    def test(self, event: Dict[str, Any]) -> bool:
-        items = self._items(event)
+    def test(self, event: Dict[str, Any], cache: Optional[Dict[Any, Any]] = None) -> bool:
         if self.op == "exists":
+            items = self._items(event)
             present = any(v is not None and v != "" for v in items)
             return present == self.want
         if self.op == "cidr":
-            for v in items:
+            for v in self._items(event):
                 try:
                     ip = ipaddress.ip_address(str(v))
                 except ValueError:
@@ -569,8 +581,7 @@ class _Leaf:
                     if ip.version == net.version and ip in net:
                         return True
             return False
-        for v in items:
-            text = _norm(v, self.cased)
+        for text in self._texts(event, cache):
             if text is None:
                 continue
             if self.op == "eq":
@@ -594,57 +605,120 @@ class _Leaf:
         return False
 
 
+_FOLDABLE = ("eq", "contains", "startswith", "endswith", "wildcard", "in")
+
+
+class _AnyText:
+    """Several string tests on one field (same case rule and position) OR-ed together --
+    an `any_of` folded at load time, so a long keyword list costs one pass over the values,
+    not one call per keyword. Same answers as the separate leaves."""
+    __slots__ = ("leaf", "eq", "contains", "starts", "ends", "globs")
+
+    def __init__(self, leaves: List["_Leaf"]):
+        self.leaf = leaves[0]
+        self.eq = frozenset(v for lf in leaves for v in ([lf.value] if lf.op == "eq" else
+                                                          (lf.values or ()) if lf.op == "in" else ()))
+        self.contains = tuple(lf.value for lf in leaves if lf.op == "contains")
+        self.starts = tuple(lf.value for lf in leaves if lf.op == "startswith")
+        self.ends = tuple(lf.value for lf in leaves if lf.op == "endswith")
+        self.globs = tuple(lf.glob for lf in leaves if lf.op == "wildcard")
+
+    def test(self, event: Dict[str, Any], cache: Optional[Dict[Any, Any]] = None) -> bool:
+        for text in self.leaf._texts(event, cache):
+            if text is None:
+                continue
+            if text in self.eq:
+                return True
+            if self.starts and text.startswith(self.starts):
+                return True
+            if self.ends and text.endswith(self.ends):
+                return True
+            for c in self.contains:
+                if c in text:
+                    return True
+            for g in self.globs:
+                if g.match(text):  # type: ignore[union-attr]
+                    return True
+        return False
+
+
 class _Node:
     __slots__ = ("op", "children", "leaf")
 
     def __init__(self, node: Dict[str, Any]):
         self.op = node["op"]
         self.leaf = None
-        self.children: List["_Node"] = []
-        if self.op in ("all_of", "any_of"):
+        self.children: List[Any] = []
+        if self.op == "any_of":
+            groups: "OrderedDict[Any, List[_Leaf]]" = OrderedDict()
+            for c in node["args"]:
+                if c.get("op") in _FOLDABLE:
+                    lf = _Leaf(c)
+                    groups.setdefault((lf.field, lf.cased, lf.index), []).append(lf)
+                else:
+                    self.children.append(_Node(c))
+            for leaves in groups.values():
+                if len(leaves) == 1:
+                    n = _Node.__new__(_Node)
+                    n.op, n.leaf, n.children = leaves[0].op, leaves[0], []
+                    self.children.append(n)
+                else:
+                    self.children.append(_AnyText(leaves))
+        elif self.op == "all_of":
             self.children = [_Node(c) for c in node["args"]]
         elif self.op == "not":
             self.children = [_Node(node["arg"])]
         else:
             self.leaf = _Leaf(node)
 
-    def test(self, event: Dict[str, Any]) -> bool:
+    def test(self, event: Dict[str, Any], cache: Optional[Dict[Any, Any]] = None) -> bool:
         if self.leaf is not None:
-            return self.leaf.test(event)
+            return self.leaf.test(event, cache)
         if self.op == "all_of":
             for c in self.children:
-                if not c.test(event):
+                if not c.test(event, cache):
                     return False
             return True
         if self.op == "any_of":
             for c in self.children:
-                if c.test(event):
+                if c.test(event, cache):
                     return True
             return False
-        return not self.children[0].test(event)
+        return not self.children[0].test(event, cache)
 
 
 class Rule:
     """A validated rule, prepared for evaluation. `meta` is the rule's JSON."""
-    __slots__ = ("id", "meta", "datasets", "where", "match", "count")
+    __slots__ = ("id", "meta", "datasets", "where", "where_key", "match", "count")
 
     def __init__(self, rule: Dict[str, Any]):
         self.id = rule["id"]
         self.meta = rule
         self.datasets = frozenset(rule["scope"]["datasets"])
-        self.where = _Node(rule["scope"]["where"]) if rule["scope"].get("where") is not None else None
+        where = rule["scope"].get("where")
+        self.where = _Node(where) if where is not None else None
+        # rules of one log source share its condition: tested once per event (cache)
+        self.where_key = ("where", canonical_bytes(where)) if where is not None else None
         self.match = _Node(rule["match"])
         self.count = rule.get("count")
 
-    def applies(self, event: Dict[str, Any]) -> bool:
+    def applies(self, event: Dict[str, Any], cache: Optional[Dict[Any, Any]] = None) -> bool:
         """The event is of a kind this rule looks at (its log source)."""
         if event.get("event.dataset") not in self.datasets:
             return False
-        return self.where is None or self.where.test(event)
+        if self.where is None:
+            return True
+        if cache is not None:
+            got = cache.get(self.where_key)
+            if got is None:
+                got = cache[self.where_key] = self.where.test(event, cache)
+            return got
+        return self.where.test(event)
 
-    def matches(self, event: Dict[str, Any]) -> bool:
-        """The event satisfies the rule's condition (a counting rule: one counted event)."""
-        return self.applies(event) and self.match.test(event)
+    def matches(self, event: Dict[str, Any], cache: Optional[Dict[Any, Any]] = None) -> bool:
+        """The event satisfies the rule's condition (a counting rule: one counted event).
+        `cache`: one dict per event, shared across rules, so each value is normalised once."""
+        return self.applies(event, cache) and self.match.test(event, cache)
 
 
 class Pack:
@@ -768,6 +842,10 @@ class Evaluator:
         self.pack = pack
         self.disabled = frozenset(disabled)
         self.active = [r for r in pack.rules if r.id not in self.disabled]
+        self.by_dataset: Dict[str, List[Rule]] = {}
+        for r in self.active:                         # in pack order within each dataset
+            for d in r.datasets:
+                self.by_dataset.setdefault(d, []).append(r)
         self.counts: Dict[str, _CountState] = {}
         for r in self.active:
             if r.count:
@@ -799,10 +877,11 @@ class Evaluator:
         itself, and a group it carries over its threshold is treated as already reported."""
         out: List[Match] = []
         eid = str(event.get("event.id") or "")
-        for rule in self.active:
+        cache: Dict[Any, Any] = {}
+        for rule in self.by_dataset.get(str(event.get("event.dataset") or ""), ()):
             if history and rule.count is None:
                 continue
-            if not rule.matches(event):
+            if not rule.matches(event, cache):
                 continue
             if rule.count is None:
                 out.append(Match(rule.id, eid, ts))
