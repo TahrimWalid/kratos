@@ -1804,7 +1804,7 @@ chat reply says which one. On top of that:
 | Setting | Default | |
 | --- | --- | --- |
 | `serve.max_parallel` | 2 | investigations at once; more wait ("waiting for another investigation to finish…") |
-| `serve.requests_per_hour` | 30 | messages that use the model, per token per hour (commands and the app's title requests don't count) |
+| `serve.requests_per_hour` | 30 | messages that use the model (and MCP investigations), per token per hour; requests still running count too, so several sent at once can't slip past it. Commands and the app's title requests don't count |
 | `serve.port` | 8770 | |
 
 Change them in *Settings → General* or with `kratos serve set serve.max_parallel 3`.
@@ -1812,14 +1812,31 @@ Change them in *Settings → General* or with `kratos serve set serve.max_parall
 ### MCP over HTTP
 
 A token made with `--mcp` can also use `http://127.0.0.1:8770/mcp`
-(Streamable HTTP, bearer token). Its tools: `kratos_start_investigation` (returns
-an id at once), `kratos_get_investigation` (progress lines, then the checked
-answer and findings), `kratos_get_findings`, `kratos_list_sessions`,
-`kratos_finding_states` — all limited to the token's machines. In Open WebUI:
-*Admin Settings → External Tools → +*, type **MCP (Streamable HTTP)**, the URL, auth
-**Bearer** with the token. Note that in this mode the chat app's own model reads
-Kratos's result and writes its own reply, so it can drop or reword what Kratos
-found — use the model connection above when you want Kratos's checked answer as
+(Streamable HTTP, bearer token). Its tools, all limited to the token's machines:
+
+- `kratos_start_investigation(goal, target, wait_seconds)` — starts one and
+  returns its id; with `wait_seconds` (up to 120) it waits and returns the
+  checked answer as soon as it's done (most take 5–30 s), so a client that makes
+  one tool call per turn still gets the answer.
+- `kratos_get_investigation(investigation_id, wait_seconds)` — progress lines, then
+  the checked answer and findings. Leave the id empty for your newest one.
+  Investigations are still found after `kratos serve` restarts (one cut off by the
+  restart says `interrupted`).
+- `kratos_get_findings`, `kratos_list_sessions`, `kratos_finding_states` — read only.
+
+In Open WebUI: *Admin Settings → External Tools → +*, type **MCP (Streamable
+HTTP)**, the URL, auth **Bearer** with the token; then turn the Kratos tools on
+for a model under *Workspace → Models*. **With Gemini models set that model's
+*Function Calling* to *Legacy*** (Advanced Params): Gemini's OpenAI-compatible
+endpoint streams tool calls without the `index` field Open WebUI 0.12 needs, so in
+the default (native) mode Open WebUI silently drops the call and the reply is
+empty. Ask it to use `wait_seconds` ("start an investigation of web-01 with
+wait_seconds 90").
+
+Note that in this mode the chat app's own model reads Kratos's result and writes
+its own reply: in our test it kept the finding, the attacker's address and the
+commands but dropped Kratos's note about what it could not check and the verdict.
+Use the model connection above when you want Kratos's checked answer itself as
 the reply.
 
 ### Remote access

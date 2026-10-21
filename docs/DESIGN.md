@@ -1531,10 +1531,18 @@ added on top.
   — title, tags, follow-ups) are answered by code with no model call.
 - **MCP over Streamable HTTP, stateless, start-then-poll** (`/mcp`, official SDK,
   `stateless_http=True, json_response=True`). `kratos_start_investigation` returns
-  a random id at once (bound to the token; another token gets "no investigation");
+  a random id (bound to the token; another token gets "no investigation");
   `kratos_get_investigation` returns progress lines, then the checked answer and
-  findings. The read tools are the stdio server's, limited to the token's machines.
-  No approvals, no `input_required`.
+  findings. Both take `wait_seconds` (0–120, a long poll: the tools are `async` and
+  sleep on the event loop, never block it) so a host that makes one tool call per
+  turn gets the answer in that call; an empty id means the token's newest. Each run
+  is recorded in `serve_sessions` as `mcp:<id>` → session (`RunRequest.on_session`),
+  so after a restart the state is rebuilt from the session's turn and transcript
+  (`interrupted` when the server stopped mid-run); the in-memory list (last 200) only
+  adds live progress. The read tools are the stdio server's, limited to the token's
+  machines. No approvals, no `input_required`. Open WebUI 0.12.3 with a Gemini model
+  needs *Legacy* function calling: Gemini's OpenAI-compatible stream omits the
+  tool-call `index` Open WebUI requires, and its non-streamed path runs no tools.
 
 **One runner for every headless door** (`serve/runs.py::run_investigation`, also
 used by `kratos mcp-serve`): budget `precheck` before anything starts → session →
@@ -1603,13 +1611,18 @@ Kratos waits for D.7):
   doors (`openai`; `mcp` only with `--mcp`). Failed attempts are throttled per
   address by the sub-agent listener's `AuthFailureLimiter` (10 per minute).
 - *Limits*: body size (`serve.max_body_bytes`), `serve.requests_per_hour` per token
-  (counted from the audit log's metered rows), `serve.max_parallel`; budget source
-  `web` (unattended caps; `precheck` refuses before routing).
+  (the audit log's metered rows plus this process's requests still running, checked
+  and reserved under one lock -- simultaneous requests can't all pass one count),
+  `serve.max_parallel`; budget source `web` (unattended caps; `precheck` refuses
+  before routing).
 - *Audit* (`serve_audit`, append-only by trigger): one row per request — time,
   token id, door, endpoint, model/target, client address, the forwarded user name
   (record only, never trusted), run id, status, metered, duration, bytes out —
   never the message text. In the stored-data inventory; nothing pruned
   automatically.
+- *Code-built answers* (the iteration-limit fallback, a budget stop) carry
+  `answer_parts` with the whole text as the block, so a chat shows them inert like
+  the findings block, not as model prose.
 - *Unreachable*: approval-reaching tools (per-run filter), `/evolve`,
   `/whitelist`, `/run-fix`, finding decisions, settings, target setup, presets,
   the fix channel. The read-only chat commands are `/findings`, `/usage`,
@@ -1621,10 +1634,8 @@ the MCP app's own check); Markdown exfiltration (images/links/HTML in machine te
 and the model's analysis — a chat app still renders the *person's own* typed
 Markdown, outside Kratos); concurrency (per-run contextvars; the approval log is a
 process list tagged by run id); an MCP investigation id is a bearer secret within
-its token. Known limits: rate limiting reads the audit log, so simultaneous
-requests can exceed the hourly count by the number in flight; investigations
-started over MCP live in memory (the last 200 are kept) and are lost on restart
-(their sessions and transcripts stay).
+its token. Known limits: the hourly reservation is per process (two `kratos serve`
+processes on one data folder would each count only their own requests in flight).
 
 ## MCP server surface
 
