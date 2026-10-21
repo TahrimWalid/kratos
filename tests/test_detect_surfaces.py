@@ -246,3 +246,11 @@ def test_importing_a_counting_correlation_groups_by_the_attackers_address(tmp_pa
     EventStore(tmp_path / "kratos.db").add([failed_login(A, NOW - 200 + i, "203.0.113.66") for i in range(4)])
     hits = [m for m in R.run_pass(A, tmp_path, now=NOW).matches if m["rule_id"] == "SIGMA-5A1F0C3E"]
     assert [m["group"] for m in hits] == ["203.0.113.66"]
+
+
+def test_the_couldnt_check_tag_for_a_rule_match_fits_the_answer_block():
+    from kratos.triage import registry
+
+    registry._ensure_loaded()
+    reason = registry.verifier_for(CHATTR_AUDITD).reason
+    assert len(f"couldn't check: {reason}") <= 90 and "events --rule" in reason

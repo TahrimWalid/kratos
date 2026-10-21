@@ -341,8 +341,9 @@ register_no_verifier(NoVerifier(
            "narrow per-finding re-check"))
 register_no_verifier(NoVerifier(
     rules=("SIGMA-",),
-    reason="a detection-rule match is on log lines Kratos already stored, which the finding names (kratos events "
-           "--rule); re-reading the logs can't make the event happen again -- look at the matched lines instead"))
+    # short: it is shown as the answer's "[couldn't check: ...]" tag. A rule match is an event in
+    # stored log lines (the finding names them); a fresh read can't make it happen again.
+    reason="a rule match can't be re-read; its log lines are kept (events --rule)"))
 register_no_verifier(NoVerifier(
     rules=("PRIV-004",),
     reason="an inventory of who holds privileged access, not a risk in itself; re-read it on demand with /verify "
