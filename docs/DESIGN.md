@@ -1355,6 +1355,11 @@ triage, so rules and evidence decide and the model only annotates.
   `/findings` (a column + the detail view with checks and evidence), `kratos findings
   show`, the Markdown report, MCP `kratos_finding_states`, and scheduled-run
   notifications. Stored append-only in `finding_verdicts` (newest per finding shown).
+- **The finding's own machine.** Re-checks and retests always read the machine the finding
+  is about (`triage/run.machine_of`), and `verify_finding` pins it around every read a
+  verifier makes -- never the active machine (the findings view lists every machine; the chat
+  server has none active). A read that fails inside a tool ("ok" wrapper, inner "error") is
+  *couldn't check*, never *not reproduced*.
 - **Retest** (`triage/run.retest`, `/retest`, `kratos findings retest`): force-run the
   collection checks whose input categories cover the finding's rule, one correlation and
   the lifecycle update, then the finding's verifier — before/after state plus the
@@ -1477,7 +1482,10 @@ leaves, and puts them back in what returns.
 - **Trust decides how widely.** Values from trusted sources (the account list, config,
   sub-agents) are replaced as whole words everywhere. Values only seen in logs or fields may be
   attacker text, so they are replaced only where they appeared as a name — an attacker who logs
-  in as `severity` cannot blank out that word across the request. No word of Kratos's own fixed
+  in as `severity` cannot blank out that word across the request. A value the conversation has
+  already given a placeholder is a whole word in its later requests (the earlier answer comes
+  back as context in prose; Phase B audit found the real name leaking there) -- still never a
+  Kratos word. No word of Kratos's own fixed
   model-facing text is ever replaced as a free word (`privacy/vocabulary.py`: every non-docstring
   string literal of the modules that write prompts, tool descriptions, finding titles and
   `RULE_TEXT`, read once per process, plus the request's own field names). Frame markers and the
@@ -1609,12 +1617,20 @@ Kratos waits for D.7):
   only on the command line or in the app (refused inside a `web`/`mcp` run); no
   endpoint touches them. Scope: listed machines (none = the default machine) and
   doors (`openai`; `mcp` only with `--mcp`). Failed attempts are throttled per
-  address by the sub-agent listener's `AuthFailureLimiter` (10 per minute).
+  address by the sub-agent listener's `AuthFailureLimiter` (10 per minute); a throttled
+  address is refused without the scrypt check unless its token names a live token id (then
+  checked in full) -- `proxy_headers` is off, so behind a reverse proxy every client is one
+  address and wrong guesses would otherwise lock the owner out.
 - *Limits*: body size (`serve.max_body_bytes`), `serve.requests_per_hour` per token
   (the audit log's metered rows plus this process's requests still running, checked
   and reserved under one lock -- simultaneous requests can't all pass one count),
-  `serve.max_parallel`; budget source `web` (unattended caps; `precheck` refuses
-  before routing).
+  `serve.max_parallel` (investigations and chat `/retest`s); budget source `web`
+  (unattended caps; `precheck` refuses before routing). At most `MAX_OPEN_TURNS` (16) chat
+  turns are open at once (429 "busy" past that). Turns run on the server's own bounded
+  thread pool and hand progress back with `call_soon_threadsafe` into an asyncio queue, so an
+  open stream holds no thread: before the Phase B audit each open chat held two threads of
+  the shared default pool (cpu+4) and with ~5 chats open on a 4-core host the whole server --
+  auth included -- stopped answering until runs ended.
 - *Audit* (`serve_audit`, append-only by trigger): one row per request — time,
   token id, door, endpoint, model/target, client address, the forwarded user name
   (record only, never trusted), run id, status, metered, duration, bytes out —

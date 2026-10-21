@@ -683,8 +683,8 @@ file) run when you ask.
 
 **Did my fix work? — /retest.** After you change something, run **`/retest`** (in
 the TUI, on the selected finding) or `kratos findings retest KEY`. Kratos
-re-collects exactly what covers that finding, updates its state, and tells you
-whether it's gone:
+re-collects exactly what covers that finding -- always from the machine the finding is
+about, whichever machine is active -- updates its state, and tells you whether it's gone:
 
 ```bash
 kratos findings retest 3f9c2a1b7d4e
@@ -1117,9 +1117,11 @@ a tool read are sent as they are, unless a name Kratos knows is in them. Kratos 
 names it read from the machine itself (its account list), the machines you configured and
 your sub-agents — those are replaced wherever they appear. A name Kratos only *saw* in a
 log line (a login someone tried, a key comment) might be an attacker's text, so it is
-replaced only where it appeared as a name, not everywhere: if that same word turns up
-elsewhere in free text, it is sent as is. A machine name Kratos was never told about is
-replaced only where it appears as one (`user@host`, a host-name field).
+replaced only where it appeared as a name the first time. Once a conversation has given it a
+placeholder, later messages in that conversation replace it everywhere (so an earlier answer
+sent back as context doesn't carry the real name) -- except a word of Kratos's own text. A
+machine name Kratos was never told about is replaced only where it appears as one
+(`user@host`, a host-name field).
 
 **Seeing exactly what was sent.** `kratos trace show <run> --sent` (or `/trace sent` in a
 conversation) lists each request to the model and what was replaced in it. To keep the full
@@ -1803,8 +1805,12 @@ chat reply says which one. On top of that:
 
 | Setting | Default | |
 | --- | --- | --- |
-| `serve.max_parallel` | 2 | investigations at once; more wait ("waiting for another investigation to finish…") |
-| `serve.requests_per_hour` | 30 | messages that use the model (and MCP investigations), per token per hour; requests still running count too, so several sent at once can't slip past it. Commands and the app's title requests don't count |
+| `serve.max_parallel` | 2 | investigations (and `/retest`s, which re-read the machine) at once; more wait ("waiting for another investigation to finish…") |
+| `serve.requests_per_hour` | 30 | messages that use the model or re-read the machine (`/retest`), and MCP investigations, per token per hour; requests still running count too, so several sent at once can't slip past it. Other commands and the app's title requests don't count |
+
+Kratos answers up to 16 chat messages at once (running or waiting for a slot); past that a
+new message gets a "Kratos is busy" reply (HTTP 429) to retry shortly, and the server keeps
+answering everything else.
 | `serve.port` | 8770 | |
 
 Change them in *Settings → General* or with `kratos serve set serve.max_parallel 3`.
@@ -1863,7 +1869,8 @@ then travel in clear text.
 `kratos serve token list` shows each token's machines, doors and last use (never
 the token). `kratos serve token revoke owui` stops it on the next request. After
 ten wrong tokens in a minute from one address, that address is refused for a
-while. Every request is recorded in the audit log in `kratos.db`
+while -- except requests carrying one of your live tokens, which are still checked: behind a
+reverse proxy every client shares one address, and a stranger's guesses must not lock you out. Every request is recorded in the audit log in `kratos.db`
 (`serve_audit`): time, token, door, model and machine, the client's address, the
 user name the app forwarded, the run it started, how it ended (ok, refused,
 stopped, error, budget) and how much was sent back — never your message; that is
