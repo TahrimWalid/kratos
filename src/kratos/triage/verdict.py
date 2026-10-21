@@ -111,6 +111,39 @@ def verdict_tag(verdict: str, detail: str = "", *, basis: str = SECOND_READ) -> 
     return base
 
 
+# A verdict older than this shows its age wherever it is shown; a fresh one (this run's)
+# doesn't, so ordinary answers stay short.
+AGE_SHOWN_AFTER_SECONDS = 3600
+
+
+def _age_words(seconds: float) -> str:
+    hours = int(seconds // 3600)
+    return f"{hours} h ago" if hours < 48 else f"{int(seconds // 86400)} days ago"
+
+
+def aged_tag(v: dict | None, now: float | None = None) -> str | None:
+    """The tag of a verdict dict (`finding["verdict"]`), with its age when it was made more
+    than an hour ago -- yesterday's "reproduced" must not read like today's (Phase B audit).
+    An old automatic-pass verdict no longer says "this run's read": it was an earlier run."""
+    import time as _time
+
+    if not isinstance(v, dict):
+        return None
+    tag = str(v.get("tag") or "")
+    at = v.get("at")
+    if not tag or not isinstance(at, (int, float)):
+        return tag or None
+    age = (_time.time() if now is None else now) - float(at)
+    if age < AGE_SHOWN_AFTER_SECONDS:
+        return tag
+    when = _age_words(age)
+    if v.get("verdict") == "seen":
+        return f"seen in a read {when} -- not re-checked yet"
+    if f"({_THIS_RUN_SUFFIX})" in tag:
+        return tag.replace(f"({_THIS_RUN_SUFFIX})", f"(a read {when}, not re-checked yet)")
+    return f"{tag}, {when}"
+
+
 def from_this_run(v: Verdict) -> Verdict:
     """Re-label a verifier's verdict that was judged against the read which raised the
     finding (the automatic pass, reuse mode). That read is not a second look, so it may

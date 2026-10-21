@@ -199,6 +199,7 @@ def _usage_text(br: Any, data_dir: Path) -> str:
 
 
 def _findings_text(target: str, data_dir: Path) -> str:
+    from kratos import finding_facts
     from kratos.lifecycle import migrate as _lc_migrate
     from kratos.lifecycle import query as Q
     from kratos.lifecycle.keys import short
@@ -211,8 +212,8 @@ def _findings_text(target: str, data_dir: Path) -> str:
         return f"No open findings for {target}."
     lines = [f"Open findings for {target} ({len(rows)}):"]
     for r in rows:
-        v = r.get("verdict") or {}
-        tag = f"  [{v.get('tag')}]" if isinstance(v, dict) and v.get("tag") else ""
+        aged = finding_facts.verdict_tag(r)
+        tag = f"  [{aged}]" if aged else ""
         lines.append(f"- {short(r['finding_key'])}  {str(r.get('severity') or '').upper():<8} {r.get('rule_id')}  "
                      f"{str(r.get('title') or '')[:100]}{tag}")
     lines.append("Re-check one: /retest <key>. Decide on one (accept, false positive): in the Kratos app.")

@@ -2086,7 +2086,8 @@ def _report_verdicts(data_dir: Path, finding_dicts: list[dict[str, Any]]) -> dic
     for f in finding_dicts:
         vr = stored.get(str(f.get("finding_key") or ""))
         if vr is not None:
-            out[(str(f.get("id") or ""), normalise_subject(f.get("subject") or ""))] = vr.verdict.as_dict()
+            out[(str(f.get("id") or ""), normalise_subject(f.get("subject") or ""))] = {**vr.verdict.as_dict(),
+                                                                                           "at": vr.at}
     return out
 
 
@@ -2334,7 +2335,8 @@ def write_findings_report(
                                 + "\n")
             vr = verdicts.get((f.id, _ns_md(getattr(f, "subject", "") or "")))
             if vr is not None:   # B.1: the latest triage verdict on record for this finding
-                md_lines.append(f"**Verdict** (Kratos re-check): {vr['tag']} — {vr['sentence']}\n")
+                from kratos.triage.verdict import aged_tag
+                md_lines.append(f"**Verdict** (Kratos re-check): {aged_tag(vr)} — {vr['sentence']}\n")
             md_lines.append("**Evidence**")
             for e in f.evidence:
                 md_lines.append(f"- {e}")

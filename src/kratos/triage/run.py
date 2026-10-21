@@ -91,7 +91,7 @@ def verify_finding(finding: dict[str, Any], *, data_dir: Path, target: str, run:
                                   run_id=getattr(run, "run_id", None), duration=duration, now=now)
         except Exception:  # noqa: BLE001 -- storing a verdict must never fail a run
             logger.debug("triage: could not store verdict for %s", finding.get("id"), exc_info=True)
-    finding["verdict"] = verdict.as_dict()
+    finding["verdict"] = {**verdict.as_dict(), "at": now}
     return verdict
 
 
@@ -211,7 +211,9 @@ def verdict_tag_of(finding: dict[str, Any]) -> str | None:
     v = finding.get("verdict")
     if not isinstance(v, dict):
         return None
-    return str(v.get("tag") or "") or None
+    from kratos.triage.verdict import aged_tag
+
+    return aged_tag(v)
 
 
 def attach_stored_verdicts(findings: list[dict[str, Any]] | None, data_dir: Path) -> None:
@@ -224,7 +226,7 @@ def attach_stored_verdicts(findings: list[dict[str, Any]] | None, data_dir: Path
     for f in findings:
         key = str(f.get("finding_key") or "")
         if key in stored and "verdict" not in f:
-            f["verdict"] = stored[key].verdict.as_dict()
+            f["verdict"] = {**stored[key].verdict.as_dict(), "at": stored[key].at}
 
 
 def enrich_rows(rows: list[dict[str, Any]], data_dir: Path) -> list[dict[str, Any]]:
@@ -236,7 +238,7 @@ def enrich_rows(rows: list[dict[str, Any]], data_dir: Path) -> list[dict[str, An
     for r in rows:
         key = str(r.get("finding_key") or "")
         vr = stored.get(key)
-        r["verdict"] = vr.verdict.as_dict() if vr is not None else None
+        r["verdict"] = {**vr.verdict.as_dict(), "at": vr.at} if vr is not None else None
         if key:
             r["suggestions"] = _store.suggestions_for(Path(data_dir), key, state="new")
     return rows

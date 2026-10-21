@@ -242,7 +242,9 @@ class FindingsScreen(Screen):
         verdict = str(v.get("verdict") or "")
         color = {"reproduced": T.CRITICAL, "seen": T.ATTENTION, "partly": T.ATTENTION, "not_reproduced": T.SAFE,
                  "couldnt_check": T.TEXT_MUTED, "verifying": T.TEXT_DIM}.get(verdict, T.TEXT)
-        return Text(str(v.get("tag") or verdict), style=color)
+        from kratos.triage.verdict import aged_tag
+
+        return Text(aged_tag(v) or verdict, style=color)
 
     def visible_rows(self) -> list[dict[str, Any]]:
         rows = Q.list_findings(self._data_dir, target=self._target, state=self._state)

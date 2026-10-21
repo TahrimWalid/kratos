@@ -101,11 +101,9 @@ def verdict_tag(f: dict[str, Any]) -> str | None:
     "seen in this run's read -- not re-checked yet" (the automatic pass),
     'reproduced by a fresh read', 'partly: ...', 'not reproduced -- retest?',
     "couldn't check: ...", or 'verifying…' while a background re-check runs."""
-    v = f.get("verdict")
-    if not isinstance(v, dict):
-        return None
-    tag = str(v.get("tag") or "")
-    return tag or None
+    from kratos.triage.verdict import aged_tag
+
+    return aged_tag(f.get("verdict"))
 
 
 def safe_facts(f: dict[str, Any]) -> list[str]:
