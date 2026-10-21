@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,13 +103,35 @@ def find(data_dir: Path, ref: str) -> TraceInfo | None:
     hits: dict[str, Path] = {}
     for p in files:
         tid = trace_id_of(p)
-        if tid.startswith(ref) and (tid not in hits or hits[tid].name.endswith(PARTIAL_SUFFIX)):
+        if (tid.startswith(ref) or short_id(tid).startswith(ref)) \
+                and (tid not in hits or hits[tid].name.endswith(PARTIAL_SUFFIX)):
             hits[tid] = p
     if not hits:
         return None
     if len(hits) > 1:
+        # One run's records (`<run>`, `<run>-2`, `<run>-route`): a bare id means its main record.
+        bases = {_split_id(t)[0] for t in hits}
+        main = [t for t in hits if not _split_id(t)[1]]
+        if len(bases) == 1 and len(main) == 1 and "-" not in ref:
+            return load(hits[main[0]])
         raise AmbiguousTrace(ref, sorted(hits))
     return load(next(iter(hits.values())))
+
+
+_ID_RE = re.compile(r"^([0-9a-f]{32})(-.+)?$")
+
+
+def _split_id(trace_id: str) -> tuple[str, str]:
+    """(the run id, the record's suffix: '', '-2', '-route', ...)."""
+    m = _ID_RE.match(trace_id or "")
+    return (m.group(1), m.group(2) or "") if m else (trace_id, "")
+
+
+def short_id(trace_id: str) -> str:
+    """How a record is named on screen: the run id's first 12 characters plus any suffix
+    (`772a9b498ba0`, `772a9b498ba0-route`), so two records of one run read differently."""
+    run, suffix = _split_id(trace_id)
+    return run[:12] + suffix
 
 
 def children_of(data_dir: Path, run_id: str) -> list[TraceInfo]:

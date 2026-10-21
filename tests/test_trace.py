@@ -469,3 +469,41 @@ def test_model_call_spans_come_only_from_the_choke_point():
     src = (SRC / "llm_interface.py").read_text()
     body = src[src.index("def _metered_call("):src.index("def _budget_exceeded_type")]
     assert 'start_span("model_call"' in body
+
+
+# ------------------------------------------------------------------------------ requests outside a run (Phase B audit)
+def test_a_model_request_outside_any_run_record_gets_its_own(dd, monkeypatch):
+    """The message router (and a chat reply, a draft, compaction...) called the model with no
+    run record open, so `kratos trace show --sent` could not show what it sent."""
+    from kratos.tui_mk2 import command_intent
+
+    monkeypatch.setattr(command_intent, "agent_chat", MeteredScript(['{"kind": "chat", "reply": "hello"}']))
+    with run_scope("interactive", session_id="s-route") as outer:
+        command_intent.route_message("hi there")
+        files = [p for p in store.trace_files(dd) if not p.name.endswith(".partial")]
+        assert len(files) == 1
+        data = json.loads(files[0].read_text())
+        assert data["kind"] == "route" and len(_spans(data, "model_call")) == 1
+        # the turn's run (budget and masking unchanged), in a file of its own name
+        assert data["run_id"] == outer.run_id and files[0].name.startswith(outer.run_id + "-route")
+    # a request inside a run record is not given a second one
+    monkeypatch.setattr(agent_loop, "agent_chat", MeteredScript([_tool("correlate_findings"), _final(GOOD)]))
+    with run_scope("interactive"):
+        agent_loop.run_agent("check", dd, max_iters=4)
+    kinds = sorted(json.loads(p.read_text())["kind"] for p in store.trace_files(dd) if not p.name.endswith(".partial"))
+    assert kinds == ["investigation", "route"]
+
+
+def test_a_runs_records_read_apart_in_the_list_and_a_bare_id_means_the_main_one(dd, monkeypatch, capsys):
+    from kratos.trace import store as S
+    from kratos.tui_mk2 import command_intent
+
+    monkeypatch.setattr(command_intent, "agent_chat", MeteredScript(['{"kind": "investigate"}']))
+    monkeypatch.setattr(agent_loop, "agent_chat", MeteredScript([_tool("correlate_findings"), _final(GOOD)]))
+    with run_scope("interactive") as ctx:
+        command_intent.route_message("check logins")
+        agent_loop.run_agent("check logins", dd, max_iters=4)
+    short = ctx.run_id[:12]
+    assert S.find(dd, short).data["kind"] == "investigation"            # bare id: the main record
+    assert S.find(dd, short + "-route").data["kind"] == "route"
+    assert S.short_id(ctx.run_id + "-route") == short + "-route" and S.short_id(ctx.run_id) == short

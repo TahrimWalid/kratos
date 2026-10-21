@@ -30,6 +30,7 @@ import re
 from dataclasses import dataclass
 
 from kratos.llm_interface import agent_chat
+from kratos.trace import recorder as _trace
 
 # The safe, Kratos-SIDE controls reachable conversationally. Deliberately NOT
 # delete/clear/reset (destructive) or evolve (a heavy human-review pipeline);
@@ -257,13 +258,15 @@ def route_message(message: str, resume_context: str = "", *, capture_stderr: boo
     if not capture_stderr:
         # kratos serve: redirect_stderr swaps sys.stderr for the whole process, unsafe while
         # other requests run on other threads.
-        response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
+        with _trace.purpose("route message"):
+            response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
         if response is None:
             return RouteResult(kind="failed", reason="the model did not answer")
     else:
         captured = io.StringIO()
         with contextlib.redirect_stderr(captured):
-            response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
+            with _trace.purpose("route message"):
+                response = agent_chat(_system_prompt(), full, max_tokens=_MAX_TOKENS)
         if response is None:
             detail = captured.getvalue().strip().splitlines()
             reason = detail[0].removeprefix("[KRATOS-LLM] ").strip() if detail else "no detail available"

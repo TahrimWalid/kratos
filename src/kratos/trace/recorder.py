@@ -346,7 +346,8 @@ _IN_FLIGHT_LOCK = threading.Lock()
 
 
 @contextlib.contextmanager
-def run_trace(kind: str, data_dir: Path | str | None, *, name: str = "", **attrs: Any) -> Iterator[Trace | None]:
+def run_trace(kind: str, data_dir: Path | str | None, *, name: str = "", _file_suffix: str | None = None,
+              **attrs: Any) -> Iterator[Trace | None]:
     """Record a run. Inside a trace of the same run it is a nested `run` span; inside a
     different run (a child scope) it starts the child's own trace and notes it in the
     parent's. Yields the Trace (None when recording is off or impossible)."""
@@ -379,7 +380,7 @@ def run_trace(kind: str, data_dir: Path | str | None, *, name: str = "", **attrs
                 run_id = ctx.run_id if ctx is not None else uuid.uuid4().hex
                 day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 with _IN_FLIGHT_LOCK:
-                    trace_id = _unique_id(Path(data_dir), run_id, day)
+                    trace_id = _unique_id(Path(data_dir), f"{run_id}-{_file_suffix}" if _file_suffix else run_id, day)
                     _IN_FLIGHT.add(trace_id)
                 tr = Trace(run_id=run_id, trace_id=trace_id, kind=kind, name=name or kind, data_dir=Path(data_dir),
                            ctx=ctx, max_result_bytes=max_bytes, store_prompts=store_prompts, otel_export=otel_export)
@@ -495,6 +496,37 @@ def annotate_last_tool(*, expect_name: str | None = None, **attrs: Any) -> None:
         return
     sp.set(**attrs)
     _LAST_TOOL.set(None)
+
+
+# What a model request outside any run record is for ("route" for the message router);
+# names the small record such a request gets (standalone_record).
+_PURPOSE: contextvars.ContextVar["str | None"] = contextvars.ContextVar("kratos_trace_purpose", default=None)
+
+
+@contextlib.contextmanager
+def purpose(label: str) -> Iterator[None]:
+    """Name the model requests made inside this block, for the record they get when no
+    run record is open (`kratos trace list` shows it)."""
+    token = _PURPOSE.set(label)
+    try:
+        yield
+    finally:
+        _PURPOSE.reset(token)
+
+
+@contextlib.contextmanager
+def standalone_record(data_dir: Path | str | None) -> Iterator[Trace | None]:
+    """A record for ONE model request made outside any run record -- the message router,
+    a plain chat reply, a pipeline draft, compaction, `kratos chat`. Every request to the
+    model then leaves a record, so `kratos trace show --sent` can show what it sent
+    (Phase B audit: the router's request, which carries the conversation, left none). It
+    belongs to the enclosing run (budget rows, per-run caps and masking are unchanged); only
+    its FILE gets a suffix (`<run>-route.json`), so it never takes the name of the
+    investigation record that may follow in the same run."""
+    label = _PURPOSE.get() or "model call"
+    kind = label.split()[0]
+    with run_trace(kind, data_dir, name=label, _file_suffix=kind) as tr:
+        yield tr
 
 
 def result_for_trace(value: Any) -> Any:

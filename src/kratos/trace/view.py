@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from kratos import untrusted
+from kratos.trace import store
 from kratos.trace.store import TraceInfo
 
 
@@ -186,9 +187,9 @@ def list_line(info: TraceInfo) -> str:
     d = info.data or {}
     t = d.get("totals") or {}
     if info.data is None:
-        return f"{_d(info.trace_id[:12], 12)}  (unreadable: {_d(info.error, 80)})"
+        return f"{_d(store.short_id(info.trace_id), 18)}  (unreadable: {_d(info.error, 80)})"
     status = _d(d.get("status") or "?", 24) + (" (unfinished)" if info.partial else "")
-    return (f"{_d(info.trace_id[:12], 12)}  {_when(d.get('started'))}  {_d(d.get('kind') or '?', 13):13s} "
+    return (f"{_d(store.short_id(info.trace_id), 18)}  {_when(d.get('started'))}  {_d(d.get('kind') or '?', 13):13s} "
             f"{_d(d.get('target') or '-', 24):24s} {status:28s} {t.get('model_calls', 0):>3} model / "
             f"{t.get('tool_calls', 0):>3} tool · {_money(t.get('cost_usd'))}")
 

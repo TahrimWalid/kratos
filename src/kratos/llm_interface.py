@@ -251,6 +251,7 @@ def _metered_call(
     model: str,
     local: bool,
     masker: Any,
+    _in_record: bool = False,
 ) -> Any:
     """THE one place a request reaches a model (docs/phase0/0.4 §3.1) -- every
     request site hands its request to this function as `send(system_prompt,
@@ -272,6 +273,14 @@ def _metered_call(
     from kratos.budget import guard as _budget
     from kratos.budget.pricing import reported_cost_from_usage
     from kratos.trace import recorder as _trace
+
+    if not _in_record and _trace.current() is None:
+        # No run record is open (the message router, a chat reply, a draft...): this
+        # request gets one of its own, so every request to the model leaves a record.
+        # (`_in_record`: once -- with recording off there is still no record inside.)
+        with _trace.standalone_record(_budget.data_dir()):
+            return _metered_call(send, system_prompt=system_prompt, prompt=prompt, max_tokens=max_tokens,
+                                 model=model, local=local, masker=masker, _in_record=True)
 
     # The run record's model-call span (kratos.trace): sizes always, the text only
     # with trace.store_prompts -- the MASKED text, since that is what was sent.
