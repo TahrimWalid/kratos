@@ -130,5 +130,37 @@ class Reads(unittest.TestCase):
         self.assertTrue(any(str(p).endswith("MALW_Eicar.yar") for p in files), files)
 
 
+detect = importlib.import_module("subagent.detect")
+_PACKS = Path(__file__).resolve().parents[2] / "src" / "kratos" / "detect" / "packs"
+
+
+class Detect(unittest.TestCase):
+    """The detection evaluator (C.1) runs on the oldest Python an agent may have, and
+    judges every shipped rule's samples as core does (tests/test_detect_pack.py)."""
+
+    def _pack(self, rules):
+        p = {"format": detect.FORMAT, "format_version": 1, "pack_id": "t", "pack_version": 1, "rules": rules}
+        p["sha256"] = detect.pack_digest(p)
+        return p
+
+    def test_validate_and_evaluate(self):
+        rule = {"id": "SIGMA-0000AAAA", "title": "t", "level": "high", "author": "a", "license": "DRL-1.1",
+                "scope": {"datasets": ["kratos.auth"], "where": None},
+                "match": {"op": "wildcard", "field": "message", "pattern": "*rm ?-rf*"}}
+        pack = detect.load_pack(self._pack([rule]))
+        ev = detect.Evaluator(pack)
+        hits = ev.evaluate({"event.id": "e1", "event.dataset": "kratos.auth", "message": "x RM --rf /"}, 1.0)
+        self.assertEqual([h.rule_id for h in hits], ["SIGMA-0000AAAA"])
+        bad = dict(rule, match={"op": "regex", "field": "message", "value": "x"})
+        with self.assertRaises(detect.PackError):
+            detect.load_pack(self._pack([bad]))
+
+    def test_shipped_pack_samples(self):
+        packs = sorted(_PACKS.glob("*.json")) if _PACKS.is_dir() else []
+        for path in packs:
+            pack = detect.load_pack(detect.parse_pack_bytes(path.read_bytes()))
+            self.assertEqual(detect.check_samples(pack), [], path.name)
+
+
 if __name__ == "__main__":
     unittest.main()

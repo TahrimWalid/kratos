@@ -47,6 +47,8 @@ BUNDLE_FILES: tuple[str, ...] = (
     "whitelist.py",
     "ceiling.py",
     "reads.py",
+    # C.1: the detection-rule evaluator, the same file core imports as kratos.subagent.detect
+    "detect.py",
 )
 # Shipped from elsewhere in the package, written next to the files above:
 # the auth-measurement script builder (so the agent builds the SAME script the
