@@ -795,6 +795,15 @@ class _CountState:
         self.held -= len(dq)
         self.fired.pop(old, None)
 
+    def add_quiet(self, group: str, ts: float, event_id: str) -> None:
+        """Hold an event in its group's window without firing (a restored checkpoint)."""
+        fired = self.fired.get(group)
+        self.add(group, ts, event_id)
+        if fired is None:
+            self.fired.pop(group, None)
+        else:
+            self.fired[group] = fired
+
     def add(self, group: str, ts: float, event_id: str) -> Optional[Tuple[int, List[str], float]]:
         entry = self.groups.get(group)
         if entry is None:
@@ -818,6 +827,18 @@ class _CountState:
             _t, old = dq.popleft()
             ids.discard(old)
             self.held -= 1
+        if dq and dq[-1][0] < dq[0][0]:
+            # Out of time order (a machine whose clock jumped back, or lines stored late):
+            # count only what lies within one window of this event, either side, so a jump
+            # neither stretches the window nor makes an old burst count as a new one.
+            keep = [(t, e) for t, e in dq if ts - self.window < t <= ts + self.window]
+            kept = {e for _t, e in keep}
+            for _t, e in dq:
+                if e not in kept:
+                    ids.discard(e)
+            self.held -= len(dq) - len(keep)
+            dq.clear()
+            dq.extend(sorted(keep))
         while self.held > MAX_HELD_PER_RULE and len(self.groups) > 1:
             self._drop_oldest_group()
         if len(dq) < self.threshold:
@@ -862,6 +883,49 @@ class Evaluator:
             if keep:
                 out[rid] = keep
         return out
+
+    def export_windows(self, now: float) -> Dict[str, Any]:
+        """The counting rules' open windows and last fires, as plain JSON data -- what an
+        agent checkpoints so a restart in the middle of a window keeps its count (C.2).
+        Only what is still inside each rule's window is kept."""
+        out: Dict[str, Any] = {}
+        for rid, st in self.counts.items():
+            groups = []
+            for group, (dq, _ids) in st.groups.items():
+                pairs = [[t, eid] for t, eid in dq if now - t < st.window]
+                if pairs:
+                    groups.append([group, pairs])
+            fired = {g: t for g, t in st.fired.items() if now - t < st.window}
+            if groups or fired:
+                out[rid] = {"groups": groups, "fired": fired}
+        return out
+
+    def import_windows(self, saved: Any) -> int:
+        """Restore what `export_windows` saved (rules no longer in the pack, or turned off,
+        are ignored; anything malformed is skipped). Returns the events restored."""
+        if not isinstance(saved, dict):
+            return 0
+        restored = 0
+        for rid, data in saved.items():
+            st = self.counts.get(rid)
+            if st is None or not isinstance(data, dict):
+                continue
+            for item in (data.get("groups") or [])[:MAX_GROUPS_PER_RULE]:
+                if not (isinstance(item, list) and len(item) == 2 and isinstance(item[0], str)
+                        and isinstance(item[1], list)):
+                    continue
+                group = item[0][:256]
+                for pair in item[1][-st.threshold:]:
+                    if (isinstance(pair, list) and len(pair) == 2 and isinstance(pair[0], (int, float))
+                            and not isinstance(pair[0], bool) and isinstance(pair[1], str)):
+                        st.add_quiet(group, float(pair[0]), pair[1][:64])
+                        restored += 1
+            fired = data.get("fired")
+            if isinstance(fired, dict):
+                for g, t in list(fired.items())[:MAX_GROUPS_PER_RULE]:
+                    if isinstance(g, str) and isinstance(t, (int, float)) and not isinstance(t, bool):
+                        st.fired[g[:256]] = float(t)
+        return restored
 
     @property
     def has_counting_rules(self) -> bool:
