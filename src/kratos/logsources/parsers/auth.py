@@ -10,14 +10,28 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from kratos.logsources.parsers import record_parts
+try:  # in the agent bundle (C.2): sibling modules
+    from .parsers_base import record_parts  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- exercised by whichever layout is running
+    try:
+        from kratos.logsources.parsers import record_parts
+    except ImportError:  # run directly
+        from parsers_base import record_parts  # type: ignore[no-redef]
+try:  # in the agent bundle (C.2)
+    from .auth_log_parse import classify_auth_message  # type: ignore[import-not-found]
+    from .lp_sudo import _with_tty  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    try:
+        from kratos.adapters.auth_log_parse import classify_auth_message
+        from kratos.logsources.parsers.sudo import _with_tty
+    except ImportError:  # run directly
+        from auth_log_parse import classify_auth_message  # type: ignore[no-redef]
+        from lp_sudo import _with_tty  # type: ignore[no-redef]
 
 AUTH_PROGRAMS = frozenset({"sshd", "sshd-session", "sudo"})
 
 
 def to_auth_event(rec: Any, target: str) -> Any | None:
-    from kratos.adapters.auth_log_parse import classify_auth_message
-
     import dataclasses
 
     prog, pid, msg, _orig, _cursor = record_parts(rec)
@@ -25,8 +39,6 @@ def to_auth_event(rec: Any, target: str) -> Any | None:
         return None
     ts = datetime.fromtimestamp(rec.ts, timezone.utc).isoformat()
     if prog == "sudo":
-        from kratos.logsources.parsers.sudo import _with_tty
-
         ev = classify_auth_message(ts, target, prog, _with_tty(msg), msg)
     else:
         ev = classify_auth_message(ts, target, prog, msg, msg)

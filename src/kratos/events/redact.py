@@ -10,14 +10,26 @@ values, and the API keys Kratos itself holds (utils/redact.redact_secrets).
 
 Left alone on purpose: a user literally named "password", paths like
 /etc/passwd, other programs' `-p` options.
+
+Standard-library Python 3.8: this file ships in the agent bundle as
+`event_redact.py` (C.2), so an agent masks a matched event exactly as Kratos
+masks a stored one. On an agent there is no Kratos API key to mask.
 """
 from __future__ import annotations
 
 import os
 import re
 
-from kratos.utils.redact import _REDACTED as MASK
-from kratos.utils.redact import redact_secrets
+try:  # in the agent bundle (C.2): a sibling module
+    from .secret_redact import _REDACTED as MASK  # type: ignore[import-not-found]
+    from .secret_redact import redact_secrets  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- exercised by whichever layout is running
+    try:
+        from kratos.utils.redact import _REDACTED as MASK
+        from kratos.utils.redact import redact_secrets
+    except ImportError:  # run directly
+        from secret_redact import _REDACTED as MASK  # type: ignore[no-redef]
+        from secret_redact import redact_secrets  # type: ignore[no-redef]
 
 _VALUE = r"""(?:"[^"]*"|'[^']*'|[^\s"'&;|]+)"""
 

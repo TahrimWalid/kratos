@@ -14,12 +14,23 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from kratos.logsources.parsers import record_parts
+try:  # in the agent bundle (C.2): sibling modules
+    from .parsers_base import record_parts  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- exercised by whichever layout is running
+    try:
+        from kratos.logsources.parsers import record_parts
+    except ImportError:  # run directly
+        from parsers_base import record_parts  # type: ignore[no-redef]
+try:  # in the agent bundle (C.2)
+    from .auth_log_parse import classify_auth_message  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    try:
+        from kratos.adapters.auth_log_parse import classify_auth_message
+    except ImportError:  # run directly
+        from auth_log_parse import classify_auth_message  # type: ignore[no-redef]
 
 
 def to_auth_event(rec: Any, target: str) -> Any | None:
-    from kratos.adapters.auth_log_parse import classify_auth_message
-
     prog, _pid, msg, _orig, _cursor = record_parts(rec)
     if rec.kind == "file" and prog is None:
         # sudo's own logfile: "Oct 11 17:17:24 : ubuntu : PWD=... ; USER=root ; COMMAND=/usr/bin/ls\x1f/root"

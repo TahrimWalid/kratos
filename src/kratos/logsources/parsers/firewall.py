@@ -11,7 +11,13 @@ import ipaddress
 import re
 from typing import Any
 
-from kratos.logsources.parsers import Parsed, record_parts
+try:  # in the agent bundle (C.2): sibling modules
+    from .parsers_base import Parsed, record_parts  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- exercised by whichever layout is running
+    try:
+        from kratos.logsources.parsers import Parsed, record_parts
+    except ImportError:  # run directly
+        from parsers_base import Parsed, record_parts  # type: ignore[no-redef]
 
 _UFW = re.compile(r"\[UFW (?P<act>[A-Z ]+?)\]")
 _PACKET = re.compile(r"\bIN=\S* OUT=\S*.*?\bSRC=(?P<src>[0-9A-Fa-f:.]+) DST=(?P<dst>[0-9A-Fa-f:.]+)", re.DOTALL)

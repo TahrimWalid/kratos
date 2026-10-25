@@ -15,7 +15,13 @@ import ipaddress
 import re
 from typing import Any
 
-from kratos.logsources.parsers import Parsed
+try:  # in the agent bundle (C.2): sibling modules
+    from .parsers_base import Parsed  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover -- exercised by whichever layout is running
+    try:
+        from kratos.logsources.parsers import Parsed
+    except ImportError:  # run directly
+        from parsers_base import Parsed  # type: ignore[no-redef]
 
 _REC = re.compile(r"^type=(?P<type>\S+) msg=audit\((?P<ts>\d+(?:\.\d+)?):(?P<serial>\d+)\):\s?(?P<body>.*)$",
                   re.DOTALL)
