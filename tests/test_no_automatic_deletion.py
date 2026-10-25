@@ -41,6 +41,9 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("trace/recorder.py", "Trace.finish", "unlink"): "the run record's own .partial copy, once the finished file is written",
     ("subagent/local_reads.py", "LocalReadServer.start", "unlink"): "a stale socket left by a listener that died",
     ("subagent/local_reads.py", "LocalReadServer.close", "unlink"): "this listener's own socket on shutdown",
+    ("subagent/tls.py", "_write_private", "unlink"): "its own half-written temp file when a key write fails",
+    ("subagent/tls.py", "rotate", "unlink"): ("the retired agent link key, on the person's own "
+                                              "`kratos subagent-tls rotate`"),
     # the person's own commands
     ("agent/presets.py", "delete_preset", "unlink"): PERSON,
     ("agent/schedules.py", "delete_schedule", "unlink"): PERSON,

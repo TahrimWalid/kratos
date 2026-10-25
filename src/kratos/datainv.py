@@ -197,6 +197,15 @@ CATEGORIES: tuple[Category, ...] = (
         files=("fss",),
     ),
     Category(
+        "agent_link_keys", "Agent link keys",
+        "The private keys (active and backup) and certificate that encrypt the link to your servers' "
+        "agents; every agent is pinned to these two keys. Keep them private and keep a copy: losing both "
+        "means re-pairing every agent.",
+        SECRET, "fixed: one active key with its certificate and one backup key",
+        files=("subagent-tls",),
+        note="replaced only when you run `kratos subagent-tls rotate`",
+    ),
+    Category(
         "settings", "Settings, presets, schedules and triggers",
         "Your settings, saved presets, schedules (with their run history) and triggers.",
         PERSONAL, "one file per preset/schedule/trigger; a line per scheduled run",

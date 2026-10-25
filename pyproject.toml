@@ -53,6 +53,10 @@ dependencies = [
     # the same library VulnerableCode uses. Pinned: comparison rules must not shift
     # under a released index. Apache-2.0; pulls attrs, packaging, semantic-version, semver.
     "univers==32.0.1",
+    # The encrypted agent link (C.4): Kratos makes its own ECDSA P-256 key pair and
+    # self-signed certificate. Apache-2.0 OR BSD-3-Clause. Only the Kratos host needs
+    # it -- agents check the key with the standard library.
+    "cryptography>=42",
 ]
 
 [project.urls]
