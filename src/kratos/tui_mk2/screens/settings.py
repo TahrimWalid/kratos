@@ -762,7 +762,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.move_cursor(row=idx)
 
     # --- Encrypted agent link (kratos.subagent.tls, C.4) ---
-    def _plaintext_agents(self, dd: Path) -> list[str]:
+    def _plaintext_agents(self, dd: Any) -> list[str]:
         from kratos.storage.subagent_store import SubAgentStore
 
         return [t.get("name") or t.get("hostname") or t["target_id"]
