@@ -30,6 +30,14 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
                            detail=reason)
     rules_hit = sorted({m["rule_id"] for m in report.matches})
     parts = [SCHEDULE_NOTE]
+    try:
+        from kratos.detect import live as L
+
+        watch = L.watch_line(ctx.data_dir, ctx.target)    # C.2: Kratos-written, counts only
+    except Exception:  # noqa: BLE001
+        watch = None
+    if watch:
+        parts.append(watch)
     if report.matches:
         shown = ", ".join(rules_hit[:6]) + (f" (+{len(rules_hit) - 6} more)" if len(rules_hit) > 6 else "")
         parts.append(f"{len(report.matches)} new match(es) of {len(rules_hit)} rule(s): {shown}")

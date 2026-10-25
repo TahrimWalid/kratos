@@ -158,19 +158,43 @@ class DetectScreen(Screen):
                 banner.append("\n  " + line, style=T.ATTENTION)
         for ref in self._loaded.refused:
             banner.append(f"\nRefused rule pack {Path(ref.path).name}: {ref.reason}", style=T.CRITICAL)
-        banner.append("\nThese rules run on the logs Kratos collected, on schedule — not continuously.",
-                      style=T.TEXT_DIM)
+        watch = self._watch_line()
+        if watch:
+            banner.append(f"\nLive: {watch}. The rules also run on schedule over the logs Kratos collects.",
+                          style=T.SAFE if "NOT running" not in watch else T.CRITICAL)
+        else:
+            banner.append("\nThese rules run on the logs Kratos collected, on schedule — not continuously"
+                          + (" (a machine with a sub-agent can be watched continuously: /subagent, w)."
+                             if self._target else "."), style=T.TEXT_DIM)
         self.query_one("#dt-banner", Static).update(banner)
+
+    def _watch_line(self) -> str | None:
+        if not self._target:
+            return None
+        try:
+            from kratos.detect import live as L
+
+            return L.watch_line(self._data_dir, self._target)
+        except Exception:  # noqa: BLE001 -- the banner must render
+            return None
 
     def _coverage_lines(self) -> list[str]:
         from kratos.adapters.findings_engine import find_latest_inputs
-        from kratos.detect.findings import load_recent
+        from kratos.detect.findings import _WATCH_FEEDS, _watched_now, load_recent
 
         doc = load_recent(find_latest_inputs(self._data_dir, self._target).get("detections"))
         if not doc:
             return []
-        return [f"{c['label']} ({c['rules']} rules): {c['note']}" for c in doc.get("coverage") or []
-                if c.get("state") != "checked"]
+        watched = _watched_now(doc)
+        out = []
+        for c in doc.get("coverage") or []:
+            if c.get("state") == "checked":
+                continue
+            feeds = [d for d in c.get("datasets") or [] if d in _WATCH_FEEDS]
+            if feeds and all(_WATCH_FEEDS[d] in watched for d in feeds):
+                continue            # read live by the machine's agent (C.2)
+            out.append(f"{c['label']} ({c['rules']} rules): {c['note']}")
+        return out
 
     def selected(self) -> dict[str, Any] | None:
         table = self.query_one("#dt-table", DataTable)

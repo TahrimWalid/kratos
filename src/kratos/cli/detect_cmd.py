@@ -4,6 +4,7 @@
     kratos detect rules disable|enable <RULE> [--target T] --reason "..."
     kratos detect run [--target T]
     kratos detect import <file|folder> [--name NAME]
+    kratos detect watch [on|off <MACHINE>] [--json]     (C.2: continuous detection on agents)
 
 Every rule shows its author (Detection Rule License 1.1). Turning a rule on or off is
 a person's decision, recorded with who and why.
@@ -41,6 +42,11 @@ def add_parser(sub: Any) -> None:
                                          "(needs the sigma extra: pip install 'kratos-security-assistant[sigma]')")
     imp.add_argument("path")
     imp.add_argument("--name", default=None, help="Pack name (default: from the file or folder name)")
+    w = dsub.add_parser("watch", help="Continuous detection: which machines' agents follow their logs and run the "
+                                      "rules as lines are written; turn it on or off for one")
+    w.add_argument("change", nargs="?", choices=("on", "off"), help="Turn it on or off")
+    w.add_argument("machine", nargs="?", help="With on/off: the paired machine (its name, host or target id)")
+    w.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_detect)
 
 
@@ -64,7 +70,80 @@ def cmd_detect(args: argparse.Namespace) -> int:
         return _rules(args)
     if action == "run":
         return _run(args)
+    if action == "watch":
+        return _watch(args)
     return _import(args)
+
+
+# ---------------------------------------------------------------------------- watch (C.2)
+def _find_agent(data_dir: Path, name: str) -> dict[str, Any] | None:
+    from kratos.storage.subagent_store import SubAgentStore
+
+    store = SubAgentStore(data_dir / "kratos.db")
+    key = (name or "").strip().lower()
+    targets = [t for t in store.list_targets(include_revoked=False)]
+    for t in targets:
+        if key in {str(t.get(k) or "").lower() for k in ("target_id", "name", "hostname")}:
+            return t
+    for ln in store.list_links():
+        if ln["host"] == key:
+            return next((t for t in targets if t["target_id"] == ln["target_id"]), None)
+    return None
+
+
+def _watch(args: argparse.Namespace) -> int:
+    from kratos.detect import live as L
+    from kratos.lifecycle.decide import Actor
+    from kratos.storage.subagent_store import SubAgentStore
+
+    data_dir = Path(args.data_dir)
+    if args.change:
+        if not args.machine:
+            print("Name the machine: kratos detect watch on <name>", file=sys.stderr)
+            return 2
+        t = _find_agent(data_dir, args.machine)
+        if t is None:
+            print(f"No paired machine called {args.machine!r} (see kratos subagent-status).", file=sys.stderr)
+            return 2
+        try:
+            st = L.set_watching(data_dir, t["target_id"], args.change == "on", actor=Actor.current("cli"))
+        except L.WatchSetupError as e:
+            print(f"Not changed: {e}", file=sys.stderr)
+            return 1
+        print(f"Continuous detection {args.change} for {t.get('name') or t['target_id']} (findings filed under "
+              f"{st.get('machine')}). The agent picks it up within seconds while connected"
+              + ("; alerts while Kratos is closed need the always-on listener (/subagent, l)." if args.change == "on"
+                 else "."))
+        return 0
+    store = SubAgentStore(data_dir / "kratos.db")
+    out = []
+    for t in store.list_targets(include_revoked=False):
+        st = L.pack_state(data_dir, t["target_id"]) or {}
+        h = L.health(data_dir, t["target_id"]) if st.get("enabled") else None
+        out.append({"target_id": t["target_id"], "name": t.get("name"), "agent_version": t.get("agent_version"),
+                    "machine": st.get("machine"), "enabled": bool(st.get("enabled")),
+                    "can_watch": L.agent_can_watch(t.get("agent_version")),
+                    "running": bool(h and h.healthy), "problems": [x for _c, x in h.reasons] if h else [],
+                    "sources": [{k: r[k] for k in ("source", "state", "watching_since", "events_per_min", "lag_seconds",
+                                                   "dropped", "error")} for r in L.watch_rows(data_dir, t["target_id"])],
+                    "line": L.watch_line(data_dir, st["machine"]) if st.get("enabled") and st.get("machine") else None})
+    if args.json:
+        print(json.dumps(out, indent=1, default=str))
+        return 0
+    if not out:
+        print("No paired machines. Continuous detection needs a sub-agent on the machine (/subagent).")
+        return 0
+    for o in out:
+        label = o["name"] or o["target_id"]
+        if not o["enabled"]:
+            print(f"{label}: off" + ("" if o["can_watch"] else f" -- {L.UPDATE_HINT}"))
+            continue
+        print(f"{label} ({o['machine']}): {o['line']}")
+        for p in o["problems"]:
+            print(f"  ! {p}")
+        for src in o["sources"]:
+            print(f"  {src['source']}: {src['state']}" + (f" -- {src['error']}" if src.get("error") else ""))
+    return 0
 
 
 # ---------------------------------------------------------------------------- rules

@@ -98,7 +98,7 @@ _ADD_SERVER_SUMMARY = (
 )
 
 _DEFAULT_CORE_PORT = 8765
-_TABLE_COLUMNS = ("status", "name", "host", "agent", "link", "last seen", "detail")
+_TABLE_COLUMNS = ("status", "name", "host", "agent", "link", "last seen", "detail", "watching")
 # How long `L` waits for the new service to register before calling it failed.
 _SERVICE_CONFIRM_SECONDS = 15.0
 # After a successful SSH deploy, how long to wait for the check-in before
@@ -137,6 +137,7 @@ class SubAgentScreen(Screen):
         Binding("l", "install_service", "always-on listener", show=True),
         Binding("k", "link_target", "link a target", show=True),
         Binding("g", "update_agent", "update agent", show=False),
+        Binding("w", "watch", "watch continuously", show=True),
         Binding("r", "refresh", "refresh", show=False),
     ]
 
@@ -205,8 +206,9 @@ class SubAgentScreen(Screen):
             yield VerticalScroll(id="sa-log")
             yield Static(
                 Text("a add a server · k link to a target · g update agent · u unpair · p re-pair\n"
-                     "t telemetry · i details · c copy deploy commands · l always-on listener\n"
-                     "n new pairing code · x dismiss code · f forget unpaired · esc back", style=T.TEXT_DIM),
+                     "w watch continuously · t telemetry · i details · c copy deploy commands\n"
+                     "l always-on listener · n new code · x dismiss code · f forget (unpaired) · esc",
+                     style=T.TEXT_DIM),
                 id="sa-hints",
             )
 
@@ -342,8 +344,9 @@ class SubAgentScreen(Screen):
                       + [r for r in targets if r["state"].state == ST.STATE_REVOKED])
         if not self._rows:
             table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
-                          "", "", "", "", "", "")
+                          "", "", "", "", "", "", "")
             return
+        watch = _watch_cells(self._data_dir)
         cells: list[list] = []
         for row in self._rows:
             if row["kind"] == "pending":
@@ -362,11 +365,13 @@ class SubAgentScreen(Screen):
                 _link_cell(t, dim),
                 Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
                 Text(st.reason, style=T.TEXT_DIM),
+                Text("—", style=T.TEXT_DIM) if dim else watch(t),
             ])
         # Keep every column on screen: shorten the detail first (the full text
         # is under i), then long names/hosts.
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for row in fit_columns(cells, available, shrink=[(6, 12), (1, 8), (2, 8), (4, 5), (3, 6), (5, 8)], headers=_TABLE_COLUMNS):
+        for row in fit_columns(cells, available, shrink=[(6, 8), (7, 7), (1, 7), (2, 6), (4, 5), (3, 5), (5, 6)],
+                               headers=_TABLE_COLUMNS):
             table.add_row(*row)
         if prev is not None and 0 <= prev < len(self._rows):
             try:
@@ -668,6 +673,74 @@ class SubAgentScreen(Screen):
             self._log(Text(f"{label} forgotten.", style=T.TEXT_MUTED))
             self._refresh()
 
+    @work(group="watch")
+    async def action_watch(self) -> None:
+        """C.2: turn continuous detection on or off for the selected machine (a person's
+        choice, confirmed; never on by itself)."""
+        from kratos.detect import live as L
+        from kratos.lifecycle.decide import Actor
+
+        t = self._selected_target()
+        if t is None or t.get("revoked_at"):
+            self._log(Text("Select a paired server first.", style=T.TEXT_DIM))
+            return
+        label = t.get("name") or t.get("hostname") or t["target_id"]
+        state = L.pack_state(self._data_dir, t["target_id"]) or {}
+        on = not state.get("enabled")
+        if on:
+            if not L.agent_can_watch(t.get("agent_version")):
+                self._log(Text(f"{label}: " + L.UPDATE_HINT, style=T.ATTENTION))
+                return
+            ok = await self.app.push_screen_wait(ConfirmModal(
+                f"Watch {label} continuously?",
+                "It reads the logs as they're written and alerts on the rules in /detect. The agent sends Kratos "
+                "only what a rule matched (over the encrypted link), keeps up to a few thousand matches while the "
+                "link is down, and never acts on the machine. Alerts while Kratos is closed need the always-on "
+                "listener (l)."))
+        else:
+            ok = await self.app.push_screen_wait(ConfirmModal(
+                f"Stop watching {label} continuously?",
+                "Detection rules then run only on schedule, over the logs Kratos collects."))
+        if not ok:
+            return
+        try:
+            L.set_watching(self._data_dir, t["target_id"], on, actor=Actor.current("tui"))
+        except L.WatchSetupError as e:
+            self._log(Text(f"{label}: {e}", style=T.ATTENTION))
+            return
+        self._log(Text(f"{label}: continuous detection {'on' if on else 'off'} -- the agent picks it up within "
+                       "seconds while connected.", style=T.SAFE if on else T.TEXT_MUTED))
+        self._refresh()
+        if on and not L.any_trigger_offered(self._data_dir):
+            await self._offer_first_trigger(t["target_id"])
+
+    async def _offer_first_trigger(self, target_id: str) -> None:
+        """The first time watching is turned on: offer a ready alert (shown, confirmed,
+        editable later with /trigger) -- never created silently."""
+        from kratos.agent import triggers as TR
+        from kratos.detect import live as L
+
+        L.mark_trigger_offered(self._data_dir, target_id)
+        name = "live-high-detections"
+        if TR.trigger_exists(self._data_dir, name):
+            return
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Alert me on HIGH and CRITICAL detections?",
+            "Creates the trigger 'live-high-detections': a phone notification when a detection rule finds something "
+            "high or critical on any machine -- only when it is new or reopened, at most once per 15 minutes. "
+            "Change or delete it with /trigger."))
+        if not ok:
+            self._log(Text("No alert created. /trigger new makes one any time.", style=T.TEXT_DIM))
+            return
+        try:
+            TR.save_trigger(self._data_dir, name=name, action="notify", min_severity="high", cooldown_minutes=15,
+                            only_new_or_reopened=True)
+        except TR.TriggerError as e:
+            self._log(Text(f"Couldn't create the alert: {e}", style=T.ATTENTION))
+            return
+        self._log(Text("Alert created: live-high-detections (notify, high and up, new or reopened, 15 min cooldown).",
+                       style=T.SAFE))
+
     def action_details(self) -> None:
         row = self._selected_row()
         if row is None:
@@ -705,6 +778,7 @@ class SubAgentScreen(Screen):
 
         body.add_row("investigated as", ", ".join(f"{ln['host']} ({_routing.MODE_LABELS.get(ln['mode'], ln['mode'])})"
                                                 for ln in links) or "— not linked to a target (press k) —")
+        self._watch_details(body, t)
         self._log(Text(f"{t.get('name') or t['target_id']}:", style=f"bold {T.ACCENT}"))
         self._log(body)
         events = self._sa_store.recent_events(t["target_id"], 24 * 3600)[-10:]
@@ -716,6 +790,31 @@ class SubAgentScreen(Screen):
             for e in events:
                 hist.add_row(ST.human_age(ST._age(e["at"], ST.utc_now())), e["event"], e.get("detail") or "")
             self._log(hist)
+
+    def _watch_details(self, body: Any, t: dict[str, Any]) -> None:
+        """C.2: continuous detection's state, per log source, with any stretch not watched."""
+        from kratos.detect import live as L
+
+        try:
+            state = L.pack_state(self._data_dir, t["target_id"])
+            if not state or not state["enabled"]:
+                body.add_row("watching", "off (w turns it on)" if L.agent_can_watch(t.get("agent_version"))
+                             else L.UPDATE_HINT)
+                return
+            h = L.health(self._data_dir, t["target_id"])
+            body.add_row("watching", f"on as {state.get('machine')} (by {state.get('changed_by')})"
+                         + ("" if h.healthy else " -- NOT RUNNING"))
+            for code, text in h.reasons:
+                body.add_row("", text)
+            for r in L.watch_rows(self._data_dir, t["target_id"]):
+                line = f"{r['state']}" + (f": {r['error']}" if r.get("error") else "")
+                if r["state"] == "watching":
+                    line += f" · {r.get('events_per_min') or 0}/min · {r.get('matches') or 0} match(es)"
+                body.add_row(f"  {r['source']}", line)
+                for g in r["gaps"][-3:]:
+                    body.add_row("", f"not watched {L._utc(g['from'])} to {L._utc(g['to'])}: {g['reason']}")
+        except Exception as e:  # noqa: BLE001
+            body.add_row("watching", f"(couldn't read: {type(e).__name__})")
 
     @work(group="offer-link")
     async def _offer_link_after_checkin(self, host: str) -> None:
@@ -1414,7 +1513,53 @@ def _pending_cells(code: dict[str, Any], now, names: dict[str, str]) -> tuple:
                  if code.get("last_attempt_at") else "")
         detail = f"code {code['code']} expired {ST.human_age(-left)}{tried} · press n for a fresh code"
     return (status, Text(label), Text(code.get("last_attempt_host") or "—", style=T.TEXT_DIM), Text("—"),
-            Text("—", style=T.TEXT_DIM), Text("—", style=T.TEXT_DIM), Text(detail, style=T.TEXT_DIM))
+            Text("—", style=T.TEXT_DIM), Text("—", style=T.TEXT_DIM), Text(detail, style=T.TEXT_DIM),
+            Text("—", style=T.TEXT_DIM))
+
+
+def _watch_cells(data_dir: Path) -> Any:
+    """C.2: a function target -> the "watching" cell (read once per refresh)."""
+    from kratos.detect import live as L
+
+    try:
+        states = {s["target_id"]: s for s in L.pack_states(data_dir)}
+        rows: dict[str, list[dict[str, Any]]] = {}
+        for r in L.watch_rows(data_dir):
+            rows.setdefault(r["target_id"], []).append(r)
+    except Exception:  # noqa: BLE001 -- a status cell must never break the screen
+        states, rows = {}, {}
+
+    def cell(t: dict[str, Any]) -> Any:
+        st = states.get(t["target_id"])
+        if not st or not st["enabled"]:
+            if not L.agent_can_watch(t.get("agent_version")):
+                return Text("update to watch → g", style=T.TEXT_DIM)
+            return Text("off · w", style=T.TEXT_DIM)
+        return watch_label(st, rows.get(t["target_id"], []))
+
+    return cell
+
+
+def watch_label(state: dict[str, Any], rows: list[dict[str, Any]]) -> Any:
+    """'watching 2h · 5/min' / 'not watching: <why>' for one watched agent."""
+    import time as _time
+
+    if state.get("ack_status") == "refused":
+        return Text("rules refused (i)", style=T.CRITICAL)
+    if (state.get("acked_version") or 0) < (state.get("push_version") or 0):
+        return Text("starting…", style=T.ATTENTION)
+    watching = [r for r in rows if r["state"] == "watching"]
+    stopped = [r for r in rows if r["state"] in ("error", "restarting")]
+    if stopped:
+        return Text(f"stopped: {stopped[0]['source']} (i)", style=T.CRITICAL)
+    if not watching:
+        return Text("not watching (i)", style=T.ATTENTION)
+    since = min((r["watching_since"] for r in watching if r["watching_since"]), default=None)
+    per_min = sum(int(r["events_per_min"] or 0) for r in watching)
+    lag = max((float(r["lag_seconds"] or 0) for r in watching), default=0.0)
+    age = ST.human_age(_time.time() - since).replace(" ago", "") if since else "?"
+    text = f"watching {age} · {per_min}/min" + (f" · lag {int(lag)}s" if lag >= 5 else "")
+    return Text(text, style=T.SAFE if lag < 60 else T.ATTENTION)
 
 
 def _link_cell(target: dict[str, Any], dim: bool) -> Any:

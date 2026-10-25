@@ -249,7 +249,11 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
                      + (f" ({untrusted.for_display(credit)[:160]})" if credit else "") + verdict)
     if len(items) > BLOCK_MAX:
         lines.append(f"  - and {len(items) - BLOCK_MAX} more serious finding(s): /findings lists them all")
-    if any(str(f.get("id") or "").startswith("SIGMA-") for f in items[:BLOCK_MAX]):
+    sigma = [f for f in items[:BLOCK_MAX] if str(f.get("id") or "").startswith("SIGMA-")]
+    if any(int((f.get("detection_rule") or {}).get("live") or 0) for f in sigma):
+        lines.append("  (SIGMA-* are detection rules: the machine's agent matches them as its logs are written "
+                     "(continuous detection), and Kratos also runs them on schedule over the logs it collects)")
+    elif sigma:
         lines.append("  (SIGMA-* are detection rules run over the logs Kratos collected -- checked on schedule, "
                      "not continuously)")
     return "\n".join(lines) + "\n\n"

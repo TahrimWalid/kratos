@@ -438,6 +438,46 @@ def _check_detection(out: list[Check], data_dir: Path) -> None:
                         fix="re-import the rules (kratos detect import) or remove the file from detect/packs"))
         return
     out.append(_row("detection rules", "pass" if runs else "info", detail))
+    _check_watch(out, data_dir)
+
+
+def _check_watch(out: list[Check], data_dir: Path) -> None:
+    """C.2: continuous detection per watched machine, and whether alerts reach the person
+    while Kratos is closed (that needs the always-on listener)."""
+    from kratos.detect import live as L
+
+    watched = L.watched_targets(data_dir)
+    if not watched:
+        out.append(_row("continuous detection", "info", "off on every machine -- detection rules run on schedule "
+                        "only", fix="to watch a machine with a sub-agent as its logs are written: /subagent, select "
+                        "it, press w"))
+        return
+    lines, bad = [], []
+    for st in watched:
+        h = L.health(data_dir, st["target_id"])
+        name = st.get("machine") or st["target_id"]
+        if h.healthy:
+            lines.append(f"{name}: watching")
+        else:
+            bad.append(f"{name}: NOT running ({h.reasons[0][1][:120]})")
+    try:
+        from kratos.storage.subagent_store import SubAgentStore
+        from kratos.subagent.status import LISTENER_STALE_AFTER_SECONDS
+
+        listeners = SubAgentStore(data_dir / "kratos.db").live_listeners(LISTENER_STALE_AFTER_SECONDS)
+    except Exception:  # noqa: BLE001
+        listeners = []
+    service = any(x.get("mode") == "service" for x in listeners)
+    detail = "; ".join(bad + lines)
+    if bad:
+        out.append(_row("continuous detection", "warn", detail, fix="open /subagent and select the machine: it says "
+                        "why the watcher isn't running (DETECT-002 has the same)"))
+    elif not service:
+        out.append(_row("continuous detection", "warn", detail + " -- but no always-on listener is running, so "
+                        "alerts stop when Kratos is closed", fix="install it: /subagent, press l"))
+    else:
+        out.append(_row("continuous detection", "pass", detail + "; the always-on listener delivers alerts while "
+                        "Kratos is closed"))
 
 
 def _check_agent_link(out: list[Check], data_dir: Path) -> None:
