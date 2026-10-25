@@ -122,12 +122,11 @@ separate:
   cap. No command text, path list or rule text is ever accepted from Kratos.
   Each request is signed for the connection's session nonce with a strictly
   increasing sequence number, so a captured request can't be replayed; reads
-  are refused on a plain network unless the operator allowed it at install,
-  because the channel has no encryption of its own. "Not plain" means
-  loopback, or the agent's own end of the connection sits on a Tailscale
-  interface (or one the operator names with `--trusted-interface`): an
-  address in 100.64.0.0/10 alone doesn't count, since that is also
-  carrier-grade NAT space. The SSH path builds its commands with the *same* builders and both
+  need a trusted transport: a pinned TLS link (see "Encrypted link" below),
+  or, for an agent from before pins, loopback or the agent's own end of the
+  connection on a Tailscale interface (or one the operator names with
+  `--trusted-interface`) — an address in 100.64.0.0/10 alone doesn't count,
+  since that is also carrier-grade NAT space. The SSH path builds its commands with the *same* builders and both
   transports' output goes through the same parsers, so results can't drift —
   verified on real hosts (identical journal reads, config verdicts and
   exhaustive auth counts over SSH and through the agent). YARA over the agent
@@ -166,6 +165,67 @@ separate:
   `sudoers` — only shells, interpreters (under any versioned name) and
   command wrappers are refused there. None of this has had its independent
   review yet.
+
+**Encrypted link (C.4).** The agent link is TLS with the server's public key
+pinned, not a CA. Kratos makes an ECDSA P-256 key pair with a long-lived
+self-signed certificate plus a *backup* key pair (`subagent/tls.py`, the
+`cryptography` package, `data_dir/subagent-tls/`: folder 0700, files 0600,
+refused when loose, symlinked, owned by someone else, or not matching the key
+record). Every installer and update carries the SHA-256 of both keys'
+SubjectPublicKeyInfo and a pin-set version (`--server-pin`,
+`--server-pins-version`); the agent keeps them in its state file, and a newer
+set it received later wins over the one on its service command line.
+
+- *Why `CERT_NONE` plus a pin is sound.* The agent's context
+  (`subagent/pinning.py`, stdlib, Python 3.8) turns chain and hostname checks
+  off because there is no CA to check against: the only identity that matters
+  is "the key this agent was given". After the handshake it takes the peer
+  certificate (`getpeercert(binary_form=True)`, returned even unvalidated),
+  extracts the SPKI with a small DER walker, hashes it and compares against
+  every pin with `hmac.compare_digest`. The handshake itself proves the server
+  holds that key's private half (it signs the handshake: TLS 1.3
+  CertificateVerify, or the TLS 1.2 ECDHE key exchange; only ECDHE suites with
+  AES-GCM or ChaCha20, TLS 1.2 minimum, no compression or renegotiation).
+- *Pre-pin silence.* No protocol byte (hello, token, pairing code) is written
+  before the pin matches; a mismatch aborts the transport, is logged locally,
+  and is counted in the state file. The count is reported in the hello of the
+  next good connection (`link_alerts`), since it can't be told to the server
+  that failed. A pinned agent has no plaintext code path; unreadable saved
+  pins stop it connecting rather than drop to plaintext.
+- *DER walker.* Reads only as far as the SPKI: definite, minimal lengths, at
+  most 4 length bytes, single-byte tags, every element inside its parent, no
+  trailing bytes after the certificate or inside the SPKI, a 64 KiB cap. It
+  fails closed (`PinError`) on anything else; fuzzed with truncations and
+  random flips/insertions/deletions.
+- *First-byte split.* The listener accepts its own sockets and peeks one byte
+  with `MSG_PEEK` before any asyncio transport exists: 0x16 (a TLS handshake
+  record) goes to `connect_accepted_socket` with the TLS context; anything
+  else is plaintext (a Kratos frame's first byte is 0x00, since frames are
+  under 16 MiB). Peeking doesn't consume, so neither path loses a byte; one
+  port serves both during migration. The peek and the handshake each have a
+  timeout, and at most 256 connections may be before their first byte or
+  handshake at once (further ones are closed at once), so silent or slow
+  clients can't block others or exhaust descriptors.
+- *Require.* `subagent.tls.require` (people-only setting, default off) makes
+  the listener refuse a plaintext hello with "update the agent", before the
+  token is looked up.
+- *Trust rule.* A pinned TLS link counts as a trusted transport for reads (and
+  execution, which stays off) wherever the agent is.
+  `--allow-untrusted-transport` is ignored once an agent has pins; it is to be
+  removed once `require` has been on long enough that no unpinned agent is
+  left.
+- *Pin-set push and rotation.* `kratos subagent-tls rotate` (people-only)
+  makes the backup key active with a new certificate, makes a new backup,
+  bumps the version and deletes the retired key. The listener notices the key
+  record change within 2 s, uses the new key for new connections, and sends
+  every live pinned agent a `pin_set_push` (signed for the connection's
+  session nonce, versioned). The agent accepts it only over a pinned TLS link,
+  newer than what it holds (an equal, identical set is acknowledged), never
+  empty, and saves it atomically before acknowledging. An offline agent still
+  holds the old backup pin, which is now the active key, so it reconnects and
+  is brought up to date. Rotation refuses while an encrypted agent hasn't
+  confirmed the current set (a second rotation would leave it with neither
+  key). Plaintext agents never get a push.
 
 **Routing.** A session target (an IP or hostname) is read through a sub-agent
 only after an explicit link (`subagent_links`), made when the user picks

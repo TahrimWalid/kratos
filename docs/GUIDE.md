@@ -1428,15 +1428,51 @@ Kratos never updates an agent on its own: that installs new code that runs as ro
 on the machine, so it waits for your keypress. `u` unpairs a machine, `k` links it
 to a target, `i` shows details.
 
-**On a plain network.** The link between agent and Kratos has no encryption of its
-own — that's why Tailscale is recommended. The agent counts the link as safe only
-over loopback or through a Tailscale interface on its own machine: an address in
-Tailscale's range alone isn't enough, because some internet providers use the same
-range for ordinary connections. If you run your own WireGuard tunnel instead, add
-`--trusted-interface wg0` when you generate the installer
-(`kratos subagent-install`). If you pick a non-Tailscale address,
-Kratos asks whether to allow investigation reads over it; if you don't, the agent
-still sends status but refuses reads.
+**The agent link is encrypted.** An agent installed or updated by this version of
+Kratos talks to it over TLS, and it trusts exactly two keys: the one Kratos's
+listener uses and a backup. Both are written into the installer, so the agent
+knows them before it ever connects. Before the agent sends anything — its login,
+a pairing code, a single status report — it checks that the server it reached
+holds one of those two keys. Anything else in between (a proxy that decrypts
+traffic, a fake listener, something that strips the encryption) gets nothing, and
+the agent never falls back to an unencrypted connection. If that ever happens, the
+agent's own log says "the server's key isn't the one this agent was given", and
+the next time it reaches the real Kratos, `/subagent` (`i` on that machine) lists
+how many such connections it refused and when. So the link is safe over any
+network now, not just Tailscale; Tailscale is still the easiest way to *reach* a
+machine behind NAT. Direct execution stays off either way.
+
+- **Which machines are encrypted.** `/subagent` has a **link** column: *encrypted*,
+  or *plain → g* for a machine still running an older agent. Until every machine is
+  encrypted, the screen says which ones aren't; select each and press `g` to update
+  it (it keeps its pairing, and its link is encrypted from then on). `/doctor` shows
+  the same count, and `kratos subagent-tls status` lists every machine with the keys
+  it holds.
+- **Require encryption.** Once every machine shows *encrypted*, turn on **Agent
+  link: require encryption** (Settings → General). From then on an old,
+  unencrypted agent is turned away with "update the agent" instead of being let
+  in. Kratos asks first if any paired machine isn't encrypted yet.
+- **The keys, and why to copy the backup.** Kratos makes both keys the first time
+  the listener starts, in the `subagent-tls` folder of your data folder (only you
+  can read it; Kratos refuses to use the keys if anyone else can). The backup key
+  isn't used yet — it exists so you can switch keys without touching any machine.
+  Copy the whole `subagent-tls` folder somewhere safe together with your Kratos
+  database backup. If both keys are lost, every agent has to be paired again
+  (`/subagent`, `p` on each).
+- **Switching keys.** `kratos subagent-tls rotate` makes the backup key the active
+  one and makes a new backup. Within seconds the listener starts using it and sends
+  the new pair to every connected machine. A machine that was off at the time still
+  trusts the new key (it was its backup), so it reconnects by itself and then gets
+  the new pair. Kratos won't rotate a second time while some machine still holds
+  the old pair, because that machine would then trust neither key; let it connect
+  once first.
+- **Older agents** (before this version) still connect unencrypted until you update
+  them or turn on "require encryption". For such an agent the old rules still
+  apply: it treats the link as safe for investigations only over loopback or a
+  Tailscale interface on its own machine (or one you named with
+  `--trusted-interface` when you generated the installer), and refuses reads
+  otherwise. The installer's old `--allow-untrusted-transport` option is ignored by
+  an agent that has the keys.
 
 ---
 
