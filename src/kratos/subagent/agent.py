@@ -896,7 +896,7 @@ class SubAgent:
             if self.watcher.enabled and self._transport_trusted():
                 for rec in self.watcher.spool.due(now, WATCH_SEND_BATCH):
                     try:
-                        await proto.write_frame(writer, rec)
+                        await proto.write_frame(writer, {**rec, "sent_at": round(time.time(), 3)})
                     except proto.FrameTooLargeError:
                         self.watcher.spool.ack([rec["seq"]])   # can't ever be sent: don't block the rest
                         continue

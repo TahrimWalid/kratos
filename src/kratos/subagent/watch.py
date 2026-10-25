@@ -1129,7 +1129,8 @@ class WatchManager:
         st[1] += 1
         self.seq += 1
         rec = {"type": "detection", "seq": self.seq, "rule_id": m.rule_id, "pack_id": pack_id,
-               "pack_version": pack_version, "ts": m.ts, "first_ts": m.first_ts, "source": source,
+               "pack_version": pack_version, "ts": m.ts, "first_ts": m.first_ts, "detected_at": round(_now(), 3),
+               "source": source,
                "position": pos, "event": bounded_event(event, used), "group": m.group, "count": m.count,
                "event_ids": list(m.event_ids)[:D.MAX_MATCHED_IDS]}
         self._spool(rec)

@@ -752,6 +752,9 @@ class LiveDetections:
         if stored:
             self.stats["stored"] += 1
             self._mark(machine, rule_id)
+            # one line per new live match, with the agent's own times: the hops of the latency
+            logger.info("live detection %s on %s: logged %.3f, matched %s, sent %s, received %.3f", rule_id, machine,
+                        float(msg.get("ts") or 0), _num(msg.get("detected_at")), _num(msg.get("sent_at")), _now())
         else:
             self.stats["duplicates"] += 1
         return True
@@ -837,6 +840,9 @@ def publish(data_dir: Path | str, machine: str, *, rules: set[str] = frozenset()
             if investigate_fn is not None:
                 kwargs["investigate_fn"] = investigate_fn
             fired = evaluate_triggers(data_dir, affected, target_key(machine), **kwargs)
+            for rec in fired:
+                logger.info("live alert on %s: trigger %s, %s, notified=%s at %.3f", machine, rec.get("trigger"),
+                            ",".join(rec.get("matched_ids") or []), rec.get("notified"), _now())
     return {"machine": machine, "snapshot": str(path), "findings": annotated, "affected": affected,
             "fired": fired, "lifecycle": summary}
 

@@ -9,6 +9,7 @@ no kratos import.
 from __future__ import annotations
 
 import importlib
+import json
 import importlib.util
 import os
 import socket
@@ -236,3 +237,65 @@ class Pinning(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+watch = importlib.import_module("subagent.watch")
+
+_FAKE_JOURNALCTL = r'''#!{python}
+import json, sys, time
+if "--follow" not in sys.argv:
+    sys.exit(0)
+with open({data!r}) as f:
+    for line in f:
+        sys.stdout.write(line)
+sys.stdout.flush()
+time.sleep(30)
+'''
+
+
+class Watch(unittest.TestCase):
+    """Continuous detection (C.2) on the oldest Python an agent may have: a journal line and
+    an audit event become events and matches, and the watcher follows a journal and spools."""
+
+    def _entry(self, i, ts, msg, comm):
+        cur = "s=%s;i=%x;b=%s;m=1;t=%x;x=1" % ("f" * 32, i, "0" * 32, int(ts * 1e6))
+        return {"__CURSOR": cur, "__REALTIME_TIMESTAMP": str(int(ts * 1e6)), "MESSAGE": msg, "_COMM": comm,
+                "SYSLOG_IDENTIFIER": comm, "_PID": "77", "_TRANSPORT": "syslog"}
+
+    def test_lines_become_events(self):
+        v = watch.journal_values(self._entry(1, 1790000000.0, "alice : TTY=pts/0 ; PWD=/ ; USER=root ; "
+                                                               "COMMAND=/usr/bin/chattr -i /etc/hostname", "sudo"),
+                                 "host.example")
+        flat = watch.A.flat(v)
+        self.assertEqual(flat["event.action"], "sudo_command")
+        self.assertEqual(flat["process.executable"], "/usr/bin/chattr")
+        self.assertRegex(flat["event.id"], r"^[0-9a-f]{32}$")
+        a = watch.audit_values(['type=SYSCALL msg=audit(1790000000.100:9): syscall=59 success=yes ppid=1 pid=2 '
+                                'auid=1000 uid=0 euid=0 ses=3 comm="useradd" exe="/usr/sbin/useradd"',
+                                'type=EXECVE msg=audit(1790000000.100:9): argc=2 a0="useradd" a1="eve"'],
+                               "/var/log/audit/audit.log", "host.example")
+        self.assertEqual(a["process_args"], ("useradd", "eve"))
+
+    def test_follow_and_spool(self):
+        tmp = Path(tempfile.mkdtemp())
+        data = tmp / "journal.jsonl"
+        now = time.time() + 5
+        data.write_text(json.dumps(self._entry(
+            1, now, "alice : TTY=pts/0 ; PWD=/ ; USER=root ; COMMAND=/usr/bin/chattr -i /etc/hostname", "sudo")) + "\n")
+        exe = tmp / "journalctl"
+        exe.write_text(_FAKE_JOURNALCTL.replace("{python}", sys.executable).replace("{data!r}", repr(str(data))))
+        exe.chmod(0o755)
+        packs = sorted(_PACKS.glob("*.json")) if _PACKS.is_dir() else []
+        if not packs:
+            self.skipTest("no shipped pack in this layout")
+        pack = detect.parse_pack_bytes(packs[-1].read_bytes())
+        m = watch.WatchManager(str(tmp / "state"), audit_path=str(tmp / "audit.log"), journalctl=str(exe))
+        m.apply(watch.validate_push({"enabled": True, "machine": "host.example", "packs": [pack]}, None))
+        try:
+            end = time.time() + 20
+            while time.time() < end and not len(m.spool):
+                time.sleep(0.1)
+            recs = [r for r, _n in m.spool.items.values()]
+            self.assertTrue(recs and recs[0]["rule_id"].startswith("SIGMA-"), recs)
+        finally:
+            m.stop()

@@ -95,7 +95,8 @@ lower `version` than the agent has applied is refused (anti-rollback, kept acros
 restarts); a pack is validated whole and refused whole.
 The agent sends what it matched, and acknowledged detections leave its spool:
   detection           {type, seq, rule_id, pack_id, pack_version, ts, first_ts,
-                       source, position, event: {bounded ECS fields}, group?,
+                       detected_at, sent_at (the agent's clock), source, position,
+                       event: {bounded ECS fields}, group?,
                        count?, event_ids?}   -- or, past the per-rule rate limit,
                       {..., summary: {suppressed, minute}} instead of an event
   detection_ack       {type, seqs: [int, ...]}
