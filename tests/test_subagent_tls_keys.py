@@ -148,7 +148,10 @@ def test_status_says_which_agents_hold_which_pins_and_what_to_do(tmp_path):
     store.record_link(ids[2], mode=tls.LINK_PLAIN, pin_version=None)
     st = tls.status(tmp_path, store)
     states = {a["name"]: a["state"] for a in st["agents"]}
-    assert states["new"] == "encrypted" and states["plain"] == "plaintext"
+    assert states["new"] == "encrypted" and states["plain"] == "plaintext (no key pins: g)"
+    store.record_connected(ids[2], hostname="plain", agent_version="0.7.1")
+    assert {a["name"]: a["state"] for a in tls.status(tmp_path, store)["agents"]}["plain"] == \
+        "plaintext (agent too old: g)"
     assert "not connected" in states["old"]
     assert "Update 2 agent(s)" in st["next"]
     _, after = tls.rotate(tmp_path, actor="test")

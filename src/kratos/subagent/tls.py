@@ -425,13 +425,21 @@ def agent_link_rows(store: Any, ks: KeySet | None) -> list[dict[str, Any]]:
             else:
                 state = "encrypted, old pins"
         elif mode == LINK_PLAIN:
-            state = "plaintext"
+            state = "plaintext (agent too old: g)" if _agent_lacks_tls(t.get("agent_version")) \
+                else "plaintext (no key pins: g)"
         else:
             state = "not connected since this Kratos version"
         rows.append({"target_id": t["target_id"], "name": t.get("name") or t.get("hostname") or t["target_id"],
                      "link_mode": mode, "pin_version": ver, "agent_version": t.get("agent_version"),
                      "state": state})
     return rows
+
+
+def _agent_lacks_tls(version: Any) -> bool:
+    from kratos.subagent.core_server import TLS_MIN_AGENT_VERSION, parse_agent_version
+
+    have = parse_agent_version(version)
+    return have is None or have < TLS_MIN_AGENT_VERSION
 
 
 def rotate_blockers(store: Any, ks: KeySet) -> list[dict[str, Any]]:
