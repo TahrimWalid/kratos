@@ -51,6 +51,8 @@ BUNDLE_FILES: tuple[str, ...] = (
     "pinning.py",
     # C.1: the detection-rule evaluator, the same file core imports as kratos.subagent.detect
     "detect.py",
+    # C.2: continuous detection -- follows the logs and runs the evaluator on each new entry
+    "watch.py",
 )
 # Shipped from elsewhere in the package, written next to the files above:
 # the auth-measurement script builder (so the agent builds the SAME script the
@@ -70,6 +72,20 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "live_response.py": _PACKAGE_ROOT / "adapters" / "live_response.py",
     # A.2: the installed-packages read
     "packages.py": _PACKAGE_ROOT / "adapters" / "packages.py",
+    # C.2: what turns a log line into the event the rules look at -- the parsers, the
+    # masking and the event assembly Kratos uses for stored lines (the same files)
+    "auth_log_parse.py": _PACKAGE_ROOT / "adapters" / "auth_log_parse.py",
+    "secret_redact.py": _PACKAGE_ROOT / "utils" / "redact.py",
+    "event_redact.py": _PACKAGE_ROOT / "events" / "redact.py",
+    "event_fields.py": _PACKAGE_ROOT / "events" / "fields.py",
+    "event_assemble.py": _PACKAGE_ROOT / "events" / "assemble.py",
+    "parsers_base.py": _PACKAGE_ROOT / "logsources" / "parsers" / "__init__.py",
+    "lp_auditd.py": _PACKAGE_ROOT / "logsources" / "parsers" / "auditd.py",
+    "lp_auth.py": _PACKAGE_ROOT / "logsources" / "parsers" / "auth.py",
+    "lp_cron.py": _PACKAGE_ROOT / "logsources" / "parsers" / "cron.py",
+    "lp_firewall.py": _PACKAGE_ROOT / "logsources" / "parsers" / "firewall.py",
+    "lp_sudo.py": _PACKAGE_ROOT / "logsources" / "parsers" / "sudo.py",
+    "lp_systemd.py": _PACKAGE_ROOT / "logsources" / "parsers" / "systemd.py",
 }
 YARA_RULES_SOURCE = _PACKAGE_ROOT / "yara_rules"  # package data (pyproject), so a pip install has them too
 

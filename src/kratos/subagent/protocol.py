@@ -81,6 +81,28 @@ the server it refused). Core may then replace the pin set over that pinned link:
 The agent accepts a push only over a pinned TLS link, signed for this
 connection's session nonce, with a version newer than the one it holds (equal
 and identical is acknowledged), and never an empty set.
+
+Continuous detection (Phase C.2, kratos.subagent.watch). A hello from an agent
+that can watch adds `watch_api` (int) and `watch` {enabled, version, packs:
+[{pack_id, pack_version, sha256}]}. Core pushes the rule packs as signed,
+versioned DATA -- rules in the evaluator's closed format, never code:
+  detect_pack_push    {type, version, enabled, machine, packs: [pack, ...],
+                       disabled: [rule id, ...], settings: {...}, session_nonce, sig}
+  detect_pack_ack     {type, version, status: "ok"|"refused", reason?, packs?}
+Turning watching on is accepted only over a trusted link (pinned TLS, or the
+older trusted-transport rule) -- matched log content crosses it. A push with a
+lower `version` than the agent has applied is refused (anti-rollback, kept across
+restarts); a pack is validated whole and refused whole.
+The agent sends what it matched, and acknowledged detections leave its spool:
+  detection           {type, seq, rule_id, pack_id, pack_version, ts, first_ts,
+                       source, position, event: {bounded ECS fields}, group?,
+                       count?, event_ids?}   -- or, past the per-rule rate limit,
+                      {..., summary: {suppressed, minute}} instead of an event
+  detection_ack       {type, seqs: [int, ...]}
+  watch_status        {type, enabled, watch_since, sources: [{name, state, since,
+                       last_event_ts, events_per_min, matches, lag_seconds,
+                       dropped, skipped, gaps, error}], packs, spooled, queued,
+                       cpu_seconds, throttled_seconds, rss, seq}
 """
 from __future__ import annotations
 
@@ -112,6 +134,14 @@ MSG_READ_REQUEST = "read_request"
 MSG_READ_RESULT = "read_result"
 MSG_PIN_SET_PUSH = "pin_set_push"
 MSG_PIN_SET_ACK = "pin_set_ack"
+MSG_DETECT_PACK_PUSH = "detect_pack_push"
+MSG_DETECT_PACK_ACK = "detect_pack_ack"
+MSG_DETECTION = "detection"
+MSG_DETECTION_ACK = "detection_ack"
+MSG_WATCH_STATUS = "watch_status"
+# Bounds on what an agent may send about watching (core refuses anything bigger).
+MAX_DETECTION_ACK_SEQS = 1000
+MAX_DETECT_PUSH_VERSION = 2**31 - 1
 
 # The two first bytes the listener tells apart without consuming them: a TLS
 # record starts with its content type (22 = handshake), a Kratos frame with the
@@ -187,6 +217,7 @@ def build_hello(
     read_probes: list[str] | tuple[str, ...] | None = None, read_api: int = 1,
     link: str | None = None, pin_version: int | None = None,
     link_alerts: dict[str, Any] | None = None,
+    watch: dict[str, Any] | None = None, watch_api: int = 1,
 ) -> dict[str, Any]:
     msg = {
         "type": MSG_HELLO,
@@ -215,6 +246,9 @@ def build_hello(
         msg["pin_version"] = pin_version
     if link_alerts:
         msg["link_alerts"] = link_alerts
+    if watch is not None:
+        msg["watch_api"] = watch_api
+        msg["watch"] = watch
     return msg
 
 
@@ -324,6 +358,27 @@ def build_pin_set_ack(version: Any, status: str, reason: str | None = None) -> d
     if reason is not None:
         msg["reason"] = reason
     return msg
+
+
+def build_detect_pack_push(version: int, enabled: bool, machine: str, packs: list[dict[str, Any]],
+                           disabled: list[str], settings: dict[str, Any], session_nonce: str) -> dict[str, Any]:
+    """Unsigned envelope -- the caller adds `sig` (signing.sign_envelope)."""
+    return {"type": MSG_DETECT_PACK_PUSH, "version": version, "enabled": enabled, "machine": machine,
+            "packs": packs, "disabled": list(disabled), "settings": dict(settings), "session_nonce": session_nonce}
+
+
+def build_detect_pack_ack(version: Any, status: str, reason: str | None = None,
+                          packs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": MSG_DETECT_PACK_ACK, "version": version, "status": status}
+    if reason is not None:
+        msg["reason"] = reason
+    if packs is not None:
+        msg["packs"] = packs
+    return msg
+
+
+def build_detection_ack(seqs: list[int]) -> dict[str, Any]:
+    return {"type": MSG_DETECTION_ACK, "seqs": list(seqs)}
 
 
 # ---------------------------------------------------------------------------

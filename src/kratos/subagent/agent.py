@@ -114,7 +114,7 @@ from pathlib import Path
 from typing import Any
 
 try:  # `python3 -m subagent.agent` (preferred) -- real package-relative import.
-    from . import ceiling as cl, collector, pinning, protocol as proto, reads, signing, whitelist as wl
+    from . import ceiling as cl, collector, pinning, protocol as proto, reads, signing, watch, whitelist as wl
 except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.py` run directly.
     import ceiling as cl  # type: ignore[no-redef]
     import collector  # type: ignore[no-redef]
@@ -122,11 +122,12 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
     import protocol as proto  # type: ignore[no-redef]
     import reads  # type: ignore[no-redef]
     import signing  # type: ignore[no-redef]
+    import watch  # type: ignore[no-redef]
     import whitelist as wl  # type: ignore[no-redef]
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.8.0"
+AGENT_VERSION = "0.9.0"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -166,6 +167,12 @@ READ_QUEUE_MAX = 4
 LINK_TLS = "tls-pinned"
 LINK_PLAIN = "plaintext"
 MAX_PIN_VERSION = 2**31 - 1
+
+# Continuous detection (C.2): how often the watch sender looks at the spool, how
+# many detections one look sends, and how often a status goes out when nothing changed.
+WATCH_SEND_INTERVAL_SECONDS = 0.5
+WATCH_SEND_BATCH = 50
+WATCH_STATUS_SECONDS = 60.0
 
 # Transport check for execution and reads (F9): this channel has no
 # encryption of its own, so core must be reached over loopback or over an
@@ -352,6 +359,10 @@ class SubAgent:
         self._last_read_seq = 0
         self._read_lock: asyncio.Lock | None = None
         self._read_tasks: set[asyncio.Task] = set()
+        # Continuous detection (C.2): the watcher runs whether or not Kratos is
+        # reachable (it spools), so it lives beside the connection, not in it.
+        self.watcher = watch.WatchManager(str(Path(state_file).parent))
+        self._watch_status_at = 0.0
 
     # ------------------------------------------------------------------
     # Persistent state
@@ -498,6 +509,11 @@ class SubAgent:
 
     async def run_forever(self) -> None:
         backoff = BACKOFF_INITIAL_SECONDS
+        try:
+            # carry on watching (and catch up) before Kratos is even reachable
+            await asyncio.get_event_loop().run_in_executor(None, self.watcher.load_saved)
+        except Exception:  # noqa: BLE001 -- watching must never stop the agent from connecting
+            logger.exception("could not resume continuous detection")
         self._stop = asyncio.Event()
         if self._stop_requested:
             self._stop.set()
@@ -575,10 +591,13 @@ class SubAgent:
         try:
             await self._handshake(reader, writer)
             await self._flush_buffer(writer)  # anything queued from a prior drop goes out immediately, not on the next collect tick.
+            self.watcher.spool.forget_sent()   # a new connection: everything waiting goes out again
+            self._watch_status_at = 0.0
             tasks = {
                 asyncio.create_task(self._collect_loop(writer)),
                 asyncio.create_task(self._ping_loop(writer)),
                 asyncio.create_task(self._receive_loop(reader, writer)),
+                asyncio.create_task(self._watch_send_loop(writer)),
             }
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -624,6 +643,9 @@ class SubAgent:
             read_probes=reads.READ_PROBES, read_api=reads.READ_API_VERSION,
             link=self._link, pin_version=self._pin_version if self._link == LINK_TLS else None,
             link_alerts=self._state.get("link_alerts") if self._link == LINK_TLS else None,
+            watch={"enabled": self.watcher.enabled, "version": self._detect_floor(),
+                   "packs": watch.pack_summary(self.watcher.held())},
+            watch_api=watch.WATCH_API,
         ))
         reply = await asyncio.wait_for(proto.read_frame(reader), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         if reply is None:
@@ -652,6 +674,7 @@ class SubAgent:
             snapshot = await loop.run_in_executor(None, collect_fn)
             if isinstance(snapshot, dict):
                 snapshot["agent_link"] = self.link_status()
+                snapshot["watching"] = self.watcher.watching
             self._seq += 1
             frame = {"seq": self._seq, "collected_at": _iso_now(), "payload": snapshot}
             self._buffer.append(frame)
@@ -706,6 +729,13 @@ class SubAgent:
                     await self._handle_exec_dispatch(msg, writer)
                 elif mtype == proto.MSG_PIN_SET_PUSH:
                     await self._handle_pin_set_push(msg, writer)
+                elif mtype == proto.MSG_DETECT_PACK_PUSH:
+                    await self._handle_detect_pack_push(msg, writer)
+                elif mtype == proto.MSG_DETECTION_ACK:
+                    seqs = msg.get("seqs")
+                    if isinstance(seqs, list):
+                        self.watcher.spool.ack([q for q in seqs[:proto.MAX_DETECTION_ACK_SEQS]
+                                                if type(q) is int])
                 elif mtype == proto.MSG_READ_REQUEST:
                     # Never awaited here: a 3-minute YARA scan must not stop
                     # this loop reading pongs and other messages.
@@ -781,6 +811,102 @@ class SubAgent:
         self._pins, self._pin_version = pins, version
         logger.info("received new server-key pins from Kratos (version %d)", version)
         await answer("ok")
+
+    # ------------------------------------------------------------------
+    # Continuous detection (C.2) -- see watch.py
+    # ------------------------------------------------------------------
+    def _detect_floor(self) -> int | None:
+        """The newest rule-pack push version applied under the current token, kept
+        across restarts (anti-rollback, like the whitelist's)."""
+        floors = self._state.get("detect_push_floor") or {}
+        v = floors.get(self._token_key()) if isinstance(floors, dict) else None
+        return v if type(v) is int else None
+
+    def _record_detect_floor(self, version: int) -> None:
+        previous = self._state.get("detect_push_floor")
+        floors = dict(previous) if isinstance(previous, dict) else {}
+        floors[self._token_key()] = version
+        self._state["detect_push_floor"] = floors
+        try:
+            self._persist_state()
+        except OSError:
+            self._state["detect_push_floor"] = previous
+            raise
+
+    async def _handle_detect_pack_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+        """Turn watching on/off, or change its rules: signed for this connection, not
+        older than what was applied, the packs validated whole; turning it ON only
+        over a trusted link (matched log content will cross it)."""
+        version = msg.get("version")
+        reply_version = version if type(version) is int else None
+
+        async def answer(status: str, reason: "str | None" = None) -> None:
+            if reason:
+                logger.warning("refused a rule-pack push (version %r): %s", version, reason)
+            await proto.write_frame(writer, proto.build_detect_pack_ack(
+                reply_version, status, reason, watch.pack_summary(self.watcher.held())))
+
+        if not self.token or msg.get("session_nonce") != self._session_nonce:
+            await answer("refused", "not signed for this connection")
+            return
+        if not signing.verify_envelope(signing.derive_signing_key(self.token), msg):
+            await answer("refused", "invalid signature")
+            return
+        if type(version) is not int or not 0 <= version <= proto.MAX_DETECT_PUSH_VERSION:
+            await answer("refused", "the version must be a whole number from 0 to %d" % proto.MAX_DETECT_PUSH_VERSION)
+            return
+        floor = self._detect_floor()
+        if floor is not None and version < floor:
+            await answer("refused", "version %d is older than %d, the newest this machine has applied "
+                                    "(anti-rollback)" % (version, floor))
+            return
+        if msg.get("enabled") is True:
+            why_not = self._transport_why_not()
+            if why_not is not None:
+                await answer("refused", "continuous detection sends matched log lines to Kratos, so it needs an "
+                                        "encrypted link: " + why_not)
+                return
+        loop = asyncio.get_event_loop()
+        try:
+            cfg = watch.validate_push(msg, self.watcher.held())
+        except watch.WatchError as e:
+            await answer("refused", str(e))
+            return
+        try:
+            self._record_detect_floor(version)
+        except OSError as e:
+            await answer("refused", "could not save the version on this machine (%s)" % (e.strerror or e))
+            return
+        try:
+            await loop.run_in_executor(None, self.watcher.apply, cfg)
+        except (watch.WatchError, OSError) as e:
+            await answer("refused", str(e))
+            return
+        logger.info("rule-pack push v%d applied: watching %s, %d pack(s), %d rule(s) off", version,
+                    "on" if cfg["enabled"] else "off", len(cfg["packs"]), len(cfg["disabled"]))
+        await answer("ok")
+        self._watch_status_at = 0.0     # report the new state at once
+
+    async def _watch_send_loop(self, writer: asyncio.StreamWriter) -> None:
+        """Waiting detections out (oldest first, again after RESEND_SECONDS until
+        acknowledged), and the watch status every minute and on any change. Matched
+        content goes out only over a trusted link; over any other it waits in the spool."""
+        while True:
+            now = time.time()
+            if self.watcher.enabled and self._transport_trusted():
+                for rec in self.watcher.spool.due(now, WATCH_SEND_BATCH):
+                    try:
+                        await proto.write_frame(writer, rec)
+                    except proto.FrameTooLargeError:
+                        self.watcher.spool.ack([rec["seq"]])   # can't ever be sent: don't block the rest
+                        continue
+                    self.watcher.spool.mark_sent(rec["seq"], now)
+            changed = self.watcher.status_changed.is_set()
+            if changed or (self.watcher.enabled and now - self._watch_status_at >= WATCH_STATUS_SECONDS):
+                self.watcher.status_changed.clear()
+                self._watch_status_at = now
+                await proto.write_frame(writer, {"type": proto.MSG_WATCH_STATUS, **self.watcher.status()})
+            await asyncio.sleep(WATCH_SEND_INTERVAL_SECONDS)
 
     async def _handle_whitelist_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
         """Apply (or reject) a signed whitelist push.
@@ -1208,6 +1334,10 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            agent.watcher.stop()   # stop following and save where it got to
+        except Exception:  # noqa: BLE001
+            logger.exception("stopping continuous detection failed")
         loop.close()
         instance_lock.close()
     return 0
