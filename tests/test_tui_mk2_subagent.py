@@ -141,7 +141,7 @@ def test_check_in_is_announced_by_the_refresh_not_a_blocking_wait(tmp_path):
             code = sa.create_pairing_code(name="web-02", core_host="10.0.0.1")["code"]
             screen._watched_codes[code] = {"name": "web-02", "host": "10.0.0.1"}
             screen._refresh()
-            captured["pending_row"] = str(screen.query_one("#sa-table").get_row_at(0)[5])
+            captured["pending_row"] = str(screen.query_one("#sa-table").get_row_at(0)[6])
             sa.redeem_pairing_code(code, agent_id="a", hostname="web-02", agent_version="0.2.0")
             screen._refresh()
             screen._refresh()  # announced once, not twice
@@ -307,7 +307,7 @@ def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
             await pilot.pause()
             row = screen.query_one("#sa-table").get_row_at(0)
             labels.append(str(row[0]))
-            labels.append(str(row[5]))
+            labels.append(str(row[6]))
 
     asyncio.run(run())
     assert "not watched" in labels[0]
@@ -332,7 +332,7 @@ def test_every_column_stays_on_screen_at_80_columns(tmp_path):
             table = screen.query_one("#sa-table")
             out["virtual"] = table.virtual_size.width
             out["width"] = table.size.width
-            out["details"] = [str(table.get_row_at(i)[5]) for i in range(table.row_count)]
+            out["details"] = [str(table.get_row_at(i)[6]) for i in range(table.row_count)]
 
     asyncio.run(run())
     assert out["virtual"] <= out["width"], out

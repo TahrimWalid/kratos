@@ -98,7 +98,7 @@ _ADD_SERVER_SUMMARY = (
 )
 
 _DEFAULT_CORE_PORT = 8765
-_TABLE_COLUMNS = ("status", "name", "host", "agent", "last contact", "detail")
+_TABLE_COLUMNS = ("status", "name", "host", "agent", "link", "last seen", "detail")
 # How long `L` waits for the new service to register before calling it failed.
 _SERVICE_CONFIRM_SECONDS = 15.0
 # After a successful SSH deploy, how long to wait for the check-in before
@@ -273,7 +273,36 @@ class SubAgentScreen(Screen):
             names = ", ".join(outdated[:3]) + (f" and {len(outdated) - 3} more" if len(outdated) > 3 else "")
             line.append(f"\n◐ An agent update ({AGENT_VERSION}) is ready for {names}: select it and press g. "
                         "It keeps its pairing.", style=T.ATTENTION)
+        line.append(self._link_banner())
         self.query_one("#sa-listener", Static).update(line)
+
+    def _link_banner(self) -> Any:
+        """While any paired agent still connects without encryption (C.4)."""
+        from kratos.subagent import tls as _tls
+
+        plain = [t.get("name") or t.get("hostname") or t["target_id"]
+                 for t in self._sa_store.list_targets(include_revoked=False) if t.get("link_mode") == "plaintext"]
+        if not plain:
+            return Text("")
+        names = ", ".join(plain[:3]) + (f" and {len(plain) - 3} more" if len(plain) > 3 else "")
+        if _tls.require_encryption(self._data_dir):
+            return Text(f"\n○ Encryption is required, so {names} can't connect until updated: select it and press g.",
+                        style=T.CRITICAL)
+        return Text(f"\n◐ {names} still connect{'s' if len(plain) == 1 else ''} without encryption: select it and "
+                    "press g to update the agent (its link is then encrypted and pinned to this Kratos).",
+                    style=T.ATTENTION)
+
+    def _server_pins(self) -> dict[str, Any] | None:
+        """The pins every installer made here carries (C.4); None, with the
+        reason logged, when the agent link keys can't be used."""
+        from kratos.subagent import tls as _tls
+
+        try:
+            return _tls.ensure_keys(self._data_dir).as_pin_set()
+        except (_tls.TLSKeyError, OSError) as exc:
+            self._log(Text(f"The agent link keys can't be used ({exc}) -- this installer won't encrypt its link. "
+                           "See `kratos subagent-tls status`.", style=T.CRITICAL))
+            return None
 
     def _refresh(self) -> None:
         self._refresh_listener_line()
@@ -313,7 +342,7 @@ class SubAgentScreen(Screen):
                       + [r for r in targets if r["state"].state == ST.STATE_REVOKED])
         if not self._rows:
             table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
-                          "", "", "", "", "")
+                          "", "", "", "", "", "")
             return
         cells: list[list] = []
         for row in self._rows:
@@ -330,13 +359,14 @@ class SubAgentScreen(Screen):
                 (Text(f"{t.get('agent_version')} → g", style=T.ATTENTION)
                  if not dim and ST.agent_outdated(t.get("agent_version"))
                  else Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else "")),
+                _link_cell(t, dim),
                 Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
                 Text(st.reason, style=T.TEXT_DIM),
             ])
         # Keep every column on screen: shorten the detail first (the full text
         # is under i), then long names/hosts.
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for row in fit_columns(cells, available, shrink=[(5, 12), (1, 8), (2, 8)], headers=_TABLE_COLUMNS):
+        for row in fit_columns(cells, available, shrink=[(6, 12), (1, 8), (2, 8), (4, 5), (3, 6), (5, 8)], headers=_TABLE_COLUMNS):
             table.add_row(*row)
         if prev is not None and 0 <= prev < len(self._rows):
             try:
@@ -519,7 +549,8 @@ class SubAgentScreen(Screen):
     def _write_installer(self, name: str | None, host: str, code: str) -> Path | None:
         try:
             script = installer.generate_installer(host, code, core_port=self._core_port,
-                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False))
+                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False),
+                                                  server_pins=self._server_pins())
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate installer: {exc}", style=T.CRITICAL))
             return None
@@ -662,6 +693,9 @@ class SubAgentScreen(Screen):
         for k in ("target_id", "hostname", "agent_version", "paired_at", "last_seen", "revoked_at"):
             if t.get(k):
                 body.add_row(k, str(t[k]))
+        body.add_row("link", {"tls-pinned": f"encrypted, server key pinned (pin set {t.get('pin_version') or '?'})",
+                              "plaintext": "not encrypted -- update the agent (g)"}.get(t.get("link_mode") or "",
+                                                                                         "not known yet"))
         for k in ("peer", "connected_at", "disconnected_at", "disconnect_reason", "last_telemetry_at",
                   "collect_interval"):
             if conn.get(k) is not None:
@@ -759,6 +793,11 @@ class SubAgentScreen(Screen):
         Returns the choice (False when no question was needed), None to stop."""
         if host in self._allow_untrusted:
             return self._allow_untrusted[host]
+        if await asyncio.to_thread(self._link_keys_usable):
+            # C.4: the installer pins this Kratos's key, so the link is
+            # encrypted whatever the network -- nothing to ask.
+            self._allow_untrusted[host] = False
+            return False
         if await asyncio.to_thread(hub_address.is_trusted_transport_address, host):
             self._allow_untrusted[host] = False
             return False
@@ -776,6 +815,15 @@ class SubAgentScreen(Screen):
             return None
         self._allow_untrusted[host] = picked == "on"
         return self._allow_untrusted[host]
+
+    def _link_keys_usable(self) -> bool:
+        from kratos.subagent import tls as _tls
+
+        try:
+            _tls.ensure_keys(self._data_dir)
+            return True
+        except (_tls.TLSKeyError, OSError):
+            return False
 
     @work
     async def action_update_agent(self) -> None:
@@ -797,7 +845,7 @@ class SubAgentScreen(Screen):
             return
         try:
             script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True,
-                                                  allow_untrusted_transport=allow)
+                                                  allow_untrusted_transport=allow, server_pins=self._server_pins())
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate the update: {exc}", style=T.CRITICAL))
             return
@@ -959,7 +1007,8 @@ class SubAgentScreen(Screen):
             return None
         try:
             script = installer.generate_installer(host, None, core_port=self._core_port, upgrade=True,
-                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False))
+                                                  allow_untrusted_transport=self._allow_untrusted.get(host, False),
+                                                  server_pins=self._server_pins())
         except installer.InstallerError as exc:
             self._log(Text(f"Could not generate the upgrade installer: {exc}", style=T.CRITICAL))
             return None
@@ -1365,4 +1414,14 @@ def _pending_cells(code: dict[str, Any], now, names: dict[str, str]) -> tuple:
                  if code.get("last_attempt_at") else "")
         detail = f"code {code['code']} expired {ST.human_age(-left)}{tried} · press n for a fresh code"
     return (status, Text(label), Text(code.get("last_attempt_host") or "—", style=T.TEXT_DIM), Text("—"),
-            Text("—", style=T.TEXT_DIM), Text(detail, style=T.TEXT_DIM))
+            Text("—", style=T.TEXT_DIM), Text("—", style=T.TEXT_DIM), Text(detail, style=T.TEXT_DIM))
+
+
+def _link_cell(target: dict[str, Any], dim: bool) -> Any:
+    """How this agent's link to Kratos is protected (C.4)."""
+    mode = target.get("link_mode")
+    if mode == "tls-pinned":
+        return Text("encrypted", style=T.TEXT_DIM if dim else T.SAFE)
+    if mode == "plaintext":
+        return Text("plain → g", style=T.TEXT_DIM if dim else T.ATTENTION)
+    return Text("—", style=T.TEXT_DIM)

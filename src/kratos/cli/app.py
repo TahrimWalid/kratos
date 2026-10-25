@@ -332,10 +332,19 @@ def cmd_subagent_pair(args: argparse.Namespace) -> int:
     store = SubAgentStore(args.data_dir / "kratos.db")
     result = store.create_pairing_code(name=args.name)
     print(f"[KRATOS] Pairing code: {result['code']}  (expires in {result['ttl_seconds'] // 60} min)")
-    print(f"[KRATOS] On the target, with subagent/{{agent,protocol,collector,signing,whitelist}}.py copied alongside each other:")
+    pin_flags = ""
+    try:
+        from kratos.subagent import tls as _tls
+
+        keys = _tls.ensure_keys(args.data_dir)
+        pin_flags = "".join(f" --server-pin {p}" for p in keys.pins()) + f" --server-pins-version {keys.version}"
+    except Exception as exc:  # noqa: BLE001 -- the code still works for an unencrypted agent
+        print(f"[KRATOS] Note: the agent link keys aren't usable ({exc}); this agent would connect unencrypted.",
+              file=sys.stderr)
+    print("[KRATOS] On the target, with the bundle's subagent/*.py files copied alongside each other:")
     print(
         f"[KRATOS]   python3 -m subagent.agent --core-host {args.core_host} --core-port {args.core_port} "
-        f"--pair {result['code']}"
+        f"--pair {result['code']}{pin_flags}"
     )
     print(f"[KRATOS] The pairing code is single-use; the agent saves a persistent token after its first successful connect.")
     print(f"[KRATOS] Easier: `kratos subagent-install --core-host {args.core_host}` emits a one-command installer instead.")
@@ -462,9 +471,18 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
         code = result["code"]
         ttl_note = f"  (pairing code expires in {result['ttl_seconds'] // 60} min)"
 
+    from kratos.subagent import tls as _tls
+
+    try:
+        pins = _tls.ensure_keys(args.data_dir).as_pin_set()
+    except (_tls.TLSKeyError, OSError) as exc:
+        print(f"[KRATOS] Could not use the agent link keys: {exc}", file=sys.stderr)
+        print("[KRATOS] Fix them (see `kratos subagent-tls status`) -- an installer without them would connect "
+              "unencrypted.", file=sys.stderr)
+        return 1
     try:
         script = _installer.generate_installer(args.core_host, code, core_port=args.core_port,
-                                               trusted_interfaces=args.trusted_interfaces)
+                                               trusted_interfaces=args.trusted_interfaces, server_pins=pins)
     except _installer.InstallerError as exc:
         print(f"[KRATOS] Could not generate installer: {exc}", file=sys.stderr)
         return 1
@@ -1147,6 +1165,68 @@ def cmd_subagent_status(args: argparse.Namespace) -> int:
                 f"uptime={host.get('uptime_seconds')}s  disk_used_pct={disk.get('used_pct')}"
             )
     return 0
+
+
+def cmd_subagent_tls(args: argparse.Namespace) -> int:
+    """The encrypted agent link (Phase C.4): `status` shows the two server keys
+    (active, backup), which agents hold which pin set and the next step;
+    `rotate` makes the backup key active and a new backup, and the listener
+    pushes the new pins to every connected encrypted agent."""
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent import tls as _tls
+
+    store = SubAgentStore(args.data_dir / "kratos.db")
+    if args.action == "rotate":
+        try:
+            keys = _tls.load_keys(args.data_dir)
+        except _tls.TLSKeyError as exc:
+            print(f"[KRATOS] Can't rotate: {exc}", file=sys.stderr)
+            return 1
+        if keys is None:
+            print("[KRATOS] There are no agent link keys yet -- they are made when the listener first starts.")
+            return 1
+        blockers = _tls.rotate_blockers(store, keys)
+        if blockers and not args.force:
+            print("[KRATOS] Not rotating: these encrypted agents don't hold the current pins yet, and would be cut "
+                  "off by a second rotation (they'd hold neither key):", file=sys.stderr)
+            for b in blockers:
+                print(f"[KRATOS]   {b['name']}  (pin set {b['pin_version']}, current {keys.version})", file=sys.stderr)
+            print("[KRATOS] Let them connect once (they get the pins automatically), or update them (/subagent, g). "
+                  "--force rotates anyway; those agents would then need re-pairing.", file=sys.stderr)
+            return 1
+        try:
+            before, after = _tls.rotate(args.data_dir, actor="cli")
+        except _tls.TLSKeyError as exc:
+            print(f"[KRATOS] Can't rotate: {exc}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] Rotated the agent link keys: pin set {before.version} -> {after.version}.")
+        print(f"[KRATOS]   active now: {after.active_pin}  (was the backup)")
+        print(f"[KRATOS]   new backup: {after.backup_pin}")
+        print("[KRATOS] A running listener starts using the new key within seconds and sends the new pins to every "
+              "connected encrypted agent. Agents that are offline still trust the new active key (it was their "
+              "backup) and get the new pins when they reconnect.")
+        print(f"[KRATOS] Copy the new backup key somewhere safe: {after.backup_key_path}")
+        return 0
+    st = _tls.status(args.data_dir, store)
+    keys = st.get("keys")
+    print(f"[KRATOS] key folder: {st['directory']}")
+    if st.get("error"):
+        print(f"[KRATOS] keys: UNUSABLE -- {st['error']}")
+    elif keys is None:
+        print("[KRATOS] keys: not made yet (made when the listener first starts)")
+    else:
+        print(f"[KRATOS] pin set {keys['version']}:")
+        print(f"[KRATOS]   active: {keys['active']}")
+        print(f"[KRATOS]   backup: {keys['backup']}  ({keys['backup_key_path']} -- copy it somewhere safe)")
+    print(f"[KRATOS] require encryption: {'on' if st['require'] else 'off'}")
+    agents = st.get("agents") or []
+    if not agents:
+        print("[KRATOS] no paired agents")
+    for a in agents:
+        pins = f"pin set {a['pin_version']}" if a.get("pin_version") else "no pins"
+        print(f"[KRATOS]   {a['name']:24s} {a['state']:34s} {pins:12s} agent {a.get('agent_version') or '?'}")
+    print(f"[KRATOS] next: {st['next']}")
+    return 1 if st.get("error") else 0
 
 
 def cmd_llm_serve(args: argparse.Namespace) -> int:
@@ -2186,6 +2266,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="List paired sub-agent targets, their liveness status, and latest telemetry",
     )
     subagent_status.set_defaults(func=cmd_subagent_status)
+
+    subagent_tls = sub.add_parser(
+        "subagent-tls",
+        help="The encrypted agent link: show the server keys and which agents are encrypted, or rotate the keys",
+    )
+    subagent_tls.add_argument("action", choices=("status", "rotate"), nargs="?", default="status")
+    subagent_tls.add_argument("--force", action="store_true",
+                              help="rotate even if some encrypted agents don't hold the current pins yet")
+    subagent_tls.set_defaults(func=cmd_subagent_tls)
 
     snapshots_p = sub.add_parser(
         "snapshots",

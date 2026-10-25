@@ -154,7 +154,7 @@ def test_pending_code_row_counts_down_and_expired_row_says_who_tried(tmp_path):
 
     async def script(app, pilot):
         for i, r in enumerate(screen._rows):
-            cells[r["code"]["code"]] = (_cell(screen, i, 0), _cell(screen, i, 5))
+            cells[r["code"]["code"]] = (_cell(screen, i, 0), _cell(screen, i, 6))
 
     _run(screen, script)
     assert "waiting" in cells[fresh][0] and "expires in 1" in cells[fresh][1]

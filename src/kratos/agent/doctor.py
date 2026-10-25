@@ -440,6 +440,38 @@ def _check_detection(out: list[Check], data_dir: Path) -> None:
     out.append(_row("detection rules", "pass" if runs else "info", detail))
 
 
+def _check_agent_link(out: list[Check], data_dir: Path) -> None:
+    """C.4: are the agent link keys usable, and which paired agents are encrypted."""
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent import tls
+
+    st = tls.status(data_dir, SubAgentStore(data_dir / "kratos.db"))
+    if st.get("error"):
+        out.append(_row("agent link", "fail", f"encryption keys unusable: {st['error']}",
+                        fix="restore the subagent-tls folder from your copy, or fix its permissions"))
+        return
+    agents = st.get("agents") or []
+    keys = st.get("keys")
+    if keys is None and not agents:
+        out.append(_row("agent link", "info", "no agents paired; the encryption keys are made when the listener "
+                        "first starts"))
+        return
+    pinned = [a for a in agents if a["link_mode"] == tls.LINK_TLS]
+    plain = [a for a in agents if a["link_mode"] == tls.LINK_PLAIN]
+    pins = f"pin set {keys['version']} (active {keys['active'][:12]}…, backup {keys['backup'][:12]}…)" if keys else ""
+    detail = (f"TLS with pinned keys, {pins}; {len(pinned)} of {len(agents)} agent(s) encrypted"
+              + (f", {len(plain)} plaintext" if plain else "")
+              + f"; require encryption {'on' if st['require'] else 'off'}")
+    if plain and st["require"]:
+        out.append(_row("agent link", "fail", detail + " -- the plaintext ones are refused",
+                        fix="update each (/subagent, select it, press g)"))
+    elif plain:
+        out.append(_row("agent link", "warn", detail,
+                        fix="update each plaintext agent (/subagent, press g), then turn on 'require encryption'"))
+    else:
+        out.append(_row("agent link", "pass", detail))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -452,6 +484,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("detection rules", lambda o: _check_detection(o, Path(data_dir))))
+        sections.append(("agent link", lambda o: _check_agent_link(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))

@@ -348,7 +348,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
                           "serve.port", "serve.allow_non_loopback", "serve.allowed_hosts", "serve.max_parallel",
-                          "serve.requests_per_hour", "serve.link_hosts"]
+                          "serve.requests_per_hour", "serve.link_hosts", "subagent.tls.require"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -756,8 +756,66 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._serve_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._agent_link_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         if idx is not None and 0 <= idx < len(self._gen_rows):
             gen.move_cursor(row=idx)
+
+    # --- Encrypted agent link (kratos.subagent.tls, C.4) ---
+    def _plaintext_agents(self, dd: Path) -> list[str]:
+        from kratos.storage.subagent_store import SubAgentStore
+
+        return [t.get("name") or t.get("hostname") or t["target_id"]
+                for t in SubAgentStore(dd / "kratos.db").list_targets(include_revoked=False)
+                if t.get("link_mode") != "tls-pinned"]
+
+    def _agent_link_rows(self) -> list[tuple[str, str, str]]:
+        from kratos.subagent import tls as _tls
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(_tls.REQUIRE, "Agent link: require encryption", "unavailable here")]
+        if _tls.require_encryption(dd):
+            tail = "on  (agents without encryption are refused)"
+        else:
+            plain = self._plaintext_agents(dd)
+            tail = ("off  (" + (f"{len(plain)} paired agent(s) not encrypted yet -- update them with g in /subagent)"
+                                if plain else "every paired agent is encrypted -- you can turn this on)"))
+        return [(_tls.REQUIRE, "Agent link: require encryption", tail)]
+
+    @work
+    async def _set_agent_link_setting_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.subagent import tls as _tls
+        from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        value = await self.app.push_screen_wait(ListPickerModal("Agent link: require encryption", [
+            ("off", "off — agents without encryption still connect (while you update them)"),
+            ("on", "on — refuse any agent that connects without encryption")]))
+        if value is None:
+            return
+        if value == "on":
+            plain = self._plaintext_agents(dd)
+            if plain:
+                names = ", ".join(plain[:5]) + (f" and {len(plain) - 5} more" if len(plain) > 5 else "")
+                ok = await self.app.push_screen_wait(ConfirmModal(
+                    "Refuse agents that aren't encrypted yet?",
+                    f"These paired agents haven't connected with encryption yet: {names}. They will be refused "
+                    "(\"update the agent\") until you update each one (/subagent, select it, press g).",
+                    yes_label="turn it on", no_label="keep it off"))
+                if not ok:
+                    return
+        try:
+            settings_store.set(_tls.REQUIRE, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved -- the listener applies it to the next agent that connects.", T.SAFE)
 
     # --- Run records (kratos.trace) ---
     def _trace_rows(self) -> list[tuple[str, str, str]]:
@@ -1091,6 +1149,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_privacy_setting_flow(key)
         elif key and key.startswith("serve."):
             self._set_serve_setting_flow(key)
+        elif key == "subagent.tls.require":
+            self._set_agent_link_setting_flow(key)
 
     def _logs_settings(self) -> tuple[Any, Any]:
         from kratos import settings_store
