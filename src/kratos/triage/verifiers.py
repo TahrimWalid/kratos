@@ -345,6 +345,9 @@ register_no_verifier(NoVerifier(
     # stored log lines (the finding names them); a fresh read can't make it happen again.
     reason="a rule match can't be re-read; its log lines are kept (events --rule)"))
 register_no_verifier(NoVerifier(
+    rules=("DETECT-002",),
+    reason="the watcher reports its own state every minute; /subagent shows it live"))
+register_no_verifier(NoVerifier(
     rules=("PRIV-004",),
     reason="an inventory of who holds privileged access, not a risk in itself; re-read it on demand with /verify "
            "(the PRIV-001/002/003 findings it summarises are each verified)"))

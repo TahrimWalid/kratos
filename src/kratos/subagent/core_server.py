@@ -163,6 +163,19 @@ TLS_MIN_AGENT_VERSION = (0, 8, 0)
 PLAINTEXT_REFUSED_REASON = (f"this Kratos {PLAINTEXT_REFUSED_MARK} now -- update the agent "
                             "(/subagent, select the box, press g)")
 READ_REPLY_MARGIN_SECONDS = 15.0
+# Continuous detection (C.2). Detections and watch statuses are handled on a small
+# pool of their own threads, never on this event loop (one slow database write must
+# not stall other agents' pings -- the Phase B `kratos serve` lesson). Past these
+# many waiting at once (all agents / one agent) a detection is not acknowledged: the
+# agent keeps it in its spool and sends it again, nothing is dropped.
+DETECT_WORKERS = 2
+DETECT_QUEUE_MAX = 1000
+DETECT_PER_AGENT_MAX = 200
+DETECT_LOOP_SECONDS = 1.0
+DETECT_PUSH_CHECK_SECONDS = 2.0
+DETECT_HEALTH_SECONDS = 30.0
+DETECT_PUSH_ACK_TIMEOUT_SECONDS = 30.0
+DETECT_ACK_DELAY_SECONDS = 0.05
 RECONNECT_EXPECTED_SECONDS = 90.0
 _MAX_ADVERTISED_PROBES = 64
 
@@ -422,6 +435,22 @@ class CoreServer:
         self._pin_push_running: set[str] = set()
         self._pending_handshakes = 0
         self._conn_tasks: set[asyncio.Task] = set()
+        # Continuous detection (C.2): what each live agent says about watching, the
+        # worker pools, back-pressure counters, pushes waiting for their ack.
+        self._agent_watch: dict[str, dict[str, Any]] = {}
+        self._detect_pool: Any | None = None
+        self._alert_pool: Any | None = None
+        self._live_detect: Any | None = None
+        self._detect_inflight = 0
+        self._detect_per_agent: dict[str, int] = {}
+        self._ack_pending: dict[str, list[int]] = {}
+        self.detect_backpressure = 0
+        self._pending_detect_ack: dict[str, asyncio.Future] = {}
+        self._detect_push_running: set[str] = set()
+        self._detect_pushed: dict[str, int] = {}
+        self._detect_refused: dict[str, int] = {}
+        self._disconnected_wall: dict[str, float] = {}
+        self._detect_task: asyncio.Task | None = None
 
     def live_target_ids(self) -> set[str]:
         return set(self._live.keys())
@@ -608,6 +637,7 @@ class CoreServer:
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         if self.whitelist_store is not None:
             self._watch_task = asyncio.create_task(self._whitelist_watch_loop())
+        self._detect_task = asyncio.create_task(self._detect_loop())
         self._stop_event = asyncio.Event()
         try:
             # Deliberately NOT asyncio's Server.serve_forever(): on cancellation
@@ -621,6 +651,9 @@ class CoreServer:
             self._server.close()
             if self._tls_task is not None:
                 self._tls_task.cancel()
+            if self._detect_task is not None:
+                self._detect_task.cancel()
+            self._shutdown_detect_pools()
             await self._stop_local_reads()
 
     def stop(self) -> None:
@@ -669,7 +702,8 @@ class CoreServer:
 
     def _busy(self) -> bool:
         return bool(self._pending_reads or self._pending_exec or self._pending_whitelist_ack
-                    or self._pending_pin_ack or self._servicing_dispatch)
+                    or self._pending_pin_ack or self._servicing_dispatch or self._detect_inflight
+                    or self._pending_detect_ack)
 
     def note_activity(self) -> None:
         self._last_activity = time.monotonic()
@@ -722,6 +756,11 @@ class CoreServer:
             self._tls_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._tls_task
+        if self._detect_task is not None:
+            self._detect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._detect_task
+        self._shutdown_detect_pools()
         await self._stop_local_reads()
         if self._server is not None:
             self._server.close()  # stop accepting new connections first
@@ -992,6 +1031,8 @@ class CoreServer:
                 # module's own test suite) -- the two run concurrently instead.
                 asyncio.create_task(self._push_current_whitelist(target_id))
             self._maybe_push_pins(target_id)  # an agent behind on pins catches up (C.4)
+            self._note_watch_capability(target_id, hello)
+            self._maybe_push_detect(target_id)  # continuous detection's rules (C.2)
             close_reason = await self._receive_loop(reader, writer, target_id, token)
         except asyncio.TimeoutError:
             close_reason = f"{SILENT_DROP_PREFIX} for {PING_TIMEOUT_SECONDS}s"
@@ -1013,6 +1054,10 @@ class CoreServer:
                     self._link.pop(target_id, None)
                     self._agent_pin_version.pop(target_id, None)
                     self._disconnected_at[target_id] = time.monotonic()
+                    self._disconnected_wall[target_id] = time.time()
+                    self._agent_watch.pop(target_id, None)
+                    self._detect_pushed.pop(target_id, None)
+                    self._detect_refused.pop(target_id, None)
                     self._fail_pending_reads(target_id, "the sub-agent disconnected before answering")
                     self._safe(self.store.record_connection_closed, target_id,
                                listener_id=self.listener_id, reason=reason)
@@ -1020,6 +1065,198 @@ class CoreServer:
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
+
+    # ------------------------------------------------------------------
+    # Continuous detection (C.2) -- kratos.detect.live, kratos.subagent.watch
+    # ------------------------------------------------------------------
+    def _detector(self) -> Any:
+        if self._live_detect is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            from kratos.detect.live import LiveDetections
+
+            self._live_detect = LiveDetections(self.data_dir)
+            self._detect_pool = ThreadPoolExecutor(max_workers=DETECT_WORKERS, thread_name_prefix="kratos-detect")
+            # One thread for findings, triggers and notifications: alerts go out one at a
+            # time, and a slow trigger (an investigation) never holds up detections.
+            self._alert_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kratos-alerts")
+        return self._live_detect
+
+    def _shutdown_detect_pools(self) -> None:
+        for pool in (self._detect_pool, self._alert_pool):
+            if pool is not None:
+                pool.shutdown(wait=False, cancel_futures=True)
+
+    def _note_watch_capability(self, target_id: str, hello: dict[str, Any]) -> None:
+        api = hello.get("watch_api")
+        info = hello.get("watch")
+        if type(api) is not int or not isinstance(info, dict):
+            self._agent_watch.pop(target_id, None)
+            return
+        version = info.get("version")
+        self._agent_watch[target_id] = {"api": api, "enabled": info.get("enabled") is True,
+                                        "version": version if type(version) is int else None}
+
+    def watch_capable(self, target_id: str) -> bool:
+        return target_id in self._agent_watch
+
+    def _maybe_push_detect(self, target_id: str) -> None:
+        if target_id not in self._agent_watch or target_id in self._detect_push_running:
+            return
+        self._detect_push_running.add(target_id)
+        task = asyncio.create_task(self.push_detect_config(target_id))
+        task.add_done_callback(lambda _t, tid=target_id: self._detect_push_running.discard(tid))
+
+    async def push_detect_config(self, target_id: str) -> bool:
+        """Bring a live agent up to the rules it should run (or turn watching off), signed
+        for this connection, and wait for its answer. False (never raises) when it is not
+        connected, can't watch, was never turned on, or doesn't confirm."""
+        from kratos.detect import live as live_mod
+
+        info = self._agent_watch.get(target_id)
+        writer = self._live.get(target_id)
+        nonce = self._session_nonce.get(target_id)
+        target = self._safe(self.store.get_target, target_id)
+        if info is None or writer is None or nonce is None or not target or target.get("revoked_at"):
+            return False
+        live = self._detector()
+        loop = asyncio.get_running_loop()
+        try:
+            res = await loop.run_in_executor(self._detect_pool, live_mod.sync_version, self.data_dir, target_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not work out the detection rules for %s: %s", target_id, e)
+            return False
+        if res is None:
+            return False                       # never turned on: nothing to send
+        version, cfg = res
+        if info.get("version") == version and info.get("enabled") == cfg["enabled"]:
+            self._detect_pushed[target_id] = version
+            return True                        # the agent already runs exactly this
+        if self._detect_refused.get(target_id) == version:
+            return False                       # refused already: not again until something changes
+        envelope = proto.build_detect_pack_push(version, cfg["enabled"], cfg["machine"], cfg["packs"],
+                                                cfg["disabled"], cfg["settings"], nonce)
+        envelope["sig"] = signing.sign_envelope(signing.derive_signing_key(target["token"]), envelope)
+        fut: asyncio.Future = loop.create_future()
+        self._pending_detect_ack[target_id] = fut
+        self.note_activity()
+        try:
+            await proto.write_frame(writer, envelope)
+            ack = await asyncio.wait_for(fut, timeout=DETECT_PUSH_ACK_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, OSError, proto.ProtocolError) as e:
+            logger.info("rule-pack push to %s got no answer (%s)", target_id, type(e).__name__)
+            return False
+        finally:
+            self._pending_detect_ack.pop(target_id, None)
+        await loop.run_in_executor(self._detect_pool, live_mod.record_ack, self.data_dir, target_id, ack)
+        if ack.get("status") == "ok" and ack.get("version") == version:
+            info.update(version=version, enabled=cfg["enabled"])
+            self._detect_pushed[target_id] = version
+            self._detect_refused.pop(target_id, None)
+            self._safe(self.store.record_connection_event, target_id, "watch_rules",
+                       f"the agent runs rule-pack push {version} (watching {'on' if cfg['enabled'] else 'off'})")
+            return True
+        reason = str(ack.get("reason") or "refused")[:300]
+        logger.warning("target %s refused rule-pack push %s: %s", target_id, version, reason)
+        self._detect_refused[target_id] = version
+        self._safe(self.store.record_connection_event, target_id, "watch_refused", reason)
+        return False
+
+    def _submit_detection(self, target_id: str, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+        seq = msg.get("seq")
+        if type(seq) is not int:
+            return
+        live = self._detector()
+        if self._detect_inflight >= DETECT_QUEUE_MAX or self._detect_per_agent.get(target_id, 0) >= DETECT_PER_AGENT_MAX:
+            self.detect_backpressure += 1      # not acknowledged: the agent keeps it and sends it again
+            return
+        self._detect_inflight += 1
+        self._detect_per_agent[target_id] = self._detect_per_agent.get(target_id, 0) + 1
+        fut = asyncio.get_running_loop().run_in_executor(self._detect_pool, live.handle_detection, target_id, msg)
+
+        def done(f: asyncio.Future) -> None:
+            self._detect_inflight -= 1
+            self._detect_per_agent[target_id] = max(0, self._detect_per_agent.get(target_id, 1) - 1)
+            if f.cancelled() or f.exception() is not None:
+                if not f.cancelled():
+                    logger.warning("a detection from %s could not be stored: %s", target_id, f.exception())
+                return
+            if f.result():
+                self._queue_detection_ack(target_id, writer, seq)
+
+        fut.add_done_callback(done)
+
+    def _queue_detection_ack(self, target_id: str, writer: asyncio.StreamWriter, seq: int) -> None:
+        pending = self._ack_pending.setdefault(target_id, [])
+        pending.append(seq)
+        if len(pending) == 1:
+            asyncio.get_running_loop().call_later(DETECT_ACK_DELAY_SECONDS, self._flush_detection_acks, target_id,
+                                                  writer)
+
+    def _flush_detection_acks(self, target_id: str, writer: asyncio.StreamWriter) -> None:
+        seqs = self._ack_pending.pop(target_id, [])
+        if not seqs or self._live.get(target_id) is not writer:
+            return                                  # the connection is gone: the agent resends
+        for i in range(0, len(seqs), proto.MAX_DETECTION_ACK_SEQS):
+            chunk = seqs[i:i + proto.MAX_DETECTION_ACK_SEQS]
+            task = asyncio.ensure_future(proto.write_frame(writer, proto.build_detection_ack(chunk)))
+            task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+
+    def _submit_watch_status(self, target_id: str, msg: dict[str, Any]) -> None:
+        live = self._detector()
+        if self._detect_inflight >= DETECT_QUEUE_MAX:
+            return                                  # the next one comes within a minute
+        self._detect_inflight += 1
+        fut = asyncio.get_running_loop().run_in_executor(self._detect_pool, live.handle_status, target_id, msg)
+
+        def done(f: asyncio.Future) -> None:
+            self._detect_inflight -= 1
+            if not f.cancelled() and f.exception() is not None:
+                logger.warning("a watch status from %s could not be stored: %s", target_id, f.exception())
+
+        fut.add_done_callback(done)
+        self._safe(self.store.touch_last_seen, target_id)
+
+    def live_map(self) -> dict[str, tuple[bool, float | None]]:
+        """Per agent: (connected now, when its link went down) -- first-hand."""
+        ids = set(self._agent_watch) | set(self._disconnected_wall) | set(self._live)
+        return {tid: (tid in self._live, None if tid in self._live else self._disconnected_wall.get(tid))
+                for tid in ids}
+
+    async def _detect_loop(self) -> None:
+        """Every second: publish batches of detections that are due (findings, triggers,
+        alerts -- on the alert thread). Every few seconds: bring live agents up to the
+        rules they should run. Every 30 s: health of every watched machine."""
+        loop = asyncio.get_running_loop()
+        last_push = last_health = 0.0
+        while True:
+            await asyncio.sleep(DETECT_LOOP_SECONDS)
+            try:
+                now = time.monotonic()
+                if self._live_detect is not None:
+                    for machine, batch in self._live_detect.due():
+                        fut = loop.run_in_executor(self._alert_pool, self._publish, machine, batch, self.live_map())
+                        fut.add_done_callback(_log_failure("publishing detections"))
+                if now - last_push >= DETECT_PUSH_CHECK_SECONDS:
+                    last_push = now
+                    for target_id in list(self._agent_watch):
+                        self._maybe_push_detect(target_id)
+                if now - last_health >= DETECT_HEALTH_SECONDS:
+                    last_health = now
+                    self._detector()
+                    fut = loop.run_in_executor(self._detect_pool, self._check_health, self.live_map())
+                    fut.add_done_callback(_log_failure("checking watch health"))
+            except Exception as e:  # noqa: BLE001 -- the loop must not die
+                logger.warning("continuous detection loop: %s", e)
+
+    def _publish(self, machine: str, batch: Any, live: dict[str, Any]) -> None:
+        self._detector().publish(machine, batch, live=live)
+
+    def _check_health(self, live: dict[str, Any]) -> None:
+        from kratos.detect import live as live_mod
+
+        for changed in live_mod.health_changes(self.data_dir, live=live):
+            self._detector().mark_health(changed)
 
     # ------------------------------------------------------------------
     # Investigation reads (docs/subagent_read_routing.md)
@@ -1266,6 +1503,14 @@ class CoreServer:
                 fut = self._pending_pin_ack.get(target_id)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
+            elif mtype == proto.MSG_DETECTION:
+                self._submit_detection(target_id, msg, writer)
+            elif mtype == proto.MSG_WATCH_STATUS:
+                self._submit_watch_status(target_id, msg)
+            elif mtype == proto.MSG_DETECT_PACK_ACK:
+                fut = self._pending_detect_ack.get(target_id)
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
             elif mtype == proto.MSG_READ_RESULT:
                 pending = self._pending_reads.get(msg.get("request_id"))
                 # Only the target the request was sent to can answer it.
@@ -1273,6 +1518,13 @@ class CoreServer:
                     pending[1].set_result(msg)
             else:
                 logger.warning("ignoring unexpected message type %r from target %s", mtype, target_id)
+
+
+def _log_failure(what: str) -> Any:
+    def cb(f: Any) -> None:
+        if not f.cancelled() and f.exception() is not None:
+            logger.warning("%s failed: %s", what, f.exception())
+    return cb
 
 
 def _interval(value: Any) -> float | None:

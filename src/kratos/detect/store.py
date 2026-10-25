@@ -86,7 +86,54 @@ def _step_2(conn: sqlite3.Connection) -> None:
     )
 
 
-STEPS = (_step_1, _step_2)
+def _step_3(conn: sqlite3.Connection) -> None:
+    """C.2: continuous detection on agents."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS detect_pack_state (
+          target_id TEXT PRIMARY KEY,        -- the paired sub-agent
+          machine TEXT,                      -- target_key its detections are filed under
+          enabled INTEGER NOT NULL DEFAULT 0,  -- a person turned watching on (people only)
+          changed_by TEXT,                   -- who turned it on or off: "user via interface"
+          changed_at REAL,
+          push_version INTEGER NOT NULL DEFAULT 0,  -- counts up whenever what the agent should run changes
+          desired_digest TEXT,               -- sha256 of that configuration
+          acked_version INTEGER,             -- the newest push the agent applied
+          ack_status TEXT,                   -- ok | refused
+          ack_reason TEXT,
+          ack_at REAL,
+          agent_packs TEXT,                  -- JSON: [{pack_id, pack_version, sha256}] the agent runs
+          last_status_at REAL,               -- the agent's latest watch status arrived
+          health TEXT,                       -- JSON: the health last turned into findings
+          trigger_offered INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS detect_watch (
+          target_id TEXT NOT NULL,
+          source TEXT NOT NULL,              -- journal | auditd
+          machine TEXT,
+          state TEXT NOT NULL,               -- watching | restarting | not_available | error | off
+          since REAL,                        -- in this state since (agent's clock)
+          watching_since REAL,               -- watching continuously since (agent's clock)
+          last_event_ts REAL,
+          events_per_min INTEGER,
+          matches INTEGER,
+          lag_seconds REAL,
+          dropped INTEGER,
+          skipped INTEGER,
+          gaps TEXT,                         -- JSON: [{from, to, reason, kind}] stretches not watched (newest 500)
+          error TEXT,
+          updated_at REAL NOT NULL,          -- Kratos's clock
+          PRIMARY KEY (target_id, source)
+        )
+        """
+    )
+
+
+STEPS = (_step_1, _step_2, _step_3)
 
 
 def _connect(data_dir: Path | str) -> sqlite3.Connection:

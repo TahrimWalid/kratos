@@ -78,6 +78,9 @@ RULES: dict[str, RuleInfo] = dict([
     _r("LOG-004", "condition", sticky=True),
     _r("LOG-005", "condition", sticky=True),
     _r("SEAL-001", "condition", sticky=True),
+    # C.2: continuous detection is on for a machine but not running -- goes away by itself
+    # when watching resumes (a later detections snapshot without it)
+    _r("DETECT-002", "condition"),
     _r("SEAL-002", "condition"),
     _r("LOG-006", "condition"),        # auditd installed but not running: a state, closes when it runs
     # A.1: where someone could keep access. Each is a state that lasts until the item

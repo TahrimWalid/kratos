@@ -24,9 +24,10 @@ from typing import Any, Callable, Iterator, TypeVar
 
 from kratos.target_key import target_key
 
-SOURCES = ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli")
-# Runs with no person watching: 0.4's hard spending caps apply to these.
-UNATTENDED = frozenset({"schedule", "trigger", "mcp", "web"})
+SOURCES = ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli", "watch")
+# Runs with no person watching: 0.4's hard spending caps apply to these. "watch": the
+# listener publishing an agent's live detections (C.2).
+UNATTENDED = frozenset({"schedule", "trigger", "mcp", "web", "watch"})
 
 
 @dataclass(frozen=True)

@@ -211,6 +211,7 @@ RULE_ATTACK: dict[str, Entry] = {
     "PKG-003": Posture("a kernel update waiting for a reboot is a weakness, not an action"),
     "PKG-004": Posture("run note: what the package check could not cover"),
     "DETECT-001": Posture("run note: what the detection rules could not check"),
+    "DETECT-002": Posture("Kratos's own watcher is not running: a gap in coverage, not an action"),
 }
 
 

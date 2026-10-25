@@ -144,6 +144,18 @@ CATEGORIES: tuple[Category, ...] = (
         note="kept unless you delete it yourself; the matches are pruned with host events",
     ),
     Category(
+        "watch", "Continuous detection on agents",
+        "Which machines a person turned continuous detection on for (who, when), which rule-pack push each "
+        "agent runs, and each watched log's state: watching since when, events a minute, lag, how many matches "
+        "were dropped, and the stretches of log that were not watched (with why). The matches themselves are "
+        "host events (dataset kratos.detect). On each watched machine the agent keeps its own small state "
+        "(rule pack, position, unsent matches -- bounded) in its state folder.",
+        NOT_PERSONAL, "one row per watched machine and one per watched log; the unwatched stretches of each log "
+                      "(newest 500)",
+        tables=(TableRef(DB, ("detect_pack_state", "detect_watch"), ("detect_watch", "updated_at")),),
+        note="kept unless you delete it yourself",
+    ),
+    Category(
         "log_sync", "Log-sync positions and coverage",
         "Where Kratos stopped reading each log, and which periods it has read completely.",
         NOT_PERSONAL, "one row per log source per machine, plus one per gap",

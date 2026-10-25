@@ -58,6 +58,7 @@ class SourceCoverage:
     state: str                # checked | partial | not_checked
     rules: int                # rules in the packs that read it
     note: str = ""            # plain words, for anything but "checked"
+    datasets: tuple[str, ...] = ()   # the datasets that feed it (C.2: is it watched live?)
 
 
 @dataclass
@@ -157,7 +158,7 @@ def _authors(text: str) -> tuple[str, ...]:
 
 
 def detection_event(m: D.Match, rule: dict[str, Any], lp: packs_mod.LoadedPack, matched: Event,
-                    target: str, *, created: datetime, run_id: str | None) -> Event:
+                    target: str, *, created: datetime, run_id: str | None, read: str = "detect_pass") -> Event:
     """One detection as an event. Its message is Kratos-shipped text only (the rule's
     title and author); what the machine logged stays in the matched event."""
     values = {a: getattr(matched, a) for a in _COPY if getattr(matched, a) is not None}
@@ -189,7 +190,7 @@ def detection_event(m: D.Match, rule: dict[str, Any], lp: packs_mod.LoadedPack, 
         detect_level=rule["level"],
         detect_group=group,
         detect_count=m.count,
-        read="detect_pass",
+        read=read,
         run_id=run_id,
         parser=PARSER,
         **values,
@@ -225,7 +226,7 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
             seen = _source_seen(conn, key, since, ls)
             held_note = _held_note(data_dir, key, ls_key, now) if seen else None
             if held_note:
-                out.append(SourceCoverage(name, ls.label, "partial", len(rules), held_note))
+                out.append(SourceCoverage(name, ls.label, "partial", len(rules), held_note, tuple(ls.datasets)))
                 continue
             if seen and ls.partial:
                 full = _full_source_seen(conn, key, since, ls_key)
@@ -238,7 +239,7 @@ def coverage(data_dir: Path | str, target: str, loaded: packs_mod.Packs, *, now:
             else:
                 state = "not_checked"
                 note = f"not checked -- no events in the last {days} days; needs {ls.needs}"
-            out.append(SourceCoverage(name, ls.label, state, len(rules), note))
+            out.append(SourceCoverage(name, ls.label, state, len(rules), note, tuple(ls.datasets)))
     finally:
         conn.close()
     return out

@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 KRATOS = "kratos"
 SUMMARY_KEYS = ("new", "still_open", "fixed", "not_rechecked", "hidden", "expired_this_run")
 _INTERFACE = {"interactive": "tui", "evolve": "tui", "pipeline": "tui", "schedule": "scheduled",
-              "trigger": "scheduled", "cli": "cli", "mcp": "mcp", "web": "web"}
+              "trigger": "scheduled", "cli": "cli", "mcp": "mcp", "web": "web",
+              "watch": "scheduled"}
 _ABSENT_TO = {"condition": "mitigated", "occurrence": "inactive"}
 
 
