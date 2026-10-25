@@ -204,6 +204,12 @@ class SubAgentStore:
             have = {r["name"] for r in conn.execute("PRAGMA table_info(subagent_targets)")}
             if "core_addr" not in have:
                 conn.execute("ALTER TABLE subagent_targets ADD COLUMN core_addr TEXT")
+            # C.4: how the agent's last connection reached Kratos ('tls-pinned' |
+            # 'plaintext') and which server-key pin set it holds.
+            if "link_mode" not in have:
+                conn.execute("ALTER TABLE subagent_targets ADD COLUMN link_mode TEXT")
+            if "pin_version" not in have:
+                conn.execute("ALTER TABLE subagent_targets ADD COLUMN pin_version INTEGER")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")
@@ -404,6 +410,15 @@ class SubAgentStore:
             raise
         finally:
             conn.close()
+
+    def record_link(self, target_id: str, *, mode: str, pin_version: int | None) -> None:
+        """How this target's current connection reached Kratos (C.4)."""
+        self._write("UPDATE subagent_targets SET link_mode = ?, pin_version = ? WHERE target_id = ?",
+                    (mode, pin_version, target_id))
+
+    def record_pin_version(self, target_id: str, pin_version: int) -> None:
+        """The agent confirmed it now holds this pin set."""
+        self._write("UPDATE subagent_targets SET pin_version = ? WHERE target_id = ?", (pin_version, target_id))
 
     def touch_last_seen(self, target_id: str) -> None:
         conn = _connect(self.db_path)

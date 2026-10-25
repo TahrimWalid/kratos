@@ -34,6 +34,16 @@ core pushes is checked on the agent against the agent's OWN execution ceiling
 (kratos.subagent.ceiling) -- core can narrow what a target allows, never widen
 it. Each connection's `session_nonce` is carried in every signed dispatch and
 pong so a captured message can't be replayed later (review findings F4/F6).
+
+**Encrypted link (Phase C.4)**: the listener accepts TLS and plaintext on the
+same port. It peeks at each connection's first byte without consuming it (a TLS
+handshake starts with 0x16, a Kratos frame with 0x00) before any stream exists,
+then either wraps the socket in TLS with the active key (kratos.subagent.tls) or
+serves it in plaintext -- refused with "update the agent" when the people-only
+setting `subagent.tls.require` is on. Agents that hold pins only ever take the
+TLS path. When the keys are rotated (another process may do it), the listener
+notices within seconds, presents the new key to new connections, and pushes the
+new pin pair to every connected encrypted agent (signed, versioned).
 """
 from __future__ import annotations
 
@@ -43,6 +53,8 @@ import ipaddress
 import logging
 import os
 import re
+import socket
+import ssl
 import time
 import uuid
 from collections import OrderedDict, deque
@@ -52,6 +64,7 @@ from kratos.storage.subagent_store import SubAgentStore
 from kratos.subagent import protocol as proto
 from kratos.subagent import reads
 from kratos.subagent import signing
+from kratos.subagent import tls as link_tls
 from kratos.subagent import whitelist as wl
 from kratos.subagent.status import (
     LISTENER_HEARTBEAT_SECONDS,
@@ -136,6 +149,18 @@ def parse_agent_version(value: Any) -> tuple[int, ...] | None:
     if not isinstance(value, str) or not re.fullmatch(r"\d{1,4}(\.\d{1,4}){1,3}", value.strip()):
         return None
     return tuple(int(x) for x in value.strip().split("."))
+# Encrypted link (C.4): connections still before their TLS handshake / first
+# byte at once (beyond this a new one is closed at once, so a flood of silent
+# or slow clients can't use up file descriptors), how long the handshake may
+# take, how often the key record is checked for a rotation, and how long to
+# wait for an agent to confirm a pin-set push.
+MAX_PENDING_HANDSHAKES = 256
+TLS_HANDSHAKE_TIMEOUT_SECONDS = 10.0
+TLS_WATCH_INTERVAL_SECONDS = 2.0
+PIN_PUSH_ACK_TIMEOUT_SECONDS = 10.0
+TLS_MIN_AGENT_VERSION = (0, 8, 0)
+PLAINTEXT_REFUSED_REASON = ("this Kratos only accepts encrypted agent links now -- update the agent "
+                            "(/subagent, select the box, press g)")
 READ_REPLY_MARGIN_SECONDS = 15.0
 RECONNECT_EXPECTED_SECONDS = 90.0
 _MAX_ADVERTISED_PROBES = 64
@@ -232,6 +257,83 @@ class AuthFailureLimiter:
         return len(self._sources)
 
 
+class _SplitServer:
+    """The listening sockets and their accept loops -- the small part of
+    asyncio.Server the rest of this module (and its tests) use: `.sockets`
+    and `.close()`. Not asyncio.start_server: its transport starts reading at
+    once, and the first byte must be looked at before deciding TLS or not."""
+
+    def __init__(self, sockets: list[socket.socket]) -> None:
+        self.sockets = sockets
+        self.tasks: list[asyncio.Task] = []
+
+    def close(self) -> None:
+        for t in self.tasks:
+            t.cancel()
+        for sock in self.sockets:
+            with contextlib.suppress(OSError):
+                sock.close()
+
+    async def wait_closed(self) -> None:
+        if self.tasks:
+            await asyncio.wait(self.tasks)
+
+
+async def _listen_sockets(hosts: list[str], port: int) -> list[socket.socket]:
+    """Bound, listening, non-blocking sockets for each host (what
+    loop.create_server does: SO_REUSEADDR, IPv6 sockets IPv6-only)."""
+    loop = asyncio.get_running_loop()
+    infos: list[tuple] = []
+    for host in hosts:
+        for info in await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE):
+            if info not in infos:
+                infos.append(info)
+    socks: list[socket.socket] = []
+    try:
+        for family, type_, proto_num, _canon, addr in infos:
+            sock = socket.socket(family, type_, proto_num)
+            socks.append(sock)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6 and hasattr(socket, "IPPROTO_IPV6"):
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            sock.bind(addr)
+            sock.listen(128)
+            sock.setblocking(False)
+    except BaseException:
+        for sock in socks:
+            sock.close()
+        raise
+    if not socks:
+        raise OSError(f"nothing to listen on for {hosts!r}")
+    return socks
+
+
+async def _peek_first_byte(conn: socket.socket) -> int | None:
+    """The connection's first byte, LEFT in the socket (MSG_PEEK); None if the
+    peer closed without sending anything (e.g. a "is it listening?" check)."""
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future = loop.create_future()
+    fd = conn.fileno()
+
+    def ready() -> None:
+        if fut.done():
+            return
+        try:
+            data = conn.recv(1, socket.MSG_PEEK)
+        except (BlockingIOError, InterruptedError):
+            return
+        except OSError as e:
+            fut.set_exception(e)
+            return
+        fut.set_result(data[0] if data else None)
+
+    loop.add_reader(fd, ready)
+    try:
+        return await fut
+    finally:
+        loop.remove_reader(fd)
+
+
 class CoreServer:
     def __init__(
         self,
@@ -241,8 +343,14 @@ class CoreServer:
         whitelist_store: Any | None = None,
         mode: str | None = None,
         read_socket_path: Any | None = None,
+        data_dir: Any | None = None,
     ) -> None:
         self.store = store
+        # Where the agent link keys and the settings live (C.4): the folder of
+        # the shared kratos.db unless given.
+        from pathlib import Path as _Path
+
+        self.data_dir = _Path(data_dir) if data_dir is not None else _Path(store.db_path).parent
         # One address, or several ("127.0.0.1,100.64.1.2" or a list): the
         # always-on listener can bind only the addresses agents dial.
         self.bind_hosts = parse_bind_hosts(host)
@@ -297,6 +405,22 @@ class CoreServer:
         self._pending_reads: dict[str, tuple[str, asyncio.Future]] = {}
         self._disconnected_at: dict[str, float] = {}
         self._started_monotonic = time.monotonic()
+        # Encrypted link (C.4): the active TLS settings (None when the keys
+        # can't be used -- then TLS clients are turned away and /doctor says
+        # why), the key record's change marker, each live connection's link and
+        # the pin set its agent holds, pin-set pushes waiting for an answer, and
+        # connections not yet past their first byte / TLS handshake.
+        self._tls_ctx: Any | None = None
+        self._tls_keys: link_tls.KeySet | None = None
+        self.tls_error: str | None = None
+        self._tls_stamp: tuple[int, int] | None = None
+        self._tls_task: asyncio.Task | None = None
+        self._link: dict[str, str] = {}
+        self._agent_pin_version: dict[str, int | None] = {}
+        self._pending_pin_ack: dict[str, asyncio.Future] = {}
+        self._pin_push_running: set[str] = set()
+        self._pending_handshakes = 0
+        self._conn_tasks: set[asyncio.Task] = set()
 
     def live_target_ids(self) -> set[str]:
         return set(self._live.keys())
@@ -317,9 +441,163 @@ class CoreServer:
             )
         return out
 
+    # ------------------------------------------------------------------
+    # Encrypted link (C.4)
+    # ------------------------------------------------------------------
+    def _load_tls(self) -> None:
+        """(Re)load the agent link keys: made on first start, reloaded after a
+        rotation. A failure leaves the previous settings in place (or none),
+        and is reported, never raised -- telemetry from old agents goes on."""
+        try:
+            keys = link_tls.ensure_keys(self.data_dir)
+            ctx = link_tls.server_context(keys)
+        except (link_tls.TLSKeyError, OSError, ImportError, ValueError) as e:
+            if self.tls_error != str(e):
+                logger.error("encrypted agent links unavailable: %s", e)
+            self.tls_error = str(e)
+            return
+        self._tls_keys, self._tls_ctx, self.tls_error = keys, ctx, None
+        self._tls_stamp = link_tls.state_stamp(self.data_dir)
+
+    @property
+    def tls_keys(self) -> link_tls.KeySet | None:
+        return self._tls_keys
+
+    async def _tls_watch_loop(self) -> None:
+        """Notice a key rotation made by another process, then bring every
+        connected encrypted agent up to the current pin set."""
+        while True:
+            await asyncio.sleep(TLS_WATCH_INTERVAL_SECONDS)
+            try:
+                stamp = link_tls.state_stamp(self.data_dir)
+                if stamp != self._tls_stamp:
+                    before = self._tls_keys.version if self._tls_keys else None
+                    self._load_tls()
+                    if self._tls_keys is not None and self._tls_keys.version != before:
+                        logger.info("agent link keys changed (pin-set version %s -> %d); new connections get the "
+                                    "new key", before, self._tls_keys.version)
+                for target_id in list(self._live):
+                    self._maybe_push_pins(target_id)
+            except Exception as e:  # noqa: BLE001 -- the watch must not die
+                logger.warning("agent link key watch failed: %s", e)
+
+    def _maybe_push_pins(self, target_id: str) -> None:
+        keys = self._tls_keys
+        if (keys is None or self._link.get(target_id) != link_tls.LINK_TLS
+                or self._agent_pin_version.get(target_id) == keys.version
+                or target_id in self._pin_push_running):
+            return
+        self._pin_push_running.add(target_id)
+        task = asyncio.create_task(self.push_pin_set(target_id))
+        task.add_done_callback(lambda _t, tid=target_id: self._pin_push_running.discard(tid))
+
+    async def push_pin_set(self, target_id: str) -> bool:
+        """Send the current pin pair to a live agent over its pinned TLS link
+        and wait for it to confirm. Never over plaintext. False (never raises)
+        when it isn't connected that way or doesn't confirm in time."""
+        keys = self._tls_keys
+        writer = self._live.get(target_id)
+        nonce = self._session_nonce.get(target_id)
+        target = self._safe(self.store.get_target, target_id)
+        if keys is None or writer is None or nonce is None or not target or target.get("revoked_at"):
+            return False
+        if self._link.get(target_id) != link_tls.LINK_TLS:
+            return False
+        envelope = proto.build_pin_set_push(keys.version, keys.pins(), nonce)
+        envelope["sig"] = signing.sign_envelope(signing.derive_signing_key(target["token"]), envelope)
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_pin_ack[target_id] = fut
+        self.note_activity()
+        try:
+            await proto.write_frame(writer, envelope)
+            ack = await asyncio.wait_for(fut, timeout=PIN_PUSH_ACK_TIMEOUT_SECONDS)
+        except (asyncio.TimeoutError, OSError, proto.ProtocolError):
+            return False
+        finally:
+            self._pending_pin_ack.pop(target_id, None)
+        if ack.get("status") == "ok" and ack.get("version") == keys.version:
+            self._agent_pin_version[target_id] = keys.version
+            self._safe(self.store.record_pin_version, target_id, keys.version)
+            self._safe(self.store.record_connection_event, target_id, "pins_updated",
+                       f"the agent now holds pin set {keys.version}")
+            logger.info("target %s now holds agent link pin set %d", target_id, keys.version)
+            return True
+        reason = str(ack.get("reason") or "refused")[:300]
+        logger.warning("target %s refused pin set %d: %s", target_id, keys.version, reason)
+        self._safe(self.store.record_connection_event, target_id, "pins_refused", reason)
+        # Don't resend the same set every few seconds; a reconnect tries again.
+        self._agent_pin_version[target_id] = keys.version
+        return False
+
+    async def _accept_loop(self, lsock: socket.socket) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            try:
+                conn, _addr = await loop.sock_accept(lsock)
+            except asyncio.CancelledError:
+                raise
+            except OSError as e:
+                if lsock.fileno() == -1:
+                    return
+                logger.warning("accepting an agent connection failed: %s", e)
+                await asyncio.sleep(0.2)  # e.g. out of file descriptors: don't spin
+                continue
+            if self._pending_handshakes >= MAX_PENDING_HANDSHAKES:
+                conn.close()  # too many silent/slow connections at once
+                continue
+            task = asyncio.create_task(self._serve_accepted(conn))
+            self._conn_tasks.add(task)
+            task.add_done_callback(self._conn_tasks.discard)
+
+    async def _serve_accepted(self, conn: socket.socket) -> None:
+        """First byte -> TLS or plaintext; then the unchanged protocol."""
+        loop = asyncio.get_running_loop()
+        self._pending_handshakes += 1
+        handed_over = False
+        try:
+            conn.setblocking(False)
+            try:
+                first = await asyncio.wait_for(_peek_first_byte(conn), timeout=HELLO_TIMEOUT_SECONDS)
+            except (asyncio.TimeoutError, OSError):
+                return
+            if first is None:
+                return  # closed without a byte: a liveness check
+            ctx = None
+            link = link_tls.LINK_PLAIN
+            if first == proto.TLS_HANDSHAKE_FIRST_BYTE:
+                ctx = self._tls_ctx
+                if ctx is None:
+                    logger.warning("turned away an encrypted agent connection: %s",
+                                   self.tls_error or "the agent link keys aren't loaded")
+                    return
+                link = link_tls.LINK_TLS
+            reader = asyncio.StreamReader()
+            protocol = asyncio.StreamReaderProtocol(reader)
+            kwargs: dict[str, Any] = {}
+            if ctx is not None:
+                kwargs = {"ssl": ctx, "ssl_handshake_timeout": TLS_HANDSHAKE_TIMEOUT_SECONDS}
+            try:
+                transport, _ = await asyncio.wait_for(
+                    loop.connect_accepted_socket(lambda: protocol, sock=conn, **kwargs),
+                    timeout=TLS_HANDSHAKE_TIMEOUT_SECONDS + 5)
+            except (asyncio.TimeoutError, OSError, ssl.SSLError) as e:
+                logger.info("agent connection failed before the protocol started (%s)", type(e).__name__)
+                return
+            handed_over = True
+            writer = asyncio.StreamWriter(transport, protocol, reader, loop)
+        finally:
+            self._pending_handshakes -= 1
+            if not handed_over:
+                with contextlib.suppress(OSError):
+                    conn.close()
+        await self._handle_connection(reader, writer, link=link)
+
     async def serve_forever(self) -> None:
-        hosts = self.bind_hosts if len(self.bind_hosts) > 1 else self.bind_hosts[0]
-        self._server = await asyncio.start_server(self._handle_connection, hosts, self.port)
+        self._load_tls()
+        socks = await _listen_sockets(self.bind_hosts, self.port)
+        self._server = _SplitServer(socks)  # type: ignore[assignment]
+        self._server.tasks = [asyncio.create_task(self._accept_loop(sock)) for sock in socks]
+        self._tls_task = asyncio.create_task(self._tls_watch_loop())
         sockets = self._server.sockets or []
         addrs = ", ".join(str(sock.getsockname()) for sock in sockets)
         logger.info("kratos subagent core server listening on %s", addrs)
@@ -340,6 +618,8 @@ class CoreServer:
         finally:
             self._drop_live_connections()
             self._server.close()
+            if self._tls_task is not None:
+                self._tls_task.cancel()
             await self._stop_local_reads()
 
     def stop(self) -> None:
@@ -388,7 +668,7 @@ class CoreServer:
 
     def _busy(self) -> bool:
         return bool(self._pending_reads or self._pending_exec or self._pending_whitelist_ack
-                    or self._servicing_dispatch)
+                    or self._pending_pin_ack or self._servicing_dispatch)
 
     def note_activity(self) -> None:
         self._last_activity = time.monotonic()
@@ -437,6 +717,10 @@ class CoreServer:
             self._watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._watch_task
+        if self._tls_task is not None:
+            self._tls_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._tls_task
         await self._stop_local_reads()
         if self._server is not None:
             self._server.close()  # stop accepting new connections first
@@ -607,7 +891,8 @@ class CoreServer:
         finally:
             self._pending_exec.pop(dispatch_id, None)
 
-    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
+                                 link: str = link_tls.LINK_PLAIN) -> None:
         peer = writer.get_extra_info("peername")
         peer_ip = peer[0] if isinstance(peer, tuple) and peer else "?"
         target_id: str | None = None
@@ -620,6 +905,12 @@ class CoreServer:
             hello = await asyncio.wait_for(proto.read_frame(reader), timeout=HELLO_TIMEOUT_SECONDS)
             if hello is None or hello.get("type") != proto.MSG_HELLO:
                 await proto.write_frame(writer, proto.build_hello_reject("expected a hello message first"))
+                return
+            if link != link_tls.LINK_TLS and link_tls.require_encryption(self.data_dir):
+                # Encryption is required: an unencrypted hello is refused before
+                # its token is looked up (it may have been read on the way).
+                self._record_rejection(hello, peer_ip, PLAINTEXT_REFUSED_REASON)
+                await proto.write_frame(writer, proto.build_hello_reject(PLAINTEXT_REFUSED_REASON))
                 return
             uses_code = not (hello.get("auth") or {}).get("token") and bool((hello.get("auth") or {}).get("pairing_code"))
             if uses_code and self._auth_limiter.pairing_paused():
@@ -670,6 +961,14 @@ class CoreServer:
                 core_addr = core_addr[len("::ffff:"):]
             self.store.record_connected(target_id, hostname=hello.get("hostname"),
                                         agent_version=hello.get("agent_version"), core_addr=core_addr)
+            pin_version = hello.get("pin_version")
+            pin_version = pin_version if type(pin_version) is int and pin_version > 0 else None
+            self._link[target_id] = link
+            self._agent_pin_version[target_id] = pin_version if link == link_tls.LINK_TLS else None
+            self._safe(self.store.record_link, target_id, mode=link,
+                       pin_version=pin_version if link == link_tls.LINK_TLS else None)
+            if link == link_tls.LINK_TLS:
+                self._note_link_alerts(target_id, hello.get("link_alerts"))
             self._safe(self.store.record_connection_open, target_id, listener_id=self.listener_id, peer=peer_ip,
                        collect_interval=_interval(hello.get("collect_interval")),
                        ping_interval=_interval(hello.get("ping_interval")))
@@ -691,6 +990,7 @@ class CoreServer:
                 # push's own ack timeout (a real bug, caught by this
                 # module's own test suite) -- the two run concurrently instead.
                 asyncio.create_task(self._push_current_whitelist(target_id))
+            self._maybe_push_pins(target_id)  # an agent behind on pins catches up (C.4)
             close_reason = await self._receive_loop(reader, writer, target_id, token)
         except asyncio.TimeoutError:
             close_reason = f"{SILENT_DROP_PREFIX} for {PING_TIMEOUT_SECONDS}s"
@@ -709,6 +1009,8 @@ class CoreServer:
                     self._last_ping_ts.pop(target_id, None)
                     self._last_frame.pop(target_id, None)
                     self._agent_reads.pop(target_id, None)
+                    self._link.pop(target_id, None)
+                    self._agent_pin_version.pop(target_id, None)
                     self._disconnected_at[target_id] = time.monotonic()
                     self._fail_pending_reads(target_id, "the sub-agent disconnected before answering")
                     self._safe(self.store.record_connection_closed, target_id,
@@ -856,6 +1158,27 @@ class CoreServer:
                 out[key] = reply[key]
         return out
 
+    def _note_link_alerts(self, target_id: str, alerts: Any) -> None:
+        """An encrypted agent reports servers it refused since its last good
+        connection (it couldn't tell them): possible interception, or keys
+        Kratos replaced without updating the agent."""
+        if not isinstance(alerts, dict):
+            return
+        count = alerts.get("count")
+        if type(count) is not int or count < 1:
+            return
+
+        def text(v: Any, n: int) -> str:
+            return re.sub(r"[^0-9A-Za-z:+.-]", "", str(v or ""))[:n] or "?"
+
+        key = re.sub(r"[^0-9a-f]", "", str(alerts.get("seen_key") or "").lower())[:16]
+        detail = (f"the agent refused {min(count, 10**9)} connection(s) to a server whose key isn't Kratos's "
+                  f"({'key ' + key + '...' if key else 'no readable key'}), {text(alerts.get('first_at'), 32)} to "
+                  f"{text(alerts.get('last_at'), 32)} -- something on the network may have been intercepting the "
+                  "link; nothing was sent to it")
+        self._safe(self.store.record_connection_event, target_id, "pin_refused", detail)
+        logger.warning("target %s: %s", target_id, detail)
+
     def _record_rejection(self, hello: dict[str, Any], peer_ip: str, reason: str) -> None:
         """Remember WHY a known agent was turned away, so the UI can say "your
         unpaired agent is still running" or "that pairing code expired"."""
@@ -936,6 +1259,10 @@ class CoreServer:
                     fut.set_result(msg)
             elif mtype == proto.MSG_EXEC_RESULT:
                 fut = self._pending_exec.get(msg.get("dispatch_id"))
+                if fut is not None and not fut.done():
+                    fut.set_result(msg)
+            elif mtype == proto.MSG_PIN_SET_ACK:
+                fut = self._pending_pin_ack.get(target_id)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
             elif mtype == proto.MSG_READ_RESULT:

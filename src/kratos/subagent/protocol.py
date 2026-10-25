@@ -68,6 +68,19 @@ connection's session_nonce, and `seq` must strictly increase per connection
                        "not_installed"|"timed_out"|"error"|"busy", reason?, data?}
 A hello from an agent that serves reads adds `read_api` (int) and
 `read_probes` (the names it has).
+
+Encrypted link (Phase C.4): the framing above is unchanged; an agent that holds
+server-key pins speaks it inside TLS and writes nothing before the server's key
+matched a pin (kratos.subagent.pinning). Its hello adds `link`
+("tls-pinned" | "plaintext"), `pin_version` (the pin set it holds) and, after
+it refused a server whose key didn't match, `link_alerts` {count, first_at,
+last_at, seen_key} (reported on the next good connection -- it can't be sent to
+the server it refused). Core may then replace the pin set over that pinned link:
+  pin_set_push        {type, version, pins: [hex sha256, ...], session_nonce, sig}
+  pin_set_ack         {type, version, status: "ok"|"refused", reason?}
+The agent accepts a push only over a pinned TLS link, signed for this
+connection's session nonce, with a version newer than the one it holds (equal
+and identical is acknowledged), and never an empty set.
 """
 from __future__ import annotations
 
@@ -97,6 +110,14 @@ MSG_EXEC_DISPATCH = "exec_dispatch"
 MSG_EXEC_RESULT = "exec_result"
 MSG_READ_REQUEST = "read_request"
 MSG_READ_RESULT = "read_result"
+MSG_PIN_SET_PUSH = "pin_set_push"
+MSG_PIN_SET_ACK = "pin_set_ack"
+
+# The two first bytes the listener tells apart without consuming them: a TLS
+# record starts with its content type (22 = handshake), a Kratos frame with the
+# high byte of its length, which MAX_FRAME_BYTES (8 MiB < 16 MiB) keeps at 0.
+TLS_HANDSHAKE_FIRST_BYTE = 0x16
+PLAIN_FRAME_FIRST_BYTE = 0x00
 
 # Whitelist versions are counted up by core from 1. Bounded so that one push
 # can't set the agent's persisted anti-rollback floor to a number core never
@@ -164,6 +185,8 @@ def build_hello(
     session_nonce: str | None = None, ceiling: dict[str, Any] | None = None,
     collect_interval: float | None = None, ping_interval: float | None = None,
     read_probes: list[str] | tuple[str, ...] | None = None, read_api: int = 1,
+    link: str | None = None, pin_version: int | None = None,
+    link_alerts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     msg = {
         "type": MSG_HELLO,
@@ -186,6 +209,12 @@ def build_hello(
     if read_probes is not None:
         msg["read_api"] = read_api
         msg["read_probes"] = list(read_probes)
+    if link is not None:
+        msg["link"] = link
+    if pin_version is not None:
+        msg["pin_version"] = pin_version
+    if link_alerts:
+        msg["link_alerts"] = link_alerts
     return msg
 
 
@@ -282,6 +311,18 @@ def build_read_result(request_id: str, status: str, *, reason: str | None = None
         msg["data"] = data
     if available is not None:
         msg["available"] = available
+    return msg
+
+
+def build_pin_set_push(version: int, pins: list[str], session_nonce: str) -> dict[str, Any]:
+    """Unsigned envelope -- the caller adds `sig` (signing.sign_envelope)."""
+    return {"type": MSG_PIN_SET_PUSH, "version": version, "pins": list(pins), "session_nonce": session_nonce}
+
+
+def build_pin_set_ack(version: Any, status: str, reason: str | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": MSG_PIN_SET_ACK, "version": version, "status": status}
+    if reason is not None:
+        msg["reason"] = reason
     return msg
 
 

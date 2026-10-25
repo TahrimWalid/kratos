@@ -24,10 +24,13 @@ single dispatch, fail-closed on any failure:
      ever actually execute anything (see docs/subagent_whitelist_design.md
      and the architecture doc's "independent review gates ENABLING, not
      building" framing).
-  2. The connection to core runs over a trusted transport: core's address is
-     loopback or a Tailscale address, unless the operator explicitly passed
-     --allow-untrusted-transport (review finding F9 -- this channel has no TLS
-     of its own, so on a plain network the pairing token could be sniffed).
+  2. The connection to core runs over a trusted transport: an encrypted link
+     whose server key matched one of this agent's pins (Phase C.4), or --
+     for an agent installed before pins existed -- core's address is loopback
+     or reached over a Tailscale interface, unless the operator explicitly
+     passed --allow-untrusted-transport (review finding F9: without TLS, on a
+     plain network the pairing token could be sniffed). That flag is ignored
+     once the agent has pins.
   3. The dispatch's signature verifies under this agent's OWN derived
      signing key (`signing.derive_signing_key(self.token)`) -- control 2 --
      and it carries this connection's `session_nonce` and a dispatch_id not
@@ -76,6 +79,13 @@ collected while disconnected is queued in a small bounded in-memory buffer
 and flushed in order on the next successful connection -- collection itself
 never blocks waiting on the network.
 
+**Encrypted link (Phase C.4)**: an agent given server-key pins (installer /
+update: --server-pin, or a later signed pin_set_push) always dials core over
+TLS and checks the server certificate's public key against its pins
+(kratos.subagent.pinning) BEFORE writing any protocol byte -- no hello, no
+token, no pairing code goes to a server that fails the pin. It never falls
+back to plaintext. An agent without pins connects in plaintext as before.
+
 Stdlib-only -- see protocol.py's module docstring for why.
 """
 from __future__ import annotations
@@ -104,10 +114,11 @@ from pathlib import Path
 from typing import Any
 
 try:  # `python3 -m subagent.agent` (preferred) -- real package-relative import.
-    from . import ceiling as cl, collector, protocol as proto, reads, signing, whitelist as wl
+    from . import ceiling as cl, collector, pinning, protocol as proto, reads, signing, whitelist as wl
 except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.py` run directly.
     import ceiling as cl  # type: ignore[no-redef]
     import collector  # type: ignore[no-redef]
+    import pinning  # type: ignore[no-redef]
     import protocol as proto  # type: ignore[no-redef]
     import reads  # type: ignore[no-redef]
     import signing  # type: ignore[no-redef]
@@ -115,7 +126,7 @@ except ImportError:  # pragma: no cover -- fallback for `python3 subagent/agent.
 
 logger = logging.getLogger("kratos.subagent.agent")
 
-AGENT_VERSION = "0.7.2"
+AGENT_VERSION = "0.8.0"
 DEFAULT_CORE_PORT = 8765
 DEFAULT_STATE_FILE = Path.home() / ".kratos_subagent" / "state.json"
 DEFAULT_COLLECT_INTERVAL_SECONDS = 30.0
@@ -150,6 +161,11 @@ SENT_PINGS_MAX = 64
 # one before further requests are answered "busy" (core sends one at a time,
 # so this only ever trips on a misbehaving peer).
 READ_QUEUE_MAX = 4
+
+# How this connection reached core (Phase C.4).
+LINK_TLS = "tls-pinned"
+LINK_PLAIN = "plaintext"
+MAX_PIN_VERSION = 2**31 - 1
 
 # Transport check for execution and reads (F9): this channel has no
 # encryption of its own, so core must be reached over loopback or over an
@@ -252,6 +268,8 @@ class SubAgent:
         trusted_interfaces: "tuple[str, ...] | list[str]" = (),
         ceiling: "cl.Ceiling" = cl.DEFAULT_CEILING,
         local_allow_file: str | None = cl.LOCAL_ALLOW_FILE,
+        server_pins: "list[str] | None" = None,
+        server_pins_version: int = 1,
     ) -> None:
         self.core_host = core_host
         self.core_port = core_port
@@ -279,6 +297,19 @@ class SubAgent:
         if not self._state.get("agent_id"):
             self._state["agent_id"] = self.agent_id
             self._persist_state()
+
+        # Server-key pins (Phase C.4). Saved pins win over the command line's
+        # unless the command line carries a NEWER pin-set version (an update
+        # from Kratos); a pushed set is newer than the one in the service unit.
+        self._pins: list[str] = []
+        self._pin_version: int | None = None
+        self._pins_broken: str | None = None
+        self._load_pins(server_pins, server_pins_version)
+        self._link: str | None = None
+        if self._pins and self.allow_untrusted_transport:
+            logger.warning("--allow-untrusted-transport is ignored: this agent has server-key pins, so its link "
+                           "to Kratos is always encrypted and checked")
+            self.allow_untrusted_transport = False
 
         self._buffer: deque[dict[str, Any]] = deque(maxlen=BUFFER_MAX)
         self._seq = 0
@@ -329,6 +360,60 @@ class SubAgent:
         self._state["agent_id"] = self.agent_id
         self._state["token"] = self.token
         _save_state(self.state_file, self._state)
+
+    # ------------------------------------------------------------------
+    # Server-key pins
+    # ------------------------------------------------------------------
+    def _load_pins(self, cli_pins: "list[str] | None", cli_version: int) -> None:
+        saved = self._state.get("server_pins")
+        saved_pins: list[str] = []
+        saved_version: int | None = None
+        if saved is not None:
+            try:
+                if not isinstance(saved, dict):
+                    raise pinning.PinError("not a pin record")
+                saved_pins = pinning.normalize_pins(saved.get("pins"))
+                saved_version = saved.get("version")
+                if type(saved_version) is not int or not 1 <= saved_version <= MAX_PIN_VERSION:
+                    raise pinning.PinError("bad pin-set version")
+            except pinning.PinError as e:
+                saved_pins, saved_version = [], None
+                self._pins_broken = (f"this agent's saved server keys in {self.state_file} are unreadable ({e}); "
+                                     "it won't connect without them -- update it from Kratos (/subagent, press g)")
+        if cli_pins:
+            pins = pinning.normalize_pins(cli_pins)  # a bad flag is an install error: raise, don't guess
+            if type(cli_version) is not int or not 1 <= cli_version <= MAX_PIN_VERSION:
+                raise pinning.PinError("--server-pins-version must be a positive whole number")
+            if saved_version is None or cli_version > saved_version:
+                saved_pins, saved_version = pins, cli_version
+                self._state["server_pins"] = {"version": cli_version, "pins": pins}
+                self._persist_state()
+                self._pins_broken = None
+            elif cli_version == saved_version and pins != saved_pins:
+                logger.warning("the server keys on the command line differ from the saved set with the same "
+                               "version (%d); keeping the saved set", saved_version)
+            elif cli_version < saved_version:
+                logger.info("server keys on the command line (version %d) are older than the saved set "
+                            "(version %d, received from Kratos); using the saved set", cli_version, saved_version)
+        self._pins, self._pin_version = saved_pins, saved_version
+
+    @property
+    def pinned(self) -> bool:
+        return bool(self._pins) or self._pins_broken is not None
+
+    def _note_pin_refusal(self, seen_key: str | None) -> None:
+        """Remember a refused server, to report on the next good connection
+        (it can't be told to the server that failed the pin)."""
+        prev = self._state.get("link_alerts")
+        prev = prev if isinstance(prev, dict) else {}
+        count = prev.get("count") if type(prev.get("count")) is int else 0
+        now = _iso_now()
+        self._state["link_alerts"] = {"count": min(count + 1, 10**9), "first_at": prev.get("first_at") or now,
+                                      "last_at": now, "seen_key": (seen_key or "")[:16] or None}
+        try:
+            self._persist_state()
+        except OSError:
+            pass
 
     def _token_key(self) -> str:
         return hashlib.sha256((self.token or "").encode()).hexdigest()[:16]
@@ -383,6 +468,10 @@ class SubAgent:
     def _transport_why_not(self) -> str | None:
         """None when this connection to core may carry execution and reads;
         otherwise a plain reason, used in refusals."""
+        if self._link == LINK_TLS:
+            return None  # encrypted, and the server's key matched a pin
+        if self.pinned:
+            return "this agent has server-key pins but the connection isn't an encrypted, pinned one"
         if self.allow_untrusted_transport:
             return None
         peer = _as_ip(self._peer_ip)
@@ -447,8 +536,42 @@ class SubAgent:
             return  # stop() was called
         serve.result()  # re-raise a connection error for run_forever's backoff handling
 
+    async def _open(self) -> "tuple[asyncio.StreamReader, asyncio.StreamWriter]":
+        """Dial core. With pins: TLS, then the pin check, before anything else
+        is written. Never plaintext once pinned."""
+        if self._pins_broken:
+            raise PinRefused(self._pins_broken)
+        if not self._pins:
+            self._link = LINK_PLAIN
+            return await asyncio.open_connection(self.core_host, self.core_port)
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(self.core_host, self.core_port, ssl=pinning.client_context(),
+                                    ssl_handshake_timeout=HANDSHAKE_TIMEOUT_SECONDS),
+            timeout=HANDSHAKE_TIMEOUT_SECONDS * 2)
+        ssl_object = writer.get_extra_info("ssl_object")
+        try:
+            pinning.check_server_pin(ssl_object, self._pins)
+        except pinning.PinError as e:
+            seen = None
+            try:
+                der = ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
+                seen = pinning.spki_sha256(der).hex() if der else None
+            except (pinning.PinError, ValueError, OSError):
+                pass
+            writer.transport.abort()  # not one byte more to this server
+            self._note_pin_refusal(seen)
+            logger.error("refused the server at %s:%s: %s -- nothing was sent to it. If Kratos's keys were "
+                         "replaced on purpose, update this agent from Kratos (/subagent, press g).",
+                         self.core_host, self.core_port, e)
+            raise PinRefused(str(e)) from e
+        self._link = LINK_TLS
+        return reader, writer
+
+    def link_status(self) -> "dict[str, Any]":
+        return {"mode": self._link or (LINK_TLS if self._pins else LINK_PLAIN), "pin_version": self._pin_version}
+
     async def _connect_and_serve(self) -> None:
-        reader, writer = await asyncio.open_connection(self.core_host, self.core_port)
+        reader, writer = await self._open()
         try:
             await self._handshake(reader, writer)
             await self._flush_buffer(writer)  # anything queued from a prior drop goes out immediately, not on the next collect tick.
@@ -499,6 +622,8 @@ class SubAgent:
             session_nonce=self._session_nonce, ceiling=self.ceiling_report(),
             collect_interval=self.collect_interval, ping_interval=self.ping_interval,
             read_probes=reads.READ_PROBES, read_api=reads.READ_API_VERSION,
+            link=self._link, pin_version=self._pin_version if self._link == LINK_TLS else None,
+            link_alerts=self._state.get("link_alerts") if self._link == LINK_TLS else None,
         ))
         reply = await asyncio.wait_for(proto.read_frame(reader), timeout=HANDSHAKE_TIMEOUT_SECONDS)
         if reply is None:
@@ -512,6 +637,11 @@ class SubAgent:
             self.token = new_token
             self._persist_state()
         self.last_target_id = reply.get("target_id")
+        if self._state.pop("link_alerts", None) is not None:
+            try:
+                self._persist_state()  # reported to Kratos in this hello
+            except OSError:
+                pass
         self.pairing_code = None  # single-use; never retried even if a later reconnect races with a core-side "already used" state.
         logger.info("paired -- target_id=%s", self.last_target_id)
 
@@ -520,6 +650,8 @@ class SubAgent:
         loop = asyncio.get_event_loop()
         while True:
             snapshot = await loop.run_in_executor(None, collect_fn)
+            if isinstance(snapshot, dict):
+                snapshot["agent_link"] = self.link_status()
             self._seq += 1
             frame = {"seq": self._seq, "collected_at": _iso_now(), "payload": snapshot}
             self._buffer.append(frame)
@@ -572,6 +704,8 @@ class SubAgent:
                     await self._handle_whitelist_push(msg, writer)
                 elif mtype == proto.MSG_EXEC_DISPATCH:
                     await self._handle_exec_dispatch(msg, writer)
+                elif mtype == proto.MSG_PIN_SET_PUSH:
+                    await self._handle_pin_set_push(msg, writer)
                 elif mtype == proto.MSG_READ_REQUEST:
                     # Never awaited here: a 3-minute YARA scan must not stop
                     # this loop reading pongs and other messages.
@@ -596,6 +730,57 @@ class SubAgent:
         if isinstance(ts, bool) or not isinstance(ts, (int, float)) or ts not in self._sent_pings:
             return False
         return 0 <= time.time() - ts <= DEAD_MANS_SWITCH_SECONDS
+
+    async def _handle_pin_set_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
+        """Replace the server-key pins (Phase C.4): only over an encrypted,
+        pinned link, signed for this connection, newer than the held set,
+        never empty. Saved atomically before it is acknowledged."""
+        version = msg.get("version")
+        reply_version = version if type(version) is int else None
+
+        async def answer(status: str, reason: "str | None" = None) -> None:
+            if reason:
+                logger.warning("refused a pin-set push (version %r): %s", version, reason)
+            await proto.write_frame(writer, proto.build_pin_set_ack(reply_version, status, reason))
+
+        if self._link != LINK_TLS:
+            await answer("refused", "pin sets are only accepted over an encrypted, pinned link")
+            return
+        if not self.token or msg.get("session_nonce") != self._session_nonce:
+            await answer("refused", "not signed for this connection")
+            return
+        if not signing.verify_envelope(signing.derive_signing_key(self.token), msg):
+            await answer("refused", "invalid signature")
+            return
+        if type(version) is not int or not 1 <= version <= MAX_PIN_VERSION:
+            await answer("refused", "the pin-set version must be a positive whole number")
+            return
+        try:
+            pins = pinning.normalize_pins(msg.get("pins"))
+        except pinning.PinError as e:
+            await answer("refused", str(e))
+            return
+        current = self._pin_version or 0
+        if version < current:
+            await answer("refused", f"older than the pin set this agent holds (version {current})")
+            return
+        if version == current:
+            if pins == self._pins:
+                await answer("ok")
+            else:
+                await answer("refused", f"a different pin set with the same version ({current})")
+            return
+        previous = self._state.get("server_pins")
+        self._state["server_pins"] = {"version": version, "pins": pins}
+        try:
+            self._persist_state()
+        except OSError as e:
+            self._state["server_pins"] = previous  # memory never runs ahead of the file
+            await answer("refused", f"couldn't save the new pins ({type(e).__name__})")
+            return
+        self._pins, self._pin_version = pins, version
+        logger.info("received new server-key pins from Kratos (version %d)", version)
+        await answer("ok")
 
     async def _handle_whitelist_push(self, msg: dict[str, Any], writer: asyncio.StreamWriter) -> None:
         """Apply (or reject) a signed whitelist push.
@@ -846,6 +1031,10 @@ class SubAgent:
         }
 
 
+class PinRefused(proto.ProtocolError):
+    """The server failed this agent's pin check; nothing was sent to it."""
+
+
 def _hostname() -> str:
     import socket
 
@@ -878,11 +1067,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--allow-untrusted-transport", dest="allow_untrusted_transport", action="store_true", default=False,
         help=(
-            "Allow execution and investigation reads even when core is not reached over loopback or "
-            "Tailscale. The channel has no "
-            "encryption of its own, so on a shared network the pairing token (and with it the signing key) "
-            "can be sniffed. Leave off unless the network itself is trusted."
+            "DEPRECATED (ignored once the agent has --server-pin keys, whose link is always encrypted). "
+            "For an agent without pins: allow execution and investigation reads even when core is not reached "
+            "over loopback or Tailscale -- on a shared network the pairing token can then be sniffed."
         ),
+    )
+    p.add_argument(
+        "--server-pin", dest="server_pins", action="append", default=[], metavar="SHA256",
+        help=("SHA-256 (64 hex) of a Kratos listener's public key. Repeat for the backup key. With pins the agent "
+              "connects only over TLS to a server holding one of these keys, and never in plaintext."),
+    )
+    p.add_argument(
+        "--server-pins-version", dest="server_pins_version", type=int, default=1, metavar="N",
+        help="Version of the --server-pin set; a newer set received from Kratos is kept over an older one.",
     )
     p.add_argument(
         "--trusted-interface", dest="trusted_interfaces", action="append", default=[], metavar="NAME",
@@ -972,18 +1169,25 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("another agent is already running with %s -- not starting a second one", args.state_file)
         return 1
 
-    agent = SubAgent(
-        core_host=args.core_host,
-        core_port=args.core_port,
-        state_file=args.state_file,
-        pairing_code=args.pairing_code,
-        collect_interval=args.collect_interval,
-        ping_interval=args.ping_interval,
-        execution_enabled=args.execution_enabled,
-        allow_untrusted_transport=args.allow_untrusted_transport,
-        trusted_interfaces=args.trusted_interfaces,
-        local_allow_file=args.local_allow_file,
-    )
+    try:
+        agent = SubAgent(
+            core_host=args.core_host,
+            core_port=args.core_port,
+            state_file=args.state_file,
+            pairing_code=args.pairing_code,
+            collect_interval=args.collect_interval,
+            ping_interval=args.ping_interval,
+            execution_enabled=args.execution_enabled,
+            allow_untrusted_transport=args.allow_untrusted_transport,
+            trusted_interfaces=args.trusted_interfaces,
+            local_allow_file=args.local_allow_file,
+            server_pins=args.server_pins or None,
+            server_pins_version=args.server_pins_version,
+        )
+    except pinning.PinError as e:
+        logger.error("bad server key settings: %s", e)
+        instance_lock.close()
+        return 2
     if args.execution_enabled:
         logger.warning(
             "direct execution is ENABLED on this agent (--enable-execution) -- "

@@ -229,7 +229,8 @@ def test_installer_can_allow_an_untrusted_transport_for_reads_only():
     plain = installer.generate_installer("192.168.1.20", "1A2B-3C4D")
     lan = installer.generate_installer("192.168.1.20", "1A2B-3C4D", allow_untrusted_transport=True)
     assert "--allow-untrusted-transport" not in plain
-    assert "--state-file $STATE_FILE --allow-untrusted-transport\"" in lan
+    assert "--state-file $STATE_FILE --allow-untrusted-transport$PIN_FLAGS\"" in lan
+    assert "PIN_FLAGS=''" in lan  # no pins: the old, unencrypted agent command line
     assert "--enable-execution" not in lan
 
 

@@ -162,5 +162,77 @@ class Detect(unittest.TestCase):
             self.assertEqual(detect.check_samples(pack), [], path.name)
 
 
+pinning = importlib.import_module("subagent.pinning")
+
+# Throwaway self-signed certificates (their private keys were discarded) and the
+# SHA-256 of each one's SubjectPublicKeyInfo, as `cryptography` computed it.
+_CERT_P256 = (
+    "MIIBGDCBv6ADAgECAgEBMAoGCCqGSM49BAMCMBYxFDASBgNVBAMMC2J1bmRsZSB0ZXN0MB4XDTI2MDEwMTAwMDAw"
+    "MFoXDTI2MDEwMjAwMDAwMFowFjEUMBIGA1UEAwwLYnVuZGxlIHRlc3QwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNC"
+    "AARmp/jccCu+y1rA8XUOMkbMrlL+OFjxwDpSj/h2UnFLOpp5ndKOvLuzP6dPCeRkTKjcCmL07ASvV9oPIKH46agh"
+    "MAoGCCqGSM49BAMCA0gAMEUCIBDZpThzR38xN2zYzb/mtzpBmE946OdB5fjTk9dQ5L7dAiEAtCm+4fjNvYqazKxY"
+    "Knyt7bmtLqv8E5ca9uciRAC92qw="
+)
+_PIN_P256 = "e7b51f4dffb9eb593f1a490fec67a7e438a0dc2e065f7fb58a3c91013a67b00a"
+_CERT_ED25519 = (
+    "MIHYMIGLoAMCAQICAQEwBQYDK2VwMBYxFDASBgNVBAMMC2J1bmRsZSB0ZXN0MB4XDTI2MDEwMTAwMDAwMFoXDTI2"
+    "MDEwMjAwMDAwMFowFjEUMBIGA1UEAwwLYnVuZGxlIHRlc3QwKjAFBgMrZXADIQBb194ZACW/2sah6cQ3MAWQ8fxo"
+    "Qh0C+/RGFN/RJLSXfDAFBgMrZXADQQDBqDL6UmbwWB/7i8Esr4kiUFrRc3V3RIA6vsmddZTxJEoiKdIidI4GlQct"
+    "BJP+7hV1C9DMUm0ZTkS1RpfLdJYO"
+)
+_PIN_ED25519 = "0ab2e5e543360912846e76201c7968fc5fbeb1ba631607cb690f3acceeb3d028"
+
+
+class Pinning(unittest.TestCase):
+    """The agent's server-key pin check on the oldest supported Python (C.4)."""
+
+    def _der(self, b64):
+        import base64
+
+        return base64.b64decode(b64)
+
+    def test_spki_hashes_match_the_known_pins(self):
+        self.assertEqual(pinning.spki_sha256(self._der(_CERT_P256)).hex(), _PIN_P256)
+        self.assertEqual(pinning.spki_sha256(self._der(_CERT_ED25519)).hex(), _PIN_ED25519)
+
+    def test_damaged_certificates_fail_closed(self):
+        der = self._der(_CERT_P256)
+        for n in range(len(der)):
+            with self.assertRaises(pinning.PinError):
+                pinning.spki_der(der[:n])
+        with self.assertRaises(pinning.PinError):
+            pinning.spki_der(der + b"\x00")
+        with self.assertRaises(pinning.PinError):
+            pinning.spki_der(b"\x30\x80" + der[2:])
+
+    def test_pin_match_and_pin_sets(self):
+        digest = bytes.fromhex(_PIN_P256)
+        self.assertTrue(pinning.pin_matches(digest, [_PIN_ED25519, _PIN_P256]))
+        self.assertFalse(pinning.pin_matches(digest, [_PIN_ED25519]))
+        self.assertEqual(pinning.normalize_pins([_PIN_P256.upper(), _PIN_P256]), [_PIN_P256])
+        with self.assertRaises(pinning.PinError):
+            pinning.normalize_pins([])
+
+    def test_client_context_builds_on_this_python(self):
+        import ssl
+
+        ctx = pinning.client_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
+        self.assertFalse(ctx.check_hostname)
+        self.assertGreaterEqual(ctx.minimum_version, ssl.TLSVersion.TLSv1_2)
+
+    def test_agent_refuses_to_start_with_bad_pins_and_keeps_newer_saved_ones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            with self.assertRaises(pinning.PinError):
+                agent.SubAgent("127.0.0.1", 1, state_file=state, server_pins=["nope"], local_allow_file=None)
+            a = agent.SubAgent("127.0.0.1", 1, state_file=state, server_pins=[_PIN_P256], server_pins_version=3,
+                               local_allow_file=None)
+            self.assertEqual(a._pin_version, 3)
+            b = agent.SubAgent("127.0.0.1", 1, state_file=state, server_pins=[_PIN_ED25519], server_pins_version=2,
+                               local_allow_file=None)
+            self.assertEqual((b._pins, b._pin_version), ([_PIN_P256], 3))  # older command line ignored
+
+
 if __name__ == "__main__":
     unittest.main()

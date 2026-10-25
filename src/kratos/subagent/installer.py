@@ -47,6 +47,8 @@ BUNDLE_FILES: tuple[str, ...] = (
     "whitelist.py",
     "ceiling.py",
     "reads.py",
+    # C.4: the server-key pin check, its DER walker and the TLS client settings
+    "pinning.py",
     # C.1: the detection-rule evaluator, the same file core imports as kratos.subagent.detect
     "detect.py",
 )
@@ -138,6 +140,7 @@ def generate_installer(
     upgrade: bool = False,
     allow_untrusted_transport: bool = False,
     trusted_interfaces: tuple[str, ...] | list[str] = (),
+    server_pins: dict | None = None,
 ) -> str:
     """Return a self-contained POSIX-``sh`` installer for the sub-agent.
 
@@ -164,6 +167,12 @@ def generate_installer(
     ``trusted_interfaces`` names interfaces on the box that encrypt by
     themselves (e.g. the operator's own WireGuard ``wg0``); core reached over
     one counts as trusted. Interfaces named ``tailscale*`` need no entry.
+
+    ``server_pins`` ({"version": int, "pins": [hex, ...]}, from
+    kratos.subagent.tls.KeySet.as_pin_set) makes the agent connect only over
+    TLS to a Kratos holding one of those keys (Phase C.4). With pins,
+    ``allow_untrusted_transport`` is not emitted: the encrypted link is
+    trusted by itself, and the agent ignores that flag once pinned.
     """
     if not core_host or not str(core_host).strip():
         raise InstallerError("core_host is required")
@@ -186,6 +195,19 @@ def generate_installer(
     for iface in ifaces:
         if not isinstance(iface, str) or not _IFACE_NAME_RE.fullmatch(iface):
             raise InstallerError(f"invalid interface name {iface!r} (up to 15 letters, digits, . _ -)")
+    pin_flags = ""
+    if server_pins is not None:
+        from kratos.subagent import pinning
+
+        try:
+            pins = pinning.normalize_pins((server_pins or {}).get("pins"))
+        except pinning.PinError as exc:
+            raise InstallerError(f"bad server key pins: {exc}") from exc
+        version = (server_pins or {}).get("version")
+        if type(version) is not int or not 1 <= version <= 2**31 - 1:
+            raise InstallerError(f"bad server key pin-set version {version!r}")
+        pin_flags = "".join(f" --server-pin {pin}" for pin in pins) + f" --server-pins-version {version}"
+        allow_untrusted_transport = False
     try:
         port = int(core_port)
     except (TypeError, ValueError) as exc:
@@ -220,6 +242,10 @@ def generate_installer(
         upgrade="1" if upgrade else "0",
         extra_flags=("".join(f" --trusted-interface {i}" for i in ifaces)
                      + (" --allow-untrusted-transport" if allow_untrusted_transport else "")),
+        pin_flags=pin_flags,
+        link_note=("The link to Kratos is encrypted (TLS), and the agent only talks to a\n"
+                   "# Kratos holding one of the two keys pinned below."
+                   if pin_flags else "The link to Kratos is NOT encrypted by this agent (no key pins)."),
         blob_section=blob_section,
         eof=_EOF,
     )
@@ -236,6 +262,7 @@ _TEMPLATE = """\
 # core at {core_host}:{core_port} and forwards observation-only snapshots.
 # The target opens NO inbound port. Direct execution (capability 2) is NOT
 # enabled by this installer.
+# {link_note}
 #
 # Run once on the target:  sh kratos-subagent-install.sh
 # Safe to re-run: it replaces the agent code and restarts it.
@@ -246,6 +273,7 @@ CORE_PORT={port}
 PAIR_CODE={code_q}
 UPGRADE={upgrade}
 SERVICE_NAME={svc_q}
+PIN_FLAGS='{pin_flags}'
 
 log() {{ printf '%s\\n' "$*"; }}
 # Machine-readable failure line (Kratos classifies these), then a plain one.
@@ -263,6 +291,7 @@ case "$CORE_HOST" in ""|-*|*[!A-Za-z0-9.:-]*) die bad_input "core address '$CORE
 case "$CORE_PORT" in ""|*[!0-9]*) die bad_input "core port '$CORE_PORT' is not a number";; esac
 case "$PAIR_CODE" in *[!A-Fa-f0-9-]*) die bad_input "pairing code '$PAIR_CODE' is not a Kratos pairing code";; esac
 case "$SERVICE_NAME" in ""|[!a-z0-9]*|*[!a-z0-9_.-]*) die bad_input "service name '$SERVICE_NAME' is not a plain name";; esac
+case "$PIN_FLAGS" in *[!a-z0-9\\ -]*) die bad_input "the server key pins were changed after Kratos made this file";; esac
 case "$PY" in *[!A-Za-z0-9/._+-]*) die bad_input "python3 is at an unusual path ('$PY'); install from a plain path";; esac
 
 # Decide where to install and whether we can manage a system service.
@@ -311,7 +340,7 @@ write_file() {{
 
 log "Bundle written."
 
-EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE{extra_flags}"
+EXEC_CMD="$PY -m subagent.agent --core-host $CORE_HOST --core-port $CORE_PORT --state-file $STATE_FILE{extra_flags}$PIN_FLAGS"
 [ -n "$PAIR_CODE" ] && EXEC_CMD="$EXEC_CMD --pair $PAIR_CODE"
 
 start_plain() {{
