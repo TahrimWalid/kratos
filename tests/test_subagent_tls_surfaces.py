@@ -174,3 +174,19 @@ def test_settings_asks_before_requiring_encryption_with_plaintext_agents(tmp_pat
     asyncio.run(run())
     assert shown == ["ListPickerModal", "ConfirmModal", "ListPickerModal", "ConfirmModal"]
     assert tls.require_encryption(tmp_path) is True
+
+
+def test_status_says_needs_update_while_kratos_refuses_an_unencrypted_agent(tmp_path):
+    from kratos.subagent import core_server, status as ST
+
+    store = SubAgentStore(tmp_path / "kratos.db")
+    tid = _pair(store, "legacy", tls.LINK_PLAIN)
+    store.register_listener("lsn_x", pid=1, host="0.0.0.0", port=8765, mode="process", build="b")
+    store.touch_last_seen(tid)
+    store.record_connection_open(tid, listener_id="lsn_x", peer="10.0.0.2")
+    store.record_connection_closed(tid, listener_id="lsn_x", reason="the agent closed the connection")
+    (_, st), = ST.assess_all(store)
+    assert st.state == ST.STATE_RECONNECTING
+    store.record_connection_event(tid, "rejected", f"{core_server.PLAINTEXT_REFUSED_REASON} -- from legacy")
+    (_, st), = ST.assess_all(store)
+    assert st.label == "needs update" and "press g" in st.reason and st.severity == "critical"

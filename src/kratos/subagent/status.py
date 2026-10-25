@@ -206,6 +206,15 @@ def assess(
                                f"{flaky_note}", "attention" if flaky else "ok", last_contact, flaky)
 
     down_age = _age(conn.get("disconnected_at"), now)
+    # C.4: Kratos requires encryption and keeps turning this agent away.
+    refusals = [e for e in events if e.get("event") == "rejected" and PLAINTEXT_REFUSED_MARK in (e.get("detail") or "")]
+    last_refusal = _age(refusals[-1]["at"], now) if refusals else None
+    if (last_refusal is not None and last_refusal <= REVOKED_STILL_TRYING_SECONDS
+            and (down_age is None or last_refusal <= down_age)):
+        return ConnectionState(STATE_OFFLINE, "needs update",
+                               f"its agent connects without encryption, which this Kratos now refuses (last try "
+                               f"{human_age(last_refusal)}) -- update it: select it and press g", "critical",
+                               last_contact, flaky)
     why = conn.get("disconnect_reason") or "connection closed"
     if down_age is not None and down_age <= RECONNECT_GRACE_SECONDS:
         if why.startswith(SILENT_DROP_PREFIX):
@@ -227,6 +236,10 @@ def assess(
                            f"no contact since {human_age(last_seen_age)}{detail}. If its agent is still running it "
                            f"retries about once a minute and reappears on its own when the link is back{flaky_note}",
                            "critical", last_contact, flaky)
+
+
+# The words a refused plaintext hello carries (core_server.PLAINTEXT_REFUSED_REASON).
+PLAINTEXT_REFUSED_MARK = "only accepts encrypted agent links"
 
 
 def next_agent_retry_in(down_age: float) -> float:

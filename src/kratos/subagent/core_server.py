@@ -67,6 +67,7 @@ from kratos.subagent import signing
 from kratos.subagent import tls as link_tls
 from kratos.subagent import whitelist as wl
 from kratos.subagent.status import (
+    PLAINTEXT_REFUSED_MARK,
     LISTENER_HEARTBEAT_SECONDS,
     LISTENER_STALE_AFTER_SECONDS,
     SILENT_DROP_PREFIX,
@@ -159,7 +160,7 @@ TLS_HANDSHAKE_TIMEOUT_SECONDS = 10.0
 TLS_WATCH_INTERVAL_SECONDS = 2.0
 PIN_PUSH_ACK_TIMEOUT_SECONDS = 10.0
 TLS_MIN_AGENT_VERSION = (0, 8, 0)
-PLAINTEXT_REFUSED_REASON = ("this Kratos only accepts encrypted agent links now -- update the agent "
+PLAINTEXT_REFUSED_REASON = (f"this Kratos {PLAINTEXT_REFUSED_MARK} now -- update the agent "
                             "(/subagent, select the box, press g)")
 READ_REPLY_MARGIN_SECONDS = 15.0
 RECONNECT_EXPECTED_SECONDS = 90.0

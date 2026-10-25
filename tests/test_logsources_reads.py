@@ -224,7 +224,7 @@ def test_a_current_agent_serves_the_new_reads_over_the_real_channel(tmp_path):
 def test_agent_version_and_bundle_files():
     from kratos.subagent import agent, installer
 
-    assert agent.AGENT_VERSION == "0.7.2"       # C.1: the bundle carries the detection evaluator (detect.py)
+    assert agent.AGENT_VERSION == "0.8.0"       # C.4: the encrypted, pinned link (pinning.py)
     files = installer.read_bundle_files()
     names = ("catalog.py", "logread.py", "hostfiles.py", "persistence.py", "live_response.py", "packages.py",
              "detect.py")

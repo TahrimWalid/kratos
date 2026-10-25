@@ -216,6 +216,10 @@ def test_plain_network_hub_asks_before_allowing_reads(tmp_path, monkeypatch):
     # From here on, pretend 100.64.0.10 is this machine's own tailscale0 address.
     monkeypatch.setattr(agent_mod, "local_interface_of", lambda a: "tailscale0" if str(a) == "100.64.0.10" else None)
     screen = SubAgentScreen(tmp_path)
+    # C.4: with usable link keys the installer pins Kratos's key and nothing is
+    # asked; the question remains only for when the keys can't be used.
+    monkeypatch.setattr(screen, "_link_keys_usable", lambda: False)
+    monkeypatch.setattr(screen, "_server_pins", lambda: None)
     out: dict = {}
 
     async def act(s, pilot):
