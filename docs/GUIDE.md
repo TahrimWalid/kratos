@@ -1119,11 +1119,16 @@ matches — the same finding says *Continuous detection missed part of this mach
 with the times, for an hour. Those stretches are kept and shown under `i`; they are never
 treated as "nothing found".
 
-**What it costs.** Measured on a lab machine: the agent's own memory is about 20 MB
-(plus the `journalctl` it starts, about 1 MB of its own and the journal files it maps); the CPU
-use is in the 24-hour measurement below. Under a flood it sends at most 20 matches of one rule a minute
-and then one "+N more" summary (`detect.watch.max_per_rule_minute`), and while catching up
-after a restart it keeps its own CPU use under a quarter of one core and runs at low priority.
+**What it costs.** Measured on a lab machine over a half-day soak: the agent's own memory
+stays around 24 MB and flat (the `journalctl` it starts shows a larger number, but almost all
+of that is the journal files it maps — shared with the system, not the agent's own memory), its
+CPU averages about 0.2% of one core (never above 2%), and it opens no new files over time. The
+data it sends is tiny — a few megabytes a day of heartbeats and alerts. A watched security event
+reaches your phone in well under 30 seconds (about 6 seconds in the lab, most of it a deliberate
+5-second window that groups a burst into one alert). Under a flood it sends at most 20 matches of
+one rule a minute and then one "+N more" summary (`detect.watch.max_per_rule_minute`), and while
+catching up after a restart it keeps its own CPU use under a quarter of one core and runs at low
+priority.
 
 ```
 kratos detect watch                 # which machines are watched, and how it is going

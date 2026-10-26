@@ -89,6 +89,7 @@ STATUS_SECONDS = 60.0
 RESEND_SECONDS = 30.0                  # an unacknowledged detection is sent again after this long
 SPOOL_GAP_MERGE_SECONDS = 300.0        # drops this close together are one outage, one gap
 RATE_QUIET_SECONDS = 10.0              # a rule's "+N more" goes out once it has been quiet this long
+MAX_RATE_MINUTES = 10                  # open per-rule minute buckets kept at once (oldest flushed + evicted)
 AUDIT_GROUP_IDLE_SECONDS = 0.5
 AUDIT_OPEN_GROUPS_MAX = 64
 AUDIT_POLL_SECONDS = 0.25
@@ -918,7 +919,10 @@ class WatchManager:
         self.journal_cursor: Optional[str] = None
         self.audit_pos: Optional[Tuple[int, int]] = None
         self._jump_to: Optional[float] = None
-        self._rate: Dict[str, List[Any]] = {}      # rule -> [minute, sent, suppressed, first_ts, last_ts, pack, ver]
+        # rule -> {event-minute -> [sent, suppressed, first_ts, last_ts, pack, ver, last_seen_wall]}.
+        # Per-minute buckets (not one "current minute" slot) so out-of-order matches -- two
+        # followers interleaving, or a throttled catch-up -- can't reset a sibling minute's count.
+        self._rate: Dict[str, Dict[int, List[Any]]] = {}
         self._own: "OrderedDict[int, float]" = OrderedDict()
         self.own_pid = own_pid if own_pid is not None else os.getpid()
         self._last_checkpoint = 0.0
@@ -1173,17 +1177,21 @@ class WatchManager:
             return
         pack_id, pack_version, _rule, used = meta
         minute = int(m.ts // 60)
-        st = self._rate.get(m.rule_id)
-        if st is None or st[0] != minute:
-            self._flush_rule(m.rule_id)
-            st = self._rate[m.rule_id] = [minute, 0, 0, None, None, pack_id, pack_version, 0.0]
-        st[7] = _now()
-        if st[1] >= self.settings["max_per_rule_minute"]:
-            st[2] += 1
-            st[3] = m.ts if st[3] is None else min(st[3], m.ts)
-            st[4] = m.ts if st[4] is None else max(st[4], m.ts)
+        buckets = self._rate.setdefault(m.rule_id, {})
+        st = buckets.get(minute)
+        if st is None:
+            st = buckets[minute] = [0, 0, None, None, pack_id, pack_version, 0.0]
+            while len(buckets) > MAX_RATE_MINUTES:         # bound open minutes; flush + evict the oldest
+                old = min(buckets)
+                self._flush_rule(m.rule_id, old)
+                buckets.pop(old, None)
+        st[6] = _now()
+        if st[0] >= self.settings["max_per_rule_minute"]:
+            st[1] += 1
+            st[2] = m.ts if st[2] is None else min(st[2], m.ts)
+            st[3] = m.ts if st[3] is None else max(st[3], m.ts)
             return
-        st[1] += 1
+        st[0] += 1
         self.seq += 1
         rec = {"type": "detection", "seq": self.seq, "rule_id": m.rule_id, "pack_id": pack_id,
                "pack_version": pack_version, "ts": m.ts, "first_ts": m.first_ts, "detected_at": round(_now(), 3),
@@ -1221,25 +1229,31 @@ class WatchManager:
         self._add_gap(source, start, end, "%d detection(s) dropped: the link was down longer than the spool holds" % n,
                       kind="spool", dropped=n)
 
-    def _flush_rule(self, rule_id: str) -> None:
-        st = self._rate.get(rule_id)
-        if not st or not st[2]:
+    def _flush_rule(self, rule_id: str, minute: int) -> None:
+        """Emit the "+N more" summary for one rule's one minute bucket (if anything was
+        suppressed), and clear that bucket's suppressed count."""
+        st = (self._rate.get(rule_id) or {}).get(minute)
+        if not st or not st[1]:
             return
         self.seq += 1
-        self._spool({"type": "detection", "seq": self.seq, "rule_id": rule_id, "pack_id": st[5],
-                     "pack_version": st[6], "ts": st[4], "first_ts": st[3],
-                     "summary": {"suppressed": st[2], "minute": st[0] * 60}})
-        st[2] = 0
+        self._spool({"type": "detection", "seq": self.seq, "rule_id": rule_id, "pack_id": st[4],
+                     "pack_version": st[5], "ts": st[3], "first_ts": st[2],
+                     "summary": {"suppressed": st[1], "minute": minute * 60}})
+        st[1] = 0
 
     def _minute_summaries(self, now: float) -> None:
-        """Send a rule's "+N more" once its minute (in the events' own time) is over: when a
-        match from a later minute arrives (_send), or once the minute is past on this clock
-        and the rule has been quiet for RATE_QUIET_SECONDS -- never per match while catching
-        up on an old flood."""
-        minute = int(now // 60)
-        for rid, st in list(self._rate.items()):
-            if st[0] < minute and now - st[7] >= RATE_QUIET_SECONDS:
-                self._flush_rule(rid)
+        """Send each rule's "+N more" once a minute bucket (in the events' own time) is past
+        the current clock minute and the bucket has been quiet for RATE_QUIET_SECONDS -- never
+        per match while catching up on an old flood. Per bucket, so an out-of-order match for
+        one minute never defeats another minute's cap."""
+        cur = int(now // 60)
+        for rid in list(self._rate.keys()):
+            buckets = self._rate[rid]
+            for minute in list(buckets.keys()):
+                if minute < cur and now - buckets[minute][6] >= RATE_QUIET_SECONDS:
+                    self._flush_rule(rid, minute)
+                    del buckets[minute]
+            if not buckets:
                 del self._rate[rid]
 
     # -- status ----------------------------------------------------------------

@@ -293,6 +293,63 @@ def test_flood_is_capped_per_rule_per_minute_with_one_summary(tmp_path):
         m.stop()
 
 
+def _manager_no_threads(tmp_path):
+    """A manager with the shipped pack's evaluator ready but no follower threads, so a test can
+    feed _handle() deterministically (no subprocess/throttle timing)."""
+    m = W.WatchManager(str(tmp_path / "state"), audit_path=str(tmp_path / "audit.log"), journalctl="/nonexistent")
+    cfg = W.validate_push({"enabled": True, "machine": MACHINE, "packs": [_shipped()],
+                           "settings": {"max_per_rule_minute": 20}}, None)
+    m.config, m.settings, m.machine = cfg, cfg["settings"], MACHINE
+    packs = [D.Pack(p) for p in cfg["packs"]]
+    merged = {"format": D.FORMAT, "format_version": D.FORMAT_VERSION, "pack_id": "merged", "pack_version": 1,
+              "rules": [r for p in packs for r in p.raw["rules"]]}
+    merged["sha256"] = D.pack_digest(merged)
+    m.evaluator = D.Evaluator(D.Pack(merged))
+    m.rules_meta = {r.id: (p.pack_id, p.version, r.meta, W._rule_fields(r.meta)) for p in packs for r in p.rules}
+    return m
+
+
+def _audit_chattr(ts, serial):
+    return [f'type=SYSCALL msg=audit({ts:.3f}:{serial}): arch=c000003e syscall=59 success=yes exit=0 ppid=1 '
+            f'pid={serial} auid=1000 uid=0 gid=0 euid=0 ses=7 comm="chattr" exe="/usr/bin/chattr" key="exec"'
+            '\x1dARCH=x86_64 SYSCALL=execve AUID="alice" UID="root"',
+            f'type=EXECVE msg=audit({ts:.3f}:{serial}): argc=3 a0="chattr" a1="-i" a2="/etc/hostname"']
+
+
+def test_cap_holds_per_minute_when_matches_arrive_out_of_minute_order(tmp_path):
+    # Two followers interleaving (or a throttled catch-up) make same-rule matches arrive out of
+    # minute order. The cap must bind PER MINUTE -- an older-minute match must never reset a
+    # newer minute's counter (the real-lab flood breach this regression guards; before the
+    # per-minute-bucket fix this produced one single per event, thousands a minute).
+    m = _manager_no_threads(tmp_path)
+    base = (int(time.time()) // 60) * 60
+    for i in range(2000):
+        ts = base + (0 if i % 2 else 60) + (i % 100) / 1000.0     # alternate minute N and N+1, out of order
+        m._handle(("entry", W.SOURCE_AUDITD, {"lines": _audit_chattr(ts, 1000 + i),
+                                              "inode": 1, "offset": i, "path": str(tmp_path / "audit.log")}))
+    m._minute_summaries(base + 300)
+    singles = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE and "summary" not in r]
+    summaries = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE and "summary" in r]
+    by_min = {}
+    for r in singles:
+        by_min[int(r["ts"] // 60)] = by_min.get(int(r["ts"] // 60), 0) + 1
+    assert by_min and all(c <= 20 for c in by_min.values()), by_min    # never more than the cap in any minute
+    assert len(singles) == 40 and len(summaries) == 2, (len(singles), len(summaries), by_min)  # 20/min x 2 minutes
+
+
+def test_cap_holds_in_order(tmp_path):
+    m = _manager_no_threads(tmp_path)
+    base = (int(time.time()) // 60) * 60
+    for i in range(2000):
+        ts = base + (i % 50) / 1000.0                              # all one minute, in order
+        m._handle(("entry", W.SOURCE_AUDITD, {"lines": _audit_chattr(ts, 5000 + i),
+                                              "inode": 1, "offset": i, "path": str(tmp_path / "audit.log")}))
+    m._minute_summaries(base + 300)
+    singles = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE and "summary" not in r]
+    summaries = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE and "summary" in r]
+    assert len(singles) == 20 and len(summaries) == 1 and summaries[0]["summary"]["suppressed"] == 1980
+
+
 def test_cpu_budget_slows_a_catch_up_and_reports_it(tmp_path):
     m, data = _manager(tmp_path)
     now = time.time()
