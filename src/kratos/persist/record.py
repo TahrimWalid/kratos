@@ -100,12 +100,19 @@ def run(data_dir: Path, target: str, *, verify: bool = False, reader: Reader | N
         "answer_gaps": list(getattr(judged, "answer_gaps", [])),
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
+        "hunt_index": _hunt_index(inv),      # C.3: paths/hashes/key owners a later hunt can find
     }
     out_dir = data_dir / PERSISTENCE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"persistence_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
     return {**doc, "status": "ok", "file": str(path)}
+
+
+def _hunt_index(inv: dict[str, Any]) -> dict[str, Any]:
+    from kratos.hunt.snapshots import persistence_index
+
+    return persistence_index(inv)
 
 
 MAX_BLIND_ITEMS = 5000

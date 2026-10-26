@@ -2425,6 +2425,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _data_cmds.register(sub)   # `kratos data` (stored data, prune) and `kratos trace` (run records)
 
+    from kratos.cli import hunt_cmds as _hunt_cmds
+
+    _hunt_cmds.register(sub)   # `kratos hunt` (C.3: search what Kratos holds) and `kratos threat-intel-sync`
+
     seal_p = sub.add_parser(
         "seal",
         help="Journal sealing (forward secure sealing): keep a machine's verification key here and check its "

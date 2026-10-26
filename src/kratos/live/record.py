@@ -84,12 +84,19 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
         "listeners": listeners(inv),
+        "hunt_index": _hunt_index(inv),      # C.3: programs, users, remote addresses a later hunt can find
     }
     out_dir = data_dir / LIVE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"live_response_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
     return {**doc, "status": "ok", "file": str(path)}
+
+
+def _hunt_index(inv: dict[str, Any]) -> dict[str, Any]:
+    from kratos.hunt.snapshots import live_index
+
+    return live_index(inv)
 
 
 MAX_BLIND_ITEMS = 5000
