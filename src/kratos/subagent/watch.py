@@ -87,6 +87,8 @@ QUEUE_MAX = 5000                       # entries read but not evaluated yet (the
 CHECKPOINT_SECONDS = 5.0
 STATUS_SECONDS = 60.0
 RESEND_SECONDS = 30.0                  # an unacknowledged detection is sent again after this long
+SPOOL_GAP_MERGE_SECONDS = 300.0        # drops this close together are one outage, one gap
+RATE_QUIET_SECONDS = 10.0              # a rule's "+N more" goes out once it has been quiet this long
 AUDIT_GROUP_IDLE_SECONDS = 0.5
 AUDIT_OPEN_GROUPS_MAX = 64
 AUDIT_POLL_SECONDS = 0.25
@@ -278,17 +280,19 @@ class Spool:
     def max_seq(self) -> int:
         return max(self.items, default=0)
 
-    def _trim(self) -> int:
-        dropped = 0
+    def _trim(self) -> List[Dict[str, Any]]:
+        """Drop the oldest past the caps; returns what was dropped."""
+        out: List[Dict[str, Any]] = []
         while self.items and (len(self.items) > self.max_items or self.size > self.max_bytes):
             _seq, (rec, n) = self.items.popitem(last=False)
             self.size -= n
-            dropped += 1
+            self.sent_at.pop(_seq, None)
+            out.append(rec)
             ts = rec.get("ts") if isinstance(rec.get("ts"), (int, float)) else _now()
             self.dropped_first = ts if self.dropped_first is None else min(self.dropped_first, ts)
             self.dropped_last = ts if self.dropped_last is None else max(self.dropped_last, ts)
-        self.dropped += dropped
-        return dropped
+        self.dropped += len(out)
+        return out
 
     def _rewrite(self) -> None:
         text = "".join(json.dumps(rec, separators=(",", ":")) + "\n" for rec, _n in self.items.values())
@@ -298,25 +302,29 @@ class Spool:
             logger.warning("could not save the detection spool (%s)", e)
         self._dirty_lines = 0
 
-    def add(self, rec: Dict[str, Any]) -> int:
-        """Keep `rec` (it has a fresh `seq`); returns how many old ones were dropped."""
+    def add(self, rec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Keep `rec` (it has a fresh `seq`); returns the old ones dropped to make room.
+        Dropped ones are marked in the file like acknowledged ones (no rewrite per match
+        while the spool is full); the file is rewritten once the marks outnumber the rest."""
         line = json.dumps(rec, separators=(",", ":")) + "\n"
         n = len(line.encode("utf-8"))
         with self._lock:
             self.items[rec["seq"]] = (rec, n)
             self.size += n
             dropped = self._trim()
-            if dropped:
+            text = line + "".join(json.dumps({"seq": d["seq"], "acked": True}) + "\n" for d in dropped)
+            self._dirty_lines += len(dropped)
+            if self._dirty_lines > max(50, len(self.items)):
                 self._rewrite()
                 return dropped
             try:
                 os.makedirs(os.path.dirname(self.path) or ".", mode=0o700, exist_ok=True)
                 fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 with os.fdopen(fd, "a", encoding="utf-8") as f:
-                    f.write(line)
+                    f.write(text)
             except OSError as e:
                 logger.warning("could not add to the detection spool (%s)", e)
-        return 0
+        return dropped
 
     def ack(self, seqs: List[int]) -> int:
         done = 0
@@ -906,6 +914,7 @@ class WatchManager:
         self.matches: Dict[str, int] = {s: 0 for s in SOURCES}
         self.skipped: Dict[str, int] = {s: 0 for s in SOURCES}
         self.gaps: Dict[str, List[Dict[str, Any]]] = {s: [] for s in SOURCES}
+        self.gap_id = 0
         self.journal_cursor: Optional[str] = None
         self.audit_pos: Optional[Tuple[int, int]] = None
         self._jump_to: Optional[float] = None
@@ -1031,6 +1040,8 @@ class WatchManager:
             for s in SOURCES:
                 if isinstance(gaps.get(s), list):
                     self.gaps[s] = [g for g in gaps[s] if isinstance(g, dict)][-MAX_GAPS_KEPT:]
+        self.gap_id = max([g.get("id") for s in SOURCES for g in self.gaps[s] if isinstance(g.get("id"), int)]
+                          + [0])
 
     def _save_checkpoint(self, force: bool = False) -> None:
         now = _now()
@@ -1165,7 +1176,8 @@ class WatchManager:
         st = self._rate.get(m.rule_id)
         if st is None or st[0] != minute:
             self._flush_rule(m.rule_id)
-            st = self._rate[m.rule_id] = [minute, 0, 0, None, None, pack_id, pack_version]
+            st = self._rate[m.rule_id] = [minute, 0, 0, None, None, pack_id, pack_version, 0.0]
+        st[7] = _now()
         if st[1] >= self.settings["max_per_rule_minute"]:
             st[2] += 1
             st[3] = m.ts if st[3] is None else min(st[3], m.ts)
@@ -1182,13 +1194,32 @@ class WatchManager:
 
     def _spool(self, rec: Dict[str, Any]) -> None:
         dropped = self.spool.add(rec)
-        if dropped:
-            first, last = self.spool.dropped_first, self.spool.dropped_last
-            src = rec.get("source") if rec.get("source") in SOURCES else SOURCE_JOURNAL
-            self._add_gap(src, first or rec.get("ts") or _now(), last or rec.get("ts") or _now(),
-                          "%d detection(s) dropped: the link was down longer than the spool holds" % dropped,
-                          kind="spool")
+        by_source: Dict[str, List[float]] = {}
+        for d in dropped:
+            src = d.get("source") if d.get("source") in SOURCES else SOURCE_JOURNAL
+            ts = d.get("ts") if isinstance(d.get("ts"), (int, float)) and not isinstance(d.get("ts"), bool) else _now()
+            by_source.setdefault(src, []).append(float(ts))
+        for src, times in by_source.items():
+            self._spool_gap(src, min(times), max(times), len(times))
         self.status_changed.set()
+
+    def _spool_gap(self, source: str, start: float, end: float, n: int) -> None:
+        """Matches dropped from a full spool: one gap per source and outage, kept up to date
+        while drops continue (not one gap per dropped match)."""
+        gaps = self.gaps.get(source, [])
+        last = gaps[-1] if gaps else None
+        if last is not None and last.get("kind") == "spool" and _now() - float(last.get("noted") or 0) < SPOOL_GAP_MERGE_SECONDS:
+            last["from"] = round(min(float(last["from"]), start), 3)
+            last["to"] = round(max(float(last["to"]), end), 3)
+            last["dropped"] = int(last.get("dropped") or 0) + n
+            last["reason"] = ("%d detection(s) dropped: the link was down longer than the spool holds"
+                              % last["dropped"])
+            last["noted"] = round(_now(), 3)
+            self.status_changed.set()
+            self._save_checkpoint()
+            return
+        self._add_gap(source, start, end, "%d detection(s) dropped: the link was down longer than the spool holds" % n,
+                      kind="spool", dropped=n)
 
     def _flush_rule(self, rule_id: str) -> None:
         st = self._rate.get(rule_id)
@@ -1201,12 +1232,15 @@ class WatchManager:
         st[2] = 0
 
     def _minute_summaries(self, now: float) -> None:
+        """Send a rule's "+N more" once its minute (in the events' own time) is over: when a
+        match from a later minute arrives (_send), or once the minute is past on this clock
+        and the rule has been quiet for RATE_QUIET_SECONDS -- never per match while catching
+        up on an old flood."""
         minute = int(now // 60)
         for rid, st in list(self._rate.items()):
-            if st[0] < minute - 1 or (st[0] < minute and st[2]):
+            if st[0] < minute and now - st[7] >= RATE_QUIET_SECONDS:
                 self._flush_rule(rid)
-                if st[0] < minute - 1:
-                    del self._rate[rid]
+                del self._rate[rid]
 
     # -- status ----------------------------------------------------------------
     def _set_state(self, source: str, state: str, error: Optional[str]) -> None:
@@ -1217,9 +1251,13 @@ class WatchManager:
             self.status_changed.set()
             logger.info("watch (%s): %s%s", source, state, (" -- " + error) if error else "")
 
-    def _add_gap(self, source: str, start: float, end: float, reason: str, kind: str = "watch") -> None:
-        gap = {"from": round(float(start), 3), "to": round(float(end), 3), "reason": reason[:300], "kind": kind,
-               "noted": round(_now(), 3)}
+    def _add_gap(self, source: str, start: float, end: float, reason: str, kind: str = "watch",
+                 dropped: Optional[int] = None) -> None:
+        self.gap_id += 1
+        gap = {"id": self.gap_id, "from": round(float(start), 3), "to": round(float(end), 3), "reason": reason[:300],
+               "kind": kind, "noted": round(_now(), 3)}
+        if dropped is not None:
+            gap["dropped"] = dropped
         self.gaps[source] = (self.gaps.get(source, []) + [gap])[-MAX_GAPS_KEPT:]
         logger.warning("watch (%s): not watched from %s to %s: %s", source, _iso(start), _iso(end), reason)
         self.status_changed.set()

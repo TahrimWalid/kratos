@@ -408,3 +408,15 @@ def test_a_reported_gap_is_published_once(tmp_path):
     live.handle_status(tid, _status(gaps=[{"from": time.time() - 300, "to": time.time() - 200,
                                           "reason": "journal entries were removed", "kind": "watch"}]))
     assert live.due() == []                                            # the same gap reported again: nothing new
+
+
+def test_a_gap_the_agent_keeps_up_to_date_stays_one_gap(tmp_path):
+    tid = _watching(tmp_path)
+    live = L.LiveDetections(tmp_path)
+    t = time.time()
+    for n, end in ((10, t - 50), (40, t - 20), (90, t)):
+        live.handle_status(tid, _status(gaps=[{"id": 7, "from": t - 60, "to": end, "kind": "spool",
+                                              "reason": f"{n} detection(s) dropped: the link was down longer than "
+                                                        "the spool holds"}]))
+    gaps = {r["source"]: r["gaps"] for r in L.watch_rows(tmp_path, tid)}["journal"]
+    assert len(gaps) == 1 and gaps[0]["reason"].startswith("90 ") and gaps[0]["to"] == pytest.approx(t)

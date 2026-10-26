@@ -234,9 +234,8 @@ def test_audit_log_rotation_mid_follow_and_truncation(tmp_path):
 
 def test_spool_bound_drops_the_oldest_and_reports_it(tmp_path):
     sp = W.Spool(str(tmp_path / "spool.jsonl"), max_items=3, max_bytes=10**6)
-    for i in range(1, 6):
-        sp.add({"seq": i, "ts": 1000.0 + i, "rule_id": "R"})
-    assert list(sp.items) == [3, 4, 5] and sp.dropped == 2
+    dropped = [d["seq"] for i in range(1, 6) for d in sp.add({"seq": i, "ts": 1000.0 + i, "rule_id": "R"})]
+    assert list(sp.items) == [3, 4, 5] and sp.dropped == 2 and dropped == [1, 2]
     assert sp.dropped_first == 1001.0 and sp.dropped_last == 1002.0
     sp.ack([3])
     again = W.Spool(str(tmp_path / "spool.jsonl"), max_items=3, max_bytes=10**6)
@@ -259,6 +258,10 @@ def test_a_spool_overflow_while_the_link_is_down_is_a_gap(tmp_path):
         gap = wait_for(lambda: next((g for g in m.gaps["journal"] if g.get("kind") == "spool"), None))
         assert "dropped" in gap["reason"]
         assert len(m.spool) == 100
+        # one gap for the outage, kept up to date -- not one per dropped match -- and on the right log
+        spool_gaps = [g for g in m.gaps["journal"] if g.get("kind") == "spool"]
+        assert len(spool_gaps) == 1 and spool_gaps[0]["dropped"] == m.spool.dropped
+        assert not [g for g in m.gaps["auditd"] if g.get("kind") == "spool"]
     finally:
         m.stop()
 
@@ -383,5 +386,27 @@ def test_a_stopped_auditd_is_not_watching_and_recovers(tmp_path, monkeypatch):
         assert "auditd isn't running" in m.state["auditd"]["error"]
         running["on"] = True
         wait_for(lambda: m.state["auditd"]["state"] == "watching")
+    finally:
+        m.stop()
+
+
+def test_catching_up_on_an_old_flood_still_gives_one_summary_per_minute(tmp_path):
+    m, data = _manager(tmp_path)
+    old = (int(time.time() - 1800) // 60) * 60.0 + 5           # a flood half an hour ago, inside one minute
+    (tmp_path / "state").mkdir(exist_ok=True)
+    (tmp_path / "state" / "watch_checkpoint.json").write_text(json.dumps(
+        {"journal_cursor": journal_entry(1, old - 10, "x")["__CURSOR"], "journal_ts": old - 10, "seq": 0}))
+    m, data = _manager(tmp_path)
+    append(data, *[journal_entry(i, old + (i % 40) / 1000, sudo_line("alice", f"/usr/bin/chattr -i /y{i}"),
+                                 comm="sudo") for i in range(2, 502)])
+    m.apply(_config([_shipped()], max_per_rule_minute=20))
+    try:
+        wait_for(lambda: m.events["journal"] and len(m.events["journal"]) >= 500 and m.queue.empty(), timeout=60)
+        time.sleep(0.5)
+        m._minute_summaries(time.time() + 3600)
+        recs = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE]
+        assert len([r for r in recs if "summary" not in r]) == 20
+        summaries = [r for r in recs if "summary" in r]
+        assert len(summaries) == 1 and summaries[0]["summary"]["suppressed"] == 480
     finally:
         m.stop()

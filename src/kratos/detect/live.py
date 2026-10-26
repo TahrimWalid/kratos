@@ -380,7 +380,9 @@ def _clean_gaps(raw: Any, seen_at: float) -> list[dict[str, Any]]:
         a, b = _num(g.get("from")), _num(g.get("to"))
         if a is None or b is None or b < a:
             continue
-        out.append({"from": a, "to": b, "reason": re.sub(r"[\x00-\x1f\x7f]", " ", str(g.get("reason") or ""))[:300],
+        gid = g.get("id") if type(g.get("id")) is int and 0 < g["id"] < 2**53 else None
+        out.append({"id": gid, "from": a, "to": b,
+                    "reason": re.sub(r"[\x00-\x1f\x7f]", " ", str(g.get("reason") or ""))[:300],
                     "kind": "spool" if g.get("kind") == "spool" else "watch", "seen_at": seen_at})
     return out
 
@@ -402,8 +404,14 @@ def record_status(data_dir: Path | str, target_id: str, msg: dict[str, Any]) -> 
                                (target_id, name)).fetchone()
             old_gaps = json.loads(row[0]) if row and row[0] else []
             known = {(g.get("from"), g.get("to"), g.get("reason")) for g in old_gaps}
+            by_id = {g.get("id"): i for i, g in enumerate(old_gaps) if g.get("id") is not None}
             gaps = list(old_gaps)
             for g in _clean_gaps(src.get("gaps"), now):
+                if g["id"] is not None and g["id"] in by_id:
+                    # the agent kept one gap up to date (drops continuing): update it, keep when it was first seen
+                    i = by_id[g["id"]]
+                    gaps[i] = {**g, "seen_at": gaps[i].get("seen_at", now)}
+                    continue
                 if (g["from"], g["to"], g["reason"]) not in known:
                     gaps.append(g)
                     new_gaps.append({**g, "source": name})
