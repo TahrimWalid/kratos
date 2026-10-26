@@ -6,7 +6,8 @@ that plan (`--apply` on the CLI, a confirmation in the TUI). Applying refuses in
 an agent tool call (like settings `set`), and every applied prune is recorded in
 `data_prunes` (who, when, what, how many).
 
-Categories handled here (docs/phaseB/B.5 §5.3): `traces`, `sessions`, `host_events`.
+Categories handled here (docs/phaseB/B.5 §5.3): `traces`, `sessions`, `host_events`, and `hunts`
+(C.3: hunt records; host-event prunes also remove the hunt index's entries for those lines).
 Snapshots keep their own tiered command. Data that other data depends on is named
 in the plan's `blockers` and refused unless `force_orphans`:
 
@@ -29,7 +30,7 @@ from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 
 COMPONENT = "data_prunes"
-PRUNABLE = ("traces", "sessions", "host_events", "pseudonyms")
+PRUNABLE = ("traces", "sessions", "host_events", "pseudonyms", "hunts")
 
 
 class PruneError(ValueError):
@@ -248,8 +249,23 @@ def _plan_pseudonyms(plan: Plan, data_dir: Path) -> None:
     plan.bytes = rows * 120
 
 
+def _plan_hunts(plan: Plan, data_dir: Path) -> None:
+    """Hunt records (kratos.hunt.store) older than the cutoff: they hold what was typed."""
+    conn = _open_ro(data_dir)
+    ids: list[int] = []
+    try:
+        if conn is not None and _table_exists(conn, "hunt_runs"):
+            ids = [int(r[0]) for r in conn.execute("SELECT id FROM hunt_runs WHERE at < ?", (plan.cutoff,))]
+    finally:
+        if conn is not None:
+            conn.close()
+    plan.rows["hunt_runs"] = ids
+    plan.counts["hunt records"] = len(ids)
+    plan.bytes = len(ids) * 600
+
+
 _PLANNERS = {"traces": _plan_traces, "sessions": _plan_sessions, "host_events": _plan_host_events,
-             "pseudonyms": _plan_pseudonyms}
+             "pseudonyms": _plan_pseudonyms, "hunts": _plan_hunts}
 
 
 def plan_prune(data_dir: Path, category: str, older_than_days: int, *, now: float | None = None) -> Plan:
@@ -301,6 +317,9 @@ def apply_prune(data_dir: Path, plan: Plan, *, actor: str, force_orphans: bool =
             if plan.category == "host_events":
                 cur = conn.execute("DELETE FROM host_events WHERE ts < ?", (plan.cutoff,))
                 done["log lines"] = cur.rowcount or 0
+                from kratos.hunt import terms as _terms   # the hunt index entries of those lines go with them
+
+                _terms.delete_older_than(conn, plan.cutoff)
                 if force_orphans and _table_exists(conn, "sync_coverage"):
                     gone = conn.execute("DELETE FROM sync_coverage WHERE end_ts <= ?", (plan.cutoff,)).rowcount
                     clipped = conn.execute("UPDATE sync_coverage SET start_ts = ? WHERE start_ts < ? AND end_ts > ?",
@@ -322,6 +341,12 @@ def apply_prune(data_dir: Path, plan: Plan, *, actor: str, force_orphans: bool =
                         conn.execute("DELETE FROM pseudonym_map WHERE scope = ? AND NOT EXISTS "
                                      "(SELECT 1 FROM sessions WHERE session_id = ?)", (f"session:{sid}", sid))
                 done["conversations with nothing newer"] = len(sids)
+            elif plan.category == "hunts":
+                ids = plan.rows.get("hunt_runs") or []
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    conn.execute(f"DELETE FROM hunt_runs WHERE id IN ({','.join('?' * len(part))})", part)
+                done["hunt records"] = len(ids)
             elif plan.category == "pseudonyms":
                 scopes = plan.rows.get("pseudonym_map") or []
                 for scope in scopes:

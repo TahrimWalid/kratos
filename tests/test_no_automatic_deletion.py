@@ -53,6 +53,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("dataprune.py", "_delete_files", "unlink"): PERSON + " (`kratos data prune --apply`)",
     ("dataprune.py", "_delete_files", "rmdir"): PERSON + " (the empty date folder that prune just emptied)",
     ("dataprune.py", "apply_prune", "DELETE FROM"): PERSON + " (`kratos data prune --apply`)",
+    ("hunt/terms.py", "delete_older_than", "DELETE FROM"): PERSON + " (the hunt index entries of the log lines "
+                                                                    "`kratos data prune --category host_events` removes)",
     ("storage/subagent_store.py", "SubAgentStore.cancel_pairing_code", "DELETE FROM"): PERSON,
     ("storage/subagent_store.py", "SubAgentStore.forget_target", "DELETE FROM"): PERSON + " (forget an unpaired machine)",
     ("storage/subagent_store.py", "SubAgentStore.remove_link", "DELETE FROM"): PERSON + " (/target unlink)",

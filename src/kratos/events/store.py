@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable
 
 from kratos.events.model import Event
+from kratos.hunt import terms as _terms
 from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 from kratos.target_key import target_key
@@ -74,10 +75,12 @@ def canonical_doc(event: Event) -> str:
     return json.dumps(event.to_ecs(), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _row(event: Event) -> tuple:
+def _row(event: Event, doc: dict | None = None) -> tuple:
+    text = (json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False) if doc is not None
+            else canonical_doc(event))
     return (event.host_name, event.event_id, event.ts, event.dataset, event.action, event.outcome,
             event.source_ip, event.user_name, event.process_name, event.file_sha256, event.schema_version,
-            event.run_id, canonical_doc(event))
+            event.run_id, text)
 
 
 def _epoch(value: float | datetime | None) -> float | None:
@@ -98,23 +101,35 @@ class EventStore:
         conn = connect_store(self.db_path)
         try:
             migrate_once(conn, self.db_path, COMPONENT, STEPS)
+            _terms.migrate(conn, self.db_path)      # C.3: the hunt's index, filled as events are added
         except BaseException:
             conn.close()
             raise
         return conn
 
     def add(self, events: Iterable[Event]) -> int:
-        """Store events (one transaction); returns how many were new."""
-        rows = [_row(e) for e in events]
+        """Store events (one transaction); returns how many were new. Each new event's
+        typed values go into the hunt's index (kratos.hunt.terms) in the same transaction."""
+        docs: dict[tuple[str, str], dict] = {}
+        rows = []
+        for e in events:
+            doc = e.to_ecs()
+            docs[(e.host_name, e.event_id)] = doc
+            rows.append(_row(e, doc))
         if not rows:
             return 0
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            last = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM host_events").fetchone()[0])
             before = conn.total_changes
             conn.executemany(f"INSERT OR IGNORE INTO host_events ({', '.join(COLUMNS)}) "
                              f"VALUES ({', '.join('?' for _ in COLUMNS)})", rows)
             inserted = conn.total_changes - before
+            if inserted:
+                new = conn.execute("SELECT id, target, event_id, ts FROM host_events WHERE id > ?", (last,)).fetchall()
+                _terms.add_terms(conn, ((rid, tgt, ts, docs[(tgt, eid)]) for rid, tgt, eid, ts in new
+                                        if (tgt, eid) in docs))
             conn.execute("COMMIT")
             return inserted
         except BaseException:

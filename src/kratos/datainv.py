@@ -89,8 +89,23 @@ CATEGORIES: tuple[Category, ...] = (
         "host_events", "Host events",
         "The log lines Kratos has read from your machines, one record per line (usernames, addresses).",
         PERSONAL, "one row per log line read",
-        tables=(TableRef(DB, ("host_events",), ("host_events", "ts")),),
+        tables=(TableRef(DB, ("host_events", "host_event_terms", "host_event_terms_state"), ("host_events", "ts")),),
         prunable=True,
+        note="host_event_terms is the hunt's search index over these lines (addresses, accounts, hashes, programs, "
+             "paths, domains); it is pruned with them",
+    ),
+    Category(
+        "hunts", "Hunts",
+        "Every hunt (`/hunt`, `kratos hunt`, a chat or MCP hunt, and the automatic hunts when the threat-intel "
+        "cache learns a malicious address): when, who, what was hunted -- the address, account, hash or name "
+        "typed --, which machines and period were searched, the coverage in one line and how many records "
+        "matched.",
+        PERSONAL, "one row per hunt",
+        tables=(TableRef(DB, ("hunt_runs",), ("hunt_runs", "at")),),
+        prunable=True,
+        files=("hunt",),
+        note="the indicator typed is personal data; HUNT-001 findings from automatic hunts are kept with the "
+             "findings; `kratos data prune --category hunts` removes old hunt records",
     ),
     Category(
         "pseudonyms", "Placeholder map (masking)",
