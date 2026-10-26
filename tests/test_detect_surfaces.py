@@ -109,7 +109,7 @@ def test_scheduled_and_trigger_notifications_name_the_author(tmp_path, monkeypat
     trig = TG.Trigger(name="sigma", min_severity=None, finding_id=CHATTR_AUDITD, target=None, action="notify",
                       cooldown_minutes=60, created_at=None, path=tmp_path / "t.toml")
     text, _worst, ids, _inv = TE._build_body(tmp_path, trig, [finding], A, datetime.now(timezone.utc), False, None)
-    assert ids == [CHATTR_AUDITD] and f"rule by {AUTHOR}" in text and "1 match(es) in 1 finding(s)" in text
+    assert ids == [CHATTR_AUDITD] and f"rule by {AUTHOR}" in text and text.startswith("HIGH on ")
 
 
 def test_chat_server_findings_text_names_the_author(tmp_path, monkeypatch):

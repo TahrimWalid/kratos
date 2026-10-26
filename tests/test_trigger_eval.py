@@ -83,7 +83,7 @@ def test_notify_action_fires_and_stamps(tmp_path):
     spy = _Spy()
     fired = TE.evaluate_triggers(tmp_path, _findings(), "10.0.0.1", now=_NOW, notifier=spy)
     assert len(fired) == 1 and fired[0]["action"] == "notify"
-    assert "as of" in spy.calls[0][0] and spy.calls[0][1] == "critical"  # high -> critical bucket
+    assert "When: " in spy.calls[0][0] and spy.calls[0][1] == "critical"  # high -> critical bucket
 
 
 def test_playbook_action_includes_response_plan(tmp_path):
@@ -225,7 +225,7 @@ def test_scheduled_run_fires_a_trigger(tmp_path, monkeypatch):
     assert rec["status"] == "completed"
     assert "high" in (rec.get("triggers_fired") or [])
     # the schedule's own report notification AND the trigger notification both went
-    assert any("Trigger 'high' fired" in m for m, _ in calls)
+    assert any("Trigger 'high' (" in m for m, _ in calls)
 
 
 def test_run_headless_investigation_excludes_gated_tools(tmp_path, monkeypatch):
@@ -305,3 +305,28 @@ def test_a_trigger_investigation_looks_at_the_schedules_machine(tmp_path, monkey
     assert "dig" in (rec.get("triggers_fired") or [])
     assert seen == ["10.0.0.77"]
     assert kratos_config.get_active_target() == "default-box.example"   # restored afterwards
+
+
+
+def test_an_alert_says_what_happened_and_where_first_and_what_to_do_next(tmp_path):
+    """Phase C audit: alerts led with the trigger name and rule ids; a person on a phone
+    could not tell what happened. The first line now names severity, the machine (its
+    sub-agent name when paired) and what happened; ids and credits come last."""
+    from kratos.storage.subagent_store import SubAgentStore
+
+    store = SubAgentStore(tmp_path / "kratos.db")
+    code = store.create_pairing_code(name="web-01")
+    tid = store.redeem_pairing_code(code["code"], agent_id="a1", hostname="web-01", agent_version="0.9.0")["target_id"]
+    store.set_link("198.51.100.20", tid, "subagent")
+    trig = TR.save_trigger(tmp_path, name="phone", action="notify", min_severity="high")
+    findings = [{"id": "PRIV-001", "severity": "critical", "title": "alice was given sudo"},
+                {"id": "NET-002", "severity": "high", "title": "Open ports"}]
+    from kratos.agent import trigger_eval as TE
+
+    body, worst, ids, _ = TE._build_body(tmp_path, trig, findings, "198.51.100.20",
+                                         datetime(2026, 10, 26, 12, 0, tzinfo=timezone.utc), False, None)
+    first = body.splitlines()[0]
+    assert first.startswith("CRITICAL on web-01 (198.51.100.20): ") and "(+1 more)" in first
+    assert "privileged" in first.lower() and "alice" not in first   # the worst first, in Kratos's words
+    assert "Next: open Kratos" in body and body.index("Next:") < body.index("ids: ")
+    assert TE.machine_label(tmp_path, "203.0.113.9") == "203.0.113.9"

@@ -229,21 +229,7 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     matched_ids = sorted({str(f.get("id") or "") for f in matched if f.get("id")})
     worst = _worst(matched)
     stamp = now.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    header = (f"Trigger '{trigger.name}' fired on {target} — {trigger.condition_text}\n"
-              f"matched: {', '.join(matched_ids) or '(finding)'}  ·  worst: {worst}\n"
-              f"as of {stamp}")
-    from kratos.detect.findings import credit_line
-
-    credits = []                     # C.1: each detection rule's matches, grouped, with its author (DRL 1.1)
-    for rid in matched_ids:
-        same = [f for f in matched if f.get("id") == rid]
-        credit = next((c for c in (credit_line(f) for f in same) if c), None)
-        if credit:
-            n = sum(int((f.get("detection_rule") or {}).get("matches") or 0) for f in same)
-            credits.append(f"{rid} {same[0].get('title', '')}: {n} match(es) in {len(same)} finding(s); "
-                           + "rule by " + credit.split("rule by ", 1)[-1])
-    if credits:
-        header += "\n" + "\n".join(credits)
+    header = _alert_text(data_dir, trigger, matched, matched_ids, worst, target, stamp)
     action = trigger.action
     investigation: Optional[dict[str, Any]] = None
     if action == "notify":
@@ -260,6 +246,67 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     else:  # investigate action but investigations disabled inline
         body = header + "\n\nA deeper read-only investigation is configured; it will run on the next scheduled run."
     return body, worst, matched_ids, investigation
+
+
+_SEV_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+ALERT_LINES_MAX = 5
+
+
+def machine_label(data_dir: Any, target: str) -> str:
+    """How a person knows the machine: its sub-agent name when it is paired (with the
+    address in brackets), else the address/host Kratos investigates."""
+    try:
+        from kratos.storage.subagent_store import SubAgentStore
+
+        store = SubAgentStore(Path(data_dir) / "kratos.db")
+        link = store.get_link(target)
+        row = store.get_target(link["target_id"]) if link else None
+        name = str((row or {}).get("name") or "").strip()
+        if name and name != target:
+            return f"{name} ({target})"
+    except Exception:  # noqa: BLE001 -- the label is a nicety; the address always works
+        pass
+    return target
+
+
+def _alert_text(data_dir, trigger, matched, matched_ids, worst, target, stamp) -> str:
+    """The alert a person reads on their phone: what happened and where first, in plain
+    words; then when, what to do next, and only then the trigger and the rule credits
+    (a Sigma rule's author goes with every alert it raises -- DRL 1.1). Kratos-written
+    words and finding titles only: no machine text, no new personal data (it may travel
+    through a public ntfy server)."""
+    from kratos import finding_facts, untrusted
+    from kratos.detect.findings import credit_line
+
+    label = machine_label(data_dir, target)
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for f in matched:
+        groups.setdefault(str(f.get("id") or ""), []).append(f)
+    order = sorted(groups, key=lambda rid: (min(_SEV_RANK.get(str(f.get("severity") or "info").lower(), 9)
+                                                for f in groups[rid]), rid))
+    lines: list[str] = []
+    credits: list[str] = []
+    for rid in order:
+        same = groups[rid]
+        sev = min((str(f.get("severity") or "info").lower() for f in same), key=lambda v: _SEV_RANK.get(v, 9))
+        what = untrusted.for_display(finding_facts.describe(same[0]) or rid)[:120]
+        n = sum(int((f.get("detection_rule") or {}).get("matches") or 0) for f in same)
+        count = f" -- {n} time(s)" if n > 1 else (f" -- {len(same)} findings" if len(same) > 1 else "")
+        lines.append(f"- {sev.upper()} {what}{count}")
+        credit = next((c for c in (credit_line(f) for f in same) if c), None)
+        if credit:
+            credits.append(f"{rid}: rule by " + credit.split("rule by ", 1)[-1])
+    first = untrusted.for_display(finding_facts.describe(groups[order[0]][0]) or order[0])[:120] if order else "a finding"
+    more = f" (+{len(order) - 1} more)" if len(order) > 1 else ""
+    shown = lines[:ALERT_LINES_MAX] + ([f"- and {len(lines) - ALERT_LINES_MAX} more"] if len(lines) > ALERT_LINES_MAX else [])
+    text = (f"{worst.upper()} on {label}: {first}{more}\n"
+            + "\n".join(shown) + "\n"
+            + f"When: {stamp}\n"
+            + "Next: open Kratos and type /findings (or run: kratos findings show)\n"
+            + f"Trigger '{trigger.name}' ({trigger.condition_text}) -- ids: {', '.join(matched_ids) or '(finding)'}")
+    if credits:
+        text += "\nRules: " + "; ".join(credits)
+    return text
 
 
 def preview_trigger(data_dir: Path, trigger: "_triggers.Trigger",
