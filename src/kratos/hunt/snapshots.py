@@ -139,8 +139,8 @@ def _match_doc(kind: str, doc: dict[str, Any], ind: Indicator) -> list[tuple[str
         for exe, comm, user in idx.get("processes") or []:
             real = exe.split(" (deleted)")[0]
             if ind.kind == "program" and (comm == v or posixpath.basename(real) == v):
-                out.append((f"program {comm or real} was running ({real or 'no program file'}, user {user or '?'})",
-                            comm or real, False))
+                where = real or "its program file could not be read by this read"
+                out.append((f"program {comm or real} was running ({where}, user {user or '?'})", comm or real, False))
             elif ind.kind == "path" and real.startswith("/") and _path_hit(ind, real):
                 out.append((f"{real} was running (user {user or '?'})", real, False))
             elif ind.kind == "account" and user == v:
@@ -161,7 +161,8 @@ def _match_doc(kind: str, doc: dict[str, Any], ind: Indicator) -> list[tuple[str
     # the findings in the snapshot -- for snapshots older than hunt_index too
     for rule, ent, ev in _entities(doc):
         path, _, frag = ent.partition("#")
-        if ind.kind == "sha256" and frag and len(frag) >= 12 and v.startswith(frag.lower()):
+        if ind.kind == "sha256" and frag and len(frag) >= 12 and v.startswith(frag.lower()) \
+                and not any(item[1] == path and not item[2] for item in out):     # a full match says it already
             out.append((f"{rule}: {path} -- hash starting {frag} (Kratos kept only the first {len(frag)} "
                         "digits for this item)", path, True))
         elif ind.kind == "path" and path.startswith("/") and _path_hit(ind, path.split("|")[0]):

@@ -7,6 +7,7 @@ source IP, user, process, SHA-256), each with limit=100 and a 24-hour window.
 
     .venv/bin/python scripts/bench/events_bench.py                 # 1,000,000 events
     .venv/bin/python scripts/bench/events_bench.py --events 100000 --full-indexes
+    .venv/bin/python scripts/bench/events_bench.py --hunt         # + C.3 hunt timings, index size, backfill
 
 Writes only to a fresh temporary folder (or --dir), never to kratos.db.
 """
@@ -120,6 +121,63 @@ def run_queries(store: S.EventStore, rng: random.Random, pools: Pools, end: date
     return results
 
 
+def _terms_bytes(db: Path) -> int:
+    import sqlite3
+
+    conn = sqlite3.connect(db)
+    try:
+        return int(conn.execute("SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name IN "
+                                "('host_event_terms')").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def run_hunts(folder: Path, rng: random.Random, pools: Pools, end: datetime, per_kind: int) -> dict:
+    """C.3: typed hunts over the 30 days (address, account, hash), a text hunt over 7
+    days within its time limit, and the backfill rate."""
+    from kratos.hunt import terms as T
+    from kratos.hunt.indicators import classify
+    from kratos.hunt.search import run_hunt
+    from kratos.storage.sqlite_files import connect_store
+
+    out: dict = {}
+    e = end.timestamp()
+    for kind, pool in (("ip", pools.ips), ("account", pools.users), ("sha256", pools.hashes)):
+        times, found = [], 0
+        for _ in range(per_kind):
+            t0 = time.perf_counter()
+            r = run_hunt(folder, [classify(rng.choice(pool), kind)], machines=[rng.choice(TARGETS)],
+                         start=e - DAYS * 86400, end=e + 1, record=False, with_text=False, with_snapshots=False,
+                         now=e)
+            times.append((time.perf_counter() - t0) * 1000)
+            found += r.indicators[0].total_events
+        q = statistics.quantiles(times, n=100, method="inclusive")
+        out[f"typed_{kind}_30d"] = {"p50_ms": round(q[49], 1), "p95_ms": round(q[94], 1), "max_ms": round(max(times), 1),
+                                    "avg_matches": round(found / per_kind, 1)}
+    t0 = time.perf_counter()
+    r = run_hunt(folder, [classify("nothing-here.example.com")], machines=[TARGETS[0]], start=e - 7 * 86400,
+                 end=e + 1, record=False, with_snapshots=False, now=e)
+    scan = r.indicators[0].text_scans[0]
+    out["text_7d"] = {"seconds": round(time.perf_counter() - t0, 2), "searched": scan.searched, "of": scan.total,
+                      "complete": scan.stopped_at is None,
+                      "statement": [ln for ln in __import__("kratos.hunt.report", fromlist=["render"]).render(r)
+                                    .splitlines() if "log text on" in ln]}
+    conn = connect_store(folder / "kratos.db")
+    try:
+        n = int(conn.execute("SELECT COUNT(*) FROM host_events").fetchone()[0])
+        conn.execute("DELETE FROM host_event_terms")
+        conn.execute("UPDATE host_event_terms_state SET through = 0, upto = (SELECT MAX(id) FROM host_events), "
+                     "done_at = NULL")
+        conn.commit()
+        t0 = time.perf_counter()
+        st = T.backfill(conn, seconds=10**6)
+        took = time.perf_counter() - t0
+    finally:
+        conn.close()
+    out["backfill"] = {"events": n, "seconds": round(took, 1), "events_per_s": round(n / took), "done": st["done"]}
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--events", type=int, default=1_000_000)
@@ -128,10 +186,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="the original full indexes instead of the store's partial ones, for comparison")
     ap.add_argument("--dir", type=Path, default=None, help="folder for the throwaway database")
     ap.add_argument("--seed", type=int, default=20261011)
+    ap.add_argument("--hunt", action="store_true", help="also time C.3 hunts, the index size and the backfill")
+    ap.add_argument("--hunts", type=int, default=50, help="with --hunt: hunts per kind")
     args = ap.parse_args(argv)
 
     folder = args.dir or Path(tempfile.mkdtemp(prefix="kratos-events-bench-"))
-    db = folder / "bench.db"
+    db = folder / ("kratos.db" if args.hunt else "bench.db")
     if db.exists():
         print(f"{db} exists; use an empty --dir", file=sys.stderr)
         return 1
@@ -144,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     end = datetime(2026, 10, 11, tzinfo=UTC)
     add_s, build_s = generate_and_insert(store, args.events, rng, pools, end)
     rows = sum(c for _, c in store.targets())
-    size = sum(p.stat().st_size for p in folder.glob("bench.db*"))
+    size = sum(p.stat().st_size for p in folder.glob(db.name + "*"))
     queries = run_queries(store, random.Random(args.seed + 1), pools, end, args.queries)
     report = {
         "events_requested": args.events, "rows_stored": rows, "index_variant": "full" if args.full_indexes else "store (partial)",
@@ -153,6 +213,11 @@ def main(argv: list[str] | None = None) -> int:
         "db_mb_per_million": round(size / 1e6 / (rows / 1e6), 1), "queries": queries,
         "worst_p95_ms": max(q["p95_ms"] for q in queries.values()), "db": str(db),
     }
+    if args.hunt:
+        tb = _terms_bytes(db)
+        report["hunt_index_bytes"] = tb
+        report["hunt_index_mb_per_million"] = round(tb / 1e6 / (rows / 1e6), 1)
+        report["hunt"] = run_hunts(folder, random.Random(args.seed + 2), pools, end, args.hunts)
     print(json.dumps(report, indent=2))
     return 0
 

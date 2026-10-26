@@ -269,3 +269,11 @@ def test_a_hunt_sends_nothing_anywhere(tmp_path, events, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", boom)
     events.add([event(NOW - 60, source_ip="198.51.100.7")])
     assert run_hunt(tmp_path, [classify("198.51.100.7"), classify("evil.example.com")], record=True).total_hits == 1
+
+
+def test_a_full_hash_match_is_not_counted_again_by_its_prefix(tmp_path):
+    _write(tmp_path / "persistence" / "persistence_20261020_000000_000000.json", {
+        "target": "web01", "checked_at_epoch": NOW - DAY, "hunt_index": {"files": [["/etc/cron.d/job", SHA]]},
+        "signals": [{"rule": "PERSIST-001", "entities": [f"/etc/cron.d/job#{SHA[:12]}"], "evidence": []}]})
+    hits = _hunt(tmp_path, SHA, machines=["web01"]).indicators[0].snapshot_hits
+    assert len(hits) == 1 and not hits[0].prefix_only
