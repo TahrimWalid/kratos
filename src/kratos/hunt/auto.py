@@ -128,7 +128,7 @@ def hunt_new_intel(data_dir: Path | str, *, cache_file: Path | None = None, noti
                 "first_ts": first, "last_ts": last, "count": sum(s.count for s in events) + len(snaps),
                 "sources": sorted({s.source for s in events} | {h.label for h in snaps}),
                 "event_ids": [h.event_id for h in res.hits if h.machine == m and h.event_id][:10],
-                "coverage": covs[m].lines()[:8] if m in covs else [], "found_at": now})
+                "coverage": covs[m].lines()[:14] if m in covs else [], "found_at": now})
     for machine, hits in per_machine.items():
         out["hits"][machine] = [h["address"] for h in hits]
         path = write_snapshot(data_dir, machine, hits, now=now)
@@ -230,7 +230,7 @@ def build(doc: dict[str, Any]) -> list[Any]:
         evidence.append(f"Show them: kratos hunt {addr} --machine {target}")
         cov = [str(c) for c in h.get("coverage") or []]
         if cov:
-            evidence.append("What the hunt could see on this machine: " + " | ".join(cov[:6]))
+            evidence.append("What the hunt could see on this machine: " + " | ".join(cov[:14]))
         out.append(Finding(
             id="HUNT-001", title=TITLE, severity="high", evidence=evidence,
             recommendation=[

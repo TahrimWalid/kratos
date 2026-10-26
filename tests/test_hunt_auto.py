@@ -125,3 +125,21 @@ def test_a_failing_hunt_never_undoes_the_sync(tmp_path, cache, monkeypatch):
         raise RuntimeError("disk on fire")
     monkeypatch.setattr(auto, "hunt_new_intel", broken)
     assert "failed: RuntimeError" in threat_intel.after_cache_update(tmp_path)
+
+
+def test_a_new_hunt_001_goes_through_the_triggers_and_the_one_notifier(tmp_path, cache):
+    from kratos.agent import triggers as TR
+
+    TR.save_trigger(tmp_path, name="hunt-hits", min_severity="high", finding_id="HUNT-001", target=None,
+                    action="notify", cooldown_minutes=15, only_new_or_reopened=True)
+    EventStore(tmp_path / "kratos.db").add([event(NOW - DAY, source_ip="198.51.100.7")])
+    sent = []
+    cache(["198.51.100.7"])
+    out = auto.hunt_new_intel(tmp_path, notifier=lambda body, severity: sent.append((body, severity)) or
+                              {"status": "sent"})
+    assert len(out["fired"]) == 1 and len(sent) == 1
+    assert "HUNT-001" in sent[0][0] and "web01" in sent[0][0]
+    # the same sighting published again is not new: no second alert
+    auto.publish(tmp_path, "web01", next((tmp_path / "hunt" / "results").glob("hunt_*.json")),
+                 notifier=lambda body, severity: sent.append((body, severity)) or {"status": "sent"})
+    assert len(sent) == 1
