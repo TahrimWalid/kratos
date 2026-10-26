@@ -344,6 +344,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "collect.sync_initial_hours", "collect.sync_max_lines", "collect.ttl",
                           "detect.lookback_hours", "detect.finding_window_hours", "detect.pass_budget_seconds",
                           "detect.max_events_per_pass", "detect.coverage_days",
+                          "detect.alert_batch_seconds", "detect.watch.max_per_rule_minute",
+                          "detect.watch.offline_minutes",
                           "vulndb.max_age_days", "vulndb.epss_high",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -1054,6 +1056,13 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             (DS.MAX_EVENTS, "Detection rules: most log events per pass", f"{get(DS.MAX_EVENTS):,}"),
             (DS.COVERAGE_DAYS, "Detection rules: a log counts as collected if seen in",
              f"the last {get(DS.COVERAGE_DAYS)} days"),
+            # C.2: continuous detection on agents
+            (DS.ALERT_BATCH_SECONDS, "Continuous detection: live matches within this become one alert",
+             f"{get(DS.ALERT_BATCH_SECONDS)} seconds"),
+            (DS.WATCH_PER_RULE_MINUTE, "Continuous detection: matches of one rule sent a minute",
+             f"{get(DS.WATCH_PER_RULE_MINUTE)}, then one summary"),
+            (DS.WATCH_OFFLINE_MINUTES, "Continuous detection: say it isn't running after the link is down",
+             f"{get(DS.WATCH_OFFLINE_MINUTES)} minutes"),
         ]
 
     @work
@@ -1079,7 +1088,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
             return
         self._reload_general()
-        self._set_gen_status("Saved — applies on the next detection pass.", T.SAFE)
+        self._set_gen_status("Saved — applies on the next detection pass"
+                             + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
+                                else "."), T.SAFE)
 
     @work
     async def _set_collect_setting_flow(self, key: str) -> None:

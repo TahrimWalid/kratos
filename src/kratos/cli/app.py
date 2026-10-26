@@ -516,6 +516,14 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
     from kratos.subagent.core_server import RESTART_EXIT_CODE, CoreServer
     from kratos.subagent.local_reads import socket_path
 
+    import logging
+
+    # The listener is a long-running service: its own log lines (connections, rule pushes,
+    # live detections and the alerts they raised) go to stderr -- the service's journal.
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("kratos").setLevel(logging.INFO)
     store = SubAgentStore(args.data_dir / "kratos.db")
     # The whitelist store is what lets core push allowlists, record what each agent
     # allows, and deliver /whitelist runs (they wait in its queue for this process).
