@@ -114,10 +114,9 @@ class MachineCoverage:
                 out.append(f"watching: {note}")
         elif self.watch_enabled is False:
             out.append("not watched continuously (no agent watches this machine)")
-        synced_ds = {s.source for s in self.synced if s.spans}
+        synced_ds = {_dataset_of(s.source) for s in self.synced if s.spans}
         for ds, v in sorted(self.read.items()):
-            src = ds.split(".", 1)[-1]
-            if src in synced_ds or ds == "kratos.detect":
+            if ds in synced_ds or ds == "kratos.detect":
                 continue
             out.append(f"{ds}: {v['count']:,} event(s) Kratos read between {fmt(v['first'])} and {fmt(v['last'])} "
                        "(only what investigations read -- not every line)")
@@ -137,6 +136,16 @@ class MachineCoverage:
                              "gaps": w.gaps, "error": w.error} for w in self.watched],
                 "watch_notes": self.watch_notes, "read": self.read, "events": self.events_total, "pruned": self.pruned,
                 "snapshots": self.snapshots, "statement": self.lines()}
+
+
+def _dataset_of(source: str) -> str:
+    """The event dataset a log-sync source stores (auth -> kratos.auth, packages -> kratos.package)."""
+    try:
+        from kratos.logsources.catalog import SYNC_SOURCES
+
+        return SYNC_SOURCES[source].dataset
+    except (ImportError, KeyError):
+        return f"kratos.{source}"
 
 
 # --------------------------------------------------------------------------- building

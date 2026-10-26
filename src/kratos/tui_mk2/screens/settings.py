@@ -346,6 +346,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "detect.max_events_per_pass", "detect.coverage_days",
                           "detect.alert_batch_seconds", "detect.watch.max_per_rule_minute",
                           "detect.watch.offline_minutes",
+                          "hunt.max_hits", "hunt.scan_seconds", "hunt.scan_days", "hunt.snapshot_files",
+                          "hunt.index_seconds", "hunt.auto_max_indicators",
                           "vulndb.max_age_days", "vulndb.epss_high",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -747,6 +749,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._detect_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._hunt_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
@@ -1065,10 +1069,30 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              f"{get(DS.WATCH_OFFLINE_MINUTES)} minutes"),
         ]
 
+    # --- Hunting (kratos.hunt, C.3) ---
+    def _hunt_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.hunt import settings as HS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("hunt.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (HS.MAX_HITS, "Hunting: most matches listed", f"{get(HS.MAX_HITS)} (past it: counts and a hint to narrow)"),
+            (HS.SCAN_SECONDS, "Hunting: most time searching log text", f"{get(HS.SCAN_SECONDS)} seconds a hunt"),
+            (HS.SCAN_DAYS, "Hunting: log text searched back", f"{get(HS.SCAN_DAYS)} days (typed fields: everything)"),
+            (HS.SNAPSHOT_FILES, "Hunting: saved reads searched per machine", f"{get(HS.SNAPSHOT_FILES)}, newest first"),
+            (HS.INDEX_SECONDS, "Hunting: indexing older events before a hunt", f"{get(HS.INDEX_SECONDS)} seconds"),
+            (HS.AUTO_MAX_INDICATORS, "Hunting: new malicious addresses hunted per intel update",
+             f"{get(HS.AUTO_MAX_INDICATORS)}"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
         from kratos.detect import settings as _DS  # noqa: F401 -- registers the detect.* settings
+        from kratos.hunt import settings as _HS  # noqa: F401 -- and the hunt.* settings (same editor)
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1150,7 +1174,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith("detect."):
+        elif key and key.startswith(("detect.", "hunt.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

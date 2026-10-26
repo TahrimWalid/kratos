@@ -555,7 +555,7 @@ def _mcp_call(env, name, args, token=None):
 def test_mcp_tools_list_is_deterministic_and_has_no_writing_tool(env):
     names = [t["name"] for t in _mcp(env, "tools/list").json()["result"]["tools"]]
     assert names == ["kratos_start_investigation", "kratos_get_investigation", "kratos_get_findings",
-                     "kratos_list_sessions", "kratos_finding_states"]
+                     "kratos_list_sessions", "kratos_finding_states", "kratos_hunt"]
     assert names == [t["name"] for t in _mcp(env, "tools/list").json()["result"]["tools"]]
 
 
@@ -916,3 +916,51 @@ def test_stopping_the_server_stops_open_chat_turns(tmp_path):
 
     threading.Thread(target=worker, daemon=True).start()
     assert st.shutdown_turns(timeout=5) == 0 and h.stop.is_set()
+
+
+# --------------------------------------------------------------------------- C.3: /hunt and kratos_hunt
+def _hunt_events(env):
+    from hunt_fixtures import event
+    from kratos.events.store import EventStore
+
+    now = time.time()
+    EventStore(env["dir"] / "kratos.db").add([event(now - 600, target=T1, n=1, source_ip="198.51.100.7"),
+                                              event(now - 600, target=OTHER, n=2, source_ip="198.51.100.7")])
+
+
+def test_a_hunt_from_a_chat_sees_only_the_tokens_machines_takes_a_slot_and_counts(env, monkeypatch):
+    from kratos.hunt import front
+
+    _hunt_events(env)
+    seen = []
+    real = front.start_hunt
+
+    def spy(*a, **k):
+        seen.append(env["app"].state.slots.active)
+        return real(*a, **k)
+    monkeypatch.setattr(front, "start_hunt", spy)
+    settings_store.set(SS.REQUESTS_PER_HOUR, 2, data_dir=env["dir"], actor="test")
+    r = _chat(env, "/hunt 198.51.100.7")
+    text = r.json()["choices"][0]["message"]["content"]
+    assert r.status_code == 200 and f"FOUND on {T1}" in text and OTHER not in text
+    assert seen == [1]                                   # it held a slot while it ran
+    assert env["calls"]["agent"] == [] and env["calls"].get("route", []) == []
+    out = _chat(env, f"/hunt 198.51.100.7 --machine {OTHER}").json()["choices"][0]["message"]["content"]
+    assert "not a machine you may search here" in out
+    assert _chat(env, "/hunt 198.51.100.7").status_code == 429      # the hour's 2 requests are used
+    from kratos.hunt import store as hstore
+
+    rows = hstore.recent(env["dir"])
+    assert rows[0]["source"] == "chat" and OTHER not in rows[0]["machines"]
+
+
+def test_kratos_hunt_over_mcp_is_scoped_to_the_token(env):
+    _hunt_events(env)
+    out = _mcp_call(env, "kratos_hunt", {"indicators": "198.51.100.7"})
+    assert OTHER not in out["machines"] and T1 in out["machines"]
+    assert f"FOUND on {T1}" in out["report"] and out["results"][0]["found"]
+    assert "may search here" in _mcp_call(env, "kratos_hunt", {"indicators": "198.51.100.7",
+                                                                "machine": OTHER})["error"]
+    assert "Which one?" in _mcp_call(env, "kratos_hunt", {"indicators": "alice"})["error"]
+    rows = [r for r in _audit_rows(env["dir"]) if r["endpoint"] == "kratos_hunt"]
+    assert rows and rows[0]["metered"] == 1

@@ -347,6 +347,74 @@ def build(state: Any) -> tuple[Any, Any]:
         return untrusted.for_model({"targets": targets, "count": len(rows), "findings": rows[:limit]},
                                    field_cap=None)
 
+    @mcp.tool()
+    async def kratos_hunt(indicators: str, ctx: Context, kind: str = "", since: str = "", until: str = "",
+                          machine: str = "") -> dict[str, Any]:
+        """Read-only: has this address (or CIDR network), SHA-256 file hash, account, domain,
+        program or path been seen on the machines this token may see? Searches what Kratos
+        already holds -- stored log events, detections, saved process and persistence reads,
+        findings -- with no model call and nothing sent to any machine. `indicators`: one or a
+        few, space-separated. `kind` forces the type (ip, sha256, account, domain, program,
+        path) when a word could be several; `since`/`until` like "30d" or "2026-10-01";
+        `machine` narrows to one machine. `report` is Kratos's plain-words answer -- show it as
+        it is: it says what was searched, and "not found" only means "not found in what Kratos
+        holds for those stretches"."""
+        import asyncio
+
+        from kratos.hunt import front, report
+
+        client = _client(ctx)
+        scope = _scope_targets(client)
+        req = front.Request(words=[w for w in str(indicators or "").replace(",", " ").split() if w],
+                            kind=kind or None, since=since or None, until=until or None,
+                            machines=[machine] if machine else [])
+        try:
+            if not req.words:
+                raise front.HuntUsageError("indicators is required")
+            prepared = front.resolve_hunt(req, scope=scope)
+        except front.HuntUsageError as e:
+            raise ValueError(str(e)) from None
+        if prepared.ambiguous:
+            a = prepared.ambiguous[0]
+            raise ValueError(f"{a.question()} Call again with kind set to one of: {', '.join(a.options)}")
+        from kratos.serve.openai_routes import _hourly_limit
+
+        limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
+            raise ValueError(f"this token has used its {limit} requests for this hour (serve.requests_per_hour)")
+        started = time.time()
+        status = "error"
+        try:
+            def _hunt() -> Any:
+                from kratos.run_context import run_scope
+
+                if not state.slots.acquire():
+                    return None
+                try:
+                    with run_scope("mcp"):
+                        return front.start_hunt(state.data_dir, prepared, source="mcp", actor=f"token {client.token_id}")
+                finally:
+                    state.slots.release()
+            result = await asyncio.to_thread(contextvars.copy_context().run, _hunt)
+            if result is None:
+                status = "stopped"
+                raise ValueError("the hunt did not start")
+            status = "ok"
+            out = result.as_dict()
+            out["report"] = report.render(result)
+            return untrusted.for_model(out, field_cap=None)
+        finally:
+            try:
+                from kratos.serve import store as _store
+
+                _store.audit(state.data_dir, door="mcp", endpoint="kratos_hunt", status=status,
+                             token_id=client.token_id, target=",".join(prepared.machines or scope)[:200],
+                             metered=True, duration=time.time() - started)
+            except Exception:  # noqa: BLE001
+                logger.debug("serve: audit failed", exc_info=True)
+            finally:
+                state.release_metered(client.token_id)
+
     app = mcp.streamable_http_app()
     return app, mcp.session_manager
 

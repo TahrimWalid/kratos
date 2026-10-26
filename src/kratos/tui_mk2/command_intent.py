@@ -82,6 +82,8 @@ CAPABILITIES: list[tuple[str, str]] = [
     ("/findings", "list remembered findings and let the user verify/accept/dismiss them (the user decides)"),
     ("/detect", "the detection rules (SigmaHQ Linux rules) Kratos runs over collected logs: list them, turn one "
                 "off for a machine, run them now"),
+    ("/hunt <indicator>", "search everything Kratos already holds (stored logs, detections, snapshots, findings) "
+                          "for an address, file hash, account, domain, program or path, with what was covered"),
 ]
 
 

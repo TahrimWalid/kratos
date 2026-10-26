@@ -435,6 +435,8 @@ class HelpModal(ModalScreen[None]):
                  "mark false positive / out of scope (alias /f)"),
                 ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
                  "checked, run them now"),
+                ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "
+                 "machines? Searches what Kratos holds and says what that covered (--since 30d, --machine, --type)"),
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),

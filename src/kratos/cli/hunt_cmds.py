@@ -31,13 +31,13 @@ def cmd_hunt(args: argparse.Namespace) -> int:
         print("[KRATOS] " + front.USAGE.replace("/hunt", "kratos hunt"), file=sys.stderr)
         return 2
     try:
-        prepared = front.prepare(req)
+        prepared = front.resolve_hunt(req)
         if prepared.ambiguous:
             a = prepared.ambiguous[0]
             print(f"[KRATOS] {a.question()} Run again with --type {' or --type '.join(a.options)}.",
                   file=sys.stderr)
             return 2
-        result = front.run(data_dir, prepared, source="cli", actor=_actor(),
+        result = front.start_hunt(data_dir, prepared, source="cli", actor=_actor(),
                            progress=(lambda m: print(f"[KRATOS] {m}", file=sys.stderr)) if not args.json else None)
     except front.HuntUsageError as e:
         print(f"[KRATOS] {e}", file=sys.stderr)

@@ -108,7 +108,7 @@ def test_huge_results_are_counts_with_a_hint(tmp_path, events):
     res = r.indicators[0]
     assert res.too_many and res.total_events == 25 and len(res.hits) == 10
     text = report.render(r)
-    assert "too many to list" in text and "Newest matching events" not in text
+    assert "too many to list" in text and "Newest matching events (10 of 25)" in text
 
 
 def test_machine_text_in_hits_is_cleaned(tmp_path, events):

@@ -15,6 +15,7 @@ from kratos.hunt.coverage import fmt
 from kratos.hunt.search import HuntResult, IndicatorResult
 
 REPORT_HITS = 20
+REPORT_HITS_WHEN_HUGE = 10
 PER_DAY_SHOWN = 10
 _SOURCE_WORDS = {"kratos.auth": "sign-ins and sudo", "kratos.cron": "cron", "kratos.systemd": "services",
                  "kratos.firewall": "firewall", "kratos.auditd": "audit log", "kratos.package": "package changes",
@@ -66,19 +67,20 @@ def _indicator_lines(res: IndicatorResult, r: HuntResult) -> list[str]:
             out.append(f"NOT SEARCHED on {m}: Kratos holds nothing from it for this period")
         else:
             out.append(f"not found on {m} -- in what Kratos holds for it (see what was searched below)")
+    shown = REPORT_HITS_WHEN_HUGE if res.too_many else REPORT_HITS
     if res.too_many:
         out.append(f"{res.total_events:,} matching events -- too many to list. Narrow the hunt: a shorter window "
                    "(--since 24h), one machine (--machine), a single address instead of a network.")
-    elif res.hits:
-        out.append(f"Newest matching events ({min(len(res.hits), REPORT_HITS)} of {res.total_events:,}):")
-        for h in res.hits[:REPORT_HITS]:
+    if res.hits:
+        out.append(f"Newest matching events ({min(len(res.hits), shown)} of {res.total_events:,}):")
+        for h in res.hits[:shown]:
             fields = ", ".join(f"{k}={v}" for k, v in h.fields.items() if k != "event.outcome")
             rule = f" rule {h.rule['id']} \"{h.rule['name'][:60]}\" by {h.rule['author'][:60]}" if h.rule else ""
             how = {"text": " (in the log text)", "column": " (not yet in the search index)"}.get(h.via, "")
             excerpt = f" -- {h.excerpt}" if h.excerpt else ""
             out.append(f"  {fmt(h.ts)}  {h.machine}  {h.dataset}{how}{rule}  {fields}{excerpt}")
-        if res.total_events > REPORT_HITS:
-            out.append(f"  ... {res.total_events - REPORT_HITS:,} more (`kratos hunt ... --json` lists up to "
+        if res.total_events > shown and not res.too_many:
+            out.append(f"  ... {res.total_events - shown:,} more (`kratos hunt ... --json` lists up to "
                        f"{len(res.hits)})")
     for t in res.text_scans:
         if t.total == 0:

@@ -1,9 +1,9 @@
 """The one way every surface starts a hunt (CLI, TUI, chat, MCP).
 
 `parse_command("198.51.100.7 --since 30d --machine web01")` reads the words people
-type after `/hunt`; `start(...)` classifies the indicators, refuses what can't be
-hunted, returns the ambiguous ones to ask about, scopes the machines, and runs the
-hunt. The scope is the CALLER's: a chat or MCP token passes the machines it may see,
+type after `/hunt`; `resolve_hunt(...)` classifies the indicators, refuses what can't be
+hunted, returns the ambiguous ones to ask about and scopes the machines;
+`start_hunt(...)` runs it. The scope is the CALLER's: a chat or MCP token passes the machines it may see,
 and a `--machine` outside that scope is refused, never widened.
 """
 from __future__ import annotations
@@ -101,7 +101,7 @@ class Prepared:
     end: float | None
 
 
-def prepare(req: Request, *, scope: list[str] | None = None) -> Prepared:
+def resolve_hunt(req: Request, *, scope: list[str] | None = None) -> Prepared:
     """Classify and scope. `scope`: the machines the caller may search (None = all)."""
     try:
         parsed = I.parse(req.words, I.kind_of(req.kind) if req.kind else None)
@@ -122,7 +122,7 @@ def prepare(req: Request, *, scope: list[str] | None = None) -> Prepared:
     return Prepared(parsed.indicators, parsed.ambiguous, machines, start, end)
 
 
-def run(data_dir: Path | str, prepared: Prepared, *, source: str, actor: str,
+def start_hunt(data_dir: Path | str, prepared: Prepared, *, source: str, actor: str,
         progress: Callable[[str], None] | None = None) -> Any:
     from kratos.hunt.search import run_hunt
 

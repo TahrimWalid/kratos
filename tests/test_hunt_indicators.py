@@ -90,5 +90,5 @@ def test_command_words_and_options():
 def test_scope_refuses_a_machine_outside_it():
     req = front.parse_command("198.51.100.7 --machine db01")
     with pytest.raises(front.HuntUsageError, match="not a machine you may search"):
-        front.prepare(req, scope=["web01"])
-    assert front.prepare(front.parse_command("198.51.100.7"), scope=["WEB01"]).machines == ["web01"]
+        front.resolve_hunt(req, scope=["web01"])
+    assert front.resolve_hunt(front.parse_command("198.51.100.7"), scope=["WEB01"]).machines == ["web01"]

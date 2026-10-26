@@ -49,6 +49,9 @@ Commands that work here (no model call):
   /findings          the open findings Kratos remembers for this machine
   /usage             today's model use and the limits
   /retest <key>      re-collect what a finding depends on and re-check it
+  /hunt <indicator>  has this address, hash, account, domain, program or path been seen on
+                     the machines this token may see? Searches what Kratos holds and says
+                     what that covered (--since 30d, --machine <name>, --type account)
   /help              this text
 
 Not available from a chat client -- use the Kratos app: /evolve, /whitelist, /run-fix,
@@ -58,7 +61,7 @@ Text Kratos quotes from a machine is shown inert: no image loads, no link is cli
 Your OWN messages are drawn by the chat app itself -- an image link you type there is
 loaded by the app, not by Kratos."""
 
-_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/help")
+_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -182,13 +185,36 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
         return _render.kratos_text_markdown(_usage_text(_br, data_dir))
     if word == "/findings":
         return _render.kratos_text_markdown(_findings_text(target, data_dir))
-    if word == "/retest":
-        return None          # it reads the machine: a turn of its own (slots, hourly limit) -- _serve_turn
+    if word in ("/retest", "/hunt"):
+        return None          # a turn of its own (slots, hourly limit) -- _serve_turn
     return None
 
 
 def is_retest(text: str) -> bool:
     return bool(text) and text.split(maxsplit=1)[0].lower() == "/retest"
+
+
+def is_hunt(text: str) -> bool:
+    return bool(text) and text.split(maxsplit=1)[0].lower() == "/hunt"
+
+
+def _hunt_text(arg: str, client: Any, data_dir: Path, progress: Any) -> str:
+    """A hunt over the machines this token may see -- never more (C.3 §3.8)."""
+    from kratos.hunt import front, report
+    from kratos.run_context import run_scope
+
+    scope = sorted({t for _mid, t in models_for(client)})
+    try:
+        prepared = front.resolve_hunt(front.parse_command(arg), scope=scope)
+        if prepared.ambiguous:
+            a = prepared.ambiguous[0]
+            return f"{a.question()} Send it again with --type {' or --type '.join(a.options)}."
+        with run_scope("web"):
+            result = front.start_hunt(data_dir, prepared, source="chat", actor=f"token {client.token_id}",
+                               progress=progress)
+    except front.HuntUsageError as e:
+        return f"{e}\n{front.USAGE}"
+    return report.render(result)
 
 
 def _usage_text(br: Any, data_dir: Path) -> str:
@@ -313,6 +339,24 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
             text = _retest_text(arg, target, state.data_dir)
         finally:
             state.slots.release()
+        handle.finish({"status": "ok", "content": _render.kratos_text_markdown(text)})
+        return
+    if is_hunt(message):
+        # A hunt reads only Kratos's own records, but it can scan a lot of them: it takes a
+        # slot like a retest, and it counted in the hourly limit before it got here.
+        if not state.slots.acquire(should_stop=handle.stop.is_set,
+                                   on_wait=lambda: handle.progress("waiting for another investigation to finish…")):
+            handle.finish({"status": "stopped", "content": "Stopped before the hunt started."})
+            return
+        try:
+            arg = message.split(maxsplit=1)[1].strip() if len(message.split(maxsplit=1)) > 1 else ""
+            text = _hunt_text(arg, client, state.data_dir, handle.progress)
+        finally:
+            state.slots.release()
+        try:
+            _record_chat_turn(state.data_dir, session_id, message, text)
+        except Exception:  # noqa: BLE001 -- the answer stands
+            logger.debug("serve: could not record the hunt turn", exc_info=True)
         handle.finish({"status": "ok", "content": _render.kratos_text_markdown(text)})
         return
     history = history_text(earlier)
@@ -468,8 +512,9 @@ def _handlers(state: Any) -> dict[str, Any]:
         # From here the request holds one of the hour's slots: it is given back once the
         # metered audit row is written, or at once if the request ends before using the model.
         try:
-            # A retest makes no model call: the spending limits don't stop it.
-            refusal = None if is_retest(message) else await asyncio.to_thread(_precheck, target, state.data_dir)
+            # A retest or a hunt makes no model call: the spending limits don't stop it.
+            refusal = None if is_retest(message) or is_hunt(message) else \
+                await asyncio.to_thread(_precheck, target, state.data_dir)
             if refusal is not None:
                 await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
                 state.release_metered(client.token_id)

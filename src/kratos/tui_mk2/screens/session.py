@@ -118,6 +118,8 @@ _PALETTE_COMMANDS = [
     ("/report", "investigation summary — new, still open, fixed, hidden by your decisions"),
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
+    ("/hunt", "has this address / hash / account / domain / program / path been seen? searches what Kratos holds, "
+              "with its coverage (no model)"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
@@ -148,6 +150,16 @@ _PALETTE_COMMANDS = [
     ("/run-fix", "run the last recommended command via the target's sub-agent (if it's in the allowlist)"),
     ("/exit", "leave the session"),
 ]
+
+
+HUNT_CONTEXT_CHARS = 6000
+
+
+def _hunt_context(text: str) -> str:
+    """A hunt report as conversation context: Kratos-written, capped (the full report is on screen)."""
+    if len(text) <= HUNT_CONTEXT_CHARS:
+        return text
+    return text[:HUNT_CONTEXT_CHARS] + "\n[... the rest of this hunt report was shown on screen, not kept here]"
 
 
 # Forgotten-slash safety net: bare words that are UNAMBIGUOUSLY a command (they
@@ -1011,6 +1023,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.detect import DetectScreen
 
             self.app.push_screen(DetectScreen(self._data_dir, target=_kconfig.get_active_target()))
+        elif cmd == "/hunt":
+            self._hunt_flow(rest)
         elif cmd in ("/findings", "/f"):
             from kratos.tui_mk2.screens.findings import FindingsScreen
 
@@ -1252,6 +1266,69 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if report.correlation is not None:
             ids = ", ".join(f"{f.get('id')} ({f.get('severity')})" for f in report.findings) or "no findings"
             self._emit_from_worker(R.note_line(f"{ids}   [{report.elapsed:.1f}s]"))
+
+    # --- /hunt (C.3: search what Kratos holds) ----------------
+    @work
+    async def _hunt_flow(self, rest: str) -> None:
+        """/hunt <indicator> [--type T] [--since 30d] [--machine M]: search everything Kratos
+        holds -- no model, nothing sent to a machine. Asks when an indicator could be
+        several kinds; the report states what was searched."""
+        from kratos.hunt import front
+        from kratos.hunt import indicators as I
+        from kratos.tui_mk2.modals import ClarifyModal
+
+        try:
+            prepared = front.resolve_hunt(front.parse_command(rest))
+        except front.HuntUsageError as e:
+            self._emit(R.note_line(f"{e}\n{front.USAGE}"))
+            return
+        for amb in prepared.ambiguous:
+            answer = await self.app.push_screen_wait(ClarifyModal(
+                amb.question(), [{"label": I.KIND_LABELS[k], "value": k, "explanation": f"hunt it as {I.KIND_LABELS[k]}"}
+                                 for k in amb.options],
+                subtitle=amb.reason, title="Hunt: which kind?"))
+            kind = I.KIND_ALIASES.get(str(answer or "").strip().lower())
+            if kind is None:
+                self._emit(R.note_line(f"Hunt cancelled -- no kind chosen for {amb.typed!r}."))
+                return
+            try:
+                prepared.indicators.append(I.classify(amb.typed, kind))
+            except I.IndicatorError as e:
+                self._emit(R.error_line(str(e)))
+                return
+        prepared.ambiguous = []
+        self._hunt_run(prepared, rest.strip())
+
+    @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
+    def _hunt_run(self, prepared: Any, typed: str) -> None:
+        from kratos.dataprune import actor_name
+        from kratos.hunt import front, report
+
+        self._set_busy(True)
+        try:
+            result = front.start_hunt(self._data_dir, prepared, source="tui", actor=actor_name("tui"),
+                               progress=lambda m: self._emit_from_worker(R.note_line(m)))
+        except front.HuntUsageError as e:
+            self._emit_from_worker(R.note_line(str(e)))
+            return
+        except Exception as e:  # noqa: BLE001
+            self._emit_from_worker(R.error_line(f"/hunt failed: {type(e).__name__}: {e}"))
+            return
+        finally:
+            self._set_busy(False)
+        text = report.render(result)
+        self._emit_from_worker(Text(""))
+        for n, line in enumerate(text.splitlines()):
+            style = f"bold {T.TEXT_BRIGHT}" if n == 0 or line.startswith(("== ", "What was searched")) else (
+                T.ACCENT if line.startswith("FOUND") else T.TEXT)
+            self._emit_from_worker(Text(line, style=style))
+        # The report joins the conversation as data, so a follow-up question can use it
+        # (the conversation is framed as data when it reaches the model -- A.4).
+        try:
+            self._log_chat_turn(f"/hunt {typed}", _hunt_context(text))
+        except Exception:  # noqa: BLE001 -- the hunt itself stands
+            pass
 
     # --- /trace (run records) --------------------------------
     def _trace_flow(self, rest: str) -> None:
