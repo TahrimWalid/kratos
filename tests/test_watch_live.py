@@ -420,3 +420,24 @@ def test_a_gap_the_agent_keeps_up_to_date_stays_one_gap(tmp_path):
                                                         "the spool holds"}]))
     gaps = {r["source"]: r["gaps"] for r in L.watch_rows(tmp_path, tid)}["journal"]
     assert len(gaps) == 1 and gaps[0]["reason"].startswith("90 ") and gaps[0]["to"] == pytest.approx(t)
+
+
+def test_a_busy_watched_machine_never_hides_another_machines_detections(tmp_path):
+    """Phase C audit: every live alert batch wrote a new timestamped snapshot, and the
+    latest-snapshot lookup reads only the newest 100 files -- so within minutes one busy
+    watched machine pushed every other machine's detection snapshot out of view (its SIGMA
+    findings and coverage then vanished from answers, /detect and the lifecycle)."""
+    from kratos.adapters.findings_engine import find_latest_inputs
+    from kratos.detect.findings import RESULTS_DIR
+
+    other = "198.51.100.31"
+    R.run_pass(other, tmp_path)
+    assert find_latest_inputs(tmp_path, other)["detections"] is not None
+    for _ in range(120):
+        L.publish(tmp_path, MACHINE, notifier=_Notifier())
+    assert find_latest_inputs(tmp_path, other)["detections"] is not None
+    assert find_latest_inputs(tmp_path, MACHINE)["detections"] is not None
+    # and the live path keeps ONE current snapshot per machine, not one per batch
+    live_files = [p for p in (tmp_path / RESULTS_DIR).glob("detections_*.json")
+                  if json.loads(p.read_text())["source"] == "live"]
+    assert len(live_files) == 1

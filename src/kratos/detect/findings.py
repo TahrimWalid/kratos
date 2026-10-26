@@ -195,10 +195,18 @@ def write_snapshot(data_dir: Path | str, target: str, report: Any, loaded: Any, 
     }
     folder = data_dir / RESULTS_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    # the written time plus the machine: two machines' passes in the same instant never share a file
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     machine = hashlib.sha256(doc["target"].encode("utf-8")).hexdigest()[:8]
-    path = folder / f"detections_{stamp}_{machine}.json"
+    if source == "live":
+        # One current live snapshot per machine, replaced in place (atomically): a watched
+        # machine publishes every few seconds, and a file per batch both grew without bound
+        # and pushed other machines' snapshots out of the newest files the latest-input
+        # lookup reads (Phase B/C audit). Every detection stays in the event store and every
+        # finding's history in the lifecycle -- this file is derived from them.
+        path = folder / f"detections_live_{machine}.json"
+    else:
+        # the written time plus the machine: two machines' passes in the same instant never share a file
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = folder / f"detections_{stamp}_{machine}.json"
     paths.write_private_text(path, json.dumps(doc, indent=1, sort_keys=True) + "\n")
     return path
 
