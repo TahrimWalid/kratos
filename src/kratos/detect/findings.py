@@ -341,10 +341,18 @@ def watch_finding(doc: dict[str, Any]) -> dict[str, Any] | None:
     from kratos.adapters.findings_engine import normalise_entities
 
     reasons = [r for r in w.get("reasons") or [] if isinstance(r, dict)]
+    only_gaps = bool(reasons) and all(str(r.get("code") or "").startswith("gap:") for r in reasons)
     evidence = [str(r.get("text") or r.get("code"))[:400] for r in reasons][:12]
-    evidence.append("While continuous detection isn't running, detections on this machine come only from the "
+    evidence.append("A stretch the agent didn't watch is checked only by the scheduled pass over the logs Kratos "
+                    "collects (if they still hold it); while watching isn't running, an attack is seen later, not as "
+                    "it happens." if only_gaps else
+                    "While continuous detection isn't running, detections on this machine come only from the "
                     "scheduled pass over the logs Kratos collects -- an attack is seen later, not as it happens.")
-    return {"title": "Continuous detection isn't running on this machine", "severity": "medium",
+    if only_gaps:
+        evidence.append("This closes by itself an hour after the last unwatched stretch was reported.")
+    title = ("Continuous detection missed part of this machine's logs" if only_gaps
+             else "Continuous detection isn't running on this machine")
+    return {"title": title, "severity": "medium",
             "evidence": evidence,
             "recommendation": [
                 "Open /subagent and select the machine: it shows the watcher's state and why it stopped.",

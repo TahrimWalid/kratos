@@ -291,6 +291,7 @@ def test_each_cause_opens_detect_002_and_it_closes_when_watching_resumes(tmp_pat
     handler.handle_status(tid, _status("error", error="journalctl: permission denied"))
     f = _detect002(tmp_path, up)
     assert f and f["severity"] == "medium" and "stopped:journal" in f["entities"]
+    assert f["title"] == "Continuous detection isn't running on this machine"
     assert any("permission denied" in e for e in f["evidence"])
     # it closes by itself once the watcher reports watching again
     handler.handle_status(tid, _status())
@@ -316,6 +317,7 @@ def test_each_cause_opens_detect_002_and_it_closes_when_watching_resumes(tmp_pat
                                               "reason": "older than the catch-up limit (1 h)", "kind": "watch"}]))
     f = _detect002(tmp_path, up)
     assert f and "gap:journal" in f["entities"] and any("catch-up limit" in e for e in f["evidence"])
+    assert f["title"] == "Continuous detection missed part of this machine's logs"
     # 5. the agent refused the rules
     L.record_ack(tmp_path, tid, {"version": 2, "status": "refused", "reason": "a rule pack was refused: bad"})
     assert "rules_refused" in L.health(tmp_path, tid, connected=True).codes

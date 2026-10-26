@@ -861,6 +861,8 @@ def watch_line(data_dir: Path | str, machine: str, *, now: float | None = None) 
     now = _now() if now is None else now
     if not summary["healthy"]:
         why = "; ".join(r["text"] for r in summary["reasons"][:2])
+        if all(str(r["code"]).startswith("gap:") for r in summary["reasons"]):
+            return f"watching continuously, but part of the log was NOT watched ({why[:300]}) -- see DETECT-002"
         return f"continuous detection is turned on but NOT running ({why[:300]}) -- see DETECT-002"
     hours = int(settings_store.get(S.FINDING_WINDOW_HOURS, data_dir=data_dir))
     try:
