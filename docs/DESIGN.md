@@ -1210,6 +1210,89 @@ Kratos is trusted with. Through a sub-agent (root, no SSH session) this doesn't 
 machine or everywhere, with who and why (refused inside an agent tool call, like every decision
 about findings). A single false alarm goes through the finding lifecycle instead.
 
+## Continuous detection on agents
+
+**Where it runs.** `kratos.subagent.watch` (agent bundle, standard-library Python 3.8) follows a
+machine's logs and evaluates the rule packs with the one evaluator (`subagent/detect.py`) on each
+entry. Two followers, each a thread: the **journal** -- one `journalctl --follow -o json` started
+with a fixed argument list (the fixed output fields, the closed matches of `catalog.JOURNAL_MATCHES`
+for the sources log sync collects, OR-ed with `+`, and a cursor checked against `logread.CURSOR_RE`;
+nothing from Kratos or the network reaches it) -- and the **audit log**, opened with the hardened
+opener (`hostfiles.open_log_file`: no symlinks, no hard links, inode re-checked) and followed by
+inode and offset; on rotation the old file is read to its end before switching. Audit records are
+grouped into events by serial (idle 0.5 s, at most 64 open groups). A third thread evaluates.
+
+**One way to turn a line into an event.** The parsers (`logsources/parsers/*`), the masking
+(`events/redact.py`) and the value assembly (`events/assemble.py`, which also holds the event IDs)
+are standard-library files shipped in the bundle; Kratos imports the same files (each imports its
+siblings bundle-first, then from `kratos`). A parity test feeds the same journal entries and audit
+records to both sides and requires identical events and identical matches. The agent is told the
+machine's name (the address a person linked to it), so the event IDs it computes are the IDs log
+sync stores later for the same lines -- and the detection ID derived from (machine, rule, event,
+group) is the one the scheduled pass would give the same match: seen live and seen later is stored
+once.
+
+**What crosses the link.** Only matches: rule, pack version, the event's time and position, and a
+bounded event -- the fields the rule names plus the identity fields, each capped (the message at
+1 KiB) and already masked. Kratos pushes the configuration as data: `detect_pack_push` (the full
+packs, the rules off for this machine, the watcher's limits from a closed settings table, on/off,
+the machine's name), signed with the connection's key for its session nonce, versioned with an
+anti-rollback floor kept per pairing across restarts, each pack re-validated whole on the agent
+(and a lower `pack_version` of a held pack refused). Turning watching ON is accepted only over a
+trusted link (pinned TLS, or the older trusted-transport rule). Detections go out only over a
+trusted link; over any other they wait in the spool.
+
+**Delivery: at least once, de-duplicated by Kratos.** Each match gets a per-agent sequence number
+and waits in a bounded on-disk spool (`watch_spool.jsonl`, root-only, 2,000 matches / 5 MB) until
+Kratos acknowledges it (`detection_ack`); unacknowledged ones are resent after 30 s and all of
+them on a new connection. Past the cap the oldest are dropped and the drop is recorded as a gap.
+The spool trims itself by design -- the only thing the watcher removes.
+
+**Restarts, catch-up and gaps.** Every 5 s the agent checkpoints the last evaluated journal cursor,
+the audit log's inode and offset, and the counting rules' open windows (`Evaluator.export_windows`).
+After a restart it resumes from there, catching up at most `max_catchup_seconds` (6 h) and
+`max_catchup_entries` (200,000); anything older, journal entries vacuumed before they were read, a
+truncated audit log, or a rotation it can't follow becomes a **gap** ("not watched from ... to ...,
+why"), reported in its status -- never skipped silently. Windows use the events' own times; an
+event out of time order (a clock jump back) only counts with events within one window of it.
+
+**Floods and CPU.** Per rule the agent sends the first `max_per_rule_minute` (20) matches of each
+event-time minute, then one summary ("+N more"), which Kratos stores as one detection event with
+that count. The evaluation thread runs at nice 10 (so does the `journalctl` it starts) and pauses
+when its CPU time exceeds `max_cpu_percent` (25 %) of the wall time; the readers then wait (the
+queue holds 5,000 entries) and the status reports lag. Programs the agent itself starts (its read
+probes, their children) are tracked by parent pid in the audit stream and never matched; Kratos's
+own SSH logins are set aside on Kratos's side with C.1's `detect/own.py`.
+
+**Kratos's side (`kratos/detect/live.py`).** The listener hands detections and statuses to a pool
+of 2 threads of their own, never its event loop; past 1,000 waiting (200 from one agent) a
+detection is simply not acknowledged -- the agent's spool holds it and resends -- so one busy
+machine or a slow database can't stall other agents' pings. A detection is checked (known rule,
+the event's ID shape, every value through the event model) and stored as a `kratos.detect` event;
+matches of one machine within `detect.alert_batch_seconds` (5 s) are then published together on a
+single alert thread through the same functions as the scheduled pass: the detections snapshot
+(`findings.write_snapshot`, now with a `watch` section), `findings.build`, the findings engine's
+lifecycle, `trigger_eval.evaluate_triggers` (only the findings with new matches are passed) and
+`notify`. Run source `watch` (unattended).
+
+**Health.** `detect_watch` keeps per machine and log: state, watching since, events a minute,
+lag, drops and the unwatched stretches (newest 500) -- what C.3 states hunt coverage from.
+`detect_pack_state` keeps who turned it on, the push version and what the agent confirmed.
+`live.health` turns them (and the link's state) into DETECT-002, a condition: watcher stopped or
+restarting for over a minute, link down longer than `detect.watch.offline_minutes`, no status for
+3 minutes while connected, rules refused or not confirmed, or a stretch reported unwatched in the
+last hour. The listener checks every 30 s and when a status arrives, and publishes each change
+once (the codes are stored). A machine watched live does not get "not checked" coverage lines for
+the logs its agent reads.
+
+**Why no action.** Detection observes and recommends. Nothing on this path can start a process
+other than the watcher's own fixed `journalctl`, write outside the agent's state folder, or reach
+the fix channel; a trigger's actions stay notify / playbook / read-only investigation. A test scans
+the watcher and the live handler for the fix channel's names and the process calls.
+
+**Old agents.** An agent older than 0.9.0 sends no `watch_api`; Kratos never pushes to it, and
+turning watching on for it is refused with "update the agent to watch continuously".
+
 ## Presets and pipelines
 
 Saved presets (`/preset`) let a user name and re-run an

@@ -985,9 +985,11 @@ lists the stored log lines it matched; `kratos events --rule SIGMA-08F26069` pri
 A match stays an open finding for 24 hours (`detect.finding_window_hours`); after that, with
 no new match, it is marked "no recurrence".
 
-> **On schedule, not continuously.** The rules see a machine's logs when Kratos collects
-> from it. Between collections nothing is checked — answers and `/detect` say so. Live,
-> second-by-second detection on the machine's sub-agent is planned.
+> **On schedule, or continuously.** The rules see a machine's logs when Kratos collects
+> from it; between collections nothing is checked — answers and `/detect` say so. A machine
+> with a sub-agent can instead be **watched continuously**: its agent runs the same rules on
+> each log line as it is written and you are alerted within seconds — see
+> [Watching a machine continuously](#watching-a-machine-continuously).
 
 **What the rules need.** Many rules look at **program starts** and **file changes**, which
 only **auditd** records. Without auditd, those rules can't see anything — Kratos says so
@@ -1057,6 +1059,77 @@ Each group is its own finding: on a server open to the internet a per-address ru
 scanners (27 addresses in one day on a real one), so mark the rule "not a real problem" for that
 machine in `/findings`, or keep it for machines that shouldn't see any. Imported rules live in
 `detect/packs/` in your data folder and run from the next pass on.
+
+## Watching a machine continuously
+
+On a machine reached through a **sub-agent** (agent 0.9.0 or newer, encrypted link), its
+agent can follow the logs **as they are written** and run the detection rules on every new
+line. A match reaches Kratos in seconds, becomes the same `SIGMA-…` finding as on schedule,
+and fires your triggers — so an alert can be on your phone a few seconds after the attack.
+
+**Turning it on.** It is off on every machine until you turn it on, one machine at a time:
+`/subagent`, select the machine, press **`w`**, confirm. Or `kratos detect watch on db-01`.
+Off again the same way. A machine whose agent is too old says *update to watch* — press `g`
+first. Kratos refuses to turn it on over an unencrypted link, because matched log lines
+cross it.
+
+**What it reads.** The systemd journal — SSH and sudo, cron, services, the kernel's
+firewall lines: the same sources log sync collects — and, where auditd runs, its log
+(`/var/log/audit/audit.log`). Text log files (`auth.log`, web server logs) are not followed
+yet; the scheduled pass still checks them. A machine without auditd shows *not available on
+this machine: auditd*: the program-start and file rules then only run on schedule (and only
+over what auditd would have recorded, which is nothing — see the table above).
+
+**What it sends.** Only what a rule matched: the rule, the time, and the few fields of that
+log line the rule looked at (masked like everything Kratos stores) — never the surrounding
+log. The full lines still arrive through log sync, and the same match found later on
+schedule is stored once. Nothing on the machine is ever changed: a match never kills,
+blocks or bans anything; it only becomes a finding and an alert.
+
+**Your first alert.** The first time you turn watching on, Kratos offers a ready trigger —
+*Alert me on HIGH and CRITICAL detections* (a notification for a high or critical finding
+that is new or reopened, at most once every 15 minutes). It is created only if you say yes;
+change or delete it with `/trigger`. Matches from one machine that arrive within 5 seconds of
+each other become **one** alert listing the rules (`detect.alert_batch_seconds`). Your
+triggers' cooldowns and the daily limit on fires per trigger (Settings → Budget) apply
+unchanged — a busy machine reaches the default of 10 fires a day quickly, so raise it if you
+want every burst. A trigger set to *investigate* still needs "Triggers may start
+investigations" in Settings → Budget.
+
+**Alerts while Kratos is closed** need the **always-on listener** (`/subagent`, `l`): the
+agent sends its matches to whatever listener is running. With no listener, the agent keeps
+watching and keeps up to 2,000 matches (5 MB) on the machine until one is back, then sends
+them — each arrives once. Past that, the oldest are dropped and Kratos says how many.
+`/doctor` warns when watching is on but no always-on listener runs.
+
+**"Watching since" and DETECT-002.** `/subagent` shows *watching 3h · 12/min* for each
+watched machine (how long, log lines a minute, and the lag when it is catching up); press `i`
+for each log's state. When watching is on but **isn't running**, Kratos opens a medium finding
+**DETECT-002** *Continuous detection isn't running on this machine*, with the reason:
+
+- the watcher stopped (journalctl kept failing, auditd isn't running);
+- the agent's link has been down longer than 10 minutes (`detect.watch.offline_minutes`);
+- the agent is connected but has said nothing about watching for 3 minutes;
+- the agent refused the rules (they're shown with why), or it is too old.
+
+It closes by itself when watching resumes. If the agent had to skip part of a log — the
+journal was cleared before it read it, it was stopped for longer than it catches up on (6
+hours or 200,000 lines after a restart), or the link was down longer than its 2,000 kept
+matches — the same finding says *Continuous detection missed part of this machine's logs*,
+with the times, for an hour. Those stretches are kept and shown under `i`; they are never
+treated as "nothing found".
+
+**What it costs.** Measured on a lab machine: the agent's own memory is about 20 MB
+(plus the `journalctl` it starts, about 1 MB of its own and the journal files it maps); the CPU
+use is in the 24-hour measurement below. Under a flood it sends at most 20 matches of one rule a minute
+and then one "+N more" summary (`detect.watch.max_per_rule_minute`), and while catching up
+after a restart it keeps its own CPU use under a quarter of one core and runs at low priority.
+
+```
+kratos detect watch                 # which machines are watched, and how it is going
+kratos detect watch on db-01        # turn it on (a person's choice; refused inside an agent tool)
+kratos detect watch off db-01
+```
 
 ## Sealing a machine's logs
 
