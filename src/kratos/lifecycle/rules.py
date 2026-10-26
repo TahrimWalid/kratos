@@ -136,9 +136,11 @@ _SIGMA = RuleInfo(kind="occurrence", inputs=rule_inputs("SIGMA-00000000"))
 
 
 def rule_info(rule_id: str) -> RuleInfo | None:
+    from kratos.detect.ids import is_detection_rule
+
     rid = str(rule_id or "")
     info = RULES.get(rid)
-    if info is None and SIGMA_ID.match(rid):
+    if info is None and is_detection_rule(rid):       # SIGMA-* and Kratos's own KRATOS-* rules
         return _SIGMA
     return info
 

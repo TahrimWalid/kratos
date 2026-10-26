@@ -941,10 +941,11 @@ def cmd_findings(args: argparse.Namespace) -> int:
             what = {"open_verified": "open or verified", "decided": "decided", "all": ""}.get(
                 args.state, _STATE_WORDS.get(args.state, args.state))
             print(f"[KRATOS] No {what} findings".replace("  ", " ") + (f" for {target}." if target else "."))
+        rule_w = max([14, *(len(str(r["rule_id"])) for r in rows)])     # KRATOS-ACCOUNT-... ids are long
         for r in rows:
             expiry = (r.get("decision") or {}).get("expires_at")
             print(f"{r['short_key']}  {_STATE_WORDS.get(r['state'], r['state']):<24} {r['severity']:<8} "
-                  f"{r['rule_id']:<14} {r['target']:<16} seen {_findings_when(r['first_seen'], tz)} .. "
+                  f"{r['rule_id']:<{rule_w}} {r['target']:<16} seen {_findings_when(r['first_seen'], tz)} .. "
                   f"{_findings_when(r['last_seen'], tz)}" + (f"  until {_findings_when(expiry, tz)}" if expiry else "")
                   + f"  {r['title']}")
         hidden = Q.hidden_counts(data_dir, target)
@@ -973,8 +974,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
             print(f"  ATT&CK: {format_label(lab)}  {lab.get('url')}")
         rule = (latest or {}).get("detection_rule") or {}
         if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
-            print(f"  rule: {rule.get('title')} by {rule.get('author')} -- {rule.get('license') or 'DRL-1.1'} "
-                  f"{rule.get('source_url') or ''}")
+            from kratos.detect.findings import credit_line
+            print(f"  rule: {rule.get('title')} " + (
+                f"by {rule.get('author')} -- {rule.get('license') or 'DRL-1.1'} {rule.get('source_url') or ''}".rstrip()
+                if credit_line({"detection_rule": rule}) else "(Kratos's own rule)"))
         d = rec.get("decision")
         if d:
             print(f"  decision: {_STATE_WORDS.get(d['kind'])} ({D.SCOPE_WORDS.get(d['scope'])}) by "

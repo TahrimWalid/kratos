@@ -246,7 +246,7 @@ def test_a_refused_imported_pack_is_listed_not_used(tmp_path):
     folder.mkdir(parents=True)
     (folder / "broken.json").write_text('{"format": "kratos-detect-pack", "rules": []}')
     rep = R.run_pass(A, tmp_path, now=NOW)
-    assert [p.pack_id for p in rep.packs] == ["sigma-linux"]
+    assert [p.pack_id for p in rep.packs] == ["sigma-linux", "kratos-linux"]
     assert rep.refused and "broken.json" in rep.refused[0]["path"]
     note = [f for f in build(json.loads(Path(rep.snapshot).read_text())) if f.id == "DETECT-001"][0]
     assert any("refused" in line for line in note.evidence)
@@ -347,10 +347,11 @@ def test_kratos_own_ssh_commands_are_set_aside_and_another_logins_are_not(tmp_pa
            _audit(A, t0 + 61, "process_started", pid=6100, ses=169, exe="/usr/bin/find", args=find))
     rep = R.run_pass(A, tmp_path, now=NOW)
     hits = [m for m in rep.matches if m["rule_id"] == RECON]
-    assert len(hits) == 1 and rep.own_events == 2          # its login record and its find
+    # its sshd "Accepted" line (its key: Phase C audit), its login record and its find
+    assert len(hits) == 1 and rep.own_events == 3
     [det] = [d for d in _detections(tmp_path, A) if d.rule_id == RECON]
     assert det.process_pid is None or det.process_pid == 6100
-    assert json.loads(Path(rep.snapshot).read_text())["kratos_own_events"] == 2
+    assert json.loads(Path(rep.snapshot).read_text())["kratos_own_events"] == 3
 
 
 def test_a_reused_sshd_pid_long_after_does_not_mark_a_login_as_kratos(tmp_path, monkeypatch):
@@ -395,7 +396,8 @@ def test_a_session_id_counts_as_kratos_only_while_that_login_lasted(tmp_path, mo
            # after a reboot someone else's login gets session 5 too, hours later
            _audit(A, NOW - 120, "process_started", pid=900, ses=5, exe="/usr/bin/find", args=find))
     rep = R.run_pass(A, tmp_path, now=NOW)
-    assert [m["rule_id"] for m in rep.matches if m["rule_id"] == RECON] == [RECON] and rep.own_events == 2
+    # Kratos's own: its "Accepted" line, session start and end -- not the later find
+    assert [m["rule_id"] for m in rep.matches if m["rule_id"] == RECON] == [RECON] and rep.own_events == 3
     # an id read directly over Kratos's connection counts only around when Kratos saw it
     ST2.record_own_session(tmp_path, B, "9", now=NOW - 3 * 3600)
     assert own.is_own("9", NOW - 3 * 3600 + 30, ST2.own_sessions_recorded(tmp_path, B, since=0))

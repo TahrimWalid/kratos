@@ -1148,6 +1148,25 @@ regular expression, a numeric comparison, a field reference, or a field Kratos's
 carry is **skipped and listed with the reason** -- never approximated. Every pack carries its
 SHA-256 and a monotonically increasing version; a pack that fails validation is refused whole.
 
+**Kratos's own pack.** `packs/kratos-linux-<N>.json` (built by `scripts/dev/build_kratos_pack.py`,
+deterministic, `--check` in the tests) holds rules in the same format for what a machine without
+auditd still logs: SSH and sudo abuse (two of them counting rules, grouped by source address or
+account) and account changes. The shipped Sigma rules can't cover these: none of them count, and
+the account-change ones read program starts. Rule ids are `KRATOS-…` (`detect/ids.py` is the one
+place that says which ids are detection rules), author "Kratos", MIT; nothing else treats them
+differently -- the same evaluator, lifecycle class (occurrence), ATT&CK mapping, overrides and
+surfaces, minus the DRL credit line. Account changes come from the auth source:
+`auth_log_parse.ACCOUNT_PROGRAMS` (`useradd`, `usermod`, `gpasswd`, `passwd`, ...) are classified
+into `account_*` actions carrying `user.id` and `group.name`, and `catalog.JOURNAL_MATCHES["auth"]`
+lists every program as a `_COMM=` match. Every match in that list has to use the same field,
+because journalctl ORs matches on one field and ANDs different fields. `group.name` is an identity
+field a live detection carries, so a finding names the group as well as the account. The root-login
+rule also reads the `Accepted ...` message, so a live match carries the key fingerprint and Kratos
+sets aside its own logins (`detect/own.is_own_login`, also applied by the scheduled pass), the same
+way it sets aside its audited commands. A machine's
+log sync position is not rewound when the match list grows: account lines written before an
+update are not read (the privileged-accounts check covers that state).
+
 **One evaluator, both sides.** `src/kratos/subagent/detect.py` is standard-library Python 3.8,
 ships in the agent bundle (0.7.2) and is imported by core as `kratos.subagent.detect` -- the
 `protocol.py` pattern, so core and an agent can never judge an event differently. It validates a

@@ -456,8 +456,8 @@ def test_coverage_layer_lists_exactly_the_labelled_techniques():
     scored = {(t["techniqueID"], t["tactic"]) for t in layer["techniques"] if "score" in t}
     expected = {(lab["technique_id"], tac["shortname"]) for rid, e in M.RULE_ATTACK.items()
                 if rid in RULES and isinstance(e, Behaviour) for lab in e.labels for tac in lab["tactics"]}
-    from kratos.detect import pack as P      # C.1: the shipped Sigma rules count too
-    sigma = {(lab["technique_id"], tac["shortname"]) for r in P.shipped().pack.rules
+    from kratos.detect import pack as P      # C.1: the shipped rules count too (Sigma and Kratos's own)
+    sigma = {(lab["technique_id"], tac["shortname"]) for lp in P.shipped_all() for r in lp.pack.rules
              for lab in M.labels(r.id) for tac in lab["tactics"]}
     assert sigma and scored == expected | sigma
     cell = [t for t in layer["techniques"] if t["techniqueID"] == "T1110.001"][0]

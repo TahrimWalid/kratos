@@ -59,6 +59,13 @@ _STOPWORDS = frozenset({"with", "from", "that", "this", "were", "have", "been", 
                         "some", "only", "they", "there", "their", "which", "while"})
 
 
+def _is_rule(f: dict[str, Any]) -> bool:
+    """A detection rule's finding (SIGMA-* or Kratos's own KRATOS-*)."""
+    from kratos.detect.ids import is_detection_rule
+
+    return is_detection_rule(f.get("id"))
+
+
 def is_ip(text: str) -> bool:
     try:
         ipaddress.ip_address(str(text))
@@ -114,7 +121,7 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
     if pids:
         facts.append("pid " + ", ".join(pids[:3]))
     subject = str(f.get("subject") or "")
-    sigma = str(f.get("id") or "").startswith("SIGMA-")      # C.1: its subject is an address, user or program
+    sigma = _is_rule(f)      # C.1: a detection rule's subject is an address, user or program
     if subject and _PACKAGE_RE.match(subject) and not sigma:
         facts.append(f"package {subject}")
     cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
@@ -232,7 +239,7 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
         if not ips(f):
             shown = [_display_entity(str(e))[0] for e in (f.get("entities") or [])[:2]]
             subject = str(f.get("subject") or "")
-            sigma = str(f.get("id") or "").startswith("SIGMA-")
+            sigma = _is_rule(f)
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
         detail = "; ".join(untrusted.for_display(x)[:120] for x in facts)
         missing = missing_from(analysis, f)
@@ -249,11 +256,11 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
                      + (f" ({untrusted.for_display(credit)[:160]})" if credit else "") + verdict)
     if len(items) > BLOCK_MAX:
         lines.append(f"  - and {len(items) - BLOCK_MAX} more serious finding(s): /findings lists them all")
-    sigma = [f for f in items[:BLOCK_MAX] if str(f.get("id") or "").startswith("SIGMA-")]
+    sigma = [f for f in items[:BLOCK_MAX] if _is_rule(f)]
     if any(int((f.get("detection_rule") or {}).get("live") or 0) for f in sigma):
-        lines.append("  (SIGMA-* are detection rules: the machine's agent matches them as its logs are written "
-                     "(continuous detection), and Kratos also runs them on schedule over the logs it collects)")
+        lines.append("  (SIGMA-* and KRATOS-* are detection rules: the machine's agent matches them as its logs are "
+                     "written (continuous detection), and Kratos also runs them on schedule over the logs it collects)")
     elif sigma:
-        lines.append("  (SIGMA-* are detection rules run over the logs Kratos collected -- checked on schedule, "
-                     "not continuously)")
+        lines.append("  (SIGMA-* and KRATOS-* are detection rules run over the logs Kratos collected -- checked on "
+                     "schedule, not continuously)")
     return "\n".join(lines) + "\n\n"

@@ -19,8 +19,11 @@ from typing import Any
 from kratos.subagent import detect as D
 
 SHIPPED_PACK_ID = "sigma-linux"
+KRATOS_PACK_ID = "kratos-linux"          # Kratos's own rules (scripts/dev/build_kratos_pack.py), Phase C audit
+SHIPPED_PACK_IDS = (SHIPPED_PACK_ID, KRATOS_PACK_ID)
 IMPORTED_DIR = Path("detect") / "packs"
 _SHIPPED_NAME = re.compile(r"^sigma-linux-(\d+)\.json$")
+_KRATOS_NAME = re.compile(r"^kratos-linux-(\d+)\.json$")
 
 
 @dataclass(frozen=True)
@@ -61,10 +64,10 @@ class Packs:
         return None
 
 
-def _shipped_files() -> list[tuple[int, Any]]:
+def _shipped_files(name: "re.Pattern[str]" = _SHIPPED_NAME) -> list[tuple[int, Any]]:
     out = []
     for entry in resources.files("kratos.detect").joinpath("packs").iterdir():
-        m = _SHIPPED_NAME.match(entry.name)
+        m = name.match(entry.name)
         if m:
             out.append((int(m.group(1)), entry))
     return sorted(out, key=lambda t: t[0])
@@ -82,6 +85,23 @@ def shipped() -> LoadedPack:
     return LoadedPack(pack=D.Pack(data), origin="shipped", path=str(entry))
 
 
+@lru_cache(maxsize=1)
+def kratos_pack() -> LoadedPack | None:
+    """Kratos's own shipped pack (highest version), or None if this install has none."""
+    files = _shipped_files(_KRATOS_NAME)
+    if not files:
+        return None
+    _version, entry = files[-1]
+    data = D.parse_pack_bytes(entry.read_bytes())
+    return LoadedPack(pack=D.Pack(data), origin="shipped", path=str(entry))
+
+
+def shipped_all() -> list[LoadedPack]:
+    """Every shipped pack: the Sigma pack, then Kratos's own."""
+    own = kratos_pack()
+    return [shipped()] + ([own] if own is not None else [])
+
+
 def imported_dir(data_dir: Path | str) -> Path:
     return Path(data_dir) / IMPORTED_DIR
 
@@ -89,7 +109,7 @@ def imported_dir(data_dir: Path | str) -> Path:
 def load(data_dir: Path | str | None) -> Packs:
     """The shipped pack and every valid imported pack. An imported pack that fails
     validation, or reuses a rule id another pack already has, is refused whole."""
-    out = Packs(loaded=[shipped()])
+    out = Packs(loaded=shipped_all())
     if data_dir is None:
         return out
     folder = imported_dir(data_dir)
@@ -97,8 +117,8 @@ def load(data_dir: Path | str | None) -> Packs:
         files = sorted(p for p in folder.glob("*.json") if p.is_file())
     except OSError:
         files = []
-    seen = {r.id for r in out.loaded[0].pack.rules}
-    ids = {SHIPPED_PACK_ID}
+    seen = {r.id for lp in out.loaded for r in lp.pack.rules}
+    ids = {lp.pack_id for lp in out.loaded}
     for path in files:
         try:
             data = D.parse_pack_bytes(path.read_bytes())

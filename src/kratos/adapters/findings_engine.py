@@ -2053,6 +2053,7 @@ register_snapshot_source(SnapshotSource(
     load=_detect_findings.load_recent, build=_detect_findings.build,
     closes_findings=_detect_findings.closes_findings))
 _FINDING_INPUTS["DETECT-"] = ("detections",)
+_FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
@@ -2359,8 +2360,11 @@ def write_findings_report(
                                 + "\n")
             if f.detection_rule:   # C.1: the Sigma rule's author goes with its finding (DRL 1.1)
                 dr = f.detection_rule
-                md_lines.append(f"**Rule**: {dr.get('title')} by {dr.get('author')} — SigmaHQ "
-                                f"[{dr.get('sigma_id')}]({dr.get('source_url')}), {dr.get('license') or 'DRL-1.1'}\n")
+                if dr.get("sigma_id"):
+                    md_lines.append(f"**Rule**: {dr.get('title')} by {dr.get('author')} — SigmaHQ "
+                                    f"[{dr.get('sigma_id')}]({dr.get('source_url')}), {dr.get('license') or 'DRL-1.1'}\n")
+                else:
+                    md_lines.append(f"**Rule**: {dr.get('title')} — Kratos's own detection rule\n")
             vr = verdicts.get((f.id, _ns_md(getattr(f, "subject", "") or "")))
             if vr is not None:   # B.1: the latest triage verdict on record for this finding
                 from kratos.triage.verdict import aged_tag

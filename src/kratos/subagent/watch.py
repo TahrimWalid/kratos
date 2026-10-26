@@ -79,7 +79,8 @@ AUDIT_LOG = "/var/log/audit/audit.log"
 JOURNAL_GROUPS = ("auth", "cron", "systemd_pid1", "kernel")
 DATASET_OF = {"auth": "kratos.auth", "cron": "kratos.cron", "systemd_pid1": "kratos.systemd",
               "kernel": "kratos.firewall"}
-_AUTH_COMMS = frozenset({"sshd", "sshd-session", "sudo"})
+# every process name the catalog's auth match follows (SSH, sudo, account management)
+_AUTH_COMMS = frozenset(m.split("=", 1)[1] for m in catalog.JOURNAL_MATCHES["auth"] if m.startswith("_COMM="))
 _CRON_IDENTS = frozenset({"CRON", "cron", "CROND", "crond", "crontab"})
 
 MAX_ENTRY_BYTES = 1024 * 1024          # one journal entry larger than this is skipped (and counted)
@@ -121,7 +122,7 @@ MAX_PACKS = 8
 _IDENTITY_FIELDS = ("@timestamp", "event.id", "event.dataset", "event.provider", "event.action", "event.outcome",
                     "host.name", "source.ip", "user.name", "user.target.name", "user.effective.name",
                     "process.executable", "process.name", "process.pid", "process.parent.pid", "service.name",
-                    "file.path", "network.transport", "kratos.audit.session", "event.sequence")
+                    "file.path", "group.name", "network.transport", "kratos.audit.session", "event.sequence")
 
 
 class WatchError(ValueError):

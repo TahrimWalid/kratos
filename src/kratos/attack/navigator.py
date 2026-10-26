@@ -100,7 +100,7 @@ def coverage_layer(rule_ids: Iterable[str] | None = None) -> dict[str, Any]:
     if rule_ids is None:
         from kratos.detect import pack as _packs
         from kratos.lifecycle.rules import RULES
-        rule_ids = [*RULES, *(r.id for r in _packs.shipped().pack.rules)]   # + the shipped Sigma rules (C.1)
+        rule_ids = [*RULES, *(r.id for lp in _packs.shipped_all() for r in lp.pack.rules)]   # + the shipped rules
     wanted = set(rule_ids)
     cells: dict[tuple[str, str], set[str]] = {}
     for rid in sorted(wanted):

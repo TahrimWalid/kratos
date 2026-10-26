@@ -133,6 +133,44 @@ def _extract_prefix(line: str) -> tuple[str, str | None, str, bool]:
     return datetime.now().isoformat(timespec="seconds"), None, line, False
 
 
+# --- account management (shadow-utils: useradd, usermod, gpasswd, ...) ---
+# These log to the same authpriv log as sshd and sudo (Debian's auth.log; the journal
+# by process name). Kratos's own words for what changed: the user and group are the
+# quoted names shadow-utils writes. Phase C audit: live detection could not see an
+# account added to a privileged group without auditd.
+ACCOUNT_PROGRAMS = frozenset({"useradd", "usermod", "userdel", "groupadd", "groupmod", "groupdel", "gpasswd",
+                              "passwd", "chpasswd", "chage", "newusers"})
+_RE_ACCT_NEW_USER = re.compile(r"\bnew user: name=(?P<user>[^,\s]{1,64}), UID=(?P<uid>\d{1,10})\b")
+_RE_ACCT_NEW_GROUP = re.compile(r"\bnew group: name=(?P<group>[^,\s]{1,64})")
+_RE_ACCT_ADD_GROUP = re.compile(r"\badd '(?P<user>[^']{1,64})' to (?:shadow )?group '(?P<group>[^']{1,64})'")
+_RE_ACCT_GPASSWD_ADD = re.compile(r"\buser (?P<user>\S{1,64}) added by \S{1,64} to group (?P<group>\S{1,64})")
+_RE_ACCT_DELETE = re.compile(r"\bdelete user '(?P<user>[^']{1,64})'")
+_RE_ACCT_UID_CHANGE = re.compile(r"\bchange user '(?P<user>[^']{1,64})' UID from '\d{1,10}' to '(?P<uid>\d{1,10})'")
+_RE_ACCT_PASSWORD = re.compile(r"\bpassword changed for (?P<user>\S{1,64})")
+
+
+def _classify_account(ts: str, host: str | None, program: str, msg: str, raw: str) -> AuthEvent:
+    m = _RE_ACCT_NEW_USER.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_created", m["user"], None, f"{raw} | UID={m['uid']}")
+    m = _RE_ACCT_ADD_GROUP.search(msg) or _RE_ACCT_GPASSWD_ADD.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_added_to_group", m["user"], None, f"{raw} | GROUP={m['group']}")
+    m = _RE_ACCT_UID_CHANGE.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_changed", m["user"], None, f"{raw} | UID={m['uid']}")
+    m = _RE_ACCT_DELETE.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_deleted", m["user"], None, raw)
+    m = _RE_ACCT_PASSWORD.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_password_changed", m["user"], None, raw)
+    m = _RE_ACCT_NEW_GROUP.search(msg)
+    if m:
+        return AuthEvent(ts, host, program, "account_group_created", None, None, f"{raw} | GROUP={m['group']}")
+    return AuthEvent(ts, host, program, "account_other", None, None, raw)
+
+
 def classify_auth_message(
     ts: str,
     host: str | None,
@@ -217,6 +255,9 @@ def classify_auth_message(
             )
 
         return AuthEvent(ts, host, program, "sudo_other", None, None, raw)
+
+    if program in ACCOUNT_PROGRAMS:
+        return _classify_account(ts, host, program, msg, raw)
 
     # Anything else in auth.log (still valuable)
     return AuthEvent(ts, host, program, "auth_other", None, None, raw)

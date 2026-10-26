@@ -441,3 +441,61 @@ def test_a_busy_watched_machine_never_hides_another_machines_detections(tmp_path
     live_files = [p for p in (tmp_path / RESULTS_DIR).glob("detections_*.json")
                   if json.loads(p.read_text())["source"] == "live"]
     assert len(live_files) == 1
+
+
+def test_a_live_kratos_rule_finding_names_the_group_and_says_it_was_seen_watching(tmp_path):
+    """Phase C audit: a new sudo account on a machine without auditd is caught live by
+    Kratos's own rule; the finding names the account AND the group (group.name crosses the
+    link), and its history says "watching", not "scheduled"."""
+    from kratos.detect import pack as P
+    from kratos.lifecycle import query as Q
+
+    tid = _watching(tmp_path)
+    own = P.kratos_pack()
+    entry = journal_entry(1, time.time() - 30, "add 'carol' to group 'sudo'", comm="useradd")
+    values = W.journal_values(entry, MACHINE)
+    event = A.flat(values)
+    [m] = D.Evaluator(own.pack).evaluate(event, values["timestamp"].timestamp())
+    rule = own.pack.by_id[m.rule_id].meta
+    det = {"type": "detection", "seq": 1, "rule_id": m.rule_id, "pack_id": own.pack_id, "pack_version": own.version,
+           "ts": m.ts, "first_ts": m.first_ts, "source": "journal", "position": entry["__CURSOR"],
+           "event": W.bounded_event(event, W._rule_fields(rule)), "group": m.group, "count": m.count,
+           "event_ids": m.event_ids}
+    assert det["event"].get("group.name") == "sudo"
+    assert L.LiveDetections(tmp_path).handle_detection(tid, det) is True
+    out = L.publish(tmp_path, MACHINE, notifier=_Notifier())
+    [f] = [x for x in out["findings"] if x["id"] == "KRATOS-ACCOUNT-PRIVILEGED-GROUP"]
+    assert {"carol", "sudo"} <= set(f["entities"]) and f["severity"] == "high"
+    key = next(r["finding_key"] for r in Q.list_findings(tmp_path, target=MACHINE, state="all")
+               if r["rule_id"] == "KRATOS-ACCOUNT-PRIVILEGED-GROUP")
+    _rec, _latest, history = Q.get_finding(tmp_path, key)
+    assert history and history[0]["interface"] == "watching"
+
+
+def test_a_live_root_login_with_kratos_own_key_is_set_aside(tmp_path, monkeypatch):
+    """Kratos's SSH user may be root: the root-login rule reads the "Accepted" line, so the
+    live match carries the key fingerprint and Kratos sets its own login aside."""
+    from kratos.detect import own as own_mod
+    from kratos.detect import pack as P
+
+    fp, other = "SHA256:" + "A" * 43, "SHA256:" + "B" * 43
+    monkeypatch.setattr(own_mod, "kratos_fingerprint", lambda: fp)
+    tid = _watching(tmp_path)
+    own = P.kratos_pack()
+    rule = own.pack.by_id["KRATOS-SSH-ROOT-LOGIN"].meta
+    live = L.LiveDetections(tmp_path)
+    for i, key in enumerate((fp, other)):
+        line = f"Accepted publickey for root from 198.51.100.7 port 50022 ssh2: ED25519 {key}"
+        entry = journal_entry(i + 1, time.time() - 30 + i, line, comm="sshd")
+        values = W.journal_values(entry, MACHINE)
+        event = A.flat(values)
+        [m] = [x for x in D.Evaluator(own.pack).evaluate(event, values["timestamp"].timestamp())
+               if x.rule_id == "KRATOS-SSH-ROOT-LOGIN"]
+        bounded = W.bounded_event(event, W._rule_fields(rule))
+        assert key in bounded["message"]
+        assert live.handle_detection(tid, {
+            "type": "detection", "seq": i + 1, "rule_id": m.rule_id, "pack_id": own.pack_id,
+            "pack_version": own.version, "ts": m.ts, "first_ts": m.first_ts, "source": "journal",
+            "position": entry["__CURSOR"], "event": bounded, "group": m.group, "count": m.count,
+            "event_ids": m.event_ids}) is True
+    assert live.stats["own"] == 1 and live.stats["stored"] == 1

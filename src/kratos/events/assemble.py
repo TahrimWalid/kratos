@@ -56,6 +56,14 @@ AUTH_EVENT_TYPES: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], str]] = {
     "sudo_other": ((), ("info",), "unknown"),
     "auth_other": ((), ("info",), "unknown"),
     "unparsed_auth_line": ((), ("info",), "unknown"),
+    # account management (shadow-utils), Phase C audit
+    "account_created": (("iam",), ("user", "creation"), "success"),
+    "account_added_to_group": (("iam",), ("group", "change"), "success"),
+    "account_changed": (("iam",), ("user", "change"), "success"),
+    "account_deleted": (("iam",), ("user", "deletion"), "success"),
+    "account_password_changed": (("iam",), ("user", "change"), "success"),
+    "account_group_created": (("iam",), ("group", "creation"), "success"),
+    "account_other": (("iam",), ("info",), "unknown"),
 }
 
 # Parsed.action -> (event.category, event.type, default event.outcome). Every
@@ -310,6 +318,11 @@ def auth_values(ev: Any, *, host: str, line_prefix: bool, time_zone: Optional[tz
     elif ev.event_type == "sudo_auth_failure":
         target = _SUDO_TARGET.search(raw_line)
         effective = short(target["target"]) if target else None
+    group_name = None
+    if ev.event_type.startswith("account_"):
+        uid = suffix.get("UID")
+        user_id = uid if uid and uid.isdigit() else None
+        group_name = short(suffix.get("GROUP"))
 
     # A sudo-run command is a process event about the COMMAND (ECS): its process.*
     # fields describe what was started; sudo is the provider and the parent.
@@ -336,6 +349,7 @@ def auth_values(ev: Any, *, host: str, line_prefix: bool, time_zone: Optional[tz
         process_name=process_name, process_pid=pid, process_parent_pid=parent_pid,
         process_executable=short(executable, 1024),
         related_ip=uniq(source_ip), related_user=uniq(user_name, effective),
+        **({"group_name": group_name} if group_name else {}),
     )
 
 

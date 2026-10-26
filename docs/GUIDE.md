@@ -975,6 +975,30 @@ the world. Each rule keeps its **author**, and every finding, alert and report e
 raises names that author (the rules are under the Detection Rule License 1.1, which asks for
 exactly that).
 
+**Kratos's own rules.** SigmaHQ's Linux rules are mostly about program starts and file
+changes, which need auditd, and none of the shipped ones count events. So on an ordinary
+machine without auditd they would miss the commonest signs of a break-in. Kratos adds **7
+rules of its own** for what every Linux machine logs anyway. Their findings are named
+`KRATOS-…` and say "Kratos's own rule" instead of naming an author:
+
+| Rule | Level | Fires when |
+| --- | --- | --- |
+| `KRATOS-SSH-BRUTEFORCE` | medium | 10 or more failed SSH logins from one address within 5 minutes |
+| `KRATOS-SSH-ROOT-LOGIN` | medium | someone logs in over SSH straight to `root` |
+| `KRATOS-SUDO-NOT-IN-SUDOERS` | medium | an account without sudo rights tries to use sudo |
+| `KRATOS-SUDO-PASSWORD-BURST` | medium | 3 or more wrong sudo passwords by one account within 10 minutes |
+| `KRATOS-ACCOUNT-CREATED` | medium | a new account for a person (user id 1000 or more) is created |
+| `KRATOS-ACCOUNT-PRIVILEGED-GROUP` | high | an account joins a group that can become root (`sudo`, `wheel`, `admin`, `docker`, `lxd`, `libvirt`, `disk`, `shadow` …) — the finding names the account and the group |
+| `KRATOS-ACCOUNT-UID0` | critical | an account is created with, or changed to, user id 0 (a second root) |
+
+An SSH brute force is **medium** on purpose: a server open to the internet sees one every
+few minutes, so it doesn't reach your phone with the ready-made alert (high and critical
+only). It still shows in answers, `/findings` and `/detect`. The account rules read the
+lines `useradd`, `usermod`, `gpasswd`, `passwd` and similar tools write to the system
+journal. Kratos reads those from the moment it (and, on a sub-agent machine, its agent
+— 0.9.1 or newer) is updated; account changes made before that are still reported by the
+privileged-accounts check. Turn a rule off per machine like any other (below).
+
 **How it runs.** Each time Kratos collects from a machine (an investigation, `/run`,
 `/collect`, a schedule), log sync stores the new log lines and the rules then check those
 lines, on your computer — nothing extra is read from or sent to the machine, and no model
@@ -998,7 +1022,7 @@ plainly, in the investigation's notes, in `/detect` and as an `info` finding
 
 | The rules read | Kratos gets it from | Without it |
 | --- | --- | --- |
-| Linux logs, SSH, sudo, cron, system log (17 rules) | log sync (on by default) | — |
+| Linux logs, SSH, sudo, cron, system log (17 rules, plus Kratos's own 7) | log sync (on by default) | — |
 | the audit log (23 rules) | auditd's log (`/var/log/audit/audit.log`) | not checked |
 | program starts (53 rules) | auditd with a rule recording every `execve` | only commands run through sudo are checked |
 | file creation (5 rules) | auditd watch rules (`-w <path> -p wa`) | not checked |
@@ -1048,7 +1072,9 @@ the rules not shipped (`s`), when the rules last ran here and what they could no
 audit log also holds the commands Kratos itself runs to check the machine (a search for setuid
 programs looks just like an attacker's reconnaissance). Kratos recognises its own SSH logins — by
 its key, in the machine's own logs — and leaves those commands out; another login on the same
-account is still checked. `kratos collect` says how many it set aside.
+account is still checked. The same goes for its SSH logins themselves: if Kratos logs in as
+`root`, its own logins don't raise "Root logged in over SSH" (a login as root with any other
+key still does). `kratos collect` says how many it set aside.
 
 **Your own rules.** `kratos detect import <file or folder>` compiles Sigma rules you wrote
 or picked (it needs pySigma: `pip install 'kratos-security-assistant[sigma]'`, Python 3.11+).
@@ -1064,8 +1090,8 @@ machine in `/findings`, or keep it for machines that shouldn't see any. Imported
 
 On a machine reached through a **sub-agent** (agent 0.9.0 or newer, encrypted link), its
 agent can follow the logs **as they are written** and run the detection rules on every new
-line. A match reaches Kratos in seconds, becomes the same `SIGMA-…` finding as on schedule,
-and fires your triggers — so an alert can be on your phone a few seconds after the attack.
+line. A match reaches Kratos in seconds, becomes the same `SIGMA-…` or `KRATOS-…` finding as
+on schedule, and fires your triggers — so an alert can be on your phone a few seconds after the attack.
 
 **Turning it on.** It is off on every machine until you turn it on, one machine at a time:
 `/subagent`, select the machine, press **`w`**, confirm. Or `kratos detect watch on db-01`.
@@ -1078,7 +1104,11 @@ firewall lines: the same sources log sync collects — and, where auditd runs, i
 (`/var/log/audit/audit.log`). Text log files (`auth.log`, web server logs) are not followed
 yet; the scheduled pass still checks them. A machine without auditd shows *not available on
 this machine: auditd*: the program-start and file rules then only run on schedule (and only
-over what auditd would have recorded, which is nothing — see the table above).
+over what auditd would have recorded, which is nothing — see the table above). Kratos's own
+rules — SSH brute force, root logins, sudo misuse, new and privileged accounts — need only the
+journal, so a machine without auditd is still watched for those (agent 0.9.1 or newer for the
+account rules). The confirmation when you press `w` says this, and `i` shows what the agent
+reports.
 
 **What it sends.** Only what a rule matched: the rule, the time, and the few fields of that
 log line the rule looked at (masked like everything Kratos stores) — never the surrounding
@@ -1089,7 +1119,9 @@ blocks or bans anything; it only becomes a finding and an alert.
 **Your first alert.** The first time you turn watching on, Kratos offers a ready trigger —
 *Alert me on HIGH and CRITICAL detections* (a notification for a high or critical finding
 that is new or reopened, at most once every 15 minutes). It is created only if you say yes;
-change or delete it with `/trigger`. Matches from one machine that arrive within 5 seconds of
+change or delete it with `/trigger`. If phone notifications aren't set up yet, the offer says
+so — the alert would be created but could reach no one until you set a topic (see
+[Getting alerts on your phone](#getting-alerts-on-your-phone)). Matches from one machine that arrive within 5 seconds of
 each other become **one** alert listing the rules (`detect.alert_batch_seconds`). Your
 triggers' cooldowns and the daily limit on fires per trigger (Settings → Budget) apply
 unchanged — a busy machine reaches the default of 10 fires a day quickly, so raise it if you
@@ -1639,6 +1671,13 @@ and random. For anything beyond trying it out, run your own ntfy server (set
 `KRATOS_NTFY_BASE_URL`) or use an ntfy access token (set `KRATOS_NTFY_TOKEN`).
 Until a topic is set, schedules still save their reports on disk; they just
 don't send them anywhere.
+
+**What an alert says.** A trigger's alert starts with the worst finding, the machine (by its
+sub-agent name when it has one) and what happened in plain words — for example *HIGH on db-01
+(10.0.0.5): Account added to a privileged group*. Then one line per finding (up to 5, then
+"+N more"), when it happened, and what to do next: *open Kratos and type `/findings`*. The
+trigger's name, the finding ids and rule credits come last. An alert never names accounts,
+addresses or file paths (it may pass through a public ntfy server): `/findings` has those.
 
 Each scheduled alert starts with what changed since last time (*New · Still open ·
 Fixed · Hidden by your decisions*) and names any risk acceptance that ran out. A

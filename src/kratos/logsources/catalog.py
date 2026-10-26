@@ -58,7 +58,11 @@ class Source:
 # field ORs it (verified on systemd 249 and 252).
 JOURNAL_MATCHES: dict[str, tuple[str, ...]] = {
     "sudo": ("_COMM=sudo",),
-    "auth": ("_COMM=sshd", "_COMM=sshd-session", "_COMM=sudo"),
+    # + account management (useradd, usermod, gpasswd, ...): they log to the same authpriv
+    # log; by process name, the same field as the others, so journalctl ORs them (Phase C audit)
+    "auth": ("_COMM=sshd", "_COMM=sshd-session", "_COMM=sudo",
+             "_COMM=useradd", "_COMM=usermod", "_COMM=userdel", "_COMM=groupadd", "_COMM=groupmod",
+             "_COMM=groupdel", "_COMM=gpasswd", "_COMM=passwd", "_COMM=chpasswd", "_COMM=chage", "_COMM=newusers"),
     "cron": ("SYSLOG_IDENTIFIER=CRON", "SYSLOG_IDENTIFIER=cron", "SYSLOG_IDENTIFIER=CROND",
              "SYSLOG_IDENTIFIER=crond", "SYSLOG_IDENTIFIER=crontab"),   # crontab: a user's table changed (C.1)
     "systemd_pid1": ("_PID=1",),

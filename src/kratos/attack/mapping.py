@@ -229,17 +229,17 @@ def sigma_entry(rule_id: str) -> Entry | None:
     meta = found[1].meta
     labs = tuple(_sigma_labels({"attack": meta.get("attack") or [], "tags": meta.get("tags") or []}))
     if not labs:
-        return Posture("this Sigma rule names no current ATT&CK technique")
-    return Behaviour(labs, why=f"the Sigma rule's own tags ({meta.get('sigma_id')})")
+        return Posture("this detection rule names no current ATT&CK technique")
+    return Behaviour(labs, why=f"the detection rule's own tags ({meta.get('sigma_id') or rule_id})")
 
 
 def entry(rule_id: str) -> Entry | None:
     rid = str(rule_id or "")
     found = RULE_ATTACK.get(rid)
-    if found is None and rid.startswith("SIGMA-"):
-        from kratos.lifecycle.rules import SIGMA_ID
+    if found is None:
+        from kratos.detect.ids import is_detection_rule
 
-        if SIGMA_ID.match(rid):
+        if is_detection_rule(rid):                     # SIGMA-* and Kratos's own KRATOS-* rules
             return sigma_entry(rid)
     return found
 

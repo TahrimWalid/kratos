@@ -1,0 +1,596 @@
+{
+ "format": "kratos-detect-pack",
+ "format_version": 1,
+ "notice": "Kratos's own detection rules, under the same licence as Kratos (MIT).",
+ "pack_id": "kratos-linux",
+ "pack_version": 1,
+ "rules": [
+  {
+   "attack": [
+    "T1110.001"
+   ],
+   "author": "Kratos",
+   "count": {
+    "group_by": "source.ip",
+    "op": "gte",
+    "threshold": 10,
+    "window_seconds": 300
+   },
+   "date": "2026-10-26",
+   "description": "Ten or more failed SSH logins from the same address within five minutes. On a machine reachable from the internet this is constant background scanning; it matters most when the address later logs in, or when the machine is not meant to be reachable.",
+   "falsepositives": [
+    "Internet-wide scanners on a public SSH port",
+    "A person repeatedly mistyping a password"
+   ],
+   "id": "KRATOS-SSH-BRUTEFORCE",
+   "level": "medium",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.action",
+      "op": "eq",
+      "value": "ssh_failed_login"
+     },
+     {
+      "field": "source.ip",
+      "op": "exists",
+      "value": true
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "ssh_failed_login",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-bf-1",
+      "source.ip": "203.0.113.9",
+      "user.name": "admin"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "ssh_success_login",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-bf-0",
+      "source.ip": "203.0.113.9",
+      "user.name": "admin"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.credential-access",
+    "attack.t1110.001"
+   ],
+   "title": "SSH brute force from one address"
+  },
+  {
+   "attack": [
+    "T1078.003"
+   ],
+   "author": "Kratos",
+   "count": null,
+   "date": "2026-10-26",
+   "description": "A successful SSH login straight to the root account. Many hardening guides disable this (PermitRootLogin no); where it is allowed on purpose, this is routine.",
+   "falsepositives": [
+    "Administrators who log in as root by design"
+   ],
+   "id": "KRATOS-SSH-ROOT-LOGIN",
+   "level": "medium",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.action",
+      "op": "eq",
+      "value": "ssh_success_login"
+     },
+     {
+      "cased": true,
+      "field": "user.name",
+      "op": "eq",
+      "value": "root"
+     },
+     {
+      "field": "message",
+      "op": "startswith",
+      "value": "Accepted "
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "ssh_success_login",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-rl-1",
+      "message": "Accepted publickey for root from 198.51.100.7 port 50022 ssh2",
+      "source.ip": "198.51.100.7",
+      "user.name": "root"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "ssh_success_login",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-rl-0",
+      "source.ip": "198.51.100.7",
+      "user.name": "alice"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.initial-access",
+    "attack.t1078.003"
+   ],
+   "title": "Root logged in over SSH"
+  },
+  {
+   "attack": [
+    "T1548.003"
+   ],
+   "author": "Kratos",
+   "count": null,
+   "date": "2026-10-26",
+   "description": "Someone without sudo rights tried to run a command as root -- a mistake, or an intruder in an ordinary account probing for privileges.",
+   "falsepositives": [
+    "A user who forgot they are not an administrator"
+   ],
+   "id": "KRATOS-SUDO-NOT-IN-SUDOERS",
+   "level": "medium",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.provider",
+      "op": "eq",
+      "value": "sudo"
+     },
+     {
+      "field": "message",
+      "op": "contains",
+      "value": "user NOT in sudoers"
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "sudo_other",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-ns-1",
+      "event.provider": "sudo",
+      "message": "bob : user NOT in sudoers ; TTY=pts/0 ; USER=root ; COMMAND=/bin/bash"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "sudo_command",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-ns-0",
+      "event.provider": "sudo",
+      "message": "bob : TTY=pts/0 ; PWD=/home/bob ; USER=root ; COMMAND=/bin/ls"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.privilege-escalation",
+    "attack.t1548.003"
+   ],
+   "title": "sudo refused: user not in sudoers"
+  },
+  {
+   "attack": [
+    "T1110.001"
+   ],
+   "author": "Kratos",
+   "count": {
+    "group_by": "user.name",
+    "op": "gte",
+    "threshold": 3,
+    "window_seconds": 600
+   },
+   "date": "2026-10-26",
+   "description": "Three or more failed sudo password attempts by the same account within ten minutes.",
+   "falsepositives": [
+    "A person mistyping their own password"
+   ],
+   "id": "KRATOS-SUDO-PASSWORD-BURST",
+   "level": "medium",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "cased": true,
+    "field": "event.action",
+    "op": "in",
+    "values": [
+     "sudo_auth_failure",
+     "sudo_pam_auth_failure"
+    ]
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "sudo_auth_failure",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-sp-1",
+      "user.name": "bob"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "sudo_command",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-sp-0",
+      "user.name": "bob"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.credential-access",
+    "attack.t1110.001"
+   ],
+   "title": "Repeated wrong sudo passwords"
+  },
+  {
+   "attack": [
+    "T1136.001"
+   ],
+   "author": "Kratos",
+   "count": null,
+   "date": "2026-10-26",
+   "description": "A new account with a user id of 1000 or more (a person's account, not a system service account) was created.",
+   "falsepositives": [
+    "An administrator adding a colleague"
+   ],
+   "id": "KRATOS-ACCOUNT-CREATED",
+   "level": "medium",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.action",
+      "op": "eq",
+      "value": "account_created"
+     },
+     {
+      "args": [
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "?????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "??????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "???????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "????????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "?????????"
+       },
+       {
+        "field": "user.id",
+        "op": "wildcard",
+        "pattern": "??????????"
+       }
+      ],
+      "op": "any_of"
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "account_created",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-ac-1",
+      "user.id": "1002",
+      "user.name": "carol"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "account_created",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-ac-0",
+      "user.id": "105",
+      "user.name": "_apt"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.persistence",
+    "attack.t1136.001"
+   ],
+   "title": "New login account created"
+  },
+  {
+   "attack": [
+    "T1098"
+   ],
+   "author": "Kratos",
+   "count": null,
+   "date": "2026-10-26",
+   "description": "An account was added to a group whose members can become root (sudo, wheel, admin, docker, lxd, libvirt, disk, shadow ...). Attackers do this to keep root access.",
+   "falsepositives": [
+    "An administrator granting admin rights on purpose"
+   ],
+   "id": "KRATOS-ACCOUNT-PRIVILEGED-GROUP",
+   "level": "high",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.action",
+      "op": "eq",
+      "value": "account_added_to_group"
+     },
+     {
+      "cased": true,
+      "field": "group.name",
+      "op": "in",
+      "values": [
+       "sudo",
+       "wheel",
+       "admin",
+       "root",
+       "docker",
+       "lxd",
+       "incus-admin",
+       "libvirt",
+       "disk",
+       "shadow"
+      ]
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "account_added_to_group",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-pg-1",
+      "group.name": "sudo",
+      "user.name": "carol"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "account_added_to_group",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-pg-0",
+      "group.name": "audio",
+      "user.name": "carol"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.persistence",
+    "attack.privilege-escalation",
+    "attack.t1098"
+   ],
+   "title": "Account added to a privileged group"
+  },
+  {
+   "attack": [
+    "T1136.001"
+   ],
+   "author": "Kratos",
+   "count": null,
+   "date": "2026-10-26",
+   "description": "An account was created with, or changed to, user id 0 -- a second root account, a classic backdoor.",
+   "falsepositives": [
+    "Almost never legitimate"
+   ],
+   "id": "KRATOS-ACCOUNT-UID0",
+   "level": "critical",
+   "license": "MIT",
+   "logsource": {
+    "category": null,
+    "product": "linux",
+    "service": "auth"
+   },
+   "match": {
+    "args": [
+     {
+      "cased": true,
+      "field": "event.action",
+      "op": "in",
+      "values": [
+       "account_created",
+       "account_changed"
+      ]
+     },
+     {
+      "cased": true,
+      "field": "user.id",
+      "op": "eq",
+      "value": "0"
+     }
+    ],
+    "op": "all_of"
+   },
+   "modified": "2026-10-26",
+   "references": [],
+   "samples": {
+    "match": [
+     {
+      "event.action": "account_created",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-u0-1",
+      "user.id": "0",
+      "user.name": "toor"
+     }
+    ],
+    "no_match": [
+     {
+      "event.action": "account_created",
+      "event.dataset": "kratos.auth",
+      "event.id": "kratos-sample-u0-0",
+      "user.id": "1002",
+      "user.name": "carol"
+     }
+    ]
+   },
+   "scope": {
+    "datasets": [
+     "kratos.auth"
+    ],
+    "where": null
+   },
+   "source": {
+    "builder": "scripts/dev/build_kratos_pack.py",
+    "path": "src/kratos/detect/packs/kratos-linux-1.json"
+   },
+   "status": "stable",
+   "tags": [
+    "attack.persistence",
+    "attack.t1136.001"
+   ],
+   "title": "Account with user id 0 (root powers)"
+  }
+ ],
+ "sha256": "53ad9d6b82c8b4957d3148c35dbfc907219f52bcf66d950b698716043370c5bd",
+ "skipped": [],
+ "source": {
+  "author": "Kratos",
+  "builder": "scripts/dev/build_kratos_pack.py",
+  "license": "MIT",
+  "note": "Kratos's own rules for what a Linux machine logs without auditd"
+ }
+}

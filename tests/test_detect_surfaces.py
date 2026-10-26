@@ -167,11 +167,11 @@ def test_kratos_detect_import_compiles_a_persons_own_rule(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Imported 1 rule(s) as local-mine v1" in out and "regular expression" in out
     loaded = P.load(data)
-    assert [lp.pack_id for lp in loaded.loaded] == ["sigma-linux", "local-mine"]
+    assert [lp.pack_id for lp in loaded.loaded] == ["sigma-linux", "kratos-linux", "local-mine"]
     rule_meta = loaded.rule("SIGMA-7A7A7A7A")[1].meta
     assert rule_meta["author"] == "Alice Example" and rule_meta["samples"]["match"]
     assert app.main(["--data-dir", str(data), "detect", "import", str(rule), "--name", "mine"]) == 0
-    assert P.load(data).loaded[1].version == 2
+    assert next(lp for lp in P.load(data).loaded if lp.pack_id == "local-mine").version == 2
 
 
 def test_doctor_row_reports_the_pack_and_last_runs(tmp_path):
@@ -210,7 +210,8 @@ async def _detect_screen(tmp_path):
     async with app.run_test(size=(180, 50)) as pilot:
         await pilot.pause()
         ids = [r["meta"]["id"] for r in screen._rows]
-        assert len(ids) == len(P.shipped().pack.rules) and CHATTR_AUDITD in ids
+        assert len(ids) == sum(len(lp.pack.rules) for lp in P.shipped_all()) and CHATTR_AUDITD in ids
+        assert "KRATOS-SSH-BRUTEFORCE" in ids
         banner = _render(screen.query_one("#dt-banner")._Static__content)
         assert "sigma-linux v1" in banner and "not continuously" in banner and "last pass" in banner
         screen.query_one("#dt-table").move_cursor(row=ids.index(CHATTR_AUDITD))

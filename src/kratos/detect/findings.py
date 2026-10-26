@@ -34,6 +34,7 @@ RESULTS_DIR = Path("detect") / "results"
 PATTERN = "detections_*.json"
 CATEGORY = "detections"
 RULE_PREFIX = "SIGMA-"
+from kratos.detect.ids import is_detection_rule  # noqa: E402  SIGMA-* and KRATOS-*
 MAX_AGE_HOURS = 24          # a snapshot older than this is not a current reading
 MAX_DETECTIONS_READ = 10000
 MAX_EVENT_IDS = 20
@@ -79,7 +80,8 @@ def _entities(ev: Event) -> set[str]:
     for value in (valid_ip(ev.source_ip) if ev.source_ip else None,
                   valid_user(ev.user_name) if ev.user_name else None,
                   valid_user(ev.user_target_name) if ev.user_target_name else None,
-                  valid_path(ev.process_executable) if ev.process_executable else None):
+                  valid_path(ev.process_executable) if ev.process_executable else None,
+                  valid_user(ev.group_name) if ev.group_name else None):     # the group an account joined
         if value:
             out.add(value)
     return out
@@ -105,7 +107,7 @@ def summarize(data_dir: Path | str, target: str, *, now: float, loaded: Any = No
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for ev in _read_detections(data_dir, target, now - hours * 3600):
         rule_id = str(ev.rule_id or "")
-        if not rule_id.startswith(RULE_PREFIX):
+        if not is_detection_rule(rule_id):
             continue
         meta = _rule_meta(rule_id, loaded)
         if ev.detect_group:
@@ -277,14 +279,15 @@ def build(doc: dict[str, Any]) -> list[Any]:
     hours = doc.get("window_hours") or 24
     for d in doc.get("detections") or []:
         rule_id = str(d.get("rule_id") or "")
-        if not rule_id.startswith(RULE_PREFIX):
+        if not is_detection_rule(rule_id):
             continue
         n = int(d.get("detections") or 0)
         span = (f"at {_when(d['first_ts'])}" if d["first_ts"] == d["last_ts"]
                 else f"between {_when(d['first_ts'])} and {_when(d['last_ts'])}")
         evidence = [
-            f"Detection rule {rule_id}: \"{d.get('title')}\" by {d.get('author')} "
-            f"(SigmaHQ rule {d.get('sigma_id')}, {d.get('license') or 'DRL-1.1'})",
+            (f"Detection rule {rule_id}: \"{d.get('title')}\" by {d.get('author')} "
+             f"(SigmaHQ rule {d.get('sigma_id')}, {d.get('license') or 'DRL-1.1'})") if d.get("sigma_id") else
+            f"Detection rule {rule_id}: \"{d.get('title')}\" (Kratos's own rule)",
             f"{n} match(es) on {target} {span}, in the last {hours} h of stored logs"
             + (f" -- up to {d['max_count']} events in one counting window" if d.get("max_count") else ""),
             _how_seen(d),
@@ -419,6 +422,8 @@ def credit_line(finding: dict[str, Any]) -> str | None:
     rule = finding.get("detection_rule") if isinstance(finding, dict) else None
     if not isinstance(rule, dict) or not rule.get("author"):
         return None
+    if not str(rule.get("license") or "DRL-1.1").startswith("DRL"):
+        return None                     # Kratos's own rules: nothing to credit under the Sigma licence
     n = rule.get("matches")
     count = f"{n} match{'es' if n != 1 else ''}; " if isinstance(n, int) and n > 0 else ""
     return f"{count}rule by {rule['author']} (Sigma, {rule.get('license') or 'DRL-1.1'})"

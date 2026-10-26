@@ -58,6 +58,15 @@ def kratos_fingerprint() -> str | None:
 _FP = re.compile(r"\bSHA256:[A-Za-z0-9+/]{43}\b")
 
 
+def is_own_login(action: Any, message: Any, fp: str | None) -> bool:
+    """An sshd "Accepted ..." line for a login made with Kratos's own key -- Kratos logging
+    in to read the machine, not something that happened on it (a root-login rule would
+    otherwise fire on every collection where Kratos's SSH user is root)."""
+    if not fp or action != "ssh_success_login" or not isinstance(message, str):
+        return False
+    return fp in _FP.findall(message)
+
+
 LOGIN_SLACK_SECONDS = 120.0       # the audit login records follow sshd's "Accepted" line within this
 MAX_SESSION_SECONDS = 3600.0      # a Kratos login lasts a collection plus 60 s idle; an hour bounds it
 RECORDED_SLACK_SECONDS = 600.0    # around a session id read directly (Kratos's clock vs the machine's)

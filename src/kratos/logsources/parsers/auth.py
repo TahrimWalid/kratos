@@ -18,17 +18,17 @@ except ImportError:  # pragma: no cover -- exercised by whichever layout is runn
     except ImportError:  # run directly
         from parsers_base import record_parts  # type: ignore[no-redef]
 try:  # in the agent bundle (C.2)
-    from .auth_log_parse import classify_auth_message  # type: ignore[import-not-found]
+    from .auth_log_parse import ACCOUNT_PROGRAMS, classify_auth_message  # type: ignore[import-not-found]
     from .lp_sudo import _with_tty  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     try:
-        from kratos.adapters.auth_log_parse import classify_auth_message
+        from kratos.adapters.auth_log_parse import ACCOUNT_PROGRAMS, classify_auth_message
         from kratos.logsources.parsers.sudo import _with_tty
     except ImportError:  # run directly
-        from auth_log_parse import classify_auth_message  # type: ignore[no-redef]
+        from auth_log_parse import ACCOUNT_PROGRAMS, classify_auth_message  # type: ignore[no-redef]
         from lp_sudo import _with_tty  # type: ignore[no-redef]
 
-AUTH_PROGRAMS = frozenset({"sshd", "sshd-session", "sudo"})
+AUTH_PROGRAMS = frozenset({"sshd", "sshd-session", "sudo"}) | ACCOUNT_PROGRAMS   # + account management (audit)
 
 
 def to_auth_event(rec: Any, target: str) -> Any | None:

@@ -240,7 +240,7 @@ def _run(args: argparse.Namespace) -> int:
         report = R.run_pass(target, data_dir)
         out_json, _md = FE.write_findings_report(data_dir=data_dir)
     findings = [f for f in json.loads(Path(out_json).read_text(encoding="utf-8")).get("findings", [])
-                if str(f.get("id", "")).startswith(("SIGMA-", "DETECT-"))]
+                if str(f.get("id", "")).startswith(("SIGMA-", "KRATOS-", "DETECT-"))]
     if args.json:
         print(json.dumps({"target": target, "status": report.status, "events": report.events,
                           "matches": report.matches, "coverage": [c.__dict__ for c in report.coverage],
@@ -286,7 +286,7 @@ def _import(args: argparse.Namespace) -> int:
     sources = [Source(path=f.name if not src.is_dir() else f.relative_to(src).as_posix(),
                       text=f.read_text(encoding="utf-8"), url=f.resolve().as_uri()) for f in files]
     compiled = compile_sources(sources, statuses=("stable", "test", "experimental"))
-    shipped_ids = {r.id for r in P.shipped().pack.rules}
+    shipped_ids = {r.id for lp in P.shipped_all() for r in lp.pack.rules}
     rules, skipped = [], list(compiled.skipped)
     for r in compiled.rules:
         if r["id"] in shipped_ids:

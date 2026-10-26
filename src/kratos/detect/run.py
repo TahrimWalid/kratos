@@ -48,7 +48,7 @@ COVERAGE_SAMPLE = 500
 # Identity fields a detection event copies from the event it matched, for hunting and
 # for the finding's subject and entities.
 _COPY = ("source_ip", "user_name", "user_target_name", "user_effective_name", "process_executable",
-         "process_name", "service_name", "file_path", "transport")
+         "process_name", "service_name", "file_path", "group_name", "transport")
 
 
 @dataclass
@@ -87,7 +87,13 @@ class PassReport:
     matches: list[dict[str, Any]] = field(default_factory=list)   # this pass's matches: rule, event id, group
     disabled: list[str] = field(default_factory=list)
     snapshot: str | None = None
-    own_events: int = 0         # events from Kratos's own SSH logins, set aside (detect/own.py)
+    own_rows: set[int] = field(default_factory=set, repr=False)   # Kratos's own SSH logins' events, set aside
+
+    @property
+    def own_events(self) -> int:
+        """Events from Kratos's own SSH logins set aside (detect/own.py): each event once,
+        however many packs read it (a per-pack sum counted it once per pack)."""
+        return len(self.own_rows)
 
     @property
     def status(self) -> str:
@@ -343,7 +349,7 @@ def _partial_source_seen(conn: Any, key: str, since: float, ls_key: tuple) -> bo
 # ---------------------------------------------------------------------------- the pass
 def _pass_one(lp: packs_mod.LoadedPack, target: str, data_dir: Path, *, now: float, deadline: float,
               max_events: int, disabled: set[str], created: datetime, run_id: str | None,
-              report: PassReport, own: own_mod.Intervals | None = None) -> PackPass:
+              report: PassReport, own: own_mod.Intervals | None = None, own_fp: str | None = None) -> PackPass:
     pp = PackPass(pack_id=lp.pack_id, version=lp.version, origin=lp.origin)
     key = target_key(target)
     last = store.last_run(data_dir, target, lp.pack_id)
@@ -399,10 +405,11 @@ def _pass_one(lp: packs_mod.LoadedPack, target: str, data_dir: Path, *, now: flo
             batch.sort(key=lambda b: (b[0], b[1]))
             detections: list[Event] = []
             for ts, _id, ev, is_history in batch:
-                if own and ev.dataset == "kratos.auditd" and own_mod.is_own(ev.audit_session, ts, own):
+                if (own and ev.dataset == "kratos.auditd" and own_mod.is_own(ev.audit_session, ts, own)) or (
+                        own_fp and ev.dataset == "kratos.auth" and own_mod.is_own_login(ev.action, ev.message, own_fp)):
                     if not is_history:          # Kratos's own read, not something that happened on the machine
                         pp.events += 1
-                        report.own_events += 1
+                        report.own_rows.add(_id)
                     continue
                 if not is_history:
                     pp.events += 1
@@ -454,11 +461,12 @@ def run_pass(target: str, data_dir: Path | str, *, now: float | None = None, dea
     ctx = run_context.current()
     created = datetime.now(timezone.utc)
     own: own_mod.Intervals = {}
+    own_fp = own_mod.kratos_fingerprint()
     try:
         conn = connect_store(data_dir / "kratos.db")
         try:
             since = now - own_mod.WINDOW_DAYS * 86400
-            own = own_mod.own_sessions(conn, target_key(target), since=since, fp=own_mod.kratos_fingerprint())
+            own = own_mod.own_sessions(conn, target_key(target), since=since, fp=own_fp)
             own = own_mod.merge(own, store.own_sessions_recorded(data_dir, target, since=since,
                                                                  slack=own_mod.RECORDED_SLACK_SECONDS))
         finally:
@@ -468,7 +476,7 @@ def run_pass(target: str, data_dir: Path | str, *, now: float | None = None, dea
     for lp in loaded.loaded:
         report.packs.append(_pass_one(lp, target, data_dir, now=now, deadline=deadline, max_events=max_events,
                                       disabled=disabled, created=created, run_id=ctx.run_id if ctx else None,
-                                      report=report, own=own))
+                                      report=report, own=own, own_fp=own_fp))
     try:
         report.coverage = coverage(data_dir, target, loaded, now=now)
     except Exception:  # noqa: BLE001

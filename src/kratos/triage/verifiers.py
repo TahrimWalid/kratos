@@ -340,7 +340,7 @@ register_no_verifier(NoVerifier(
     reason="describes Kratos's own host context; re-read it by investigating the Kratos host again, not by a "
            "narrow per-finding re-check"))
 register_no_verifier(NoVerifier(
-    rules=("SIGMA-",),
+    rules=("SIGMA-", "KRATOS-"),
     # short: it is shown as the answer's "[couldn't check: ...]" tag. A rule match is an event in
     # stored log lines (the finding names them); a fresh read can't make it happen again.
     reason="a rule match can't be re-read; its log lines are kept (events --rule)"))

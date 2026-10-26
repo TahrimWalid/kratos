@@ -623,7 +623,7 @@ def matched_event(machine: str, ev: dict[str, Any], created: datetime) -> Any:
                               ("user.target.name", "user_target_name", valid_user),
                               ("user.effective.name", "user_effective_name", valid_user),
                               ("process.executable", "process_executable", valid_path),
-                              ("file.path", "file_path", valid_path)):
+                              ("file.path", "file_path", valid_path), ("group.name", "group_name", valid_user)):
         v = check(ev.get(name)) if ev.get(name) is not None else None
         if v:
             values[attr] = v
@@ -740,6 +740,10 @@ class LiveDetections:
             det = summary_event(machine, rule.meta, lp, float(minute), min(n, 10**9), first or ts, ts, created)
         else:
             ev = msg.get("event")
+            if isinstance(ev, dict) and ev.get("event.action") == "ssh_success_login" and own_mod.is_own_login(
+                    ev.get("event.action"), ev.get("message"), own_mod.kratos_fingerprint()):
+                self.stats["own"] += 1          # Kratos's own SSH login (its key), not something that happened
+                return True
             matched = matched_event(machine, ev, created) if isinstance(ev, dict) else None
             ts = _num(msg.get("ts"))
             if matched is None or ts is None:
