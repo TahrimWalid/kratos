@@ -278,8 +278,11 @@ def test_flood_is_capped_per_rule_per_minute_with_one_summary(tmp_path):
         minute = (int(now) // 60) * 60.0
         append(data, *[journal_entry(i, now + (i % 50) / 1000, sudo_line("alice", f"/usr/bin/chattr -i /x{i}"),
                                      comm="sudo") for i in range(1, 2001)])
-        wait_for(lambda: m.last_ts["journal"] is not None and m.queue.empty() and m.events["journal"]
-                 and len(m.events["journal"]) >= 2000, timeout=60)
+        # Wait until every match is COUNTED, not just taken off the queue: "queue empty" is true
+        # while the last entry is still being evaluated (Phase C audit: 1979 of 1980 under load).
+        def counted() -> int:
+            return sum(b[0] + b[1] for b in (m._rate.get(CHATTR_RULE) or {}).values())
+        wait_for(lambda: counted() >= 2000, timeout=60)
         m._minute_summaries(minute + 180)                 # the minute is over
         recs = [r for r in _spooled(m) if r["rule_id"] == CHATTR_RULE]
         single = [r for r in recs if "summary" not in r]

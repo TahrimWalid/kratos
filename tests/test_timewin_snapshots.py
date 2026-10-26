@@ -68,10 +68,15 @@ def test_as_of_returns_the_nearest_earlier_snapshot_and_filters_other_hosts(tmp_
 def test_state_as_of_tool_reports_distance_or_no_record(tmp_path, monkeypatch):
     monkeypatch.setattr(tools, "get_active_target", lambda: "10.0.0.5")
     _parsed(tmp_path, "b", time.time() - 3 * DAY, [22, 8080])
+    # "2 days ago" is the same LOCAL clock time two days back (by design), so in a zone with
+    # DST it is 47 or 49 hours back for a few days after a clock change. Pin the zone: this
+    # test is about the distance message (Phase C audit, failed under Helsinki on Oct 26).
+    from kratos.utils import time_window
+    monkeypatch.setattr(time_window, "resolve_display_tz", lambda: UTC)
     out = tools.tool_state_as_of(tmp_path, "open_ports", at="2 days ago")
+    none = tools.tool_state_as_of(tmp_path, "open_ports", at="5 days ago")
     assert out["snapshot"]["state"]["hosts"][0]["open_ports"] == ["22/tcp svc", "8080/tcp svc"]
     assert "1.0 days before" in out["distance"]
-    none = tools.tool_state_as_of(tmp_path, "open_ports", at="5 days ago")
     assert none["snapshot"] is None and "no record" in none["note"]
 
 
