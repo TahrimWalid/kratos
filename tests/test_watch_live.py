@@ -392,3 +392,17 @@ def test_cursor_helper_is_a_valid_journal_cursor():
     from kratos.logsources.logread import valid_cursor
 
     assert valid_cursor(cursor(5, 1_790_000_000.0))
+
+
+def test_a_reported_gap_is_published_once(tmp_path):
+    tid = _watching(tmp_path)
+    L.record_ack(tmp_path, tid, {"version": 1, "status": "ok"})
+    live = L.LiveDetections(tmp_path)
+    live.handle_status(tid, _status())
+    live.handle_status(tid, _status(gaps=[{"from": time.time() - 300, "to": time.time() - 200,
+                                          "reason": "journal entries were removed", "kind": "watch"}]))
+    assert [m for m, _b in live.due()] == [MACHINE]                    # a health change goes out at once
+    assert L.health_changes(tmp_path, live={tid: (True, None)}) == []  # ...and isn't published again
+    live.handle_status(tid, _status(gaps=[{"from": time.time() - 300, "to": time.time() - 200,
+                                          "reason": "journal entries were removed", "kind": "watch"}]))
+    assert live.due() == []                                            # the same gap reported again: nothing new

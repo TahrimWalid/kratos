@@ -529,12 +529,14 @@ def health(data_dir: Path | str, target_id: str, *, connected: bool | None = Non
 
 
 def health_changes(data_dir: Path | str, *, live: dict[str, tuple[bool, float | None]] | None = None,
-                   now: float | None = None) -> list[str]:
+                   now: float | None = None, only: str | None = None) -> list[str]:
     """Machines whose watch health changed since it was last turned into findings (the
     listener publishes those). Stored, so every listener and restart agrees."""
     now = _now() if now is None else now
     out: list[str] = []
     for st in pack_states(data_dir):
+        if only is not None and st["target_id"] != only:
+            continue
         prev = list((st.get("health") or {}).get("codes") or [])
         if not st["enabled"] and not prev:
             continue
@@ -763,9 +765,11 @@ class LiveDetections:
         state = pack_state(self.data_dir, target_id)
         if state is None:
             return                      # never turned on here: nothing to keep
-        new_gaps = record_status(self.data_dir, target_id, msg)
-        if new_gaps and state and state["enabled"] and state.get("machine"):
-            self._mark(state["machine"], None, health=True)
+        record_status(self.data_dir, target_id, msg)
+        # A health change (a watcher stopped or back, a stretch not watched) is published at
+        # once -- and recorded, so the listener's periodic check doesn't publish it again.
+        for machine in health_changes(self.data_dir, live={target_id: (True, None)}, only=target_id):
+            self._mark(machine, None, health=True)
 
     def _mark(self, machine: str, rule_id: str | None, health: bool = False) -> None:
         with self._lock:
