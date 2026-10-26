@@ -81,3 +81,31 @@ def test_an_old_agent_is_told_to_update_and_nothing_is_asked(tmp_path, monkeypat
     assert L.pack_state(tmp_path, tid) is None
     assert "update to watch" in out["cell"]
     assert any("update the agent to watch continuously" in x for x in out["texts"])
+
+
+def test_the_alert_offer_says_when_phone_notifications_are_not_set_up(tmp_path, monkeypatch):
+    """Phase C audit: the ready alert was offered (and created) with notifications off, so a
+    person could wait for alerts that could never reach them."""
+    from kratos import kratos_config
+
+    monkeypatch.setattr(kratos_config, "NTFY_TOPIC", "")
+    seen: list = []
+    real = SubAgentScreen._offer_first_trigger
+
+    async def spy(self, target_id):
+        orig = self.app.push_screen_wait
+
+        async def capture(modal):
+            seen.append(str(getattr(modal, "_body", "") or getattr(modal, "_message", "") or vars(modal)))
+            return await orig(modal)
+
+        self.app.push_screen_wait = capture
+        try:
+            return await real(self, target_id)
+        finally:
+            self.app.push_screen_wait = orig
+
+    monkeypatch.setattr(SubAgentScreen, "_offer_first_trigger", spy)
+    tid, out = _drive(tmp_path, monkeypatch, [True, True])
+    assert seen and "not set up yet" in seen[0]
+    assert any("Phone notifications are off" in x for x in out["texts"])

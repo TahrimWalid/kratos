@@ -696,7 +696,10 @@ class SubAgentScreen(Screen):
                 "It reads the logs as they're written and alerts on the rules in /detect. The agent sends Kratos "
                 "only what a rule matched (over the encrypted link), keeps up to a few thousand matches while the "
                 "link is down, and never acts on the machine. Alerts while Kratos is closed need the always-on "
-                "listener (l)."))
+                "listener (l).\n\nWhat it can see depends on the machine: sign-ins, sudo, cron and the system "
+                "log are always read; the rules about program starts and file changes need auditd on the "
+                "machine (the guide's 'What the rules need'). Press i once it's on to see what this agent "
+                "reports."))
         else:
             ok = await self.app.push_screen_wait(ConfirmModal(
                 f"Stop watching {label} continuously?",
@@ -724,11 +727,17 @@ class SubAgentScreen(Screen):
         name = "live-high-detections"
         if TR.trigger_exists(self._data_dir, name):
             return
+        from kratos.agent.notify import notify_config_status
+
+        status, detail = notify_config_status()
+        phone = ("" if status in ("ok", "warn") else
+                 "\n\nPhone notifications are not set up yet (" + detail + "). The alert is created anyway and "
+                 "starts notifying once KRATOS_NTFY_TOPIC is set in Kratos's settings file -- /doctor checks it.")
         ok = await self.app.push_screen_wait(ConfirmModal(
             "Alert me on HIGH and CRITICAL detections?",
             "Creates the trigger 'live-high-detections': a phone notification when a detection rule finds something "
             "high or critical on any machine -- only when it is new or reopened, at most once per 15 minutes. "
-            "Change or delete it with /trigger."))
+            "Change or delete it with /trigger." + phone))
         if not ok:
             self._log(Text("No alert created. /trigger new makes one any time.", style=T.TEXT_DIM))
             return
@@ -740,6 +749,9 @@ class SubAgentScreen(Screen):
             return
         self._log(Text("Alert created: live-high-detections (notify, high and up, new or reopened, 15 min cooldown).",
                        style=T.SAFE))
+        if status not in ("ok", "warn"):
+            self._log(Text("Phone notifications are off until KRATOS_NTFY_TOPIC is set -- the alert can't reach you "
+                           "until then (/doctor shows how).", style=T.ATTENTION))
 
     def action_details(self) -> None:
         row = self._selected_row()
