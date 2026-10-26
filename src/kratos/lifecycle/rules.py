@@ -118,6 +118,9 @@ RULES: dict[str, RuleInfo] = dict([
     _r("LIVE-003", "occurrence"),
     _r("LIVE-005", "occurrence"),
     _r("LIVE-006", "occurrence"),
+    # C.3: a known-malicious address found in stored records -- a sighting in the past;
+    # it stays open until a person decides on it (the auto-hunt never closes it).
+    _r("HUNT-001", "occurrence"),
     # run notes
     _r("COV-001", "run_note"),
     _r("VULN-003", "run_note"),

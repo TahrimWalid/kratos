@@ -44,7 +44,7 @@ OTX_SYNC_TIMEOUT_SECONDS = 30
 ABUSEIPDB_TIMEOUT_SECONDS = 15
 
 
-def update_threat_intel_cache(max_pages: int = 5) -> tuple[bool, str]:
+def update_threat_intel_cache(max_pages: int = 5, *, data_dir: Any = None, hunt: bool = True) -> tuple[bool, str]:
     """
     Syncs subscribed OTX pulses via DirectConnect (GET /pulses/subscribed,
     paginated) into a local JSON cache, keyed by IP indicator for O(1)
@@ -103,7 +103,34 @@ def update_threat_intel_cache(max_pages: int = 5) -> tuple[bool, str]:
     finally:
         if tmp_path.exists():
             tmp_path.unlink(missing_ok=True)
-    return True, f"Synced {len(all_indicators)} IP indicators to {CACHE_FILE}"
+    msg = f"Synced {len(all_indicators)} IP indicators to {CACHE_FILE}"
+    if hunt:
+        msg += "\n" + after_cache_update(data_dir)
+    return True, msg
+
+
+def after_cache_update(data_dir: Any = None) -> str:
+    """C.3: hunt the addresses the cache newly lists as malicious over what Kratos has
+    stored (kratos.hunt.auto) -- local data only, no network, no model. A failure here
+    never undoes the sync; it is reported."""
+    from pathlib import Path
+
+    from kratos import kratos_config
+
+    folder = Path(data_dir) if data_dir else (kratos_config.get_active_data_dir() or _paths.default_data_dir())
+    try:
+        from kratos.hunt.auto import hunt_new_intel
+
+        out = hunt_new_intel(folder)
+    except Exception as e:  # noqa: BLE001 -- the cache is updated either way
+        return f"Automatic hunt for the new addresses failed: {type(e).__name__}: {e}"
+    seen = sum(len(v) for v in out["hits"].values())
+    more = f"; {out['remaining']} wait for the next update" if out["remaining"] else ""
+    if not out["hunted"]:
+        return "Automatic hunt: no address the cache lists is new since the last hunt."
+    return (f"Automatic hunt: searched for {out['hunted']} new malicious address(es){more}; "
+            + (f"{seen} seen before on {', '.join(sorted(out['hits']))} -- see HUNT-001 in /findings"
+               if seen else "none seen in what Kratos holds (`kratos hunt history` shows the coverage)"))
 
 
 def lookup_ip_cache(ip: str) -> dict[str, Any] | None:

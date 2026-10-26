@@ -2053,6 +2053,12 @@ register_snapshot_source(SnapshotSource(
     load=_detect_findings.load_recent, build=_detect_findings.build,
     closes_findings=_detect_findings.closes_findings))
 _FINDING_INPUTS["DETECT-"] = ("detections",)
+
+# C.3: HUNT-001 -- an address the threat-intel cache now lists as malicious, found in
+# what Kratos had stored (kratos.hunt.auto).
+from kratos.hunt import auto as _hunt_auto  # noqa: E402
+
+_hunt_auto.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
