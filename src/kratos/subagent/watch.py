@@ -90,6 +90,7 @@ RESEND_SECONDS = 30.0                  # an unacknowledged detection is sent aga
 AUDIT_GROUP_IDLE_SECONDS = 0.5
 AUDIT_OPEN_GROUPS_MAX = 64
 AUDIT_POLL_SECONDS = 0.25
+AUDITD_CHECK_SECONDS = 15.0
 LINE_MAX_BYTES = logread.LINE_MAX_BYTES    # log sync's line cap: the same line gives the same event
 FOLLOWER_BACKOFF_MAX = 60.0
 EVENT_TEXT_MAX = 2048                  # each text value a detection carries
@@ -634,6 +635,9 @@ class AuditReader(_Reader):
         self.buf = b""
         self.groups: "OrderedDict[Tuple[str, int], Dict[str, Any]]" = OrderedDict()
         self.skip_before: Optional[float] = None    # records older than this are past the catch-up limit
+        self.check_daemon = manager.check_auditd       # tests replace it; None = look at the real auditd
+        self._daemon_checked = 0.0
+        self._daemon_down = False
         self.started = _now()
         self.backlog = 0
 
@@ -759,8 +763,48 @@ class AuditReader(_Reader):
             self.buf = b""
         return True
 
+    def _auditd_running(self) -> bool:
+        """Is auditd itself running? A stopped auditd leaves its log in place and simply
+        writes nothing more -- that must read as "not watching", never as quiet."""
+        for pidfile in ("/run/auditd.pid", "/var/run/auditd.pid"):
+            try:
+                with open(pidfile) as f:
+                    pid = int(f.read().strip())
+                with open("/proc/%d/comm" % pid) as f:
+                    if f.read().strip() == "auditd":
+                        return True
+            except (OSError, ValueError):
+                continue
+        try:
+            for d in os.listdir("/proc"):
+                if d.isdigit():
+                    try:
+                        with open("/proc/%s/comm" % d) as f:
+                            if f.read().strip() == "auditd":
+                                return True
+                    except OSError:
+                        continue
+        except OSError:
+            return True        # can't tell: don't claim it stopped
+        return False
+
+    def _check_daemon(self) -> None:
+        now = _now()
+        if now - self._daemon_checked < AUDITD_CHECK_SECONDS:
+            return
+        self._daemon_checked = now
+        running = self.check_daemon() if self.check_daemon is not None else self._auditd_running()
+        if not running and not self._daemon_down:
+            self._daemon_down = True
+            self.state("error", "auditd isn't running -- nothing new is being recorded in the audit log")
+        elif running and self._daemon_down:
+            self._daemon_down = False
+            self.state("watching")
+
     def _follow(self) -> None:
+        self._daemon_checked = 0.0
         while not self.stopping.is_set():
+            self._check_daemon()
             if self._read_once():
                 self._flush_groups(force=False)
                 continue
@@ -837,6 +881,7 @@ class WatchManager:
                  journalctl: Optional[str] = None):
         self.state_dir = state_dir
         self.journalctl = journalctl          # tests only; normally found in the system bin directories
+        self.check_auditd: Any = None         # tests only: a function saying whether auditd runs
         self.config_path = os.path.join(state_dir, "watch_config.json")
         self.checkpoint_path = os.path.join(state_dir, "watch_checkpoint.json")
         self.spool_path = os.path.join(state_dir, "watch_spool.jsonl")

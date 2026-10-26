@@ -58,6 +58,7 @@ def _manager(tmp_path: Path, audit: Path | None = None, **kw) -> tuple[W.WatchMa
     exe, data = make_fake_journalctl(tmp_path)
     m = W.WatchManager(str(tmp_path / "state"), audit_path=str(audit or tmp_path / "audit.log"),
                        journalctl=str(exe), **kw)
+    m.check_auditd = lambda: True          # this host's auditd doesn't matter here
     return m, data
 
 
@@ -365,3 +366,22 @@ def test_journal_argv_is_fixed_and_refuses_a_bad_cursor():
     assert "_COMM=sshd" in argv and "_PID=1" in argv and "_TRANSPORT=kernel" in argv
     with pytest.raises(ValueError):
         W.journal_argv("s=1;i=1; --output=export", None)
+
+
+def test_a_stopped_auditd_is_not_watching_and_recovers(tmp_path, monkeypatch):
+    monkeypatch.setattr(W, "AUDITD_CHECK_SECONDS", 0.2)
+    audit = tmp_path / "audit.log"
+    audit.write_text("")
+    m, _ = _manager(tmp_path, audit=audit)
+    running = {"on": True}
+    m.check_auditd = lambda: running["on"]
+    m.apply(_config([_shipped()]))
+    try:
+        wait_for(lambda: m.state["auditd"]["state"] == "watching")
+        running["on"] = False                      # auditd stopped: its log just stops growing
+        wait_for(lambda: m.state["auditd"]["state"] == "error")
+        assert "auditd isn't running" in m.state["auditd"]["error"]
+        running["on"] = True
+        wait_for(lambda: m.state["auditd"]["state"] == "watching")
+    finally:
+        m.stop()
