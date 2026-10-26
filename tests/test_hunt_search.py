@@ -153,7 +153,8 @@ def test_a_window_clips_coverage(tmp_path, events):
 def test_prune_is_stated_and_not_found_never_claims_before_it(tmp_path, events):
     from kratos import dataprune
 
-    events.add([event(NOW - 40 * DAY, source_ip="198.51.100.7"), event(NOW - DAY, n=1, source_ip="203.0.113.5")])
+    events.add([event(NOW - 40 * DAY, source_ip="198.51.100.7"), event(NOW - DAY, n=1, source_ip="203.0.113.5"),
+                event(NOW - DAY, n=2, source_ip="192.0.2.8")])
     assert _hunt(tmp_path, "198.51.100.7").indicators[0].total_events == 1
     dataprune.apply_prune(tmp_path, dataprune.plan_prune(tmp_path, "host_events", 14), actor="alice via cli")
     r = _hunt(tmp_path, "198.51.100.7")
@@ -161,6 +162,7 @@ def test_prune_is_stated_and_not_found_never_claims_before_it(tmp_path, events):
     text = report.render(r)
     assert "PRUNED: events before" in text and "nothing before then can be found" in text
     assert "not found on web01 -- in what Kratos holds" in text
+    assert "\"first\" is the earliest Kratos still holds" in report.render(_hunt(tmp_path, "192.0.2.8"))
 
 
 def test_watch_records_and_link_down_appear(tmp_path, events, monkeypatch):

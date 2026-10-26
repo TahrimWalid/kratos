@@ -46,8 +46,12 @@ def _indicator_lines(res: IndicatorResult, r: HuntResult) -> list[str]:
     ind = res.indicator
     out = [f"== {ind.label} {ind.value} =="]
     hit_machines = res.machines_hit()
+    pruned = {c.machine: c.pruned[0] for c in r.coverage if c.pruned}
     for m in hit_machines:
         out.append(f"FOUND on {m}:")
+        if m in pruned:
+            out.append(f"  (\"first\" is the earliest Kratos still holds: events before {fmt(pruned[m]['cutoff'])} "
+                       "were pruned)")
         for s in sorted((s for s in res.summaries if s.machine == m), key=lambda s: s.first or 0):
             note = f" [{s.note}]" if s.note else ""
             out.append(f"  {_source(s.source)}: {s.count:,} -- first {fmt(s.first)}, last {fmt(s.last)}{note}")

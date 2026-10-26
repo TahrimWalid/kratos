@@ -83,8 +83,8 @@ class Ambiguous:
     reason: str = ""
 
     def question(self) -> str:
-        names = " or ".join(KIND_LABELS[k] for k in self.options)
-        return f"{self.typed!r} could be a {names}. Which one?"
+        names = " or ".join(("an " if KIND_LABELS[k][0] in "aeiou" else "a ") + KIND_LABELS[k] for k in self.options)
+        return f"{self.typed!r} could be {names}. Which one?"
 
 
 @dataclass
