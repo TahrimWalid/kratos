@@ -69,3 +69,17 @@ def test_a_local_job_unpacks_the_tree_and_runs_every_step():
     assert script.startswith("set -e\n")
     order = [script.index(s) for s in ("tar -xf /ci/src.tar", "apt-get install", "pip install a", "echo 1", "echo 2")]
     assert order == sorted(order)
+
+
+def test_dependencies_are_audited_every_day_and_every_skip_has_a_reason():
+    """Kratos's own supply chain: a fresh install is audited on every push and daily, and
+    an advisory is only skipped with its reason written next to the job."""
+    job = next(j for j in ci.load_jobs() if j.name == "deps-audit")
+    command = " ".join(job.run)
+    assert "pip-audit" in command and "[sigma,otel]" in command and "--strict" in command
+    text = (REPO / "scripts" / "ci" / "jobs.toml").read_text(encoding="utf-8")
+    for vuln in re.findall(r"--ignore-vuln (\S+)", command):
+        assert re.search(rf"#\s+{re.escape(vuln)} \(", text), f"{vuln} is skipped without a reason"
+    workflow = ci.WORKFLOW.read_text(encoding="utf-8")
+    assert "  schedule:\n    - cron:" in workflow and "workflow_dispatch:" in workflow
+

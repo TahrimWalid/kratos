@@ -35,3 +35,15 @@ def test_an_unknown_word_is_an_error_not_the_app(opened, capsys, argv, named, su
     assert f"'{named}'" in err and "kratos --help" in err
     if suggested:
         assert f"kratos {suggested}" in err
+
+
+def test_version_prints_kratos_and_the_agent_it_installs(capsys):
+    """`kratos --version` / `-V` (a bug report and a security advisory need it), not
+    an 'unknown command' -- and it opens nothing."""
+    from kratos import __version__
+    from kratos.cli import app
+    from kratos.subagent.agent import AGENT_VERSION
+
+    for flag in ("--version", "-V"):
+        assert app.main([flag]) == 0
+        assert capsys.readouterr().out.strip() == f"kratos {__version__} (sub-agent {AGENT_VERSION})"

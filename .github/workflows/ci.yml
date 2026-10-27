@@ -5,6 +5,9 @@ name: ci
 on:
   push:
   pull_request:
+  schedule:
+    - cron: "17 5 * * *"   # daily: new advisories (deps-audit) and new dependency releases
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -366,6 +369,37 @@ jobs:
           id -u ci >/dev/null 2>&1 || useradd -m ci
           cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
           python -m evals smoke
+          CI_RUN_EOF
+          chown -R ci .
+          runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh
+  deps-audit:
+    name: deps-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container: python:3.12-slim
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PIP_ROOT_USER_ACTION: "ignore"
+      PYTHONDONTWRITEBYTECODE: "1"
+    defaults:
+      run:
+        shell: sh -e {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install
+        run: |
+          pip install 'pip-audit==2.10.1'
+      - name: Run
+        run: |
+          id -u ci >/dev/null 2>&1 || useradd -m ci
+          cat > /tmp/ci-run.sh <<'CI_RUN_EOF'
+          python -m venv /tmp/user-env
+          /tmp/user-env/bin/pip install --quiet '.[sigma,otel]'
+          /tmp/user-env/bin/pip freeze --exclude-editable | grep -v '^kratos-security-assistant' > /tmp/installed.txt
+          cat /tmp/installed.txt
+          pip-audit --strict --progress-spinner off --no-deps --disable-pip -r /tmp/installed.txt --ignore-vuln PYSEC-2026-2447
           CI_RUN_EOF
           chown -R ci .
           runuser -u ci -- env HOME=/home/ci sh -e /tmp/ci-run.sh

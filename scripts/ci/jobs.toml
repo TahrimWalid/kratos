@@ -12,7 +12,8 @@
 #   user   run the checks as this unprivileged user (default "ci"); "" keeps root
 #
 # CI sends nothing anywhere: no API keys, no model calls, no lab. The unit suite's
-# tests/conftest.py refuses any test that starts ssh.
+# tests/conftest.py refuses any test that starts ssh. (deps-audit asks the public
+# vulnerability databases about Kratos's public dependency list -- nothing else.)
 
 [defaults]
 # The suite's real-read tests expect a Linux host's userland: procps (ps), iproute2
@@ -137,3 +138,29 @@ image = "python:3.12-slim"
 env = { TZ = "UTC" }
 setup = ["pip install -e '.[test,eval]'"]
 run = ["python -m evals smoke"]
+
+# Known vulnerabilities in what `pip install kratos-security-assistant` brings in today.
+# The dependencies are ranges (no lock file), so a fresh install resolves to the newest
+# releases: install the way a user does, with the user-facing extras, in a clean
+# environment, freeze exactly what was installed and audit that list against the OSV and
+# PyPI advisory data. Runs on every push and every day (the schedule in ci.yml), so an
+# advisory published tomorrow fails tomorrow's run. A finding is fixed by raising a
+# minimum version in pyproject.toml (or, for Kratos itself, by an advisory -- SECURITY.md).
+#
+# Skipped advisories -- each with why, re-checked whenever this file is touched:
+#   PYSEC-2026-2447 (CVE-2025-69872, diskcache <= 5.6.3, no fixed release yet): pickle
+#     from a cache folder an attacker could write. Only pySigma (the optional `sigma`
+#     extra, used by `kratos detect import`) brings it in, and its cache is in the user's
+#     own folder: whoever can write there can already run code as that user.
+[[job]]
+name = "deps-audit"
+image = "python:3.12-slim"
+apt = []
+setup = ["pip install 'pip-audit==2.10.1'"]
+run = [
+    "python -m venv /tmp/user-env",
+    "/tmp/user-env/bin/pip install --quiet '.[sigma,otel]'",
+    "/tmp/user-env/bin/pip freeze --exclude-editable | grep -v '^kratos-security-assistant' > /tmp/installed.txt",
+    "cat /tmp/installed.txt",
+    "pip-audit --strict --progress-spinner off --no-deps --disable-pip -r /tmp/installed.txt --ignore-vuln PYSEC-2026-2447",
+]

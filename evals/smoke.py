@@ -105,7 +105,7 @@ def run() -> int:
 
     # 4. a recording that leaves the lab is caught
     bad = dict(_RECORDING, calls=_RECORDING["calls"] + [{"tool": "x", "args": {},
-               "result": {"note": "reached 8.8.8.8 with key sk-abcdefghijklmnopqrstuvwxyz"}}])
+               "result": {"note": "reached 8.8.8.8 with key " + "sk-" + "abcdefghijklmnopqrstuvwxyz"}}])
     probs = replay.scan_recording(bad)
     _check(any("8.8.8.8" in p for p in probs) and any("key" in p.lower() for p in probs),
            f"scan_recording should flag the public IP and the key: {probs}")

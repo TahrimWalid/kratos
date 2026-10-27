@@ -1995,11 +1995,22 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     return 1
 
 
+def version_text() -> str:
+    """`kratos --version`: what a bug report or a security advisory needs -- Kratos's
+    version and the sub-agent version it installs."""
+    from kratos import __version__
+    from kratos.subagent.agent import AGENT_VERSION
+
+    return f"kratos {__version__} (sub-agent {AGENT_VERSION})"
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=PROJECT_NAME,
         description="Kratos — a self-hostable, self-growing security assistant",
     )
+    p.add_argument("-V", "--version", action="version", version=version_text(),
+                   help="Show Kratos's version and the sub-agent version it installs")
     p.add_argument(
         "--data-dir",
         type=Path,
@@ -2578,6 +2589,9 @@ def _unknown_command(word: str, commands: list[str]) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("--version", "-V"):
+        print(version_text())
+        return 0
     no_color = "--no-color" in argv or bool(os.environ.get("NO_COLOR"))
     _console.configure(no_color)
 

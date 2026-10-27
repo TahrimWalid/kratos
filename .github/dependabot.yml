@@ -1,0 +1,16 @@
+# Dependabot: proposes updates for Kratos's own dependencies and for the pinned
+# GitHub Actions. Security alerts for this repository come from the same data
+# (enable "Dependabot alerts" in the repository settings). The daily deps-audit
+# job in ci.yml checks what a fresh install brings in, independently of this.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5

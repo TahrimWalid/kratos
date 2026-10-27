@@ -80,7 +80,7 @@ def test_the_hygiene_scan_catches_a_non_lab_address_and_a_key():
     clean = replay.scan_recording(RECORDING)
     assert clean == []
     bad = dict(RECORDING, calls=RECORDING["calls"] + [
-        {"tool": "x", "args": {}, "result": {"note": "called 8.8.8.8 with sk-abcdefghijklmnopqrstuvwxyz0"}}])
+        {"tool": "x", "args": {}, "result": {"note": "called 8.8.8.8 with " + "sk-" + "abcdefghijklmnopqrstuvwxyz0"}}])
     probs = replay.scan_recording(bad)
     assert any("8.8.8.8" in p for p in probs) and any("key" in p.lower() for p in probs)
 

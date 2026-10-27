@@ -246,7 +246,7 @@ The core reasons about a goal and picks its own read-only tools; a findings engi
 
 ## Status and roadmap
 
-Kratos is under active development. Working today: investigations and fixed audits, over SSH or a sub-agent; exact time windows and period comparisons; the findings engine and its checks on the model's conclusions; presets, pipelines, schedules and triggers; the self-writing loop; the MCP server; and the terminal UI. Its 1,800+ automated tests pass on Python 3.10 and 3.12.
+Kratos is under active development. Working today: investigations and fixed audits, over SSH or a sub-agent; exact time windows and period comparisons; the findings engine and its checks on the model's conclusions; presets, pipelines, schedules and triggers; the self-writing loop; the MCP server; and the terminal UI. Its 5,200+ automated tests pass on Python 3.10 to 3.13, and CI audits Kratos's own dependencies every day.
 
 Not yet: a follow-up security review of the experimental fix channel's fixes (needed before it should be enabled anywhere real), running one investigation across several machines at once, and email delivery for scheduled reports.
 
@@ -255,6 +255,12 @@ Not yet: a follow-up security review of the experimental fix channel's fixes (ne
 ## Where it came from
 
 Kratos began as a Bachelor's thesis (Tampere University of Applied Sciences, Software Engineering, 2026): could a quantized model on ARM edge hardware produce meaningful, explainable security analysis with nothing sent off the machine? The answer was yes. It has grown well past that first prototype since, but the two ideas at its center — explain everything in plain language, and never act without a person — are the same ones it started with.
+
+## Security
+
+Found a vulnerability? Please report it privately through **Security → Report a
+vulnerability** on this repository; [SECURITY.md](https://github.com/TahrimWalid/kratos/blob/main/SECURITY.md)
+says what happens next and how fixes reach installs and forks.
 
 ## License
 
