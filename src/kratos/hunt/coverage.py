@@ -31,6 +31,7 @@ from kratos.target_key import target_key
 
 UTC = timezone.utc
 SYNC_STALE_SECONDS = 6 * 3600       # a source not synced for this long is "not synced since"
+COUNT_CAP = 100_000                 # events outside synced logs are counted up to this ("100,000+")
 
 
 def fmt(ts: float | None) -> str:
@@ -118,7 +119,8 @@ class MachineCoverage:
         for ds, v in sorted(self.read.items()):
             if ds in synced_ds or ds == "kratos.detect":
                 continue
-            n = f"{v['count']:,} event(s)" if v.get("count") is not None else "events"
+            c = v.get("count")
+            n = ("events" if c is None else f"{COUNT_CAP:,}+ events" if c > COUNT_CAP else f"{c:,} event(s)")
             out.append(f"{ds}: {n} Kratos read between {fmt(v['first'])} and {fmt(v['last'])} "
                        "(only what investigations read -- not every line)")
         for p in self.pruned:
@@ -241,7 +243,8 @@ def _read(conn: sqlite3.Connection, machine: str, lo: float | None, hi: float,
         last = conn.execute(f"SELECT MAX(ts) FROM host_events WHERE {where}", args).fetchone()[0]
         n = None
         if ds not in synced:
-            n = int(conn.execute(f"SELECT COUNT(*) FROM host_events WHERE {where}", args).fetchone()[0])
+            n = int(conn.execute(f"SELECT COUNT(*) FROM (SELECT 1 FROM host_events WHERE {where} LIMIT ?)",
+                                 (*args, COUNT_CAP + 1)).fetchone()[0])
             total += n
         out[ds] = {"first": first, "last": last, "count": n}
     return out, total

@@ -293,3 +293,16 @@ def test_coverage_reads_each_logs_first_and_last_and_counts_only_outside_synced_
     assert cov.read["kratos.cron"]["count"] == 2
     assert cov.read["kratos.cron"]["first"] < cov.read["kratos.cron"]["last"]
     assert C.machine_coverage(tmp_path, "web01", start=NOW - DAY).read == {}
+
+
+def test_a_big_result_is_counted_from_the_index_not_split_by_log(tmp_path, events, monkeypatch):
+    from kratos.hunt import search as SE
+
+    monkeypatch.setattr(SE, "EXACT_BREAKDOWN_LIMIT", 5)
+    events.add([event(NOW - i * 3600, n=i, user_name="root", dataset=("kratos.auth" if i % 2 else "kratos.cron"))
+                for i in range(12)])
+    res = _hunt(tmp_path, "root", "account").indicators[0]
+    assert [s.source for s in res.summaries] == ["all logs"] and res.summaries[0].count == 12
+    assert "counted from the search index" in res.summaries[0].note and len(res.hits) == 12
+    assert _hunt(tmp_path, "root", "account", start=NOW - 4.5 * 3600).indicators[0].summaries[0].source \
+        in ("kratos.auth", "kratos.cron")                  # 5 matches: split by log again

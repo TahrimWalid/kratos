@@ -39,6 +39,8 @@ from kratos.target_key import target_key
 
 DETECT_DATASET = "kratos.detect"
 SCAN_SLICE_SECONDS = 3600
+EXACT_BREAKDOWN_LIMIT = 2000      # more matches than this: counted from the index, not split by log
+ALL_LOGS = "all logs"
 EXCERPT_CHARS = 160
 # where an indicator kind is found by the main columns of an event not yet in the index
 _COLUMN_FOR = {"ip": "source_ip", "account": "user_name", "program": "process_name", "sha256": "file_sha256"}
@@ -226,14 +228,24 @@ def _typed(conn: sqlite3.Connection, machine: str, ind: Indicator, start: float 
     base = f"FROM host_event_terms t {join} WHERE t.target = ? AND {match}{wsql}"
     args = [machine, *margs, *wargs]
     summaries: dict[str, SourceSummary] = {}
-    for ds, day, n, lo, hi in conn.execute(
-            f"SELECT e.dataset, CAST(t.ts / 86400 AS INTEGER), COUNT(DISTINCT t.row), MIN(t.ts), MAX(t.ts) {base} "
-            "GROUP BY e.dataset, CAST(t.ts / 86400 AS INTEGER)", args):
-        s = summaries.setdefault(ds, SourceSummary(machine, ds, 0, None, None))
-        s.count += int(n)
-        s.first = lo if s.first is None else min(s.first, lo)
-        s.last = hi if s.last is None else max(s.last, hi)
-        s.per_day[_day(day * 86400)] = s.per_day.get(_day(day * 86400), 0) + int(n)
+    tbase = f"FROM host_event_terms t WHERE t.target = ? AND {match}{wsql}"
+    n_terms, t_lo, t_hi = conn.execute(f"SELECT COUNT(DISTINCT t.row), MIN(t.ts), MAX(t.ts) {tbase}", args).fetchone()
+    if int(n_terms or 0) > EXACT_BREAKDOWN_LIMIT:
+        # A big result (an account like root, a machine's own address): count it from the index
+        # alone -- splitting it by log would read every matching event -- and list the newest.
+        per_day = {_day(day * 86400): int(n) for day, n in conn.execute(
+            f"SELECT CAST(t.ts / 86400 AS INTEGER), COUNT(DISTINCT t.row) {tbase} GROUP BY 1", args)}
+        summaries[ALL_LOGS] = SourceSummary(machine, ALL_LOGS, int(n_terms), t_lo, t_hi, per_day,
+                                            note="counted from the search index; too many to split by log")
+    else:
+        for ds, day, n, lo, hi in conn.execute(
+                f"SELECT e.dataset, CAST(t.ts / 86400 AS INTEGER), COUNT(DISTINCT t.row), MIN(t.ts), MAX(t.ts) {base} "
+                "GROUP BY e.dataset, CAST(t.ts / 86400 AS INTEGER)", args):
+            s = summaries.setdefault(ds, SourceSummary(machine, ds, 0, None, None))
+            s.count += int(n)
+            s.first = lo if s.first is None else min(s.first, lo)
+            s.last = hi if s.last is None else max(s.last, hi)
+            s.per_day[_day(day * 86400)] = s.per_day.get(_day(day * 86400), 0) + int(n)
     hits = [_hit(machine, r, ts, ds, doc, "field") for r, ts, ds, doc in conn.execute(
         f"SELECT DISTINCT e.id, e.ts, e.dataset, e.doc {base} ORDER BY t.ts DESC, e.id DESC LIMIT ?",
         (*args, max_hits))]

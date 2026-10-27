@@ -19,7 +19,8 @@ REPORT_HITS_WHEN_HUGE = 10
 PER_DAY_SHOWN = 10
 _SOURCE_WORDS = {"kratos.auth": "sign-ins and sudo", "kratos.cron": "cron", "kratos.systemd": "services",
                  "kratos.firewall": "firewall", "kratos.auditd": "audit log", "kratos.package": "package changes",
-                 "kratos.web": "web server", "detections": "detections (rule matches)"}
+                 "kratos.web": "web server", "detections": "detections (rule matches)",
+                 "all logs": "every log together"}
 
 
 def _source(name: str) -> str:
