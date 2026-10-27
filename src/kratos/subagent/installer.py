@@ -294,6 +294,19 @@ PIN_FLAGS='{pin_flags}'
 log() {{ printf '%s\\n' "$*"; }}
 # Machine-readable failure line (Kratos classifies these), then a plain one.
 die() {{ printf 'KRATOS_INSTALL_ERROR: %s: %s\\n' "$1" "$2" >&2; printf 'error: %s\\n' "$2" >&2; exit 1; }}
+# Running, and not a zombie: an agent that died at once stays a zombie when the process
+# it was handed to never reaps (a container whose main process is `tail -f /dev/null`),
+# and `kill -0` alone reports a zombie as alive.
+alive() {{
+  [ -n "$1" ] && $SUDO kill -0 "$1" 2>/dev/null || return 1
+  _st=""
+  if [ -r "/proc/$1/stat" ]; then                 # shell built-ins only: minimal boxes may lack sed
+    IFS= read -r _st < "/proc/$1/stat" || true
+    _st=${{_st##*) }}
+    _st=${{_st%% *}}
+  fi
+  [ "$_st" != "Z" ] && [ "$_st" != "X" ]
+}}
 
 PY=$(command -v python3 || true)
 [ -n "$PY" ] || die no_python "python3 is required on the target but was not found"
@@ -384,7 +397,7 @@ start_plain() {{
     $SUDO sh "$START" || die start_failed "could not start the agent in the background"
     sleep 2
     NEW_PID=$($SUDO cat "$PIDFILE" 2>/dev/null || true)
-    if [ -z "$NEW_PID" ] || ! $SUDO kill -0 "$NEW_PID" 2>/dev/null; then
+    if ! alive "$NEW_PID"; then
         die start_failed "the agent exited right after starting: $($SUDO tail -n 3 "$LOGFILE" 2>/dev/null | tr '\\n' ' ')"
     fi
     log "Started (pid $NEW_PID). Logs: $LOGFILE"

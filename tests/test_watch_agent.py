@@ -367,13 +367,28 @@ def test_cap_holds_in_order(tmp_path):
 
 
 def test_cpu_budget_slows_a_catch_up_and_reports_it(tmp_path):
+    """The budget is checked once evaluation has worked for a second: keep the watcher busy
+    until it gets there. A fixed batch finished in under a second on CI's faster machines
+    and was never throttled (correctly), so the test failed there."""
     m, data = _manager(tmp_path)
     now = time.time()
-    append(data, *[journal_entry(i, now + 5 + i / 1000, failed_ssh("u", "198.51.100.9"), comm="sshd")
-                   for i in range(1, 6001)])
+    n = 0
+
+    def feed(count: int) -> None:
+        nonlocal n
+        append(data, *[journal_entry(n + i, now + 5 + (n + i) / 1000, failed_ssh("u", "198.51.100.9"), comm="sshd")
+                       for i in range(1, count + 1)])
+        n += count
+
+    feed(6000)
     m.apply(_config([_shipped()], max_cpu_percent=5))
     try:
-        wait_for(lambda: m.throttled_seconds > 0, timeout=60)
+        end = time.monotonic() + 60
+        while m.throttled_seconds <= 0 and time.monotonic() < end:
+            if m.queue.qsize() < 1000:
+                feed(3000)
+            time.sleep(0.2)
+        assert m.throttled_seconds > 0, "a catch-up kept busy for 60 s was never slowed to its CPU budget"
     finally:
         m.stop()
 

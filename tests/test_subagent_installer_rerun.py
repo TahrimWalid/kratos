@@ -155,3 +155,34 @@ def test_uninstall_really_removes_a_user_install_without_sudo(box):
             break
         time.sleep(0.1)
     assert not _alive(pid) and not (home / ".kratos-subagent").exists()
+
+
+def test_a_zombie_agent_is_not_taken_for_a_running_one():
+    """An agent that died at once stays a zombie when the process it was handed to never
+    reaps it -- CI's containers run `tail -f /dev/null` as PID 1 -- and `kill -0` says a
+    zombie is alive, so the installer printed KRATOS_INSTALL_OK for a dead agent."""
+    import os
+    import subprocess
+
+    script = I.generate_installer("127.0.0.1", "AAAA-1111", core_port=9)
+    start = script.index("alive() {")
+    alive_fn = script[start: script.index("\n}", start) + 2]
+
+    def verdict(pid: int) -> str:
+        # an empty PATH: minimal boxes (and the installer's own test sandbox) may lack sed/awk
+        r = subprocess.run(["/bin/sh", "-c", f'SUDO=\n{alive_fn}\nalive {pid} && echo alive || echo dead'],
+                           capture_output=True, text=True, timeout=10, env={"PATH": "/nonexistent"})
+        return r.stdout.strip()
+
+    running = subprocess.Popen(["sleep", "30"])
+    dead = subprocess.Popen(["true"])
+    os.waitid(os.P_PID, dead.pid, os.WEXITED | os.WNOWAIT)      # exited, not reaped: a zombie
+    try:
+        assert open(f"/proc/{dead.pid}/stat").read().rsplit(")", 1)[1].split()[0] == "Z"
+        assert verdict(running.pid) == "alive"
+        assert verdict(dead.pid) == "dead"
+        assert verdict(999999999) == "dead"
+    finally:
+        running.kill()
+        running.wait()
+        dead.wait()
