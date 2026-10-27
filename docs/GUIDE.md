@@ -1219,6 +1219,13 @@ paths are looked up in an index over every stored line; anything else that appea
 log text (a domain inside a `curl` command) is searched by scanning the newest 7 days
 (`hunt.scan_days`) for at most 3 seconds (`hunt.scan_seconds`), and the report says how many
 lines it got through ("searched 6,145 of 6,145 events", or where the time limit stopped it).
+The log text is the line the machine wrote, never the rest of what Kratos stores with it, so a
+hunt for a machine's own address doesn't match every line just because each one is filed under
+that machine. An account or program name that is also an ordinary word (`user`, `info`) can
+still match plain wording such as *session opened for user root*: those lines are listed after
+the records that name it (a sign-in, a process, a file), and when that's all there is the report
+says *FOUND … only as a word in the log text*. An address written the way dual-stack servers
+log IPv4 clients (`::ffff:203.0.113.9`) is hunted as the IPv4 address `203.0.113.9`.
 
 **In a session** the hunt's report joins the conversation, so you can ask a follow-up ("what did
 that address do after it logged in?"). Kratos indexes lines stored before this feature existed
@@ -1232,7 +1239,8 @@ that was seen before becomes a high finding **HUNT-001** *An address a threat-in
 as malicious was seen on this machine before*, with when, where, the pulse name and what the hunt
 could see — and it goes through your triggers like any new finding. Nothing here calls a model
 or reaches the network. (New CISA exploited-vulnerability entries aren't a hunt: `kratos
-vulndb-update` already re-checks the stored package lists against them.)
+vulndb-update` marks every machine's package check as due, so a machine's packages are matched
+against them at its next collection.)
 
 **Every hunt is recorded** — who, when, what was hunted, which machines and period, the coverage
 and how many records matched: `kratos hunt --history`. What you typed (an account, an address)

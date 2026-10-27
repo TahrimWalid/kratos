@@ -1339,15 +1339,23 @@ one matters: on the lab target 1,800 of 2,850 sign-in lines naming the attacker 
 address only in the text ("Connection closed by invalid user x 10.136.28.52 port …"), so a typed
 search alone would have missed them beyond the text scan's 7 days while the coverage said every
 line was held. Such hits are labelled "in the log text"; terms step 2 re-indexes stored events. Addresses are stored as `4`/`6` + the address's hex digits, so a CIDR is a `BETWEEN` and v4
-never meets v6; a path also finds what is inside it (a range, not `LIKE`, so the index serves it).
+never meets v6 -- except that an IPv4-mapped address (`::ffff:203.0.113.9`, which dual-stack
+servers write and `/proc/net/tcp6` shows for IPv4 peers) is the IPv4 address it carries, in the
+index, the indicator and every comparison (`terms.address`; step 3 re-indexes); a path also finds what is inside it (a range, not `LIKE`, so the index serves it).
 Events stored before the index existed are filled by a resumable, idempotent backfill
 (`host_event_terms_state`: one batch per transaction; a hunt spends `hunt.index_seconds` on it
 first and searches the events not yet indexed by their `host_events` columns, saying so). A term
 row only counts when its event row still exists with the same machine and time, and a host-events
 prune deletes the terms by the same cutoff in the same transaction. Text that is in no typed field
-(a domain inside a `curl` line) is found by a substring scan: escaped `LIKE` then a whole-word
-check, newest hour first, over `hunt.scan_days`, stopped by a progress handler after
-`hunt.scan_seconds`; the report says how many of how many events it searched. FTS5 was not added
+(a domain inside a `curl` line) is found by a substring scan over the log text only -- `message`,
+`event.original`, `process.command_line`, never the rest of the stored record, whose field names,
+`host.name` (the machine's own address) and values like `event.type: info` would match nearly every
+event: escaped `LIKE` on those fields then a whole-word check, newest hour first, over `hunt.scan_days`, stopped by a progress handler after
+`hunt.scan_seconds`; the report says how many of how many events it searched. Every text match
+that isn't already a typed hit is counted (not only the listed ones), and listed hits put records
+that name the indicator in a typed field before log-text matches, since an account that is also an
+ordinary word can match thousands of lines of plain wording. Run notes (Kratos's own words about
+what a read couldn't see) are never a snapshot sighting. FTS5 was not added
 (see the measurements below).
 
 **Coverage comes only from records** (`hunt/coverage.py`): `sync_coverage` complete spans per

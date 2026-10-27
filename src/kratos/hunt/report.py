@@ -49,7 +49,12 @@ def _indicator_lines(res: IndicatorResult, r: HuntResult) -> list[str]:
     hit_machines = res.machines_hit()
     pruned = {c.machine: c.pruned[0] for c in r.coverage if c.pruned}
     for m in hit_machines:
-        out.append(f"FOUND on {m}:")
+        mine = [s for s in res.summaries if s.machine == m]
+        text_only = (mine and all(s.source.endswith("(log text)") for s in mine)
+                     and not any(h.machine == m for h in res.snapshot_hits)
+                     and not any(f.get("machine") == m for f in res.findings))
+        out.append(f"FOUND on {m}, only as a word in the log text (no sign-in, process, file or finding record "
+                   f"names this {ind.label}):" if text_only else f"FOUND on {m}:")
         if m in pruned:
             out.append(f"  (\"first\" is the earliest Kratos still holds: events before {fmt(pruned[m]['cutoff'])} "
                        "were pruned)")
@@ -77,7 +82,8 @@ def _indicator_lines(res: IndicatorResult, r: HuntResult) -> list[str]:
         out.append(f"{res.total_events:,} matching events -- too many to list. Narrow the hunt: a shorter window "
                    "(--since 24h), one machine (--machine), a single address instead of a network.")
     if res.hits:
-        out.append(f"Newest matching events ({min(len(res.hits), shown)} of {res.total_events:,}):")
+        out.append(f"Matching events, records naming it first, then the log text, newest first "
+                   f"({min(len(res.hits), shown)} of {res.total_events:,}):")
         for h in res.hits[:shown]:
             fields = ", ".join(f"{k}={v}" for k, v in h.fields.items() if k != "event.outcome")
             rule = f" rule {h.rule['id']} \"{h.rule['name'][:60]}\" by {h.rule['author'][:60]}" if h.rule else ""

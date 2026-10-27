@@ -92,6 +92,7 @@ class TextScan:
     total: int = 0
     matched: int = 0                            # events whose text holds it (may include typed hits)
     stopped_at: float | None = None             # the scan reached back to here, then ran out of time
+    rows: list[tuple[int, float, str]] = field(default_factory=list, repr=False)   # every match: (row, ts, dataset)
 
     def as_dict(self) -> dict[str, Any]:
         return {"machine": self.machine, "from": C.fmt(self.start), "to": C.fmt(self.end), "searched": self.searched,
@@ -181,6 +182,20 @@ def _like(value: str) -> str:
     return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
 
 
+# The log text a text hunt reads: what the machine wrote, never the rest of Kratos's stored
+# record (its field names, `host.name` -- the machine's own address -- or values such as
+# `event.type: info`), which would match nearly every event (Phase C audit).
+_TEXT_SQL = " OR ".join(f"json_extract(doc, '$.{f}') LIKE ? ESCAPE '\\'" for f in T.TEXT_FIELDS)
+
+
+def _log_text(doc_text: str) -> str:
+    try:
+        doc = json.loads(doc_text)
+    except ValueError:
+        return ""
+    return "\n".join(str(v) for v in (T._get(doc, f) for f in T.TEXT_FIELDS) if isinstance(v, str))
+
+
 def _hit(machine: str, row: int, ts: float, dataset: str, doc_text: str, via: str) -> EventHit:
     from kratos import untrusted
 
@@ -258,13 +273,24 @@ def _typed(conn: sqlite3.Connection, machine: str, ind: Indicator, start: float 
     return summaries, hits, sum(s.count for s in summaries.values())
 
 
-def _in_network(ind: Indicator, value: Any) -> bool:
-    import ipaddress
+_TEXT_NOTE = {"account": "the word appears in the log text -- for a common word this is ordinary wording, "
+                          "not this account",
+              "program": "the word appears in the log text -- for a common word this is ordinary wording, "
+                         "not this program",
+              "": "found in the log text, not a typed field"}
 
-    try:
-        return value is not None and ipaddress.ip_address(str(value)) in ind.network
-    except ValueError:
-        return False
+
+def _typed_rows(conn: sqlite3.Connection, machine: str, ind: Indicator, start: float, end: float) -> set[int]:
+    """The rows the index already has for `ind` in a window (a text match there isn't a new hit)."""
+    match, margs = T.match_clause(ind.kind, ind.value, ind.network)
+    return {int(r) for (r,) in conn.execute(
+        f"SELECT DISTINCT t.row FROM host_event_terms t WHERE t.target = ? AND {match} AND t.ts >= ? AND t.ts < ?",
+        (machine, *margs, start, end))}
+
+
+def _in_network(ind: Indicator, value: Any) -> bool:
+    addr = T.address(value) if value is not None else None
+    return addr is not None and addr in ind.network
 
 
 def _related_has(conn: sqlite3.Connection, row: int, ind: Indicator) -> bool:
@@ -319,9 +345,10 @@ def _text_scan(conn: sqlite3.Connection, machine: str, ind: Indicator, start: fl
             try:
                 n = int(conn.execute("SELECT COUNT(*) FROM host_events WHERE target = ? AND ts >= ? AND ts < ?",
                                      (machine, lo, hi)).fetchone()[0])
+                # the cheap whole-record LIKE first; the log-text fields only for rows that pass it
                 rows = conn.execute("SELECT id, ts, dataset, doc FROM host_events WHERE target = ? AND ts >= ? "
-                                    "AND ts < ? AND doc LIKE ? ESCAPE '\\' ORDER BY ts DESC",
-                                    (machine, lo, hi, like)).fetchall()
+                                    f"AND ts < ? AND doc LIKE ? ESCAPE '\\' AND ({_TEXT_SQL}) ORDER BY ts DESC",
+                                    (machine, lo, hi, like, *([like] * len(T.TEXT_FIELDS)))).fetchall()
             except sqlite3.OperationalError:
                 if interrupted["v"]:
                     scan.stopped_at = hi
@@ -329,8 +356,9 @@ def _text_scan(conn: sqlite3.Connection, machine: str, ind: Indicator, start: fl
                 raise
             scan.searched += n
             for r, ts, ds, doc in rows:
-                if pattern.search(doc):
+                if pattern.search(_log_text(doc)):
                     scan.matched += 1
+                    scan.rows.append((int(r), float(ts), ds))
                     if len(hits) < max_hits:
                         hits.append(_hit(machine, r, ts, ds, doc, "text"))
             hi = lo
@@ -341,18 +369,15 @@ def _text_scan(conn: sqlite3.Connection, machine: str, ind: Indicator, start: fl
 
 # --------------------------------------------------------------------------- findings
 def _finding_match(ind: Indicator, values: list[str]) -> bool:
-    import ipaddress
 
     for v in values:
         if not v:
             continue
         if ind.kind == "ip":
             for token in re.findall(r"[0-9A-Fa-f:.]+", v):
-                try:
-                    if ipaddress.ip_address(token) in ind.network:
-                        return True
-                except ValueError:
-                    continue
+                addr = T.address(token)
+                if addr is not None and addr in ind.network:
+                    return True
         elif ind.kind == "sha256":
             frag = v.partition("#")[2].lower()
             if (frag and len(frag) >= 12 and ind.value.startswith(frag)) or ind.value in v.lower():
@@ -441,17 +466,23 @@ def run_hunt(data_dir: Path | str, indicators: list[Indicator], *, machines: lis
                     scan, thits = _text_scan(conn, m, ind, text_start, text_end,
                                              time.monotonic() + deadline_each, max_hits)
                     res.text_scans.append(scan)
-                    extra = [h for h in thits if h.row not in seen]
-                    for h in extra:
-                        seen.add(h.row)
-                        s = summaries.setdefault(f"{h.dataset} (log text)",
-                                                 SourceSummary(m, f"{h.dataset} (log text)", 0, None, None,
-                                                               note="found in the log text, not a typed field"))
+                    # every text match that isn't already a typed hit counts -- not only the ones listed
+                    typed_rows = seen | _typed_rows(conn, m, ind, text_start, text_end)
+                    text_only: set[int] = set()
+                    for row, ts, ds in scan.rows:
+                        if row in typed_rows or row in text_only:
+                            continue
+                        text_only.add(row)
+                        s = summaries.setdefault(f"{ds} (log text)",
+                                                 SourceSummary(m, f"{ds} (log text)", 0, None, None,
+                                                               note=_TEXT_NOTE.get(ind.kind, _TEXT_NOTE[""])))
                         s.count += 1
-                        s.first = h.ts if s.first is None else min(s.first, h.ts)
-                        s.last = h.ts if s.last is None else max(s.last, h.ts)
-                        s.per_day[_day(h.ts)] = s.per_day.get(_day(h.ts), 0) + 1
+                        s.first = ts if s.first is None else min(s.first, ts)
+                        s.last = ts if s.last is None else max(s.last, ts)
+                        s.per_day[_day(ts)] = s.per_day.get(_day(ts), 0) + 1
                         total += 1
+                    extra = [h for h in thits if h.row in text_only and h.row not in seen]
+                    seen.update(h.row for h in extra)
                     hits.extend(extra)
                 for s in summaries.values():
                     if s.source == DETECT_DATASET:
@@ -474,7 +505,9 @@ def run_hunt(data_dir: Path | str, indicators: list[Indicator], *, machines: lis
                                                            {_day(t): sum(1 for x in tss if _day(x) == _day(t))
                                                             for t in tss}))
             res.findings = _findings(conn, machines, ind)
-            res.hits.sort(key=lambda h: (h.ts, h.row), reverse=True)
+            # records that name it in a typed field first (a sign-in, a process, a file), then the
+            # log text -- a common word ("user") can match thousands of ordinary lines (Phase C audit)
+            res.hits.sort(key=lambda h: (h.via != "text", h.ts, h.row), reverse=True)
             res.too_many = res.total_events > max_hits
             res.hits = res.hits[:max_hits]
         say("working out what Kratos holds (coverage)…")

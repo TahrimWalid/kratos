@@ -106,7 +106,10 @@ def _as_ip(text: str) -> str | None:
         if "/" in text:
             net = ipaddress.ip_network(text, strict=False)
             return net.compressed if net.num_addresses > 1 else net.network_address.compressed
-        return ipaddress.ip_address(text).compressed
+        addr = ipaddress.ip_address(text)
+        if addr.version == 6 and addr.ipv4_mapped is not None:   # ::ffff:203.0.113.9 is 203.0.113.9
+            addr = addr.ipv4_mapped
+        return addr.compressed
     except ValueError:
         return None
 

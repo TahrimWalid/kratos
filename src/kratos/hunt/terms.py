@@ -58,7 +58,9 @@ URL_FIELDS = ("url.original",)
 TEXT_FIELDS = ("message", "event.original", "process.command_line")
 MAX_TEXT_ADDRESSES = 8
 _V4_IN_TEXT = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]*\d)")
-_V6_IN_TEXT = re.compile(r"(?<![0-9A-Fa-f:])(?=[0-9A-Fa-f:]*::?[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![0-9A-Fa-f:])")
+# not followed by "." or a hex digit: in "::ffff:203.0.113.9" only the IPv4 part counts (the
+# IPv4 pattern takes it), never the fragment "::ffff:203"
+_V6_IN_TEXT = re.compile(r"(?<![0-9A-Fa-f:])(?=[0-9A-Fa-f:]*::?[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![0-9A-Fa-f:.])")
 FIELDS_BY_KIND = {"ip": IP_FIELDS, "account": ACCOUNT_FIELDS, "sha256": HASH_FIELDS,
                   "program": PROGRAM_FIELDS + ("process.executable",), "path": PATH_FIELDS, "domain": URL_FIELDS}
 
@@ -94,7 +96,13 @@ def _step_2(conn: sqlite3.Connection) -> None:
                  "WHERE name = 'backfill'", (upto, time.time(), time.time() if upto == 0 else None))
 
 
-STEPS = (_step_1, _step_2)
+def _step_3(conn: sqlite3.Connection) -> None:
+    """IPv4-mapped addresses are indexed as the IPv4 address they carry (Phase C audit):
+    index the stored events again (INSERT OR IGNORE keeps what is there)."""
+    _step_2(conn)
+
+
+STEPS = (_step_1, _step_2, _step_3)
 
 
 def migrate(conn: sqlite3.Connection, db_path: Path) -> None:
@@ -102,11 +110,21 @@ def migrate(conn: sqlite3.Connection, db_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- extraction
-def ip_key(value: str) -> str | None:
-    """`4`/`6` + the address's hex digits, or None for something that isn't an address."""
+def address(value: Any) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """`value` as an address, an IPv4-mapped IPv6 one as the IPv4 address it carries; None if not one."""
     try:
         addr = ipaddress.ip_address(str(value).strip())
     except ValueError:
+        return None
+    return addr.ipv4_mapped if addr.version == 6 and addr.ipv4_mapped is not None else addr
+
+
+def ip_key(value: str) -> str | None:
+    """`4`/`6` + the address's hex digits, or None for something that isn't an address.
+    An IPv4-mapped IPv6 address (`::ffff:203.0.113.9`, written by servers on dual-stack
+    sockets) is the IPv4 address it carries."""
+    addr = address(value)
+    if addr is None:
         return None
     return f"{addr.version}{int(addr):0{8 if addr.version == 4 else 32}x}"
 

@@ -11,7 +11,6 @@ hash: such a match is reported as a prefix match).
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import posixpath
 import re
@@ -48,9 +47,10 @@ def persistence_index(inv: dict[str, Any]) -> dict[str, Any]:
 
 
 def _public(addr: Any) -> str | None:
-    try:
-        a = ipaddress.ip_address(str(addr))
-    except ValueError:
+    from kratos.hunt.terms import address
+
+    a = address(addr)             # a tcp6 socket's ::ffff:198.51.100.7 peer is saved as 198.51.100.7
+    if a is None:
         return None
     if a.is_unspecified or a.is_loopback:
         return None
@@ -92,10 +92,10 @@ def _files(data_dir: Path, kind: str, limit: int) -> tuple[list[Path], int]:
 
 
 def _ip_in(ind: Indicator, value: Any) -> bool:
-    try:
-        return ipaddress.ip_address(str(value)) in ind.network
-    except (ValueError, TypeError):
-        return False
+    from kratos.hunt.terms import address
+
+    addr = address(value)
+    return addr is not None and addr in ind.network
 
 
 def _path_hit(ind: Indicator, path: str) -> bool:
@@ -108,9 +108,16 @@ def _word_in(value: str, text: str) -> bool:
 
 
 def _entities(doc: dict[str, Any]) -> Iterator[tuple[str, str, str]]:
-    """(rule, entity, first evidence line) of a snapshot's findings."""
+    """(rule, entity, first evidence line) of a snapshot's findings. Run notes are left
+    out: they are Kratos's own words about what a read could not see ("read as this
+    user..."), so a word in them is never a sighting (Phase C audit: `hunt user`)."""
+    from kratos.lifecycle.rules import rule_info
+
     for s in doc.get("signals") or []:
         if not isinstance(s, dict):
+            continue
+        info = rule_info(str(s.get("rule") or ""))
+        if info is not None and info.kind == "run_note":
             continue
         ev = " ".join(str(x) for x in (s.get("evidence") or [])[:6])
         for e in s.get("entities") or []:

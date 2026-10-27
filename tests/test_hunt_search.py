@@ -108,7 +108,7 @@ def test_huge_results_are_counts_with_a_hint(tmp_path, events):
     res = r.indicators[0]
     assert res.too_many and res.total_events == 25 and len(res.hits) == 10
     text = report.render(r)
-    assert "too many to list" in text and "Newest matching events (10 of 25)" in text
+    assert "too many to list" in text and "newest first (10 of 25)" in text
 
 
 def test_machine_text_in_hits_is_cleaned(tmp_path, events):
@@ -306,3 +306,67 @@ def test_a_big_result_is_counted_from_the_index_not_split_by_log(tmp_path, event
     assert "counted from the search index" in res.summaries[0].note and len(res.hits) == 12
     assert _hunt(tmp_path, "root", "account", start=NOW - 4.5 * 3600).indicators[0].summaries[0].source \
         in ("kratos.auth", "kratos.cron")                  # 5 matches: split by log again
+
+
+# ---------------------------------------------------------------------------- Phase C audit
+def test_the_text_search_reads_the_log_line_not_kratos_own_record_fields(tmp_path, events):
+    """Every stored record carries the machine's address (host.name), field names (`user`)
+    and values like event.type `info`: a text hunt must match only what the machine wrote."""
+    me = "198.51.100.20"
+    events.add([event(NOW - 60 - i, target=me, n=i, message="session opened for root", type=("info",))
+                for i in range(30)]
+               + [event(NOW - 10, target=me, n=99, message=f"Connection closed by {me} port 22")])
+    own = _hunt(tmp_path, me).indicators[0]
+    assert own.total_events == 1 and not own.too_many         # the one line that names it, not all 31
+    assert _hunt(tmp_path, "info", "account").indicators[0].total_events == 0
+    assert _hunt(tmp_path, "user", "account").indicators[0].total_events == 0
+
+
+def test_text_matches_are_all_counted_and_listed_after_records_that_name_it(tmp_path, events):
+    """More text matches than hunt.max_hits are all counted (not just the listed ones), and
+    a record naming the account in a typed field is listed before ordinary log wording."""
+    settings_store.set(S.MAX_HITS, 10, data_dir=tmp_path, actor="test")
+    events.add([event(NOW - 100 - i, n=i, message="session opened for user root") for i in range(25)]
+               + [event(NOW - 500, n=50, user_name="user", message="Invalid user user from 203.0.113.9")])
+    r = _hunt(tmp_path, "user", "account")
+    res = r.indicators[0]
+    assert res.total_events == 26
+    text = sum(s.count for s in res.summaries if s.source.endswith("(log text)"))
+    assert text == 25 and res.hits[0].via == "field"          # the sign-in attempt first, though older
+    assert "ordinary wording" in report.render(r)
+
+
+def test_only_word_matches_say_so_instead_of_a_plain_found(tmp_path, events):
+    events.add([event(NOW - 60, n=1, message="session opened for user root")])
+    text = report.render(_hunt(tmp_path, "user", "account"))
+    assert "FOUND on web01, only as a word in the log text" in text
+
+
+def test_an_ipv4_mapped_address_is_the_ipv4_address(tmp_path, events):
+    """Servers on dual-stack sockets write ::ffff:203.0.113.9; a hunt for 203.0.113.9 (or its
+    /24) finds it as a typed field, and a mapped indicator is hunted as the IPv4 address."""
+    events.add([event(NOW - 60, n=1, dataset="kratos.detect", source_ip="::ffff:203.0.113.9",
+                      rule_id="KRATOS-SSH-BRUTEFORCE", rule_name="SSH brute force", rule_author=("Kratos",))])
+    for typed in ("203.0.113.9", "203.0.113.0/24", "::ffff:203.0.113.9"):
+        res = _hunt(tmp_path, typed).indicators[0]
+        assert res.total_events == 1 and res.hits[0].via == "field", typed
+
+
+def test_the_text_index_takes_no_fragment_of_a_mapped_address():
+    from kratos.hunt import terms as T
+
+    keys = {T.ip_from_key(v) for c, v in T.terms_of_doc({"message": "::ffff:203.0.113.9 - - GET /"}) if c == "i"}
+    assert keys == {"203.0.113.9"}
+
+
+def test_kratos_own_coverage_notes_are_not_sightings(tmp_path):
+    """A run note (PERSIST-009, LIVE-007) is Kratos's own words about what a read couldn't
+    see -- 'read as this user' -- never a place an account was seen."""
+    from kratos.hunt import snapshots as SN
+
+    doc = {"signals": [{"rule": "PERSIST-009", "entities": [],
+                        "evidence": ["root-only places were not read: read as this user over SSH"]},
+                       {"rule": "PERSIST-001", "entities": ["/etc/cron.d/x"],
+                        "evidence": ["added by mallory"]}]}
+    assert SN._match_doc("persistence", doc, classify("user", "account")) == []
+    assert SN._match_doc("persistence", doc, classify("mallory", "account"))
