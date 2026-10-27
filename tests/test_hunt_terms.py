@@ -1,5 +1,4 @@
 """C.3: the hunt's term index over stored events (kratos.hunt.terms)."""
-import json
 import time
 
 import pytest
