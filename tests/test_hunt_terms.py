@@ -165,3 +165,25 @@ def test_terms_of_doc_ignores_junk():
     assert T.terms_of_doc({"source": {"ip": "not-an-ip"}, "file": {"hash": {"sha256": "short"}}}) == set()
     assert T.terms_of_doc({"url": {"original": "no host here"}}) == set()
     assert T.terms_of_doc({"file": {"path": "relative/x"}}) == set()
+
+
+def test_an_address_written_only_in_the_log_text_is_indexed(tmp_path, store):
+    store.add([event(NOW - 40 * 86400, message="Connection closed by invalid user x 198.51.100.7 port 22 [preauth]"),
+               event(NOW - 60, n=1, message="mac 00:1a:2b:3c:4d:5e at 10:03:51 and 1.2.3.4.5")])
+    got = {T.ip_from_key(v) for k, v in _terms(tmp_path) if k == "ip"}
+    assert got == {"198.51.100.7"}
+    from kratos.hunt.indicators import classify
+    from kratos.hunt.search import run_hunt
+
+    res = run_hunt(tmp_path, [classify("198.51.100.7")], machines=["web01"], record=False).indicators[0]
+    # 40 days old: far outside the text scan, found through the index -- and labelled as text
+    assert res.total_events == 1 and res.hits[0].via == "text"
+
+
+def test_a_new_kind_of_term_reindexes_what_is_stored(tmp_path):
+    """Step 2 resets the backfill, so events stored by an older Kratos get their text addresses."""
+    store = _old_store(tmp_path, 3)
+    conn = connect_store(tmp_path / "kratos.db")
+    T.migrate(conn, tmp_path / "kratos.db")
+    assert T.state(conn)["upto"] == 3 and not T.state(conn)["done"]
+    conn.close()

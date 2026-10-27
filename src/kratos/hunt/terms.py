@@ -53,6 +53,12 @@ HASH_FIELDS = ("file.hash.sha256",)
 PROGRAM_FIELDS = ("process.name",)
 PATH_FIELDS = ("process.executable", "file.path", "kratos.audit.paths", "kratos.audit.created_paths")
 URL_FIELDS = ("url.original",)
+# Free text an address may be written in without a parser putting it in a typed field
+# ("Connection closed by invalid user x 203.0.113.9 port 22"): validated, at most a few an event.
+TEXT_FIELDS = ("message", "event.original", "process.command_line")
+MAX_TEXT_ADDRESSES = 8
+_V4_IN_TEXT = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.]*\d)")
+_V6_IN_TEXT = re.compile(r"(?<![0-9A-Fa-f:])(?=[0-9A-Fa-f:]*::?[0-9A-Fa-f])[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![0-9A-Fa-f:])")
 FIELDS_BY_KIND = {"ip": IP_FIELDS, "account": ACCOUNT_FIELDS, "sha256": HASH_FIELDS,
                   "program": PROGRAM_FIELDS + ("process.executable",), "path": PATH_FIELDS, "domain": URL_FIELDS}
 
@@ -79,7 +85,16 @@ def _step_1(conn: sqlite3.Connection) -> None:
                  "VALUES ('backfill', 0, ?, ?, ?)", (upto, time.time(), time.time() if upto == 0 else None))
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    """Addresses written only in the log text are indexed too: index the stored events again
+    (INSERT OR IGNORE keeps what is there and adds what is new)."""
+    exists = conn.execute("SELECT 1 FROM sqlite_schema WHERE type='table' AND name='host_events'").fetchone()
+    upto = int(conn.execute("SELECT COALESCE(MAX(id), 0) FROM host_events").fetchone()[0]) if exists else 0
+    conn.execute("UPDATE host_event_terms_state SET through = 0, upto = ?, started_at = ?, done_at = ? "
+                 "WHERE name = 'backfill'", (upto, time.time(), time.time() if upto == 0 else None))
+
+
+STEPS = (_step_1, _step_2)
 
 
 def migrate(conn: sqlite3.Connection, db_path: Path) -> None:
@@ -168,6 +183,16 @@ def terms_of_doc(doc: dict[str, Any]) -> set[tuple[str, str]]:
         for v in _values(doc, f):
             v = v.strip()
             add("path", (v.rstrip("/") or "/") if v.startswith("/") else None)
+    found = 0
+    for f in TEXT_FIELDS:
+        for text in _values(doc, f):
+            for m in list(_V4_IN_TEXT.finditer(text)) + list(_V6_IN_TEXT.finditer(text)):
+                if found >= MAX_TEXT_ADDRESSES:
+                    break
+                key = ip_key(m.group(0))
+                if key is not None:
+                    found += 1
+                    add("ip", key)
     for v in _values(doc, "url.original"):
         host = domain_of_url(v)
         if host is None:

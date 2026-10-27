@@ -237,7 +237,30 @@ def _typed(conn: sqlite3.Connection, machine: str, ind: Indicator, start: float 
     hits = [_hit(machine, r, ts, ds, doc, "field") for r, ts, ds, doc in conn.execute(
         f"SELECT DISTINCT e.id, e.ts, e.dataset, e.doc {base} ORDER BY t.ts DESC, e.id DESC LIMIT ?",
         (*args, max_hits))]
+    if ind.kind == "ip":
+        # an address the index took from the log text, not from a typed field: say so
+        for h in hits:
+            if not any(_in_network(ind, h.fields.get(f)) for f in ("source.ip", "destination.ip")) \
+                    and not _related_has(conn, h.row, ind):
+                h.via = "text"
     return summaries, hits, sum(s.count for s in summaries.values())
+
+
+def _in_network(ind: Indicator, value: Any) -> bool:
+    import ipaddress
+
+    try:
+        return value is not None and ipaddress.ip_address(str(value)) in ind.network
+    except ValueError:
+        return False
+
+
+def _related_has(conn: sqlite3.Connection, row: int, ind: Indicator) -> bool:
+    r = conn.execute("SELECT json_extract(doc, '$.related.ip') FROM host_events WHERE id = ?", (row,)).fetchone()
+    try:
+        return any(_in_network(ind, v) for v in json.loads(r[0] or "[]")) if r else False
+    except (TypeError, ValueError):
+        return False
 
 
 def _unindexed(conn: sqlite3.Connection, machine: str, ind: Indicator, start: float | None, end: float | None,
