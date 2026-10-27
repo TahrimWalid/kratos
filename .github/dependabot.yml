@@ -9,6 +9,12 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Allowing mcp 2 failed CI's package and test jobs (PR #3, 2026-10-27): find out
+      # what breaks and port Kratos's MCP server first, then lift this. Updates within
+      # 1.x (security fixes included) still come.
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

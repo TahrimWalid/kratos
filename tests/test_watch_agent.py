@@ -127,10 +127,23 @@ def test_restart_mid_counting_window_keeps_the_count(tmp_path):
         append(data, *[journal_entry(i, now + i, failed_ssh("bob", "192.0.2.7"), comm="sshd") for i in (3, 4)])
         rec = wait_for(lambda: next(iter(_spooled(m2)), None))
         assert rec["rule_id"] == "SIGMA-AB12CD34" and rec["count"] == 4 and rec["group"] == "192.0.2.7"
-        argv = [json.loads(l) for l in Path(str(data) + ".argv").read_text().splitlines()]
-        assert any(a.startswith("--after-cursor=") for a in argv[-1])   # resumed from its checkpoint
+        assert any(a.startswith("--after-cursor=") for a in _last_follow(data))   # resumed from its checkpoint
     finally:
         m2.stop()
+
+
+def _follows(data) -> list:
+    path = Path(str(data) + ".argv")
+    calls = [json.loads(l) for l in path.read_text().splitlines()] if path.exists() else []
+    return [c for c in calls if "--follow" in c]
+
+
+def _last_follow(data) -> list:
+    """The last `journalctl --follow` the watcher started. The recorded calls also hold
+    its short 'oldest entry the journal holds' probe, and the watcher records a catch-up
+    gap before it starts following -- in slower CI containers the test woke in between --
+    so wait for the follow call instead of taking whatever ran last."""
+    return wait_for(lambda: (_follows(data) or [None])[-1])
 
 
 def test_catch_up_stops_at_the_limit_and_records_the_gap(tmp_path):
@@ -145,7 +158,7 @@ def test_catch_up_stops_at_the_limit_and_records_the_gap(tmp_path):
         gap = wait_for(lambda: next(iter(m.gaps["journal"]), None))
         assert "catch-up limit" in gap["reason"] and gap["from"] == pytest.approx(old, abs=1)
         assert gap["to"] == pytest.approx(time.time() - 3600, abs=30)
-        argv = json.loads(Path(str(data) + ".argv").read_text().splitlines()[-1])
+        argv = _last_follow(data)
         assert "--since" in argv and not any(a.startswith("--after-cursor") for a in argv)
     finally:
         m.stop()
