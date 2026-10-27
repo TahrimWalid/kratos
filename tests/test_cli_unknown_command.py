@@ -14,6 +14,7 @@ from kratos.cli import app as cli_app
 def opened(monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr("kratos.tui_mk2.app.main", lambda argv: calls.append(list(argv)) or 0)
+    monkeypatch.setattr(cli_app, "_has_terminal", lambda: True)    # a person at a terminal
     return calls
 
 
@@ -47,3 +48,15 @@ def test_version_prints_kratos_and_the_agent_it_installs(capsys):
     for flag in ("--version", "-V"):
         assert app.main([flag]) == 0
         assert capsys.readouterr().out.strip() == f"kratos {__version__} (sub-agent {AGENT_VERSION})"
+
+
+def test_without_a_terminal_kratos_says_what_to_run_instead_of_opening_the_app(monkeypatch, capsys):
+    """`kratos` from a script, cron or a service has no terminal: the full-screen app's
+    input thread used to spin a CPU core on end-of-file until killed (one ran two weeks).
+    Now it refuses with what to run instead, and the app is never started."""
+    calls = []
+    monkeypatch.setattr("kratos.tui_mk2.app.main", lambda argv: calls.append(argv) or 0)
+    monkeypatch.setattr(cli_app, "_has_terminal", lambda: False)
+    assert cli_app.main([]) == 2
+    assert calls == [] and "needs a terminal" in capsys.readouterr().err
+

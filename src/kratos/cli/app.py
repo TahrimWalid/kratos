@@ -1995,6 +1995,14 @@ def cmd_investigate(args: argparse.Namespace) -> int:
     return 1
 
 
+def _has_terminal() -> bool:
+    """Is a person at a terminal? The full-screen app needs both ends."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError, OSError):      # closed or replaced streams
+        return False
+
+
 def version_text() -> str:
     """`kratos --version`: what a bug report or a security advisory needs -- Kratos's
     version and the sub-agent version it installs."""
@@ -2646,6 +2654,15 @@ def main(argv: list[str] | None = None) -> int:
         # unaffected and still dispatches below. The TUI loads kept tools itself,
         # so there is no load_kept_tools() here. --resume/--continue are handled
         # by the TUI's own session picker rather than by these flags.
+        if not _has_terminal():
+            # Without a terminal the full-screen app can't be used: its input thread
+            # read an endless end-of-file and spun a CPU core until killed (a stray
+            # one from a script ran for two weeks). Say what to run instead.
+            print("[KRATOS] `kratos` on its own opens the full-screen app, which needs a terminal -- "
+                  "none is attached here (a script, cron or a service?). Run a command instead, e.g. "
+                  "`kratos collect`, `kratos investigate \"...\"`, `kratos doctor` or `kratos hunt`; "
+                  "`kratos --help` lists them.", file=sys.stderr)
+            return 2
         from kratos.tui_mk2.app import main as tui_main
         tui_argv = ["--data-dir", str(global_args.data_dir)]
         if getattr(global_args, "no_color", False):
