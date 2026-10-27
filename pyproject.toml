@@ -40,7 +40,7 @@ dependencies = [
     # FastMCP (kratos mcp-serve failed to import on a fresh install), and Textual
     # changes its API between majors. Raise each after testing on the new major.
     "textual>=8.2,<9",
-    "mcp>=1.10,<2",
+    "mcp>=1.10,<3",
     # `kratos serve` (the chat-client server) uses these directly; mcp already needs them.
     "starlette>=0.27",
     "uvicorn>=0.31",
