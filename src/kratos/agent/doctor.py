@@ -16,6 +16,7 @@ try/except: one failing check reports itself and never aborts the rest.
 """
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import time
@@ -242,6 +243,49 @@ def _check_build(out: list[Check]) -> None:
                         fix="quit and run `kratos` again to use the code on disk."))
 
 
+# When each Python release stops getting security fixes from python.org (the
+# release-schedule PEPs give the month: end of that month). A release not listed
+# has no known end yet.
+PYTHON_SECURITY_END = {
+    (3, 8): (2024, 10, 31), (3, 9): (2025, 10, 31), (3, 10): (2026, 10, 31), (3, 11): (2027, 10, 31),
+    (3, 12): (2028, 10, 31), (3, 13): (2029, 10, 31), (3, 14): (2030, 10, 31),
+}
+PYTHON_WARN_DAYS = 90
+
+
+def python_support(version: tuple[int, int], today: date, *, from_distribution: bool) -> Check:
+    """The doctor row for the Python running Kratos. A distribution's own Python
+    keeps getting security fixes from the distribution after python.org stops, so
+    that is said instead of a warning."""
+    name = f"Python {version[0]}.{version[1]}"
+    end = PYTHON_SECURITY_END.get(tuple(version[:2]))
+    if end is None:
+        return _row("Python", "info", f"{name} (no end of support announced)")
+    end_day = date(*end)
+    left = (end_day - today).days
+    if from_distribution:
+        if left < 0:
+            return _row("Python", "info", f"{name}: python.org stopped its security fixes on {end_day.isoformat()}; "
+                                          "this is your distribution's Python, which keeps getting fixes from the "
+                                          "distribution while that release is supported")
+        return _row("Python", "pass", f"{name} (your distribution's; python.org fixes until {end_day.isoformat()})")
+    if left < 0:
+        return _row("Python", "warn", f"{name} stopped getting security fixes on {end_day.isoformat()}",
+                    fix="install Kratos under a newer Python (3.11 or later) -- see SECURITY.md.")
+    if left <= PYTHON_WARN_DAYS:
+        return _row("Python", "warn", f"{name} stops getting security fixes on {end_day.isoformat()} "
+                                      f"({left} days)", fix="plan a move to Python 3.11 or later.")
+    return _row("Python", "pass", f"{name} (security fixes until {end_day.isoformat()})")
+
+
+def _check_python(out: list[Check]) -> None:
+    import sys
+
+    base = getattr(sys, "base_prefix", sys.prefix)
+    out.append(python_support(sys.version_info[:2], date.today(),
+                              from_distribution=base == "/usr"))   # a venv over the system Python included
+
+
 def _check_notifications(out: list[Check]) -> None:
     from kratos.agent.notify import notify_config_status
 
@@ -260,6 +304,7 @@ def _check_notifications(out: list[Check]) -> None:
 
 _SECTIONS = (
     ("Kratos build", _check_build),
+    ("Python", _check_python),
     ("notifications", _check_notifications),
     ("LLM endpoint", _check_llm_endpoint),
     (".env profile", _check_env_profile),

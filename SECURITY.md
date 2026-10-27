@@ -53,3 +53,8 @@ that job. Currently accepted:
 
 The sub-agent that runs on monitored machines uses only the Python standard library, so
 its exposure is the machine's own Python, which Kratos's package check already covers.
+
+The Python that runs Kratos needs security fixes too. `kratos doctor` (and `/doctor`)
+warns 90 days before python.org stops them for your version and after it has; Python 3.10
+reaches that point at the end of October 2026. A Python that came with your Linux
+distribution keeps getting fixes from the distribution, so for it the doctor only says so.
