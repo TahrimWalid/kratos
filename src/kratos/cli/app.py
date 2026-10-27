@@ -420,6 +420,22 @@ def cmd_vulndb_update(args: argparse.Namespace) -> int:
     if args.about:
         print(_vupdate.NOTICES)
         return 0
+    if getattr(args, "timer", None):
+        from kratos.pkgvuln import timer as _vtimer
+
+        if args.timer == "off":
+            print("[KRATOS] To stop the scheduled vulnerability-data update, run:")
+            cmds = _vtimer.uninstall_commands()
+        else:
+            service, timer = _vtimer.write_units(args.timer, data_dir)
+            print(f"[KRATOS] Wrote {service} and {timer}: a {args.timer} update at "
+                  f"{_vtimer.oncalendar(args.timer, data_dir).split()[-1][:5]} (+ up to an hour), which also "
+                  "matches each machine's stored package list against the new data so your triggers hear about "
+                  "newly exploited vulnerabilities. Kratos doesn't install it itself; run:")
+            cmds = _vtimer.install_commands(service, timer)
+        for c in cmds:
+            print(f"  {c}")
+        return 0
     if args.status:
         st = _vindex.status(data_dir)
         if not st.present:
@@ -445,9 +461,31 @@ def cmd_vulndb_update(args: argparse.Namespace) -> int:
         from kratos.collect import state as _cstate
 
         _cstate.expire(data_dir, "packages")
-        print(f"[KRATOS] Took {result.seconds:.0f} s. Machines are matched against it at their next package "
-              "check. Data sources and their terms: `kratos vulndb-update --about`.")
+        print(f"[KRATOS] Took {result.seconds:.0f} s. Data sources and their terms: `kratos vulndb-update --about`.")
+        _rematch_stored_packages(data_dir)
     return 0 if result.ok else 1
+
+
+def _rematch_stored_packages(data_dir: Path) -> None:
+    """After new vulnerability data: match each machine's stored package list again
+    (nothing is read from the machines) and report what's new; triggers fire on it."""
+    from kratos.pkgvuln import rematch as _rematch
+
+    try:
+        results = _rematch.rematch_all(data_dir)
+    except Exception as exc:          # the update itself succeeded; say so and why matching didn't
+        print(f"[KRATOS] The stored package lists could not be matched again: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return
+    if not results:
+        print("[KRATOS] No machine has a stored package list yet; each is matched at its first package check.")
+        return
+    print("[KRATOS] Matched each machine's stored package list against the new data (nothing was read from the "
+          "machines; a fresh package check still runs at each machine's next collection):")
+    from kratos.untrusted import safe_print
+
+    for line in _rematch.report_lines(results):     # package names come from the machines
+        safe_print(f"         {line}")
 
 
 def cmd_subagent_install(args: argparse.Namespace) -> int:
@@ -2255,6 +2293,9 @@ def build_parser() -> argparse.ArgumentParser:
     vulndb_p.add_argument("--full", action="store_true", help="Download everything again instead of only what changed")
     vulndb_p.add_argument("--status", action="store_true", help="Show what the current data holds and how old it is")
     vulndb_p.add_argument("--about", action="store_true", help="Show the data sources and their licences/notices")
+    vulndb_p.add_argument("--timer", choices=("daily", "weekly", "off"), default=None,
+                          help="Write a systemd user timer that runs this update daily or weekly (and print the "
+                               "commands to install it), or print the commands to remove it ('off')")
     vulndb_p.set_defaults(func=cmd_vulndb_update)
 
     # ====== Sub-agent telemetry (capability 1 only -- docs/subagent_architecture.md) ======

@@ -96,7 +96,7 @@ class Trigger:
         if self.min_severity:
             parts.append(f"severity ≥ {self.min_severity}")
         text = " and ".join(parts) if parts else "(no condition — never fires)"
-        return text + (" (only when new, reopened or recurred)" if parts and self.only_new_or_reopened else "")
+        return text + (" (only when new, reopened, recurred or more severe)" if parts and self.only_new_or_reopened else "")
 
 
 # --------------------------------------------------------------------------- #

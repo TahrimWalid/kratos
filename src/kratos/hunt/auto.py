@@ -14,8 +14,8 @@ machine has one current hunt snapshot (`hunt/results/hunt_<id>.json`, replaced i
 place, earlier hits kept); it goes through the same findings path as the detection
 snapshots (findings engine -> lifecycle -> triggers -> notify).
 
-New CISA KEV entries are not a hunt: they re-run the package matching over the
-stored package lists (A.2, `kratos vulndb-update`), which already exists.
+New CISA KEV entries are not a hunt: `kratos vulndb-update` matches every machine's
+stored package list against them (kratos.pkgvuln.rematch).
 """
 from __future__ import annotations
 

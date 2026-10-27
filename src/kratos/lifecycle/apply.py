@@ -187,7 +187,17 @@ def _settle_absent(r: _Run, rec: sqlite3.Row, coverage: Coverage) -> None:
                {"rechecked": list(rule_info(rec["rule_id"]).covering_inputs) if rule_info(rec["rule_id"]) else []})
 
 
-_CHANGE_PRIORITY = ("new", "recurred", "reopened", "changed", "unchanged")
+# "worse": still open, but its severity rose this run (a newly exploited CVE makes a
+# package finding critical) -- news, unlike any other change to an open finding.
+_CHANGE_PRIORITY = ("new", "recurred", "reopened", "worse", "changed", "unchanged")
+
+
+def _rose(e: sqlite3.Row) -> bool:
+    try:
+        d = json.loads(e["details"] or "{}")
+    except (TypeError, ValueError):
+        return False
+    return S.SEVERITY_RANK.get(str(d.get("to")), 0) > S.SEVERITY_RANK.get(str(d.get("from")), 0)
 
 
 def _change_of(events: list[sqlite3.Row]) -> str:
@@ -197,6 +207,8 @@ def _change_of(events: list[sqlite3.Row]) -> str:
             found.add("new")
         elif e["kind"] in ("reopened", "expired"):
             found.add("recurred" if e["reason"] == "recurred" else "reopened")
+        elif e["kind"] == "severity_changed" and _rose(e):
+            found.add("worse")
         elif e["kind"] in ("severity_changed", "entities_changed"):
             found.add("changed")
     return next(c for c in _CHANGE_PRIORITY if c in found)

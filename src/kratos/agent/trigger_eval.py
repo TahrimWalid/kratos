@@ -37,8 +37,9 @@ from kratos.agent.scheduled_run import Notifier, _NTFY_BUCKET, _SEVERITY_RANK
 from kratos.utils.timeutil import utc_now_iso
 
 InvestigateFn = Callable[[str, Path], dict[str, Any]]
-# kratos.lifecycle `change` values that count as news (an expired acceptance reopens)
-_NEW_CHANGES = frozenset({"new", "reopened", "recurred"})
+# kratos.lifecycle `change` values that count as news (an expired acceptance reopens;
+# "worse" = still open but its severity rose)
+_NEW_CHANGES = frozenset({"new", "reopened", "recurred", "worse"})
 
 
 def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> list[dict[str, Any]]:

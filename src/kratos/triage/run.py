@@ -119,11 +119,11 @@ def _reuse_report(report: Any, findings: list[dict[str, Any]] | None) -> "_Reuse
 
 def _eligible(finding: dict[str, Any]) -> bool:
     """A finding auto-verification should re-check: serious (HIGH/CRITICAL), open, and
-    new/reopened/recurred this run (not one already verified on an earlier run)."""
+    new/reopened/recurred/worse this run (not one already verified on an earlier run)."""
     if not finding_facts.serious([finding]):
         return False
     change = str(finding.get("change") or "")
-    return change in ("", "new", "reopened", "recurred")
+    return change in ("", "new", "reopened", "recurred", "worse")
 
 
 def auto_verify(findings: list[dict[str, Any]] | None, *, data_dir: Path, target: str, run: Any = None,

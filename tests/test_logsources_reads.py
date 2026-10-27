@@ -224,7 +224,7 @@ def test_a_current_agent_serves_the_new_reads_over_the_real_channel(tmp_path):
 def test_agent_version_and_bundle_files():
     from kratos.subagent import agent, installer
 
-    assert agent.AGENT_VERSION == "0.9.1"       # Phase C audit: account-change lines in the auth match + classifier
+    assert agent.AGENT_VERSION == "0.9.2"       # package origins in the package read
     files = installer.read_bundle_files()
     names = ("catalog.py", "logread.py", "hostfiles.py", "persistence.py", "live_response.py", "packages.py",
              "detect.py")

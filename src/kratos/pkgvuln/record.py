@@ -24,6 +24,7 @@ from kratos import settings_store
 from kratos.pkgvuln import ecosystems as _eco
 from kratos.pkgvuln import index as _index
 from kratos.pkgvuln import inventory_store
+from kratos.pkgvuln import origin as _origin
 from kratos.pkgvuln import settings as _settings
 from kratos.pkgvuln.match import KernelStatus, MatchResult, PackageResult, kernel_status, match
 from kratos.pkgvuln.priority import RANK, Scored, score_cve, worst
@@ -64,6 +65,13 @@ def _family(inv: dict[str, Any], choice: _eco.Choice) -> str:
         if (inv.get("managers") or {}).get(mgr):
             return _FAMILY_OF_MANAGER[mgr]
     return ""
+
+
+def _list_words(target: str, when: float, list_read_at: float | None) -> str:
+    if list_read_at is None:
+        return f"From the package check of {target} at {epoch_to_utc_iso(when)}"
+    return (f"From the package list of {target} read at {epoch_to_utc_iso(list_read_at)} and matched again at "
+            f"{epoch_to_utc_iso(when)} after the vulnerability data was updated (nothing was read from the machine)")
 
 
 def _plural(n: int, one: str, many: str) -> str:
@@ -222,6 +230,57 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
     inv = result
     choice = _eco.for_os(inv.get("os") or {})
     family = _family(inv, choice)
+    # Packages from outside the distribution (a PPA, a vendor repository, a downloaded
+    # file): the distribution's advisories can't speak for them, so they are left out of
+    # matching and named as not checked -- never matched against the wrong fixed versions.
+    origins = _origin.classify(inv, choice.selector)
+    stored = inventory_store.save(data_dir, target, inv, family=family,
+                                  selector=choice.selector.key if choice.selector else None, now=when,
+                                  read=_read_facts(inv, origins))
+    return _judge(data_dir, target, inv, choice, family, origins, stored, when, list_read_at=None)
+
+
+def rematch(data_dir: Path, target: str, *, now: float | None = None) -> dict[str, Any] | None:
+    """Match the machine's newest STORED package list again -- nothing is read from the
+    machine (after `kratos vulndb-update`, so a newly published or newly exploited CVE
+    shows up without waiting for the next package check). None when no list is stored.
+    The result says when the list was read, and can't close a finding: only a fresh
+    read can say a package was upgraded."""
+    data_dir = Path(data_dir)
+    when = time.time() if now is None else now
+    row = inventory_store.latest(data_dir, target)
+    if row is None:
+        return None
+    read = row.read or {}
+    sysinfo = row.system or {}
+    inv: dict[str, Any] = {
+        "header": bool(read.get("header", True)), "complete": bool(read.get("complete", True)),
+        "dropped": int(read.get("dropped") or 0), "managers": read.get("managers") or {},
+        "os": sysinfo.get("os") or {}, "running_kernel": sysinfo.get("running_kernel") or "",
+        "kernel_trees": sysinfo.get("kernel_trees") or [], "reboot_required": bool(sysinfo.get("reboot_required")),
+        "reboot_required_pkgs": sysinfo.get("reboot_required_pkgs") or [], "packages": list(row.packages),
+        "via": row.via or "ssh"}
+    choice = _eco.for_os(inv["os"])
+    family = row.family or _family(inv, choice)
+    origins = _origin.OriginReport.from_dict(read.get("origins")) if read else _origin.OriginReport(
+        reason="this package list was stored by an earlier Kratos that didn't record where each package came "
+               "from, so packages from outside the distribution (if any) were matched like its own -- the "
+               "machine's next package check records it")
+    return _judge(data_dir, target, inv, choice, family, origins, row, when, list_read_at=row.last_seen_at)
+
+
+def _read_facts(inv: dict[str, Any], origins: _origin.OriginReport) -> dict[str, Any]:
+    """How the read went, stored with the list so it can be matched again the same way."""
+    return {"header": bool(inv.get("header")), "complete": bool(inv.get("complete")),
+            "dropped": int(inv.get("dropped") or 0), "managers": dict(inv.get("managers") or {}),
+            "origins": origins.to_dict()}
+
+
+def _judge(data_dir: Path, target: str, inv: dict[str, Any], choice: Any, family: str,
+           origins: _origin.OriginReport, stored: Any, when: float, *, list_read_at: float | None) -> dict[str, Any]:
+    """Match a package list and save the judged document. `list_read_at`: when the
+    list was read, for a stored list matched again (None: read just now)."""
+    rematched = list_read_at is not None
     packages = list(inv.get("packages") or [])
     gaps: list[str] = []
     if not inv.get("header") or not packages and not (inv.get("managers") or {}):
@@ -231,8 +290,10 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
                     "was cut short)")
     if inv.get("dropped"):
         gaps.append(f"{inv['dropped']} package record(s) were not readable and were skipped")
-    stored = inventory_store.save(data_dir, target, inv, family=family,
-                                  selector=choice.selector.key if choice.selector else None, now=when)
+    distro_name = _origin.DISTRO_NAMES.get(choice.selector.distro, choice.selector.distro) if choice.selector else ""
+    gaps += _origin.gap_lines(origins, distro_name)
+    outside = origins.names
+    to_match = [p for p in packages if p["name"] not in outside]
 
     st = _index.status(data_dir)
     max_age = settings_store.get(_settings.MAX_AGE_DAYS, data_dir=data_dir)
@@ -255,7 +316,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
             gaps.append(f"the vulnerability data could not be opened -- {UPDATE_HINT}")
         else:
             try:
-                m = match(conn, choice.selector, packages)
+                m = match(conn, choice.selector, to_match)
                 matched = True
                 all_cves = {c for pr in m.packages.values() for c in (*pr.fixable, *pr.unfixed)}
                 all_cves |= {c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())}
@@ -264,7 +325,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
                 conn.close()
             pretty = (inv.get("os") or {}).get("PRETTY_NAME") or choice.selector.key
             built = epoch_to_utc_iso(st.built_at) if st.built_at else "unknown"
-            source_line = (f"From the package check of {target} at {epoch_to_utc_iso(when)}: "
+            source_line = (f"{_list_words(target, when, list_read_at)}: "
                            f"{_plural(len(packages), 'installed package', 'installed packages')} on {pretty}, "
                            f"matched on the Kratos machine against {choice.selector.key} advisory data "
                            f"(downloaded {built})")
@@ -285,7 +346,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
                 gaps.append(f"{m.uncomparable} version comparison(s) could not be made (an unusual version string) "
                             "and were left out")
     if not matched and family:
-        ks_sig = _kernel_signal(ks, [], f"From the package check of {target} at {epoch_to_utc_iso(when)}")
+        ks_sig = _kernel_signal(ks, [], _list_words(target, when, list_read_at))
         if ks_sig:
             signals.append(ks_sig)
     if stale_days is not None:
@@ -302,6 +363,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
         "act_now": sum(1 for s in signals if s["rule"] in ("PKG-001", "PKG-002") and s.get("act_now")),
         "unfixed_packages": sum(len(s.get("packages") or []) for s in signals if s["rule"] == "PKG-002"),
         "fixable_cves": sum(len(s["entities"]) for s in signals if s["rule"] == "PKG-001"),
+        "unchecked_packages": len(origins.outside),
     }
     # The packages to act on now, by name, for the one-line summary the model starts
     # from. Safe to name there: each is a package the distribution's own advisory data
@@ -320,11 +382,16 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
         "kernel": {"managed": ks.managed, "running": ks.running, "newest": ks.newest, "pending": ks.pending},
         "counts": counts, "coverage_gaps": gaps, "signals": signals,
         "act_now_packages": list(dict.fromkeys(act_now)),
+        "outside_distribution": [{"name": o.name, "version": o.version, "origin": o.origin, "kind": o.kind}
+                                 for o in origins.outside[:500]],
+        "origins_checked": origins.checked,
+        "rematched": rematched,
+        "list_read_at": epoch_to_utc_iso(list_read_at if rematched else when),
     }
     out_dir = data_dir / PKG_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     key = _content_key(target, stored.hash, st.built_at, epss_high, choice.selector.key if choice.selector else None,
-                       gaps)
+                       gaps, rematched)
     path = out_dir / f"packages_{key}.json"
     _write(path, doc)
     return {**doc, "status": "ok", "file": str(path)}
@@ -348,6 +415,10 @@ def summary_line(doc: dict[str, Any]) -> str:
         parts.append(f"{vul} with fixable vulnerabilities" if vul else "none with a fixable known vulnerability")
     else:
         parts.append("not matched against vulnerability data")
+    outside = [str(o.get("name")) for o in doc.get("outside_distribution") or []]
+    if outside:
+        shown = ", ".join(outside[:3]) + (f" +{len(outside) - 3} more" if len(outside) > 3 else "")
+        parts.append(f"{len(outside)} from outside the distribution NOT checked ({shown})")
     if (doc.get("kernel") or {}).get("pending"):
         parts.append("reboot pending for a newer kernel")
     if doc.get("index_stale_days"):

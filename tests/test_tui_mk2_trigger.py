@@ -81,7 +81,7 @@ def test_trigger_new_only_new_or_reopened(tmp_path, monkeypatch):
     tg = T.load_trigger(tmp_path, "news-only")
     assert tg.only_new_or_reopened is True
     assert "only_new_or_reopened = true" in tg.path.read_text()
-    assert "only when new, reopened or recurred" in tg.condition_text
+    assert "only when new, reopened, recurred or more severe" in tg.condition_text
 
 
 def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch):

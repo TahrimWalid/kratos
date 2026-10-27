@@ -227,7 +227,7 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style=T.TEXT_DIM)
     status = lifecycle_status(finding)
     if status:
-        body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred")
+        body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred", "worse")
                     else T.TEXT_DIM)
 
     attack = attack_line(finding)
@@ -267,7 +267,8 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
 
 _LIFECYCLE_WORDS = {"verified": "confirmed real (verified)", "risk_accepted": "risk accepted",
                     "false_positive": "marked not a real problem", "out_of_scope": "marked out of scope"}
-_CHANGE_WORDS = {"reopened": "came back (reopened)", "recurred": "happened again (recurred)", "changed": "changed"}
+_CHANGE_WORDS = {"reopened": "came back (reopened)", "recurred": "happened again (recurred)",
+                 "worse": "more severe than before", "changed": "changed"}
 
 
 def lifecycle_status(finding: dict[str, Any]) -> str:

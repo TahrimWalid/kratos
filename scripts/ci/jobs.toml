@@ -102,7 +102,7 @@ apt = ["git", "tzdata", "procps", "iproute2", "python3", "mawk", "gawk", "busybo
 env = { TZ = "UTC", KRATOS_TEST_REQUIRE_AWKS = "mawk,gawk,busybox" }
 setup = ["pip install -e '.[test]'"]
 run = [
-    "python -m pytest -q -p no:cacheprovider -rs tests/test_logsources_logread.py tests/test_logsources_parsers.py tests/test_logsources_reads.py tests/test_persistence.py tests/test_live_response.py tests/test_pkgvuln.py tests/test_collect_sync_reads.py tests/test_read_host_logs.py tests/test_timewin_classic.py > awk.out 2>&1 || { cat awk.out; exit 1; }",
+    "python -m pytest -q -p no:cacheprovider -rs tests/test_logsources_logread.py tests/test_logsources_parsers.py tests/test_logsources_reads.py tests/test_persistence.py tests/test_live_response.py tests/test_pkgvuln.py tests/test_pkg_origin.py tests/test_collect_sync_reads.py tests/test_read_host_logs.py tests/test_timewin_classic.py > awk.out 2>&1 || { cat awk.out; exit 1; }",
     "cat awk.out",
     "! grep -Ei 'SKIPPED.*awk' awk.out",
 ]

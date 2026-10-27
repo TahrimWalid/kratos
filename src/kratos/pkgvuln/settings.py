@@ -8,6 +8,7 @@ from kratos.settings_store import SettingError, SettingSpec
 
 MAX_AGE_DAYS = "vulndb.max_age_days"
 EPSS_HIGH = "vulndb.epss_high"
+REMATCH_MAX_LIST_AGE_DAYS = "vulndb.rematch_max_list_age_days"
 
 
 def _days(value: Any) -> int:
@@ -37,3 +38,7 @@ settings_store.register(SettingSpec(
     EPSS_HIGH, 0.1, _probability,
     "A fixable vulnerability this likely to be exploited in the next 30 days (EPSS) and serious (CVSS 7+) is "
     "rated high."))
+settings_store.register(SettingSpec(
+    REMATCH_MAX_LIST_AGE_DAYS, 30, _days,
+    "After `kratos vulndb-update`, each machine's stored package list is matched again against the new data -- "
+    "unless the list is older than this many days (then only a fresh package check says anything useful)."))

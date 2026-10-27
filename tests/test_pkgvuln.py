@@ -49,7 +49,12 @@ DEB_OUT = "\n".join([
     "D\tlinux-image-5.15.0-94-generic\t5.15.0-94.104\tamd64\tlinux-signed\t5.15.0-94.104\tii ",
     "D\tlinux-modules-5.15.0-91-generic\t5.15.0-91.101\tamd64\tlinux\t5.15.0-91.101\tii ",
     "D\tbad;name\t1.0\tamd64\tbad\t1.0\tii ",
-    "MGR\tdpkg\tok", "END", ""])
+    "MGR\tdpkg\tok",
+    # where each package came from (every one from Ubuntu's own lists here)
+    *[f"PO\t{n}\tUbuntu\tUbuntu" for n in ("curl", "libcurl4", "libssl3", "openssh-server",
+                                               "linux-image-5.15.0-91-generic", "linux-image-5.15.0-94-generic",
+                                               "linux-modules-5.15.0-91-generic")],
+    "POS\t12\t12", "END", ""])
 
 RPM_OUT = "\n".join([
     "PKGINV\t1", 'OS\tID="rocky"', 'OS\tVERSION_ID="9.0"', "KREL\t5.14.0-70.13.1.el9_0.x86_64", "RR\t0",
@@ -58,7 +63,9 @@ RPM_OUT = "\n".join([
     "R\tqemu-img\t17:6.2.0-11.el9_0.2\tx86_64\tqemu-kvm-6.2.0-11.el9_0.2.src.rpm",
     "R\tkernel-core\t(none):5.14.0-70.13.1.el9_0\tx86_64\tkernel-5.14.0-70.13.1.el9_0.src.rpm",
     "R\tgpg-pubkey\t(none):350d275d-6279f1ef\t(none)\t(none)",
-    "MGR\trpm\tok", "END", ""])
+    "MGR\trpm\tok",
+    *[f"RV\t{n}\tRocky Enterprise Software Foundation" for n in ("curl", "libcurl", "qemu-img", "kernel-core")],
+    "RV\tgpg-pubkey\t(none)", "END", ""])
 
 APK_OUT = "\n".join([
     "PKGINV\t1", "OS\tID=alpine", "OS\tVERSION_ID=3.22.0", "KREL\t6.8.0-1-lts", "RR\t0",
@@ -600,8 +607,11 @@ def test_priority_layers(info, hit, want):
 
 # ============================================================== record, rules, kernel
 def _deb_inv(packages=DEB12_PACKAGES, **extra):
+    # every package from Debian's own lists unless a test says otherwise (what a normal machine reports)
+    origins = {p["name"]: {"exact": ["Debian"], "any": ["Debian"]} for p in packages}
     return {"header": True, "complete": True, "os": {"ID": "debian", "VERSION_ID": "12", "PRETTY_NAME": "Debian 12"},
-            "running_kernel": "", "packages": list(packages), "managers": {"dpkg": "ok"}, "dropped": 0, **extra}
+            "running_kernel": "", "packages": list(packages), "managers": {"dpkg": "ok"}, "dropped": 0,
+            "origins": origins, "origin_lists": {"lists": 4, "known": 4}, **extra}
 
 
 def test_record_turns_matches_into_pkg_rules(deb_index):

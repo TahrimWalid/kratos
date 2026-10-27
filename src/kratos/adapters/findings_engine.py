@@ -2041,7 +2041,8 @@ register_snapshot_source(SnapshotSource(
 register_snapshot_source(SnapshotSource(
     category="packages", folder="packages", pattern="packages_*.json", rule_prefix="PKG-",
     load=lambda path: _load_recent_packages(path), build=lambda doc: _package_findings(doc),
-    closes_findings=lambda doc: bool(doc.get("complete"))))
+    # a stored list matched again after a data update can't show that a package was upgraded
+    closes_findings=lambda doc: bool(doc.get("complete")) and not doc.get("rematched")))
 
 
 # C.1: SIGMA-* findings from the detection pass (kratos.detect), and DETECT-001, its
@@ -2445,7 +2446,7 @@ def _lifecycle_markdown(findings: list[dict[str, Any]], summary: dict[str, Any])
         f = by_key.get(key)
         if f is None:
             return f"- `{_lc_keys.short(key)}`"
-        change = f" ({f['change']})" if f.get("change") in ("reopened", "recurred") else ""
+        change = f" ({f['change']})" if f.get("change") in ("reopened", "recurred", "worse") else ""
         return f"- [{str(f.get('severity', '')).upper()}] {f.get('id')} — {f.get('title')}{change} `{_lc_keys.short(key)}`"
 
     out = ["", f"**{_lc_apply.footer_line(summary)}**", ""]
