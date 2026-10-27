@@ -452,6 +452,10 @@ hit. This doesn't depend on the agent choosing to call
 enough to gate a real corroboration signal on, so the rule engine does it
 directly and unconditionally for the offline tier.
 
+When the cache learns new malicious addresses, Kratos also hunts them over every
+machine's stored records (local data only) and raises `HUNT-001` where one was seen
+before -- see [Retro-hunting](#retro-hunting-kratoshunt).
+
 `run_vuln_scan` makes the same cloud-dependency tradeoff for CVE data:
 nmap's `vulners.nse` script queries a live external API per scan, which
 would reopen the same tension; `run_vuln_scan` uses `vulscan` against a
@@ -1311,6 +1315,70 @@ the watcher and the live handler for the fix channel's names and the process cal
 
 **Old agents.** An agent older than 0.9.0 sends no `watch_api`; Kratos never pushes to it, and
 turning watching on for it is refused with "update the agent to watch continuously".
+
+## Retro-hunting (`kratos.hunt`)
+
+**What it is.** A deterministic search over what Kratos already holds -- `host_events` (including
+the `kratos.detect` detections), saved persistence and live-response reads, `pkg_inventory`, and
+`finding_records` -- for one indicator or a few: an address or CIDR network, a SHA-256, an account,
+a domain, a program, a path (`hunt/indicators.py`: strict parsers, `ipaddress` for addresses;
+MD5/SHA-1 refused because Kratos stores no such hashes; a word that fits two kinds is returned as
+ambiguous and the surface asks). No model call, no network, nothing sent to a machine; one
+`hunt_runs` row per hunt (personal data: what was typed; inventory category `hunts`, prunable).
+
+**The term index.** `host_event_terms (target, kind, value, ts, row)` is a `WITHOUT ROWID` table
+keyed on all five columns, so a hunt is one range scan per machine. `EventStore.add` fills it in
+the same transaction as the events it stores -- the only insert path -- from the typed ECS fields:
+`source.ip`, `destination.ip`, `related.ip`; `user.name`, `user.effective.name`,
+`user.target.name`, `related.user`; `file.hash.sha256`; `process.name` and the basename of
+`process.executable`; `process.executable`, `file.path`, `kratos.audit.paths`,
+`kratos.audit.created_paths`; and the host of `url.original` (an address there becomes an address
+term). Addresses are stored as `4`/`6` + the address's hex digits, so a CIDR is a `BETWEEN` and v4
+never meets v6; a path also finds what is inside it (a range, not `LIKE`, so the index serves it).
+Events stored before the index existed are filled by a resumable, idempotent backfill
+(`host_event_terms_state`: one batch per transaction; a hunt spends `hunt.index_seconds` on it
+first and searches the events not yet indexed by their `host_events` columns, saying so). A term
+row only counts when its event row still exists with the same machine and time, and a host-events
+prune deletes the terms by the same cutoff in the same transaction. Text that is in no typed field
+(a domain inside a `curl` line) is found by a substring scan: escaped `LIKE` then a whole-word
+check, newest hour first, over `hunt.scan_days`, stopped by a progress handler after
+`hunt.scan_seconds`; the report says how many of how many events it searched. FTS5 was not added
+(see the measurements below).
+
+**Coverage comes only from records** (`hunt/coverage.py`): `sync_coverage` complete spans per
+source (and the gaps and the holes between spans), C.2's `detect_watch` (watching since, the gaps
+the agent reported, and `detect.live.health`'s link-down / no-status notes), `data_prunes` cutoffs
+for host events, the event store's own first/last/count per dataset outside synced stretches
+("what investigations read -- partial"), and the saved reads' capture times. A machine with none
+of these is "not searched". The report's "not found" is always followed by this statement;
+watching is described as rule matches only (it stores no lines). After a prune, "first seen" is
+labelled the earliest Kratos still holds.
+
+**Snapshots.** Persistence and live-response reads now save a bounded `hunt_index` (identities
+only: non-package files with their SHA-256, SSH key owners, `exe`/`comm`/user of each process,
+remote addresses of connected sockets, temp-folder files and hashes). Older snapshots are still
+searched through their findings' entities, where a persistence item keeps 12 hex digits of its
+hash -- reported as a prefix match, and not counted again when the full hash matched.
+
+**Scope.** `hunt/front.py` is the one front door. A caller passes its scope: the chat server and
+MCP pass the token's machines (`models_for`), and a `--machine` outside it is refused, never
+widened. Chat `/hunt` takes a `serve.max_parallel` slot and counts in `serve.requests_per_hour`
+like `/retest`; MCP `kratos_hunt` reserves the hourly limit and a slot and writes a metered audit
+row. In the TUI the report is appended to the session's conversation (capped), which reaches the
+model framed as data like every replayed turn.
+
+**Auto-hunt and HUNT-001.** `adapters/threat_intel.update_threat_intel_cache` (`kratos
+threat-intel-sync`) calls `after_cache_update` once the new cache is in place; it runs
+`hunt/auto.hunt_new_intel`: every cached address no `auto` hunt row has searched, at most
+`hunt.auto_max_indicators` per run, typed search only. Each machine where one was seen gets one
+snapshot `hunt/results/hunt_<id>.json` (replaced atomically, earlier hits kept), registered as the
+`hunt` snapshot source; `HUNT-001` (occurrence, high, Posture in the ATT&CK table: the address's
+role decides any technique) is filed through `_apply_lifecycle` and new/reopened ones go to
+`evaluate_triggers` -- the path live detections take. A failed hunt never undoes the sync.
+
+**Measured** (`scripts/bench/events_bench.py --hunt`): see the C.3 Handoff for the 1M and 10M
+numbers; at 1M events a typed hunt over 30 days is BENCH_P95 ms at p95 and the index adds
+BENCH_MB MB per million events.
 
 ## Presets and pipelines
 

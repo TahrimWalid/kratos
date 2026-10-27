@@ -1168,6 +1168,83 @@ kratos detect watch on db-01        # turn it on (a person's choice; refused ins
 kratos detect watch off db-01
 ```
 
+## Hunting for an address, account or file
+
+`/hunt` answers "has this address — or this file hash, account, domain, program or path —
+appeared on my machines, and when?" from **everything Kratos already holds**: the log lines it
+synced and read, the detections, the saved process and persistence reads, the installed-package
+lists and the findings. It takes a second or two, uses no model, and sends nothing to any
+machine.
+
+```
+/hunt 203.0.113.9                       # an address
+/hunt 203.0.113.0/24                    # a whole network (IPv6 too)
+/hunt 9f86d081884c7d65…                 # a file's SHA-256 (64 hex digits)
+/hunt alice --type account              # an account
+/hunt evil.example.com                  # a domain, from URLs and from the log text
+/hunt /tmp/.x                           # a path -- a file, or a program run from there
+/hunt 203.0.113.9 --since 30d --machine web-01
+```
+
+A word that could be several things (`alice` — an account or a program?) makes Kratos ask.
+MD5 and SHA-1 hashes are refused: Kratos keeps SHA-256 hashes only, so it couldn't honestly
+say it hadn't seen one.
+
+**What you get.** For each machine where it was found: per log source, how many times, the
+first and last time, and how many a day; detections it appears in (with the rule's author);
+saved reads that saw it ("program `kworkerd` was running", "file /etc/cron.d/x had this hash");
+findings that name it. Then the newest matching log lines, cleaned for display. Something seen
+very often — `root`, the machine's own address — is shown as counts with a hint to narrow the
+hunt (a shorter `--since`, one `--machine`) rather than a wall of lines.
+
+**What was searched.** Every report ends with what Kratos holds for each machine, taken from its
+own records — never guessed from an empty result:
+
+- *auth log: every line held for 2026-09-28 to 2026-10-26* — the stretches log sync collected
+  completely; *GAP …* where lines were lost (a cleared journal) and *not synced from … to …*
+  between them;
+- *journal: watched live since …* and *not watched from … to …* — continuous detection (only
+  rule matches are stored from watching; the full lines come from log sync), and the link
+  being down;
+- *kratos.cron: 41 events Kratos read …* — lines read during investigations, outside a synced
+  stretch: partial by nature;
+- *PRUNED: events before … were removed on … by …* — what you deleted with `kratos data prune`;
+- *not searched: Kratos holds nothing from db-01 for this period* — a machine never synced or
+  watched.
+
+So **"not found" always means "not found in what Kratos holds for these stretches"** — a gap, an
+unsynced log or a pruned period is unknown, not clean. Addresses, accounts, hashes, programs and
+paths are looked up in an index over every stored line; anything else that appears only in the
+log text (a domain inside a `curl` command) is searched by scanning the newest 7 days
+(`hunt.scan_days`) for at most 3 seconds (`hunt.scan_seconds`), and the report says how many
+lines it got through ("searched 6,145 of 6,145 events", or where the time limit stopped it).
+
+**In a session** the hunt's report joins the conversation, so you can ask a follow-up ("what did
+that address do after it logged in?"). Kratos indexes lines stored before this feature existed
+for a few seconds before each hunt; `kratos hunt --build-index` finishes it in one go.
+
+**When the threat-intel cache learns a malicious address**, Kratos hunts for it by itself over
+every machine's stored records — `kratos threat-intel-sync` updates the offline OTX cache (it
+needs `OTX_API_KEY`) and then hunts each address no hunt has searched yet (at most 1,000 per
+update, `hunt.auto_max_indicators`); `kratos hunt --from-intel` runs only the hunt. An address
+that was seen before becomes a high finding **HUNT-001** *An address a threat-intel feed now lists
+as malicious was seen on this machine before*, with when, where, the pulse name and what the hunt
+could see — and it goes through your triggers like any new finding. Nothing here calls a model
+or reaches the network. (New CISA exploited-vulnerability entries aren't a hunt: `kratos
+vulndb-update` already re-checks the stored package lists against them.)
+
+**Every hunt is recorded** — who, when, what was hunted, which machines and period, the coverage
+and how many records matched: `kratos hunt --history`. What you typed (an account, an address)
+is personal data; `kratos data prune --category hunts --older-than 90d` removes old records.
+
+```
+kratos hunt 203.0.113.9 [--type …] [--machine …] [--since 30d] [--until …] [--json]
+kratos hunt --history
+kratos hunt --build-index
+kratos hunt --from-intel
+kratos threat-intel-sync [--no-hunt]
+```
+
 ## Sealing a machine's logs
 
 Sealing (systemd's *forward secure sealing*) makes the machine sign its own journal
@@ -1403,6 +1480,7 @@ but here's the map. Everything starts with `/`.
 | `/report` | this session's findings: new, still open, fixed, not rechecked, hidden |
 | `/findings` (or `/f`) | findings remembered across checks — verify, accept a risk, mark false positive or out of scope |
 | `/detect` | the detection rules (SigmaHQ, with their authors): which run, on/off for this machine, what couldn't be checked, run them now — see [Detection rules](#detection-rules) |
+| `/hunt <indicator>` | has this address, hash, account, domain, program or path been seen on your machines? Searches what Kratos holds and says what that covered — see [Hunting](#hunting-for-an-address-account-or-file) |
 | `/investigate-host` | investigate the Kratos machine itself, not the target |
 | `/use <tool>` | run one specific tool directly |
 | `/tools` | list every tool Kratos can use, built-in and self-written |
@@ -1825,6 +1903,7 @@ logs, the questions you asked. `kratos data -v` adds the exact files and tables.
 | Host events | yes | the log lines Kratos read from your machines |
 | Findings and decisions | yes | what was found, its history, your accept/ignore decisions, reports |
 | Collected snapshots | yes | port scans, logs, processes, packages, persistence, each machine's account list — what each check read |
+| Hunts | yes | each hunt: when, who, what was hunted (the address or account you typed), which machines and period, how many matched ([Hunting](#hunting-for-an-address-account-or-file)) |
 | Placeholder map (masking) | yes | which placeholder stood for which real name or address in each conversation ([What the model sees](#what-the-model-sees)) |
 | Chat-client server | yes | chat-app tokens (only a hash of each), which session holds each chat, one audit row per request ([Using Kratos from a chat app](#using-kratos-from-a-chat-app)) |
 | Sub-agent pairing and telemetry | yes | paired machines and their live status |
@@ -1847,7 +1926,8 @@ kratos data prune --category traces --older-than 90d
 That prints how many run records (and how many MB) are older than 90 days and
 deletes nothing. Add `--apply` to remove them. The same works for `sessions`
 (old questions and answers, with their transcript files and placeholder maps),
-`host_events` (old log lines) and `pseudonyms` (placeholder maps of old runs that
+`host_events` (old log lines, with their entries in the hunt's index), `hunts` (old hunt
+records) and `pseudonyms` (placeholder maps of old runs that
 had no conversation, and of conversations already removed). In the app, `/data prune traces 90` shows the same summary and asks
 before deleting. If other data depends on what you remove — for example Kratos
 says it holds a period of a log completely, and you're deleting those lines —
@@ -2045,7 +2125,8 @@ so they cost nothing.
 
 These work without using the model: `/findings` (open findings for the
 machine), `/usage` (today's spending), `/retest <key>` (re-collect and re-check a
-finding), `/help`. **Not available from a chat app** — use the Kratos app:
+finding), `/hunt <indicator>` (search what Kratos holds — only on the machines this
+token may see; it takes a slot and counts in the hourly limit like `/retest`), `/help`. **Not available from a chat app** — use the Kratos app:
 `/evolve`, `/whitelist`, `/run-fix`, accepting or dismissing findings, settings,
 target setup, presets, and anything that would ask for your approval. Tools that
 could stop to ask you are left out of investigations started from a chat app, so
@@ -2083,6 +2164,9 @@ A token made with `--mcp` can also use `http://127.0.0.1:8770/mcp`
   Investigations are still found after `kratos serve` restarts (one cut off by the
   restart says `interrupted`).
 - `kratos_get_findings`, `kratos_list_sessions`, `kratos_finding_states` — read only.
+- `kratos_hunt(indicators, kind, since, until, machine)` — read only: the same hunt as
+  `/hunt`, over this token's machines only, with its plain-words `report` (what was
+  searched included). It counts in the hourly limit.
 
 In Open WebUI: *Admin Settings → External Tools → +*, type **MCP (Streamable
 HTTP)**, the URL, auth **Bearer** with the token; then turn the Kratos tools on
