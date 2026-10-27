@@ -919,8 +919,19 @@ finding):
   apply after a reboot (medium; high if the running kernel has an exploited-now CVE).
   After the reboot the finding closes by itself.
 - `PKG-004` — what couldn't be checked: no vulnerability data downloaded yet, data older
-  than a week, a distribution Kratos has no data for. Those packages are **unknown, not
-  safe**.
+  than a week, a distribution Kratos has no data for, and **packages from outside the
+  distribution**. Those packages are **unknown, not safe**.
+
+**Packages from outside the distribution.** A PHP build from a PPA (such as Ondřej Surý's),
+a vendor repository (Docker, Microsoft, EPEL) or a `.deb`/`.rpm` you downloaded isn't covered
+by the distribution's security advisories, and its version numbers mean nothing against them.
+Kratos works out where each package came from (for apt, which repository lists the installed
+version; for rpm, the package's vendor) and lists these by name under `PKG-004`, grouped by
+repository, instead of matching them. Keep them updated through their own repository and
+watch that project's own security announcements. If a machine's apt package lists are empty
+(container images often ship without them; `apt update` fills them), Kratos says it couldn't
+tell these packages apart. A machine on an agent older than 0.9.2 says to update the agent
+(`g` in `/subagent`).
 
 A package's finding names its CVEs, so if you accept the risk for `curl` and a new CVE for
 `curl` appears later, the finding comes back (the same goes for the "no fix yet" list: a new
@@ -947,9 +958,19 @@ failed or interrupted update keeps the previous data untouched. Investigations n
 online for this data. If the data is more than a week old (`vulndb.max_age_days`), every
 package result says so.
 
-To keep it current without thinking about it, add a weekly timer, for example a user
-crontab line: `0 4 * * 1 kratos vulndb-update >/dev/null 2>&1` (Kratos doesn't schedule
-network downloads on its own).
+**After every update, Kratos matches each machine's stored package list against the new
+data** (nothing is read from or sent to the machines; lists read in the last 30 days,
+`vulndb.rematch_max_list_age_days`) and prints what changed per machine. A vulnerability
+that is new on a machine — or an open one that got more severe, such as a CVE that just
+went onto CISA's exploited-now list — goes through your triggers like any new finding, so a
+trigger such as `severity ≥ critical, only when new` tells you the same day. These results
+say when the package list was read, and never mark a finding fixed: only a fresh package
+check can see an upgrade.
+
+**Keep it current with a timer.** `kratos vulndb-update --timer weekly` (or `daily`) writes
+a systemd user timer into your data folder and prints the commands to install it; Kratos
+doesn't install or start it by itself. `--timer off` prints the commands to remove it. Each
+run fetches only what changed and then re-matches the stored lists as above.
 
 **Supported:** Debian, Ubuntu, Alpine, Rocky Linux, AlmaLinux and Red Hat Enterprise
 Linux, by release. Other distributions (and Linux Mint, CentOS, testing/rolling releases)
@@ -963,6 +984,33 @@ Debian and Alpine: no licence stated), CISA's Known Exploited Vulnerabilities ca
 (CC0), FIRST's EPSS scores (published freely by Empirical Security), and CVSS scores
 from NVD — *this product uses data from the NVD API but is not endorsed or certified by
 the NVD.* `kratos vulndb-update --about` prints these notices.
+
+## Web servers and PHP
+
+Kratos watches two things about web servers, using only what it already collected (nothing
+extra is read from the machine):
+
+- **WEB-001 — web-server workers crashing in bursts.** When a PHP, Apache or nginx worker
+  dies on a bad memory access, the kernel logs it (*php-fpm8.3[2345]: segfault at 0 …*), and
+  Apache logs its own line (*AH00052: child pid 2345 exit signal Segmentation fault*). One
+  crash is usually a buggy extension; **three or more within ten minutes** is what someone
+  probing a memory-corruption bug looks like — their crafted requests crash workers until
+  one works. The finding lists each burst (when, how many, which worker pids); medium, high
+  at ten or more in a burst. Look at the access log for the same minutes, update PHP or the
+  web server, and check for new files in the web root.
+- **WEB-002 — PHP served to the network that the package check can't cover.** When a web
+  server listens on a network address and the installed PHP comes from outside the
+  distribution (for example a PPA), Kratos says so: the distribution's advisories don't
+  cover that PHP, so nobody is checking it for you. It is low, or **medium when that PHP
+  branch no longer gets security fixes from the PHP project** (8.1 and older, as of 2026).
+  PHP from the distribution itself is checked by the package check, so it only gets a line
+  in the summary.
+
+Where the crash lines come from: the kernel's lines are read from the journal by the
+`firewall` log source (on by default); Apache's own lines only when web logs are synced
+(`collect.sync_sources` with `web`). A machine without a journal, or a container (the kernel
+logs to its host, not to the container), shows no kernel crash lines — run Kratos on the
+host for those.
 
 ## Detection rules
 
@@ -1239,8 +1287,8 @@ that was seen before becomes a high finding **HUNT-001** *An address a threat-in
 as malicious was seen on this machine before*, with when, where, the pulse name and what the hunt
 could see — and it goes through your triggers like any new finding. Nothing here calls a model
 or reaches the network. (New CISA exploited-vulnerability entries aren't a hunt: `kratos
-vulndb-update` marks every machine's package check as due, so a machine's packages are matched
-against them at its next collection.)
+vulndb-update` matches every machine's stored package list against them right away — see
+[Vulnerable packages](#vulnerable-packages).)
 
 **Every hunt is recorded** — who, when, what was hunted, which machines and period, the coverage
 and how many records matched: `kratos hunt --history`. What you typed (an account, an address)

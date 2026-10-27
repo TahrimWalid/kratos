@@ -102,6 +102,9 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PKG-001", "condition"),
     _r("PKG-002", "condition"),
     _r("PKG-003", "condition"),
+    # PHP served to the network without package-check coverage lasts until it is moved
+    # to a checked package or stops being served.
+    _r("WEB-002", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -121,6 +124,8 @@ RULES: dict[str, RuleInfo] = dict([
     # C.3: a known-malicious address found in stored records -- a sighting in the past;
     # it stays open until a person decides on it (the auto-hunt never closes it).
     _r("HUNT-001", "occurrence"),
+    # a burst of crashing web-server workers: an event in time (each burst its own entity)
+    _r("WEB-001", "occurrence"),
     # run notes
     _r("COV-001", "run_note"),
     _r("VULN-003", "run_note"),

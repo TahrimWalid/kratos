@@ -292,3 +292,6 @@ from kratos.live import check as _live_response_check  # noqa: E402,F401
 from kratos.pkgvuln import check as _packages_check  # noqa: E402,F401
 # C.1: the detection rules, run over what log sync just stored (reads the event store only).
 from kratos.detect import check as _detect_check  # noqa: E402,F401
+
+# Web-server worker crash bursts and PHP served to the network (reads what the checks above stored).
+from kratos.websig import check as _websig_check  # noqa: E402,F401

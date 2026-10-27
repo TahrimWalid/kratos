@@ -135,7 +135,7 @@ CATEGORIES: tuple[Category, ...] = (
         "local account name, kept with the privileged-account read so masking can tell a real account "
         "from a name an attacker tried).",
         PERSONAL, "one file per check per machine each time it runs",
-        files=("scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages"),
+        files=("scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages", "web_signals"),
         tables=(TableRef(DB, ("persistence_baseline", "pkg_inventory"), ("pkg_inventory", "taken_at")),),
         note="`kratos snapshots prune` thins old ones (preview first)",
     ),

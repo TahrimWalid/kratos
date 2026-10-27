@@ -103,9 +103,26 @@ MAX_BLIND_ITEMS = 5000
 MAX_LISTENERS = 500
 
 
+def proc_net_address(raw: Any) -> str | None:
+    """A /proc/net/{tcp,udp}{,6} address as an IP string: IPv4 is one little-endian 32-bit
+    word ("3500007F" -> 127.0.0.53), IPv6 four of them. None when it isn't one."""
+    import ipaddress
+
+    text = str(raw or "")
+    try:
+        if len(text) == 8:
+            return str(ipaddress.IPv4Address(bytes.fromhex(text)[::-1]))
+        if len(text) == 32:
+            words = bytes.fromhex(text)
+            return str(ipaddress.IPv6Address(b"".join(words[i:i + 4][::-1] for i in range(0, 16, 4))))
+    except ValueError:
+        return None
+    return None
+
+
 def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
     """Each listening socket with the program behind it, when this read could see it:
-    {port, proto, seen, exe, package}. `seen` is False when the owning process is not
+    {port, proto, address, seen, exe, package}. `seen` is False when the owning process is not
     known (another user's socket over SSH); `package` is None for a program no package
     owns (or one running from memory/a deleted file). Used by the package cross-check
     (kratos.pkgvuln.crosscheck.listener_doubts)."""
@@ -125,7 +142,8 @@ def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
         it = procs.get(sock.get("pid")) or {}
         seen_exe = bool(it.get("exe"))       # the process and its program link were readable
         exe = _L._exe_real_path(str(it.get("exe") or "")) if seen_exe else None
-        out.append({"port": port, "proto": proto.rstrip("6"), "seen": seen_exe,
+        out.append({"port": port, "proto": proto.rstrip("6"), "address": proc_net_address(sock.get("local_addr")),
+                    "seen": seen_exe,
                     "exe": exe or (str(it.get("exe")) if seen_exe else None),
                     "package": it.get("exe_package") if exe else None})
         if len(out) >= MAX_LISTENERS:

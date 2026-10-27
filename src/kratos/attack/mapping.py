@@ -35,6 +35,7 @@ LINUX_AUDIT = label("T1685.004")
 DISABLE_TOOLS = label("T1685")
 
 # Accounts and passwords.
+EXPLOIT_PUBLIC_APP = label("T1190")                                  # Initial Access
 PASSWORD_GUESSING = label("T1110.001")                              # Credential Access
 ACCOUNT_MANIPULATION = label("T1098", "persistence", "privilege-escalation")
 LOCAL_ACCOUNT = label("T1136.001")                                  # Create Account: Local Account
@@ -212,6 +213,9 @@ RULE_ATTACK: dict[str, Entry] = {
     "PKG-004": Posture("run note: what the package check could not cover"),
     "DETECT-001": Posture("run note: what the detection rules could not check"),
     "DETECT-002": Posture("Kratos's own watcher is not running: a gap in coverage, not an action"),
+    "WEB-001": Behaviour((EXPLOIT_PUBLIC_APP,), why="web-server workers crashing in bursts is what probing a "
+                         "memory-corruption bug in a public-facing application looks like"),
+    "WEB-002": Posture("a PHP build the package check can't cover is a gap in coverage, not an action"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),
 }

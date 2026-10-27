@@ -707,6 +707,8 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "PKG-002": "Some installed packages have known vulnerabilities their distribution has not released a fix for yet.",
     "PKG-003": "A newer kernel is installed than the one running — the machine needs a reboot for the kernel fixes to apply.",
     "PKG-004": "Part of the package vulnerability check could not be done — those packages are unknown, not safe.",
+    "WEB-001": "A web server's worker processes (PHP, Apache, nginx) crashed in bursts — how attacks on memory-corruption bugs in them look.",
+    "WEB-002": "PHP is served to the network but comes from outside the distribution, so the package check can't tell whether it has known vulnerabilities.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -2060,6 +2062,12 @@ _FINDING_INPUTS["DETECT-"] = ("detections",)
 from kratos.hunt import auto as _hunt_auto  # noqa: E402
 
 _hunt_auto.register()
+
+# WEB-001 / WEB-002: web-server worker crash bursts and PHP served to the network without
+# package-check coverage (kratos.websig), judged from what Kratos already collected.
+from kratos.websig import findings as _websig_findings  # noqa: E402
+
+_websig_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 

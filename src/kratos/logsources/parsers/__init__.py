@@ -44,6 +44,8 @@ class Parsed:
     cursor: str | None = None             # journal __CURSOR -> a stable event id
     zone_assumed: bool = False
     redacted: bool = False                # the parser masked something (e.g. a URL query value)
+    dataset: str | None = None            # the event's dataset when not the read's (a kernel crash line in the
+                                          # firewall read is a journal entry, not a firewall event)
 
     def __post_init__(self) -> None:
         bad = set(self.fields) - FIELDS

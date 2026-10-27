@@ -2,8 +2,14 @@
 
     [UFW BLOCK] IN=enp5s0 OUT= MAC=... SRC=10.136.28.52 DST=10.136.28.102 ... PROTO=TCP SPT=59286 DPT=2222 ...
 
-Only lines that carry a packet (IN=/OUT= and SRC=) are events; other kernel
-lines are skipped.
+Only lines that carry a packet (IN=/OUT= and SRC=) are firewall events. The same read
+also carries the kernel's crash lines for programs that died on a bad memory access --
+
+    php-fpm8.3[2345]: segfault at 0 ip 00007f.. sp 00007ff.. error 4 in libphp8.3.so[..]
+    traps: httpd[1000] general protection fault ip:.. sp:.. error:0 in libc.so.6[..]
+
+-- which become `process_crashed` events in the journal's dataset (web-server crash
+bursts, kratos.websig). Other kernel lines are skipped.
 """
 from __future__ import annotations
 
@@ -24,6 +30,12 @@ _PACKET = re.compile(r"\bIN=\S* OUT=\S*.*?\bSRC=(?P<src>[0-9A-Fa-f:.]+) DST=(?P<
 _PROTO = re.compile(r"\bPROTO=(?P<p>[A-Za-z0-9]+)")
 _SPT = re.compile(r"\bSPT=(?P<p>\d{1,5})\b")
 _DPT = re.compile(r"\bDPT=(?P<p>\d{1,5})\b")
+# The kernel's report of a program killed by a fault: "comm[pid]: segfault at ...",
+# "traps: comm[pid] general protection fault ...", arm64's "unhandled level N ... fault",
+# and "potentially unexpected fatal signal". comm is at most 15 characters.
+_CRASH = re.compile(r"^(?:traps: )?(?P<comm>[^\[\]\s][^\[\]]{0,15}?)\[(?P<pid>\d{1,10})\]:? "
+                    r"(?:segfault at |general protection fault|trap |unhandled level \d+ |"
+                    r"potentially unexpected fatal signal )")
 _ACTIONS = {"BLOCK": "blocked", "LIMIT BLOCK": "blocked", "ALLOW": "allowed", "AUDIT": "audit",
             "AUDIT INVALID": "audit", "LIMIT": "audit"}
 
@@ -44,7 +56,13 @@ def to_parsed(rec: Any) -> Parsed | None:
     _prog, _pid, msg, original, cursor = record_parts(rec)
     pm = _PACKET.search(msg)
     if not pm:
-        return None
+        cm = _CRASH.match(msg)
+        if not cm:
+            return None
+        return Parsed(ts=rec.ts, action="process_crashed", provider="kernel", message=msg, original=original,
+                      fields={"process_name": cm.group("comm"), "process_pid": int(cm.group("pid"))},
+                      log_file_path=rec.path, cursor=cursor, zone_assumed=rec.zone_assumed,
+                      dataset="kratos.journal")
     um = _UFW.search(msg)
     action = _ACTIONS.get(um.group("act").strip(), "logged") if um else "logged"
     proto = _PROTO.search(msg)

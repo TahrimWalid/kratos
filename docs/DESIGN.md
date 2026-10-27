@@ -940,7 +940,14 @@ one fixed POSIX sh script (in the agent bundle) that the SSH path runs as the SS
 sub-agent runs through `sh -s` (its `package_inventory` probe, agent 0.7.0): `dpkg-query -W` with the
 source package and source version (Debian advisories are listed by source), `rpm -qa` with
 `EPOCH:VERSION-RELEASE` and the source RPM, Alpine's `/lib/apk/db/installed` (origin), plus
-`/etc/os-release`, `uname -r`, the installed module trees and `reboot-required`. One parser; names and
+`/etc/os-release`, `uname -r`, the installed module trees and `reboot-required`. Where each package came
+from (agent 0.9.2): for apt, one awk pass over the Release files' `Origin:` and the `*_Packages` lists
+gives, per installed package, the origins offering that exact version and those offering the name at
+all; for rpm, `%{VENDOR}`. `pkgvuln/origin.py` judges it on Kratos: an exact version from the
+distribution's own origin is the distribution's; a name the distribution offers at another version is
+an older/newer distribution build unless the version carries a PPA marker; anything else is outside the
+distribution and is left out of matching and listed in `PKG-004` (empty apt lists, or an older agent,
+are a stated gap, never a guess). One parser; names and
 versions that don't look like names and versions are dropped and counted. The list is stored in
 `kratos.db` → `pkg_inventory` (one row per distinct package set per machine — a re-check that finds the
 same set only moves `last_seen_at`) and never leaves the Kratos machine.
@@ -992,7 +999,7 @@ per machine with `package:CVE` entities: nothing can be installed, and a fully p
 dozens of such packages, so per-package findings would be noise. `PKG-003` is a newer kernel
 installed than running (running vs newest installed kernel package, plus Debian/Ubuntu's
 `reboot-required`), entity the newest kernel; `PKG-004` is a run note for what wasn't covered (no or
-stale data, no data for the distribution, an incomplete read). All three PKG rules are conditions; an
+stale data, no data for the distribution, an incomplete read, packages from outside the distribution). All three PKG rules are conditions; an
 incomplete check (partial read, no matching data) can't close one. No ATT&CK labels (weakness, not
 behaviour). The upgrade command is shown, never run; the remediation catalogue has a
 `package.upgrade` template whose package must appear in a finding. `record.run` writes
@@ -1027,6 +1034,42 @@ against Trivy (and add 92 pairs Trivy doesn't list), so it was not adopted witho
 **The check** (`pkgvuln/check.py`): `packages`, quick (one listing, local matching; ~0.1 s to match a
 few hundred packages), 6 h freshness; `kratos vulndb-update` expires it so new data is used at the next
 collection. No model tool was added.
+
+**Re-matching after an update** (`pkgvuln/rematch.py`): right after a successful update, each
+machine's newest stored list (read in the last `vulndb.rematch_max_list_age_days`) is matched again
+(`record.rematch`: the stored list plus the read facts saved with it in `pkg_inventory.read_json` --
+completeness and the origin judgement, so packages from outside the distribution stay out). The result
+is published like the detections and the hunt (findings -> lifecycle -> triggers). It never closes a
+finding (`closes_findings` is false for `rematched` documents) and doesn't move the list's
+`last_seen_at`. A finding whose severity rose is lifecycle change `worse`, which triggers with
+"only new" treat as news. `kratos vulndb-update --timer daily|weekly` writes a systemd user timer
+(`pkgvuln/timer.py`, the schedules' mechanism; Kratos prints the install commands and never runs
+systemctl).
+
+## Web-server signals
+
+`kratos/websig/` judges two web-server signals from data Kratos already holds; its check
+(`web_signals`, quick, `after=("log_sync", "packages", "live_response")`) reads nothing from
+the machine and writes one snapshot per machine (`web_signals/web_signals_<hash>.json`,
+replaced in place), registered as a snapshot source with rule prefix `WEB-`.
+
+- **Crash events.** The kernel's fault lines (`comm[pid]: segfault at`, `traps: comm[pid]
+  general protection fault`, arm64's `unhandled level N ... fault`, `potentially unexpected
+  fatal signal`) arrive in the `firewall` source's `_TRANSPORT=kernel` journal read; the
+  firewall parser now turns them into `process_crashed` events instead of skipping them.
+  `Parsed.dataset` lets a parser file an event under another dataset than its read's: these
+  are `kratos.journal`, not `kratos.firewall`. Apache's `AH00051/AH00052 ... exit signal`
+  lines (web logs, opt-in) are `process_crashed` too. The parsers ship in the agent bundle, so
+  the live watcher produces the same events.
+- **WEB-001** (occurrence, medium; high at 10+ in one burst; T1190): `process_crashed` events
+  of the last 24 h whose program is a PHP / Apache / nginx / lighttpd worker, in runs no more
+  than 10 minutes apart with 3+ crashes. One entity per burst (`<family>@<start minute>`), so a
+  new burst recurs the finding. The same pid within 5 s counts once (kernel + Apache line).
+- **WEB-002** (condition, low; medium when an upstream PHP branch is past
+  `PHP_SECURITY_END`): a web server listening on a non-loopback address (live response's
+  listeners now carry `address`; an unseen owner counts on a common web port) while PHP
+  packages from outside the distribution are installed (the origin judgement stored with the
+  package list). Distribution PHP gives only a digest line: the package check covers it.
 
 ## Log sources and tamper detection
 

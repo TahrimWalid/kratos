@@ -134,6 +134,16 @@ def _verify_live(ctx: VerifyContext) -> Verdict:
                               reproduced_sentence=sentence_live, gone_sentence=gone_live)
 
 
+def _verify_web_exposure(ctx: VerifyContext) -> Verdict:
+    # re-read what WEB-002 is judged from (the package list and the listening ports), then judge again
+    return _condition_verdict(
+        ctx, ["packages", "live_response", "web_signals"],
+        reproduced_sentence="A fresh package and port read still shows PHP from outside the distribution served "
+                            "to the network.",
+        gone_sentence="A fresh package and port read no longer shows this -- PHP was moved, removed or is no "
+                      "longer served to the network.")
+
+
 def _verify_integrity(ctx: VerifyContext) -> Verdict:
     return _condition_verdict(
         ctx, _covering_checks(ctx.rule_id),
@@ -344,6 +354,11 @@ register_no_verifier(NoVerifier(
     # short: it is shown as the answer's "[couldn't check: ...]" tag. A rule match is an event in
     # stored log lines (the finding names them); a fresh read can't make it happen again.
     reason="a rule match can't be re-read; its log lines are kept (events --rule)"))
+register_verifier(Verifier(rules=("WEB-002",), cost="quick", verify=_verify_web_exposure,
+                           label="a fresh package and listening-port read"))
+register_no_verifier(NoVerifier(
+    rules=("WEB-001",),
+    reason="a crash burst is in stored log lines (the finding lists them); a fresh read can't make it happen again"))
 register_no_verifier(NoVerifier(
     rules=("HUNT-001",),
     # short, shown as the answer's "[couldn't check: ...]" tag: the sighting is in Kratos's stored

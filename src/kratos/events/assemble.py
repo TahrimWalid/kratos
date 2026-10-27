@@ -121,6 +121,8 @@ LOG_ACTIONS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], Optional[str]]] =
     "allowed": (("network",), ("connection", "allowed"), "success"),
     "audit": (("network",), ("connection", "info"), "unknown"),
     "logged": (("network",), ("connection", "info"), "unknown"),
+    # a program crashed (the kernel's segfault / protection-fault line, Apache's "exit signal")
+    "process_crashed": (("process",), ("end", "error"), "failure"),
     # packages
     "package_installed": (("package",), ("installation",), "success"),
     "package_upgraded": (("package",), ("change",), "success"),
@@ -393,6 +395,7 @@ def parsed_values(p: Any, *, host: str, dataset: str,
     """Masks command lines, messages and the raw line (events.redact) and caps every
     text field. `mask_url`: the web parser's query masking, a backstop for URLs."""
     category, etype, default_outcome = LOG_ACTIONS.get(p.action, ((), ("info",), "unknown"))
+    dataset = getattr(p, "dataset", None) or dataset
     f = dict(p.fields)
     command = f.pop("process_command_line", None)
     values: Dict[str, Any] = {}

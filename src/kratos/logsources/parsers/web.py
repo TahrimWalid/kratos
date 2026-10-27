@@ -21,6 +21,8 @@ _ACCESS = re.compile(r'^(?P<ip>\S+) \S+ (?P<user>\S+) \[[^\]]+\] "(?P<req>[^"]*)
                      r'(?: "(?P<ref>[^"]*)" "(?P<ua>[^"]*)")?')
 _NGINX_ERR = re.compile(r"^\S+ \S+ \[(?P<level>[a-z]+)\] (?P<msg>.*)$", re.DOTALL)
 _APACHE_ERR = re.compile(r"^\[[^\]]+\] \[(?:[\w.-]*:)?(?P<level>[a-z0-9]+)\] (?P<msg>.*)$", re.DOTALL)
+# "AH00052: child pid 2345 exit signal Segmentation fault (11)" (AH00051: "..., possible coredump in ...")
+_APACHE_CRASH = re.compile(r"\bAH0005[12]: child pid (?P<pid>\d{1,10}) exit signal ")
 _CLIENT_NGINX = re.compile(r"\bclient: (?P<ip>[0-9A-Fa-f:.]+)")
 _CLIENT_APACHE = re.compile(r"\[client (?P<ip>[0-9A-Fa-f:.]+?)(?::\d+)?\]")
 _SENSITIVE = re.compile(r"(pass|pwd|token|secret|key|auth|session|sid|signature|sig|code|credential|otp|jwt)",
@@ -94,6 +96,11 @@ def _error(rec: Any, text: str, apache: bool) -> Parsed | None:
     m = (_APACHE_ERR if apache else _NGINX_ERR).match(text)
     if not m:
         return None
+    crash = _APACHE_CRASH.search(m.group("msg")) if apache else None
+    if crash:
+        return Parsed(ts=rec.ts, action="process_crashed", provider="apache", message=m.group("msg"),
+                      original=text, fields={"process_pid": int(crash.group("pid"))}, log_file_path=rec.path,
+                      zone_assumed=rec.zone_assumed)
     cm = (_CLIENT_APACHE if apache else _CLIENT_NGINX).search(m.group("msg"))
     fields = {"source_ip": _ip(cm.group("ip")) if cm else None}
     return Parsed(ts=rec.ts, action="web_error", provider="apache" if apache else "nginx", message=m.group("msg"),
