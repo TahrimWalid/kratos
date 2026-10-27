@@ -1195,7 +1195,8 @@ first and last time, and how many a day; detections it appears in (with the rule
 saved reads that saw it ("program `kworkerd` was running", "file /etc/cron.d/x had this hash");
 findings that name it. Then the newest matching log lines, cleaned for display. Something seen
 very often — `root`, the machine's own address — is shown as counts with a hint to narrow the
-hunt (a shorter `--since`, one `--machine`) rather than a wall of lines.
+hunt (a shorter `--since`, one `--machine`) rather than a wall of lines; past 2,000 matches the
+count and its days come from Kratos's search index, for all logs together.
 
 **What was searched.** Every report ends with what Kratos holds for each machine, taken from its
 own records — never guessed from an empty result:

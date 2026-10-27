@@ -1381,9 +1381,27 @@ snapshot `hunt/results/hunt_<id>.json` (replaced atomically, earlier hits kept),
 role decides any technique) is filed through `_apply_lifecycle` and new/reopened ones go to
 `evaluate_triggers` -- the path live detections take. A failed hunt never undoes the sync.
 
-**Measured** (`scripts/bench/events_bench.py --hunt`): see the C.3 Handoff for the 1M and 10M
-numbers; at 1M events a typed hunt over 30 days is BENCH_P95 ms at p95 and the index adds
-BENCH_MB MB per million events.
+**Big results and coverage cost.** A hunt with more than 2,000 matching events (an account like
+`root`, a machine's own address) is counted, with its first/last time and per-day counts, from the
+term index alone and labelled so; splitting it by log would read every matching event (0.6 s for
+9,000 matches at 10M events). Coverage finds a machine's logs with a skip-scan over
+`host_events_dataset (target, dataset, ts)`, takes first/last per log by index seeks, and counts
+only logs outside synced stretches, up to 100,000 ("100,000+").
+
+**Measured** (`scripts/bench/events_bench.py --hunt`, 3 machines, 30 days): typed hunts over the
+30 days at 10M events take p95 96 ms (address), 69 ms (account, ~9,000 matches each) and 33 ms
+(hash), N=50; at 1M, 35-48 ms. The term index is 94 MB per million events in the bench and 92 MB
+on the lab target (474k real events, ~2 rows an event), plus 43-45 MB/M for `host_events_dataset`,
+against ~1.07 GB/M for the events. The backfill indexes ~5,700-9,200 events a second (10M in 29
+min). A text hunt over 7 days stopped at its 3 s limit after 27,688 of 777,901 events at 10M and
+said so; at 1M it searched all 77,551 in 0.7 s.
+
+**FTS5, measured and not added.** A contentless FTS5 table over message + command line on the lab
+data costs 51 MB per million events (5%) and answers phrase queries in under a millisecond, where
+the bounded scan takes 0.24 s for 7 days and 0.6 s for all 474k events. It is not added: the case
+that mattered -- addresses written only in the text -- is in the term index; what remains
+text-only (a domain or path inside a command line) is searched over the newest 7 days and the
+report says so. Revisit for fleet hunts (D.2) or if domain hunts beyond a week are needed.
 
 ## Presets and pipelines
 
