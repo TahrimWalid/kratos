@@ -1332,8 +1332,13 @@ the same transaction as the events it stores -- the only insert path -- from the
 `source.ip`, `destination.ip`, `related.ip`; `user.name`, `user.effective.name`,
 `user.target.name`, `related.user`; `file.hash.sha256`; `process.name` and the basename of
 `process.executable`; `process.executable`, `file.path`, `kratos.audit.paths`,
-`kratos.audit.created_paths`; and the host of `url.original` (an address there becomes an address
-term). Addresses are stored as `4`/`6` + the address's hex digits, so a CIDR is a `BETWEEN` and v4
+`kratos.audit.created_paths`; the host of `url.original` (an address there becomes an address
+term); and up to 8 addresses written in `message`, `event.original` or `process.command_line`
+(validated with `ipaddress`; times, MAC addresses and `1.2.3.4.5` are not addresses). The last
+one matters: on the lab target 1,800 of 2,850 sign-in lines naming the attacker carried its
+address only in the text ("Connection closed by invalid user x 10.136.28.52 port …"), so a typed
+search alone would have missed them beyond the text scan's 7 days while the coverage said every
+line was held. Such hits are labelled "in the log text"; terms step 2 re-indexes stored events. Addresses are stored as `4`/`6` + the address's hex digits, so a CIDR is a `BETWEEN` and v4
 never meets v6; a path also finds what is inside it (a range, not `LIKE`, so the index serves it).
 Events stored before the index existed are filled by a resumable, idempotent backfill
 (`host_event_terms_state`: one batch per transaction; a hunt spends `hunt.index_seconds` on it

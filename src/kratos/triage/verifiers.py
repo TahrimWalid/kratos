@@ -345,6 +345,11 @@ register_no_verifier(NoVerifier(
     # stored log lines (the finding names them); a fresh read can't make it happen again.
     reason="a rule match can't be re-read; its log lines are kept (events --rule)"))
 register_no_verifier(NoVerifier(
+    rules=("HUNT-001",),
+    # short, shown as the answer's "[couldn't check: ...]" tag: the sighting is in Kratos's stored
+    # records (the finding names them); a fresh read of the machine can't make it happen again.
+    reason="a past sighting in stored records can't be re-read; `kratos hunt <address>` shows them"))
+register_no_verifier(NoVerifier(
     rules=("DETECT-002",),
     reason="the watcher reports its own state every minute; /subagent shows it live"))
 register_no_verifier(NoVerifier(
