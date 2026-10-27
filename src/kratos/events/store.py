@@ -68,7 +68,13 @@ def _step_1(conn: sqlite3.Connection) -> None:
     )
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    """C.3: which logs a machine's events came from, and their first and last time, by index
+    seeks -- a hunt states that coverage for every machine it searches (kratos.hunt.coverage)."""
+    conn.execute("CREATE INDEX IF NOT EXISTS host_events_dataset ON host_events(target, dataset, ts)")
+
+
+STEPS = (_step_1, _step_2)
 
 
 def canonical_doc(event: Event) -> str:

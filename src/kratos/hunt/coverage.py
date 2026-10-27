@@ -80,7 +80,7 @@ class MachineCoverage:
 
     @property
     def holds_anything(self) -> bool:
-        return bool(self.events_total or any(s.spans for s in self.synced) or self.watched
+        return bool(self.read or any(s.spans for s in self.synced) or self.watched
                     or any(v.get("count") for v in self.snapshots.values()) or self.findings)
 
     def lines(self) -> list[str]:
@@ -118,7 +118,8 @@ class MachineCoverage:
         for ds, v in sorted(self.read.items()):
             if ds in synced_ds or ds == "kratos.detect":
                 continue
-            out.append(f"{ds}: {v['count']:,} event(s) Kratos read between {fmt(v['first'])} and {fmt(v['last'])} "
+            n = f"{v['count']:,} event(s)" if v.get("count") is not None else "events"
+            out.append(f"{ds}: {n} Kratos read between {fmt(v['first'])} and {fmt(v['last'])} "
                        "(only what investigations read -- not every line)")
         for p in self.pruned:
             out.append(f"PRUNED: events before {fmt(p['cutoff'])} were removed on {fmt(p['at'])} by {p['actor']} "
@@ -134,7 +135,7 @@ class MachineCoverage:
                             "not_synced_since": s.since_stale} for s in self.synced],
                 "watched": [{"source": w.source, "state": w.state, "watching_since": w.watching_since,
                              "gaps": w.gaps, "error": w.error} for w in self.watched],
-                "watch_notes": self.watch_notes, "read": self.read, "events": self.events_total, "pruned": self.pruned,
+                "watch_notes": self.watch_notes, "read": self.read, "events_outside_synced_logs": self.events_total, "pruned": self.pruned,
                 "snapshots": self.snapshots, "statement": self.lines()}
 
 
@@ -211,18 +212,38 @@ def _watched(data_dir: Path, machine: str, lo: float | None,
     return bool(targets), out, notes
 
 
-def _read(conn: sqlite3.Connection, machine: str, lo: float | None, hi: float) -> tuple[dict[str, dict], int]:
+def _datasets(conn: sqlite3.Connection, machine: str) -> list[str]:
+    """The machine's event datasets, by a skip-scan over host_events_dataset (a few index
+    seeks, however many events there are)."""
+    rows = conn.execute(
+        "WITH RECURSIVE d(x) AS (SELECT (SELECT MIN(dataset) FROM host_events WHERE target = :m) "
+        "UNION ALL SELECT (SELECT MIN(dataset) FROM host_events WHERE target = :m AND dataset > d.x) FROM d "
+        "WHERE d.x IS NOT NULL) SELECT x FROM d WHERE x IS NOT NULL LIMIT 200", {"m": machine}).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _read(conn: sqlite3.Connection, machine: str, lo: float | None, hi: float,
+          synced: set[str]) -> tuple[dict[str, dict], int]:
+    """Per dataset: the first and last event in the window (index seeks), and -- for datasets
+    outside a synced log, the ones the report counts -- how many."""
     if not _table(conn, "host_events"):
         return {}, 0
-    sql = "SELECT dataset, MIN(ts), MAX(ts), COUNT(*) FROM host_events WHERE target = ? AND ts < ?"
-    args: list[Any] = [machine, hi]
-    if lo is not None:
-        sql += " AND ts >= ?"
-        args.append(lo)
     out, total = {}, 0
-    for ds, a, b, n in conn.execute(sql + " GROUP BY dataset", args):
-        out[ds] = {"first": a, "last": b, "count": int(n)}
-        total += int(n)
+    for ds in _datasets(conn, machine):
+        args: list[Any] = [machine, ds, hi]
+        where = "target = ? AND dataset = ? AND ts < ?"
+        if lo is not None:
+            where += " AND ts >= ?"
+            args.append(lo)
+        first = conn.execute(f"SELECT MIN(ts) FROM host_events WHERE {where}", args).fetchone()[0]
+        if first is None:
+            continue
+        last = conn.execute(f"SELECT MAX(ts) FROM host_events WHERE {where}", args).fetchone()[0]
+        n = None
+        if ds not in synced:
+            n = int(conn.execute(f"SELECT COUNT(*) FROM host_events WHERE {where}", args).fetchone()[0])
+            total += n
+        out[ds] = {"first": first, "last": last, "count": n}
     return out, total
 
 
@@ -259,7 +280,7 @@ def machine_coverage(data_dir: Path | str, machine: str, *, start: float | None 
     try:
         cov = MachineCoverage(key, (start, hi))
         cov.synced = _synced(conn, key, start, hi, now)
-        cov.read, cov.events_total = _read(conn, key, start, hi)
+        cov.read, cov.events_total = _read(conn, key, start, hi, {_dataset_of(x.source) for x in cov.synced if x.spans})
         cov.pruned = _pruned(conn, start)
         cov.findings = _findings(conn, key)
     finally:
@@ -313,8 +334,9 @@ def summary_line(covs: list[MachineCoverage]) -> str:
         live = [w for w in c.watched if w.state == "watching" and w.watching_since]
         if live:
             bits.append(f"watched since {fmt(min(w.watching_since for w in live))}")
-        if c.events_total:
-            bits.append(f"{c.events_total:,} events")
+        firsts = [v["first"] for v in c.read.values() if v.get("first")]
+        if firsts:
+            bits.append(f"events from {fmt(min(firsts))}")
         if c.pruned:
             bits.append(f"pruned before {fmt(c.pruned[0]['cutoff'])}")
         gaps = sum(len(s.gaps) + len(s.holes) for s in c.synced) + sum(len(w.gaps) for w in c.watched)

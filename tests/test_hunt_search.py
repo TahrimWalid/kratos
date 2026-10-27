@@ -279,3 +279,17 @@ def test_a_full_hash_match_is_not_counted_again_by_its_prefix(tmp_path):
         "signals": [{"rule": "PERSIST-001", "entities": [f"/etc/cron.d/job#{SHA[:12]}"], "evidence": []}]})
     hits = _hunt(tmp_path, SHA, machines=["web01"]).indicators[0].snapshot_hits
     assert len(hits) == 1 and not hits[0].prefix_only
+
+
+def test_coverage_reads_each_logs_first_and_last_and_counts_only_outside_synced_logs(tmp_path, events):
+    from kratos.hunt import coverage as C
+
+    events.add([event(NOW - 3 * DAY + i, n=i, dataset=ds) for i, ds in
+                enumerate(["kratos.auth"] * 3 + ["kratos.cron"] * 2 + ["kratos.detect"])])
+    cursors.add_span(tmp_path, "web01", "auth", NOW - 4 * DAY, NOW - 60, complete=True)
+    cov = C.machine_coverage(tmp_path, "web01")
+    assert sorted(cov.read) == ["kratos.auth", "kratos.cron", "kratos.detect"]
+    assert cov.read["kratos.auth"]["count"] is None          # a synced log: its spans say it all
+    assert cov.read["kratos.cron"]["count"] == 2
+    assert cov.read["kratos.cron"]["first"] < cov.read["kratos.cron"]["last"]
+    assert C.machine_coverage(tmp_path, "web01", start=NOW - DAY).read == {}

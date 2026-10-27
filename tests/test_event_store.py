@@ -31,10 +31,10 @@ def store(tmp_path):
 def test_empty_db_migration(tmp_path, store):
     assert store.count("10.136.28.168") == 0
     conn = connect_store(tmp_path / "kratos.db")
-    assert schema_version(conn, "events") == 1
+    assert schema_version(conn, "events") == 2
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
     assert {"host_events", "host_events_append_only", "host_events_ts", "host_events_ip", "host_events_user",
-            "host_events_proc", "host_events_sha256"} <= names
+            "host_events_proc", "host_events_sha256", "host_events_dataset"} <= names
     conn.close()
     assert (tmp_path / "kratos.db").stat().st_mode & 0o077 == 0
 
