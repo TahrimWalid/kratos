@@ -33,7 +33,10 @@ DECIDED = frozenset({"risk_accepted", "false_positive", "out_of_scope"})
 SHOWN_BY_DEFAULT = frozenset({"open", "verified"})
 EXCEPTION_KINDS = ("risk_accepted", "false_positive", "out_of_scope")
 SCOPES = ("key", "rule_target", "rule")
-EVENT_KINDS = ("created", "state_changed", "reopened", "severity_changed", "entities_changed", "expired", "imported")
+# "ssvc_changed" (D.3): a vulnerability finding's SSVC decision changed (Track ... Act);
+# a rise counts as "worse", like a severity rise.
+EVENT_KINDS = ("created", "state_changed", "reopened", "severity_changed", "entities_changed", "expired", "imported",
+               "ssvc_changed")
 SEVERITY_RANK = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 

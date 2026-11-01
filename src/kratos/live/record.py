@@ -84,6 +84,11 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
         "listeners": listeners(inv),
+        # D.3: what SSVC exposure reads -- packages behind any running program, whether
+        # this read looked at listening processes' libraries, the machine's own addresses
+        "running_packages": running_packages(inv),
+        "maps_read": bool(inv.get("maps_read")),
+        "local_addresses": [str(a) for a in inv.get("local_addresses") or []][:256],
         "hunt_index": _hunt_index(inv),      # C.3: programs, users, remote addresses a later hunt can find
     }
     out_dir = data_dir / LIVE_DIR
@@ -120,15 +125,24 @@ def proc_net_address(raw: Any) -> str | None:
     return None
 
 
+def running_packages(inv: dict[str, Any]) -> list[str]:
+    """Every package that owns the program of a running process this read could see."""
+    return sorted({str(it["exe_package"]) for it in (inv.get("procs") or {}).values() if it.get("exe_package")})
+
+
 def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
     """Each listening socket with the program behind it, when this read could see it:
-    {port, proto, address, seen, exe, package}. `seen` is False when the owning process is not
+    {port, proto, address, seen, exe, package, lib_packages, maps}. `lib_packages`: the
+    packages owning the shared libraries the process has mapped; `maps`: "read",
+    "unreadable" (this login can't read the process's maps) or "not_read" (an agent or
+    script from before D.3, or the process wasn't seen). `seen` is False when the owning process is not
     known (another user's socket over SSH); `package` is None for a program no package
     owns (or one running from memory/a deleted file). Used by the package cross-check
     (kratos.pkgvuln.crosscheck.listener_doubts)."""
     from kratos.adapters import live_response as _L
 
     procs = inv.get("procs") or {}
+    gaps = set(inv.get("maps_gaps") or [])
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, int]] = set()
     for sock in inv.get("sockets") or []:
@@ -142,10 +156,13 @@ def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
         it = procs.get(sock.get("pid")) or {}
         seen_exe = bool(it.get("exe"))       # the process and its program link were readable
         exe = _L._exe_real_path(str(it.get("exe") or "")) if seen_exe else None
+        pid = sock.get("pid")
+        maps = ("unreadable" if pid in gaps else "read" if inv.get("maps_read") and it else "not_read")
         out.append({"port": port, "proto": proto.rstrip("6"), "address": proc_net_address(sock.get("local_addr")),
                     "seen": seen_exe,
                     "exe": exe or (str(it.get("exe")) if seen_exe else None),
-                    "package": it.get("exe_package") if exe else None})
+                    "package": it.get("exe_package") if exe else None,
+                    "lib_packages": list(it.get("lib_packages") or []), "maps": maps})
         if len(out) >= MAX_LISTENERS:
             break
     return out

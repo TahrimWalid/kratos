@@ -1010,6 +1010,97 @@ Debian and Alpine: no licence stated), CISA's Known Exploited Vulnerabilities ca
 from NVD — *this product uses data from the NVD API but is not endorsed or certified by
 the NVD.* `kratos vulndb-update --about` prints these notices.
 
+## How Kratos ranks vulnerabilities
+
+Severity (critical, high, ...) says how bad a vulnerability is in general. To decide **what to
+fix first on your machines**, Kratos also gives every vulnerable package (`PKG-001`, `PKG-002`,
+`PKG-003`) and every network-matched CVE (`VULN-001`) a **decision** from CISA's Stakeholder-Specific
+Vulnerability Categorization (SSVC) tree — the same tree CISA uses for its own advisories. Kratos
+computes it; the model can explain it but never sets or lowers it.
+
+**The four questions.**
+
+1. **Is it being exploited?** *none*, *public proof of concept*, or *active*. From CISA's own
+   per-CVE assessment where CISA made one, or *active* when the CVE is on CISA's
+   exploited-now list (KEV). Without either it is *none (not assessed)* — never guessed from
+   the EPSS score, which is shown beside it.
+2. **Can an attacker automate it?** *yes* or *no* (can the attack run unattended against many
+   machines?).
+3. **How much control does it give?** *partial* or *total*.
+4. **How much does the machine matter?** From the **criticality** you set (low → minimal,
+   medium → support, high or critical → essential), combined with the machine's *public
+   well-being impact* (*minimal* by default; raise it to *material* or *irreversible* only if a
+   compromise could physically or financially hurt people outside your organisation, or harm
+   systems society relies on).
+
+For 2 and 3 Kratos uses CISA's assessment when there is one; otherwise it **estimates from the
+CVE's CVSS vector** and says *estimated from CVSS* next to the value: automatable = network
+attack, low complexity, no privileges, no user interaction; total impact = high confidentiality
+and integrity impact (or a changed scope with high impact). A CVE with neither CISA's assessment
+nor a CVSS vector shows **not enough data** instead of a decision.
+
+**The decisions, in CISA's words.**
+
+| Decision | What CISA says to do |
+|---|---|
+| **Act** | Leadership and supervisors decide the response together; remediate **as soon as possible**. |
+| **Attend** | Supervisors pay attention, may ask for help or notify others; remediate **sooner than your normal update schedule**. |
+| **Track\*** | Watch it more closely for changes; remediate within normal update timelines. |
+| **Track** | No action now beyond your normal update timelines; reassess if something changes. |
+
+**Exposure — Kratos's own measurement, shown beside the decision.** A scanner sees installed
+packages; Kratos also looks at what is running. From the machine's running-process read it says
+whether the vulnerable code is actually exposed:
+
+- **internet** — a program from the package, or a program that *loads one of its libraries*,
+  listens on a network address, and the machine has a public address there (or you marked the
+  machine as reachable from the internet);
+- **network** — the same, on a private, CGNAT or tailnet address only;
+- **local** — something running uses it, but nothing it owns listens on the network;
+- **not running** — installed, nothing running uses it, nothing listening loads it;
+- **unknown** — Kratos couldn't see (another user's processes over SSH, or an older agent) — it
+  says why and how to see more (usually: read the machine through its sub-agent).
+
+For example: *"libssl3 is loaded by /usr/sbin/nginx, which listens on 0.0.0.0:443"* versus
+*"installed; no running program comes from it"*. Exposure **never changes CISA's decision** —
+it orders findings *within* one decision (most exposed first, then exploited-now, then EPSS),
+so of two Attend packages the one serving the internet comes first. The libraries are read only
+for programs that listen, so for a library used only by programs that don't listen Kratos says
+*not running* and tells you that limit.
+
+**Where you see it.** `/findings` has a **decision** column (Act in red, Attend in amber) and an
+**exposure** column; opening a finding shows the four inputs, each with where it came from and
+the date of CISA's assessment, CISA's definition of the decision, the exposure in plain words,
+and per CVE whether it is used in ransomware campaigns (KEV) and whether the distribution has a
+fix today — an Act with no fix yet says *"no fix yet — limit who can reach it"* instead of
+*"upgrade"*. The same appears in `kratos findings show`, the report, and the answer's findings
+block; lists everywhere are ordered by decision first. An alert for an open **Act** finding starts
+with **"Act:"**, and a trigger can fire on decisions (in `/trigger new`: *vulnerabilities whose
+decision is Attend or Act*). A decision that rises — CISA starts seeing exploitation, or you raise
+a machine's criticality — counts as "more severe" for *only new or worse* triggers.
+
+**Setting how much each machine matters.** Kratos asks once per machine — when you add it, or the
+first time vulnerable packages show up — and remembers your answer (choose *not now* and it
+assumes **medium**, labelled *criticality not set — assumed medium*). Change it any time:
+
+```
+/assets                                            # every machine: criticality, exposure, groups, owner
+kratos assets list
+kratos assets set web-01 --criticality high --groups prod --owner-note "Ana, on call"
+kratos assets set web-01 --exposure internet       # it is reachable from the internet (behind a NAT Kratos can't see)
+kratos assets history web-01                       # every change, with who made it
+```
+
+Machines Kratos holds data for that nobody has described yet are listed as *not set up*. The
+*role* and *owner note* are for you and are never sent to the model. Turn the one-time question
+off in Settings → General (*Ask how much each machine matters*).
+
+**The data.** CISA's per-CVE assessments come from its **vulnrichment** repository (CC0), downloaded
+with the rest of the vulnerability data by `kratos vulndb-update` (about 105 MB, half a minute to
+read; skipped when unchanged) and matched offline — the investigation never fetches anything.
+After an update, each machine's stored package list is matched again, so a new CISA assessment
+changes the decision without reading the machine, and the result says so.
+
 ## Web servers and PHP
 
 Kratos watches two things about web servers, using only what it already collected (nothing

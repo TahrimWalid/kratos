@@ -7,6 +7,8 @@ accounts (PRIV-*) is left out for exactly that reason.
 """
 from __future__ import annotations
 
+import re
+
 from kratos.collect.registry import get as get_check
 from kratos.untrusted import for_display
 from kratos.collect.runner import CheckOutcome, CollectionReport
@@ -35,7 +37,23 @@ def _checked(o: CheckOutcome) -> str:
 
 
 def _sorted_findings(report: CollectionReport) -> list[dict]:
-    return sorted(report.findings, key=lambda f: (_SEVERITY_ORDER.get(str(f.get("severity")), 9), str(f.get("id"))))
+    """Most urgent first: an SSVC decision ranks a vulnerability finding (D.3), severity the rest."""
+    from kratos.ssvc.attach import sort_key
+
+    return sorted(report.findings, key=sort_key)
+
+
+_ACT_NOW_RE = re.compile(r"^ACT NOW: [^;]*; ")
+
+
+def _package_line(summary: str, report: CollectionReport) -> str:
+    """The package check's line, led by the SSVC decision when correlation made one
+    (D.3): 'Act: openssh on <machine> (exploited, ...; listening on 0.0.0.0:22); ...'
+    in place of the KEV-only 'ACT NOW: openssh (...)'."""
+    from kratos.ssvc.attach import digest_lead
+
+    lead = digest_lead(report.findings, report.target) if report.correlation is not None else ""
+    return f"{lead}; {_ACT_NOW_RE.sub('', summary)}" if lead else summary
 
 
 def _finding_tag(f: dict, with_title: bool) -> str:
@@ -80,7 +98,8 @@ def _build_digest(report: CollectionReport) -> str:
             tail = ""
             if o.finding_ids:
                 tail = "  -> " + ", ".join(o.finding_ids[:4])
-            lines.append(f"- {o.label} ({_checked(o)}): {o.summary}{tail}")
+            summary = _package_line(o.summary, report) if o.name == "packages" else o.summary
+            lines.append(f"- {o.label} ({_checked(o)}): {summary}{tail}")
         else:
             why = o.reason or o.summary
             not_checked.append(f"{o.label} ({why})")

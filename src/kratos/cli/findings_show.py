@@ -81,6 +81,9 @@ def cmd_findings_show(args) -> int:
     from kratos.attack import attack_of, format_label
     for lab in attack_of(match):
         print(f"ATT&CK: {format_label(lab)}  {lab.get('url')}")
+    from kratos.ssvc import present as _sp
+    for line in _sp.detail_lines(match.get("ssvc") or {}):
+        print(line)
     rule = match.get("detection_rule") or {}
     if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
         print(f"Rule: {rule.get('title')} by {rule.get('author')} -- {rule.get('license') or 'DRL-1.1'} "

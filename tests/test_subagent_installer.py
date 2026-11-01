@@ -204,7 +204,7 @@ def test_bundle_runs_standalone_and_serves_reads(tmp_path):
         (pkg / name).write_bytes(base64.b64decode(body.encode("ascii")))
     code = (
         "import json, sys; sys.path.insert(0, '.'); from subagent import reads, agent; "
-        "assert agent.AGENT_VERSION >= '0.3.0'; "
+        "assert tuple(int(x) for x in agent.AGENT_VERSION.split('.')) >= (0, 3, 0); "
         "print(json.dumps({p: reads.run_probe(p, {'lines': 2} if p == 'journal_fetch' else "
         "{'start': 1790000000, 'granularity': 60} if p == 'measure_auth' else {})['status'] "
         "for p in ('clock', 'file_hashes', 'processes', 'journal_fetch', 'config_audit', 'measure_auth')})); "

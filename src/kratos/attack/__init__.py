@@ -52,12 +52,18 @@ def compact_for_model(obj: Any) -> Any:
     'T1110.001 Password Guessing' strings. The model reads a tool result through a
     1500-character window (agent/loop.py OBSERVATION_CHAR_CAP); a full label (both
     tactics, url, version) is ~300 characters per finding that would push the next
-    finding out of view. The transcript, the screen and MCP keep the full labels."""
+    finding out of view. An SSVC decision (D.3) is shortened the same way, to one line.
+    The transcript, the screen and MCP keep the full labels and decisions."""
     if isinstance(obj, dict):
         out = {}
         for k, v in obj.items():
             if k == "attack" and isinstance(v, list) and v and all(isinstance(a, dict) for a in v):
                 out[k] = [f"{a.get('technique_id')} {a.get('technique')}" for a in v if a.get("technique_id")]
+            elif k == "ssvc" and isinstance(v, dict) and v.get("label"):
+                # D.3: the decision and its four inputs in one Kratos-written line
+                from kratos.ssvc.attach import short_line
+
+                out[k] = short_line(v)
             else:
                 out[k] = compact_for_model(v)
         return out

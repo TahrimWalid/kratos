@@ -2188,6 +2188,21 @@ def _run_agent_loop(
             guard3_violated = bool(unacknowledged_high) and bool(
                 _NO_SUSPICIOUS_ACTIVITY_CLAIM_RE.search(final_answer_text)
             )
+            # D.3: naming a vulnerability whose SSVC decision is Act while calling it
+            # unimportant ("low priority", "can wait") is dismissive too -- the decision is
+            # Kratos's computation from CISA's tree, not the model's to lower.
+            downplayed_act = [
+                f for f in (last_correlate_findings or [])
+                if isinstance(f, dict) and str((f.get("ssvc") or {}).get("outcome") or "") == "act"
+                and str(f.get("state") or "") not in _finding_facts.DECIDED_STATES
+                and _finding_facts.downplays(final_answer_text, f)
+            ]
+            if downplayed_act:
+                guard3_violated = True
+                unacknowledged_high = unacknowledged_high + [
+                    {**f, "title": f"{f.get('title')} (CISA SSVC decision: Act -- remediate as soon as possible; "
+                                   "the answer calls it unimportant)"} for f in downplayed_act
+                    if f not in unacknowledged_high]
             guard3_can_reject = (
                 guard3_violated
                 and not is_final_iteration

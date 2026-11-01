@@ -160,6 +160,10 @@ TLS_HANDSHAKE_TIMEOUT_SECONDS = 10.0
 TLS_WATCH_INTERVAL_SECONDS = 2.0
 PIN_PUSH_ACK_TIMEOUT_SECONDS = 10.0
 TLS_MIN_AGENT_VERSION = (0, 8, 0)
+# D.3: the live_inventory read reports the libraries of listening processes from this
+# version on; an older agent's read says it didn't look (no `maps` marker), and SSVC
+# exposure then says "update the agent to see loaded libraries" (kratos.ssvc.exposure).
+LIVE_LIBS_MIN_AGENT_VERSION = (0, 10, 0)
 PLAINTEXT_REFUSED_REASON = (f"this Kratos {PLAINTEXT_REFUSED_MARK} now -- update the agent "
                             "(/subagent, select the box, press g)")
 READ_REPLY_MARGIN_SECONDS = 15.0

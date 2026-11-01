@@ -1046,6 +1046,76 @@ finding (`closes_findings` is false for `rematched` documents) and doesn't move 
 (`pkgvuln/timer.py`, the schedules' mechanism; Kratos prints the install commands and never runs
 systemctl).
 
+## SSVC decisions and asset records (D.3)
+
+**The tree** (`kratos/ssvc/tree.py`) is CISA's SSVC tree encoded row for row from the *CISA
+Stakeholder-Specific Vulnerability Categorization Guide* (November 2022, Table 9; a U.S.
+government work), tree version `cisa-2.0.3` (the version CISA's assessments are labelled with).
+A completeness test checks every (Exploitation, Automatable, Technical Impact, Mission &
+Well-being) combination maps to exactly one outcome. CERT/CC's SSVC tables (including the
+Deployer tree, which uses system exposure) are CC BY-NC 4.0 and are **not** used or vendored.
+Mission & Well-being (`ssvc/mission.py`) is the guide's Table 8: Mission Prevalence from the
+person's criticality (low → minimal, medium → support, high/critical → essential) × Public
+Well-being Impact (minimal / material / irreversible); unset criticality computes as medium and
+is labelled so.
+
+**Per-CVE inputs** (`ssvc/inputs.py`). CISA's ADP SSVC block from the **vulnrichment** repository
+(CC0): `kratos vulndb-update` streams the default branch's tarball (`pkgvuln/ssvc_source.py`;
+~105 MB, ~205,000 assessments, read in ~30 s; ETag-checked, so an unchanged archive is a 304),
+reads only members shaped `<year>/<n>xxx/CVE-*.json` under a size cap, keeps Exploitation /
+Automatable / Technical Impact, CISA's timestamp and the SSVC version into `ssvc_inputs` in
+`vulndb.sqlite`, and drops (and counts) any value outside CISA's closed sets. The table is
+replaced whole inside the update's transaction, so a failed download keeps the old rows; an
+index from before D.3 has no table and every input falls back to its estimate. KEV listing
+makes Exploitation *active* even over an older CISA assessment (both are CISA's statements; KEV
+is the newer). Without CISA's assessment: Exploitation *none (not assessed)* — never from EPSS;
+Automatable / Technical Impact estimated from the CVSS v3/v4/v2 vector (automatable ⇔ AV:N AC:L
+PR:N UI:N [+AT:N for v4]; total ⇔ C:H and I:H, or S:C with C:H or I:H), each labelled
+`cvss-estimate`; no vector → "not enough data". The package check stores each CVE's inputs (and
+the package's binary names) with its signals; the decision itself is made when findings are
+built (`ssvc/attach.py`), with the machine's criticality and exposure at that moment, so a
+criticality change applies at the next report and `kratos vulndb-update`'s re-match recomputes
+decisions on stored lists.
+
+**Exposure** (`ssvc/exposure.py`) is measured, shown and used to order, never to change CISA's
+outcome. It reads the newest running-process snapshot (A.5): listeners with their program's
+package, and — new in agent 0.10.0 — the packages owning the shared libraries each **listening**
+process has mapped (`/proc/<pid>/maps`, `.so` paths only, deduplicated, ≤500 per process and
+20,000 per read; the SSH script and the agent's walk print the same `LIB`/`MAPGAP` records, one
+parser), the machine's own addresses (`/proc/net/fib_trie` LOCAL entries and `if_inet6`), and the
+packages behind every running program. `/proc` is read directly on the agent like the rest of the
+live walk (proc files aren't regular files, so the hardened opener isn't used for them); over SSH a
+maps file the login can't read is a `MAPGAP` → *unknown*, never "not loaded". A public address is
+one outside every local range — the same rule SSH reachability uses. A person's override
+(`internet` / `private`) wins and says so; a firewall Kratos can see is mentioned but its per-port
+rules aren't read, so it never lowers a measured exposure. An agent older than 0.10.0 sends no
+`maps` marker: exposure then comes from programs only and says "update the agent to see loaded
+libraries".
+
+**Where decisions go.** `Finding.ssvc` (left out of the dict when empty). Ranking
+(`attach.sort_key`, used by the report, digest, `/findings`, `kratos findings list`, MCP finding
+states and the answer's findings block) puts a decision with the matching severity band (Act with
+critical, Attend with high, Track\* with medium, Track with low) and, within one decision, orders by
+exposure, then KEV, then EPSS. The lifecycle records an `ssvc_changed` event; a rise counts as
+"worse" (news for "only new or worse" triggers). Triggers take `min_ssvc` (track … act) and read
+only the computed outcome. An open Act finding leads its alert with "Act:". The model sees one
+Kratos-written line per decision (`compact_for_model`), the digest's package line leads with
+"Act: <package> on <machine> (inputs; listening on <address:port>)" — package names from the index,
+validated IPs and ports only, never program paths — and Guard 3 treats an answer that names an Act
+finding while calling it unimportant as dismissive.
+
+**Asset records** (`kratos/assets/store.py`): `kratos.db` → `assets` (one row per machine, keyed by
+`target_key`: criticality, wellbeing, exposure_override, role, groups, owner_note, asked_at) and
+`asset_events` (append-only, a trigger refuses updates; every edit with the actor and interface).
+Edits are people-only (refused inside a tool run) from the TUI (`/assets`) or CLI (`kratos assets`).
+`known_machines` lists machines Kratos holds data for without a row as "not set up". D.2 (groups),
+D.5, D.6 and D.7 build on this record.
+
+**Disk growth** (`kratos/diskgrowth.py`): one `disk_samples` row per day (folder size, disk free and
+total) from `/doctor` and, at most daily, a background sample when a collection starts; `/doctor`
+projects days until the data folder's disk fills from the last 7 days (warn under 60, alert under 14)
+and says it is still measuring until there is a day of samples.
+
 ## Web-server signals
 
 `kratos/websig/` judges two web-server signals from data Kratos already holds; its check

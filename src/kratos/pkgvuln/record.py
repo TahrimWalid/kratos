@@ -26,6 +26,7 @@ from kratos.pkgvuln import index as _index
 from kratos.pkgvuln import inventory_store
 from kratos.pkgvuln import origin as _origin
 from kratos.pkgvuln import settings as _settings
+from kratos.pkgvuln import ssvc_source as _ssvc_source
 from kratos.pkgvuln.match import KernelStatus, MatchResult, PackageResult, kernel_status, match
 from kratos.pkgvuln.priority import RANK, Scored, score_cve, worst
 from kratos.utils.timeutil import epoch_to_utc_iso
@@ -35,6 +36,9 @@ FILE_GLOB = "packages_*.json"
 CVES_SHOWN = 5
 ACT_NOW_SHOWN = 3
 BINARIES_SHOWN = 8
+# D.3: per-CVE SSVC inputs kept with each signal (the decision is made when findings
+# are built, with the machine's criticality and exposure at that moment)
+SSVC_INPUTS_KEPT = 2000
 
 Reader = Callable[[], Any]
 
@@ -208,6 +212,30 @@ def _kernel_signal(ks: KernelStatus, kev_cves: list[str], source_line: str) -> d
             "running_kernel": ks.running, "newest_kernel": ks.newest}
 
 
+def _binaries(pr: PackageResult) -> list[str]:
+    """The installed binary package names of one match group (what a process's program
+    or library is owned by, for SSVC exposure)."""
+    return sorted({n for n, _v in pr.installed})
+
+
+def _ssvc_inputs(items: Any, info: dict[str, dict[str, Any]], cisa: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """[(cve, fixed_in, package)] -> each CVE's SSVC inputs (kratos.ssvc.inputs), with
+    where each came from. Worst first by CISA/KEV/EPSS, at most SSVC_INPUTS_KEPT."""
+    from kratos.ssvc.inputs import for_cve
+
+    out = []
+    for cve, fixed_in, package in items:
+        e = info.get(cve) or {}
+        d = for_cve(cve, cisa=cisa.get(cve), kev=e.get("kev"), cvss=e.get("cvss"),
+                    epss=(e.get("epss") or {}).get("score"), fixed_in=fixed_in).to_dict()
+        if package:
+            d["package"] = package
+        out.append(d)
+    rank = {"active": 0, "poc": 1, "none": 2}
+    out.sort(key=lambda d: (rank.get((d["exploitation"] or {}).get("value"), 3), -(d.get("epss") or 0.0), d["cve"]))
+    return out[:SSVC_INPUTS_KEPT]
+
+
 def _content_key(*parts: Any) -> str:
     return hashlib.sha256(json.dumps(parts, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
@@ -321,6 +349,7 @@ def _judge(data_dir: Path, target: str, inv: dict[str, Any], choice: Any, family
                 all_cves = {c for pr in m.packages.values() for c in (*pr.fixable, *pr.unfixed)}
                 all_cves |= {c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())}
                 info = _index.enrichment(conn, all_cves)
+                cisa = _ssvc_source.lookup(conn, all_cves)
             finally:
                 conn.close()
             pretty = (inv.get("os") or {}).get("PRETTY_NAME") or choice.selector.key
@@ -333,14 +362,25 @@ def _judge(data_dir: Path, target: str, inv: dict[str, Any], choice: Any, family
             for pr in m.packages.values():
                 fix = [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.fixable.values()]
                 unfixed.append((pr, [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.unfixed.values()]))
-                signals += _package_signals(family, pr, fix, source_line)
+                for sig in _package_signals(family, pr, fix, source_line):
+                    sig["binaries"] = _binaries(pr)
+                    sig["ssvc_inputs"] = _ssvc_inputs(((c, h.fixed_in, None) for c, h in pr.fixable.items()),
+                                                      info, cisa)
+                    signals.append(sig)
             open_sig = _unfixed_signal(unfixed, source_line)
             if open_sig:
+                by_name = {pr.package: pr for pr, _sc in unfixed}
+                for item in open_sig.get("packages") or []:
+                    pr = by_name.get(item["package"])
+                    item["binaries"] = _binaries(pr) if pr else []
+                open_sig["ssvc_inputs"] = _ssvc_inputs(((c, None, pr.package) for pr, _sc in unfixed
+                                                        for c in pr.unfixed), info, cisa)
                 signals.append(open_sig)
-            kev_running = sorted({c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())
-                                  if (info.get(c) or {}).get("kev")})
+            running_cves = sorted({c for lk in ks.running_lookups for c in m.lookups_affected.get(lk, set())})
+            kev_running = sorted(c for c in running_cves if (info.get(c) or {}).get("kev"))
             ks_sig = _kernel_signal(ks, kev_running, source_line)
             if ks_sig:
+                ks_sig["ssvc_inputs"] = _ssvc_inputs(((c, ks.newest, None) for c in running_cves), info, cisa)
                 signals.append(ks_sig)
             if m.uncomparable:
                 gaps.append(f"{m.uncomparable} version comparison(s) could not be made (an unusual version string) "

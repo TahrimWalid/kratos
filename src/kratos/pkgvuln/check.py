@@ -14,6 +14,7 @@ from __future__ import annotations
 from kratos.collect.registry import Check, CheckContext, CheckResult, register
 from kratos.pkgvuln import record
 from kratos.pkgvuln import settings as _settings  # noqa: F401 -- registers vulndb.* settings
+from kratos.ssvc import settings as _ssvc_settings  # noqa: F401 -- registers ssvc.* settings (D.3)
 
 CHECK_NAME = "packages"
 

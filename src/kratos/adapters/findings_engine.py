@@ -302,13 +302,21 @@ class Finding:
     # (Detection Rule License 1.1). Empty for Kratos's own rules, and then left out of
     # the finding's dict.
     detection_rule: dict[str, Any] = field(default_factory=dict)
+    # D.3: the SSVC decision (kratos.ssvc) for a vulnerability finding (PKG-001/002/003,
+    # VULN-001) -- {outcome, label, tree, cve, inputs (each with its source and date),
+    # definition, kev, ransomware, epss, fix_available, exposure, cves, ...}. Computed by
+    # code from evidence and the asset record; empty for every other rule, and then left
+    # out of the finding's dict.
+    ssvc: dict[str, Any] = field(default_factory=dict)
 
 
 def finding_dict(f: "Finding") -> dict[str, Any]:
-    """A finding as a dict (dataclasses.asdict), without an empty detection_rule."""
+    """A finding as a dict (dataclasses.asdict), without an empty detection_rule or ssvc."""
     d = asdict(f)
     if not d.get("detection_rule"):
         d.pop("detection_rule", None)
+    if not d.get("ssvc"):
+        d.pop("ssvc", None)
     return d
 
 
@@ -2336,6 +2344,12 @@ def write_findings_report(
     from kratos.kratos_config import get_active_target
 
     report_target = _host_key(get_active_target()) or None
+    # D.3: SSVC decisions on vulnerability findings, then rank by them (severity stays)
+    from kratos.ssvc import attach as _ssvc_attach
+
+    _ssvc_attach.attach(findings, data_dir=data_dir, target=report_target or "unknown", packages_doc=packages_doc,
+                        live_doc=live_doc, config_audit=config_audit, vuln_scan=vuln_scan)
+    findings.sort(key=_ssvc_attach.sort_key)
     finding_dicts = [finding_dict(f) for f in findings]
     lifecycle_summary, lifecycle_error = None, None
     try:
@@ -2418,6 +2432,13 @@ def write_findings_report(
                 from kratos.attack import format_label
                 md_lines.append("**ATT&CK**: " + "; ".join(f"[{format_label(a)}]({a.get('url')})" for a in f.attack)
                                 + "\n")
+            if f.ssvc:   # D.3: the SSVC decision with every input and where it came from
+                from kratos.ssvc import present as _sp
+                from kratos.untrusted import for_markdown as _md_safe
+                lines = _sp.detail_lines(f.ssvc)
+                md_lines.append(f"**{_md_safe(lines[0])}**\n")
+                md_lines.extend(f"- {_md_safe(x.strip())}" for x in lines[1:])
+                md_lines.append("")
             if f.detection_rule:   # C.1: the Sigma rule's author goes with its finding (DRL 1.1)
                 dr = f.detection_rule
                 if dr.get("sigma_id"):

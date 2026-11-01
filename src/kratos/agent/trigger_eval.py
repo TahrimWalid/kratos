@@ -44,7 +44,7 @@ _NEW_CHANGES = frozenset({"new", "reopened", "recurred", "worse"})
 
 def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The findings that satisfy the trigger's condition. Reads ONLY id/severity/
-    change (structured, engine/lifecycle-generated) -- never evidence."""
+    change/the SSVC outcome (structured, engine/lifecycle-generated) -- never evidence."""
     floor = _SEVERITY_RANK.get(trigger.min_severity or "", -1) if trigger.min_severity else None
     out = []
     for f in findings:
@@ -52,10 +52,18 @@ def _matched(trigger: "_triggers.Trigger", findings: list[dict[str, Any]]) -> li
             continue  # its own id, or one it absorbed (e.g. CORR-001 folded into CORR-SSH-001)
         if floor is not None and _SEVERITY_RANK.get(str(f.get("severity") or "info").lower(), 0) < floor:
             continue
+        if getattr(trigger, "min_ssvc", None) and not _ssvc_at_least(f, trigger.min_ssvc):
+            continue  # D.3: no decision (not a vulnerability finding), or one below the floor
         if getattr(trigger, "only_new_or_reopened", False) and f.get("change") not in _NEW_CHANGES:
             continue  # still open from before (or no lifecycle data): not news
         out.append(f)
     return out
+
+
+def _ssvc_at_least(f: dict[str, Any], floor: str) -> bool:
+    from kratos.ssvc.attach import at_least
+
+    return at_least(f, floor)
 
 
 def _cooldown_elapsed(data_dir: Path, trigger: "_triggers.Trigger", now: datetime) -> bool:
@@ -293,14 +301,21 @@ def _alert_text(data_dir, trigger, matched, matched_ids, worst, target, stamp) -
         what = untrusted.for_display(finding_facts.describe(same[0]) or rid)[:120]
         n = sum(int((f.get("detection_rule") or {}).get("matches") or 0) for f in same)
         count = f" -- {n} time(s)" if n > 1 else (f" -- {len(same)} findings" if len(same) > 1 else "")
-        lines.append(f"- {sev.upper()} {what}{count}")
+        decided = next((str((f.get("ssvc") or {}).get("label")) for f in same
+                        if (f.get("ssvc") or {}).get("outcome")), "")
+        lines.append(f"- {sev.upper()} {what}{count}" + (f" (decision: {decided})" if decided else ""))
         credit = next((c for c in (credit_line(f) for f in same) if c), None)
         if credit:
             credits.append(f"{rid}: rule by " + credit.split("rule by ", 1)[-1])
     first = untrusted.for_display(finding_facts.describe(groups[order[0]][0]) or order[0])[:120] if order else "a finding"
     more = f" (+{len(order) - 1} more)" if len(order) > 1 else ""
+    # D.3: an open finding whose SSVC decision is Act leads the alert with "Act:" (CISA:
+    # remediate as soon as possible) -- the decision is Kratos's own computation
+    act = [f for f in matched if str((f.get("ssvc") or {}).get("outcome") or "") == "act"
+           and str(f.get("state") or "open") in ("open", "verified", "")]
+    lead = "Act: " if act else ""
     shown = lines[:ALERT_LINES_MAX] + ([f"- and {len(lines) - ALERT_LINES_MAX} more"] if len(lines) > ALERT_LINES_MAX else [])
-    text = (f"{worst.upper()} on {label}: {first}{more}\n"
+    text = (f"{lead}{worst.upper()} on {label}: {first}{more}\n"
             + "\n".join(shown) + "\n"
             + f"When: {stamp}\n"
             + "Next: open Kratos and type /findings (or run: kratos findings show)\n"
