@@ -160,6 +160,17 @@ def test_long_data_dir_uses_a_private_runtime_socket(tmp_path):
     assert len(str(p)) < 108 and p.name.startswith("kratos-reads-")
 
 
+async def _until_disconnected(h, tid, timeout=20.0):
+    """Wait until the core has handled the agent's disconnect (it drops the live writer and
+    records the time in one step). A fixed 2 s wait was too short on a slow CI runner."""
+    loop = asyncio.get_running_loop()
+    end = loop.time() + timeout
+    while tid not in h.core._disconnected_at or tid in h.core._live:
+        if loop.time() > end:
+            raise AssertionError(f"the core did not notice {tid} disconnecting within {timeout}s")
+        await asyncio.sleep(0.02)
+
+
 def test_unknown_or_offline_target(tmp_path):
     async def go():
         h = Harness(tmp_path)
@@ -169,10 +180,7 @@ def test_unknown_or_offline_target(tmp_path):
             h.core._local_reads.started_monotonic -= 1000
             assert (await h.read("tgt_nobody", "clock"))["status"] == "offline"
             h.agent.stop()
-            for _ in range(100):
-                if not h.core._live:
-                    break
-                await asyncio.sleep(0.02)
+            await _until_disconnected(h, tid)
             h.core._disconnected_at[tid] -= 1000
             out = await h.read(tid, "clock")
             assert out["status"] == "offline" and "isn't connected" in out["reason"]
@@ -192,10 +200,7 @@ def test_listener_waits_for_an_agent_that_is_reconnecting(tmp_path):
             # the request named a different id; a request for the real one connects fine
             assert (await pending)["status"] == "offline"
             h.agent.stop()
-            for _ in range(100):
-                if not h.core._live:
-                    break
-                await asyncio.sleep(0.02)
+            await _until_disconnected(h, tid)
             agent2_task = asyncio.ensure_future(h.read(tid, "clock"))
             await asyncio.sleep(0.3)
             # same identity reconnects
