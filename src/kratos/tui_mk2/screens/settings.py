@@ -348,7 +348,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "detect.watch.offline_minutes",
                           "hunt.max_hits", "hunt.scan_seconds", "hunt.scan_days", "hunt.snapshot_files",
                           "hunt.index_seconds", "hunt.auto_max_indicators",
-                          "vulndb.max_age_days", "vulndb.epss_high",
+                          "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
                           "serve.port", "serve.allow_non_loopback", "serve.allowed_hosts", "serve.max_parallel",
@@ -756,6 +756,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
         gen.add_row(Text("Likely-exploited threshold (EPSS)", style=T.TEXT_MUTED),
                     Text(f"{epss:.0%}  (a serious fixable CVE at least this likely to be exploited is high)", style=T.TEXT))
+        gen.add_row(Text("Ask how much each machine matters", style=T.TEXT_MUTED),
+                    Text(self._ssvc_ask_text(), style=T.TEXT))
         for key, label, tail in self._trace_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._privacy_rows():
@@ -953,6 +955,39 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         self._reload_general()
         self._set_gen_status("Saved — " + PM.describe_mode(data_dir=dd) + ".", T.SAFE)
+
+    # --- SSVC (kratos.ssvc, D.3): the one-time "how much does this machine matter?" question ---
+    def _ssvc_ask_text(self) -> str:
+        from kratos import settings_store
+        from kratos.ssvc import settings as SVS
+
+        dd = self._data_dir()
+        on = settings_store.get(SVS.ASK_CRITICALITY, data_dir=dd) if dd is not None else True
+        return ("on  (once per machine; it ranks the machine's vulnerabilities -- change any time with /assets)"
+                if on else "off  (unset machines are assumed medium, and say so)")
+
+    @work
+    async def _set_ssvc_ask_flow(self, key: str) -> None:
+        from kratos import settings_store
+        from kratos.ssvc import settings as SVS  # noqa: F401 -- registers ssvc.*
+        from kratos.tui_mk2.modals import ListPickerModal
+
+        dd = self._data_dir()
+        if dd is None:
+            self._set_gen_status("No data directory available to save this.", T.CRITICAL)
+            return
+        spec = next((sp for sp in settings_store.specs() if sp.key == key), None)
+        value = await self.app.push_screen_wait(ListPickerModal(spec.doc if spec else key,
+                                                                [("on", "on"), ("off", "off")]))
+        if value is None:
+            return
+        try:
+            settings_store.set(key, value, data_dir=dd, actor="tui:settings")
+        except settings_store.SettingError as e:
+            self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
+            return
+        self._reload_general()
+        self._set_gen_status("Saved.", T.SAFE)
 
     @work
     async def _set_trace_setting_flow(self, key: str) -> None:
@@ -1180,6 +1215,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_vulndb_setting_flow(key)
         elif key and key.startswith("trace."):
             self._set_trace_setting_flow(key)
+        elif key == "ssvc.ask_criticality":
+            self._set_ssvc_ask_flow(key)
         elif key and key.startswith("privacy."):
             self._set_privacy_setting_flow(key)
         elif key and key.startswith("serve."):

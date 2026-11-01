@@ -312,6 +312,9 @@ def _finding_states_for(data_dir: Path, target: str | None, state: str | None, l
     # not reproduced / couldn't check; `basis` says whether a second read made it) and
     # the model's open suggestions about it, read-only.
     enrich_rows(rows, data_dir)
+    from kratos.ssvc.attach import sort_key
+
+    rows.sort(key=sort_key)        # D.3: an SSVC decision ranks a vulnerability, severity the rest
     return rows
 
 

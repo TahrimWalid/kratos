@@ -27,6 +27,7 @@ from kratos.tui_mk2.safe_widgets import SafeButton as Button, SafeDataTable as D
 
 from kratos import settings_store
 from kratos.attack import format_label
+from kratos.ssvc import present as _ssvc
 from kratos.lifecycle import decide as D
 from kratos.lifecycle import query as Q
 from kratos.lifecycle import settings as LS
@@ -37,7 +38,10 @@ from kratos.tui_mk2.modals import ConfirmModal, InfoModal, ListPickerModal, Prom
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils.timeutil import format_for_display, resolve_display_tz
 
-COLUMNS = ("state", "severity", "rule", "title", "verdict", "machine", "first seen", "last seen", "until")
+COLUMNS = ("state", "severity", "decision", "exposure", "rule", "title", "verdict", "machine", "first seen",
+           "last seen", "until")
+# D.3: the SSVC decision column (Act red, Attend amber, Track* and Track plain)
+DECISION_COLOR = {"Act": T.CRITICAL, "Attend": T.ATTENTION}
 STATE_WORDS = {"open": "open", "verified": "verified", "mitigated": "fixed", "inactive": "no recurrence",
                "risk_accepted": "risk accepted", "false_positive": "not a problem", "out_of_scope": "out of scope"}
 STATE_COLOR = {"open": T.ATTENTION, "verified": T.CRITICAL, "mitigated": T.SAFE, "inactive": T.SAFE,
@@ -255,7 +259,9 @@ class FindingsScreen(Screen):
             needle = self._search.lower()
             rows = [r for r in rows if needle in " ".join(
                 [r["rule_id"], r["title"], r["finding_key"], r["target"], *r["entities"]]).lower()]
-        return rows
+        from kratos.ssvc.attach import sort_key
+
+        return sorted(rows, key=sort_key)      # D.3: by SSVC decision first, then severity
 
     def refresh_rows(self) -> None:
         table = self.query_one("#fd-table", DataTable)
@@ -268,12 +274,15 @@ class FindingsScreen(Screen):
             cells.append([
                 Text(STATE_WORDS.get(r["state"], r["state"]), style=STATE_COLOR.get(r["state"], T.TEXT)),
                 Text(r["severity"], style=T.SEVERITY_COLOR.get(r["severity"], T.TEXT)),
+                Text(_ssvc.cell(r) or "-", style=DECISION_COLOR.get(_ssvc.cell(r), T.TEXT if _ssvc.cell(r) else T.TEXT_DIM)),
+                Text(_ssvc.exposure_cell(r) or "-", style=T.TEXT if _ssvc.exposure_cell(r) else T.TEXT_DIM),
                 r["rule_id"], r["title"], self._verdict_cell(r), r["target"],
                 self._when(r["first_seen"]), self._when(r["last_seen"]),
                 self._when(until) if until else "",
             ])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 14), (4, 16), (5, 10), (6, 10)], headers=COLUMNS)):
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(5, 14), (6, 16), (7, 10), (8, 10), (3, 8)],
+                                             headers=COLUMNS)):
             table.add_row(*row, key=self._rows[i]["finding_key"])
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
@@ -360,6 +369,8 @@ class FindingsScreen(Screen):
                                     f"{credit.get('source_url') or ''}")
         body.add_row("state", f"{STATE_WORDS.get(row['state'], row['state'])}  ({row['state']})")
         body.add_row("severity", row["severity"])
+        for i, line in enumerate(_ssvc.detail_lines(row.get("ssvc") or {})):
+            body.add_row("decision (SSVC)" if i == 0 else "", annotate_lookalikes(line.strip()))
         body.add_row("machine", row["target"])
         body.add_row("about", annotate_lookalikes(", ".join(row["entities"])) or "-")
         for i, lab in enumerate(row.get("attack") or []):

@@ -433,6 +433,8 @@ class HelpModal(ModalScreen[None]):
                 ("/report", "Investigation summary — new, still open, fixed, hidden by your decisions"),
                 ("/findings", "Findings remembered across checks — verify, accept a risk until a date, "
                  "mark false positive / out of scope (alias /f)"),
+                ("/assets", "Your machines — how much each matters (CISA's SSVC tree ranks its vulnerabilities "
+                 "by it), reachable from the internet, groups, owner note"),
                 ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
                  "checked, run them now"),
                 ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "

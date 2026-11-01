@@ -335,6 +335,14 @@ def attack_line(finding: dict[str, Any]) -> str:
     return f"ATT&CK: {format_labels(labels)}" if labels else ""
 
 
+def ssvc_line(finding: dict[str, Any]) -> str:
+    """'SSVC: Act -- exploited, automatable, total impact, mission high; exposure internet' (D.3), or ''."""
+    from kratos.ssvc import present
+
+    s = present.ssvc_of(finding)
+    return f"SSVC: {present.one_line(s)}" if s else ""
+
+
 def render_finding(console: Console, finding: dict[str, Any]) -> None:
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
@@ -347,6 +355,11 @@ def render_finding(console: Console, finding: dict[str, Any]) -> None:
     attack = attack_line(finding)
     if attack:
         body.append(f"\n{attack}", style="dim")
+    decision = ssvc_line(finding)
+    if decision:
+        outcome = str((finding.get("ssvc") or {}).get("outcome") or "")
+        body.append(f"\n{annotate_lookalikes(decision)}",
+                    style=FAILURE if outcome == "act" else ATTENTION if outcome == "attend" else "dim")
     from kratos.detect.findings import credit_line
 
     credit = credit_line(finding)      # C.1: a Sigma rule's author goes with every finding it raises

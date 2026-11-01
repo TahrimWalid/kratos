@@ -143,7 +143,7 @@ CATEGORIES: tuple[Category, ...] = (
         "collection_state", "Collection bookkeeping",
         "When each check last ran, the snapshot index, log-file positions and journal-seal results.",
         NOT_PERSONAL, "a few rows per check per machine",
-        tables=(TableRef(DB, ("collect_state", "snapshots", "log_file_state", "seal_verifications"),
+        tables=(TableRef(DB, ("collect_state", "snapshots", "log_file_state", "seal_verifications", "disk_samples"),
                          ("collect_state", "started_at")),),
     ),
     Category(
@@ -182,7 +182,8 @@ CATEGORIES: tuple[Category, ...] = (
         NOT_PERSONAL, "replaced by each `kratos vulndb-update` (hundreds of MB)",
         files=("vulndb",),
         tables=(TableRef(VULNDB, ("info", "meta", "ecosystems", "advisories", "ranges", "versions",
-                                  "advisory_cves", "precise_cves", "seen", "kev", "epss", "cvss")),),
+                                  "advisory_cves", "precise_cves", "seen", "kev", "epss", "cvss",
+                                  "ssvc_inputs")),),
         note="public data, rebuilt from its sources on update",
     ),
     Category(
@@ -238,6 +239,14 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one file per preset/schedule/trigger; a line per scheduled run",
         files=("presets", "schedules", "triggers", "kratos_local_config.json"),
         tables=(TableRef(DB, ("app_settings", "schema_versions", "data_prunes"), ("data_prunes", "at")),),
+    ),
+    Category(
+        "assets", "Machines (asset records)",
+        "What you said about each machine -- how much it matters, its role, whether it is reachable from the "
+        "internet, its groups, who to call -- and every change to that, with who made it.",
+        PERSONAL, "one row per machine; one row per edit",
+        tables=(TableRef(DB, ("assets", "asset_events"), ("asset_events", "at")),),
+        note="kept until you remove them; edit with /assets or `kratos assets set`",
     ),
     Category(
         "kept_tools", "Kept tools",

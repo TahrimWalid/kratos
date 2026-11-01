@@ -150,6 +150,11 @@ def _upsert_present(r: _Run, finding: dict[str, Any], coverage: Coverage) -> str
             r.event(key, "severity_changed", from_state=rec["state"], to_state=rec["state"],
                     reason=f"severity {rec['severity']} -> {severity}",
                     details={"from": rec["severity"], "to": severity})
+        old_outcome, new_outcome = _ssvc_outcome(rec["latest"]), _ssvc_outcome(finding)
+        if old_outcome != new_outcome and new_outcome is not None:
+            r.event(key, "ssvc_changed", from_state=rec["state"], to_state=rec["state"],
+                    reason=f"decision {_ssvc_label(old_outcome)} -> {_ssvc_label(new_outcome)}",
+                    details={"from": old_outcome, "to": new_outcome})
         old_entities = json.loads(rec["entities"] or "[]")
         if old_entities != entities:
             added = sorted(set(entities) - set(old_entities))
@@ -197,7 +202,28 @@ def _rose(e: sqlite3.Row) -> bool:
         d = json.loads(e["details"] or "{}")
     except (TypeError, ValueError):
         return False
+    if e["kind"] == "ssvc_changed":
+        from kratos.ssvc.tree import rank
+
+        return rank(d.get("to")) > rank(d.get("from"))
     return S.SEVERITY_RANK.get(str(d.get("to")), 0) > S.SEVERITY_RANK.get(str(d.get("from")), 0)
+
+
+def _ssvc_outcome(finding: Any) -> str | None:
+    """A finding's SSVC outcome (from its dict, or a record's stored `latest` JSON)."""
+    if isinstance(finding, str):
+        try:
+            finding = json.loads(finding)
+        except (TypeError, ValueError):
+            return None
+    ssvc = finding.get("ssvc") if isinstance(finding, dict) else None
+    return ssvc.get("outcome") if isinstance(ssvc, dict) else None
+
+
+def _ssvc_label(outcome: str | None) -> str:
+    from kratos.ssvc.tree import label
+
+    return label(outcome) if outcome else "none"
 
 
 def _change_of(events: list[sqlite3.Row]) -> str:
@@ -207,9 +233,9 @@ def _change_of(events: list[sqlite3.Row]) -> str:
             found.add("new")
         elif e["kind"] in ("reopened", "expired"):
             found.add("recurred" if e["reason"] == "recurred" else "reopened")
-        elif e["kind"] == "severity_changed" and _rose(e):
+        elif e["kind"] in ("severity_changed", "ssvc_changed") and _rose(e):
             found.add("worse")
-        elif e["kind"] in ("severity_changed", "entities_changed"):
+        elif e["kind"] in ("severity_changed", "entities_changed", "ssvc_changed"):
             found.add("changed")
     return next(c for c in _CHANGE_PRIORITY if c in found)
 

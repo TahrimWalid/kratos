@@ -980,9 +980,14 @@ def cmd_findings(args: argparse.Namespace) -> int:
                 args.state, _STATE_WORDS.get(args.state, args.state))
             print(f"[KRATOS] No {what} findings".replace("  ", " ") + (f" for {target}." if target else "."))
         rule_w = max([14, *(len(str(r["rule_id"])) for r in rows)])     # KRATOS-ACCOUNT-... ids are long
+        from kratos.ssvc import present as _sp
+        from kratos.ssvc.attach import sort_key as _ssvc_sort
+        rows = sorted(rows, key=_ssvc_sort)                               # D.3: by decision, then severity
         for r in rows:
             expiry = (r.get("decision") or {}).get("expires_at")
+            ssvc = _sp.cell(r) and f"{_sp.cell(r)}/{_sp.exposure_cell(r) or '?'}"
             print(f"{r['short_key']}  {_STATE_WORDS.get(r['state'], r['state']):<24} {r['severity']:<8} "
+                  f"{ssvc or '-':<20} "
                   f"{r['rule_id']:<{rule_w}} {r['target']:<16} seen {_findings_when(r['first_seen'], tz)} .. "
                   f"{_findings_when(r['last_seen'], tz)}" + (f"  until {_findings_when(expiry, tz)}" if expiry else "")
                   + f"  {r['title']}")
@@ -1010,6 +1015,9 @@ def cmd_findings(args: argparse.Namespace) -> int:
         from kratos.attack import format_label
         for lab in rec.get("attack") or []:
             print(f"  ATT&CK: {format_label(lab)}  {lab.get('url')}")
+        from kratos.ssvc import present as _sp
+        for line in _sp.detail_lines(rec.get("ssvc") or {}):
+            print(f"  {line}")
         rule = (latest or {}).get("detection_rule") or {}
         if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
             from kratos.detect.findings import credit_line
@@ -2383,6 +2391,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     from kratos.cli import detect_cmd
     detect_cmd.add_parser(sub)
+
+    from kratos.cli import assets_cmd
+    assets_cmd.add_parser(sub)
 
     attack_p = sub.add_parser(
         "attack-layer",

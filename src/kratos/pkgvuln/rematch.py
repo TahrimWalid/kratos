@@ -81,7 +81,16 @@ def _one(data_dir: Path, machine: str, age: float, now: float, notifier: Any,
         doc = record.rematch(data_dir, key, now=now)
         if doc is None:
             return MachineResult(machine, age, "error", "no stored package list")
-        findings = [finding_dict(f) for f in _package_findings(doc)]
+        built = _package_findings(doc)
+        # D.3: decisions from the new data (CISA's assessments, KEV) and the asset record as
+        # it is now; exposure from the newest stored running-process read -- nothing is read
+        # from the machine
+        from kratos.ssvc import attach as ssvc_attach
+
+        ssvc_attach.attach(built, data_dir=data_dir, target=key, packages_doc=doc,
+                           live_doc=_stored_live(data_dir, key))
+        built.sort(key=ssvc_attach.sort_key)
+        findings = [finding_dict(f) for f in built]
         annotated, _summary = _apply_lifecycle(findings, data_dir=data_dir, target=key,
                                                inputs={CATEGORY: Path(doc["file"])}, auth_stats=None,
                                                patterns_stats=None, snapshots={CATEGORY: doc})
@@ -95,6 +104,18 @@ def _one(data_dir: Path, machine: str, age: float, now: float, notifier: Any,
                 kwargs["investigate_fn"] = investigate_fn
             fired = evaluate_triggers(data_dir, news, key, **kwargs)
     return MachineResult(machine, age, "matched", record.summary_line(doc), news, fired)
+
+
+def _stored_live(data_dir: Path, key: str) -> dict[str, Any] | None:
+    """The newest recent running-process read of this machine, as the findings engine
+    would load it (None when there is none recent enough)."""
+    try:
+        from kratos.adapters.findings_engine import _load_recent_live, find_latest_inputs
+
+        return _load_recent_live(find_latest_inputs(data_dir, target=key).get("live_response"))
+    except Exception:  # noqa: BLE001 -- exposure then says it is unknown
+        logger.debug("no stored live read for %s", key, exc_info=True)
+        return None
 
 
 def report_lines(results: list[MachineResult]) -> list[str]:

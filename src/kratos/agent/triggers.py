@@ -81,12 +81,15 @@ class Trigger:
     # Fire only for findings that are new, reopened or recurred this run
     # (kratos.lifecycle's `change`) -- not for ones still open from before.
     only_new_or_reopened: bool = False
+    # D.3: fire only for vulnerability findings whose SSVC decision is at least this
+    # (track | track* | attend | act). Kratos computes the decision; nothing else counts.
+    min_ssvc: Optional[str] = None
 
     @property
     def is_valid(self) -> bool:
         if self.action not in ACTIONS:
             return False
-        return bool(self.min_severity or self.finding_id)
+        return bool(self.min_severity or self.finding_id or self.min_ssvc)
 
     @property
     def condition_text(self) -> str:
@@ -95,6 +98,10 @@ class Trigger:
             parts.append(f"finding {self.finding_id}")
         if self.min_severity:
             parts.append(f"severity ≥ {self.min_severity}")
+        if self.min_ssvc:
+            from kratos.ssvc.tree import label
+
+            parts.append(f"decision ≥ {label(self.min_ssvc)}")
         text = " and ".join(parts) if parts else "(no condition — never fires)"
         return text + (" (only when new, reopened, recurred or more severe)" if parts and self.only_new_or_reopened else "")
 
@@ -150,7 +157,7 @@ def _toml_basic_string(s: str) -> str:
 def _dump_trigger_toml(
     *, name: str, min_severity: Optional[str], finding_id: Optional[str],
     target: Optional[str], action: str, cooldown_minutes: int,
-    created_at: Optional[str], only_new_or_reopened: bool = False,
+    created_at: Optional[str], only_new_or_reopened: bool = False, min_ssvc: Optional[str] = None,
 ) -> str:
     lines = [
         "# Kratos trigger — 'if a matching finding is detected, do <action>'.",
@@ -163,6 +170,8 @@ def _dump_trigger_toml(
         lines.append(f"min_severity = {_toml_basic_string(min_severity)}")
     if finding_id:
         lines.append(f"finding_id = {_toml_basic_string(finding_id)}")
+    if min_ssvc:
+        lines.append(f"min_ssvc = {_toml_basic_string(min_ssvc)}")
     if target:
         lines.append(f"target = {_toml_basic_string(target)}")
     if only_new_or_reopened:
@@ -197,10 +206,19 @@ def _trigger_from_dict(data: dict[str, Any], path: Path, stem: str) -> Trigger:
     except (TypeError, ValueError):
         cooldown = DEFAULT_COOLDOWN_MINUTES
     created_at = str(data["created_at"]) if data.get("created_at") else None
+    min_ssvc = _clean_ssvc(data.get("min_ssvc")) if data.get("min_ssvc") else None
     return Trigger(name=name, min_severity=min_sev, finding_id=fid, target=target,
                    action=action, cooldown_minutes=max(0, cooldown),
                    created_at=created_at, path=path, raw=dict(data),
-                   only_new_or_reopened=data.get("only_new_or_reopened") is True)
+                   only_new_or_reopened=data.get("only_new_or_reopened") is True, min_ssvc=min_ssvc)
+
+
+def _clean_ssvc(value: Any) -> Optional[str]:
+    """'Attend' / 'attend' / 'track-star' / 'track*' -> the outcome key, else None."""
+    from kratos.ssvc.tree import OUTCOMES
+
+    v = str(value or "").strip().lower().replace("-star", "*").replace("_star", "*").replace(" ", "")
+    return v if v in OUTCOMES else None
 
 
 def trigger_exists(data_dir: Path, name: str) -> bool:
@@ -252,6 +270,7 @@ def save_trigger(
     cooldown_minutes: int = DEFAULT_COOLDOWN_MINUTES,
     created_at: Optional[str] = None,
     only_new_or_reopened: bool = False,
+    min_ssvc: Optional[str] = None,
 ) -> Trigger:
     ok, canonical, err = validate_trigger_name(name)
     if not ok:
@@ -268,8 +287,13 @@ def save_trigger(
         if not _FINDING_ID_RE.match(finding_id):
             raise TriggerError(
                 "A finding-ID looks like 'CORR-SSH-001' or 'NET-002' (letters, digits, dashes).")
-    if not (min_severity or finding_id):
-        raise TriggerError("A trigger needs a condition: a severity threshold and/or a finding-ID.")
+    if min_ssvc is not None:
+        cleaned = _clean_ssvc(min_ssvc)
+        if cleaned is None:
+            raise TriggerError("Unknown decision. Use one of: track, track*, attend, act.")
+        min_ssvc = cleaned
+    if not (min_severity or finding_id or min_ssvc):
+        raise TriggerError("A trigger needs a condition: a severity threshold, a decision and/or a finding-ID.")
     try:
         cooldown_minutes = max(0, int(cooldown_minutes))
     except (TypeError, ValueError):
@@ -285,6 +309,7 @@ def save_trigger(
         name=canonical, min_severity=min_severity, finding_id=finding_id,
         target=(target or None), action=action, cooldown_minutes=cooldown_minutes,
         created_at=(created_at or utc_now_iso()), only_new_or_reopened=bool(only_new_or_reopened),
+        min_ssvc=min_ssvc,
     )
     _atomic_write(path, text)
     reloaded = load_trigger(data_dir, canonical)

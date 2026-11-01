@@ -413,6 +413,15 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         state, info = TM.setup_state(self._data_dir, targets[0])
         if state == "new":
             await self.app.push_screen_wait(OnboardTargetScreen(self._data_dir, targets[0]))
+            # D.3: how much the new machine matters (ranks its vulnerabilities); asked once
+            from kratos.tui_mk2.screens.assets import ask_criticality_once
+
+            try:
+                await ask_criticality_once(self.app, self._data_dir, targets[0],
+                                           why="Used to rank this machine's vulnerabilities (CISA's SSVC tree). "
+                                               "Asked once; change it any time with /assets.")
+            except Exception:  # noqa: BLE001 -- never block opening a session on this
+                pass
         elif state != "local":
             # Shown as the new session's first line (a toast would sit behind the
             # name prompt and vanish with this screen).

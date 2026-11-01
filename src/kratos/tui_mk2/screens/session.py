@@ -117,6 +117,8 @@ _PALETTE_COMMANDS = [
     ("/preset-import", "import a preset from a .toml file"),
     ("/report", "investigation summary — new, still open, fixed, hidden by your decisions"),
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
+    ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
+                "groups, owner"),
     ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
     ("/hunt", "has this address / hash / account / domain / program / path been seen? searches what Kratos holds, "
               "with its coverage (no model)"),
@@ -1025,6 +1027,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.app.push_screen(DetectScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd == "/hunt":
             self._hunt_flow(rest)
+        elif cmd in ("/assets", "/machines"):
+            from kratos.tui_mk2.screens.assets import AssetsScreen
+
+            self.app.push_screen(AssetsScreen(self._data_dir, configured=_kconfig.get_active_target()))
         elif cmd in ("/findings", "/f"):
             from kratos.tui_mk2.screens.findings import FindingsScreen
 
@@ -3291,17 +3297,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
             [("", "Any severity — match on a specific finding-ID instead"),
              ("medium", "MEDIUM or higher"),
              ("high", "HIGH or higher"),
-             ("critical", "CRITICAL only")],
+             ("critical", "CRITICAL only"),
+             ("ssvc:attend", "Vulnerabilities whose decision is Attend or Act (CISA's SSVC tree)"),
+             ("ssvc:act", "Vulnerabilities whose decision is Act")],
             subtitle="↑↓ pick · esc cancel"))
         if sev is None:
             return
+        min_ssvc = sev.split(":", 1)[1] if sev.startswith("ssvc:") else None
+        if min_ssvc:
+            sev = ""
         fid = await self.app.push_screen_wait(PromptModal(
             "Specific finding-ID? (optional)",
             "e.g. CORR-SSH-001 — or leave blank to match on severity only"))
         if fid is None:
             return
         fid = fid.strip()
-        if not sev and not fid:
+        if not sev and not fid and not min_ssvc:
             self._emit(R.error_line("A trigger needs a condition — pick a severity and/or a finding-ID."))
             return
 
@@ -3354,14 +3365,15 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         what = {"notify": "alert", "playbook": "playbook", "investigate": "investigate"}[action]
         name_raw = await self._ask_new_name(
-            "Trigger name", f"{fid or sev}-{what}", _T.slugify_trigger_name,
+            "Trigger name", f"{fid or sev or min_ssvc}-{what}", _T.slugify_trigger_name,
             _T.validate_trigger_name, lambda n: _T.trigger_exists(self._data_dir, n), "trigger")
         if name_raw is None:
             return
         try:
             tg = _T.save_trigger(self._data_dir, name=name_raw, action=action,
                                  min_severity=(sev or None), finding_id=(fid or None),
-                                 cooldown_minutes=int(cooldown), only_new_or_reopened=bool(only_new))
+                                 cooldown_minutes=int(cooldown), only_new_or_reopened=bool(only_new),
+                                 min_ssvc=min_ssvc)
         except _T.TriggerError as e:
             self._emit(R.error_line(str(e)))
             return
@@ -4848,6 +4860,24 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         self._apply_target(typed)  # as typed, so a user@host login is kept
 
+    @work(exclusive=False, group="ask-criticality")
+    async def _ask_criticality_flow(self, target: str) -> None:
+        """D.3: the first time a machine's package findings carry SSVC decisions and nobody
+        has said how much it matters, ask once (any answer is remembered)."""
+        from kratos.tui_mk2.screens.assets import ask_criticality_once
+
+        try:
+            crit = await ask_criticality_once(
+                self.app, self._data_dir, target,
+                why="Kratos ranks this machine's vulnerabilities with CISA's SSVC tree, which needs to know how "
+                    "much the machine matters. Asked once; change it any time with /assets.")
+        except Exception as e:  # noqa: BLE001 -- the question is a convenience, never a blocker
+            self._emit(R.error_line(f"Couldn't save how much {target} matters: {e}"))
+            return
+        if crit:
+            self._emit(R.note_line(f"Saved: {target} is {crit}-criticality. Its vulnerability decisions use this from "
+                                   "the next check (/findings shows them)."))
+
     def _run_investigation(self, goal: str, target_override: str | None = None) -> None:
         from kratos.agent.loop import STOPPED_BY_BUDGET, InvestigationStopped, run_agent
 
@@ -4990,6 +5020,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 f"({names}) — type /run-fix to review and approve it. Nothing runs without you typing EXECUTE."))
 
         self._emit_from_worker(Text(f"Done in {duration:.0f}s", style=T.TEXT_FAINTER))
+        if getattr(self, "_saw_package_decision", False) and not target_override:
+            self._saw_package_decision = False
+            target = self.session_state["targets"][0] if self.session_state["targets"] else ""
+            if target:
+                self.app.call_from_thread(self._ask_criticality_flow, target)
 
         transcript_path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
         transcript_path.write_text(json.dumps(result.get("transcript", []), indent=2, default=str), encoding="utf-8")
@@ -5102,6 +5137,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit_from_worker(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
             elif tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
                 findings = result["findings"]
+                if any(str(f.get("id") or "").startswith("PKG-") and f.get("ssvc") for f in findings
+                       if isinstance(f, dict)):
+                    self._saw_package_decision = True     # D.3: ask this machine's criticality once, after the turn
                 line = Text()
                 line.append("✓ ", style=T.SAFE)
                 line.append(tool_name, style=f"bold {T.ACCENT}")

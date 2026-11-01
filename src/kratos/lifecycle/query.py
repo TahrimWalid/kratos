@@ -39,6 +39,9 @@ def _row(conn, rec, now: float) -> dict[str, Any]:
         latest = {}
     d["attack"] = attack_of({**(latest if isinstance(latest, dict) else {}), "id": rec["rule_id"],
                              "entities": d["entities"]})
+    ssvc = latest.get("ssvc") if isinstance(latest, dict) else None
+    if isinstance(ssvc, dict) and ssvc:
+        d["ssvc"] = ssvc                  # D.3: the SSVC decision as of the finding's latest run
     rule = latest.get("detection_rule") if isinstance(latest, dict) else None
     if isinstance(rule, dict) and rule:
         d["detection_rule"] = rule        # C.1: the Sigma rule and its author (DRL 1.1), on every surface

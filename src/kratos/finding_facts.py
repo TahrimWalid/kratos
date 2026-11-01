@@ -74,12 +74,55 @@ def is_ip(text: str) -> bool:
     return True
 
 
+def _act(f: dict[str, Any]) -> bool:
+    return str((f.get("ssvc") or {}).get("outcome") or "") == "act"
+
+
 def serious(findings: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Open (not decided by a person) HIGH/CRITICAL findings, critical first."""
+    """Open (not decided by a person) HIGH/CRITICAL findings and every vulnerability
+    whose SSVC decision is Act (D.3), most urgent first."""
+    from kratos.ssvc.attach import sort_key
+
     out = [f for f in findings or [] if isinstance(f, dict)
-           and str(f.get("severity") or "").lower() in SERIOUS
+           and (str(f.get("severity") or "").lower() in SERIOUS or _act(f))
            and str(f.get("state") or "") not in DECIDED_STATES]
-    return sorted(out, key=lambda f: (0 if str(f.get("severity")).lower() == "critical" else 1, str(f.get("id"))))
+    return sorted(out, key=sort_key)
+
+
+def decision_fact(f: dict[str, Any]) -> str:
+    """'decision Act (CISA SSVC); exposure internet' -- Kratos's computation, or ''."""
+    s = f.get("ssvc") if isinstance(f.get("ssvc"), dict) else None
+    if not s or not s.get("label"):
+        return ""
+    ex = (s.get("exposure") or {}).get("value")
+    return f"decision {s['label']} (CISA SSVC)" + (f"; exposure {ex}" if ex else "")
+
+
+# Words that downplay a finding (D.3: an answer calling an Act vulnerability one of
+# these is caught by the dismissive-verdict guard). Negated forms ("not low priority")
+# don't count.
+_DOWNPLAY_RE = re.compile(
+    r"(?<!not )(?<!n't )\b(low[- ]priority|lower[- ]priority|not urgent|not a priority|not important|"
+    r"unimportant|not (?:a )?(?:real |serious |big )?concern|can (?:safely )?wait|no (?:need|rush|urgency) to "
+    r"(?:act|patch|upgrade|fix|update)|nothing urgent|just (?:keep )?track(?:ing)?|only (?:needs )?track(?:ing)?|"
+    r"minor (?:issue|risk|concern|problem)|safe to ignore|can be ignored|ignore (?:it|this|them))\b",
+    re.IGNORECASE)
+
+
+def downplays(answer: str, f: dict[str, Any]) -> bool:
+    """Does a sentence of the answer that names this finding (its id, package or a CVE)
+    also call it unimportant?"""
+    names = {str(f.get("id") or "").lower()}
+    subject = str(f.get("subject") or "")
+    if subject and _PACKAGE_RE.match(subject):
+        names.add(subject.lower())
+    names |= {str(e).lower() for e in (f.get("entities") or []) if _CVE_RE.match(str(e))}
+    names.discard("")
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n+", str(answer or "")):
+        low = sentence.lower()
+        if any(n in low for n in names) and _DOWNPLAY_RE.search(sentence):
+            return True
+    return False
 
 
 def describe(f: dict[str, Any]) -> str:
@@ -127,6 +170,9 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
     cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
     if cves:
         facts.append(", ".join(cves[:2]) + (f" (+{len(cves) - 2})" if len(cves) > 2 else ""))
+    decision = decision_fact(f)
+    if decision:
+        facts.append(decision)
     return facts
 
 
@@ -241,6 +287,9 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
             subject = str(f.get("subject") or "")
             sigma = _is_rule(f)
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
+        decision = decision_fact(f)
+        if decision:
+            facts.append(decision)
         detail = "; ".join(untrusted.for_display(x)[:120] for x in facts)
         missing = missing_from(analysis, f)
         mark = " (not discussed below)" if "not discussed" in missing else \
