@@ -384,7 +384,7 @@ def test_missing_database_says_how_to_install_it(tmp_path):
     assert status["stale"] and "kratos vulscan-install" in status["note"]
 
 
-def _patch_scan(monkeypatch, tools, installed, newest=2013):
+def _patch_scan(monkeypatch, tools, installed, newest=2013, age_days=0):
     seen = {}
 
     def fake_nmap(target, data_dir, use_vulscan=True):
@@ -405,8 +405,9 @@ def _patch_scan(monkeypatch, tools, installed, newest=2013):
     def staleness():
         if not installed:
             return vuln_scan.check_vulscan_db_staleness(Path("/nonexistent/cve.csv"))
-        return {"exists": True, "last_updated": "x", "age_days": 0, "newest_cve_year": newest,
-                "stale": newest < 2025, "note": "old" if newest < 2025 else None}
+        stale = newest < 2025 or age_days > 30
+        return {"exists": True, "last_updated": "2026-09-17T10:00:00", "age_days": age_days, "newest_cve_year": newest,
+                "stale": stale, "note": "old" if stale else None}
 
     monkeypatch.setattr(tools, "_check_vulscan_db_staleness", staleness)
     return seen
@@ -430,6 +431,20 @@ def test_vuln_scan_with_an_old_cve_list_names_the_cutoff(monkeypatch, tmp_path):
     assert seen["use_vulscan"] is True
     assert out["database_newest_cve_year"] == 2013
     assert out["coverage_gap"].startswith("CVEs published after 2013")
+
+
+def test_vuln_scan_with_an_old_file_of_this_years_cves_names_its_age_not_a_cutoff(monkeypatch, tmp_path):
+    """D.3 follow-up: a list that reaches this year but was rebuilt 45 days ago used to be
+    reported as "CVEs published after <this year>" -- false, and silent about the age."""
+    from datetime import datetime
+
+    from kratos.agent import tools
+
+    _patch_scan(monkeypatch, tools, installed=True, newest=datetime.now().year, age_days=45)
+    out = tools.tool_run_vuln_scan(tmp_path, target="198.51.100.7")
+    assert out["database_stale"] is True
+    assert out["coverage_gap"].startswith("CVEs published or changed in the last 45 days")
+    assert "last rebuilt 2026-09-17" in out["coverage_gap"] and "published after" not in out["coverage_gap"]
 
 
 def test_vuln_scan_with_a_current_cve_list_reports_no_gap(monkeypatch, tmp_path):

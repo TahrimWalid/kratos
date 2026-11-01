@@ -97,6 +97,10 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
     from evals import harness_bridge
     from evals.lab import lab
 
+    if not _link_vulndb(data_dir) and sc.id in NEEDS_VULNDB:
+        return {"status": "no_vulndb", "final_answer": "", "transcript": [], "setup_error": (
+            "no vulnerability index for live runs: set EVAL_VULNDB or [vulndb] path in evals/config/lab.toml "
+            "(build one with `kratos vulndb-update`)")}
     setup, teardown, extras = harness_bridge.setup_teardown(sc.id)
     kratos_config.set_active_target(lab().target)
     ctx = {"data_dir": data_dir}
@@ -119,6 +123,32 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
             print(f"    teardown error: {e}", file=sys.stderr)
     payload["setup_error"] = setup_err
     return payload
+
+
+# Live scenarios that judge package findings: without an index they can only fail, so they
+# are reported incomplete with the reason instead (D.3 follow-up, 2026-11-01).
+NEEDS_VULNDB = frozenset({"V1_pkg"})
+
+
+def _link_vulndb(data_dir: Path) -> bool:
+    """Put the configured index in the run's data folder, as `kratos vulndb-update` would
+    (a hard link, else a copy). Every live run gets it when one is configured -- the same
+    data a real install has -- so scenarios aren't scored against an empty package check."""
+    import os
+    import shutil
+
+    from evals.lab import vulndb_path
+
+    src = vulndb_path()
+    if src is None:
+        return False
+    dest = Path(data_dir) / "vulndb" / "vulndb.sqlite"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copyfile(src, dest)
+    return True
 
 
 def _read_trace(data_dir: Path, run_id: str | None) -> dict[str, Any] | None:
@@ -156,8 +186,10 @@ def cmd_run(mode: str, scenarios: str | None, n: int, out: Path | None, mask_mod
                 scored.update(id=sc.id, run=k + 1, elapsed=round(time.time() - t0, 1),
                               status=payload.get("status"), replay=payload.get("replay"))
                 have.append(scored)
+                why = (f"  ({scored['details'].get('reason')})" if scored["person_sees"] == "incomplete"
+                       and scored.get("details", {}).get("reason") else "")
                 print(f"  {sc.id:<16} run {k + 1}/{n}  person={scored['person_sees']} "
-                      f"model_alone={scored['model_alone']}  {scored['elapsed']}s", flush=True)
+                      f"model_alone={scored['model_alone']}  {scored['elapsed']}s{why}", flush=True)
                 if out:
                     _write_results(out, mode, runs, mask_mode)
     finally:
