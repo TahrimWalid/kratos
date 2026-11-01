@@ -5,5 +5,7 @@ Track / Track* / Attend / Act from four facts, each traceable to where it came f
 (``inputs``, ``mission``). ``decide`` is pure. Beside the decision Kratos shows one
 fact of its own, measured on the machine (``exposure``): whether the vulnerable code
 is running and listening. Exposure orders findings within one decision; it never
-changes CISA's outcome. ``attach`` puts both on findings.
+changes CISA's outcome. ``bod2604`` adds CISA BOD 26-04's remediation timeline
+beside the decision (its own table; the machine's public exposure is one of its
+inputs), never in place of it. ``attach`` puts all three on findings.
 """

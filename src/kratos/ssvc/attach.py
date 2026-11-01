@@ -17,6 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any, Iterable
 
+from kratos.ssvc import bod2604 as B
 from kratos.ssvc import exposure as X
 from kratos.ssvc import tree as T
 from kratos.ssvc.decide import for_finding
@@ -142,34 +143,53 @@ def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict
     override = asset.exposure_override if asset else None
     firewall = _firewall(config_audit)
     signals = _signals(packages_doc)
+    # BOD 26-04's Publicly Exposed is about the machine, not one package (bod2604).
+    machine = X.machine_highest(live_doc, override=override, firewall=firewall).to_dict()
+    addresses = [target, *(((live_doc or {}).get("local_addresses") or []) if isinstance(live_doc, dict) else [])]
     for f in wanted:
         fid = str(_get(f, "id"))
         sig = signals.get((fid, str(_get(f, "subject") or "")))
         decision: dict[str, Any] | None = None
+        cve_inputs: list[CveInputs] = []
+        measured: list[dict[str, Any]] = [machine]
+        known_by = list(addresses)
         if fid == "PKG-001" and sig:
-            decision = for_finding(_inputs(sig), mission, fix_available=True)
+            cve_inputs = _inputs(sig)
+            decision = for_finding(cve_inputs, mission, fix_available=True)
             if decision is not None:
                 decision["exposure"] = X.for_packages(sig.get("binaries") or [sig.get("subject")], live_doc,
                                                       override=override, firewall=firewall,
                                                       label=str(sig.get("subject") or "")).to_dict()
         elif fid == "PKG-002" and sig:
+            cve_inputs = _inputs(sig)
             decision = _pkg002(sig, mission, live_doc, override, firewall)
         elif fid == "PKG-003" and sig:
-            decision = for_finding(_inputs(sig), mission, fix_available=True)
+            cve_inputs = _inputs(sig)
+            decision = for_finding(cve_inputs, mission, fix_available=True)
             if decision is not None:
                 decision["exposure"] = X.machine_highest(live_doc, override=override, firewall=firewall).to_dict()
                 decision["fix"] = "reboot into the newer kernel that is already installed"
         elif fid == "VULN-001":
             cves = [str(e).upper() for e in _get(f, "entities") or [] if str(e).upper().startswith("CVE-")]
             if cves:
-                decision = for_finding(_vuln_inputs(data_dir, cves), mission, fix_available=None)
+                cve_inputs = _vuln_inputs(data_dir, cves)
+                decision = for_finding(cve_inputs, mission, fix_available=None)
                 if decision is not None:
-                    ports, addresses = _vuln_ports(vuln_scan, set(cves))
-                    ex = X.for_scanned_ports(ports, target, override=override, addresses=addresses,
+                    ports, reached = _vuln_ports(vuln_scan, set(cves))
+                    ex = X.for_scanned_ports(ports, target, override=override, addresses=reached,
                                              scanned_at=str((vuln_scan or {}).get("scanned_at") or ""))
                     decision["exposure"] = ex.to_dict()
                     decision["fix_available"] = None        # a network text match says nothing about fixes
+                    # A scan that reached a public address measures the machine as exposed;
+                    # one that reached a private address says nothing about its other addresses.
+                    if ex.value == X.INTERNET:
+                        measured.append(ex.to_dict())
+                    known_by.extend(reached)
         if decision is not None:
+            bod = B.for_finding(cve_inputs, B.publicly_exposed(override=override, measured=measured,
+                                                               addresses=known_by))
+            if bod is not None:
+                decision["bod_26_04"] = bod
             _set(f, "ssvc", decision)
 
 

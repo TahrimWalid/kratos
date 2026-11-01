@@ -370,7 +370,8 @@ class FindingsScreen(Screen):
         body.add_row("state", f"{STATE_WORDS.get(row['state'], row['state'])}  ({row['state']})")
         body.add_row("severity", row["severity"])
         for i, line in enumerate(_ssvc.detail_lines(row.get("ssvc") or {})):
-            body.add_row("decision (SSVC)" if i == 0 else "", annotate_lookalikes(line.strip()))
+            name = "decision (SSVC)" if i == 0 else "deadline (BOD 26-04)" if line.startswith("CISA BOD 26-04") else ""
+            body.add_row(name, annotate_lookalikes(line.strip()))
         body.add_row("machine", row["target"])
         body.add_row("about", annotate_lookalikes(", ".join(row["entities"])) or "-")
         for i, lab in enumerate(row.get("attack") or []):

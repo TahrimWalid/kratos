@@ -89,13 +89,18 @@ def serious(findings: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
     return sorted(out, key=sort_key)
 
 
-def decision_fact(f: dict[str, Any]) -> str:
-    """'decision Act (CISA SSVC); exposure internet' -- Kratos's computation, or ''."""
+def decision_fact(f: dict[str, Any], *, with_bod: bool = False) -> str:
+    """'decision Act (CISA SSVC); exposure internet' -- Kratos's computation, or ''.
+    `with_bod` adds '; CISA BOD 26-04: 3 days' -- for the person's answer block only:
+    the model's digest and triage's fact comparison keep the shorter form."""
+    from kratos.ssvc.bod2604 import short
+
     s = f.get("ssvc") if isinstance(f.get("ssvc"), dict) else None
     if not s or not s.get("label"):
         return ""
     ex = (s.get("exposure") or {}).get("value")
-    return f"decision {s['label']} (CISA SSVC)" + (f"; exposure {ex}" if ex else "")
+    bod = short(s.get("bod_26_04")) if with_bod else ""
+    return f"decision {s['label']} (CISA SSVC)" + (f"; exposure {ex}" if ex else "") + (f"; {bod}" if bod else "")
 
 
 # Words that downplay a finding (D.3: an answer calling an Act vulnerability one of
@@ -295,7 +300,7 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
             subject = str(f.get("subject") or "")
             sigma = _is_rule(f)
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
-        decision = decision_fact(f)
+        decision = decision_fact(f, with_bod=True)
         if decision:
             facts.append(decision)
         detail = "; ".join(untrusted.for_display(x)[:120] for x in facts)
