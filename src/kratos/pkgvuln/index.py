@@ -21,7 +21,11 @@ Tables:
   (relevant or not), so an incremental update fetches only what changed;
 - ``kev(cve, date_added, due_date, known_ransomware, vendor, product, name)``;
 - ``epss(cve, score, percentile, date)``;
-- ``cvss(cve, score, vector, version, severity)``.
+- ``cvss(cve, score, vector, version, severity)``;
+- ``ssvc_inputs(cve, exploitation, automatable, technical_impact, assessed_at, ssvc_version, source)``
+  -- CISA's own SSVC assessment per CVE (D.3, ``kratos.pkgvuln.ssvc_source``). An index
+  built before it has no such table: the schema version is unchanged, the next update
+  adds it, and until then every SSVC input falls back to its documented estimate.
 """
 from __future__ import annotations
 
@@ -70,6 +74,8 @@ CREATE TABLE IF NOT EXISTS kev (cve TEXT PRIMARY KEY, date_added TEXT, due_date 
                                 vendor TEXT, product TEXT, name TEXT);
 CREATE TABLE IF NOT EXISTS epss (cve TEXT PRIMARY KEY, score REAL, percentile REAL, date TEXT);
 CREATE TABLE IF NOT EXISTS cvss (cve TEXT PRIMARY KEY, score REAL, vector TEXT, version TEXT, severity TEXT);
+CREATE TABLE IF NOT EXISTS ssvc_inputs (cve TEXT PRIMARY KEY, exploitation TEXT, automatable TEXT,
+                                        technical_impact TEXT, assessed_at TEXT, ssvc_version TEXT, source TEXT);
 """
 
 

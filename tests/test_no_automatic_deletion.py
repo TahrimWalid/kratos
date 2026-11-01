@@ -82,6 +82,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("pkgvuln/update.py", "_update_kev", "unlink"): TEMP,
     ("pkgvuln/update.py", "_update_epss", "DELETE FROM"): PUBLIC,
     ("pkgvuln/update.py", "_update_epss", "unlink"): TEMP,
+    ("pkgvuln/ssvc_source.py", "store", "DELETE FROM"): PUBLIC,      # D.3: CISA's SSVC rows, replaced whole
+    ("pkgvuln/update.py", "_update_ssvc", "unlink"): TEMP,
     ("pkgvuln/update.py", "_nvd_feed", "unlink"): TEMP,
     ("pkgvuln/update.py", "_build", "unlink"): TEMP,
     ("pkgvuln/update.py", "_build", "rmtree"): TEMP,

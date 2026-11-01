@@ -33,6 +33,7 @@ from kratos.pkgvuln import record as REC
 from kratos.pkgvuln import update as U
 from kratos.pkgvuln import versions as V
 from tests._logsources_util import awks
+from tests._ssvc_util import default_tar
 
 # ============================================================== inventory read
 DEB_OUT = "\n".join([
@@ -374,7 +375,8 @@ def _feeds(debian_records=DEBIAN_RECORDS, epss=None, nvd=None):
     gz, meta = _nvd(nvd)
     files = {f"{OSV}/Debian/all.zip": _zip(debian_records),
              f"{OSV}/Debian/modified_id.csv": "\n".join(f"{r['modified']},{r['id']}" for r in debian_records).encode(),
-             U.KEV_URL: json.dumps(KEV).encode(), U.EPSS_URL: _epss_gz(epss)}
+             U.KEV_URL: json.dumps(KEV).encode(), U.EPSS_URL: _epss_gz(epss),
+             U._ssvc.VULNRICHMENT_URL: default_tar()}
     year = time.gmtime().tm_year
     for y in range(U.NVD_FIRST_YEAR, year + 1):
         g, m = (gz, meta) if y == year else _nvd({})
@@ -852,7 +854,8 @@ def test_no_package_name_or_version_leaves_kratos(deb_index, monkeypatch):
     blob = json.dumps(s.requests)
     for p in distinctive:
         assert p["name"] not in blob and p["version"] not in blob
-    assert all(u.startswith((E.OSV_BASE, "https://www.cisa.gov/", "https://epss.", "https://nvd.nist.gov/"))
+    assert all(u.startswith((E.OSV_BASE, "https://www.cisa.gov/", "https://epss.", "https://nvd.nist.gov/",
+                             "https://codeload.github.com/cisagov/vulnrichment/"))
                for u, _ in s.requests)
     # the real HTTP layer was never reached by either
     monkeypatch.setattr(requests.Session, "request", real_request)
