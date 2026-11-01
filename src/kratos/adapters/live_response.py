@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shlex
 import stat
 import time
@@ -58,6 +59,12 @@ OUTPUT_CAP_BYTES = 4 * 1024 * 1024
 DEFAULT_BUDGET_SECONDS = 40
 TEMP_FIND_SECONDS = 15
 HASH_SECONDS = 15              # all dropped-file hashes together, over SSH
+# D.3: the shared libraries each LISTENING process has mapped (/proc/<pid>/maps), so
+# Kratos can tell "libssl3 is loaded by nginx, which listens on :443" from "installed,
+# nothing running uses it". Only listening processes; deduplicated and capped.
+MAX_LIBS_PER_PROC = 500
+MAX_LIBS_TOTAL = 20000
+MAX_ADDRESSES = 256
 
 # The directories a dropped executable is looked for in. /run/user/* is only read
 # by the agent (as root); over SSH the user sees only its own.
@@ -199,12 +206,35 @@ kr_temp() {
 }
 """
 
+# D.3: the machine's own addresses (IPv4 from the routing table's LOCAL entries, IPv6
+# from if_inet6) and the libraries mapped by each listening process.
+_SH_LIBS = r"""
+kr_ifaddr() {
+  [ -r @ROOT@/proc/net/fib_trie ] && awk '$1 == "|--" { ip = $2 } $1 == "/32" && $2 == "host" && $3 == "LOCAL" { print "IFA\t" ip }' @ROOT@/proc/net/fib_trie 2>/dev/null | sort -u | head -n @MAXADDR@
+  [ -r @ROOT@/proc/net/if_inet6 ] && awk 'length($1) == 32 { print "IFA6\t" $1 }' @ROOT@/proc/net/if_inet6 2>/dev/null | sort -u | head -n @MAXADDR@
+}
+kr_libs() {  # $1: socket records (NET ...), $2: process records (FD ...)
+  _lpids=$( { printf '%s\n' "$1" | awk -F'\t' '$1 == "NET" && (($2 ~ /^tcp/ && $5 == "0A") || ($2 ~ /^udp/ && $5 == "07" && $4 ~ /:0000$/)) { print "L\t" $6 }'
+             printf '%s\n' "$2" | grep '^FD	'; } | awk -F'\t' '$1 == "L" { l[$2] = 1; next } $1 == "FD" && ($3 in l) && !seen[$2]++ { print $2 }')
+  printf '%s\n' "$_lpids" | grep -v '^$' | while IFS= read -r _pid; do
+    _o=$(awk '{ p = ""; for (i = 6; i <= NF; i++) p = p (i > 6 ? " " : "") $i; sub(/ [(]deleted[)]$/, "", p)
+                if (substr(p, 1, 1) == "/" && p ~ /[.]so([.][0-9]+)*$/) print p }' @ROOT@/proc/"$_pid"/maps 2>/dev/null)
+    if [ $? -ne 0 ]; then printf 'MAPGAP\t%s\n' "$_pid"; continue; fi
+    printf '%s\n' "$_o" | grep -v '^$' | sort -u | head -n @MAXLIBS@ | while IFS= read -r _l; do printf 'LIB\t%s\t%s\n' "$_pid" "$_l"; done
+  done | head -n @MAXLIBSALL@
+}
+"""
+
 _SH_MAIN = r"""
 printf 'M\tfamily\t%s\n' "$FAMILY"
 printf 'M\tnow\t%s\n' "$(date +%s)"
 printf 'M\tuid\t%s\n' "$(id -u)"
 kr_proc
 NETOUT=$(kr_net); printf '%s\n' "$NETOUT" | grep '^NET	'
+printf 'M\tmaps\t1\n'
+kr_ifaddr
+LIBOUT=$(kr_libs "$NETOUT" "$PROCOUT"); printf '%s\n' "$LIBOUT" | grep -v '^$'
+LIBPATHS=$(printf '%s\n' "$LIBOUT" | awk -F'\t' '$1 == "LIB" { print $3 }' | sort -u)
 TEMPOUT=$(kr_temp)
 printf '%s\n' "$TEMPOUT" | grep -v '^@ROOT@/' | grep -v '^$'
 TEMPFILES=$(printf '%s\n' "$TEMPOUT" | grep '^@ROOT@/')
@@ -234,7 +264,7 @@ printf '%s\n' "$HASHLIST" | awk -F'\t' '$1 == "OK" { print substr($0, 4) }' | tr
   | { if command -v timeout >/dev/null 2>&1; then timeout @HASHT@ xargs -0 -r sha256sum; else xargs -0 -r sha256sum; fi; } 2>/dev/null | sed 's/^\\\([0-9a-f]\{64\}\)  /HE\t\1\t/; s/^\([0-9a-f]\{64\}\)  /H\t\1\t/'
 # package ownership: every exe path, preload library and dropped-file path
 EXES=$(printf '%s\n' "$PROCEXES" | sed 's/ (deleted)$//' | grep '^@ROOT@/' | grep -v '^/memfd:' | grep -v '^@ROOT@/tmp/' | grep -v '^@ROOT@/dev/shm/' | grep -v '^@ROOT@/var/tmp/' | sort -u)
-WANT=$( { printf '%s\n' "$EXES"; printf '%s\n' "$PRELOADS" | grep '^/'; printf '%s\n' "$TEMPFILES"; } | grep '^/' | sort -u)
+WANT=$( { printf '%s\n' "$EXES"; printf '%s\n' "$PRELOADS" | grep '^/'; printf '%s\n' "$TEMPFILES"; printf '%s\n' "$LIBPATHS" | sed 's|^|@ROOT@|'; } | grep '^/' | sort -u)
 @OWNERSHIP@# which deleted-exe paths exist again (a package upgrade leaves the old inode running)
 printf '%s\n' "$PROCEXES" | grep ' (deleted)$' | sed 's/ (deleted)$//' | grep '^/' | sort -u | while IFS= read -r _p; do
   [ -e "$_p" ] && printf 'EXIST\t%s\n' "$_p"
@@ -250,7 +280,7 @@ def build_script(root: str = "") -> str:
     out = [
         _SH_HEAD,
         catalog.FAMILY_SH.replace("/etc/os-release", f"{r}/etc/os-release"),
-        _SH_PROC, _SH_NET_TEMP,
+        _SH_PROC, _SH_NET_TEMP, _SH_LIBS,
         # Two passes over /proc are expensive, so the main body captures the process
         # records once and reuses the exe/preload lists for ownership.
         "PROCOUT=$(kr_proc)",
@@ -267,6 +297,7 @@ def build_script(root: str = "") -> str:
         ("MAXPROCS", str(MAX_PROCS)), ("MAXCMD", str(MAX_CMDLINE_CHARS)), ("MAXFD", str(MAX_FD_PER_PROC)),
         ("MAXTEMP", str(MAX_TEMP_FILES)), ("TEMPT", str(TEMP_FIND_SECONDS)), ("TEMPDIRS", tempdirs),
         ("MAXHASH", str(MAX_HASH_BYTES)), ("HASHT", str(HASH_SECONDS)),
+        ("MAXLIBS", str(MAX_LIBS_PER_PROC)), ("MAXLIBSALL", str(MAX_LIBS_TOTAL)), ("MAXADDR", str(MAX_ADDRESSES)),
         ("PRELOADVARS", " ".join(PRELOAD_VARS)), ("LDPATHVARS", " ".join(LDPATH_VARS)),
         ("AWKSTAT", _sh_q(AWK_STAT)), ("AWKNET", _sh_q(AWK_NET)),
     ):
@@ -337,6 +368,9 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
         # what this read could not look at (lifecycle blind spots, kratos.live.record):
         # pid -> what of it was unreadable; temp folders it could not enter; hidepid
         "proc_gap_pids": {}, "temp_denied": [], "hidepid": False,
+        # D.3: whether this read looked at listening processes' libraries (older
+        # agents don't), which it could not read, and the machine's own addresses
+        "maps_read": False, "maps_gaps": [], "local_addresses": [],
     }
     procs: dict[int, dict[str, Any]] = inv["procs"]
     temp: dict[str, dict[str, Any]] = inv["temp_files"]
@@ -359,6 +393,8 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
                 inv["reader_uid"] = _int_or_none(val)
             elif key == "hidepid":
                 inv["hidepid"] = val == "1"
+            elif key == "maps":
+                inv["maps_read"] = val == "1"
         elif tag == "PP" and len(cols) >= 4:
             it = proc(int(cols[1])) if cols[1].isdigit() else None
             if it is not None:
@@ -394,6 +430,16 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
             inv["sockets"].append({"proto": cols[1], "local_addr": laddr, "local_port": lport,
                                    "remote_addr": raddr, "remote_port": rport, "state": cols[4],
                                    "inode": _int_or_none(cols[5])})
+        elif tag == "LIB" and len(cols) >= 3 and cols[1].isdigit():
+            libs = proc(int(cols[1])).setdefault("libs", [])
+            if len(libs) < MAX_LIBS_PER_PROC:
+                libs.append(p(cols[2]))
+        elif tag == "MAPGAP" and len(cols) >= 2 and cols[1].isdigit():
+            inv["maps_gaps"].append(int(cols[1]))
+        elif tag in ("IFA", "IFA6") and len(cols) >= 2:
+            addr = _local_address(cols[1], v6=tag == "IFA6")
+            if addr and addr not in inv["local_addresses"] and len(inv["local_addresses"]) < MAX_ADDRESSES:
+                inv["local_addresses"].append(addr)
         elif tag == "TMP" and len(cols) >= 2:
             temp.setdefault(p(cols[1]), {"path": p(cols[1])})
         elif tag == "S" and len(cols) >= 9:
@@ -442,11 +488,26 @@ def parse_output(stdout: str, root: str = "") -> dict[str, Any]:
         preloads = (it.get("ld") or {})
         it["preload_packages"] = {lib: owners.get(lib) for var in PRELOAD_VARS
                                   for lib in [preloads.get(var)] if lib and lib.startswith("/")}
+        if it.get("libs"):
+            it["lib_packages"] = sorted({owners[lib] for lib in it["libs"] if owners.get(lib)})
     for path, it in temp.items():
         if path in owners:
             it["package"] = owners[path]
     inv["exists_again"] = sorted(inv["exists_again"])
     return inv
+
+
+def _local_address(text: str, *, v6: bool) -> str | None:
+    """A printable address from an IFA (dotted IPv4) or IFA6 (if_inet6's 32 hex digits,
+    network order) record, or None."""
+    import ipaddress
+
+    try:
+        if v6:
+            return str(ipaddress.IPv6Address(bytes.fromhex(text.strip())))
+        return str(ipaddress.IPv4Address(text.strip()))
+    except ValueError:
+        return None
 
 
 def _strip_root_exe(target: str, r: str) -> str:
@@ -637,6 +698,10 @@ def inventory_output(*, root: str = "", run: Runner | None = None,
             f = line.split()
             if len(f) >= 10:
                 out.append(f"NET\t{proto}\t{f[1]}\t{f[2]}\t{f[3]}\t{f[9]}")
+    # D.3: the machine's own addresses and the libraries of listening processes
+    out.append("M\tmaps\t1")
+    out += _addresses(r)
+    lib_paths = _listening_libs(r, out)
     # dropped executables
     temp_files = _find_temp_files(r, run, deadline, out)
     for path in temp_files:
@@ -644,7 +709,7 @@ def inventory_output(*, root: str = "", run: Runner | None = None,
     # package ownership of exes, preload libs and dropped files
     real_exes = sorted({_exe_real_path(e) for e in proc_exes} - {None})      # type: ignore[arg-type]
     wanted = {e for e in real_exes if e} | {x for x in preloads if x.startswith("/")} \
-        | {p for p in temp_files}
+        | {p for p in temp_files} | {(r + x) if r else x for x in lib_paths}
     owners, own_lines = _persistence._ownership(family, wanted, r, run)
     out += own_lines
     out += [f"OWN\t{p}\t{pkg}" for p, pkg in sorted(owners.items())]
@@ -664,6 +729,83 @@ def inventory_output(*, root: str = "", run: Runner | None = None,
         text = text[:text.rfind("\n") + 1]
         truncated = True
     return {"returncode": 0, "stdout": text, "stderr": "", "truncated": truncated}
+
+
+def _addresses(r: str) -> list[str]:
+    """IFA / IFA6 records: the same reads the script makes."""
+    out: list[str] = []
+    data = _read_proc_file(f"{r}/proc/net/fib_trie", 4 * 1024 * 1024)
+    if data is not None:
+        ip = ""
+        seen: set[str] = set()
+        for line in data.decode("latin-1").split("\n"):
+            s = line.strip()
+            if s.startswith("|-- "):
+                ip = s[4:].split()[0] if s[4:].split() else ""
+            elif s.startswith("/32 host LOCAL") and ip and ip not in seen and len(seen) < MAX_ADDRESSES:
+                seen.add(ip)
+                out.append(f"IFA\t{ip}")
+    data = _read_proc_file(f"{r}/proc/net/if_inet6", 1024 * 1024)
+    if data is not None:
+        seen6: set[str] = set()
+        for line in data.decode("latin-1").split("\n"):
+            f = line.split()
+            if f and len(f[0]) == 32 and f[0] not in seen6 and len(seen6) < MAX_ADDRESSES:
+                seen6.add(f[0])
+                out.append(f"IFA6\t{f[0]}")
+    return out
+
+
+_LIB_RE = re.compile(r"[.]so([.][0-9]+)*$")
+
+
+def _is_library_path(path: str) -> bool:
+    """A shared library's path (the same test as the script's awk: absolute, ending .so[.N...])."""
+    return path.startswith("/") and bool(_LIB_RE.search(path))
+
+
+def _listening_libs(r: str, out: list[str]) -> list[str]:
+    """LIB / MAPGAP records for every process holding a listening socket (from the NET
+    and FD records already in `out`). Returns the library paths seen."""
+    listening: set[str] = set()
+    for line in out:
+        if line.startswith("NET\t"):
+            c = line.split("\t")
+            if len(c) >= 6 and ((c[1].startswith("tcp") and c[4].upper() == "0A")
+                                or (c[1].startswith("udp") and c[4] == "07" and c[3].endswith(":0000"))):
+                listening.add(c[5])
+    pids: list[int] = []
+    for line in out:
+        if line.startswith("FD\t"):
+            c = line.split("\t")
+            if len(c) >= 3 and c[2] in listening and c[1].isdigit() and int(c[1]) not in pids:
+                pids.append(int(c[1]))
+    paths: set[str] = set()
+    total = 0
+    for pid in pids:
+        data = _read_proc_file(f"{r}/proc/{pid}/maps", 16 * 1024 * 1024)
+        if data is None:
+            out.append(f"MAPGAP\t{pid}")
+            continue
+        libs: list[str] = []
+        for line in data.decode("utf-8", "replace").split("\n"):
+            f = line.split(None, 5)
+            if len(f) < 6:
+                continue
+            path = f[5].strip()
+            if path.endswith(" (deleted)"):
+                path = path[: -len(" (deleted)")]
+            if _is_library_path(path):
+                path = _strip_root_exe(path, r) if r else path
+                if path not in libs:
+                    libs.append(path)
+        for lib in sorted(libs)[:MAX_LIBS_PER_PROC]:
+            if total >= MAX_LIBS_TOTAL:
+                return sorted(paths)
+            out.append(f"LIB\t{pid}\t{_clean(lib)}")
+            paths.add(lib)
+            total += 1
+    return sorted(paths)
 
 
 def _scan_fds(d: str, pid: int, out: list[str], gaps: dict[str, int]) -> None:
