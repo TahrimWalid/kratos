@@ -180,10 +180,7 @@ def _cves_decisive_first(f: dict[str, Any]) -> list[str]:
     """The finding's CVEs, the one behind its SSVC decision first (D.3)."""
     cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
     lead = str((f.get("ssvc") or {}).get("cve") or "") if isinstance(f.get("ssvc"), dict) else ""
-    if lead in cves:
-        cves.remove(lead)
-        cves.insert(0, lead)
-    return cves
+    return [lead] + [c for c in cves if c != lead] if lead in cves else cves
 
 
 def _display_entity(entity: str) -> tuple[str, list[str]]:

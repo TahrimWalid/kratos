@@ -227,9 +227,11 @@ def test_new_session_flow_onboards_remote_but_not_host(tmp_path, monkeypatch):
         asyncio.run(run())
         return seen, opened
 
-    # Remote: target prompt -> OnboardTargetScreen (dismiss None) -> name prompt.
-    seen_remote, opened_remote = scenario(["203.0.113.5", None, ""])
+    # Remote: target prompt -> OnboardTargetScreen (dismiss None) -> how much it matters
+    # (D.3, asked once; "later") -> name prompt.
+    seen_remote, opened_remote = scenario(["203.0.113.5", None, "later", ""])
     assert "OnboardTargetScreen" in seen_remote
+    assert seen_remote[2] == "ListPickerModal"  # the one-time criticality question
     assert opened_remote  # the session still opens after onboarding
 
     # Host: target prompt -> (no onboarding) -> name prompt.
