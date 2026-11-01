@@ -103,6 +103,7 @@ from kratos.adapters.vuln_scan import (
     parse_nuclei_jsonl as _parse_nuclei_jsonl,
     DEFAULT_NUCLEI_TAGS as _DEFAULT_NUCLEI_TAGS,
     STALENESS_THRESHOLD_DAYS as _VULSCAN_STALENESS_THRESHOLD_DAYS,
+    STALE_CVE_YEARS as _VULSCAN_STALE_CVE_YEARS,
 )
 from kratos.adapters.threat_intel import (
     lookup_ip_cache as _lookup_ip_cache,
@@ -1559,9 +1560,16 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
         cve_gap = "known CVEs on the target's services (the CVE database isn't installed)"
     elif cve_matching == "failed":
         cve_gap = "known CVEs on the target's services (the version scan that CVE matching needs failed)"
-    elif staleness["note"] and staleness["newest_cve_year"]:
+    elif staleness["note"] and staleness["newest_cve_year"] and (
+            staleness["newest_cve_year"] < datetime.now().year - _VULSCAN_STALE_CVE_YEARS):
         cve_gap = (f"CVEs published after {staleness['newest_cve_year']} "
                    "(the local CVE list used for matching ends there)")
+    elif staleness["stale"] and staleness["age_days"] is not None:
+        # The list reaches this year but is old: what was published or changed since it
+        # was rebuilt is not matched (D.3 follow-up: this used to say "after <this year>").
+        cve_gap = (f"CVEs published or changed in the last {staleness['age_days']} days (the local CVE list used "
+                   f"for matching is {staleness['age_days']} days old, last rebuilt "
+                   f"{str(staleness['last_updated'] or '')[:10]} -- refresh it with `kratos vulscan-install`)")
     else:
         cve_gap = None
 
