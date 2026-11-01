@@ -12,6 +12,19 @@ incus = "kratos-target"       # its Incus name, for setups that need the console
 incus = "attacker-box"
 ip = "10.136.28.52"
 
+[vulndb]
+# The package-vulnerability index (`kratos vulndb-update` builds it) linked into every live
+# run's data folder, as a real install has it. Package scenarios (V1_pkg) need it; without
+# one they are reported incomplete, not failed. EVAL_VULNDB overrides this path.
+path = "~/kratos_eval_artifacts/phaseD3/vulndb.sqlite"
+
+[expect.V1_pkg]
+# What the external harness plants for V1_pkg (an old libnghttp2-14 from the 22.04 release
+# pocket, inside a snapshot it restores after the run) and what the answer must name.
+# EVAL_V1_PKG / EVAL_V1_CVE override them.
+package = "nghttp2"
+cve = "CVE-2023-44487"
+
 [recordings]
 # Recordings may hold only lab data. tests/test_eval_recordings.py fails on any address
 # outside private, loopback, link-local and documentation ranges unless it is listed

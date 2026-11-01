@@ -33,6 +33,8 @@ class Lab:
     attacker_incus: str
     attacker_ip: str
     allowed_public: dict[str, str] = field(default_factory=dict)
+    vulndb: str = ""                                   # index linked into live runs ([vulndb] path)
+    expect: dict[str, dict[str, str]] = field(default_factory=dict)   # per-scenario expectations
 
 
 @lru_cache(maxsize=None)
@@ -42,7 +44,22 @@ def lab() -> Lab:
     t, a = d["target"], d["attacker"]
     return Lab(target=t["host"], target_user=t["user"], key=str(Path(t["key"]).expanduser()),
                target_incus=t["incus"], attacker_incus=a["incus"], attacker_ip=a["ip"],
-               allowed_public=dict(d.get("recordings", {}).get("allowed_public_addresses", {})))
+               allowed_public=dict(d.get("recordings", {}).get("allowed_public_addresses", {})),
+               vulndb=str(Path(str(d.get("vulndb", {}).get("path") or "")).expanduser())
+               if d.get("vulndb", {}).get("path") else "",
+               expect={k: dict(v) for k, v in (d.get("expect") or {}).items() if isinstance(v, dict)})
+
+
+def vulndb_path() -> Path | None:
+    """The vulnerability index live runs get: EVAL_VULNDB, else [vulndb] path; None if missing."""
+    raw = os.environ.get("EVAL_VULNDB") or lab().vulndb
+    p = Path(raw).expanduser() if raw else None
+    return p if p is not None and p.is_file() else None
+
+
+def expected(scenario_id: str, key: str, env: str) -> str:
+    """A scenario's expectation from the environment, else from [expect.<scenario>]."""
+    return (os.environ.get(env) or lab().expect.get(scenario_id, {}).get(key) or "").strip()
 
 
 def lab_addresses() -> set[str]:
