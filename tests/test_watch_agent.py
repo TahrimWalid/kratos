@@ -267,13 +267,17 @@ def test_a_spool_overflow_while_the_link_is_down_is_a_gap(tmp_path):
         now = time.time()
         append(data, *[journal_entry(i, now, sudo_line("alice", f"/usr/bin/chattr -i /f{i}"), comm="sudo")
                        for i in range(1, 151)])
+        # 150 matches into a 100-detection spool drop exactly 50. The watcher thread counts a
+        # drop in the spool first and in the gap a moment later, so wait for both to settle
+        # (reading them in between failed on a slow CI runner: gap 49, spool 50).
         wait_for(lambda: m.spool.dropped >= 50, timeout=20)
-        gap = wait_for(lambda: next((g for g in m.gaps["journal"] if g.get("kind") == "spool"), None))
-        assert "dropped" in gap["reason"]
-        assert len(m.spool) == 100
+        gap = wait_for(lambda: next((g for g in m.gaps["journal"] if g.get("kind") == "spool"
+                                     and g.get("dropped") == 50), None), timeout=20)
+        assert "50 detection(s) dropped" in gap["reason"]
+        assert len(m.spool) == 100 and m.spool.dropped == 50
         # one gap for the outage, kept up to date -- not one per dropped match -- and on the right log
         spool_gaps = [g for g in m.gaps["journal"] if g.get("kind") == "spool"]
-        assert len(spool_gaps) == 1 and spool_gaps[0]["dropped"] == m.spool.dropped
+        assert len(spool_gaps) == 1
         assert not [g for g in m.gaps["auditd"] if g.get("kind") == "spool"]
     finally:
         m.stop()
