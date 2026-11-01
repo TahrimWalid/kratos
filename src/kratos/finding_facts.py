@@ -167,13 +167,23 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
     sigma = _is_rule(f)      # C.1: a detection rule's subject is an address, user or program
     if subject and _PACKAGE_RE.match(subject) and not sigma:
         facts.append(f"package {subject}")
-    cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
+    cves = _cves_decisive_first(f)
     if cves:
         facts.append(", ".join(cves[:2]) + (f" (+{len(cves) - 2})" if len(cves) > 2 else ""))
     decision = decision_fact(f)
     if decision:
         facts.append(decision)
     return facts
+
+
+def _cves_decisive_first(f: dict[str, Any]) -> list[str]:
+    """The finding's CVEs, the one behind its SSVC decision first (D.3)."""
+    cves = [e for e in (str(x) for x in f.get("entities") or []) if _CVE_RE.match(e)]
+    lead = str((f.get("ssvc") or {}).get("cve") or "") if isinstance(f.get("ssvc"), dict) else ""
+    if lead in cves:
+        cves.remove(lead)
+        cves.insert(0, lead)
+    return cves
 
 
 def _display_entity(entity: str) -> tuple[str, list[str]]:
@@ -283,7 +293,8 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
         facts = [ip_fact for ip_fact in (f"source {ip}" + (", known-malicious in the threat-intel cache"
                                                           if known_malicious(f) else "") for ip in ips(f))]
         if not ips(f):
-            shown = [_display_entity(str(e))[0] for e in (f.get("entities") or [])[:2]]
+            ordered = _cves_decisive_first(f) or list(f.get("entities") or [])
+            shown = [_display_entity(str(e))[0] for e in ordered[:2]]
             subject = str(f.get("subject") or "")
             sigma = _is_rule(f)
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])

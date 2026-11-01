@@ -364,6 +364,16 @@ def test_downplaying_an_act_finding_is_caught(answer, caught):
     assert finding_facts.downplays(answer, f) is caught
 
 
+def test_the_decisive_cve_is_named_first():
+    from kratos import finding_facts
+
+    f = {"id": "PKG-001", "severity": "critical", "subject": "apache2", "title": "apache2: 3 fixable",
+         "entities": ["CVE-2006-20001", "CVE-2022-26377", "CVE-2024-38475"],
+         "ssvc": {"outcome": "act", "label": "Act", "cve": "CVE-2024-38475", "exposure": {"value": "network"}}}
+    assert "CVE-2024-38475, CVE-2006-20001 (+1)" in finding_facts.safe_facts(f)
+    assert "-- CVE-2024-38475; CVE-2006-20001; decision Act" in finding_facts.answer_block([f], "")
+
+
 def test_act_findings_are_serious_even_below_high_and_carry_their_decision():
     from kratos import finding_facts
 
