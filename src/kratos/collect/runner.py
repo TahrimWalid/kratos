@@ -290,6 +290,15 @@ def _default_dispatch() -> Dispatch:
     return execute_tool_call
 
 
+def _sample_disk_growth(data_dir: Path) -> None:
+    """Once a day, the data folder's size for /doctor's disk projection (kratos.diskgrowth),
+    on a thread of its own so the walk never delays a collection."""
+    from kratos import diskgrowth
+
+    threading.Thread(target=diskgrowth.record_sample, args=(Path(data_dir),), name="kratos-disk-sample",
+                     daemon=True).start()
+
+
 def prepare(
     target: str | None = None,
     data_dir: Path | str | None = None,
@@ -317,6 +326,7 @@ def prepare(
     if data_dir is None:
         report.disabled_reason = "no data folder"
         return report
+    _sample_disk_growth(data_dir)
     if budget is None:
         budget = float(settings_store.get(collect_settings.START_BUDGET, data_dir=data_dir))
     report.budget_seconds = float(budget)

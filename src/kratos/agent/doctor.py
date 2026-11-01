@@ -346,7 +346,20 @@ def _check_stored_data(out: list[Check], data_dir: Path) -> None:
         detail += f"; biggest: {s['biggest']} ({datainv.human_size(s['biggest_bytes'])})"
     out.append(_row("stored data", "info", detail + f". {datainv.NOTHING_DELETED}",
                     "`kratos data` lists every kind, where it is and whether it is personal data"))
+    _check_disk_growth(out, data_dir)
     _check_trace_export(out, data_dir)
+
+
+def _check_disk_growth(out: list[Check], data_dir: Path) -> None:
+    """When the data folder's disk fills at the last 7 days' rate (Phase D README §3)."""
+    from kratos import diskgrowth
+
+    diskgrowth.record_sample(data_dir)
+    p = diskgrowth.project(data_dir)
+    status = {"measuring": "info"}.get(p.status, p.status)
+    fix = ("make room on that disk, move the data folder (KRATOS_HOME) to a bigger one, or remove old data "
+           "yourself with `kratos data prune` (preview first)") if p.status in ("warn", "fail") else ""
+    out.append(_row("disk growth", status, p.text, fix))
 
 
 def _check_trace_export(out: list[Check], data_dir: Path) -> None:
