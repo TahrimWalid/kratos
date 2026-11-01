@@ -248,8 +248,9 @@ def test_findings_evidence_states_partial_coverage(tmp_path, monkeypatch):
     evidence = " ".join(" ".join(f.get("evidence") or []) for f in report["findings"])
     assert "Coverage: partial" in evidence and "SSH log: only the newest 500 entries were read" in evidence
     assert any(f["id"] == "COV-001" for f in report["findings"])
-    # and the burst itself still produced the attributed burst finding
-    assert any(f["id"] == "AUTH-004" and "10.66.66.66" in " ".join(f["evidence"]) for f in report["findings"])
+    # and the burst itself still produced the attributed burst finding (failed logins from
+    # another address prove SSH is reachable, so it is the brute-force finding, not AUTH-004)
+    assert any(f["id"] == "CORR-SSH-001" and "10.66.66.66" in " ".join(f["evidence"]) for f in report["findings"])
 
 
 def test_openssh_98_sshd_session_lines_reach_the_correlation_feed(monkeypatch):

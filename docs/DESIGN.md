@@ -1510,6 +1510,35 @@ These on-demand snapshots (`PRIV-*`, `VULN-*`) are considered even when the
 core inputs are passed explicitly, since each is already limited to a fresh
 scan of the active target.
 
+**SSH brute force is rated by whether a guess can succeed** (owner decision
+2026-11-01), not by how many attempts there were. Every `run_config_audit` call
+(both transports) saves its rows as `context/config_audit_<ts>.json`, and
+`adapters/ssh_guessing.py::assess` reads the newest one for the machine (under
+24 h): `closed` when password and keyboard-interactive-with-PAM logins are off
+and no `Match` block re-enables them (or `AuthenticationMethods` requires a key
+for every allowed sign-in), `open` when any of those is on, `unknown` when a
+needed row is missing or couldn't be read -- an agent older than 0.9.3 doesn't
+report the new rows, and the gap says so. CORR-SSH-001 (and CORR-001, which it
+absorbs) is low / high / medium for closed / open / unknown, with the reasons and
+gaps in its evidence. Reachability no longer needs an nmap scan:
+`ssh_guessing.exposure` counts failed logins from addresses outside the
+local-network ranges (private, CGNAT/tailnet, link-local, loopback, ULA) as
+"reachable from the internet", any other remote source as "from the network",
+and also accepts sshd listening on a non-loopback address (from the live-response
+read) or an nmap scan that found SSH open.
+
+`CORR-SSH-002` (`kratos/sshguess/`, collection check `ssh_guess` after log sync)
+reads the exhaustive stored sign-in events, not the target-side burst summary
+(that keeps only the top 5 sources): a successful SSH login from an address with
+3 or more guessing failures in the 24 hours before it. Guessing failures are
+password, keyboard-interactive, invalid-user, PAM authentication-failure,
+max-attempts and `none` lines; `Failed publickey` is not guessing (a client
+offering each of its keys). Kratos's own logins are set aside by key fingerprint
+(`detect/own.is_own_login`). Critical when the login used a password or
+keyboard-interactive, high for a key; one finding per address, the entities are
+the individual logins, and an occurrence rule (a past login doesn't "close").
+No stored sign-in events in the last 24 h is a stated gap, never a clean result.
+
 The agent loop enforces a few structural checks on any `final_answer`
 before accepting it, rather than trusting the model's own claim:
 
@@ -1599,6 +1628,7 @@ restart-needed hint or a first look is never a "not checked" gap.
 | Rules | Label (v19) |
 | --- | --- |
 | AUTH-004, CORR-001, CORR-SSH-001, CORR-002 | T1110.001 Password Guessing (Credential Access) |
+| CORR-SSH-002 | T1110.001 Password Guessing (Credential Access); T1078 Valid Accounts (Initial Access) |
 | PRIV-001, PRIV-003 | T1098 Account Manipulation (Persistence, Privilege Escalation) |
 | PRIV-002 | T1136.001 Local Account (Persistence); T1098 Account Manipulation |
 | INTEG-001 | by changed file (above) |

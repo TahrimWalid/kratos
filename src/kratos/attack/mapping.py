@@ -35,7 +35,8 @@ LINUX_AUDIT = label("T1685.004")
 DISABLE_TOOLS = label("T1685")
 
 # Accounts and passwords.
-EXPLOIT_PUBLIC_APP = label("T1190")                                  # Initial Access
+EXPLOIT_PUBLIC_APP = label("T1190")
+VALID_ACCOUNTS = label("T1078", "initial-access")                                  # Initial Access
 PASSWORD_GUESSING = label("T1110.001")                              # Credential Access
 ACCOUNT_MANIPULATION = label("T1098", "persistence", "privilege-escalation")
 LOCAL_ACCOUNT = label("T1136.001")                                  # Create Account: Local Account
@@ -155,6 +156,8 @@ RULE_ATTACK: dict[str, Entry] = {
     "AUTH-004": Behaviour((PASSWORD_GUESSING,), why=_BURST_WHY),
     "CORR-001": Behaviour((PASSWORD_GUESSING,), why=_BURST_WHY),
     "CORR-SSH-001": Behaviour((PASSWORD_GUESSING,), why=_BURST_WHY),
+    "CORR-SSH-002": Behaviour((PASSWORD_GUESSING, VALID_ACCOUNTS),
+                              why="an address that was guessing passwords then logged in with a valid account"),
     "CORR-002": Behaviour((PASSWORD_GUESSING,), why=_BURST_WHY + " (here: one sudo user's password)"),
     "AUTH-001": Posture("any sudo password failure, usually a typo; repeated guessing is AUTH-004/CORR-002"),
     "AUTH-003": Posture("sudo sessions are normal admin activity, not by themselves an attack"),

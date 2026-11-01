@@ -517,6 +517,31 @@ Two things keep answers readable:
   from an earlier check, are folded into one line — *"Also on record — unchanged since
   shown above: …"* — and `/report` shows them all.
 
+**How serious is an SSH brute force?** Every server that can be reached from the
+internet is guessed at by bots all day, so the number of attempts says little. What
+matters is whether a guess *can* work, and Kratos reads that from the machine's own
+SSH settings (the configuration audit, which runs on every collection):
+
+| What sshd allows | The brute-force finding (`CORR-SSH-001`) |
+| --- | --- |
+| Keys only — password and keyboard-interactive logins are off, and no `Match` block turns them back on | **low** — "attempts that can't succeed"; no phone alert |
+| Passwords possible — `PasswordAuthentication yes`, keyboard-interactive through PAM, a `Match` block that turns passwords on for some users or addresses, or `AuthenticationMethods` that lets someone in without a key | **high** — the finding says which setting allows it |
+| Can't tell — the settings couldn't be read (no sudo for `sshd -T`, `sshd_config` not readable, or a sub-agent older than 0.9.3) | **medium** — the finding says what couldn't be read and how to fix it |
+
+Kratos no longer needs a network scan to know SSH is reachable: failed logins from
+public addresses already prove it, and so does sshd listening on a network address.
+That matters for a machine watched only through a sub-agent, where no scan runs.
+
+**A successful login from an address that was guessing** is a separate finding,
+`CORR-SSH-002`, and it is **critical** when the login used a password or
+keyboard-interactive (the guess may have worked) — **high** when it used a key.
+It fires when an address had 3 or more failed guesses in the 24 hours before it got
+in. Trying several keys before the right one isn't guessing, so an admin whose SSH
+client offers each of its keys doesn't trigger it, and neither do Kratos's own
+logins. The finding names the account and the time, and gives the
+`kratos hunt <address> --machine <machine>` command that shows everything else that
+address did.
+
 **The ATT&CK line.** A finding about something an attacker *did* carries a line like
 
 > ATT&CK: T1110.001 Password Guessing (Credential Access)
@@ -1041,7 +1066,9 @@ rules of its own** for what every Linux machine logs anyway. Their findings are 
 
 An SSH brute force is **medium** on purpose: a server open to the internet sees one every
 few minutes, so it doesn't reach your phone with the ready-made alert (high and critical
-only). It still shows in answers, `/findings` and `/detect`. The account rules read the
+only). The brute-force finding a collection produces (`CORR-SSH-001`) goes further and
+rates the burst by whether a guess could work — see "How serious is an SSH brute force?"
+under Understanding findings. It still shows in answers, `/findings` and `/detect`. The account rules read the
 lines `useradd`, `usermod`, `gpasswd`, `passwd` and similar tools write to the system
 journal. Kratos reads those from the moment it (and, on a sub-agent machine, its agent
 — 0.9.1 or newer) is updated; account changes made before that are still reported by the

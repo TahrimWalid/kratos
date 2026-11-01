@@ -46,8 +46,15 @@ def test_burst_findings_name_every_source_ip_normalised():
 
 
 def test_auth_004_without_ssh_exposure_names_its_ips():
-    f = _by_id(FE.generate_findings(None, None, {"bursts": [_burst([("203.0.113.9", 4)])]}, None))["AUTH-004"]
-    assert f.entities == ["203.0.113.9"]
+    # failed logins from another address prove SSH is reachable (CORR-SSH-001); with no remote
+    # source and no scan, only the burst itself is known
+    f = _by_id(FE.generate_findings(None, None, {"bursts": [_burst([("127.0.0.1", 4)])]}, None))["AUTH-004"]
+    assert f.entities == ["127.0.0.1"]
+
+
+def test_failed_logins_from_another_address_prove_ssh_is_reachable_without_a_scan():
+    f = _by_id(FE.generate_findings(None, None, {"bursts": [_burst([("203.0.113.9", 4)])]}, None))
+    assert "AUTH-004" not in f and f["CORR-SSH-001"].entities == ["203.0.113.9"]
 
 
 def test_tied_source_ips_are_ordered_by_ip_so_the_first_is_stable():

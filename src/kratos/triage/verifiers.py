@@ -357,6 +357,9 @@ register_no_verifier(NoVerifier(
 register_verifier(Verifier(rules=("WEB-002",), cost="quick", verify=_verify_web_exposure,
                            label="a fresh package and listening-port read"))
 register_no_verifier(NoVerifier(
+    rules=("CORR-SSH-002",),
+    reason="a past login is in stored sign-in events (the finding lists them); `kratos hunt <address>` shows them"))
+register_no_verifier(NoVerifier(
     rules=("WEB-001",),
     reason="a crash burst is in stored log lines (the finding lists them); a fresh read can't make it happen again"))
 register_no_verifier(NoVerifier(

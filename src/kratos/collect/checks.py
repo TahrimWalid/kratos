@@ -146,7 +146,8 @@ def _run_privileged_accounts(ctx: CheckContext) -> CheckResult:
 _AUDIT_NAMES = {
     "ssh_root_login": "SSH root login", "ssh_password_auth": "SSH password login", "firewall": "firewall",
     "fail2ban_status": "fail2ban", "world_writable_etc": "world-writable files in /etc",
-    "unattended_upgrades": "automatic updates",
+    "unattended_upgrades": "automatic updates", "ssh_kbd_interactive": "SSH keyboard-interactive login",
+    "ssh_match_password": "SSH Match blocks", "ssh_auth_methods": "SSH AuthenticationMethods",
 }
 
 
@@ -263,7 +264,7 @@ register(Check(
     short="privileged"))
 register(Check(
     name="config_audit", cost="quick", ttl_setting="collect.ttl.config_audit_minutes", default_ttl_minutes=360,
-    run=_run_config_audit, inputs=(), transports=frozenset({"ssh", "agent"}), budget_seconds=40.0,
+    run=_run_config_audit, inputs=("config_audit",), transports=frozenset({"ssh", "agent"}), budget_seconds=40.0,
     label="configuration audit", order=60, short="config"))
 register(Check(
     name="log_sync", cost="quick", ttl_setting="collect.ttl.log_sync_minutes", default_ttl_minutes=15,
@@ -295,3 +296,6 @@ from kratos.detect import check as _detect_check  # noqa: E402,F401
 
 # Web-server worker crash bursts and PHP served to the network (reads what the checks above stored).
 from kratos.websig import check as _websig_check  # noqa: E402,F401
+
+# A login from an address that was guessing passwords (reads the sign-in events log sync stored).
+from kratos.sshguess import check as _sshguess_check  # noqa: E402,F401

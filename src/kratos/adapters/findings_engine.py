@@ -153,6 +153,8 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         "file_integrity": pick(baseline_dir, "file_integrity_diff_*.json", "file_integrity"),
         # Filtered by its own loader (_load_recent_privileged_snapshot).
         "privileged_accounts": latest_file(ctx_dir, "privileged_accounts_*.json"),
+        # sshd's login settings for this machine (adapters/ssh_guessing.load_recent: <= 24 h).
+        "config_audit": pick(ctx_dir, "config_audit_*.json", "config_audit"),
         # check_log_integrity (0.3): the newest result for this machine; freshness
         # is checked by _load_recent_log_integrity.
         "log_integrity": pick(data_dir / "integrity", "log_integrity_*.json", "log_integrity"),
@@ -667,6 +669,7 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "CORR-001": "A network-exposed SSH service combined with a burst of failed logins — a pattern consistent with a brute-force attempt.",
     "CORR-002": "A burst of failed admin (sudo) logins concentrated on a single account.",
     "CORR-SSH-001": "SSH is exposed to the network and a burst of failed logins was observed — looks like a brute-force attempt.",
+    "CORR-SSH-002": "A login succeeded from an address that had been guessing passwords — the guessing may have worked.",
     "AUTH-TREND-001": "Login failures have been trending upward across recent runs.",
     "INTEG-001": "One or more tracked files have changed since the last known-good baseline.",
     "ENV-001": "This looks like a development environment (WSL2), not a production system.",
@@ -953,11 +956,17 @@ def generate_findings(
     snapshots: dict[str, dict[str, Any] | None] | None = None,
     package_fixed_cves: dict[str, str] | None = None,
     package_doubted_cves: dict[str, str] | None = None,
+    config_audit: dict[str, Any] | None = None,
 ) -> list[Finding]:
     """`auth_patterns_window`: the auth_stats data saved WITH the burst list (same
     read), so a burst finding states the window its count covers. Without it the
-    auth_stats argument is assumed to be that read."""
+    auth_stats argument is assumed to be that read. `config_audit`: the machine's
+    latest config audit (adapters/ssh_guessing) -- whether SSH password guessing can
+    succeed, which sets the SSH brute-force finding's severity."""
+    from kratos.adapters import ssh_guessing as _ssh_guessing
+
     findings: list[Finding] = []
+    ssh_guess = _ssh_guessing.assess(config_audit)
     burst_window_note = _time_window_note(
         auth_patterns_window if auth_patterns_window is not None else auth_stats)
 
@@ -1216,7 +1225,7 @@ def generate_findings(
             Finding(
                 id="CORR-001",
                 title="SSH exposure correlated with failed-login burst activity",
-                severity="medium",
+                severity=ssh_guess.severity,
                 evidence=[
                     "SSH appears exposed in latest scan (port 22 and/or ssh service detected).",
                     f"Bursts of failed SSH logins: {len(ssh_bursts)}",
@@ -1282,33 +1291,34 @@ def generate_findings(
             )
         )
 
-    # CORR-SSH-001: SSH open + failed-login burst => HIGH
-    # Check exposure from both nmap and system context
+    # CORR-SSH-001: SSH reachable + failed-login burst. Severity by whether a guess can
+    # succeed (adapters/ssh_guessing; owner decision 2026-11-01): password logins
+    # possible -> high, key-only -> low (constant internet scanning that can't get in),
+    # settings unknown -> medium. Reachability from the machine's own evidence too
+    # (failures from other addresses, sshd listening on a network address), so a machine
+    # reached only through its sub-agent (no nmap) is judged like any other.
     ssh_from_nmap = _nmap_has_ssh_exposed(nmap_parsed)
     ssh_from_context = False
     ssh_ports = []
-    
+
     if system_context and "ssh" in system_context:
         ssh_ctx = system_context["ssh"]
         if ssh_ctx.get("listening_ports"):
             ssh_from_context = True
             ssh_ports = ssh_ctx.get("listening_ports", [])
-    
-    ssh_exposed = ssh_from_nmap or ssh_from_context
+
     ssh_failed_bursts = _bursts_of(auth_patterns, ("ssh_failed_login",))
-    
+    burst_ips = [e.get("ip") for b in ssh_failed_bursts for e in b.get("top_source_ips") or [] if isinstance(e, dict)]
+    live_doc = (snapshots or {}).get("live_response") or {}
+    reach = _ssh_guessing.exposure(burst_ips, listeners=live_doc.get("listeners"), nmap_ssh=ssh_from_nmap)
+    ssh_exposed = reach.exposed or ssh_from_context
+
     if ssh_exposed and len(ssh_failed_bursts) > 0:
-        # Build evidence based on what detected SSH
         evidence = []
-        if ssh_from_nmap and ssh_from_context:
-            exposure_msg = f"ssh exposed (nmap + context), ports: {ssh_ports if ssh_ports else [22]}"
-        elif ssh_from_nmap:
-            exposure_msg = "ssh exposed (nmap scan detected port 22 open)"
-        else:
-            exposure_msg = f"ssh exposed (context: listening on ports {ssh_ports})"
-        
-        evidence.append(exposure_msg)
+        evidence.extend(reach.lines)
         if ssh_from_context:
+            exposure_msg = f"ssh exposed (context: listening on ports {ssh_ports})"
+            evidence.append(exposure_msg)
             # system_context's "ssh" info reflects whatever host
             # collect_system_context inspected (Kratos's own local host as of
             # this writing) -- flag that explicitly whenever it contributed
@@ -1320,23 +1330,47 @@ def generate_findings(
         evidence.append(f"Bursts of failed SSH logins: {len(ssh_failed_bursts)}")
         # right under the count: the live view shows only the first few evidence lines
         evidence.append(burst_window_note)
-        
+
         # Summarize burst evidence (keep it minimal)
         b0 = ssh_failed_bursts[0]
         evidence.append("for example, " + _burst_line({**b0, "count": b0.get("count", 0)}))
-        
+        evidence.extend(ssh_guess.reasons)
+        evidence.extend("Not known: " + g for g in ssh_guess.gaps)
+
+        if ssh_guess.state == "closed":
+            title = "SSH brute-force attempts that can't succeed (password logins are off)"
+            recommendation = [
+                "Nothing to fix for these guesses: this machine only accepts keys, so guessing passwords can't get in.",
+                "Keep password logins off; if SSH doesn't need to be reachable from everywhere, restrict it "
+                "(firewall allowlist, VPN, or bind to a trusted interface) to cut the noise.",
+                "Watch for a successful login from an address that was guessing (Kratos reports it as CORR-SSH-002).",
+            ]
+        elif ssh_guess.state == "open":
+            title = "SSH brute force against a machine that accepts passwords"
+            recommendation = [
+                "Turn password logins off (PasswordAuthentication no, KbdInteractiveAuthentication no, and no Match "
+                "block turning them back on), then reload sshd -- after checking your own key works.",
+                "Until then: rate-limit or block the guessing addresses (fail2ban), and make sure every account "
+                "that can log in has a strong password.",
+                "Restrict SSH access (firewall allowlist, VPN, or bind to a trusted interface).",
+                "Check for a successful login from a guessing address (Kratos reports it as CORR-SSH-002).",
+            ]
+        else:
+            title = "SSH exposed with failed-login burst activity observed"
+            recommendation = [
+                "Let Kratos read sshd's settings (the configuration audit) so it can tell whether these guesses could "
+                "succeed -- see the gap above.",
+                "Prefer key-based authentication; disable password auth if possible.",
+                "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
+                "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban).",
+            ]
         findings.append(
             Finding(
                 id="CORR-SSH-001",
-                title="SSH exposed with failed-login burst activity observed",
-                severity="high",
+                title=title,
+                severity=ssh_guess.severity,
                 evidence=evidence,
-                recommendation=[
-                    "Confirm SSH is required on this host.",
-                    "Restrict SSH access (firewall, allowlist, or bind to trusted interface/VPN).",
-                    "Prefer key-based authentication; disable password auth if possible.",
-                    "Monitor for continued failed logins and consider rate limiting (e.g., Fail2ban).",
-                ],
+                recommendation=recommendation,
                 playbooks=[
                     {
                         "title": "Inspect recent SSH authentication activity",
@@ -2068,6 +2102,12 @@ _hunt_auto.register()
 from kratos.websig import findings as _websig_findings  # noqa: E402
 
 _websig_findings.register()
+
+# CORR-SSH-002: a successful login from an address that had been guessing passwords
+# (kratos.sshguess), judged from the stored sign-in events.
+from kratos.sshguess import findings as _sshguess_findings  # noqa: E402
+
+_sshguess_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
@@ -2238,6 +2278,10 @@ def write_findings_report(
     # were passed explicitly.
     privileged = _load_recent_privileged_snapshot(auto.get("privileged_accounts"))
     inputs["privileged_accounts"] = auto.get("privileged_accounts") if privileged else None
+    from kratos.adapters import ssh_guessing as _ssh_guessing
+
+    config_audit = _ssh_guessing.load_recent(auto.get("config_audit"))
+    inputs["config_audit"] = auto.get("config_audit") if config_audit else None
     vuln_scan, vuln_scan_path = _load_recent_vuln_scan(data_dir / "scans")
     inputs["vuln_scan"] = vuln_scan_path
     log_integrity = _load_recent_log_integrity(auto.get("log_integrity"))
@@ -2286,6 +2330,7 @@ def write_findings_report(
         snapshots=snapshots,
         package_fixed_cves=package_fixed,
         package_doubted_cves=package_doubts,
+        config_audit=config_audit,
     )
     _stamp_collected_at(findings, inputs)
     from kratos.kratos_config import get_active_target

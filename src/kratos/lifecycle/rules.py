@@ -113,6 +113,8 @@ RULES: dict[str, RuleInfo] = dict([
     _r("CORR-001", "occurrence", _BURST),
     _r("CORR-002", "occurrence", _BURST),
     _r("CORR-SSH-001", "occurrence", _BURST),
+    # a login after guessing: an event in time; it stays open until a person decides
+    _r("CORR-SSH-002", "occurrence"),
     _r("LOG-003", "occurrence"),
     # A.5: a running process is an event in time -- a later run that re-reads and no
     # longer sees it marks it inactive ("not seen since ...").

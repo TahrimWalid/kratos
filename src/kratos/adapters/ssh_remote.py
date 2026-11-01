@@ -689,7 +689,17 @@ def run_config_audit_checks() -> SSHResult | list[dict[str, str]]:
     result = _route("config_audit", {}, lambda: run_remote_script(_CONFIG_AUDIT_SCRIPT))
     if not result.ok:
         return result
+    _last_config_audit_via.set(getattr(result, "via", None) or "ssh")
     return _reads.parse_check_lines(result.stdout)
+
+
+# How the latest config audit in this context was read ("ssh" or "subagent"): an older
+# agent lacks the newer rows, and the brute-force judgement says "update the agent".
+_last_config_audit_via: contextvars.ContextVar[str] = contextvars.ContextVar("kratos_config_audit_via", default="ssh")
+
+
+def last_config_audit_via() -> str:
+    return _last_config_audit_via.get()
 
 
 # ---------------------------------------------------------------------------

@@ -174,7 +174,9 @@ def parse_check_lines(stdout: str) -> list[dict[str, str]]:
 # `$SUDO` is "sudo -n" over SSH (an unprivileged SSH user reads these through
 # passwordless sudo) and empty for an agent that already runs as root.
 _CONFIG_AUDIT_BODY = r"""
-prl=$($SUDO sshd -T 2>/dev/null | grep -i '^permitrootlogin' | awk '{print $2}')
+sshd_out=$($SUDO sshd -T 2>/dev/null)
+sv() { printf '%s\n' "$sshd_out" | awk -v k="$1" 'tolower($1)==k {print tolower($2); exit}'; }
+prl=$(sv permitrootlogin)
 if [ -z "$prl" ]; then
   printf 'ssh_root_login\tUNKNOWN\tCould not determine effective PermitRootLogin (%s unavailable)\n' "$SSHD_T"
 elif [ "$prl" = "no" ]; then
@@ -185,13 +187,58 @@ else
   printf 'ssh_root_login\tFAIL\tRoot login permitted (PermitRootLogin %s)\n' "$prl"
 fi
 
-pa=$($SUDO sshd -T 2>/dev/null | grep -i '^passwordauthentication' | awk '{print $2}')
+pa=$(sv passwordauthentication)
 if [ -z "$pa" ]; then
   printf 'ssh_password_auth\tUNKNOWN\tCould not determine effective PasswordAuthentication (%s unavailable)\n' "$SSHD_T"
 elif [ "$pa" = "no" ]; then
   printf 'ssh_password_auth\tPASS\tKey-only authentication enforced (PasswordAuthentication no)\n'
 else
   printf 'ssh_password_auth\tWARN\tPassword authentication is enabled (PasswordAuthentication %s); key-only is stronger\n' "$pa"
+fi
+
+# Keyboard-interactive login asks for a password through PAM; without PAM it has
+# nothing to ask with on Linux. (OpenSSH before 8.7 calls it ChallengeResponse.)
+kia=$(sv kbdinteractiveauthentication)
+[ -n "$kia" ] || kia=$(sv challengeresponseauthentication)
+upam=$(sv usepam)
+if [ -z "$kia" ]; then
+  printf 'ssh_kbd_interactive\tUNKNOWN\tCould not determine effective KbdInteractiveAuthentication (%s unavailable)\n' "$SSHD_T"
+elif [ "$kia" = "no" ]; then
+  printf 'ssh_kbd_interactive\tPASS\tKeyboard-interactive login is off\n'
+elif [ "$upam" != "yes" ]; then
+  printf 'ssh_kbd_interactive\tPASS\tKeyboard-interactive login is on but without PAM, so it cannot ask for a password\n'
+else
+  printf 'ssh_kbd_interactive\tWARN\tKeyboard-interactive login is on with PAM (usually a password prompt)\n'
+fi
+
+# AuthenticationMethods: every space-separated list must include publickey for a
+# key to be required whatever else is allowed. Default "any" adds no row.
+am=$(printf '%s\n' "$sshd_out" | awk 'tolower($1)=="authenticationmethods" {$1=""; sub(/^ +/, ""); print tolower($0); exit}')
+if [ -n "$am" ] && [ "$am" != "any" ]; then
+  if printf '%s\n' "$am" | awk '{for (i = 1; i <= NF; i++) if (("," $i ",") !~ /,publickey,/) bad = 1} END {exit bad}'; then
+    printf 'ssh_auth_methods\tPASS\tEvery allowed sign-in needs a key (AuthenticationMethods %s)\n' "$am"
+  else
+    printf 'ssh_auth_methods\tWARN\tSome allowed sign-ins need no key (AuthenticationMethods %s)\n' "$am"
+  fi
+fi
+
+# A Match block can turn password logins back on for some users or addresses;
+# `sshd -T` without -C shows only the global settings.
+unread=""
+for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+  [ -e "$f" ] || continue
+  [ -r "$f" ] || unread="$unread ${f##*/}"
+done
+if [ -n "$unread" ]; then
+  printf 'ssh_match_password\tUNKNOWN\tNot readable as this user:%s -- Match blocks could not be checked\n' "$unread"
+elif cat /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk '
+    { l = tolower($1) }
+    l == "match" { inm = 1; next }
+    inm && (l == "passwordauthentication" || l == "kbdinteractiveauthentication" || l == "challengeresponseauthentication") && tolower($2) == "yes" { found = 1 }
+    END { exit !found }'; then
+  printf 'ssh_match_password\tWARN\tA Match block in sshd_config allows password logins for some users or addresses\n'
+else
+  printf 'ssh_match_password\tPASS\tNo Match block in sshd_config or sshd_config.d turns password logins back on\n'
 fi
 
 fw_found=0

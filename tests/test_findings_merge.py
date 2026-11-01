@@ -14,8 +14,11 @@ _SUDO_BURST = {"event_type": "sudo_auth_failure", "count": 3, "start": "2026-10-
                "end": "2026-10-04T09:01:00+00:00"}
 
 
-def _findings(*bursts):
-    return FE.generate_findings(_NMAP, None, {"bursts": list(bursts)}, None)
+_PASSWORDS_ON = {"checks": [{"check": "ssh_password_auth", "status": "WARN", "detail": ""}]}
+
+
+def _findings(*bursts, config_audit=_PASSWORDS_ON):
+    return FE.generate_findings(_NMAP, None, {"bursts": list(bursts)}, None, config_audit=config_audit)
 
 
 def test_one_burst_is_one_finding_at_the_highest_severity():
@@ -46,3 +49,11 @@ def test_rules_naming_an_absorbed_id_still_match():
     assert compile_when("finding_id == 'AUTH-004'")(ctx) is True
     assert compile_when("finding_id == 'NET-001'")(ctx) is False
     assert FE.finding_ids({"id": "NET-002"}) == {"NET-002"}     # old reports: just the id
+
+
+def test_a_key_only_machine_keeps_the_merged_finding_low():
+    """CORR-001 is folded in at the same judgement, so it can't lift a key-only burst."""
+    closed = {"checks": [{"check": c, "status": "PASS", "detail": ""}
+                         for c in ("ssh_password_auth", "ssh_kbd_interactive", "ssh_match_password")]}
+    main = next(f for f in _findings(_SSH_BURST, config_audit=closed) if f.id == "CORR-SSH-001")
+    assert main.severity == "low" and main.also_matched == ["CORR-001", "AUTH-004"]

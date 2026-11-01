@@ -39,6 +39,23 @@ def test_a1_passes_when_the_answer_names_the_attacker_and_fails_when_it_omits_it
     assert score.score_payload(score.SCENARIOS["A1"], omits)["person_sees"] == "fail"  # IP not named
 
 
+def test_a1_accepts_the_brute_force_at_the_severity_kratos_judged_for_it():
+    """Since 2026-11-01 a brute force on a key-only machine is low ("can't succeed") and an
+    unreadable sshd setup is medium; neither is the model dropping the finding."""
+    answer = f"SSH brute force from {IP} (CORR-SSH-001). Passwords are off, so it can't get in."
+    for corr_obs, want in (
+        ('{"findings": [{"id": "CORR-SSH-001", "severity": "low", '
+         '"title": "SSH brute-force attempts that can\'t succeed (password logins are off)"}]}', "pass"),
+        ('{"findings": [{"id": "CORR-SSH-001", "severity": "medium", '
+         '"evidence": ["Not known: Match blocks in sshd_config couldn\'t be read"]}]}', "pass"),
+        ('{"findings": [{"id": "CORR-SSH-001", "severity": "low"}]}', "fail"),   # low with no judgement
+        ('{"findings": [{"id": "AUTH-004", "severity": "info"}]}', "fail"),
+    ):
+        payload = {"status": "final_answer", "final_answer": answer,
+                   "transcript": [{"tool": "correlate_findings", "observation": corr_obs}]}
+        assert score.score_payload(score.SCENARIOS["A1"], payload)["person_sees"] == want, corr_obs
+
+
 def test_person_sees_and_model_alone_differ_when_the_block_carries_the_answer():
     # the model's own text omits the IP; Kratos's block names it -- person sees it, model alone doesn't
     corr_obs = '{"findings":[{"id":"CORR-SSH-001","severity":"high"}]}'

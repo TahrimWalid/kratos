@@ -49,6 +49,10 @@ def accepted_high(tmp_path, monkeypatch):
     (tmp_path / "logs" / "auth_stats_1.json").write_text(json.dumps(
         {"target": T, "source": f"ssh_target_journald:ubuntu@{T}", "events_by_type": {"ssh_failed_login": 4}}))
     from kratos.adapters.findings_engine import write_findings_report
+    from kratos.adapters import ssh_guessing
+
+    # the machine accepts passwords, so the brute force is high (rated by risk since 2026-11-01)
+    ssh_guessing.save_snapshot(tmp_path, T, [{"check": "ssh_password_auth", "status": "WARN", "detail": "yes"}])
 
     write_findings_report(tmp_path)
     D.accept_risk(finding_key("CORR-SSH-001", T, ""), actor=ME, reason="lab scanner", owner=None,

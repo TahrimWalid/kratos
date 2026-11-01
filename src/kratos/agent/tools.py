@@ -1681,6 +1681,16 @@ def tool_run_config_audit() -> dict[str, Any]:
     result = _run_config_audit_checks()
     if isinstance(result, _SSHResult):
         return {"status": "error", "observation": f"Config audit {_remote_failure(result)}"}
+    # Kept per machine: the SSH brute-force finding's severity depends on whether
+    # password logins are possible (adapters/ssh_guessing).
+    from kratos.adapters import ssh_guessing as _ssh_guessing
+    from kratos.adapters import ssh_remote as _ssh_route
+
+    try:
+        _ssh_guessing.save_snapshot(_kconfig.get_active_data_dir(), get_active_target(), result,
+                                    via="agent" if _ssh_route.last_config_audit_via() == "subagent" else "ssh")
+    except OSError:
+        pass
     return {"status": "ok", "target": _ssh_target_label(), "checks": result}
 
 
