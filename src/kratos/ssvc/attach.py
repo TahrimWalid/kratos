@@ -78,13 +78,18 @@ def _vuln_inputs(data_dir: Path, cves: list[str]) -> list[CveInputs]:
                     epss=((info.get(c) or {}).get("epss") or {}).get("score")) for c in cves]
 
 
-def _vuln_ports(vuln_scan: dict[str, Any] | None, cves: set[str]) -> list[Any]:
+def _vuln_ports(vuln_scan: dict[str, Any] | None, cves: set[str]) -> tuple[list[Any], list[str]]:
+    """(ports, addresses) of the scanned services these CVEs matched -- the address is
+    the one nmap reached, which tells a host name's real address."""
     ports: list[Any] = []
+    addresses: list[str] = []
     for x in (vuln_scan or {}).get("findings") or []:
         if isinstance(x, dict) and x.get("source") == "vulscan" and cves & {str(c).upper() for c in x.get("cve_ids") or []}:
             if x.get("port") not in ports:
                 ports.append(x.get("port"))
-    return ports
+            if x.get("host") and str(x["host"]) not in addresses:
+                addresses.append(str(x["host"]))
+    return ports, addresses
 
 
 def _pkg002(sig: dict[str, Any], mission: Any, live: dict[str, Any] | None, override: str | None,
@@ -159,7 +164,8 @@ def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict
             if cves:
                 decision = for_finding(_vuln_inputs(data_dir, cves), mission, fix_available=None)
                 if decision is not None:
-                    ex = X.for_scanned_ports(_vuln_ports(vuln_scan, set(cves)), target, override=override,
+                    ports, addresses = _vuln_ports(vuln_scan, set(cves))
+                    ex = X.for_scanned_ports(ports, target, override=override, addresses=addresses,
                                              scanned_at=str((vuln_scan or {}).get("scanned_at") or ""))
                     decision["exposure"] = ex.to_dict()
                     decision["fix_available"] = None        # a network text match says nothing about fixes

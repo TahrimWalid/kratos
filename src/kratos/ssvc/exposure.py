@@ -92,16 +92,26 @@ def _loaded(item: dict[str, Any], wanted: set[str], label: str) -> str:
     return f"{', '.join(names[:2])} (from {label})"
 
 
-def _scope(items: list[dict[str, Any]], local_addresses: Iterable[str]) -> tuple[str, str]:
-    """(internet|network, why) for listeners on non-loopback addresses."""
+def _scope(items: list[dict[str, Any]], local_addresses: Iterable[str]
+           ) -> tuple[str, str, dict[str, Any]]:
+    """(internet|network, why, the listener that decided it) for listeners on
+    non-loopback addresses. The caller shows that listener, so the reason never pairs
+    one listener's address with another's verdict.
+
+    A wildcard listener reaches the machine's public addresses of its own family:
+    ``0.0.0.0`` only IPv4 ones; ``::`` IPv6 ones and, on Linux's default dual-stack
+    sockets, IPv4 ones too."""
     machine_public = [a for a in (_ip(x) for x in local_addresses or []) if _public(a)]
     for item in items:
         ip = _ip(item.get("address"))
         if _public(ip):
-            return INTERNET, f"{_where(item)} is a public address"
-        if _wildcard(ip) and machine_public:
-            return INTERNET, f"it listens on all addresses and the machine has the public address {machine_public[0]}"
-    return NETWORK, "the machine has no public address there (private, CGNAT or tailnet only)"
+            return INTERNET, f"{_where(item)} is a public address", item
+        if _wildcard(ip):
+            reachable = [a for a in machine_public if ip.version == 6 or a.version == 4]
+            if reachable:
+                return INTERNET, (f"it listens on all addresses and the machine has the public address "
+                                  f"{reachable[0]}"), item
+    return NETWORK, "the machine has no public address there (private, CGNAT or tailnet only)", items[0]
 
 
 def _apply_override(value: str, why: str, override: str | None) -> tuple[str, str, str]:
@@ -143,8 +153,7 @@ def for_packages(names: Iterable[str], live: dict[str, Any] | None, *, override:
     hits = by_program + by_library
     open_hits = [x for x in hits if not (_ip(x.get("address")) and _ip(x.get("address")).is_loopback)]
     if open_hits:
-        value, why = _scope(open_hits, live.get("local_addresses") or [])
-        first = open_hits[0]
+        value, why, first = _scope(open_hits, live.get("local_addresses") or [])
         how = (f"{_program(first)}, from {label}, listens on {_where(first)}" if first in by_program
                else f"{_loaded(first, wanted, label)} is loaded by {_program(first)}, which listens on "
                     f"{_where(first)}")
@@ -187,21 +196,29 @@ def machine_highest(live: dict[str, Any] | None, *, override: str | None = None,
     listeners = [x for x in live.get("listeners") or [] if isinstance(x, dict)]
     open_items = [x for x in listeners if not (_ip(x.get("address")) and _ip(x.get("address")).is_loopback)]
     if open_items:
-        value, why = _scope(open_items, live.get("local_addresses") or [])
+        value, why, first = _scope(open_items, live.get("local_addresses") or [])
         value, why, used = _apply_override(value, why, override)
         return Exposure(value, f"the running kernel serves {len(open_items)} network listener(s), e.g. "
-                               f"{_where(open_items[0])}; {why}{_firewall_note(firewall)}", when, via,
+                               f"{_where(first)}; {why}{_firewall_note(firewall)}", when, via,
                         override=used)
     return Exposure(LOCAL, "nothing on this machine listens on the network", when, via)
 
 
 def for_scanned_ports(ports: Iterable[Any], target: str, *, override: str | None = None,
-                      scanned_at: str = "") -> Exposure:
-    """VULN-001: the CVEs matched a service Kratos reached over the network itself."""
+                      scanned_at: str = "", addresses: Iterable[Any] = ()) -> Exposure:
+    """VULN-001: the CVEs matched a service Kratos reached over the network itself.
+    `addresses` are the ones the scan actually reached (nmap resolves a host name);
+    without one, a target given by name is judged by nothing it can't see."""
     shown = ", ".join(str(p) for p in list(ports)[:5]) or "?"
-    ip = _ip(target)
-    value, why = (INTERNET, f"{target} is a public address") if _public(ip) else (
-        NETWORK, "Kratos reached it over the network (the address it scanned is not public)")
+    reached = [ip for ip in (_ip(a) for a in [target, *addresses]) if ip is not None]
+    public = next((ip for ip in reached if _public(ip)), None)
+    if public is not None:
+        value, why = INTERNET, f"{public} is a public address"
+    elif reached:
+        value, why = NETWORK, "Kratos reached it over the network (the address it scanned is not public)"
+    else:
+        value, why = NETWORK, (f"Kratos reached it over the network by the name {target} and has no record of "
+                               "the address, so whether it is public is not known")
     value, why, used = _apply_override(value, why, override)
     return Exposure(value, f"the scan reached port(s) {shown} from the Kratos machine; {why}",
                     scanned_at, "scan", override=used)
