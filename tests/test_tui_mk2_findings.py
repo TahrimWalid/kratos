@@ -254,3 +254,33 @@ async def _verdicts_and_suggestions_show_and_dismiss(tmp_path):
         await pilot.pause()
         assert TS.suggestions_for(tmp_path, key, state="new") == []
         assert "Dismissed the model's suggestion" in _notes(screen)
+
+
+def test_details_show_the_bod_26_04_deadline_beside_the_ssvc_decision(tmp_path):
+    asyncio.run(_details_show_the_bod_26_04_deadline(tmp_path))
+
+
+async def _details_show_the_bod_26_04_deadline(tmp_path):
+    from kratos.ssvc import bod2604 as B
+    from kratos.ssvc import inputs as I
+
+    cve = I.CveInputs("CVE-2026-0001", I.Input("active", I.KEV, "2026-10-01"), I.Input("no", I.CISA),
+                      I.Input("total", I.CISA), kev=True)
+    exposed = {"value": "yes", "source": B.MEASURED, "date": "", "note": ""}
+    f = {**_f("PKG-001", "critical", ["CVE-2026-0001"]), "subject": "openssh", "ssvc": {
+        "outcome": "attend", "label": "Attend", "cve": "CVE-2026-0001", "tree": "cisa-2.0.3", "inputs": {},
+        "exposure": {"value": "internet", "reason": "0.0.0.0:22"}, "bod_26_04": B.for_finding([cve], exposed)}}
+    r = RunContext(run_id=uuid.uuid4().hex, source="interactive", target=T, session_id=None, started_at=time.time())
+    A.apply_run([f], target=T, coverage=nothing(), run=r, data_dir=tmp_path)
+    screen = FindingsScreen(tmp_path, target=T)
+    app = _Host(screen)
+    async with app.run_test(size=(180, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, InfoModal)
+        buf = io.StringIO()
+        Console(file=buf, width=170).print(app.screen._body)
+        text = buf.getvalue()
+        assert "decision (SSVC)" in text and "deadline (BOD 26-04)" in text
+        assert "3 days + forensic check" in text

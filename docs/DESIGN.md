@@ -1053,7 +1053,9 @@ Stakeholder-Specific Vulnerability Categorization Guide* (November 2022, Table 9
 government work), tree version `cisa-2.0.3` (the version CISA's assessments are labelled with).
 A completeness test checks every (Exploitation, Automatable, Technical Impact, Mission &
 Well-being) combination maps to exactly one outcome. CERT/CC's SSVC tables (including the
-Deployer tree, which uses system exposure) are CC BY-NC 4.0 and are **not** used or vendored.
+Deployer tree, which uses system exposure) are not used or vendored. Their `data/` folder carried
+CC BY-NC 4.0 when D.3 was specified and has since moved to an MIT (SEI)-style licence; only the
+BOD 26-04 table below is checked against one of their files, in a test.
 Mission & Well-being (`ssvc/mission.py`) is the guide's Table 8: Mission Prevalence from the
 person's criticality (low → minimal, medium → support, high/critical → essential) × Public
 Well-being Impact (minimal / material / irreversible); unset criticality computes as medium and
@@ -1103,6 +1105,28 @@ Kratos-written line per decision (`compact_for_model`), the digest's package lin
 "Act: <package> on <machine> (inputs; listening on <address:port>)" — package names from the index,
 validated IPs and ports only, never program paths — and Guard 3 treats an answer that names an Act
 finding while calling it unimportant as dismissive.
+
+**CISA BOD 26-04 timeline** (`kratos/ssvc/bod2604.py`), stored as `ssvc.bod_26_04` beside the
+decision and never used to rank. The directive (issued 2026-06-10, implementation guidance
+2026-08-25; it revoked BOD 19-02 and 22-01) prints its Table 1 as an image. The 16 rows are encoded
+in Kratos's code and checked by a test against CERT/CC's machine copy,
+`data/csv/cisa/cisa_bod_26_04_1_0_0.csv`. That copy is a test fixture with its licence notice, not
+shipped. The inputs are:
+
+- **In KEV**, from the index.
+- **Publicly Exposed**, judged for the asset (CISA: "accessible to unauthenticated or untrusted
+  entities via a public network"), not per package. The person's override wins; next, Kratos's
+  measurement: the machine's most exposed point (`exposure.machine_highest`), or a VULN-001 scan
+  that reached a public address. Last, CISA's missing-data rule: a publicly routable address among
+  the target and the machine's own addresses means public, otherwise internal.
+- **Automatable** and **Technical Impact**, from CISA's vulnrichment value. Where there is none,
+  the directive's missing-value rule gives *no* and *total*. Kratos's CVSS estimate is not used
+  here.
+
+A finding takes its most urgent CVE's timeline and keeps a count per timeline. It is shown in
+`present.detail_lines` and `one_line`, and in the answer block (`decision_fact(with_bod=True)`). The
+model's digest and triage's fact comparison keep the shorter line without it. Decisions stored
+before this change have no timeline and show none.
 
 **Asset records** (`kratos/assets/store.py`): `kratos.db` → `assets` (one row per machine, keyed by
 `target_key`: criticality, wellbeing, exposure_override, role, groups, owner_note, asked_at) and

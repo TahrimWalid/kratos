@@ -1068,6 +1068,36 @@ so of two Attend packages the one serving the internet comes first. The librarie
 for programs that listen, so for a library used only by programs that don't listen Kratos says
 *not running* and tells you that limit.
 
+**CISA's BOD 26-04 deadline, shown beside the decision.** CISA's Binding Operational Directive
+26-04 (June 2026) gives U.S. federal agencies a deadline per vulnerability. Kratos works it out the
+same way and shows it as a guide; it never changes the SSVC decision or the order. The deadline
+comes from four inputs: whether the CVE is on CISA's exploited list, whether the **machine** is
+publicly exposed, whether exploitation is automatable, and its technical impact. The result is
+one of:
+
+| Deadline | Meaning |
+|---|---|
+| **3 days + forensic check** | Fix or mitigate within 3 days, and check the machine for signs it was already compromised. |
+| **3 days** / **14 days** / **60 days** | Fix or mitigate within that many days. |
+| **fix on system upgrade** | No deadline: fix at the machine's next major upgrade or rebuild, unless it's added to the exploited list. |
+
+The clock starts when CISA lists the CVE as exploited or when it is found on the machine,
+whichever comes first. Three differences from the SSVC decision, all from the directive:
+
+- **Exposure is about the machine, not the package.** If anything on the machine listens on a
+  public address, the machine counts as publicly exposed, even for a package that isn't running.
+  Your `/assets` setting wins. If Kratos couldn't measure exposure, it follows CISA's rule: the
+  machine counts as exposed if it uses a public address, and otherwise as internal. In that case
+  Kratos says so.
+- **CISA's values only.** Where CISA hasn't assessed a CVE, the directive counts it as *not
+  automatable* and as *total* impact. Kratos's estimate from the CVSS score is used only for the
+  SSVC decision.
+- **How much the machine matters isn't an input.**
+
+Opening a finding in `/findings` shows the deadline, its four inputs, where each came from, and
+when the clock starts. `kratos findings show`, the report and the answer's findings block show it
+too.
+
 **Where you see it.** `/findings` has a **decision** column (Act in red, Attend in amber) and an
 **exposure** column; opening a finding shows the four inputs, each with where it came from and
 the date of CISA's assessment, CISA's definition of the decision, the exposure in plain words,

@@ -4,13 +4,15 @@ TUI /findings, `kratos findings show`, the Markdown report, the terminal panels 
 MCP all show the same lines: the decision, CISA's definition of it, the four inputs
 with where each came from and when, the measured exposure in plain words, and per CVE
 the two facts people act on -- used in ransomware campaigns (KEV), and whether the
-distribution has a fix today. Machine-written text (a program path inside an exposure
+distribution has a fix today. Beside the decision: CISA BOD 26-04's remediation
+timeline with its own four inputs (``bod2604``), never in place of the decision. Machine-written text (a program path inside an exposure
 reason) is cleaned by the caller's display layer like any other evidence.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from kratos.ssvc import bod2604 as B
 from kratos.ssvc import inputs as I
 from kratos.ssvc import tree as T
 
@@ -106,6 +108,7 @@ def detail_lines(s: dict[str, Any]) -> list[str]:
     action = action_line(s)
     if action:
         out.append(action)
+    out.extend(B.detail_lines(s.get("bod_26_04")))
     fix_known = s.get("fix_available") is not None
     cves = s.get("cves") or []
     for c in cves[:CVES_SHOWN]:
@@ -142,4 +145,6 @@ def one_line(s: dict[str, Any]) -> str:
     if not s:
         return ""
     ex = (s.get("exposure") or {}).get("value")
-    return f"{s.get('label')} -- {summary_words(s)}" + (f"; exposure {ex}" if ex else "")
+    bod = B.short(s.get("bod_26_04"))
+    return (f"{s.get('label')} -- {summary_words(s)}" + (f"; exposure {ex}" if ex else "")
+            + (f"; {bod}" if bod else ""))
