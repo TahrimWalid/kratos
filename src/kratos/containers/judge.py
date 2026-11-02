@@ -250,6 +250,9 @@ def _fix_bind_local(c: dict[str, Any], p: dict[str, Any]) -> dict[str, str]:
 def judge_ports(c: dict[str, Any], inv: dict[str, Any], rs: F.Ruleset, *, host_addrs: dict[int, str | None],
                 in_iface: dict[int, str | None]) -> list[F.PortJudgement]:
     ip4, ip6, bridge, has6, _opts = _network_of(c, inv)
+    # Rootless Podman publishes through a user-space proxy (rootlessport) listening on the
+    # machine itself -- no DNAT, so INPUT governs it like any local service (seen on the lab).
+    rootless = str(c.get("engine") or "").startswith("podman-rootless")
     out = []
     seen: set[tuple[int, int, str]] = set()
     for p in c.get("ports") or []:
@@ -264,7 +267,7 @@ def judge_ports(c: dict[str, Any], inv: dict[str, Any], rs: F.Ruleset, *, host_a
         out.append(F.judge_port(rs, family=fam, proto=str(p["proto"]), host_port=int(p["host_port"]),
                                 container_port=int(p["container_port"]), container_ip=(ip4 if fam == 4 else ip6),
                                 bridge=bridge, host_addr=host_addrs.get(fam), in_iface=in_iface.get(fam),
-                                forwarded=(fam == 4 or has6)))
+                                forwarded=not rootless and (fam == 4 or has6)))
     return out
 
 

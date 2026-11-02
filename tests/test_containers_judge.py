@@ -292,3 +292,10 @@ def test_journal_reads_keep_the_fields_that_say_which_container_wrote_a_line():
 
     assert {"CONTAINER_ID_FULL", "CONTAINER_NAME", "IMAGE_NAME"} <= set(logread.JOURNAL_FIELDS)
     assert "_COMM=dockerd" in " ".join(logread.journal_sync_argv("container", None, 0.0))
+
+
+def test_rootless_podman_ports_go_through_input_not_a_bypass():
+    j = J.judge(inv(ctr("rootweb", engine="podman-rootless:1000", networks=[],
+                        ports=[{"proto": "tcp", "container_port": 80, "host_ip": "", "host_port": 8090}])),
+                host_addrs=HOST, confirm=lambda p: True)
+    assert j.signals == [] and j.port_checks[0]["path"] == "proxied" and j.port_checks[0]["bypass"] == "no"
