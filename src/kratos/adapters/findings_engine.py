@@ -2479,6 +2479,8 @@ def write_findings_report(
             md_lines.append("\n**Recommendations**")
             for r in f.recommendation:
                 md_lines.append(f"- {r}")
+            for fx in f.fix:                         # D.5: a fix to copy; Kratos never runs it
+                md_lines.append(f"\n**Fix -- {fx.get('title')}** (run it yourself)\n\n```\n{fx.get('text')}\n```")
             
             # Add playbooks section if present
             if f.playbooks:

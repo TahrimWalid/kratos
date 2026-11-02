@@ -435,6 +435,8 @@ class HelpModal(ModalScreen[None]):
                  "mark false positive / out of scope (alias /f)"),
                 ("/assets", "Your machines — how much each matters (CISA's SSVC tree ranks its vulnerabilities "
                  "by it), reachable from the internet, groups, owner note"),
+                ("/containers", "Docker / Podman containers — risky settings, published ports reachable despite "
+                 "the firewall, read-only (never the docker group)"),
                 ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
                  "checked, run them now"),
                 ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "

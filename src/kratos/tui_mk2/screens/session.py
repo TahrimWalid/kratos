@@ -119,6 +119,8 @@ _PALETTE_COMMANDS = [
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
+    ("/containers", "Docker / Podman containers on this machine — risky settings, ports reachable despite the "
+                    "firewall (read-only, never the docker group)"),
     ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
     ("/hunt", "has this address / hash / account / domain / program / path been seen? searches what Kratos holds, "
               "with its coverage (no model)"),
@@ -1027,6 +1029,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.app.push_screen(DetectScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd == "/hunt":
             self._hunt_flow(rest)
+        elif cmd in ("/containers", "/docker"):
+            from kratos.tui_mk2.screens.containers import ContainersScreen
+
+            self.app.push_screen(ContainersScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd in ("/assets", "/machines"):
             from kratos.tui_mk2.screens.assets import AssetsScreen
 
