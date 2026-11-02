@@ -855,14 +855,25 @@ def open_in_root(root_fd: int, rel: str) -> tuple[int, os.stat_result]:
     """Open a regular file inside a container root without following any link."""
     dir_fd, name = _walk_in_root(root_fd, rel)
     try:
+        # Look before opening: a container's root can hold a device node or a FIFO under a
+        # package-database name, and opening a device as host root can have side effects
+        # (the container's device cgroup doesn't apply to the agent). Regular files only.
+        try:
+            before = os.lstat(name, dir_fd=dir_fd)
+        except OSError as e:
+            raise _root_refusal(e) from None
+        if stat.S_ISLNK(before.st_mode):
+            raise RootRefused("symlink", "a symbolic link (not followed out of the container's root)")
+        if not stat.S_ISREG(before.st_mode):
+            raise RootRefused("not_regular")
         try:
             fd = os.open(name, _NOFOLLOW_FILE, dir_fd=dir_fd)
         except OSError as e:
             raise _root_refusal(e) from None
         st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != (before.st_dev, before.st_ino):
             os.close(fd)
-            raise RootRefused("not_regular")
+            raise RootRefused("not_regular", "replaced while it was being opened")
         return fd, st
     finally:
         os.close(dir_fd)
@@ -898,6 +909,11 @@ def list_in_root(root_fd: int, rel: str) -> list[str]:
         os.close(dir_fd)
 
 
+def _clean_field(value: str) -> str:
+    """A field from a container's own files, made one record field (no tab, no control character)."""
+    return _CTRL_RE.sub(" ", str(value))[:MAX_TEXT]
+
+
 _WANT = {"install": "i", "hold": "h", "deinstall": "r", "purge": "p", "unknown": "u"}
 _STATE = {"installed": "i", "config-files": "c", "half-installed": "h", "unpacked": "U",
           "not-installed": "n", "half-configured": "F", "triggers-awaited": "W", "triggers-pending": "t"}
@@ -927,8 +943,8 @@ def dpkg_records(text: str) -> list[str]:
         if m:
             src_name, src_ver = m.group(1), m.group(2)
         version = fields.get("Version", "")
-        out.append("\t".join(("D", name, version, fields.get("Architecture", ""), src_name or name,
-                              src_ver or version, abbrev)))
+        out.append("\t".join(_clean_field(x) for x in ("D", name, version, fields.get("Architecture", ""),
+                                                        src_name or name, src_ver or version, abbrev)))
     return out
 
 
@@ -939,7 +955,8 @@ def apk_records(text: str) -> list[str]:
 
     def flush() -> None:
         if cur.get("P"):
-            out.append("\t".join(("A", cur.get("P", ""), cur.get("V", ""), cur.get("A", ""), cur.get("o", ""))))
+            out.append("\t".join(_clean_field(x) for x in ("A", cur.get("P", ""), cur.get("V", ""), cur.get("A", ""),
+                                                            cur.get("o", ""))))
         cur.clear()
 
     for line in text.splitlines():
@@ -983,7 +1000,7 @@ def rpm_header_record(blob: bytes) -> str | None:
     if not vals.get("name") or not vals.get("version"):
         return None
     evr = f"{vals.get('epoch', '(none)')}:{vals['version']}-{vals.get('release', '')}"
-    return "\t".join(("R", vals["name"], evr, vals.get("arch", ""), vals.get("sourcerpm", "")))
+    return "\t".join(_clean_field(x) for x in ("R", vals["name"], evr, vals.get("arch", ""), vals.get("sourcerpm", "")))
 
 
 def rpm_sqlite_records(root_fd: int, rel: str) -> list[str]:

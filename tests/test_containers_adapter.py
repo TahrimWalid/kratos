@@ -492,3 +492,31 @@ def test_a_removed_container_is_gone_and_a_bad_id_is_refused(tmp_path):
     run.mkdir()
     assert C.parse_log_output(C.container_log_output(CID, None, 0, run_root=str(run))["stdout"])["files"][0]["status"] == "gone"
     assert C.parse_log_output(C.container_log_output("web", None, 0)["stdout"])["files"][0]["status"] == "refused"
+
+
+# --------------------------------------------------------------------------- security review
+def test_a_fifo_or_device_under_a_package_database_name_is_never_opened(tmp_path, monkeypatch):
+    root = tmp_path / "r"
+    (root / "var/lib/dpkg").mkdir(parents=True)
+    os.mkfifo(root / "var/lib/dpkg/status")           # opening a FIFO for reading would block / could signal
+    opened = []
+    real_open = os.open
+
+    def spy(path, flags, *a, **k):
+        opened.append(str(path))
+        return real_open(path, flags, *a, **k)
+    fd = real_open(root, os.O_RDONLY)
+    monkeypatch.setattr(os, "open", spy)
+    try:
+        with pytest.raises(C.RootRefused) as e:
+            C.read_in_root(fd, "var/lib/dpkg/status")
+    finally:
+        monkeypatch.setattr(os, "open", real_open)
+        os.close(fd)
+    assert e.value.status == "not_regular" and "status" not in opened     # refused before any open()
+
+
+def test_tabs_in_a_containers_package_files_cannot_shift_record_fields():
+    recs = C.dpkg_records("Package: evil\tD\tinjected\nStatus: install ok installed\nVersion: 1\tx\n")
+    assert len(recs) == 1 and recs[0].count("\t") == 6
+    assert C.apk_records("P:musl\tA\tfake\nV:1\n\n")[0].count("\t") == 4

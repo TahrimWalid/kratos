@@ -10,6 +10,7 @@ finding -- it can't hand anyone the host until it runs.
 from __future__ import annotations
 
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -31,6 +32,10 @@ ALL_CAPS_MASK = (1 << 41) - 1            # CAP_LAST_CAP is 40 on current kernels
 _SOCKET_NAMES = ("docker.sock", "podman.sock", "containerd.sock", "crio.sock")
 _SOCKET_DIRS = ("/run", "/var/run", "/run/docker", "/var/run/docker", "/run/podman", "/run/containerd")
 MAX_CONFIRM = 20                          # TCP connects one collection makes at most
+# What an image reference may look like to be printed on a command line in a fix (Docker's own grammar
+# is narrower still); anything else is shown as IMAGE.
+_IMAGE_REF_RE = re.compile(r"^([a-z0-9][a-z0-9.-]{0,252}(:[0-9]{1,5})?/)?[a-z0-9][a-z0-9._/-]{0,200}"
+                           r"(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[0-9a-f]{64})?$")
 
 
 @dataclass
@@ -242,9 +247,11 @@ def _fix_bind_local(c: dict[str, Any], p: dict[str, Any]) -> dict[str, str]:
                 "text": (f"# In {where}, service \"{comp['service']}\":\n"
                          f"    ports:\n      - \"127.0.0.1:{hp}:{cp}{suffix}\"\n"
                          f"# then, in {comp['dir'] or 'the project folder'}: docker compose up -d")}
+    image = str(c.get("image") or "")
+    shown = image if _IMAGE_REF_RE.match(image) else "IMAGE"   # machine text never reaches a command line unchecked
     return {"title": f"Publish {hp} on 127.0.0.1 only",
             "text": (f"# Re-create the container with the port bound to the loopback address only:\n"
-                     f"docker run ... -p 127.0.0.1:{hp}:{cp}{suffix} ... {c.get('image') or 'IMAGE'}")}
+                     f"docker run ... -p 127.0.0.1:{hp}:{cp}{suffix} ... {shown}")}
 
 
 def judge_ports(c: dict[str, Any], inv: dict[str, Any], rs: F.Ruleset, *, host_addrs: dict[int, str | None],
