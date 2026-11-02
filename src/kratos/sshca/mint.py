@@ -201,6 +201,19 @@ def credentials_for(data_dir: Path | None, host: str) -> Minted | None:
         return minted
 
 
+def mint_for_verification(data_dir: Path, host: str) -> Minted:
+    """Mint a certificate for `host` regardless of its enrolment state, for the
+    enrolment verification and diagnosis (which must test the certificate path before
+    the state has moved to 'cert'). Uncached, in a throwaway run folder."""
+    import secrets as _secrets
+
+    data_dir = Path(data_dir)
+    enr = _store.get_enrolment(data_dir, host)
+    if enr is None:
+        raise CertUnavailable(f"{host} is not enrolled in certificates")
+    return _mint(data_dir, enr, target_key(host), f"verify-{_secrets.token_hex(4)}")
+
+
 def _mint(data_dir: Path, enr: _store.Enrolment, machine: str, run_key: str) -> Minted:
     _sweep_stale_runs(data_dir)
     folder = _run_folder(data_dir, run_key)
@@ -265,6 +278,8 @@ def _cleanup_run(ctx: run_context.RunContext) -> None:
         for key in [k for k in _CACHE if k[0] == run_key]:
             _CACHE.pop(key, None)
     for sock in controls:
+        if not os.path.exists(sock):
+            continue  # no master was ever opened on this socket (nothing to close)
         try:
             subprocess.run(["ssh", "-o", f"ControlPath={sock}", "-O", "exit", "x"],
                            capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
