@@ -2,7 +2,7 @@
 (`sshguess/sshguess_<machine-hash>.json`, replaced in place).
 
 Logins of the last LOGIN_LOOKBACK_DAYS are looked at on every run, so a day without a
-collection doesn't hide one; Kratos's own logins (its key's fingerprint in sshd's
+collection doesn't hide one; Kratos's own logins (its key's fingerprint, or a certificate from its own SSH CA, in sshd's
 "Accepted" line) are set aside.
 """
 from __future__ import annotations
@@ -29,14 +29,14 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
 
 
-def run(data_dir: Path, target: str, *, now: float | None = None, fingerprint: str | None = None) -> dict[str, Any]:
+def run(data_dir: Path, target: str, *, now: float | None = None, fingerprint: Any = None) -> dict[str, Any]:
     from kratos.detect import own
     from kratos.events.store import EventStore
 
     data_dir = Path(data_dir)
     now = time.time() if now is None else now
     key = target_key(target)
-    fp = fingerprint if fingerprint is not None else own.kratos_fingerprint()
+    fp = fingerprint if fingerprint is not None else own.kratos_identity(data_dir)
     gaps: list[str] = []
     hits: list[dict[str, Any]] = []
     db = data_dir / "kratos.db"

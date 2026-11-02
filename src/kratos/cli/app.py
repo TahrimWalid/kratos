@@ -1290,6 +1290,174 @@ def cmd_subagent_tls(args: argparse.Namespace) -> int:
     return 1 if st.get("error") else 0
 
 
+def cmd_ssh_ca(args: argparse.Namespace) -> int:
+    """SSH certificates (Phase D.1): set up the CA, show status, unlock it (agent/tpm
+    mode after a reboot), rotate it, enrol a machine (prints the checklist), verify the
+    certificate path, diagnose a failed login, and list issued certificates."""
+    from kratos import kratos_config as _kc
+    from kratos.sshca import ca as _ca
+    from kratos.sshca import diagnose as _diag
+    from kratos.sshca import enrol as _enrol
+    from kratos.sshca import store as _castore
+
+    data_dir = Path(args.data_dir)
+    action = args.action
+
+    def _machine() -> str:
+        host = getattr(args, "machine", None) or _kc.get_active_target()
+        if not host:
+            raise SystemExit("[KRATOS] name the machine: kratos ssh-ca " + action + " <machine>")
+        return host
+
+    if action == "setup":
+        mode = args.mode or _ca.configured_mode(data_dir)
+        if mode == "tpm" and not _ca.has_tpm2():
+            print("[KRATOS] This computer does not report full TPM2 support (`systemd-creds has-tpm2`). "
+                  "Install the tpm2 libraries first, or choose another mode.", file=sys.stderr)
+            return 1
+        try:
+            ca = _ca.ensure_user_ca(data_dir, mode=mode, actor="cli")
+            _ca.ensure_host_ca(data_dir, actor="cli")
+        except _ca.CAError as exc:
+            print(f"[KRATOS] Could not set up the CA: {exc}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] CA ready (mode {ca.mode}). User CA fingerprint: {ca.fingerprint}")
+        print(f"[KRATOS] Keys are in {_ca.ca_dir(data_dir)} -- keep a copy somewhere safe.")
+        if ca.mode == "agent":
+            print("[KRATOS] agent mode: run `kratos ssh-ca unlock` after each reboot before scheduled runs can sign.")
+        return 0
+
+    if action == "unlock":
+        try:
+            _ca.unlock(data_dir)
+        except _ca.CAError as exc:
+            print(f"[KRATOS] {exc}", file=sys.stderr)
+            return 1
+        print("[KRATOS] CA unlocked." if _ca.is_unlocked(data_dir) else "[KRATOS] CA is still locked.")
+        return 0 if _ca.is_unlocked(data_dir) else 1
+
+    if action == "rotate":
+        try:
+            nxt = _ca.rotate_user_ca(data_dir, actor="cli")
+        except _ca.CAError as exc:
+            print(f"[KRATOS] {exc}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] Made the next user CA key: {nxt.fingerprint}")
+        print("[KRATOS] Add this line to each enrolled machine's CA file "
+              f"({_enrol.CA_FILE_ON_MACHINE}), alongside the active one:")
+        print("  " + nxt.record.public_key)
+        print("[KRATOS] Then `kratos ssh-ca promote` once every machine trusts it.")
+        return 0
+
+    if action == "promote":
+        try:
+            ca = _ca.promote_next(data_dir, actor="cli", force=args.force)
+        except _ca.CAError as exc:
+            print(f"[KRATOS] {exc}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] Switched signing to {ca.fingerprint}. The old key is still trusted for 7 days.")
+        return 0
+
+    if action == "enrol":
+        host = _machine()
+        try:
+            plan = _enrol.build_checklist(data_dir, host, simple=args.simple,
+                                          host_cert=not args.no_host_cert, actor="cli")
+        except _ca.CAError as exc:
+            print(f"[KRATOS] {exc}", file=sys.stderr)
+            return 1
+        print(f"[KRATOS] Enrolment checklist for {plan.login}@{host} "
+              f"(principal {plan.principal}{', host certificate' if plan.host_cert else ''}):")
+        print()
+        print(plan.checklist)
+        print()
+        print(f"[KRATOS] After you run it on the machine: `kratos ssh-ca verify {host}` "
+              "(Kratos checks the certificate works and the old key still works). Then remove the old key "
+              f"from authorized_keys there and run `kratos ssh-ca verify {host} --finish` -- Kratos proves the "
+              "old key is refused before calling the machine certificate-only.")
+        return 0
+
+    if action == "verify":
+        host = _machine()
+        result = _enrol.run_full_verification(data_dir, host, include_old_key_refused=args.finish)
+        for step in result.steps:
+            mark = "OK " if step.ok else "XX "
+            print(f"[KRATOS]   [{mark}] {step.label}" + (f"  -- {step.detail}" if step.detail and not step.ok else ""))
+        print(f"[KRATOS] state: {result.state}" + ("  (certificate-only)" if result.done else ""))
+        if not args.finish and result.state == "cert":
+            print(f"[KRATOS] next: remove the old key from authorized_keys on {host}, then "
+                  f"`kratos ssh-ca verify {host} --finish`.")
+        return 0 if all(s.ok for s in result.steps) else 1
+
+    if action == "diagnose":
+        host = _machine()
+        d = _diag.diagnose(data_dir, host)
+        print(f"[KRATOS] {d.message}")
+        if d.cause != "ok":
+            print(f"[KRATOS] cause: {d.cause}")
+            print(f"[KRATOS] fix: {d.fix}")
+            if d.detail:
+                print(f"[KRATOS] detail: {d.detail}")
+        return 0 if d.cause == "ok" else 1
+
+    if action == "unenrol":
+        host = _machine()
+        _enrol.unenrol(data_dir, host)
+        print(f"[KRATOS] Forgot the enrolment for {host} (nothing changed on the machine). "
+              "Remove the Kratos CA lines from its sshd_config yourself if you want to.")
+        return 0
+
+    if action == "certs":
+        rows = _castore.certs(data_dir, machine=getattr(args, "machine", None))
+        if not rows:
+            print("[KRATOS] no certificates issued yet")
+            return 0
+        for r in rows[:50]:
+            frm = _fmt_time(r["valid_from"])
+            to = _fmt_time(r["valid_to"])
+            src = ",".join(r["source_addresses"]) or "any"
+            print(f"[KRATOS]   #{r['serial']:<5} {r['machine']:20s} {r['key_id']}  {frm}..{to}  from {src}")
+        return 0
+
+    # status (default)
+    ca = _ca.active_user_ca(data_dir)
+    print(f"[KRATOS] CA folder: {_ca.ca_dir(data_dir)}")
+    if ca is None:
+        print("[KRATOS] no CA yet -- run `kratos ssh-ca setup` (or enrol a machine).")
+    else:
+        locked = "" if _ca.is_unlocked(data_dir) else "  (LOCKED -- `kratos ssh-ca unlock`)"
+        print(f"[KRATOS] user CA: {ca.fingerprint}  mode {ca.mode}{locked}")
+        nxt = _castore.ca_key(data_dir, kind="user", role="next")
+        if nxt is not None:
+            blk = _ca.rotation_blockers(data_dir)
+            print(f"[KRATOS] next CA (rotation in progress): {nxt.fingerprint}"
+                  + (f"  -- waiting on: {', '.join(blk)}" if blk else "  -- ready to promote"))
+        hc = _ca.host_ca(data_dir)
+        if hc is not None:
+            print(f"[KRATOS] host CA: {hc.fingerprint}")
+    enrolments = _castore.list_enrolments(data_dir)
+    if not enrolments:
+        print("[KRATOS] no machines enrolled")
+    for enr in enrolments:
+        extra = []
+        if enr.host_cert_active:
+            extra.append("host cert")
+        if not enr.source_address_enabled:
+            extra.append("source-address off")
+        tail = ("  [" + ", ".join(extra) + "]") if extra else ""
+        print(f"[KRATOS]   {enr.host:22s} {enr.state:10s} login {enr.login}  principal {enr.principal}{tail}")
+    return 0
+
+
+def _fmt_time(epoch: float) -> str:
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    try:
+        return epoch_to_utc_iso(float(epoch))[:16]
+    except Exception:  # noqa: BLE001
+        return str(epoch)
+
+
 def cmd_llm_serve(args: argparse.Namespace) -> int:
     """
     Start a local model server (a GGUF model loaded once and kept in memory, or a
@@ -2358,6 +2526,27 @@ def build_parser() -> argparse.ArgumentParser:
     subagent_tls.add_argument("--force", action="store_true",
                               help="rotate even if some encrypted agents don't hold the current pins yet")
     subagent_tls.set_defaults(func=cmd_subagent_tls)
+
+    ssh_ca_p = sub.add_parser(
+        "ssh-ca",
+        help="Short-lived SSH certificates: set up the CA, enrol a machine, verify, rotate, show status",
+    )
+    ssh_ca_p.add_argument("action", nargs="?", default="status",
+                          choices=("status", "setup", "unlock", "rotate", "promote", "enrol",
+                                   "verify", "diagnose", "unenrol", "certs"))
+    ssh_ca_p.add_argument("machine", nargs="?", default=None,
+                          help="the machine for enrol/verify/diagnose/unenrol/certs (default: the active target)")
+    ssh_ca_p.add_argument("--mode", choices=("file", "agent", "token", "tpm"), default=None,
+                          help="setup: how the CA private key is protected (default file)")
+    ssh_ca_p.add_argument("--simple", action="store_true",
+                          help="enrol: use the login name as the principal (weaker: not bound to one machine)")
+    ssh_ca_p.add_argument("--no-host-cert", action="store_true",
+                          help="enrol: skip the host certificate (keep first-contact host-key trust)")
+    ssh_ca_p.add_argument("--finish", action="store_true",
+                          help="verify: also prove the old key alone is refused (after you removed it)")
+    ssh_ca_p.add_argument("--force", action="store_true",
+                          help="promote: switch to the next CA even if a machine doesn't trust it yet")
+    ssh_ca_p.set_defaults(func=cmd_ssh_ca)
 
     snapshots_p = sub.add_parser(
         "snapshots",

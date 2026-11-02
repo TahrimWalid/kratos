@@ -97,6 +97,18 @@ ALLOWED: dict[tuple[str, str, str], str] = {
         "OWNER DECISION: connection history, newest 200 events per machine",
     ("storage/subagent_store.py", "SubAgentStore.create_pairing_code", "DELETE FROM"):
         "OWNER DECISION: unused pairing codes (secrets) a week after they expired",
+    # D.1 SSH certificate authority: temp files, this run's own ephemeral keys, the person's own unenrol
+    ("sshca/ca.py", "_write_private", "unlink"): TEMP + " (a half-written CA key file when the write fails)",
+    ("sshca/ca.py", "fingerprint_of_pubkey", "unlink"): TEMP + " (a temporary copy of a PUBLIC key)",
+    ("sshca/ca.py", "_new_ca_key", "unlink"): TEMP + " (the freshly generated key before it is stored/sealed)",
+    ("sshca/ca.py", "ensure_agent", "unlink"): "a stale CA ssh-agent socket left by a dead agent, before a fresh one",
+    ("sshca/mint.py", "_mint", "unlink"): "this run's own previous ephemeral key, before re-minting a fresh one",
+    ("sshca/mint.py", "_sweep_stale_runs", "rmtree"): "a crashed run's per-run ephemeral keys, swept by age (2 h)",
+    ("sshca/mint.py", "_cleanup_run", "unlink"): "this run's own multiplexing socket at run end",
+    ("sshca/mint.py", "_cleanup_run", "rmtree"): "this run's own ephemeral key folder at run end",
+    ("sshca/enrol.py", "_sign_host_cert_line", "unlink"): TEMP + " (the host public key and signed cert copies)",
+    ("sshca/enrol.py", "verify_host_cert", "unlink"): TEMP + " (the throwaway @cert-authority known_hosts)",
+    ("sshca/store.py", "delete_enrolment", "DELETE FROM"): PERSON + " (`kratos ssh-ca unenrol`)",
 }
 
 

@@ -221,6 +221,25 @@ CATEGORIES: tuple[Category, ...] = (
         files=("kratos-subagent-install-*", "kratos-subagent-upgrade-*"),
     ),
     Category(
+        "ssh_certificates", "SSH certificates",
+        "Which machines log in with short-lived SSH certificates instead of the long-lived key, every "
+        "certificate Kratos issued (its serial, key id, machine, principals, validity and the addresses it is "
+        "bound to -- never a private key), and the public records of Kratos's own certificate-authority keys.",
+        PERSONAL, "one row per enrolled machine, one per certificate issued, a few CA-key records",
+        tables=(TableRef(DB, ("ssh_ca_keys", "ssh_certs", "ssh_enrolment"), ("ssh_certs", "issued_at")),),
+        note="kept unless you remove them; manage with `kratos ssh-ca`",
+    ),
+    Category(
+        "ssh_ca", "SSH certificate authority keys",
+        "The private keys that sign Kratos's SSH login certificates and your machines' host certificates. The "
+        "most valuable secret on this computer: keep them private and keep a copy (losing them means "
+        "re-enrolling every machine). Short-lived per-run keys live here only while a run is in progress.",
+        SECRET, "fixed: the user CA and host CA keys (active + next), plus a backup copy",
+        files=("ssh-ca",),
+        note="protection mode (file/agent/token/tpm) is shown by `kratos ssh-ca status`; this folder never leaves "
+             "the Kratos host",
+    ),
+    Category(
         "seal_keys", "Journal seal keys",
         "The keys that verify each machine's sealed journal. Keep them private.",
         SECRET, "one small file per machine",

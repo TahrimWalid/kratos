@@ -90,6 +90,28 @@ def run_scope(source: str, *, target: str | None = None,
         yield ctx
     finally:
         _CURRENT.reset(token)
+        _run_end_hooks(ctx)
+
+
+_END_HOOKS: list[Callable[[RunContext], None]] = []
+
+
+def on_run_end(fn: Callable[[RunContext], None]) -> None:
+    """Call `fn(ctx)` whenever a run scope closes (e.g. D.1 closes that run's SSH
+    connections and deletes its one-run keys). Registered once, at import."""
+    if fn not in _END_HOOKS:
+        _END_HOOKS.append(fn)
+
+
+def _run_end_hooks(ctx: RunContext) -> None:
+    import logging
+
+    for fn in list(_END_HOOKS):
+        try:
+            fn(ctx)
+        except Exception:  # noqa: BLE001 -- cleanup must never break the run's own result
+            logging.getLogger(__name__).warning("run-end cleanup %s failed", getattr(fn, "__name__", fn),
+                                                exc_info=True)
 
 
 T = TypeVar("T")

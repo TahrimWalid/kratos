@@ -26,6 +26,7 @@ from typing import Any
 
 from kratos.untrusted_rich import SafeTable as Table
 from kratos.untrusted_rich import SafeText as Text
+from kratos.sshca.mint import CertUnavailable as _CertUnavailable
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -1103,9 +1104,9 @@ class SubAgentScreen(Screen):
         script = ('for f in /opt/kratos-subagent/state.json "$HOME/.kratos-subagent/state.json"; do '
                   '[ -e "$f" ] && echo "$f"; done; true')
         try:
-            proc = subprocess.run(["ssh", *self._ssh_options(), "--", ssh_addr, script], capture_output=True,
+            proc = subprocess.run(["ssh", *self._ssh_options(ssh_addr), "--", ssh_addr, script], capture_output=True,
                                   text=True, timeout=30, stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, _CertUnavailable):
             return None
         found = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip().endswith("state.json")]
         return " and ".join(found) if proc.returncode == 0 and found else None
@@ -1146,10 +1147,21 @@ class SubAgentScreen(Screen):
             except (OSError, ValueError):
                 pass  # a convenience; the deploy itself already worked
 
-    @staticmethod
-    def _ssh_options() -> list[str]:
+    def _ssh_options(self, ssh_addr: str | None = None) -> list[str]:
+        """Options for scp/ssh to `ssh_addr`. A machine enrolled in SSH certificates
+        (D.1) gets this run's certificate from the same builder investigations use --
+        raising sshca.mint.CertUnavailable instead of ever falling back to the old key."""
         from kratos import kratos_config as _kc
 
+        if ssh_addr:
+            from kratos.adapters import ssh_remote
+            from kratos.sshca import mint as _mint
+
+            login, _, host = ssh_addr.rpartition("@")
+            data_dir = getattr(self, "_data_dir", None)
+            enrol = _mint.enrolment(data_dir, host)
+            if enrol is not None and enrol.uses_cert:
+                return ssh_remote.connection_options(host, login or enrol.login, data_dir)
         opts = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new"]
         # Present exactly Kratos's configured key -- the one whose public half a
         # failure tells the user to authorize. IdentitiesOnly stops ssh offering
@@ -1166,7 +1178,7 @@ class SubAgentScreen(Screen):
         import subprocess
 
         basename = Path(script_path).name
-        ssh_opts = self._ssh_options()
+        ssh_opts = self._ssh_options(ssh_addr)
         stage = "copy"
         try:
             scp = subprocess.run(
@@ -1207,7 +1219,7 @@ class SubAgentScreen(Screen):
         except subprocess.TimeoutExpired:
             what = "copying the installer" if stage == "copy" else "running the installer"
             self._deploy_failed(ssh_addr, "", timed_out=what)
-        except (OSError, subprocess.SubprocessError) as exc:
+        except (OSError, subprocess.SubprocessError, _CertUnavailable) as exc:
             self._deploy_failed(ssh_addr, str(exc))
 
     def _deploy_failed(self, ssh_addr: str, detail: str, *, timed_out: str | None = None,
@@ -1245,9 +1257,9 @@ class SubAgentScreen(Screen):
         if not host or candidate == tried:
             return None
         try:
-            ok = subprocess.run(["ssh", *self._ssh_options(), "--", f"{candidate}@{host}", "true"],
+            ok = subprocess.run(["ssh", *self._ssh_options(f"{candidate}@{host}"), "--", f"{candidate}@{host}", "true"],
                                 capture_output=True, timeout=20, stdin=subprocess.DEVNULL).returncode == 0
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, _CertUnavailable):
             return None
         return candidate if ok else None
 

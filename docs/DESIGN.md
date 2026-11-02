@@ -2354,6 +2354,54 @@ scans every committed recording for non-lab addresses and key-shaped strings. Th
 gate must be run for any change to the prompt, the digest, the model's tool list,
 or the shape of an answer.
 
+## SSH certificates (D.1)
+
+`kratos.sshca` lets Kratos stop depending on one long-lived SSH key. For an **enrolled**
+machine, every connection uses a fresh Ed25519 key pair made for that run, signed by
+Kratos's own small certificate authority with OpenSSH's own `ssh-keygen -s` (never a
+hand-rolled certificate encoder):
+
+```
+ssh-keygen -s <CA> -I kratos:<machine>:<run id>:<serial> -n <principal>
+           -V -1m:+<N>m -z <serial> -O clear -O source-address=<addr>
+```
+
+- `-O clear` strips every certificate option — no pty, no port/agent/X11 forwarding, no
+  user rc — and nothing is re-enabled. The certificate is for Kratos's reads, not a shell.
+- **Principals bind a certificate to one machine.** Each machine grants its own principal
+  `kratos-<short id>` to Kratos's login through `AuthorizedPrincipalsFile`, so machine A's
+  certificate is refused on machine B even with the same login. A "simple" mode uses the
+  login name as the principal for machines where a principals file can't be added; it's
+  shown as weaker.
+- **`source-address`** is taken from what the machine itself reports in `$SSH_CONNECTION`
+  during enrolment, so a copied certificate is refused from any other address.
+- **Validity** is minutes (`ssh.cert.minutes`, default 10, max 60); a longer run re-mints.
+  The key id names the run, so a line in a machine's sshd log traces to one Kratos run, and
+  every issued certificate is recorded in `ssh_certs` (serial, key id, machine, principals,
+  validity, source addresses, actor, run id — never a private key).
+
+**The multiplexing caveat.** sshd checks a certificate only at login, so a connection-sharing
+master authenticated with a certificate would outlive it. Each run therefore uses its **own**
+control socket, `ControlPersist` is capped at the validity, and the run-end hook
+(`run_context.on_run_end`) closes the master (`ssh -O exit`) and deletes that run's ephemeral
+keys; stale run folders from a crash are swept by age. No private key is ever written outside
+the per-run folder or `ssh-ca/`.
+
+**The CA key** lives in `data_dir/ssh-ca/` (owner-only) in one of four protection modes —
+file, agent (a dedicated ssh-agent; signing with `-U`), token (PKCS#11, `-D`), or tpm
+(sealed with `systemd-creds encrypt --with-key=tpm2`, loaded into the agent on demand so the
+plaintext never touches disk). Two user CA keys are trusted at once (active + next) so
+rotation never locks Kratos out, mirroring C.4's TLS pins. A separate **host CA** signs each
+enrolled machine's host key; Kratos then trusts it by `@cert-authority` in its own
+`known_hosts` with strict checking, and refuses a swapped host key.
+
+**Own-login recognition** (`detect/own.py`): a login is Kratos's when sshd's `Accepted` line
+carries a certificate signed by one of Kratos's user CAs (active, next, or retired within a
+7-day window) **and** a key id starting with `kratos:`. The key id alone is never enough —
+anyone with any CA could write it — so a forged `kratos:` id under a foreign CA is not set
+aside. The old key-fingerprint match stays for machines not yet enrolled. This keeps the
+C.1/C.2 detections and CORR-SSH-002 from reporting Kratos itself as an intruder.
+
 ## Known limitations
 
 - **CVE matching is textual**: vulscan matches nmap's detected product and

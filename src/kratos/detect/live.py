@@ -694,7 +694,7 @@ class LiveDetections:
             conn = connect_store(self.data_dir / "kratos.db")
             try:
                 since = _now() - own_mod.WINDOW_DAYS * 86400
-                intervals = own_mod.own_sessions(conn, machine, since=since, fp=own_mod.kratos_fingerprint())
+                intervals = own_mod.own_sessions(conn, machine, since=since, fp=own_mod.kratos_identity(self.data_dir))
             finally:
                 conn.close()
             intervals = own_mod.merge(intervals, dstore.own_sessions_recorded(
@@ -741,7 +741,7 @@ class LiveDetections:
         else:
             ev = msg.get("event")
             if isinstance(ev, dict) and ev.get("event.action") == "ssh_success_login" and own_mod.is_own_login(
-                    ev.get("event.action"), ev.get("message"), own_mod.kratos_fingerprint()):
+                    ev.get("event.action"), ev.get("message"), own_mod.kratos_identity(self.data_dir)):
                 self.stats["own"] += 1          # Kratos's own SSH login (its key), not something that happened
                 return True
             matched = matched_event(machine, ev, created) if isinstance(ev, dict) else None

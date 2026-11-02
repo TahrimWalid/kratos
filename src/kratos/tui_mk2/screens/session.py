@@ -142,6 +142,7 @@ _PALETTE_COMMANDS = [
     ("/model", "switch / add / edit / delete LLM backends"),
     ("/timezone", "show / set the display timezone (storage stays UTC)"),
     ("/target", "set, change, verify or seal the active target (/target seal)"),
+    ("/ssh-ca", "short-lived SSH certificates: status, enrol a machine, verify"),
     ("/rename", "name this session"),
     ("/compact", "summarize the conversation to free context (keeps memory)"),
     ("/clear", "clear the screen + working context (history kept)"),
@@ -995,6 +996,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._rename_flow(rest)
         elif cmd == "/target":
             self._target_flow(rest)
+        elif cmd in ("/ssh-ca", "/certs", "/ssh-cert"):
+            self._ssh_ca_flow(rest)
         elif cmd == "/model":
             # /model is a quick shortcut into the Models tab of Settings (full
             # switch/add/edit/delete manager), not a bare picker.
@@ -1467,6 +1470,77 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # first, not last.
         self._emit_bubble_from_worker(R.doctor_table(checks), self._stamp_now()[1])
         self._set_busy(False)
+
+    # --- /ssh-ca (D.1) ----------------------------------------------
+    def _ssh_ca_flow(self, rest: str) -> None:
+        """`/ssh-ca` status; `/ssh-ca enrol [machine]` shows the setup checklist;
+        `/ssh-ca verify [machine] [--finish]` proves the certificate path (and, with
+        --finish, that the old key alone is refused)."""
+        from kratos.sshca import ca as _ca
+        from kratos.sshca import store as _castore
+
+        parts = rest.split()
+        action = parts[0].lower() if parts else "status"
+        if action in ("enrol", "enroll", "verify"):
+            finish = "--finish" in parts
+            machine = next((p for p in parts[1:] if not p.startswith("--")), None) or _kconfig.get_active_target()
+            if not machine:
+                self._emit(R.error_line("Name the machine: /ssh-ca " + action + " <host> (or set /target first)."))
+                return
+            self._ssh_ca_worker("enrol" if action.startswith("enrol") else "verify", machine, finish)
+            return
+        if action == "unlock":
+            self._emit(R.note_line("Unlock the CA from a terminal (it may prompt for the passphrase): "
+                                   "`kratos ssh-ca unlock`."))
+            return
+        # status
+        ca = _ca.active_user_ca(self._data_dir)
+        if ca is None:
+            self._emit(R.note_line("SSH certificates are not set up — Kratos uses the long-lived key on every "
+                                   "machine. `/ssh-ca enrol <host>` sets up the CA and shows the checklist."))
+            return
+        locked = "" if _ca.is_unlocked(self._data_dir) else "  (LOCKED — `kratos ssh-ca unlock`)"
+        self._emit(R.note_line(f"user CA {ca.fingerprint[:24]}…  mode {ca.mode}{locked}"))
+        enrolments = _castore.list_enrolments(self._data_dir)
+        if not enrolments:
+            self._emit(R.note_line("No machines enrolled yet. `/ssh-ca enrol <host>` to start."))
+        for enr in enrolments:
+            tail = "  (certificate-only)" if enr.state == "cert_only" else (
+                "  (still accepts the old key)" if enr.state == "cert" else "  (setup not verified yet)")
+            self._emit(R.note_line(f"{enr.host} — {enr.state}{tail}  login {enr.login}"))
+
+    @work(thread=True, exclusive=True, group="turn")
+    def _ssh_ca_worker(self, action: str, machine: str, finish: bool) -> None:
+        from kratos.sshca import enrol as _enrol
+
+        self._set_busy(True)
+        try:
+            if action == "enrol":
+                self._emit_from_worker(R.note_line(f"Preparing the certificate setup for {machine}…"))
+                plan = _enrol.build_checklist(self._data_dir, machine, actor="tui")
+                self.app.call_from_thread(
+                    self._emit_commands,
+                    f"Enrol {plan.login}@{machine} in SSH certificates — run ON THE MACHINE (sudo)",
+                    [plan.checklist],
+                    "Then: /ssh-ca verify " + machine + "  (then remove the old key and /ssh-ca verify "
+                    + machine + " --finish).")
+            else:  # verify
+                self._emit_from_worker(R.note_line(f"Checking the certificate path to {machine}…"))
+                result = _enrol.run_full_verification(self._data_dir, machine, include_old_key_refused=finish)
+                for step in result.steps:
+                    mark = "✓" if step.ok else "✗"
+                    line = f"  {mark} {step.label}" + (f" — {step.detail}" if step.detail and not step.ok else "")
+                    self._emit_from_worker(R.note_line(line) if step.ok else R.error_line(line))
+                if result.done:
+                    self._emit_from_worker(R.note_line(f"old key refused ✓ — {machine} is certificate-only."))
+                elif result.state == "cert" and not finish:
+                    self._emit_from_worker(R.note_line(
+                        f"Certificate works. Remove the old key from authorized_keys on {machine}, then "
+                        f"/ssh-ca verify {machine} --finish."))
+        except Exception as e:  # noqa: BLE001 -- never crash the session
+            self._emit_from_worker(R.error_line(f"/ssh-ca {action} failed: {type(e).__name__}: {e}"))
+        finally:
+            self._set_busy(False)
 
     # --- /report -----------------------------------------------------
     def _render_report(self) -> None:

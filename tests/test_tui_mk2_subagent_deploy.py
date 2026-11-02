@@ -101,8 +101,8 @@ def test_generate_local_key_creates_once_and_never_overwrites(tmp_path, monkeypa
 
 
 # --- deploy flow -----------------------------------------------------------
-def test_ssh_options_offer_only_kratos_key(key):
-    opts = SubAgentScreen._ssh_options()
+def test_ssh_options_offer_only_kratos_key(tmp_path, key):
+    opts = SubAgentScreen(tmp_path)._ssh_options()
     assert "IdentitiesOnly=yes" in opts and str(key) in opts and "BatchMode=yes" in opts
 
 

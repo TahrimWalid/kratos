@@ -349,7 +349,8 @@ def _partial_source_seen(conn: Any, key: str, since: float, ls_key: tuple) -> bo
 # ---------------------------------------------------------------------------- the pass
 def _pass_one(lp: packs_mod.LoadedPack, target: str, data_dir: Path, *, now: float, deadline: float,
               max_events: int, disabled: set[str], created: datetime, run_id: str | None,
-              report: PassReport, own: own_mod.Intervals | None = None, own_fp: str | None = None) -> PackPass:
+              report: PassReport, own: own_mod.Intervals | None = None,
+              own_fp: "str | own_mod.OwnIdentity | None" = None) -> PackPass:
     pp = PackPass(pack_id=lp.pack_id, version=lp.version, origin=lp.origin)
     key = target_key(target)
     last = store.last_run(data_dir, target, lp.pack_id)
@@ -461,7 +462,7 @@ def run_pass(target: str, data_dir: Path | str, *, now: float | None = None, dea
     ctx = run_context.current()
     created = datetime.now(timezone.utc)
     own: own_mod.Intervals = {}
-    own_fp = own_mod.kratos_fingerprint()
+    own_fp = own_mod.kratos_identity(data_dir)
     try:
         conn = connect_store(data_dir / "kratos.db")
         try:

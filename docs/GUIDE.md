@@ -2003,6 +2003,65 @@ machine behind NAT. Direct execution stays off either way.
 
 ---
 
+## Safer SSH with certificates
+
+By default Kratos logs in to each machine with one long-lived SSH key. That one key
+works on every machine that trusts it, forever, until you rotate it everywhere. SSH
+certificates are a stronger alternative: Kratos signs a **fresh, throwaway key for each
+run and each machine** into a certificate that
+
+- is valid for **minutes** (10 by default), not forever,
+- works only on **that one machine**, for the login Kratos uses there,
+- works only **from the address that machine sees Kratos connecting from**, and
+- can't open a shell, forward ports or run a login script — it is for Kratos's reads.
+
+So a copied certificate is useless on another machine or from another address, and
+expires on its own in minutes. Removing a machine from Kratos needs no key changes
+anywhere.
+
+**One-time setup on each machine.** Run `kratos ssh-ca enrol <machine>` (or `/ssh-ca enrol
+<machine>` in the app). Kratos prints a short checklist — a copy-and-paste block you run
+**on that machine, with sudo**. It trusts Kratos's certificate authority (CA), grants the
+machine's own name to Kratos's login, and (optionally) lets Kratos verify the machine's
+identity by a signed host certificate, so the first-connection "are you sure?" prompt and
+its risk go away. Your existing key keeps working the whole time, so you are never locked
+out mid-setup.
+
+Then Kratos checks it for you:
+
+1. `kratos ssh-ca verify <machine>` — the certificate logs in, and your old key still works.
+2. You remove the old key from that machine's `authorized_keys`.
+3. `kratos ssh-ca verify <machine> --finish` — Kratos makes **one deliberate login attempt
+   with the old key and confirms it is refused** before it calls the machine
+   "certificate-only". It never just takes your word that the key is gone.
+
+**The CA key — your most valuable secret.** The key that signs the certificates lives in
+`<data folder>/ssh-ca/` and never leaves this computer. How it's protected is your choice
+at setup (`kratos ssh-ca setup --mode …`), shown in `kratos ssh-ca status` and `/doctor`:
+
+- **file** (default): an owner-only file. Simple, and scheduled runs keep working after a
+  reboot. A copy of that file could sign a login for every enrolled machine — but the
+  certificates it signs still expire in minutes and stay bound to this computer's address.
+- **agent**: the key is held in a dedicated SSH agent. After a reboot the agent is empty and
+  scheduled runs stop with "CA locked" — run `kratos ssh-ca unlock` once to continue. Kratos
+  never quietly falls back to the old key.
+- **tpm**: the key is sealed to this computer's TPM chip, so a copied file is useless on any
+  other machine, and runs keep working after a reboot with no unlock. Needs a TPM and the
+  tpm2 system libraries.
+- **token**: the key lives on a hardware security token (PKCS#11).
+
+**Keep a copy.** Back up the `ssh-ca/` folder somewhere safe (with your database backup):
+losing it means re-enrolling every machine.
+
+**Rotation.** `kratos ssh-ca rotate` makes a second CA key and shows the line to add on each
+machine; once every enrolled machine trusts it, `kratos ssh-ca promote` switches signing to
+it. Both keys are trusted at once, so a rotation never locks Kratos out, and the old key is
+still recognised for a week.
+
+If a certificate login ever fails, `kratos ssh-ca diagnose <machine>` says why in plain
+words — the address changed, the machine stopped trusting the CA, a principal is missing, or
+the clocks disagree — and what to do.
+
 ## Building a new tool with /evolve
 
 This is Kratos's most unusual feature, and it's built to be safe. If Kratos needs
