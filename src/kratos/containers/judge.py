@@ -370,13 +370,13 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
                             "`systemctl --user enable --now podman.socket`)")
     if out.engines_found and not fw_read:
         statuses = {k: (v or {}).get("status") for k, v in (inv.get("firewall") or {}).items()}
-        if via == "ssh":
+        if via in ("ssh", "local"):
             gaps.append("published ports vs the firewall: can't tell -- the firewall rules are only readable as root "
                         "(allow exactly `iptables-save`, `ip6tables-save` and `nft -j list ruleset` with sudo -- "
                         "the setup checklist has the lines -- or read this machine through its sub-agent)")
         else:
             gaps.append(f"published ports vs the firewall: can't tell -- the firewall rules could not be read ({statuses})")
-    if inv.get("hidepid") not in ("0", "", None) and via == "ssh":
+    if inv.get("hidepid") not in ("0", "", None) and via in ("ssh", "local"):
         gaps.append("/proc hides other users' processes from this login (hidepid), so containers may be missing "
                     f"-- {_agent_fix()}")
     if inv.get("proc_gaps"):
