@@ -258,9 +258,9 @@ def retest(finding_key: str, *, data_dir: Path, target: str | None = None,
         full = _lc.resolve_key(conn, finding_key)
         rec = _lc.get_record(conn, full)
         before_state = rec["state"]
-        rule_id, rec_target = rec["rule_id"], rec["target"]
+        rule_id, rec_target, subject = rec["rule_id"], rec["target"], rec["subject"] or ""
     tgt = machine_of(rec_target, target)
-    check_names = _covering_check_names(rule_id)
+    check_names = _covering_check_names(rule_id, subject)
     report = _recollect(tgt, data_dir, check_names, run=run) if check_names else None
     # The forced collection + correlation already ran the lifecycle update (write_findings_report
     # -> apply_run), so re-read this finding's state now.
@@ -291,14 +291,14 @@ def machine_of(rec_target: str, wanted: str | None = None) -> str:
     return rec_target
 
 
-def _covering_check_names(rule_id: str) -> list[str]:
+def _covering_check_names(rule_id: str, subject: str = "") -> list[str]:
     from kratos.adapters.findings_engine import rule_inputs
     from kratos.collect import checks as _checks  # noqa: F401
     from kratos.collect.registry import checks as registered_checks
     from kratos.lifecycle.rules import rule_info
 
     info = rule_info(rule_id)
-    needed = set(info.covering_inputs if info else rule_inputs(rule_id))
+    needed = set(info.covering_for(rule_id, subject) if info else rule_inputs(rule_id))
     return [c.name for c in registered_checks() if needed & set(c.inputs)]
 
 

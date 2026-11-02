@@ -51,12 +51,22 @@ class RuleInfo:
     def covering_inputs(self) -> tuple[str, ...]:
         return self.needs if self.needs is not None else self.inputs
 
+    def covering_for(self, rule_id: str, subject: str = "") -> tuple[str, ...]:
+        """The covering inputs for one finding: a package finding about a container image
+        (D.5, subject "<image>:<package>" or "<image>") is re-checked by the container
+        package read, not the machine's own package read."""
+        if rule_id in IMAGE_SCOPED_RULES and ":" in str(subject or ""):
+            return ("container_packages",)
+        return self.covering_inputs
+
 
 def _r(rule_id: str, kind: Kind, needs: tuple[str, ...] | None = None, sticky: bool = False) -> tuple[str, RuleInfo]:
     return rule_id, RuleInfo(kind=kind, inputs=rule_inputs(rule_id), needs=needs, sticky=sticky)
 
 
 _BURST = ("auth_patterns",)
+# Package rules whose findings may be about a container image instead of the machine (D.5).
+IMAGE_SCOPED_RULES = frozenset({"PKG-001", "PKG-002"})
 
 RULES: dict[str, RuleInfo] = dict([
     # conditions
@@ -105,6 +115,15 @@ RULES: dict[str, RuleInfo] = dict([
     # PHP served to the network without package-check coverage lasts until it is moved
     # to a checked package or stops being served.
     _r("WEB-002", "condition"),
+    # D.5: a container's setting lasts until the container is re-created without it (or a
+    # person accepts it); a fresh, complete container read that no longer sees it closes it.
+    _r("CONT-001", "condition"),
+    _r("CONT-002", "condition"),
+    _r("CONT-003", "condition"),
+    _r("CONT-004", "condition"),
+    _r("CONT-005", "condition"),
+    _r("CONT-006", "condition"),
+    _r("CONT-007", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -135,7 +154,8 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PERSIST-009", "run_note"),     # what the persistence check could not read
     _r("LIVE-007", "run_note"),        # the restart-needed hint + what could not be read
     _r("PKG-004", "run_note"),         # what the package check could not cover (no data, stale data, ...)
-    _r("DETECT-001", "run_note"),      # C.1: log sources the detection rules need that the machine doesn't give
+    _r("DETECT-001", "run_note"),
+    _r("CONT-008", "run_note"),        # D.5: what the container checks could not read      # C.1: log sources the detection rules need that the machine doesn't give
 ])
 
 # C.1: the detection rules' findings, SIGMA-<8 hex digits>. Their ids come from the rule

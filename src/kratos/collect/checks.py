@@ -299,3 +299,6 @@ from kratos.websig import check as _websig_check  # noqa: E402,F401
 
 # A login from an address that was guessing passwords (reads the sign-in events log sync stored).
 from kratos.sshguess import check as _sshguess_check  # noqa: E402,F401
+
+# D.5: containers -- settings, published ports vs the firewall, packages inside running images.
+from kratos.containers import check as _containers_check  # noqa: E402,F401

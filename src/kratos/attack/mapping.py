@@ -219,6 +219,15 @@ RULE_ATTACK: dict[str, Entry] = {
     "WEB-001": Behaviour((EXPLOIT_PUBLIC_APP,), why="web-server workers crashing in bursts is what probing a "
                          "memory-corruption bug in a public-facing application looks like"),
     "WEB-002": Posture("a PHP build the package check can't cover is a gap in coverage, not an action"),
+    # D.5: container settings -- each enables T1611 Escape to Host; none is an observed action.
+    "CONT-001": Posture("a privileged container is a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-002": Posture("a mounted engine socket is a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-003": Posture("a shared host namespace is a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-004": Posture("a published port the firewall doesn't filter is exposure, not an action"),
+    "CONT-005": Posture("a writable host-folder mount is a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-006": Posture("added capabilities are a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-007": Posture("confinement turned off is a setting that enables T1611 Escape to Host, not an action"),
+    "CONT-008": Posture("run note: what the container check could not read"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),
 }
