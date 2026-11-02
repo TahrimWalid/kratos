@@ -13,9 +13,14 @@ credential hunting. Those events are set aside, and only those:
   account can't take it on.
 
 A login is Kratos's when it used Kratos's own SSH key (its fingerprint, computed here
-from the public key). Nothing is sent to the machine; both logs are already synced.
-Someone holding Kratos's private key would be treated as Kratos: that key is the
-credential Kratos is trusted with.
+from the public key), or -- on a machine enrolled in SSH certificates (D.1) -- a
+certificate signed by one of Kratos's user CA keys (active, next, or retired within
+WINDOW_DAYS) whose key id starts with ``kratos:``. sshd logs both:
+``Accepted publickey ... ssh2: ED25519-CERT SHA256:<key> ID kratos:<m>:<run>:<n>
+(serial <n>) CA ED25519 SHA256:<ca>``. The key id alone is never enough: anyone with
+any CA can write it. Nothing is sent to the machine; both logs are already synced.
+Someone holding Kratos's private key or CA would be treated as Kratos: those are the
+credentials Kratos is trusted with.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ import base64
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,15 +62,63 @@ def kratos_fingerprint() -> str | None:
 
 
 _FP = re.compile(r"\bSHA256:[A-Za-z0-9+/]{43}\b")
+# sshd's certificate login: "<KEY>-CERT SHA256:<key> ID <key id> (serial <n>) CA <CAKEY> SHA256:<ca>"
+_CERT = re.compile(r"-CERT SHA256:[A-Za-z0-9+/]{43} ID (?P<id>\S+) \(serial \d+\) CA \S+ "
+                   r"(?P<ca>SHA256:[A-Za-z0-9+/]{43})\b")
+KEY_ID_PREFIX = "kratos:"
 
 
-def is_own_login(action: Any, message: Any, fp: str | None) -> bool:
-    """An sshd "Accepted ..." line for a login made with Kratos's own key -- Kratos logging
-    in to read the machine, not something that happened on it (a root-login rule would
-    otherwise fire on every collection where Kratos's SSH user is root)."""
-    if not fp or action != "ssh_success_login" or not isinstance(message, str):
+@dataclass(frozen=True)
+class OwnIdentity:
+    """What makes an sshd "Accepted" line Kratos's own: its long-lived key, or a
+    certificate from one of its user CAs with a ``kratos:`` key id."""
+    key_fingerprints: frozenset[str] = frozenset()
+    ca_fingerprints: frozenset[str] = frozenset()
+
+    def __bool__(self) -> bool:
+        return bool(self.key_fingerprints or self.ca_fingerprints)
+
+    def matches(self, message: str) -> bool:
+        if self.key_fingerprints and any(fp in self.key_fingerprints for fp in _FP.findall(message)):
+            # a certificate line names the certified key first; that key is a one-run key,
+            # never the long-lived one, so a key match here is a plain-key login
+            return True
+        if self.ca_fingerprints:
+            for m in _CERT.finditer(message):
+                if m.group("id").startswith(KEY_ID_PREFIX) and m.group("ca") in self.ca_fingerprints:
+                    return True
         return False
-    return fp in _FP.findall(message)
+
+
+def kratos_identity(data_dir: Path | str | None = None, *, now: float | None = None) -> OwnIdentity:
+    """Kratos's long-lived key fingerprint, plus its user CA keys when `data_dir` has a CA."""
+    fp = kratos_fingerprint()
+    cas: frozenset[str] = frozenset()
+    if data_dir is not None:
+        try:
+            from kratos.sshca import ca
+
+            cas = frozenset(ca.trusted_user_fingerprints(Path(data_dir), now=now))
+        except Exception:  # noqa: BLE001 -- an unreadable CA record must not break detection
+            cas = frozenset()
+    return OwnIdentity(frozenset({fp}) if fp else frozenset(), cas)
+
+
+def _identity(fp: "str | OwnIdentity | None") -> OwnIdentity:
+    if isinstance(fp, OwnIdentity):
+        return fp
+    return OwnIdentity(frozenset({fp}) if fp else frozenset())
+
+
+def is_own_login(action: Any, message: Any, fp: "str | OwnIdentity | None") -> bool:
+    """An sshd "Accepted ..." line for a login made by Kratos itself -- Kratos logging
+    in to read the machine, not something that happened on it (a root-login rule would
+    otherwise fire on every collection where Kratos's SSH user is root). `fp` is the old
+    key's fingerprint, or an OwnIdentity that also knows Kratos's CAs."""
+    ident = _identity(fp)
+    if not ident or action != "ssh_success_login" or not isinstance(message, str):
+        return False
+    return ident.matches(message)
 
 
 LOGIN_SLACK_SECONDS = 120.0       # the audit login records follow sshd's "Accepted" line within this
@@ -74,12 +128,13 @@ RECORDED_SLACK_SECONDS = 600.0    # around a session id read directly (Kratos's 
 Intervals = dict[str, list[tuple[float, float]]]
 
 
-def own_sessions(conn: Any, target_key: str, *, since: float, fp: str | None) -> Intervals:
+def own_sessions(conn: Any, target_key: str, *, since: float, fp: "str | OwnIdentity | None") -> Intervals:
     """Audit session ids of the logins made with Kratos's key on this machine since `since`,
     each with when it was Kratos's: from the login to its logout (or an hour). Session ids
     restart at every boot, so an id counts only within that interval. A login is matched by
     sshd's pid AND time (pids are reused too)."""
-    if not fp:
+    ident = _identity(fp)
+    if not ident:
         return {}
     accepted: dict[int, list[float]] = {}
     for ts, doc in conn.execute(
@@ -87,7 +142,7 @@ def own_sessions(conn: Any, target_key: str, *, since: float, fp: str | None) ->
             "'ssh_success_login' AND ts >= ?", (target_key, since)):
         d = json.loads(doc)
         pid = (d.get("process") or {}).get("pid")
-        if isinstance(pid, int) and fp in _FP.findall(str(d.get("message") or "")):
+        if isinstance(pid, int) and ident.matches(str(d.get("message") or "")):
             accepted.setdefault(pid, []).append(float(ts))
     if not accepted:
         return {}

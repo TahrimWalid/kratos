@@ -44,6 +44,7 @@ from kratos.subagent import reads as _reads
 from kratos.subagent import routing as _routing
 from kratos.utils import cancel as _cancel
 from kratos.utils import ssh_slots as _slots
+from kratos.sshca.mint import CertUnavailable as _CertUnavailable
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.kratos_config import (
     SSH_TARGET_KEY_PATH,
@@ -95,21 +96,50 @@ def _host_key_opts() -> list[str]:
     return opts
 
 
-def _base_ssh_argv() -> list[str]:
+def _cert_host_key_opts(data_dir: Path) -> list[str]:
+    """A machine with a verified Kratos host certificate: trusted only through Kratos's
+    own @cert-authority file, strictly -- no first-contact trust, a changed key refused."""
+    from kratos.sshca import enrol as _enrol
+
+    return ["-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_enrol.known_hosts_path(data_dir)}"]
+
+
+def connection_options(host: str, login: str, data_dir: Path | None = None) -> list[str]:
+    """Authentication, host-key and shared-connection options for `login@host` -- the
+    one builder every SSH and scp call uses (investigation reads and the sub-agent
+    deploy). A machine enrolled in certificates gets this run's certificate (D.1;
+    raises sshca.mint.CertUnavailable rather than ever falling back to the old key);
+    any other machine gets today's long-lived key, unchanged."""
+    from kratos.sshca import mint as _mint
+
+    data_dir = data_dir if data_dir is not None else _kconfig.get_active_data_dir()
+    minted = _mint.credentials_for(data_dir, host)
+    if minted is not None:
+        enrol = _mint.enrolment(data_dir, host)
+        hk = _cert_host_key_opts(data_dir) if enrol is not None and enrol.host_cert_active else _host_key_opts()
+        return [*_mint.ssh_options(minted, data_dir), "-o", "BatchMode=yes", *hk,
+                "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}"]
     # Offer only Kratos's key when it exists: an agent full of other keys can
     # otherwise hit the server's MaxAuthTries ("Too many authentication
     # failures") before this one is ever tried.
     only = ["-o", "IdentitiesOnly=yes"] if Path(SSH_TARGET_KEY_PATH).exists() else []
     return [
-        "ssh",
         "-i", str(SSH_TARGET_KEY_PATH),
         *only,
         "-o", "BatchMode=yes",  # never prompt -- fail fast instead of hanging
         *_host_key_opts(),
         "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_SECONDS}",
         *_slots.mux_options(),
-        f"{_kconfig.ssh_user_for()}@{get_active_target()}",
     ]
+
+
+def _base_ssh_argv() -> list[str]:
+    host, login = get_active_target(), _kconfig.ssh_user_for()
+    return ["ssh", *connection_options(host, login), f"{login}@{host}"]
+
+
+def _cert_unavailable_result(exc: Exception) -> SSHResult:
+    return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {exc}")
 
 
 def pin_target_host_key(target: str | None = None, known_hosts_path: Path | None = None) -> SSHResult:
@@ -220,6 +250,8 @@ def run_remote_command(command: str, timeout: int | None = None) -> SSHResult:
         return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=_clean_stderr(result.stderr))
     except _slots.Busy as e:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {e}")
+    except _CertUnavailable as e:
+        return _cert_unavailable_result(e)
     except subprocess.TimeoutExpired:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH command timed out after {secs}s")
     except FileNotFoundError:
@@ -264,6 +296,8 @@ def run_remote_script(script: str, timeout: int | None = None, shell: str = "bas
         return SSHResult(ok=result.returncode == 0, returncode=result.returncode, stdout=result.stdout, stderr=_clean_stderr(result.stderr))
     except _slots.Busy as e:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"not run: {e}")
+    except _CertUnavailable as e:
+        return _cert_unavailable_result(e)
     except subprocess.TimeoutExpired:
         return SSHResult(ok=False, returncode=-1, stdout="", stderr=f"SSH script timed out after {secs}s")
     except FileNotFoundError:
