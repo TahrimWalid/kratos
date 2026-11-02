@@ -118,9 +118,19 @@ def _build_digest(report: CollectionReport) -> str:
     text = "\n".join(lines)
     if len(text) <= DIGEST_CAP:
         return text
-    # Over the cap: findings by ID only, then shorten the check lines.
+    # Over the cap: findings by ID only -- identical ones once, with a count, so one image's
+    # dozens of package findings can't push the others out (D.5) -- then shorten the check lines.
+    full = ["  " + _finding_tag(f, True) for f in findings]
+    counts: dict[str, int] = {}
     for f in findings:
-        text = text.replace("  " + _finding_tag(f, True), "  " + _finding_tag(f, False))
+        tag = _finding_tag(f, False)
+        counts[tag] = counts.get(tag, 0) + 1
+    short = [f"  {tag}" + (f" x{n}" if n > 1 else "") for tag, n in counts.items()]
+    body = text.splitlines()
+    if full:
+        start = body.index(full[0])
+        body[start:start + len(full)] = short
+    text = "\n".join(body)
     if len(text) <= DIGEST_CAP:
         return text
     out: list[str] = []
