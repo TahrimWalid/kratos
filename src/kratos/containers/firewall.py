@@ -694,6 +694,10 @@ def judge_port(rs: Ruleset, *, family: int, proto: str, host_port: int, containe
         return PortJudgement(family, host_port, proto, "forwarded", None, None, "unknown",
                              "the firewall rules could not be read")
     inp = hook_verdict(rs, replace(inp_pkt, orig_dst=host, orig_dport=host_port), "input")
+    if inp.verdict == ACCEPT:
+        # the firewall doesn't refuse this port at all: open on purpose, whatever forwarding does
+        return PortJudgement(family, host_port, proto, "forwarded", None, inp, "no",
+                             "the firewall allows this port on INPUT too, so it is meant to be open")
     if container_ip is None:
         return PortJudgement(family, host_port, proto, "forwarded", None, inp, "unknown",
                              "the container's address on its network was not reported")

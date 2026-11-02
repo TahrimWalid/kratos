@@ -244,3 +244,12 @@ def test_parse_iptables_save_reads_policies_rules_and_negations():
                                           (":1023", 8080, False), ("80,443,8080", 8080, True), ("9090", 8080, False)])
 def test_port_specs(spec, port, ok):
     assert F._port_in(port, spec) is ok
+
+
+def test_a_port_input_accepts_is_open_on_purpose_even_when_forwarding_cant_be_told():
+    """Seen on a real VPS: INPUT policy ACCEPT (no host firewall) with a forwarding rule the
+    model can't read -- that is no bypass, not "can't tell"."""
+    rs = _rs("*filter\n:INPUT ACCEPT [0:0]\n:FORWARD DROP [0:0]\n:DOCKER-USER - [0:0]\n-A FORWARD -j DOCKER-USER\n"
+             "-A DOCKER-USER -m set --match-set x src -j DROP\nCOMMIT\n")
+    j = _judge(rs)
+    assert j.bypass == "no" and j.input.verdict == "accept"

@@ -422,7 +422,8 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
         out.rows += _ssh_rows(procs, inv)
         if fw_read:
             out.signals += _rule_bypass_signals(inv, rs, host_addrs=host_addrs, in_iface=in_iface,
-                                                try_confirm=try_confirm, backend=backend, vantage=vantage)
+                                                try_confirm=try_confirm, backend=backend, vantage=vantage,
+                                                unknown=gaps)
     out.gaps = gaps
     if gaps:
         out.signals.append({"rule": "CONT-008", "severity": "info", "subject": "",
@@ -441,7 +442,7 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
 
 def _rule_bypass_signals(inv: dict[str, Any], rs: F.Ruleset, *, host_addrs: dict[int, str | None],
                          in_iface: dict[int, str | None], try_confirm: Any, backend: str,
-                         vantage: str) -> list[dict[str, Any]]:
+                         vantage: str, unknown: list[str]) -> list[dict[str, Any]]:
     """CONT-004 over SSH, from the ports Docker's own NAT rules publish (no engine API). The
     subject is the container's address: its name is only readable through the sub-agent."""
     out = []
@@ -455,6 +456,9 @@ def _rule_bypass_signals(inv: dict[str, Any], rs: F.Ruleset, *, host_addrs: dict
                          in_iface=in_iface.get(pp["family"]), forwarded=True)
         if j.bypass == "yes":
             by_ip.setdefault(pp["container_ip"], []).append(j)
+        elif j.bypass == "unknown":
+            unknown.append(f"container at {pp['container_ip']}: port {j.host_port}/{j.proto} IPv{j.family} vs the "
+                           f"firewall: can't tell ({j.why})")
     for ip, hits in sorted(by_ip.items()):
         c = {"id": "", "name": f"at {ip}", "image": "", "image_id": "",
              "ports": [{"proto": j.proto, "container_port": 0, "host_ip": "", "host_port": j.host_port} for j in hits]}
