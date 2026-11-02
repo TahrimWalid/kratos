@@ -75,7 +75,7 @@ def compose_of(c: dict[str, Any]) -> dict[str, str] | None:
 
 def _where(c: dict[str, Any]) -> str:
     comp = compose_of(c)
-    base = f"container {c.get('name')} (image {c.get('image') or '?'})"
+    base = f"container {c.get('name')}" + (f" (image {c.get('image')})" if c.get("image") else "")
     if comp:
         base += f", Compose project {comp['project']} service {comp['service'] or '?'}"
         if comp["file"]:
@@ -342,6 +342,9 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
     infos = inv.get("infos") or {}
     backend = next((str(i.get("firewall_backend") or "") for i in infos.values() if i.get("firewall_backend")), "")
     rs = F.ruleset_from(inv.get("firewall") or {}, backend)
+    if not backend:      # over SSH the engine isn't asked; Docker's own rules say which backend it uses
+        backend = ("nftables" if any(k[1] in F.DOCKER_NFT_TABLES for k in rs.nft)
+                   else "iptables" if any("DOCKER" in (t.get("nat") or {}) for t in rs.ipt.values()) else "")
     routes = inv.get("routes") or {}
     in_iface = {4: (routes.get("4") or [None])[0], 6: (routes.get("6") or [None])[0]}
     fw_read = rs.have_ipt.get(4) or rs.have_nft
@@ -411,10 +414,15 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
             gaps.append(f"{c.get('name')}: port {j.host_port}/{j.proto} IPv{j.family} vs the firewall: can't tell ({j.why})")
         out.signals += sigs
         out.rows.append(_row(c, sigs, checks))
-    # SSH-only view: containers from /proc, with what /proc can show (capabilities)
+    # SSH-only view: containers from /proc, with what /proc can show (capabilities), and --
+    # when the firewall rules were readable (the pinned sudo lines) -- the published ports
+    # from Docker's own NAT rules
     if not containers and procs:
         out.signals += _ssh_cap_signals(procs)
         out.rows += _ssh_rows(procs, inv)
+        if fw_read:
+            out.signals += _rule_bypass_signals(inv, rs, host_addrs=host_addrs, in_iface=in_iface,
+                                                try_confirm=try_confirm, backend=backend, vantage=vantage)
     out.gaps = gaps
     if gaps:
         out.signals.append({"rule": "CONT-008", "severity": "info", "subject": "",
@@ -428,6 +436,39 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
                   "confirmed": sum(1 for s in out.signals if s["rule"] == "CONT-004" and s["severity"] == "high"),
                   "risky": len({s["subject"] for s in out.signals if s["rule"] in ("CONT-001", "CONT-002", "CONT-003",
                                                                                      "CONT-005", "CONT-006", "CONT-007")})}
+    return out
+
+
+def _rule_bypass_signals(inv: dict[str, Any], rs: F.Ruleset, *, host_addrs: dict[int, str | None],
+                         in_iface: dict[int, str | None], try_confirm: Any, backend: str,
+                         vantage: str) -> list[dict[str, Any]]:
+    """CONT-004 over SSH, from the ports Docker's own NAT rules publish (no engine API). The
+    subject is the container's address: its name is only readable through the sub-agent."""
+    out = []
+    by_ip: dict[str, list[F.PortJudgement]] = {}
+    for pp in F.published_from_rules(rs):
+        if _loopback(pp["host_ip"]):
+            continue
+        j = F.judge_port(rs, family=pp["family"], proto=pp["proto"], host_port=pp["host_port"],
+                         container_port=pp["container_port"], container_ip=pp["container_ip"] or None,
+                         bridge=pp["bridge"], host_addr=host_addrs.get(pp["family"]),
+                         in_iface=in_iface.get(pp["family"]), forwarded=True)
+        if j.bypass == "yes":
+            by_ip.setdefault(pp["container_ip"], []).append(j)
+    for ip, hits in sorted(by_ip.items()):
+        c = {"id": "", "name": f"at {ip}", "image": "", "image_id": "",
+             "ports": [{"proto": j.proto, "container_port": 0, "host_ip": "", "host_port": j.host_port} for j in hits]}
+        confirmed = {j.host_port: try_confirm(j.host_port, j.proto) for j in hits}
+        sig = _bypass_signal(c, hits, confirmed, backend=backend,
+                             fw_name=firewall_name(inv, hits[0].input.where if hits[0].input else ""),
+                             in_iface=in_iface, vantage=vantage or "this machine", gateway_note="")
+        sig["subject"] = ip
+        sig["entities"] = sorted({f"address:{ip}", *(f"port:{j.host_port}/{j.proto}" for j in hits)})
+        sig["evidence"].insert(0, f"Read over SSH from Docker's own NAT rules (the pinned, read-only firewall "
+                                  f"listings): a container at {ip} is published. Its name, image and settings are "
+                                  "only readable through the sub-agent.")
+        sig["fix"] = sig["fix"][1:]          # no Compose/run definition is known over SSH
+        out.append(sig)
     return out
 
 

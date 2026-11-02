@@ -299,3 +299,20 @@ def test_rootless_podman_ports_go_through_input_not_a_bypass():
                         ports=[{"proto": "tcp", "container_port": 80, "host_ip": "", "host_port": 8090}])),
                 host_addrs=HOST, confirm=lambda p: True)
     assert j.signals == [] and j.port_checks[0]["path"] == "proxied" and j.port_checks[0]["bypass"] == "no"
+
+
+def test_over_ssh_with_the_firewall_readable_the_bypass_comes_from_dockers_own_nat_rules():
+    nat = ("*nat\n:PREROUTING ACCEPT [0:0]\n:DOCKER - [0:0]\n"
+           "-A DOCKER ! -i docker0 -p tcp -m tcp --dport 8080 -j DNAT --to-destination 172.17.0.2:80\n"
+           "-A DOCKER -d 127.0.0.1/32 ! -i docker0 -p tcp -m tcp --dport 9090 -j DNAT --to-destination 172.17.0.3:80\n"
+           "COMMIT\n")
+    procs = {5: {"engine": "docker", "container": CID, "uid": 0, "capeff": "0", "ppid": 1, "comm": "nginx"}}
+    doc = inv(via="ssh", procs=procs, engines=[{"engine": "docker", "socket": "/run/docker.sock", "state": "not_read",
+                                                "detail": ""}])
+    doc["containers"], doc["infos"] = {}, {}
+    doc["firewall"]["iptables"]["text"] = IPT_UFW_DOCKER + nat
+    j = J.judge(doc, host_addrs=HOST, confirm=lambda p: True)
+    s = next(x for x in j.signals if x["rule"] == "CONT-004")
+    assert s["subject"] == "172.17.0.2" and s["severity"] == "high" and "port:8080/tcp" in s["entities"]
+    assert "DOCKER-USER" in s["fix"][0]["text"]                    # iptables backend, inferred from the rules
+    assert "9090" not in " ".join(s["evidence"])                   # a loopback-only port is no bypass

@@ -714,3 +714,72 @@ def judge_port(rs: Ruleset, *, family: int, proto: str, host_port: int, containe
     return PortJudgement(family, host_port, proto, "forwarded", fwd, inp, "yes",
                          "the firewall refuses this port on INPUT, but published container traffic is forwarded "
                          "before those rules and nothing on the forwarding path drops it")
+
+
+# =========================================================================== published ports from Docker's own rules
+_TO_DEST = re.compile(r"--to-destination\s+(\[?[0-9A-Fa-f:.]+\]?):(\d{1,5})\b")
+
+
+def _bridge_of(conds: list[tuple[str, bool, list[str]]]) -> str | None:
+    for opt, neg, args in conds:
+        if opt in ("-i", "--in-interface") and neg and args and _DOCKER_BRIDGE_RE.match(args[0]):
+            return args[0]
+    return None
+
+
+def published_from_rules(rs: Ruleset) -> list[dict[str, Any]]:
+    """The ports Docker publishes, read from its own NAT rules (iptables ``-j DNAT
+    --to-destination`` in the nat table, or ``dnat`` in the docker-bridges table) --
+    what lets a login that may read the firewall rules (the pinned sudo lines) judge the
+    bypass without the engine's API. [{family, proto, host_ip, host_port, container_ip,
+    container_port, bridge}]"""
+    out: list[dict[str, Any]] = []
+    for family, tables in rs.ipt.items():
+        for chain in (tables.get("nat") or {}).values():
+            for rule in chain.rules:
+                if rule.target != "DNAT":
+                    continue
+                m = _TO_DEST.search(rule.text)
+                c = {o: (neg, a) for o, neg, a in rule.conds}
+                proto = (c.get("-p") or c.get("--protocol") or (False, [""]))[1][0]
+                dport = (c.get("--dport") or c.get("--destination-port") or (False, [""]))[1][0]
+                if not m or proto not in ("tcp", "udp") or not dport.isdigit():
+                    continue
+                dst = c.get("-d") or c.get("--destination")
+                host_ip = dst[1][0].split("/")[0] if dst and not dst[0] else ("::" if family == 6 else "0.0.0.0")
+                out.append({"family": family, "proto": proto, "host_ip": host_ip, "host_port": int(dport),
+                            "container_ip": m.group(1).strip("[]"), "container_port": int(m.group(2)),
+                            "bridge": _bridge_of(rule.conds)})
+    for key, ch in rs.nft.items():
+        if ch.table not in DOCKER_NFT_TABLES:
+            continue
+        for exprs in ch.rules:
+            dn = next((e["dnat"] for e in exprs if isinstance(e, dict) and isinstance(e.get("dnat"), dict)), None)
+            if not dn or not isinstance(dn.get("port"), int):
+                continue
+            proto, dport, host_ip, bridge = None, None, None, None
+            for e in exprs:
+                mm = e.get("match") if isinstance(e, dict) else None
+                if not isinstance(mm, dict):
+                    continue
+                left = mm.get("left") or {}
+                pl, meta = left.get("payload") or {}, left.get("meta") or {}
+                if pl.get("field") == "dport" and pl.get("protocol") in ("tcp", "udp") and isinstance(mm.get("right"), int):
+                    proto, dport = pl["protocol"], mm["right"]
+                elif pl.get("field") == "daddr" and isinstance(mm.get("right"), str) and mm.get("op") == "==":
+                    host_ip = mm["right"]
+                elif meta.get("key") == "iifname" and mm.get("op") == "!=" and isinstance(mm.get("right"), str):
+                    bridge = mm["right"]
+            if proto is None or dport is None:
+                continue
+            family = 6 if ch.family == "ip6" else 4
+            out.append({"family": family, "proto": proto, "host_ip": host_ip or ("::" if family == 6 else "0.0.0.0"),
+                        "host_port": int(dport), "container_ip": str(dn.get("addr") or ""),
+                        "container_port": int(dn["port"]), "bridge": bridge})
+    seen, uniq = set(), []
+    for pp in out:
+        k = (pp["family"], pp["proto"], pp["host_ip"], pp["host_port"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(pp)
+    return uniq
