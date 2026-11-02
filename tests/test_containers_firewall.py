@@ -187,6 +187,11 @@ NFT_DOCKER = {"nftables": [
 ]}
 NFT_INPUT_DENY = [_chain("inet", "host-fw", "input", "input", 0, "drop"),
                   _rule("inet", "host-fw", "input", _m({"meta": {"key": "iifname"}}, "lo"), {"accept": None}),
+                  _rule("inet", "host-fw", "input", _m({"ct": {"key": "state"}}, ["established", "related"], "in"),
+                        {"accept": None}),
+                  # seen on the lab: an icmp match is simply false for a TCP packet, not "can't tell"
+                  _rule("inet", "host-fw", "input", _m({"payload": {"protocol": "icmp", "field": "type"}},
+                                                        "echo-request"), {"accept": None}),
                   _rule("inet", "host-fw", "input", _m({"payload": {"protocol": "tcp", "field": "dport"}}, 22),
                         {"accept": None})]
 

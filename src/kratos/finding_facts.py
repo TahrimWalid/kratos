@@ -170,7 +170,21 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
         facts.append("pid " + ", ".join(pids[:3]))
     subject = str(f.get("subject") or "")
     sigma = _is_rule(f)      # C.1: a detection rule's subject is an address, user or program
-    if subject and _PACKAGE_RE.match(subject) and not sigma:
+    rule = str(f.get("id") or "")
+    if rule.startswith("CONT-"):
+        # D.5: the subject is a container's name (machine text) -- never a fact; ports are validated numbers
+        ports = [e.split(":", 1)[1] for e in (str(x) for x in f.get("entities") or [])
+                 if re.fullmatch(r"port:\d{1,5}/(tcp|udp|sctp)", e)]
+        if ports:
+            facts.append("port " + ", ".join(ports[:3]))
+        if rule == "CONT-004" and str(f.get("severity")) == "high":
+            facts.append("confirmed reachable from Kratos")
+    elif subject and ":" in subject and rule in ("PKG-001", "PKG-002"):
+        # D.5: "<image>:<package>" -- name the package (validated), not the image (machine text)
+        pkg = subject.rsplit(":", 1)[-1]
+        facts.append(f"package {pkg} (inside a container image)" if rule == "PKG-001" and _PACKAGE_RE.match(pkg)
+                     else "inside a container image")
+    elif subject and _PACKAGE_RE.match(subject) and not sigma:
         facts.append(f"package {subject}")
     cves = _cves_decisive_first(f)
     if cves:

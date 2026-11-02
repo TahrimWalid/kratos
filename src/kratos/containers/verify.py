@@ -30,7 +30,7 @@ def _verify_bypass(ctx: VerifyContext) -> Verdict:
         gone_sentence="A fresh read no longer shows this port reachable despite the firewall -- it was bound to "
                       "127.0.0.1, filtered, or the container is gone. Note: this is Kratos's own vantage.")
     if v.verdict == "reproduced":
-        confirmed = any("Confirmed: a TCP connection from Kratos" in line for line in v.evidence)
+        confirmed = "confirmed reachable from Kratos" in v.evidence
         sentence = ("A fresh read still lets outside traffic reach this port, and Kratos connected to it just now "
                     "(no data sent)." if confirmed else
                     "A fresh read still lets outside traffic reach this port; Kratos's own connection didn't "

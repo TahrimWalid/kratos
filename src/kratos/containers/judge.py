@@ -311,10 +311,15 @@ def _bypass_signal(c: dict[str, Any], hits: list[F.PortJudgement], confirmed: di
                 ports=[j.as_dict() for j in hits], confirmed=sorted(conf_ports))
 
 
-def firewall_name(inv: dict[str, Any]) -> str:
+def firewall_name(inv: dict[str, Any], decided_by: str = "") -> str:
+    """What refused the port on INPUT, in a person's words: the nftables table named by the
+    deciding rule, else ufw when ufw's own rules are loaded, else firewalld, else "the firewall"."""
+    if decided_by.startswith("table "):
+        parts = decided_by.split()
+        return f"the nftables firewall (table {parts[2]})" if len(parts) > 2 else "the nftables firewall"
     fw = inv.get("firewall") or {}
     text = " ".join(str((fw.get(k) or {}).get("text") or "")[:400000] for k in ("iptables", "nft"))
-    if "ufw-user-input" in text or "ufw-before-input" in text:
+    if "-A ufw-user-input" in text or "-A ufw-before-input" in text:
         return "ufw"
     if "firewalld" in text:
         return "firewalld"
@@ -336,7 +341,6 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
     rs = F.ruleset_from(inv.get("firewall") or {}, backend)
     routes = inv.get("routes") or {}
     in_iface = {4: (routes.get("4") or [None])[0], 6: (routes.get("6") or [None])[0]}
-    fw_name = firewall_name(inv)
     fw_read = rs.have_ipt.get(4) or rs.have_nft
     # ---- gaps
     gaps: list[str] = []
@@ -397,6 +401,7 @@ def judge(inv: dict[str, Any], *, host_addrs: dict[int, str | None], confirm: An
                   or k.endswith("allow_direct_routing")]
             note = ("The network's gateway mode allows direct access to container addresses too: " + ", ".join(gw)
                     if gw else "")
+            fw_name = firewall_name(inv, hits[0].input.where if hits[0].input else "")
             sigs.append(_bypass_signal(c, hits, confirmed, backend=backend, fw_name=fw_name, in_iface=in_iface,
                                        vantage=vantage or "this machine", gateway_note=note))
         for j in unknown:
@@ -428,11 +433,14 @@ def _agent_fix() -> str:
 
 
 def _row(c: dict[str, Any], sigs: list[dict[str, Any]], checks: list[F.PortJudgement]) -> dict[str, Any]:
-    bypass = {(j.host_port, j.proto) for j in checks if j.bypass == "yes"}
+    bypass = {(j.family, j.host_port, j.proto) for j in checks if j.bypass == "yes"}
     ports = []
     for p in c.get("ports") or []:
-        mark = " (reachable despite firewall)" if (int(p["host_port"]), p["proto"]) in bypass else ""
-        ports.append(f"{p.get('host_ip') or '*'}:{p['host_port']}->{p['container_port']}/{p['proto']}{mark}")
+        hip = str(p.get("host_ip") or "")
+        fam = 6 if ":" in hip else 4
+        mark = " (reachable despite firewall)" if (fam, int(p["host_port"]), p["proto"]) in bypass else ""
+        shown = f"[{hip}]" if fam == 6 else (hip or "*")
+        ports.append(f"{shown}:{p['host_port']}->{p['container_port']}/{p['proto']}{mark}")
     return {"id": c.get("id"), "name": c.get("name"), "image": c.get("image"),
             "digest": (c.get("image_digest") or c.get("image_id") or "")[7:19], "user": c.get("user") or "root (default)",
             "running": bool(c.get("running")), "state": c.get("state"), "engine": c.get("engine"),

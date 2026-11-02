@@ -55,7 +55,9 @@ DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 LINE_MAX_BYTES = 2048
 WALL_MARGIN_SECONDS = 7200          # zone offset uncertainty: a DST change, plus a margin
 JOURNAL_FIELDS = ("MESSAGE", "SYSLOG_IDENTIFIER", "_COMM", "_PID", "_UID", "_SYSTEMD_UNIT", "UNIT", "PRIORITY",
-                  "_BOOT_ID", "_TRANSPORT", "SYSLOG_PID", "_HOSTNAME")
+                  "_BOOT_ID", "_TRANSPORT", "SYSLOG_PID", "_HOSTNAME",
+                  # D.5: which container wrote a journald-driver line (absent on every other entry)
+                  "CONTAINER_ID_FULL", "CONTAINER_NAME", "IMAGE_NAME")
 COMPRESSED_SUFFIXES = (".gz", ".xz", ".bz2", ".zst", ".lz4")
 MAX_SKIPPED_LISTED = 20
 

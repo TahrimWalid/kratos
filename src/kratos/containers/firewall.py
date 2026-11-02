@@ -337,6 +337,8 @@ class NftChain:
     texts: list[str] = field(default_factory=list)
 
 
+# Transport headers a TCP/UDP packet doesn't carry (an nft match on one of their fields is false).
+_OTHER_L4 = frozenset({"icmp", "icmpv6", "sctp", "dccp", "udplite", "igmp", "esp", "ah", "comp", "tcp", "udp"})
 _PRIO_NAMES = {"raw": -300, "mangle": -150, "dstnat": -100, "filter": 0, "security": 50, "srcnat": 100}
 
 
@@ -415,6 +417,8 @@ def _nft_value(left: Any, pkt: Packet, pre: bool) -> Any:
             if fld in ("protocol", "nexthdr"):
                 return pkt.proto
             return _UNK
+        if proto in _OTHER_L4 and proto != pkt.proto:
+            return _ABSENT                      # an ICMP / SCTP / ... header on a TCP or UDP packet
         if proto in ("tcp", "udp", "th"):
             if proto in ("tcp", "udp") and proto != pkt.proto:
                 return _ABSENT
