@@ -91,11 +91,38 @@ def models_for(client: Any) -> list[tuple[str, str]]:
     return out
 
 
-def target_for_model(client: Any, model: str) -> str | None:
-    """The machine a model name stands for, if this token may reach it. The machine comes
-    from the model name only -- never from the message."""
+def group_models_for(client: Any, data_dir: Any) -> list[tuple[str, str]]:
+    """(model id, '@group') for each group with at least one machine this token may see
+    (D.2). A fleet question over it is narrowed to those machines."""
+    if data_dir is None:
+        return []
+    from kratos.fleet import groups as G
+
+    scope = [t for _m, t in models_for(client)]
+    out: list[tuple[str, str]] = []
+    try:
+        groups = G.list_groups(data_dir)
+    except Exception:  # noqa: BLE001 -- no group store yet
+        return []
+    for g in groups:
+        try:
+            G.resolve(data_dir, f"@{g.name}", scope=scope)
+        except G.GroupError:
+            continue
+        out.append((f"{MODEL_PREFIX}/@{g.name}", f"@{g.name}"))
+    return out
+
+
+def scope_machines(client: Any) -> list[str]:
+    """The machines (never groups) this token may see."""
+    return sorted({t for _m, t in models_for(client)})
+
+
+def target_for_model(client: Any, model: str, data_dir: Any = None) -> str | None:
+    """The machine (or, with `data_dir`, the '@group') a model name stands for, if this
+    token may reach it. It comes from the model name only -- never from the message."""
     wanted = str(model or "").strip().lower()
-    for mid, target in models_for(client):
+    for mid, target in models_for(client) + group_models_for(client, data_dir):
         if mid == wanted:
             return target
     return None
@@ -205,7 +232,7 @@ def _hunt_text(arg: str, client: Any, data_dir: Path, progress: Any) -> str:
 
     scope = sorted({t for _mid, t in models_for(client)})
     try:
-        prepared = front.resolve_hunt(front.parse_command(arg), scope=scope)
+        prepared = front.resolve_hunt(front.parse_command(arg), scope=scope, data_dir=data_dir)
         if prepared.ambiguous:
             a = prepared.ambiguous[0]
             return f"{a.question()} Send it again with --type {' or --type '.join(a.options)}."
@@ -326,6 +353,10 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
     from kratos.tui_mk2.command_intent import route_message
 
     link_hosts = settings_store.get(_s.LINK_HOSTS, data_dir=state.data_dir) or []
+    if target.startswith("@"):
+        _serve_fleet_turn(handle, state=state, client=client, group=target, message=message, session_id=session_id,
+                          link_hosts=link_hosts)
+        return
     if is_retest(message):
         # A retest re-collects from the machine like an investigation does: it waits for a
         # slot, so chat clients can't put more load on a machine than serve.max_parallel.
@@ -420,6 +451,47 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
     handle.finish({"status": status, "content": content, "run_id": outcome.run_id, "usage": outcome.token_usage})
 
 
+def _serve_fleet_turn(handle: TurnHandle, *, state: Any, client: Any, group: str, message: str, session_id: str,
+                      link_hosts: Any) -> None:
+    """A message to `kratos/@<group>`: a fleet question over the machines of the group this
+    token may see (D.2 §3.8) -- never the others, which are only counted. One slot, like an
+    investigation; /retest, /hunt and fixes stay single-machine."""
+    from kratos.fleet import run as FR
+    from kratos.lifecycle.decide import Actor
+
+    first = message.strip().split(maxsplit=1)[0].lower() if message.strip() else ""
+    if first.startswith("/"):
+        text = (FR.FIX_CHANNEL_REFUSAL if first in ("/run-fix", "/fix") else
+                "Commands work on one machine: pick its model (kratos/<machine>). A group model only answers "
+                "questions about its machines.")
+        handle.finish({"status": "ok", "content": _render.kratos_text_markdown(text)})
+        return
+    if not state.slots.acquire(should_stop=handle.stop.is_set,
+                               on_wait=lambda: handle.progress("waiting for another investigation to finish…")):
+        handle.finish({"status": "stopped", "content": "Stopped before the question started."})
+        return
+    try:
+        state.note_runs()
+        out = FR.run_fleet(FR.FleetRequest(
+            question=message, group=group, data_dir=state.data_dir, source="web",
+            actor=Actor(user=f"token:{client.token_id}", interface="serve"), scope=scope_machines(client),
+            on_progress=handle.progress, should_stop=handle.stop.is_set))
+    except FR.FleetError as e:
+        handle.finish({"status": "error", "content": _render.kratos_note_markdown(str(e))})
+        return
+    finally:
+        state.slots.release()
+        state.note_runs()
+    status = {"refused_by_budget": "budget", "cancelled": "stopped"}.get(out.status, "ok")
+    content = (_render.fleet_markdown(out.answer, link_hosts=link_hosts) if out.answer is not None
+               else _render.kratos_note_markdown(out.text))
+    try:
+        _record_chat_turn(state.data_dir, session_id, message, out.text)
+    except Exception:  # noqa: BLE001 -- the answer stands
+        logger.debug("serve: could not record the fleet turn", exc_info=True)
+    handle.finish({"status": status, "content": content, "run_id": out.run_id, "usage": out.token_usage})
+
+
 # --------------------------------------------------------------------------- routes
 def routes(state: Any) -> list[Any]:
     """The OpenAI-door routes (Starlette -- no extra web framework on top of what the MCP
@@ -437,7 +509,8 @@ def _handlers(state: Any) -> dict[str, Any]:
     async def list_models(request: Request) -> Any:
         client = request.scope["kratos.client"]
         now = int(state.started_at)
-        data = [{"id": mid, "object": "model", "created": now, "owned_by": "kratos"} for mid, _t in models_for(client)]
+        models = models_for(client) + await asyncio.to_thread(group_models_for, client, state.data_dir)
+        data = [{"id": mid, "object": "model", "created": now, "owned_by": "kratos"} for mid, _t in models]
         body = {"object": "list", "data": data}
         await asyncio.to_thread(_store.audit, state.data_dir, door="openai", endpoint=MODELS_PATH, status="ok",
                                 token_id=client.token_id, client_addr=_peer(request), bytes_out=len(json.dumps(body)))
@@ -474,7 +547,7 @@ def _handlers(state: Any) -> dict[str, Any]:
             return _error(400, "the request body must be a JSON object")
         model = str(body.get("model") or "")
         stream = bool(body.get("stream"))
-        target = target_for_model(client, model)
+        target = await asyncio.to_thread(target_for_model, client, model, state.data_dir)
         if target is None:
             await asyncio.to_thread(audit, "refused", model=model[:200], detail="model not in this token's scope")
             return _error(404, f"The model {model[:80]!r} does not exist or this token may not use it.",

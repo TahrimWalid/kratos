@@ -119,6 +119,11 @@ _PALETTE_COMMANDS = [
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
+    ("/groups", "groups of machines (@web, @db; @all is built in) — /groups create web 10.0.0.5 10.0.0.6, "
+                "/groups add, /groups remove, /groups delete"),
+    ("/fleet", "the machines of a group: link, agent version, certificate, last collected, open findings "
+               "(/fleet refresh collects them all)"),
+    ("/look", "in a group session: open one machine as a normal investigation, with the last question"),
     ("/containers", "Docker / Podman containers on this machine — risky settings, ports reachable despite the "
                     "firewall (read-only, never the docker group)"),
     ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
@@ -165,6 +170,30 @@ def _hunt_context(text: str) -> str:
     if len(text) <= HUNT_CONTEXT_CHARS:
         return text
     return text[:HUNT_CONTEXT_CHARS] + "\n[... the rest of this hunt report was shown on screen, not kept here]"
+
+
+def fleet_status_text(rows: list[dict]) -> str:
+    """The /fleet table as plain text (machine names are cleaned by the panel)."""
+    from kratos.collect.digest import ago
+    from kratos.fleet.status import agent_update_note
+
+    if not rows:
+        return "No machines in that group."
+    out = []
+    for r in rows:
+        if r.get("duplicate_of"):
+            out.append(f"{r['machine']}: the same machine as {r['duplicate_of']} (shown once)")
+            continue
+        when = ago(time.time() - r["last_collected"]) if r.get("last_collected") else "never collected"
+        found = ", ".join(f"{n} {s}" for s, n in sorted((r.get("open_findings") or {}).items())) or "no open findings"
+        name = r["machine"] + (f" ({r['name']})" if r.get("name") else "")
+        bits = [r.get("link") or "?", f"agent {r['agent_version']}" if r.get("agent_version") else "",
+                f"certificate: {r['certificate']}" if r.get("certificate") else "", f"collected {when}", found]
+        if r.get("last_fleet_outcome") and r["last_fleet_outcome"] not in ("ok",):
+            bits.append(f"last fleet run: {r['last_fleet_outcome']} ({r.get('last_fleet_reason') or ''})")
+        out.append(f"{name}: " + " · ".join(b for b in bits if b))
+    note = agent_update_note(rows)
+    return "\n".join(out) + (f"\n\n{note}" if note else "") + "\n\n/fleet refresh collects them all now."
 
 
 # Forgotten-slash safety net: bare words that are UNAMBIGUOUSLY a command (they
@@ -312,7 +341,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         # which every model call writes with this session's id; /usage reads it.)
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)
         self._user_name = (_kconfig.load_local_config(self._data_dir).get("user_name") or "").strip()
-        if self.session_state["targets"]:
+        if self.session_state["targets"] and not str(self.session_state["targets"][0]).startswith("@"):
             _kconfig.set_active_target(self.session_state["targets"][0])
             from kratos.subagent import routing as _routing
 
@@ -1049,7 +1078,18 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
             self.app.push_screen(WhitelistScreen(self._data_dir))
         elif cmd in ("/run-fix", "/run-recommended"):
+            if self._fleet_group():
+                from kratos.fleet.run import FIX_CHANNEL_REFUSAL
+
+                self._emit(R.note_line(FIX_CHANNEL_REFUSAL))
+                return
             self._run_fix_flow()
+        elif cmd in ("/groups", "/group"):
+            self._groups_flow(rest)
+        elif cmd == "/fleet":
+            self._fleet_status_flow(rest)
+        elif cmd == "/look":
+            self._look_flow(rest)
         elif cmd in ("/investigate-host", "/investigate-self", "/host"):
             self._investigate_host_flow(rest)
         elif cmd == "/run":
@@ -1293,7 +1333,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.tui_mk2.modals import ClarifyModal
 
         try:
-            prepared = front.resolve_hunt(front.parse_command(rest))
+            prepared = front.resolve_hunt(front.parse_command(rest), data_dir=self._data_dir)
         except front.HuntUsageError as e:
             self._emit(R.note_line(f"{e}\n{front.USAGE}"))
             return
@@ -3831,6 +3871,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         an unresolvable active target (Sprint-4 gap)."""
         from kratos.tui_mk2.target_input import expand_host_aliases, remember_logins, validate_targets
 
+        if len(targets) == 1 and str(targets[0]).startswith("@"):
+            self._apply_group_target(targets[0])
+            return
         typed = expand_host_aliases(targets)
         targets, err = validate_targets(typed, allow_login=True)
         if err:
@@ -4662,6 +4705,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.tui_mk2.command_intent import route_message
 
         self._last_goal = goal
+        if self._fleet_group():
+            # A group session: every question is a fleet question (one checked answer per machine).
+            self._fleet_question(goal)
+            return
         self._set_busy(True)
         started = time.monotonic()
         try:
@@ -5166,6 +5213,197 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 out.append({"target_id": tid, "action_id": row["spec"].id, "values": values,
                             "label": row["label"], "command": str(c.get("command"))})
         return out
+
+    # --- D.2: groups of machines and fleet questions --------------------------
+    def _fleet_group(self) -> str | None:
+        """'@web' when this session is about a group of machines, else None."""
+        targets = self.session_state.get("targets") or []
+        first = str(targets[0]) if targets else ""
+        return first if first.startswith("@") else None
+
+    def _apply_group_target(self, ref: str) -> None:
+        from kratos.fleet import groups as G
+
+        try:
+            resolved = G.resolve(self._data_dir, ref)
+        except G.GroupError as e:
+            self._emit(R.error_line(str(e)))
+            return
+        label = f"@{G.check_name(ref) if G._normal_name(ref) != G.BUILTIN_ALL else G.BUILTIN_ALL}"
+        self.session_state["targets"] = [label]
+        self._store.set_targets(self.session_state["session_id"], [label])
+        self._refresh_header()
+        self._refresh_footer()
+        names = ", ".join(resolved.machines[:8]) + (" …" if len(resolved.machines) > 8 else "")
+        self._emit(R.success_line(f"Target set to the group {label}: {len(resolved.machines)} machine(s) ({names})."))
+        self._emit(R.note_line(
+            "Each question is now asked of every machine: Kratos reads them in parallel, the model answers once, and "
+            "each machine's answer is checked against that machine's own evidence. /look <machine> opens one; "
+            "/fleet shows them all."))
+
+    def _fleet_question(self, goal: str) -> None:
+        """Runs inside the turn worker (_run_goal): one fleet question, rendered per machine."""
+        from kratos.agent.loop import InvestigationStopped
+        from kratos.fleet import run as FR
+        from kratos.lifecycle.decide import Actor
+
+        group = self._fleet_group() or "@all"
+        worker = get_current_worker()
+        self._set_busy(True)
+        started = time.monotonic()
+        turn_id = self._store.start_turn(self.session_state["session_id"], goal)
+
+        def progress(line: str) -> None:
+            self._emit_from_worker(R.note_line(line))
+
+        def confirm(est: Any) -> bool:
+            self._emit_from_worker(R.note_line(f"{group}: {est.text()}"))
+            return True
+
+        status = "error"
+        try:
+            out = FR.run_fleet(FR.FleetRequest(
+                question=goal, group=group, data_dir=self._data_dir, actor=Actor.current("tui"), source="interactive",
+                on_progress=progress, should_stop=lambda: worker.is_cancelled, confirm=confirm))
+        except FR.FleetError as e:
+            self._emit_from_worker(R.error_line(str(e)))
+            self._store.complete_turn(turn_id, "error")
+            self._set_busy(False)
+            return
+        except InvestigationStopped:
+            self._emit_from_worker(R.note_line("Stopped — no answer."))
+            self._store.complete_turn(turn_id, "cancelled")
+            self._set_busy(False)
+            return
+        status = out.status
+        t, d = self._stamp_now()
+        tone = T.SAFE if out.status in ("final_answer", "audit") else T.ATTENTION
+        self._emit_bubble_from_worker(R.result_panel(f"Kratos — {out.group_label}", out.text, tone, time_str=t), d)
+        if out.results:
+            self._emit_from_worker(R.note_line(
+                "Look deeper at one machine: " + "  ·  ".join(f"/look {r.machine}" for r in out.results[:8])))
+        self._last_answer = out.text
+        self._last_commands, self._runnable_fixes, self._last_target_commands = [], [], []
+        self._last_fleet = {"question": goal, "machines": [r.machine for r in out.results]}
+        self._emit_from_worker(Text(f"Done in {time.monotonic() - started:.0f}s", style=T.TEXT_FAINTER))
+        record = {"fleet": True, "group": out.group_label, "run_id": out.run_id, "status": out.status,
+                  "summary": out.answer.summary if out.answer else out.text,
+                  "machines": [{"machine": m.machine, "outcome": m.outcome, "reason": m.reason, "passed": m.passed,
+                                "text": m.text} for m in (out.answer.machines if out.answer else [])]}
+        path = self._transcripts_dir() / f"{self.session_state['session_id']}_turn{turn_id}.json"
+        path.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
+        self._store.complete_turn(turn_id, status, transcript_ref=str(path))
+        self._remember_turn(goal, out.text)
+        self._ctx_chars += len(goal) + len(out.text)
+        self.app.call_from_thread(self._refresh_footer)
+        self._set_busy(False)
+
+    def _look_flow(self, rest: str) -> None:
+        from kratos.fleet import groups as G
+        from kratos.target_key import target_key
+
+        group = self._fleet_group()
+        parts = rest.split(maxsplit=1)
+        if not parts:
+            self._emit(R.note_line("/look <machine> [question] — open one machine of this group as a normal "
+                                   "investigation (the last question is carried over)."))
+            return
+        try:
+            members = G.resolve(self._data_dir, group).machines if group else []
+        except G.GroupError:
+            members = []
+        machine = target_key(parts[0])
+        last = getattr(self, "_last_fleet", None) or {}
+        ids = {f"m{i}": m for i, m in enumerate(last.get("machines") or [], 1)}
+        machine = ids.get(parts[0].lower(), machine)
+        if group and machine not in members:
+            self._emit(R.error_line(f"{parts[0]} is not a machine of {group}."))
+            return
+        goal = parts[1] if len(parts) > 1 else (last.get("question") or self._last_goal or "")
+        if not goal:
+            self._emit(R.note_line("What should Kratos look at on it? /look <machine> <question>"))
+            return
+        self._look_worker(machine, goal)
+
+    @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
+    def _look_worker(self, machine: str, goal: str) -> None:
+        from kratos.fleet.collect import host_for
+
+        self._set_busy(True)
+        try:
+            self._emit_from_worker(R.note_line(f"Looking at {machine} on its own: {goal}"))
+            with _kconfig.pinned_target(host_for(machine)):
+                self._run_investigation(goal)
+        finally:
+            self._set_busy(False)
+
+    def _groups_flow(self, rest: str) -> None:
+        """/groups (list) · /groups create <name> <machine...> · /groups add|remove <name> <machine...>
+        · /groups delete <name> -- each change recorded with your name."""
+        from kratos.fleet import groups as G
+        from kratos.lifecycle.decide import Actor
+
+        words = rest.split()
+        try:
+            if not words or words[0] == "list":
+                lines = []
+                for g in G.list_groups(self._data_dir):
+                    kind = " (built in: every machine with an asset record)" if g.builtin else ""
+                    lines.append(f"@{g.name}{kind}: {', '.join(g.members[:10]) or 'no machines'}"
+                                 + (" …" if len(g.members) > 10 else ""))
+                self._emit(R.result_panel("Groups", "\n".join(lines) + "\n\n/target @<group> asks about all of a "
+                                          "group's machines at once.", T.ACCENT))
+                return
+            action, name, members = words[0], (words[1] if len(words) > 1 else ""), words[2:]
+            actor = Actor.current("tui")
+            if action == "create":
+                g = G.create_group(self._data_dir, name, actor, members=members)
+                self._emit(R.success_line(f"@{g.name} made with {len(g.members)} machine(s)."))
+            elif action == "add":
+                added = G.add_members(self._data_dir, name, members, actor)
+                self._emit(R.success_line(f"Added to @{G.check_name(name)}: {', '.join(added) or 'nothing new'}."))
+            elif action == "remove":
+                removed = G.remove_members(self._data_dir, name, members, actor)
+                self._emit(R.success_line(f"Removed from @{G.check_name(name)}: {', '.join(removed) or 'none of those'}."))
+            elif action == "delete":
+                G.delete_group(self._data_dir, name, actor)
+                self._emit(R.success_line(f"@{G.check_name(name)} deleted (its history is kept)."))
+            else:
+                self._emit(R.note_line("/groups · /groups create <name> <machine…> · /groups add|remove <name> "
+                                       "<machine…> · /groups delete <name>"))
+        except G.GroupError as e:
+            self._emit(R.error_line(f"Not changed: {e}"))
+
+    def _fleet_status_flow(self, rest: str) -> None:
+        from kratos.fleet import status as FS
+
+        words = rest.split()
+        if words and words[0] == "refresh":
+            self._fleet_refresh_worker(words[1] if len(words) > 1 else (self._fleet_group() or "@all"))
+            return
+        group = words[0] if words else (self._fleet_group() or "@all")
+        self._emit(R.result_panel(f"Fleet — {group}", fleet_status_text(FS.rows(self._data_dir, group)), T.ACCENT))
+
+    @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
+    def _fleet_refresh_worker(self, group: str) -> None:
+        from kratos.fleet import run as FR
+        from kratos.fleet import status as FS
+        from kratos.lifecycle.decide import Actor
+
+        self._set_busy(True)
+        try:
+            out = FR.run_fleet(FR.FleetRequest(question="", group=group, data_dir=self._data_dir,
+                                               actor=Actor.current("tui"), source="interactive", kind="audit",
+                                               on_progress=lambda line: self._emit_from_worker(R.note_line(line))))
+            self._emit_from_worker(R.note_line(out.answer.summary if out.answer else out.text))
+            self._emit_from_worker(R.result_panel(f"Fleet — {group}", fleet_status_text(FS.rows(self._data_dir, group)),
+                                                  T.ACCENT))
+        except FR.FleetError as e:
+            self._emit_from_worker(R.error_line(str(e)))
+        finally:
+            self._set_busy(False)
 
     @work
     async def _run_fix_flow(self) -> None:

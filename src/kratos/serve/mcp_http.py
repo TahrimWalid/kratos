@@ -53,6 +53,7 @@ class Job:
     stop: threading.Event = field(default_factory=threading.Event)
     session_id: str | None = None
     thread: threading.Thread | None = None
+    scope: tuple[str, ...] = ()                  # the token's machines (a fleet question is narrowed to them)
 
     def view(self) -> dict[str, Any]:
         out: dict[str, Any] = {"investigation_id": self.investigation_id, "status": self.status,
@@ -61,6 +62,8 @@ class Job:
         if self.outcome is not None:
             out.update({k: self.outcome.get(k) for k in ("final_answer", "findings", "recommended_commands",
                                                          "session_id", "run_id", "token_usage", "budget")})
+            if self.outcome.get("fleet") is not None:
+                out["fleet"] = self.outcome["fleet"]
         return out
 
 
@@ -188,14 +191,14 @@ def _scope_targets(client: Any) -> list[str]:
     return list(client.targets) or ([default_target()] if default_target() else [])
 
 
-def _resolve_target(client: Any, target: str) -> str:
+def _resolve_target(client: Any, target: str, data_dir: Any = None) -> str:
     from kratos.serve.openai_routes import MODEL_PREFIX, target_for_model
 
     t = str(target or "").strip().lower()
     if not t:
         raise ValueError("target is required")
     model = t if t == MODEL_PREFIX or t.startswith(MODEL_PREFIX + "/") else f"{MODEL_PREFIX}/{t}"
-    resolved = target_for_model(client, model)
+    resolved = target_for_model(client, model, data_dir)
     if resolved is None:
         raise ValueError(f"this token may not investigate {t!r}")
     return resolved
@@ -225,16 +228,25 @@ def build(state: Any) -> tuple[Any, Any]:
             try:
                 job.status = "running"
                 state.note_runs()
-                outcome = run_investigation(RunRequest(goal=goal, target=job.target, data_dir=state.data_dir,
-                                                       source="mcp", should_stop=job.stop.is_set,
-                                                       on_progress=job.progress.append,
-                                                       on_session=lambda sid: _remember(state, job, sid)))
+                if job.target.startswith("@"):
+                    from kratos.serve.runs import run_fleet_question
+
+                    job.outcome = run_fleet_question(goal=goal, group=job.target, data_dir=state.data_dir,
+                                                     source="mcp", actor_user=f"token:{job.token_id}",
+                                                     actor_interface="serve", scope=list(job.scope),
+                                                     should_stop=job.stop.is_set, on_progress=job.progress.append)
+                    status = str(job.outcome.get("status"))
+                else:
+                    outcome = run_investigation(RunRequest(goal=goal, target=job.target, data_dir=state.data_dir,
+                                                           source="mcp", should_stop=job.stop.is_set,
+                                                           on_progress=job.progress.append,
+                                                           on_session=lambda sid: _remember(state, job, sid)))
+                    job.outcome, status = outcome.as_dict(), outcome.status
             finally:
                 state.slots.release()
                 state.note_runs()
-            job.outcome = outcome.as_dict()
             job.status = {"refused_by_budget": "refused", "stopped": "stopped", "error": "error"}.get(
-                outcome.status, "done")
+                status, "done")
         except Exception as e:  # noqa: BLE001
             logger.warning("serve: MCP investigation failed", exc_info=True)
             job.status, job.outcome = "error", {"final_answer": f"The investigation failed: {type(e).__name__}"}
@@ -257,7 +269,7 @@ def build(state: Any) -> tuple[Any, Any]:
         client = _client(ctx)
         if not goal or not goal.strip():
             raise ValueError("goal is required")
-        resolved = _resolve_target(client, target)
+        resolved = await asyncio.to_thread(_resolve_target, client, target, state.data_dir)
         from kratos.serve.openai_routes import _hourly_limit
 
         limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
@@ -265,6 +277,9 @@ def build(state: Any) -> tuple[Any, Any]:
             raise ValueError(f"this token has used its {limit} investigations for this hour (serve.requests_per_hour)")
         try:
             job = state.investigations.new(client.token_id, resolved, goal)
+            from kratos.serve.openai_routes import scope_machines
+
+            job.scope = tuple(scope_machines(client))
             job.thread = threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
                                           name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True)
             job.thread.start()
@@ -371,7 +386,7 @@ def build(state: Any) -> tuple[Any, Any]:
         try:
             if not req.words:
                 raise front.HuntUsageError("indicators is required")
-            prepared = front.resolve_hunt(req, scope=scope)
+            prepared = front.resolve_hunt(req, scope=scope, data_dir=state.data_dir)
         except front.HuntUsageError as e:
             raise ValueError(str(e)) from None
         if prepared.ambiguous:

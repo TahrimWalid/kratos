@@ -515,3 +515,97 @@ def test_extra_read_tools_never_include_execution_or_approval_tools():
     assert allowed and not allowed & {"run_linux_command", "capture_traffic", "send_notification",
                                       "parse_auth_log", "collect_system_context", "check_ip_reputation",
                                       "run_vuln_scan"}
+
+
+# --- surfaces -------------------------------------------------------------------------
+
+
+def _client(*targets: str):
+    from kratos.serve.auth import Client
+
+    return Client(token_id="tok1", name="t", targets=tuple(targets), doors=("openai", "mcp"))
+
+
+def test_chat_models_list_groups_the_token_can_see_and_scope_stays_machines(dd):
+    from kratos.serve import openai_routes as O
+
+    G.create_group(dd, "lab", ME, members=[A, B, C])
+    G.create_group(dd, "far", ME, members=[D, E])
+    client = _client(A, B)
+    # @all is listed (two of its machines are visible); @far isn't (none are)
+    assert O.group_models_for(client, dd) == [("kratos/@all", "@all"), ("kratos/@lab", "@lab")]
+    assert O.target_for_model(client, "kratos/@lab", dd) == "@lab"
+    assert O.target_for_model(client, "kratos/@far", dd) is None
+    assert O.target_for_model(client, "kratos/@lab") is None          # no data folder: machines only
+    assert O.scope_machines(client) == [A, B]
+
+
+def test_a_chat_fleet_turn_is_narrowed_to_the_tokens_machines_and_refuses_commands(dd, monkeypatch):
+    import asyncio
+
+    from kratos.serve import openai_routes as O
+
+    seen: dict[str, Any] = {}
+
+    def fake_run(req):
+        seen.update(scope=list(req.scope), actor=req.actor, source=req.source, group=req.group)
+        return fleet_run.FleetOutcome("final_answer", "summary", group_label="@lab")
+
+    monkeypatch.setattr(fleet_run, "run_fleet", fake_run)
+
+    class Slots:
+        def acquire(self, **kw):
+            return True
+
+        def release(self):
+            pass
+
+    state = type("S", (), {"data_dir": dd, "slots": Slots(), "note_runs": lambda self: None})()
+
+    async def go(message):
+        h = O.TurnHandle()
+        O._serve_fleet_turn(h, state=state, client=_client(A, B), group="@lab", message=message, session_id="s",
+                            link_hosts=[])
+        return h.result
+
+    res = asyncio.run(go("/run-fix"))
+    assert "never runs a fix on several machines" in res["content"] and not seen
+    asyncio.run(go("who gained sudo?"))
+    assert seen["scope"] == [A, B] and seen["source"] == "web"
+    assert seen["actor"].interface == "serve" and seen["actor"].user == "token:tok1"
+
+
+def test_mcp_stdio_investigate_with_a_group_is_a_fleet_question(dd, lab, monkeypatch):
+    from kratos import mcp_server
+
+    G.create_group(dd, "pair", ME, members=[A, B])
+    lab.down[B] = "Connection refused"
+    monkeypatch.setattr(llm_interface, "agent_chat", Chat(_machines_reply({"m1": "Nothing new."})))
+    out = mcp_server._mcp_investigation("who gained sudo?", "@pair", 5, dd)
+    assert out["fleet"]["group"] == "@pair"
+    assert [(m["machine"], m["outcome"]) for m in out["fleet"]["machines"]] == [(A, "ok"), (B, "unreachable")]
+    assert "Connection refused" in out["final_answer"]
+
+
+def test_a_schedule_on_a_group_sends_one_grouped_notification(dd, lab, monkeypatch):
+    from kratos.agent import scheduled_run, schedules
+
+    G.create_group(dd, "pair", ME, members=[A, B])
+    lab.reports[A] = make_report(A, [HIGH])
+    schedules.save_schedule(dd, name="nightly", kind="audit", target="@pair", cadence="daily", deliver=["ntfy"])
+    sched = schedules.load_schedule(dd, "nightly")
+    sent: list[str] = []
+    rec = scheduled_run.run_scheduled(sched, dd, notifier=lambda m, s: sent.append(m) or {"status": "sent"})
+    assert rec["fleet"] and rec["status"] == "completed" and rec["machines"] == {A: "ok", B: "ok"}
+    assert len(sent) == 1 and sent[0].startswith("HIGH on @pair")
+    assert lab.prepared.count(A) == 1 and lab.prepared.count(B) == 1
+
+
+def test_hunt_group_scopes_to_the_groups_machines_and_never_widens(dd):
+    from kratos.hunt import front
+
+    G.create_group(dd, "lab", ME, members=[A, B, C])
+    req = front.parse_command("203.0.113.9 --group lab")
+    assert front.resolve_hunt(req, data_dir=dd).machines == [A, B, C]
+    req = front.parse_command("203.0.113.9 --group lab")
+    assert front.resolve_hunt(req, scope=[A], data_dir=dd).machines == [A]

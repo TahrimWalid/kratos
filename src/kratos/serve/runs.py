@@ -194,6 +194,34 @@ def run_investigation(req: RunRequest) -> RunOutcome:
                       error=error, duration=time.monotonic() - started)
 
 
+def run_fleet_question(*, goal: str, group: str, data_dir: Path, source: str, actor_user: str,
+                       actor_interface: str, scope: list[str] | None = None,
+                       should_stop: Callable[[], bool] | None = None,
+                       on_progress: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """A fleet question from a headless door (MCP stdio / HTTP): one checked answer per
+    machine of `group` that `scope` allows (D.2). Same outcome keys as an investigation,
+    plus `fleet` -- the code summary and each machine's outcome, never the others' names."""
+    from kratos.fleet import run as FR
+    from kratos.lifecycle.decide import Actor
+
+    try:
+        out = FR.run_fleet(FR.FleetRequest(question=goal, group=group, data_dir=Path(data_dir), source=source,
+                                           actor=Actor(user=actor_user, interface=actor_interface), scope=scope,
+                                           should_stop=should_stop, on_progress=on_progress))
+    except FR.FleetError as e:
+        return {"status": "error", "final_answer": str(e), "findings": [], "recommended_commands": []}
+    a = out.answer
+    machines = [{"machine": m.machine, "name": m.label, "outcome": m.outcome, "reason": m.reason,
+                 "checked": m.passed, "answer": m.text} for m in (a.machines if a else [])]
+    findings = [f for r in out.results for f in r.findings]
+    return {"status": {"refused_by_budget": "refused_by_budget"}.get(out.status, "final_answer"
+                       if out.status in ("final_answer", "fallback", "audit") else out.status),
+            "run_id": out.run_id, "final_answer": out.text, "findings": findings, "recommended_commands": [],
+            "token_usage": out.token_usage,
+            "fleet": {"group": out.group_label, "summary": a.summary if a else out.text,
+                      "outside_scope": getattr(out.resolved, "outside_scope", 0), "machines": machines}}
+
+
 class RunSlots:
     """At most `serve.max_parallel` investigations at once (read fresh on every wait, so
     a change applies without a restart); the rest wait their turn, in order."""

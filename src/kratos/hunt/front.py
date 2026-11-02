@@ -54,6 +54,7 @@ class Request:
     since: str | None = None
     until: str | None = None
     machines: list[str] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)      # D.2: --group web (its machines)
 
 
 def parse_command(text: str) -> Request:
@@ -65,7 +66,7 @@ def parse_command(text: str) -> Request:
     req = Request()
     it = iter(parts)
     for p in it:
-        if p in ("--type", "-t", "--since", "--until", "--machine", "-m"):
+        if p in ("--type", "-t", "--since", "--until", "--machine", "-m", "--group", "-g"):
             try:
                 value = next(it)
             except StopIteration:
@@ -76,10 +77,12 @@ def parse_command(text: str) -> Request:
                 req.since = value
             elif p == "--until":
                 req.until = value
+            elif p in ("--group", "-g"):
+                req.groups.append(value)
             else:
                 req.machines.append(value)
         elif p.startswith("--"):
-            raise HuntUsageError(f"unknown option {p} (use --type, --since, --until, --machine)")
+            raise HuntUsageError(f"unknown option {p} (use --type, --since, --until, --machine, --group)")
         else:
             req.words.append(p)
     if not req.words:
@@ -89,7 +92,7 @@ def parse_command(text: str) -> Request:
 
 
 USAGE = ("Usage: /hunt <indicator> [more ...] [--type ip|sha256|account|domain|program|path] [--since 30d] "
-         "[--until <time>] [--machine <name>]")
+         "[--until <time>] [--machine <name>] [--group <group>]")
 
 
 @dataclass
@@ -101,8 +104,10 @@ class Prepared:
     end: float | None
 
 
-def resolve_hunt(req: Request, *, scope: list[str] | None = None) -> Prepared:
-    """Classify and scope. `scope`: the machines the caller may search (None = all)."""
+def resolve_hunt(req: Request, *, scope: list[str] | None = None, data_dir: Path | str | None = None) -> Prepared:
+    """Classify and scope. `scope`: the machines the caller may search (None = all).
+    `--group` adds the group's machines (narrowed to `scope`, never widened); it needs
+    `data_dir` to read the group."""
     try:
         parsed = I.parse(req.words, I.kind_of(req.kind) if req.kind else None)
     except I.IndicatorError as e:
@@ -112,6 +117,16 @@ def resolve_hunt(req: Request, *, scope: list[str] | None = None) -> Prepared:
         raise HuntUsageError("--until must be after --since")
     allowed = None if scope is None else sorted({target_key(m) for m in scope})
     machines: list[str] | None = allowed
+    if req.groups:
+        if data_dir is None:
+            raise HuntUsageError("--group needs Kratos's data folder")
+        from kratos.fleet import groups as G
+
+        for g in req.groups:
+            try:
+                req.machines.extend(G.resolve(data_dir, g, scope=allowed).machines)
+            except G.GroupError as e:
+                raise HuntUsageError(str(e)) from None
     if req.machines:
         wanted = sorted({target_key(m) for m in req.machines})
         if allowed is not None:

@@ -295,7 +295,8 @@ def _audit_answer(results: list[Any]) -> Any:
     return ans
 
 
-def _grouped_notification(req: FleetRequest, label: str, results: list[Any], answer: Any, data_dir: Path) -> bool:
+def _grouped_notification(req: FleetRequest, label: str, results: list[Any], answer: Any, data_dir: Path,
+                          extra_lines: list[str] | None = None) -> bool:
     """ONE notification for the run: worst severity, the group, the machines with open
     serious findings or Act decisions, the ones not checked. No accounts, addresses
     of attackers or paths (it may cross a public ntfy server); machine names only."""
@@ -321,6 +322,7 @@ def _grouped_notification(req: FleetRequest, label: str, results: list[Any], ans
             lines.append(f"- {r.label or r.machine}: an Act decision")
     for r in missing[:5]:
         lines.append(f"- {r.label or r.machine}: not checked ({r.outcome_words})")
+    lines.extend((extra_lines or [])[:5])
     lines.append("Next: open Kratos and type /fleet")
     if req.name:
         lines.append(f"({req.name})")
