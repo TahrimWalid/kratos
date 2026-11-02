@@ -270,6 +270,15 @@ CATEGORIES: tuple[Category, ...] = (
         note="kept until you remove them; edit with /assets or `kratos assets set`",
     ),
     Category(
+        "fleet", "Groups and fleet runs",
+        "The groups of machines you made (and who changed them), and each question or audit about a group: who "
+        "asked, the period, the estimate and the cost, and for each machine whether it was read and why not.",
+        PERSONAL, "one row per group and member; one row per fleet run and one per machine in it",
+        tables=(TableRef(DB, ("machine_groups", "group_members", "fleet_runs", "fleet_run_machines"),
+                         ("fleet_runs", "started_at")),),
+        note="kept until you remove them; groups are edited with /groups or `kratos groups`",
+    ),
+    Category(
         "kept_tools", "Kept tools",
         "Tools you approved with /evolve, their metadata and the test that defines each.",
         NOT_PERSONAL, "one file per tool you keep",

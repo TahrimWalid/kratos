@@ -454,6 +454,27 @@ def measure_target_clock_offset(force: bool = False) -> float | None:
     return offset
 
 
+def probe_reachable() -> tuple[bool, str, float | None]:
+    """(reached, why not -- first line of the error, clock offset in seconds) for the
+    active target, through whichever transport it is read by (SSH, or its sub-agent).
+    One fixed `date` read; refreshes the clock-offset cache. Used by a fleet run to tell
+    "not reached" apart from "reached, nothing found" before collecting (D.2)."""
+    import time as _time
+
+    host = get_active_target()
+    t0 = _time.time()
+    result = _route("clock", {}, lambda: run_remote_command(_reads.CLOCK_COMMAND))
+    t1 = _time.time()
+    if not result.ok:
+        return False, _first_line(result.stderr) or f"the read failed (exit {result.returncode})", None
+    try:
+        offset: float | None = float(result.stdout.strip()) - (t0 + t1) / 2
+    except ValueError:
+        offset = None
+    _clock_offset_cache[host] = (t1, offset)
+    return True, "", offset
+
+
 # Shared with the sub-agent (kratos.subagent.reads) -- see its docstring for why
 # every fetch is `--reverse -n <lines+1>` with absolute epochs.
 _window_args = _reads.window_args
