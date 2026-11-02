@@ -308,11 +308,19 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
     for f in items[:BLOCK_MAX]:
         facts = [ip_fact for ip_fact in (f"source {ip}" + (", known-malicious in the threat-intel cache"
                                                           if known_malicious(f) else "") for ip in ips(f))]
-        if not ips(f):
+        rule_id = str(f.get("id") or "")
+        subject = str(f.get("subject") or "")
+        if rule_id.startswith("CONT-") and subject:
+            # D.5: which container (the person's view, cleaned below), then the setting -- not its image digest
+            settings = [str(e) for e in f.get("entities") or [] if not str(e).startswith("image:")]
+            facts += [f"container {subject}", *(_display_entity(e)[0] for e in settings[:2])]
+        elif not ips(f):
             ordered = _cves_decisive_first(f) or list(f.get("entities") or [])
+            ordered = [e for e in ordered if not str(e).startswith("container:")]
             shown = [_display_entity(str(e))[0] for e in ordered[:2]]
-            subject = str(f.get("subject") or "")
             sigma = _is_rule(f)
+            if rule_id in ("PKG-001", "PKG-002") and ":" in subject:
+                shown.insert(0, "image " + (subject.rsplit(":", 1)[0] if rule_id == "PKG-001" else subject))
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
         decision = decision_fact(f, with_bod=True)
         if decision:
