@@ -1250,6 +1250,88 @@ def fetch_package_inventory() -> Any:
     return out
 
 
+CONTAINER_INVENTORY_TIMEOUT_SECONDS = 90
+SSH_ONLY_CONTAINER_NOTE = "not readable over SSH by a login without root-equivalent access"
+
+
+def _agent_first(probe: str, params: dict[str, Any], ssh_call: Any) -> Any:
+    """Container reads prefer the sub-agent whenever the machine is linked to one (even
+    "ssh_first"): the engine's own settings are only readable as root, which the SSH login
+    must not be. An agent that can't do the read (offline, too old) falls back to SSH with
+    a note; no link -> SSH."""
+    link = _routing.active_link()
+    if link is None:
+        return ssh_call()
+    out = agent_result(_routing.agent_read(link, probe, params))
+    if out.ok:
+        _routing.note(f"read through its sub-agent ({link.label})")
+        return out
+    if ssh_call is None:
+        return out
+    _routing.note(f"the sub-agent could not read containers ({_first_line(out.stderr)}); read over SSH instead")
+    res = ssh_call()
+    if isinstance(res, SSHResult) and res.ok:
+        res.stderr = out.stderr          # kept: why the richer read was not used
+    return res
+
+
+def fetch_containers() -> Any:
+    """Containers on the machine (phase D.5) as a dict (adapters.containers.parse_output),
+    or the failed SSHResult. Through the sub-agent: the engines' own view (GET-only API
+    over their local sockets), /proc and the firewall rules, as root. Over SSH: only what
+    /proc shows the SSH user, plus the firewall listings if `sudo -n` allows exactly those
+    commands -- never the docker group, never `sudo docker`."""
+    from kratos.adapters import containers
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(containers.build_script(), shell="sh", errors="replace",
+                                 timeout=CONTAINER_INVENTORY_TIMEOUT_SECONDS)
+
+    result = _agent_first("container_inventory", {}, over_ssh)
+    if not result.ok:
+        return result
+    out = containers.parse_output(result.stdout)
+    out["via"] = result.via
+    out["agent_note"] = result.stderr if result.via != "subagent" else ""
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
+def fetch_container_packages() -> Any:
+    """Each running image's packages (phase D.5), as a dict
+    (adapters.containers.parse_packages_output) -- through the sub-agent only. Over SSH:
+    {"unsupported": reason}; a failed agent read: the failed SSHResult."""
+    from kratos.adapters import containers
+
+    if _routing.active_link() is None:
+        return {"unsupported": SSH_ONLY_CONTAINER_NOTE, "via": "ssh"}
+    result = _agent_first("container_packages", {}, None)
+    if not result.ok:
+        return result
+    out = containers.parse_packages_output(result.stdout)
+    out["via"] = result.via
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
+def fetch_container_log(container_id: str, inode: int | None, offset: int) -> Any:
+    """One chunk of a container's own log file (phase D.5) -- through the sub-agent only.
+    Over SSH: {"unsupported": reason}."""
+    from kratos.adapters import containers
+
+    if _routing.active_link() is None:
+        return {"unsupported": SSH_ONLY_CONTAINER_NOTE, "via": "ssh"}
+    params: dict[str, Any] = {"container_id": container_id, "offset": int(offset or 0)}
+    if inode:
+        params["inode"] = int(inode)
+    result = _agent_first("container_logs", params, None)
+    if not result.ok:
+        return result
+    out = containers.parse_log_output(result.stdout)
+    out["via"] = result.via
+    return out
+
+
 def fetch_log_file_states() -> Any:
     """State of every tracked log file and its first rotation (tamper check §6.1)."""
     from kratos.logsources import hostfiles

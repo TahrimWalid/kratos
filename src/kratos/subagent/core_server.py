@@ -142,6 +142,11 @@ PROBE_MIN_AGENT_VERSION: dict[str, tuple[int, int, int]] = {
     "persistence_inventory": (0, 6, 0),                            # phase A.1: persistence checks
     "live_inventory": (0, 6, 1),                                   # phase A.5: live-response reads
     "package_inventory": (0, 7, 0),                                # phase A.2: installed packages
+    **{p: (0, 11, 0) for p in ("container_inventory", "container_packages", "container_logs")},  # phase D.5
+}
+# A parameter value an older agent's read refuses: (probe, param, value) -> first version that takes it.
+PARAM_MIN_AGENT_VERSION: dict[tuple[str, str, str], tuple[int, int, int]] = {
+    ("journal_sync", "match", "container"): (0, 11, 0),          # phase D.5: container (journald driver) lines
 }
 
 
@@ -1352,6 +1357,9 @@ class CoreServer:
                 f"through it needs {'.'.join(map(str, READ_MIN_AGENT_VERSION))} or newer. Update it from "
                 "/subagent (select it, press g) -- the box keeps its pairing.")}
         needed = PROBE_MIN_AGENT_VERSION.get(probe)
+        for (p_probe, p_name, p_value), p_min in PARAM_MIN_AGENT_VERSION.items():
+            if probe == p_probe and isinstance(params, dict) and params.get(p_name) == p_value:
+                needed = max(needed or (0, 0, 0), p_min)
         have = parse_agent_version(info.get("version"))
         if needed is not None and (have is None or have < needed):
             return {"status": "old_agent", "reason": (

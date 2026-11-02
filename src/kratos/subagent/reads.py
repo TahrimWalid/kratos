@@ -38,14 +38,15 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, containers, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import live_response, packages, persistence, privileged_accounts
+        from kratos.adapters import containers, live_response, packages, persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
         import catalog  # type: ignore[no-redef]
+        import containers  # type: ignore[no-redef]
         import hostfiles  # type: ignore[no-redef]
         import live_response  # type: ignore[no-redef]
         import logread  # type: ignore[no-redef]
@@ -431,6 +432,13 @@ def v_ip(v: Any) -> str:
         raise ReadParamError("must be an IP address") from None
 
 
+def v_container_id(v: Any) -> str:
+    """A full 64-hex container id (never a name or a prefix -- names are machine text)."""
+    if not isinstance(v, str) or not containers.ID_RE.match(v):
+        raise ReadParamError("must be a full container id (64 hex digits)")
+    return v
+
+
 def v_journal_name(v: Any) -> str:
     """Shape only here; the agent also requires the name to be in its own
     journal directory listing (hostfiles.find_journal_file)."""
@@ -527,6 +535,15 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
     # phase A.2: the installed packages (agent 0.7.0). No params: the script is the
     # fixed one in packages.py.
     "package_inventory": {},
+    # phase D.5: containers (agent 0.11.0). No paths: the engine sockets, the API paths
+    # (GET only) and the firewall listings are the closed constants in containers.py.
+    "container_inventory": {},
+    "container_packages": {},
+    "container_logs": {
+        "container_id": (v_container_id, True, None),
+        "inode": (v_int_range(1, 2 ** 63 - 1), False, None),
+        "offset": (v_int_range(0, 2 ** 44), False, 0),
+    },
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -541,6 +558,9 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "persistence_inventory": persistence.DEFAULT_BUDGET_SECONDS + persistence.VERIFY_EXTRA_SECONDS + 10,
     "live_inventory": live_response.DEFAULT_BUDGET_SECONDS + 15,
     "package_inventory": packages.DEFAULT_BUDGET_SECONDS,
+    "container_inventory": containers.DEFAULT_BUDGET_SECONDS + 20,
+    "container_packages": containers.PACKAGES_BUDGET_SECONDS + 10,
+    "container_logs": 30,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -552,6 +572,9 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "persistence_inventory": persistence.OUTPUT_CAP_BYTES + 65536,
     "live_inventory": live_response.OUTPUT_CAP_BYTES + 65536,
     "package_inventory": packages.OUTPUT_CAP_BYTES + 65536,
+    "container_inventory": containers.OUTPUT_CAP_BYTES + 65536,
+    "container_packages": containers.PACKAGES_OUTPUT_CAP + 65536,
+    "container_logs": containers.LOG_OUTPUT_CAP + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1651,6 +1674,27 @@ def _p_package_inventory(p: dict[str, Any]) -> dict[str, Any]:
                       cap=OUTPUT_CAP_BYTES["package_inventory"], stdin_text=packages.build_script())
 
 
+def _p_container_inventory(p: dict[str, Any]) -> dict[str, Any]:
+    """The container read (containers.inventory_output): the engines' API over their
+    local sockets (GET, closed path list), /proc and cgroups, default routes, and the
+    three read-only firewall listings -- all as root, nothing written."""
+    return containers.inventory_output(
+        run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap),
+        deadline=time.monotonic() + containers.DEFAULT_BUDGET_SECONDS)
+
+
+def _p_container_packages(p: dict[str, Any]) -> dict[str, Any]:
+    """Each running image's package database, read through /proc/<pid>/root of one of
+    its processes without following any link (containers.packages_output)."""
+    return containers.packages_output(deadline=time.monotonic() + containers.PACKAGES_BUDGET_SECONDS)
+
+
+def _p_container_logs(p: dict[str, Any]) -> dict[str, Any]:
+    """One bounded chunk of a container's own log file (json-file / k8s-file), from a
+    remembered (inode, offset), through the hardened opener (containers.container_log_output)."""
+    return containers.container_log_output(p["container_id"], p["inode"], p["offset"], opener=_open_for_read)
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1663,6 +1707,9 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "persistence_inventory": _p_persistence_inventory,
     "live_inventory": _p_live_inventory,
     "package_inventory": _p_package_inventory,
+    "container_inventory": _p_container_inventory,
+    "container_packages": _p_container_packages,
+    "container_logs": _p_container_logs,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

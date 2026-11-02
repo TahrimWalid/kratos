@@ -72,6 +72,8 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "live_response.py": _PACKAGE_ROOT / "adapters" / "live_response.py",
     # A.2: the installed-packages read
     "packages.py": _PACKAGE_ROOT / "adapters" / "packages.py",
+    # D.5: the container read (engine API GETs, /proc, firewall listings, per-image packages)
+    "containers.py": _PACKAGE_ROOT / "adapters" / "containers.py",
     # C.2: what turns a log line into the event the rules look at -- the parsers, the
     # masking and the event assembly Kratos uses for stored lines (the same files)
     "auth_log_parse.py": _PACKAGE_ROOT / "adapters" / "auth_log_parse.py",
