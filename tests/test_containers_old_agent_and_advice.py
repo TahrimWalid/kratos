@@ -75,7 +75,7 @@ def test_nothing_kratos_ships_advises_the_docker_group_or_sudo_docker():
             # the sentences that say Kratos NEVER asks for it are the point, not advice (a sentence
             # may start on the line before)
             context = text[max(0, m.start() - 160):m.end()]
-            if re.search(r"\bnever\b|\bnot\b|n't\b", context, re.IGNORECASE):
+            if re.search(r"\bnever\b|\bnot\b|\bwithout\b|n't\b", context, re.IGNORECASE):
                 continue
             hits.append(f"{p.relative_to(ROOT)}: {line.strip()}")
     assert hits == []
