@@ -189,7 +189,8 @@ def analyze_auth_patterns(
 
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = logs_dir / f"auth_patterns_{ts}.json"
+    from kratos.utils.stamped import reserve
+
+    out, _ts = reserve(logs_dir, "auth_patterns", ".json")
     out.write_text(json.dumps(patterns, indent=2), encoding="utf-8")
     return out

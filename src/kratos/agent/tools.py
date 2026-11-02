@@ -675,8 +675,9 @@ def _persist_target_auth_correlation_data(
 
     logs_dir = data_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    ts_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-    events_out = logs_dir / f"auth_events_{ts_tag}.json"
+    from kratos.utils.stamped import reserve
+
+    events_out, ts_tag = reserve(logs_dir, "auth_events", ".json")   # never shared (D.2)
     stats_out = logs_dir / f"auth_stats_{ts_tag}.json"
     events_out.write_text(json.dumps([asdict(e) for e in events], indent=2), encoding="utf-8")
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
@@ -914,11 +915,13 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
     if persist:
         logs_dir = data_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
-        # window id + second-resolution stamp: two windows measured in one second never
-        # collide, and the stamp stays LAST (utils/latest_file.files_in_date_range reads the
-        # date from the second-to-last "_" field).
-        ts_tag = f"{w.id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        stats_out = logs_dir / f"auth_stats_{ts_tag}.json"
+        # window id + a stamp no other writer holds: two windows -- or two machines --
+        # measured in one second never collide, and the stamp stays LAST
+        # (utils/latest_file.files_in_date_range reads the date from the second-to-last "_" field).
+        from kratos.utils.stamped import reserve
+
+        stats_out, _stamp = reserve(logs_dir, f"auth_stats_{w.id}", ".json")
+        ts_tag = f"{w.id}_{_stamp}"
         patterns_out = logs_dir / f"auth_patterns_{ts_tag}.json"
         stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         patterns_out.write_text(json.dumps({"target": _ssh_target_label(), **m.as_auth_patterns()}, indent=2),

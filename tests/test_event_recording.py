@@ -84,7 +84,7 @@ CALLS = {
 
 def _normalised(result, data_dir: Path) -> str:
     text = json.dumps(result, sort_keys=True, default=str).replace(str(data_dir), "<DATA>")
-    text = re.sub(r"\d{8}_\d{6}(_\d+)?", "<TS>", text)                       # file names carry the time
+    text = re.sub(r"\d{8}_\d{6}(\d{8})?(_\d+)?", "<TS>", text)                # file names carry the time
     text = re.sub(r'"checked_at": "[^"]*"', '"checked_at": "<NOW>"', text)  # so does this
     text = re.sub(r'"(since|until)_utc": "[^"]*"', r'"\1_utc": "<T>"', text)
     return text
