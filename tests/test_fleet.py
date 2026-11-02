@@ -609,3 +609,14 @@ def test_hunt_group_scopes_to_the_groups_machines_and_never_widens(dd):
     assert front.resolve_hunt(req, data_dir=dd).machines == [A, B, C]
     req = front.parse_command("203.0.113.9 --group lab")
     assert front.resolve_hunt(req, scope=[A], data_dir=dd).machines == [A]
+
+
+def test_a_fleet_answer_may_not_invent_an_act_decision_for_a_machine(dd, lab, monkeypatch):
+    G.create_group(dd, "pair", ME, members=[A, B])
+    lab.reports[A] = make_report(A, [HIGH])
+    chat = Chat(_machines_reply({"m1": "An Act decision is required because of PRIV-001.", "m2": "No Act decision."}),
+                _machines_reply({"m1": "PRIV-001: bob gained sudo; there is no Act decision.", "m2": "No Act decision."}))
+    out = _ask(dd, "@pair", chat, monkeypatch, question="Which machines have an Act decision?")
+    assert "MACHINE m1: REJECTED (decision not made by Kratos)" in chat.prompts[1]
+    assert "MACHINE m2: REJECTED" not in chat.prompts[1]
+    assert all(m.passed for m in out.answer.machines)

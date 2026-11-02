@@ -152,7 +152,7 @@ class FleetAnswer:
 def fleet_digest_outcome(m: MachineAnswer) -> str:
     from kratos.fleet.collect import OUTCOME_WORDS
 
-    return OUTCOME_WORDS.get(m.outcome, m.outcome) + (f": {m.reason}" if m.reason and m.outcome != "ok" else "")
+    return OUTCOME_WORDS.get(m.outcome, m.outcome) + (f": {m.reason}" if m.reason else "")
 
 
 # --- evidence ---------------------------------------------------------------------
@@ -224,7 +224,7 @@ def _parse(raw: str) -> dict[str, Any] | None:
 
 
 def _not_read_text(res: MachineResult) -> str:
-    return f"Not checked by Kratos in this run: {res.reason or res.outcome_words}. Nothing is said about it."
+    return f"Not checked by Kratos in this run ({res.status_text}). Nothing is said about it."
 
 
 def answer_fleet(question: str, results: list[MachineResult], data_dir: Path | str, *, time_block: str = "",
@@ -518,7 +518,6 @@ def code_summary(results: list[MachineResult], by_mid: dict[str, MachineResult] 
     if partial:
         parts.append(f"{len(partial)} partly read")
     if missing:
-        named = "; ".join(f"{untrusted.for_display(r.label or r.machine)}: {r.reason or r.outcome_words}"
-                          for r in missing[:6])
+        named = "; ".join(f"{untrusted.for_display(r.label or r.machine)} {r.status_text}" for r in missing[:6])
         parts.append(f"{len(missing)} not checked ({named})")
     return " · ".join(parts)

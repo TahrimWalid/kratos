@@ -27,9 +27,9 @@ KINDS = ("question", "audit")
 RUN_INTERFACES = ("tui", "cli", "serve", "mcp", "schedule")
 # Rough sizes for the estimate (measured on the lab, D.2 Handoff): what one machine's
 # block costs in the digest, the prompt around it, and one answer.
-_BLOCK_CHARS = 1800
-_PROMPT_CHARS = 3500
-_ANSWER_TOKENS = 450       # per machine in the reply
+_BLOCK_CHARS = 4500        # 5 lab machines: ~24k characters of blocks (D.2 Handoff)
+_PROMPT_CHARS = 4000
+_ANSWER_TOKENS = 250       # per machine in the reply
 _CHARS_PER_TOKEN = 4
 
 FIX_CHANNEL_REFUSAL = ("Not in a fleet answer: Kratos never runs a fix on several machines at once. Open one "
@@ -285,7 +285,7 @@ def _audit_answer(results: list[Any]) -> Any:
         r = next(x for x in results if x.machine == m)
         ma = MachineAnswer(mid=mid, machine=r.machine, label=r.label, outcome=r.outcome, reason=r.reason)
         if not r.collected:
-            ma.kratos_text = f"Not checked by Kratos in this run: {r.reason or r.outcome_words}."
+            ma.kratos_text = f"Not checked by Kratos in this run ({r.status_text})."
         else:
             ma.block = finding_facts.answer_block(r.findings, "")
             gaps = r.gaps

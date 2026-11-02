@@ -83,13 +83,18 @@ class MachineResult:
     @property
     def gaps(self) -> list[str]:
         out = list(self.report.gaps()) if self.report is not None else []
-        if self.reason and self.outcome not in COLLECTED and self.reason not in out:
-            out.insert(0, self.reason)
+        if self.outcome not in COLLECTED and self.status_text not in out:
+            out.insert(0, self.status_text)
         return out
 
     @property
     def outcome_words(self) -> str:
         return OUTCOME_WORDS.get(self.outcome, self.outcome)
+
+    @property
+    def status_text(self) -> str:
+        """'not reached: ssh: connect to host ... timed out' -- the outcome and why."""
+        return self.outcome_words + (f": {self.reason}" if self.reason else "")
 
     @property
     def clock_note(self) -> str:
@@ -189,13 +194,12 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
             if handle is None:
                 stopped = should_stop is not None and should_stop()
                 res.outcome = "stopped" if stopped else "busy"
-                res.reason = OUTCOME_WORDS[res.outcome]
                 return
             remaining = limit - (time.monotonic() - t0)
             if machine != "loopback":
                 ok, why, offset = ssh_remote.probe_reachable()
                 if not ok:
-                    res.outcome, res.reason = "unreachable", f"not reached: {why}"
+                    res.outcome, res.reason = "unreachable", why
                     return
                 res.clock_offset = offset
             res.time_ctx = make_time_ctx()
@@ -208,7 +212,7 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
             if report.correlation_step is not None:
                 res.steps.append({**report.correlation_step, "collected": True})
             if report.disabled_reason:
-                res.outcome, res.reason = "failed", f"not collected: {report.disabled_reason}"
+                res.outcome, res.reason = "failed", f"not collected ({report.disabled_reason})"
                 return
             _measure_windows(res, data_dir, dispatch or runner._default_dispatch())
             usable = [o for o in report.checks if o.usable]
@@ -218,15 +222,15 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
             elif len(usable) < len(report.checks) or report.correlation is None:
                 res.outcome = "partial"
                 missed = [o.label for o in report.checks if not o.usable]
-                res.reason = "partly read: " + (", ".join(missed[:6]) + " not read" if missed
-                                                else "the findings could not be correlated")
+                res.reason = (", ".join(missed[:6]) + " not read" if missed
+                              else "the findings could not be correlated")
             else:
                 res.outcome = "ok"
     except cancel.Cancelled:
-        res.outcome, res.reason = "timeout", f"timed out after {limit:.0f} s"
+        res.outcome, res.reason = "timeout", f"still running after {limit:.0f} s; its commands were stopped"
     except Exception as e:  # noqa: BLE001 -- one machine failing must not stop the others
         logger.warning("fleet: collecting %s failed", machine, exc_info=True)
-        res.outcome, res.reason = "failed", f"could not be checked (Kratos hit {type(e).__name__})"
+        res.outcome, res.reason = "failed", f"Kratos hit {type(e).__name__}"
     finally:
         if handle is not None:
             target_lock.release_target(handle)
@@ -262,13 +266,13 @@ def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[s
         if hasattr(sp, "finish"):
             sp.finish("ok" if res.collected else res.outcome, outcome=res.outcome, reason=res.reason or None,
                       transport=res.transport, elapsed_s=round(res.elapsed, 2))
-        say(f"{res.label or m}: {res.outcome_words}" + (f" -- {res.reason}" if res.reason and not res.collected else ""))
+        say(f"{res.label or m}: {res.status_text}")
 
     while pending or running:
         while pending and len(running) < par:
             m = pending.pop(0)
             if should_stop is not None and should_stop():
-                results[m] = MachineResult(machine=m, outcome="stopped", reason=OUTCOME_WORDS["stopped"])
+                results[m] = MachineResult(machine=m, outcome="stopped")
                 continue
             sp = _trace.start_span("fleet_machine", m, machine=m)
             box = _Box()
@@ -293,7 +297,8 @@ def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[s
                 info = machine_info(data_dir, m)
                 finish(m, MachineResult(machine=m, label=info["label"], transport=info["transport"],
                                         agent_version=info["agent_version"], cert_state=info["cert_state"],
-                                        outcome="timeout", reason=f"timed out after {limit:.0f} s",
+                                        outcome="timeout",
+                                        reason=f"still running after {limit:.0f} s; its commands were stopped",
                                         elapsed=time.monotonic() - started), sp)
                 del running[m]
     return [results[m] for m in dict.fromkeys(machines)]

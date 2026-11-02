@@ -69,10 +69,33 @@ _TIMEFRAME_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Guard 13 (D.2): an SSVC decision ("an Act decision", "decision: Attend", "SSVC ... Track*")
+# claimed for a machine whose findings carry no such decision. The decisions are Kratos's
+# computation (CISA's tree over its own inputs); the model may explain one, never make one.
+_DECISION_CLAIM_RES = (
+    re.compile(r"\b(act|attend|track\*?)\b[\s:\"'()-]{0,3}(?:ssvc\s+)?decisions?\b", re.IGNORECASE),
+    re.compile(r"\bdecision\s*(?:is|was|of|:|=)?\s*[\"'(]?(act|attend|track\*?)(?=[^\w*]|$)", re.IGNORECASE),
+    re.compile(r"\bssvc\b[^.\n]{0,30}?\b(act|attend|track\*?)(?=[^\w*]|$)", re.IGNORECASE),
+)
+_DECISION_NEGATION_RE = re.compile(r"\b(?:no|not|none|without|neither|nor|zero|never)\b|n't\b", re.IGNORECASE)
+
+
+def _claimed_decisions(answer: str) -> set[str]:
+    """SSVC outcomes the answer says a machine HAS (negated mentions -- "no Act decision" -- don't count)."""
+    out: set[str] = set()
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n+", answer or ""):
+        for rx in _DECISION_CLAIM_RES:
+            for m in rx.finditer(sentence):
+                if _DECISION_NEGATION_RE.search(sentence[max(0, m.start() - 40): m.start()]):
+                    continue
+                out.add(m.group(1).lower())
+    return out
+
+
 # Check name -> (violation tag, how many times it may reject one investigation's answer).
 MAX_REJECTIONS: dict[str, int] = {
     "guard1": 2, "guard2": 2, "guard3": 2, "guard12": 1, "guard4": 2, "guard5": 2,
-    "guard6": 2, "guard7": 2, "guard8": 1, "guard9": 1, "guard10": 1, "guard11": 1,
+    "guard6": 2, "guard7": 2, "guard8": 1, "guard9": 1, "guard10": 1, "guard11": 1, "guard13": 1,
 }
 VIOLATION_TAGS: dict[str, str] = {
     "guard1": "missing_correlation",
@@ -87,15 +110,16 @@ VIOLATION_TAGS: dict[str, str] = {
     "guard9": "past_state_without_record",
     "guard10": "host_called_target",
     "guard11": "yes_no_contradicts_comparison",
+    "guard13": "decision_not_computed",
 }
 # The order corrections are combined in (one rejection per iteration) and the order
 # NOTEs are prepended in -- both exactly the loop's historical order.
 CORRECTION_ORDER: tuple[str, ...] = (
     "guard11", "guard1", "guard2", "guard3", "guard12", "guard4", "guard5", "guard6",
-    "guard7", "guard10", "guard9", "guard8",
+    "guard7", "guard10", "guard9", "guard8", "guard13",
 )
 _NOTE_ORDER: tuple[str, ...] = ("guard1", "guard2", "guard3", "guard4", "guard7", "guard11", "guard9",
-                                "guard6", "guard5")
+                                "guard6", "guard5", "guard13")
 
 
 @dataclass
@@ -234,6 +258,12 @@ def evaluate(answer: str, ev: MachineEvidence, claims: Any = None) -> Evaluation
               if ev.comparison_pairs else None)
     r["guard11"] = CheckResult("guard11", yes_no is not None, yes_no is not None, {"yes_no": yes_no})
 
+    # Guard 13: an SSVC decision claimed that Kratos didn't compute for this machine.
+    have = {str((f.get("ssvc") or {}).get("outcome") or "").lower() for f in (findings or []) if isinstance(f, dict)
+            and str(f.get("state") or "") not in _finding_facts.DECIDED_STATES}
+    unmade = sorted(d for d in _claimed_decisions(answer) if d not in have)
+    r["guard13"] = CheckResult("guard13", bool(unmade), bool(unmade), {"unmade": unmade, "have": sorted(have - {""})})
+
     return Evaluation(r, verified)
 
 
@@ -356,6 +386,15 @@ def correction_text(res: CheckResult, ev: MachineEvidence) -> str:
             "investigation -- and then send your final_answer again. If an existing tool already "
             "covers it, use that tool instead. If the gap isn't real, reword the answer."
         )
+    if res.name == "guard13":
+        have = ", ".join(d.capitalize() for d in d["have"]) or "none"
+        return (
+            "REJECTED (decision not made by Kratos): this answer says the machine has an SSVC decision of "
+            + ", ".join(x.capitalize() for x in d["unmade"]) + ", but Kratos computed no such decision for it "
+            f"(the decisions it did compute here: {have}). SSVC decisions come only from Kratos's own "
+            "computation on vulnerability findings; don't call a finding an Act/Attend/Track decision. Say "
+            "which decisions the machine has (or that it has none) and keep everything else that is right."
+        )
     raise KeyError(res.name)
 
 
@@ -386,7 +425,7 @@ class NotedAnswer:
     def noted(self, evaluation: Evaluation) -> dict[str, bool]:
         """Which NOTEs the answer carries, by violation tag (for the run record)."""
         out = {VIOLATION_TAGS[n]: evaluation[n].noted for n in
-               ("guard1", "guard2", "guard3", "guard4", "guard5", "guard6", "guard7", "guard9", "guard11")}
+               ("guard1", "guard2", "guard3", "guard4", "guard5", "guard6", "guard7", "guard9", "guard11", "guard13")}
         out["unstated_coverage_gap"] = bool(self.unstated_gaps)
         out["ungrounded_ip"] = bool(self.invented_ips)
         return out
@@ -458,6 +497,12 @@ def note_text(res: CheckResult, ev: MachineEvidence) -> str:
         return (
             f"[NOTE: this answer refers to {', '.join(d['uncalled'])}, which was never run in "
             "this investigation -- anything attributed to it above is unverified.]\n\n"
+        )
+    if res.name == "guard13":
+        return (
+            "[NOTE: this answer mentions an SSVC decision ("
+            + ", ".join(x.capitalize() for x in d["unmade"]) + ") that Kratos did not compute for this machine -- "
+            "treat that part as wrong; Kratos's decisions are listed with its findings.]\n\n"
         )
     raise KeyError(res.name)
 

@@ -89,7 +89,8 @@ def machine_block(mid: str, res: MachineResult) -> str:
     name = f" ({res.label})" if res.label else ""
     head = f"MACHINE {mid} -- {res.machine}{name}: reached by {res.transport or 'unknown'}; {res.outcome_words}"
     if not res.collected:
-        return head + f". NOT CHECKED: {res.reason}. Kratos writes this machine's answer itself; say nothing about it."
+        return head + (f" ({res.reason})" if res.reason else "") + \
+            ". NOT CHECKED: Kratos writes this machine's answer itself; say nothing about it."
     lines = [head + (f" ({res.reason})" if res.reason else "") + "."]
     if res.clock_note:
         lines.append(f"- {res.clock_note}")
@@ -106,7 +107,7 @@ def machine_block(mid: str, res: MachineResult) -> str:
 
 def short_line(mid: str, res: MachineResult) -> str:
     if not res.collected:
-        return f"MACHINE {mid} -- {res.machine}: {res.outcome_words} ({res.reason}). NOT CHECKED."
+        return f"MACHINE {mid} -- {res.machine}: {res.status_text}. NOT CHECKED."
     return f"MACHINE {mid} -- {res.machine}: {counts_line(res)}, {res.outcome_words} (shortened: no room for details)."
 
 
