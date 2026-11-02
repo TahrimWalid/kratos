@@ -316,3 +316,14 @@ def test_over_ssh_with_the_firewall_readable_the_bypass_comes_from_dockers_own_n
     assert s["subject"] == "172.17.0.2" and s["severity"] == "high" and "port:8080/tcp" in s["entities"]
     assert "DOCKER-USER" in s["fix"][0]["text"]                    # iptables backend, inferred from the rules
     assert "9090" not in " ".join(s["evidence"])                   # a loopback-only port is no bypass
+
+
+def test_the_answer_block_shows_each_kind_of_serious_finding_before_repeats():
+    from kratos import finding_facts as FF
+
+    pkgs = [{"id": "PKG-001", "severity": "critical", "title": f"In a container image: p{i}",
+             "subject": f"img:1:p{i}", "entities": [f"CVE-2026-{i:04d}"]} for i in range(8)]
+    bypass = {"id": "CONT-004", "severity": "high", "title": "A container's published port(s) 8080/tcp reachable "
+              "despite the firewall", "subject": "web", "entities": ["port:8080/tcp"]}
+    block = FF.answer_block([*pkgs, bypass], "")
+    assert "CONT-004" in block and "container web" in block and "port:8080/tcp" in block

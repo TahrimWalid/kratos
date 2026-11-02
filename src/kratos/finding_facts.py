@@ -304,6 +304,12 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
     items = serious(findings)
     if not items:
         return ""
+    # Under the cap, the most urgent finding of each rule first, then the repeats: one image's
+    # several package findings must not hide a different kind of risk (D.5: a confirmed
+    # firewall bypass fell off the list behind three package findings).
+    seen: set[str] = set()
+    first = [f for f in items if not (str(f.get("id")) in seen or seen.add(str(f.get("id"))))]
+    items = first + [f for f in items if f not in first]
     lines = ["Kratos found (checked by Kratos itself -- not written by the model):"]
     for f in items[:BLOCK_MAX]:
         facts = [ip_fact for ip_fact in (f"source {ip}" + (", known-malicious in the threat-intel cache"
