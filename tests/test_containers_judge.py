@@ -259,3 +259,36 @@ def test_an_ssh_read_does_not_close_a_setting_seen_through_the_agent(tmp_path):
     R.run(tmp_path, t, reader=lambda: ssh)
     _correlate(tmp_path, t)
     assert _states(tmp_path)[("CONT-001", "p")] == "open"
+
+
+# --------------------------------------------------------------------------- found on the lab
+def test_only_the_bypassed_family_is_marked_and_ipv6_shows_in_brackets():
+    j = J.judge(inv(ctr("web", ports=PUBLISHED)), host_addrs=HOST, confirm=lambda p: True)
+    assert j.rows[0]["ports"] == ["0.0.0.0:8080->80/tcp (reachable despite firewall)", "[::]:8080->80/tcp"]
+
+
+def test_the_firewall_named_is_the_one_that_refused_the_port():
+    assert J.firewall_name({}, "table inet hostfw chain input policy drop") == "the nftables firewall (table hostfw)"
+    assert J.firewall_name({"firewall": {"iptables": {"text": "-A ufw-user-input -p tcp --dport 22 -j ACCEPT"}}},
+                           "filter/INPUT policy DROP") == "ufw"
+    # ufw disabled leaves its empty chains behind: not ufw
+    assert J.firewall_name({"firewall": {"iptables": {"text": ":ufw-user-input - [0:0]"}}}, "filter/INPUT policy DROP") \
+        == "the firewall"
+
+
+def test_model_facts_never_call_a_container_a_package():
+    from kratos import finding_facts as FF
+
+    cont = {"id": "CONT-004", "severity": "high", "subject": "web", "entities": ["image:sha256:" + "d" * 64,
+                                                                            "port:8080/tcp"]}
+    assert FF.safe_facts(cont) == ["port 8080/tcp", "confirmed reachable from Kratos"]
+    img = {"id": "PKG-001", "subject": "shop/web:2:openssl", "entities": ["CVE-2024-0001", "container:web"]}
+    assert FF.safe_facts(img)[0] == "package openssl (inside a container image)"
+    assert "web" not in " ".join(FF.safe_facts({"id": "CONT-001", "subject": "web", "entities": ["privileged"]}))
+
+
+def test_journal_reads_keep_the_fields_that_say_which_container_wrote_a_line():
+    from kratos.logsources import logread
+
+    assert {"CONTAINER_ID_FULL", "CONTAINER_NAME", "IMAGE_NAME"} <= set(logread.JOURNAL_FIELDS)
+    assert "_COMM=dockerd" in " ".join(logread.journal_sync_argv("container", None, 0.0))
