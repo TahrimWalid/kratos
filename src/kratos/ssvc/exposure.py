@@ -226,3 +226,39 @@ def for_scanned_ports(ports: Iterable[Any], target: str, *, override: str | None
 
 def rank(value: Any) -> int:
     return RANK.get(str(value or ""), RANK[UNKNOWN])
+
+
+def for_container_image(image: dict[str, Any], live: dict[str, Any] | None, *, override: str | None = None,
+                        dropped: Iterable[tuple[int, str]] = (), measured_at: str = "",
+                        via: str = "") -> Exposure:
+    """D.5: exposure of a package inside a container image -- through the ports its running
+    containers publish (`image`: {containers, ports [{host_ip, host_port, proto}],
+    host_network}). A port the firewall's forwarding rules drop (`dropped`, from the
+    container read's firewall model) doesn't count; one bound to loopback is local. A
+    container on the host's network shares the machine's own exposure."""
+    names = ", ".join(str(n) for n in (image.get("containers") or [])[:3]) or "a container"
+    if image.get("host_network"):
+        ex = machine_highest(live, override=override)
+        return Exposure(ex.value, f"container {names} uses the machine's own network: {ex.reason}",
+                        ex.measured_at or measured_at, ex.via or via, fix=ex.fix, override=ex.override)
+    blocked = {(int(p), str(pr)) for p, pr in dropped}
+    reach, local = [], []
+    for p in image.get("ports") or []:
+        if not isinstance(p, dict) or not isinstance(p.get("host_port"), int):
+            continue
+        ip = _ip(p.get("host_ip") or "0.0.0.0")
+        item = {"address": str(p.get("host_ip") or "0.0.0.0"), "port": p["host_port"]}
+        if (ip is not None and ip.is_loopback) or (p["host_port"], str(p.get("proto") or "tcp")) in blocked:
+            local.append(item)
+        else:
+            reach.append(item)
+    if reach:
+        addresses = (live or {}).get("local_addresses") or [] if isinstance(live, dict) else []
+        value, why, first = _scope(reach, addresses)
+        value, why, used = _apply_override(value, why, override)
+        return Exposure(value, f"container {names} publishes {_where(first)}; {why}", measured_at, via, override=used)
+    if local:
+        return Exposure(LOCAL, f"container {names} publishes {_where(local[0])} only on the loopback address or "
+                               "behind a forwarding rule that drops outside traffic", measured_at, via)
+    return Exposure(LOCAL, f"container {names} runs it but publishes no port (only other containers on its "
+                           "network can reach it)", measured_at, via)

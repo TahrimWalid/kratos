@@ -56,7 +56,21 @@ def _step_2(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE pkg_inventory ADD COLUMN read_json TEXT")
 
 
-STEPS = (_step_1, _step_2)
+def _step_3(conn: sqlite3.Connection) -> None:
+    # D.5: whose packages a row holds -- the machine itself ("host") or one container image
+    # on it ("image:sha256:..."). Rows before this step are all the machine's own.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pkg_inventory)")}
+    if "scope" not in cols:
+        conn.execute("ALTER TABLE pkg_inventory ADD COLUMN scope TEXT NOT NULL DEFAULT 'host'")
+    conn.execute("CREATE INDEX IF NOT EXISTS pkg_inventory_scope ON pkg_inventory (target, scope, last_seen_at)")
+
+
+STEPS = (_step_1, _step_2, _step_3)
+HOST = "host"
+
+
+def image_scope(image_id: str) -> str:
+    return f"image:{image_id}"
 
 
 @contextlib.contextmanager
@@ -85,6 +99,7 @@ class Inventory:
     hash: str
     via: str
     read: dict[str, Any] = field(default_factory=dict)   # {} for a list stored before read_json existed
+    scope: str = HOST                                      # "host" or "image:sha256:..." (D.5)
 
 
 def _system(inv: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +116,7 @@ def inventory_hash(packages: list[dict[str, Any]], system: dict[str, Any]) -> st
 
 
 def save(data_dir: Path, target: str, inv: dict[str, Any], *, family: str, selector: str | None,
-         now: float | None = None, read: dict[str, Any] | None = None) -> Inventory:
+         now: float | None = None, read: dict[str, Any] | None = None, scope: str = HOST) -> Inventory:
     """Record a fresh inventory. Returns the stored row (new, or the unchanged one
     whose last_seen_at moved). `read`: how this read went (complete, origins), kept
     with the row -- the newest read's, for an unchanged set."""
@@ -115,8 +130,8 @@ def save(data_dir: Path, target: str, inv: dict[str, Any], *, family: str, selec
     with opened(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            row = conn.execute("SELECT id, hash FROM pkg_inventory WHERE target = ? ORDER BY last_seen_at DESC, id DESC "
-                               "LIMIT 1", (key,)).fetchone()
+            row = conn.execute("SELECT id, hash FROM pkg_inventory WHERE target = ? AND scope = ? "
+                               "ORDER BY last_seen_at DESC, id DESC LIMIT 1", (key, scope)).fetchone()
             if row is not None and row["hash"] == digest:
                 conn.execute("UPDATE pkg_inventory SET last_seen_at = ?, via = ?, selector = ?, read_json = ? "
                              "WHERE id = ?", (when, inv.get("via") or "ssh", selector, read_json, row["id"]))
@@ -125,10 +140,11 @@ def save(data_dir: Path, target: str, inv: dict[str, Any], *, family: str, selec
                 blob = zlib.compress(json.dumps(packages, separators=(",", ":")).encode(), 6)
                 cur = conn.execute(
                     "INSERT INTO pkg_inventory (target, taken_at, last_seen_at, family, os_id, os_version, selector, "
-                    "packages_json, hash, package_count, system_json, via, read_json) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "packages_json, hash, package_count, system_json, via, read_json, scope) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (key, when, when, family, str(os_info.get("ID") or ""), str(os_info.get("VERSION_ID") or ""),
-                     selector, blob, digest, len(packages), json.dumps(system), inv.get("via") or "ssh", read_json))
+                     selector, blob, digest, len(packages), json.dumps(system), inv.get("via") or "ssh", read_json,
+                     scope))
                 rid = int(cur.lastrowid)
             conn.execute("COMMIT")
         except BaseException:
@@ -143,7 +159,7 @@ def _row(r: sqlite3.Row) -> Inventory:
     return Inventory(int(r["id"]), r["target"], float(r["taken_at"]), float(r["last_seen_at"]), r["family"] or "",
                      r["os_id"] or "", r["os_version"] or "", r["selector"],
                      json.loads(zlib.decompress(r["packages_json"])), json.loads(r["system_json"] or "{}"),
-                     r["hash"], r["via"] or "", _read_of(r))
+                     r["hash"], r["via"] or "", _read_of(r), r["scope"] or HOST)
 
 
 def _read_of(r: sqlite3.Row) -> dict[str, Any]:
@@ -160,10 +176,10 @@ def get(data_dir: Path, inventory_id: int) -> Inventory | None:
     return _row(r) if r is not None else None
 
 
-def latest(data_dir: Path, target: str) -> Inventory | None:
+def latest(data_dir: Path, target: str, scope: str = HOST) -> Inventory | None:
     with opened(data_dir) as conn:
-        r = conn.execute("SELECT * FROM pkg_inventory WHERE target = ? ORDER BY last_seen_at DESC, id DESC LIMIT 1",
-                         (target_key(target),)).fetchone()
+        r = conn.execute("SELECT * FROM pkg_inventory WHERE target = ? AND scope = ? "
+                         "ORDER BY last_seen_at DESC, id DESC LIMIT 1", (target_key(target), scope)).fetchone()
     return _row(r) if r is not None else None
 
 
@@ -172,13 +188,13 @@ def machines(data_dir: Path) -> list[str]:
     if not (Path(data_dir) / "kratos.db").exists():
         return []
     with opened(data_dir) as conn:
-        return [r[0] for r in conn.execute("SELECT target FROM pkg_inventory GROUP BY target "
+        return [r[0] for r in conn.execute("SELECT target FROM pkg_inventory WHERE scope = 'host' GROUP BY target "
                                            "ORDER BY MAX(last_seen_at) DESC")]
 
 
 def known_selectors(data_dir: Path) -> set[str]:
-    """Every release a package inventory has been taken from (so `kratos vulndb-update`
-    knows which data to download)."""
+    """Every release a package inventory has been taken from -- machines and container images
+    alike (so `kratos vulndb-update` knows which data to download)."""
     if not (Path(data_dir) / "kratos.db").exists():
         return set()
     with opened(data_dir) as conn:
