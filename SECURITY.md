@@ -54,6 +54,25 @@ that job. Currently accepted:
 The sub-agent that runs on monitored machines uses only the Python standard library, so
 its exposure is the machine's own Python, which Kratos's package check already covers.
 
+## The SSH certificate authority key
+
+If you turn on SSH certificates (`kratos ssh-ca`), the key that signs Kratos's login
+certificates is the **most valuable secret on the Kratos host**: a copy of it can sign a
+login certificate for every enrolled machine. The certificates it signs still expire in
+minutes and stay bound to this computer's address, but the CA key itself must stay private.
+
+- It lives in `<data folder>/ssh-ca/` (the folder is `0700`, files `0600`) and **never
+  leaves this computer** — Kratos never writes it to a monitored machine.
+- Protect it with the strongest mode your host supports (`kratos ssh-ca status` shows which
+  is in use): **tpm** (sealed to this machine's TPM — a copied file is useless elsewhere),
+  **agent** (held in a dedicated ssh-agent, unlocked after a reboot), **token** (a PKCS#11
+  device), or **file** (an owner-only file; honest about the trade-off).
+- **Back it up** — copy the `ssh-ca/` folder somewhere safe, together with your database
+  backup and your agent-link keys. Losing it means re-enrolling every machine. Keep the
+  backup private; treat it like the live key.
+- Rotate it with `kratos ssh-ca rotate` / `promote`; the retired key is trusted for a week
+  so no run fails during the change.
+
 The Python that runs Kratos needs security fixes too. `kratos doctor` (and `/doctor`)
 warns 90 days before python.org stops them for your version and after it has; Python 3.10
 reaches that point at the end of October 2026. A Python that came with your Linux
