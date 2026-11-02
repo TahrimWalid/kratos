@@ -167,6 +167,13 @@ sudo tee /etc/sudoers.d/kratos > /dev/null << 'EOF'
 {login} ALL=(ALL) NOPASSWD: /usr/bin/fail2ban-client get * bantime
 {login} ALL=(ALL) NOPASSWD: /usr/sbin/auditctl -s
 {login} ALL=(ALL) NOPASSWD: /usr/sbin/auditctl -l
+# Containers (Docker/Podman): whether a published container port gets past the
+# firewall. Each line allows ONE read-only listing with exactly these arguments
+# ("" = no arguments at all) -- nothing that changes a rule. Kratos never asks
+# for the docker group or `sudo docker`: both are root on this machine.
+{login} ALL=(root) NOPASSWD: /usr/sbin/iptables-save ""
+{login} ALL=(root) NOPASSWD: /usr/sbin/ip6tables-save ""
+{login} ALL=(root) NOPASSWD: /usr/sbin/nft -j list ruleset
 EOF
 sudo chmod 440 /etc/sudoers.d/kratos
 

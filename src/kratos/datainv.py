@@ -131,11 +131,13 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "snapshots", "Collected snapshots",
         "What Kratos read from your machines: port scans, logs, system context, baselines, log integrity, "
-        "persistence, running processes, installed packages, and each machine's account list (every "
+        "persistence, running processes, installed packages (the machine's and its running container "
+        "images'), containers and their settings, and each machine's account list (every "
         "local account name, kept with the privileged-account read so masking can tell a real account "
         "from a name an attacker tried).",
         PERSONAL, "one file per check per machine each time it runs",
-        files=("scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages", "web_signals", "sshguess"),
+        files=("scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages", "web_signals", "sshguess",
+               "containers"),
         tables=(TableRef(DB, ("persistence_baseline", "pkg_inventory"), ("pkg_inventory", "taken_at")),),
         note="`kratos snapshots prune` thins old ones (preview first)",
     ),

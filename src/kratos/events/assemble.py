@@ -134,12 +134,14 @@ LOG_ACTIONS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], Optional[str]]] =
     # web
     "http_request": (("web", "network"), ("access",), None),
     "web_error": (("web",), ("error",), "unknown"),
+    # D.5: a line a container wrote (its own output -- not judged here)
+    "container_output": ((), ("info",), "unknown"),
 }
 FIELD_CAPS = {"url_original": 2048, "user_agent_original": 1024, "process_working_directory": 1024,
               "process_executable": 1024, "file_path": 4096, "network_transport": 32, "http_request_method": 32,
               "package_name": 256, "package_version": 128}
 LIST_CAPS = {"process_args": (64, 1024), "audit_types": (32, 32), "audit_paths": (32, 4096),
-             "audit_created_paths": (32, 4096)}
+             "audit_created_paths": (32, 4096), "container_image_hash": (4, 128)}
 _INT_FIELDS = ("source_port", "destination_port", "process_pid", "process_parent_pid", "sequence",
                "http_response_status_code", "log_syslog_priority")
 

@@ -26,9 +26,12 @@ FIELDS: frozenset[str] = frozenset({
     # C.1: what Sigma's auditd and process rules look at
     "process_args", "user_effective_id", "audit_types", "audit_key", "audit_syscall", "audit_paths",
     "audit_created_paths", "audit_session",
+    # D.5: a line a container wrote
+    "container_id", "container_name", "container_image_name", "container_image_hash", "container_runtime",
 })
 # The fields above that hold a list (in order) rather than one value.
-LIST_FIELDS: frozenset[str] = frozenset({"process_args", "audit_types", "audit_paths", "audit_created_paths"})
+LIST_FIELDS: frozenset[str] = frozenset({"process_args", "audit_types", "audit_paths", "audit_created_paths",
+                                         "container_image_hash"})
 
 
 @dataclass
@@ -101,12 +104,12 @@ def record_parts(rec: Any) -> tuple[str | None, int | None, str, str | None, str
 def parse_read(read: Any, target: str = "") -> list[Any]:
     """Parsed facts (or AuthEvents, for the sudo source) for every record of a
     logread.LogRead, newest first. Lines that aren't events are skipped."""
-    from kratos.logsources.parsers import auditd, auth, cron, firewall, packages, sudo, systemd, web
+    from kratos.logsources.parsers import auditd, auth, containers, cron, firewall, packages, sudo, systemd, web
 
     if read.source == "sudo":
         return sudo.parse(read, target)
     if read.source == "auth":
         return auth.parse(read, target)
     module = {"auditd": auditd, "cron": cron, "systemd": systemd, "firewall": firewall, "packages": packages,
-              "web": web}[read.source]
+              "web": web, "containers": containers}[read.source]
     return module.parse(read)

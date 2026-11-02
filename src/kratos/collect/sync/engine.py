@@ -383,7 +383,16 @@ def sync_source(data_dir: Path, target: str, source: str, *, fetchers: Fetchers,
         rep.status, rep.message = "failed", f"{source}: not a source Kratos syncs"
         return rep
     try:
-        if spec.journal is not None:
+        if source == "containers":
+            # D.5: journald-driver lines through the journal, plus each container's own log file
+            from kratos.containers import logs as _container_logs
+
+            outcome = _journal_rounds(data_dir, target, source, fetchers, rep, now=now, initial_hours=initial_hours,
+                                      max_lines=max_lines, deadline=deadline)
+            if outcome == "no_journal":
+                rep.status, rep.mode = "ok", "files"
+            _container_logs.sync_files(data_dir, target, rep, now=now, initial_hours=initial_hours, deadline=deadline)
+        elif spec.journal is not None:
             outcome = _journal_rounds(data_dir, target, source, fetchers, rep, now=now, initial_hours=initial_hours,
                                       max_lines=max_lines, deadline=deadline)
             if outcome == "no_journal":

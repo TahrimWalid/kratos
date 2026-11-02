@@ -68,7 +68,7 @@ def test_no_stale_entries():
 def test_classification_matches_the_spec():
     kinds = {rid: info.kind for rid, info in RULES.items()}
     assert {r for r, k in kinds.items() if k == "run_note"} == {
-        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004", "DETECT-001"}
+        "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004", "DETECT-001", "CONT-008"}
     assert {r for r, k in kinds.items() if k == "occurrence"} == {
         "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001", "LOG-003",
         "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-005", "LIVE-006", "HUNT-001", "WEB-001", "CORR-SSH-002"}
@@ -84,3 +84,15 @@ def test_inputs_match_what_the_engine_reads():
     assert rule_info("CORR-SSH-001").covering_inputs == ("auth_patterns",)
     assert rule_info("NET-002").covering_inputs == ("nmap_parsed",)
     assert rule_info("NOPE-001") is None
+
+
+def test_container_settings_are_conditions_and_image_package_findings_are_rechecked_by_their_own_read():
+    for rid in ("CONT-001", "CONT-002", "CONT-003", "CONT-004", "CONT-005", "CONT-006", "CONT-007"):
+        assert rule_info(rid).kind == "condition", rid
+        assert rule_info(rid).inputs == ("containers",), rid
+    pkg = rule_info("PKG-001")
+    assert pkg.covering_for("PKG-001", "openssl") == ("packages",)
+    assert pkg.covering_for("PKG-001", "nginx:1.27:openssl") == ("container_packages",)
+    assert rule_info("PKG-002").covering_for("PKG-002", "nginx:1.27") == ("container_packages",)
+    assert rule_info("PKG-002").covering_for("PKG-002", "") == ("packages",)
+    assert rule_info("PKG-003").covering_for("PKG-003", "x:y") == ("packages",)

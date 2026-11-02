@@ -308,15 +308,18 @@ class Finding:
     # code from evidence and the asset record; empty for every other rule, and then left
     # out of the finding's dict.
     ssvc: dict[str, Any] = field(default_factory=dict)
+    # D.5: fixes a person can copy and run on the machine -- [{title, text}], built by code
+    # from the evidence (e.g. a Compose change, a DOCKER-USER rule). Kratos never runs them.
+    # Empty for most rules, and then left out of the finding's dict.
+    fix: list[dict[str, str]] = field(default_factory=list)
 
 
 def finding_dict(f: "Finding") -> dict[str, Any]:
-    """A finding as a dict (dataclasses.asdict), without an empty detection_rule or ssvc."""
+    """A finding as a dict (dataclasses.asdict), without an empty detection_rule, ssvc or fix."""
     d = asdict(f)
-    if not d.get("detection_rule"):
-        d.pop("detection_rule", None)
-    if not d.get("ssvc"):
-        d.pop("ssvc", None)
+    for key in ("detection_rule", "ssvc", "fix"):
+        if not d.get(key):
+            d.pop(key, None)
     return d
 
 
@@ -720,6 +723,14 @@ FINDING_SUMMARY_TEMPLATES: dict[str, str] = {
     "PKG-004": "Part of the package vulnerability check could not be done — those packages are unknown, not safe.",
     "WEB-001": "A web server's worker processes (PHP, Apache, nginx) crashed in bursts — how attacks on memory-corruption bugs in them look.",
     "WEB-002": "PHP is served to the network but comes from outside the distribution, so the package check can't tell whether it has known vulnerabilities.",
+    "CONT-001": "A container runs privileged — every capability and host device, no confinement: whoever controls it controls the host.",
+    "CONT-002": "A container has the container engine's API socket mounted inside — that is root on the host.",
+    "CONT-003": "A container shares the host's network, process or IPC namespace, so it isn't isolated from the host there.",
+    "CONT-004": "A container's published port is reachable from outside although the firewall refuses that port — Docker's forwarding runs before the firewall's rules.",
+    "CONT-005": "A container can write to a host system folder (/etc, /root, /usr, the Docker data folder, ...), which changes the host itself.",
+    "CONT-006": "A container was given powerful capabilities (SYS_ADMIN, SYS_MODULE, ...) that help it escape to the host.",
+    "CONT-007": "A container runs with seccomp, AppArmor or SELinux confinement turned off.",
+    "CONT-008": "Part of the container check could not be done — what wasn't checked is unknown, not safe.",
 }
 
 GENERIC_FINDING_SUMMARY = "A security-relevant pattern was detected — see details below."
@@ -2045,6 +2056,10 @@ class SnapshotSource:
     build: Callable[[dict[str, Any]], list[Finding]]
     closes_findings: Callable[[dict[str, Any]], bool]
     blind: Callable[[dict[str, Any]], Callable[[str, str], str | None] | None] | None = None
+    # False when another source already owns `rule_prefix`'s input category (D.5: package
+    # findings about container images come from their own read, but PKG-* stays the
+    # machine package check's -- lifecycle.rules scopes those findings by subject).
+    owns_prefix: bool = True
 
 
 SNAPSHOT_SOURCES: dict[str, SnapshotSource] = {}
@@ -2053,7 +2068,8 @@ SNAPSHOT_SOURCES: dict[str, SnapshotSource] = {}
 def register_snapshot_source(src: SnapshotSource) -> None:
     """Add (or replace) a snapshot source; its rules read its category."""
     SNAPSHOT_SOURCES[src.category] = src
-    _FINDING_INPUTS[src.rule_prefix] = (src.category,)
+    if src.owns_prefix:
+        _FINDING_INPUTS[src.rule_prefix] = (src.category,)
 
 
 def snapshot_sources() -> list[SnapshotSource]:
@@ -2110,6 +2126,12 @@ _hunt_auto.register()
 from kratos.websig import findings as _websig_findings  # noqa: E402
 
 _websig_findings.register()
+
+# D.5: containers -- CONT-001..008 from the container read, and package findings about the
+# images of running containers (kratos.containers).
+from kratos.containers import findings as _container_findings  # noqa: E402
+
+_container_findings.register()
 
 # CORR-SSH-002: a successful login from an address that had been guessing passwords
 # (kratos.sshguess), judged from the stored sign-in events.
@@ -2348,7 +2370,8 @@ def write_findings_report(
     from kratos.ssvc import attach as _ssvc_attach
 
     _ssvc_attach.attach(findings, data_dir=data_dir, target=report_target or "unknown", packages_doc=packages_doc,
-                        live_doc=live_doc, config_audit=config_audit, vuln_scan=vuln_scan)
+                        live_doc=live_doc, config_audit=config_audit, vuln_scan=vuln_scan,
+                        container_packages_doc=snapshots.get("container_packages"))
     findings.sort(key=_ssvc_attach.sort_key)
     finding_dicts = [finding_dict(f) for f in findings]
     lifecycle_summary, lifecycle_error = None, None
@@ -2456,6 +2479,8 @@ def write_findings_report(
             md_lines.append("\n**Recommendations**")
             for r in f.recommendation:
                 md_lines.append(f"- {r}")
+            for fx in f.fix:                         # D.5: a fix to copy; Kratos never runs it
+                md_lines.append(f"\n**Fix -- {fx.get('title')}** (run it yourself)\n\n```\n{fx.get('text')}\n```")
             
             # Add playbooks section if present
             if f.playbooks:

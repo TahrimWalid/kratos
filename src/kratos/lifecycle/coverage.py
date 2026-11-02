@@ -42,7 +42,7 @@ class Coverage:
     # finding about something in a blind spot is not "gone" just because it wasn't seen.
     blind: dict[str, EntityBlind] = field(default_factory=dict)
 
-    def why_not(self, rule_id: str, entities: Iterable[str] = ()) -> str | None:
+    def why_not(self, rule_id: str, entities: Iterable[str] = (), subject: str = "") -> str | None:
         """None when the rule is covered, else a plain reason. With `entities` (the
         finding's), also None only when this run's reads could see every one of them."""
         if self.no_run:
@@ -50,7 +50,7 @@ class Coverage:
         info = rule_info(rule_id)
         if info is None or info.kind == "run_note":
             return "this rule has no lifecycle"
-        needed = info.covering_inputs
+        needed = info.covering_for(rule_id, subject)
         if not needed:
             return "the rule reads no inputs"
         for name in needed:
@@ -67,8 +67,8 @@ class Coverage:
                     return f"this run could not look at {entity}: {why}"
         return None
 
-    def covered(self, rule_id: str, entities: Iterable[str] = ()) -> bool:
-        return self.why_not(rule_id, entities) is None
+    def covered(self, rule_id: str, entities: Iterable[str] = (), subject: str = "") -> bool:
+        return self.why_not(rule_id, entities, subject) is None
 
 
 def nothing() -> Coverage:

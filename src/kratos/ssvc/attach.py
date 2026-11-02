@@ -121,18 +121,21 @@ def _pkg002(sig: dict[str, Any], mission: Any, live: dict[str, Any] | None, over
 
 def attach(findings: Iterable[Any], *, data_dir: Path, target: str, packages_doc: dict[str, Any] | None,
            live_doc: dict[str, Any] | None, config_audit: dict[str, Any] | None = None,
-           vuln_scan: dict[str, Any] | None = None) -> None:
+           vuln_scan: dict[str, Any] | None = None, container_packages_doc: dict[str, Any] | None = None) -> None:
     """Set `ssvc` on every finding SSVC applies to (Finding objects or dicts). Never
-    raises: a failure leaves findings without a decision and is logged."""
+    raises: a failure leaves findings without a decision and is logged. D.5: a package
+    finding about a container image (its signal is in `container_packages_doc`) is exposed
+    through the ports its containers publish."""
     try:
-        _attach(list(findings), Path(data_dir), target, packages_doc, live_doc, config_audit, vuln_scan)
+        _attach(list(findings), Path(data_dir), target, packages_doc, live_doc, config_audit, vuln_scan,
+                container_packages_doc)
     except Exception:  # noqa: BLE001 -- a decision must never cost the report
         logger.exception("SSVC decisions could not be attached; the findings are kept without them")
 
 
 def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict[str, Any] | None,
             live_doc: dict[str, Any] | None, config_audit: dict[str, Any] | None,
-            vuln_scan: dict[str, Any] | None) -> None:
+            vuln_scan: dict[str, Any] | None, container_packages_doc: dict[str, Any] | None = None) -> None:
     wanted = [f for f in findings if _get(f, "id") in RULES]
     if not wanted:
         return
@@ -143,17 +146,33 @@ def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict
     override = asset.exposure_override if asset else None
     firewall = _firewall(config_audit)
     signals = _signals(packages_doc)
+    image_signals = _signals(container_packages_doc)
     # BOD 26-04's Publicly Exposed is about the machine, not one package (bod2604).
     machine = X.machine_highest(live_doc, override=override, firewall=firewall).to_dict()
     addresses = [target, *(((live_doc or {}).get("local_addresses") or []) if isinstance(live_doc, dict) else [])]
     for f in wanted:
         fid = str(_get(f, "id"))
-        sig = signals.get((fid, str(_get(f, "subject") or "")))
+        key = (fid, str(_get(f, "subject") or ""))
+        image_sig = image_signals.get(key)
+        sig = image_sig or signals.get(key)
         decision: dict[str, Any] | None = None
         cve_inputs: list[CveInputs] = []
         measured: list[dict[str, Any]] = [machine]
         known_by = list(addresses)
-        if fid == "PKG-001" and sig:
+        if fid in ("PKG-001", "PKG-002") and image_sig:
+            cve_inputs = _inputs(image_sig)
+            decision = for_finding(cve_inputs, mission, fix_available=fid == "PKG-001")
+            if decision is not None:
+                ex = X.for_container_image(image_sig.get("image") or {}, live_doc, override=override,
+                                           dropped=[tuple(x) for x in image_sig.get("dropped_ports") or []],
+                                           measured_at=str((container_packages_doc or {}).get("checked_at") or ""),
+                                           via=str((container_packages_doc or {}).get("via") or ""))
+                decision["exposure"] = ex.to_dict()
+                if ex.value == X.INTERNET:
+                    measured.append(ex.to_dict())
+                if fid == "PKG-001":
+                    decision["fix"] = "pull or rebuild a newer image and re-create its containers"
+        elif fid == "PKG-001" and sig:
             cve_inputs = _inputs(sig)
             decision = for_finding(cve_inputs, mission, fix_available=True)
             if decision is not None:

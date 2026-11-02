@@ -1039,6 +1039,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
             print(f"  the model suggests ({s['kind'].replace('_', ' ')}): {s['why']}  [#{s['id']} -- you decide]")
         for line in (latest.get("evidence") or [])[:12]:
             print(f"  - {line}")
+        for fx in latest.get("fix") or []:          # D.5: a fix built from the evidence -- Kratos never runs it
+            print(f"  fix (run it yourself): {fx.get('title')}")
+            for ln in str(fx.get("text") or "").splitlines():
+                print(f"    {ln}")
         print("  history:")
         for e in events:
             move = f"{e['from_state'] or '-'} -> {e['to_state']}" if e["to_state"] else ""
@@ -2394,6 +2398,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     from kratos.cli import assets_cmd
     assets_cmd.add_parser(sub)
+    from kratos.cli import containers_cmd
+    containers_cmd.add_parser(sub)
 
     attack_p = sub.add_parser(
         "attack-layer",

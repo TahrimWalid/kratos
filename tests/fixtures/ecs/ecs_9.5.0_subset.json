@@ -5,6 +5,28 @@
    "normalize": [],
    "type": "date"
   },
+  "container.id": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "container.image.hash.all": {
+   "normalize": [
+    "array"
+   ],
+   "type": "keyword"
+  },
+  "container.image.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "container.name": {
+   "normalize": [],
+   "type": "keyword"
+  },
+  "container.runtime": {
+   "normalize": [],
+   "type": "keyword"
+  },
   "destination.ip": {
    "normalize": [],
    "type": "ip"

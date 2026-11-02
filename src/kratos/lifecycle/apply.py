@@ -125,7 +125,7 @@ def _upsert_present(r: _Run, finding: dict[str, Any], coverage: Coverage) -> str
     key = finding_key(rid, r.target, subject)
     severity = str(finding.get("severity") or "info").lower()
     entities = _entities(finding)
-    covered = coverage.covered(rid)
+    covered = coverage.covered(rid, subject=subject)
     latest = json.dumps(finding, sort_keys=True, default=str)
     rec = S.get_record(r.conn, key)
     if rec is None:
@@ -174,7 +174,7 @@ def _upsert_present(r: _Run, finding: dict[str, Any], coverage: Coverage) -> str
 
 def _settle_absent(r: _Run, rec: sqlite3.Row, coverage: Coverage) -> None:
     key, state = rec["finding_key"], rec["state"]
-    covered = coverage.covered(rec["rule_id"], json.loads(rec["entities"] or "[]"))
+    covered = coverage.covered(rec["rule_id"], json.loads(rec["entities"] or "[]"), rec["subject"] or "")
     if covered:
         r.conn.execute("UPDATE finding_records SET last_checked = ? WHERE finding_key = ?", (r.now, key))
     if state in S.DECIDED:
@@ -189,7 +189,8 @@ def _settle_absent(r: _Run, rec: sqlite3.Row, coverage: Coverage) -> None:
         r.move(key, state, to, "state_changed",
                "not found in a run that re-checked it" if to == "mitigated"
                else "no recurrence in a run that re-checked it",
-               {"rechecked": list(rule_info(rec["rule_id"]).covering_inputs) if rule_info(rec["rule_id"]) else []})
+               {"rechecked": list(rule_info(rec["rule_id"]).covering_for(rec["rule_id"], rec["subject"] or ""))
+                if rule_info(rec["rule_id"]) else []})
 
 
 # "worse": still open, but its severity rose this run (a newly exploited CVE makes a

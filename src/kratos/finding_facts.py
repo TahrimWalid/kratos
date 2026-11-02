@@ -170,7 +170,21 @@ def safe_facts(f: dict[str, Any]) -> list[str]:
         facts.append("pid " + ", ".join(pids[:3]))
     subject = str(f.get("subject") or "")
     sigma = _is_rule(f)      # C.1: a detection rule's subject is an address, user or program
-    if subject and _PACKAGE_RE.match(subject) and not sigma:
+    rule = str(f.get("id") or "")
+    if rule.startswith("CONT-"):
+        # D.5: the subject is a container's name (machine text) -- never a fact; ports are validated numbers
+        ports = [e.split(":", 1)[1] for e in (str(x) for x in f.get("entities") or [])
+                 if re.fullmatch(r"port:\d{1,5}/(tcp|udp|sctp)", e)]
+        if ports:
+            facts.append("port " + ", ".join(ports[:3]))
+        if rule == "CONT-004" and str(f.get("severity")) == "high":
+            facts.append("confirmed reachable from Kratos")
+    elif subject and ":" in subject and rule in ("PKG-001", "PKG-002"):
+        # D.5: "<image>:<package>" -- name the package (validated), not the image (machine text)
+        pkg = subject.rsplit(":", 1)[-1]
+        facts.append(f"package {pkg} (inside a container image)" if rule == "PKG-001" and _PACKAGE_RE.match(pkg)
+                     else "inside a container image")
+    elif subject and _PACKAGE_RE.match(subject) and not sigma:
         facts.append(f"package {subject}")
     cves = _cves_decisive_first(f)
     if cves:
@@ -290,15 +304,29 @@ def answer_block(findings: Iterable[dict[str, Any]] | None, analysis: str) -> st
     items = serious(findings)
     if not items:
         return ""
+    # Under the cap, the most urgent finding of each rule first, then the repeats: one image's
+    # several package findings must not hide a different kind of risk (D.5: a confirmed
+    # firewall bypass fell off the list behind three package findings).
+    seen: set[str] = set()
+    first = [f for f in items if not (str(f.get("id")) in seen or seen.add(str(f.get("id"))))]
+    items = first + [f for f in items if f not in first]
     lines = ["Kratos found (checked by Kratos itself -- not written by the model):"]
     for f in items[:BLOCK_MAX]:
         facts = [ip_fact for ip_fact in (f"source {ip}" + (", known-malicious in the threat-intel cache"
                                                           if known_malicious(f) else "") for ip in ips(f))]
-        if not ips(f):
+        rule_id = str(f.get("id") or "")
+        subject = str(f.get("subject") or "")
+        if rule_id.startswith("CONT-") and subject:
+            # D.5: which container (the person's view, cleaned below), then the setting -- not its image digest
+            settings = [str(e) for e in f.get("entities") or [] if not str(e).startswith("image:")]
+            facts += [f"container {subject}", *(_display_entity(e)[0] for e in settings[:2])]
+        elif not ips(f):
             ordered = _cves_decisive_first(f) or list(f.get("entities") or [])
+            ordered = [e for e in ordered if not str(e).startswith("container:")]
             shown = [_display_entity(str(e))[0] for e in ordered[:2]]
-            subject = str(f.get("subject") or "")
             sigma = _is_rule(f)
+            if rule_id in ("PKG-001", "PKG-002") and ":" in subject:
+                shown.insert(0, "image " + (subject.rsplit(":", 1)[0] if rule_id == "PKG-001" else subject))
             facts += shown or ([subject if sigma else f"package {subject}"] if subject else [])
         decision = decision_fact(f, with_bod=True)
         if decision:

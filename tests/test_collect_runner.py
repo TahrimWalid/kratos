@@ -369,6 +369,20 @@ def test_the_digest_stays_under_its_cap(tmp_path, fake_registry):
     assert len(build_digest(r)) <= DIGEST_CAP
 
 
+def test_many_identical_findings_are_counted_so_a_later_one_still_fits(tmp_path, fake_registry):
+    """D.5: one container image's dozens of package findings used to push a firewall-bypass
+    finding out of the capped digest."""
+    fake_registry.register(make_check("t_a", run=lambda c: CheckResult("ok", "x" * 300)))
+    findings = [{"id": "PKG-001", "severity": "low", "title": "In a container image: p", "subject": f"img:1:p{i}"}
+                for i in range(60)] + [{"id": "CONT-004", "severity": "high", "title": "t", "subject": "web",
+                                        "entities": ["port:8080/tcp"]}]
+    r = runner.prepare(TARGET, tmp_path, budget=5,
+                       dispatch=lambda t, a, d: {"status": "ok", "result": {"findings": findings}})
+    text = build_digest(r)
+    assert len(text) <= DIGEST_CAP and "CONT-004 (high)" in text and "port 8080/tcp" in text
+    assert "PKG-001 (low) x60" in text
+
+
 def test_no_correlation_without_a_usable_check(tmp_path, fake_registry):
     fake_registry.register(make_check(run=lambda c: CheckResult("failed", "could not be checked")))
     called = []

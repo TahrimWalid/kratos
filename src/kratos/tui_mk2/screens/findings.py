@@ -189,6 +189,7 @@ class FindingsScreen(Screen):
         Binding("m", "pick_machine", "machine", show=True),
         Binding("slash", "search", "search", show=True),
         Binding("c", "copy_attack", "copy ATT&CK link", show=True),
+        Binding("x", "show_fix", "fix to copy", show=True),
     ]
 
     CSS = """
@@ -216,7 +217,7 @@ class FindingsScreen(Screen):
             yield DataTable(id="fd-table", cursor_type="row")
             yield VerticalScroll(id="fd-log")
             yield Static(Text(
-                "↑↓ select · enter details · h history · c copy ATT&CK\n"
+                "↑↓ select · enter details · h history · c copy ATT&CK · x fix to copy\n"
                 "v verify · a accept risk · f not a real problem · o out of scope · r reopen\n"
                 "k re-check · t retest · n dismiss note\n"
                 "s which findings · p severity · m machine · / search · esc back",
@@ -399,8 +400,33 @@ class FindingsScreen(Screen):
             body.add_row("reason", d["reason"])
         for i, line in enumerate((latest.get("evidence") or [])[:12]):
             body.add_row("evidence" if i == 0 else "", annotate_lookalikes(line))
+        for i, line in enumerate((latest.get("recommendation") or [])[:6]):
+            body.add_row("what to do" if i == 0 else "", annotate_lookalikes(str(line)))
+        for i, fx in enumerate(latest.get("fix") or []):
+            body.add_row("fix (x copies)" if i == 0 else "", annotate_lookalikes(str(fx.get("title") or "")))
         body.add_row("key", row["finding_key"])
         self.app.push_screen(InfoModal(f"{row['rule_id']} — details", body))
+
+    def action_show_fix(self) -> None:
+        """D.5: a fix built by code from the evidence (a Compose change, a DOCKER-USER rule),
+        shown in the copy-safe box -- Kratos never runs it."""
+        from kratos.tui_mk2.modals import CommandModal
+        from kratos.untrusted import for_display
+
+        row = self._need_row()
+        if row is None:
+            return
+        _rec, latest, _events = Q.get_finding(self._data_dir, row["finding_key"])
+        fixes = [f for f in latest.get("fix") or [] if isinstance(f, dict) and f.get("text")]
+        if not fixes:
+            self.note(Text("This finding has no fix to copy -- see its \"what to do\" in the details.",
+                           style=T.TEXT_DIM))
+            return
+        text = "\n\n".join(f"# {for_display(str(f.get('title') or 'Fix'))}\n{for_display(str(f['text']))}"
+                            for f in fixes)
+        self.app.push_screen(CommandModal(text, title=f"{row['rule_id']} — fix to run on the machine yourself",
+                                          note="Kratos does not run this. Copy it, read it, run it on the machine, "
+                                               "then re-check with t (retest)."))
 
     def action_copy_attack(self) -> None:
         """Copy the selected finding's ATT&CK technique link(s) (Kratos-generated

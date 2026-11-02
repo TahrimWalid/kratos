@@ -94,6 +94,9 @@ def cmd_findings_show(args) -> int:
     print("")
     print("Recommendations:")
     print(_fmt_list(match.get("recommendation") or []))
+    for fx in match.get("fix") or []:                 # D.5: a fix built from the evidence -- never run by Kratos
+        print(f"Fix (run it yourself): {fx.get('title')}")
+        print("\n".join(f"    {ln}" for ln in str(fx.get("text") or "").splitlines()))
     
     # Display playbooks if present
     playbooks = match.get("playbooks") or []

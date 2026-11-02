@@ -30,15 +30,16 @@ from kratos.triage.verdict import Verdict, VerifyCheck
 
 
 # --------------------------------------------------------------------------- helpers
-def _covering_checks(rule_id: str) -> list[str]:
-    """The collection checks whose inputs refresh what this rule reads to be gone."""
+def _covering_checks(rule_id: str, subject: str = "") -> list[str]:
+    """The collection checks whose inputs refresh what this rule reads to be gone (for a
+    package finding about a container image: the container package read -- D.5)."""
     from kratos.adapters.findings_engine import rule_inputs
     from kratos.collect import checks as _checks  # noqa: F401 -- register the built-ins
     from kratos.collect.registry import checks as registered_checks
     from kratos.lifecycle.rules import rule_info
 
     info = rule_info(rule_id)
-    needed = set(info.covering_inputs if info else rule_inputs(rule_id))
+    needed = set(info.covering_for(rule_id, subject) if info else rule_inputs(rule_id))
     return [c.name for c in registered_checks() if needed & set(c.inputs)]
 
 
@@ -101,7 +102,7 @@ def _condition_verdict(ctx: VerifyContext, check_names: list[str], *,
 # --------------------------------------------------------------------------- conditions
 def _verify_packages(ctx: VerifyContext) -> Verdict:
     v = _condition_verdict(
-        ctx, _covering_checks(ctx.rule_id),
+        ctx, _covering_checks(ctx.rule_id, str(ctx.finding.get("subject") or "")),
         reproduced_sentence="A fresh package read still shows this -- the fix is not installed yet.",
         gone_sentence="A fresh package read no longer shows this -- it looks fixed. Retest to confirm.")
     if ctx.rule_id == "PKG-003" and v.verdict == "reproduced":
@@ -374,3 +375,6 @@ register_no_verifier(NoVerifier(
     rules=("PRIV-004",),
     reason="an inventory of who holds privileged access, not a risk in itself; re-read it on demand with /verify "
            "(the PRIV-001/002/003 findings it summarises are each verified)"))
+
+# D.5: the container findings register their own verifiers (kratos.containers.verify).
+from kratos.containers import verify as _container_verify  # noqa: E402,F401

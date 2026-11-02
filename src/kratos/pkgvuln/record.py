@@ -468,3 +468,78 @@ def summary_line(doc: dict[str, Any]) -> str:
 
 def severity_rank(sev: str) -> int:
     return RANK.get(sev, 0)
+
+
+def match_image(data_dir: Path, inv: dict[str, Any], *, source_line: str) -> dict[str, Any]:
+    """Match one container image's package list (D.5) the way a machine's list is matched
+    -- the same index, origins rule, version comparison and scoring -- without the kernel
+    part (an image has no kernel of its own). Returns {signals (PKG-001 per package and
+    one PKG-002, before the caller names them after the image), gaps, matched, selector,
+    os_name, packages}. Nothing is saved here."""
+    data_dir = Path(data_dir)
+    packages = list(inv.get("packages") or [])
+    choice = _eco.for_os(inv.get("os") or {})
+    family = _family(inv, choice)
+    origins = _origin.classify(inv, choice.selector)
+    gaps: list[str] = []
+    if not inv.get("complete"):
+        gaps.append("the image's package list could not be read completely")
+    if inv.get("dropped"):
+        gaps.append(f"{inv['dropped']} package record(s) were not readable and were skipped")
+    distro_name = _origin.DISTRO_NAMES.get(choice.selector.distro, choice.selector.distro) if choice.selector else ""
+    if origins.outside:
+        gaps += _origin.gap_lines(_origin.OriginReport(checked=origins.checked, outside=origins.outside), distro_name)
+    outside = origins.names
+    to_match = [p for p in packages if p["name"] not in outside]
+    signals: list[dict[str, Any]] = []
+    matched = False
+    st = _index.status(data_dir)
+    epss_high = float(settings_store.get(_settings.EPSS_HIGH, data_dir=data_dir))
+    if choice.selector is None:
+        gaps.append(choice.gap)
+    elif not st.present:
+        gaps.append(f"no vulnerability data has been downloaded yet -- {UPDATE_HINT}")
+    elif choice.selector.key not in st.selectors:
+        gaps.append(f"the downloaded vulnerability data does not cover {choice.selector.key} yet -- {UPDATE_HINT}")
+    else:
+        conn = _index.open_readonly(data_dir)
+        if conn is None:
+            gaps.append(f"the vulnerability data could not be opened -- {UPDATE_HINT}")
+        else:
+            try:
+                m = match(conn, choice.selector, to_match)
+                all_cves = {c for pr in m.packages.values() for c in (*pr.fixable, *pr.unfixed)}
+                info = _index.enrichment(conn, all_cves)
+                cisa = _ssvc_source.lookup(conn, all_cves)
+            finally:
+                conn.close()
+            matched = True
+            unfixed: list[tuple[PackageResult, list[Scored]]] = []
+            for pr in m.packages.values():
+                fix = [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.fixable.values()]
+                unfixed.append((pr, [score_cve(h, info.get(h.cve, {}), epss_high) for h in pr.unfixed.values()]))
+                for sig in _package_signals(family, pr, fix, source_line):
+                    sig["binaries"] = _binaries(pr)
+                    sig["ssvc_inputs"] = _ssvc_inputs(((c, h.fixed_in, None) for c, h in pr.fixable.items()), info, cisa)
+                    signals.append(sig)
+            open_sig = _unfixed_signal(unfixed, source_line)
+            if open_sig:
+                by_name = {pr.package: pr for pr, _sc in unfixed}
+                for item in open_sig.get("packages") or []:
+                    pr = by_name.get(item["package"])
+                    item["binaries"] = _binaries(pr) if pr else []
+                open_sig["ssvc_inputs"] = _ssvc_inputs(((c, None, pr.package) for pr, _sc in unfixed for c in pr.unfixed),
+                                                       info, cisa)
+                signals.append(open_sig)
+            if m.uncomparable:
+                gaps.append(f"{m.uncomparable} version comparison(s) could not be made (an unusual version string) "
+                            "and were left out")
+    age = st.age_days(time.time())
+    max_age = settings_store.get(_settings.MAX_AGE_DAYS, data_dir=data_dir)
+    if age is not None and age > max_age:
+        gaps.append(f"the vulnerability data is {int(age)} days old -- {UPDATE_HINT}")
+    return {"signals": signals, "gaps": gaps, "matched": matched, "family": family,
+            "selector": choice.selector.key if choice.selector else None,
+            "os_name": (inv.get("os") or {}).get("PRETTY_NAME") or (choice.selector.key if choice.selector else "unknown"),
+            "packages": len(packages), "outside": [o.name for o in origins.outside][:50],
+            "index_built_at": st.built_at}
