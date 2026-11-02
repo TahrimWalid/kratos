@@ -570,6 +570,50 @@ def _check_agent_link(out: list[Check], data_dir: Path) -> None:
         out.append(_row("agent link", "pass", detail))
 
 
+def _check_ssh_certificates(out: list[Check], data_dir: Path) -> None:
+    """D.1: the CA mode and fingerprint, whether it is locked, machines by enrolment
+    state, and any machine still accepting the old key."""
+    from kratos.sshca import ca as _ca
+    from kratos.sshca import store as _castore
+
+    try:
+        ca = _ca.active_user_ca(data_dir)
+    except Exception as e:  # noqa: BLE001
+        out.append(_row("ssh certificates", "fail", f"CA folder unusable: {e}",
+                        fix="restore the ssh-ca folder from your copy, or fix its permissions"))
+        return
+    if ca is None:
+        out.append(_row("ssh certificates", "info",
+                        "not set up -- Kratos uses the long-lived SSH key on every machine. "
+                        "Set up with `kratos ssh-ca setup` and enrol a machine."))
+        return
+    if not _ca.is_unlocked(data_dir):
+        out.append(_row("ssh certificates", "fail",
+                        f"CA locked (mode {ca.mode}); scheduled runs can't sign for enrolled machines",
+                        fix="unlock it with `kratos ssh-ca unlock`"))
+    else:
+        nxt = _castore.ca_key(data_dir, kind="user", role="next")
+        rot = f"; rotation in progress (next {nxt.fingerprint[:16]}…)" if nxt else ""
+        out.append(_row("ssh certificates", "pass",
+                        f"user CA {ca.fingerprint[:20]}… mode {ca.mode}{rot}"))
+    enrolments = _castore.list_enrolments(data_dir)
+    if not enrolments:
+        out.append(_row("ssh certificates", "info", "no machines enrolled yet"))
+        return
+    by_state: dict[str, int] = {}
+    still_old_key = []
+    for enr in enrolments:
+        by_state[enr.state] = by_state.get(enr.state, 0) + 1
+        if enr.state == "cert":
+            still_old_key.append(enr.host)
+    summary = ", ".join(f"{n} {s}" for s, n in sorted(by_state.items()))
+    out.append(_row("ssh certificates", "pass", f"enrolled machines: {summary}"))
+    if still_old_key:
+        out.append(_row("ssh certificates", "warn",
+                        "still accepting the old key (not certificate-only yet): " + ", ".join(still_old_key),
+                        fix="remove the old key on each, then `kratos ssh-ca verify <machine> --finish`"))
+
+
 def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
@@ -583,6 +627,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("detection rules", lambda o: _check_detection(o, Path(data_dir))))
         sections.append(("agent link", lambda o: _check_agent_link(o, Path(data_dir))))
+        sections.append(("ssh certificates", lambda o: _check_ssh_certificates(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
