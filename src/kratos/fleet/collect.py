@@ -149,28 +149,36 @@ class _Box:
         self.scope = cancel.CancelScope()
 
 
-def _measure_windows(res: MachineResult, data_dir: Path, dispatch: Callable[..., dict[str, Any]]) -> None:
+def _measure_windows(res: MachineResult, data_dir: Path, dispatch: Callable[..., dict[str, Any]]) -> list[str]:
     """The question's periods, counted on THIS machine by code (measure_auth_activity per
-    window), then one re-correlation so the findings include those numbers."""
+    window), then one re-correlation so the findings include those numbers. Returns what
+    could not be measured -- the machine then counts as partly read, never fully."""
     from kratos.timewin.windows import reset_current_context, set_current_context
 
     ctx = res.time_ctx
     windows = [ctx.windows[i] for i in getattr(ctx, "goal_ids", ()) if i in ctx.windows] if ctx is not None else []
     if not windows:
-        return
+        return []
+    missed: list[str] = []
     token = set_current_context(ctx)
     try:
         for w in windows[:4]:
             obs = dispatch("measure_auth_activity", {"window": {"id": w.id}}, data_dir)
             res.steps.append({"tool": "measure_auth_activity", "args": {"window": {"id": w.id}}, "observation": obs,
                               "collected": True})
+            if not (isinstance(obs, dict) and obs.get("status") == "ok"):
+                why = str((obs or {}).get("observation") or "the read failed") if isinstance(obs, dict) else "the read failed"
+                missed.append(f"{w.label or w.id} not measured ({why[:160]})")
         obs = dispatch("correlate_findings", {}, data_dir)
         res.steps.append({"tool": "correlate_findings", "args": {}, "observation": obs, "collected": True})
         inner = obs.get("result") if isinstance(obs, dict) else None
         if isinstance(inner, dict) and isinstance(inner.get("findings"), list) and res.report is not None:
             res.report.correlation = inner
+        else:
+            missed.append("the findings could not be correlated again after measuring")
     finally:
         reset_current_context(token)
+    return missed
 
 
 def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], force: bool, limit: float,
@@ -214,7 +222,7 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
             if report.disabled_reason:
                 res.outcome, res.reason = "failed", f"not collected ({report.disabled_reason})"
                 return
-            _measure_windows(res, data_dir, dispatch or runner._default_dispatch())
+            unmeasured = _measure_windows(res, data_dir, dispatch or runner._default_dispatch())
             usable = [o for o in report.checks if o.usable]
             if not usable:
                 first = next((o.reason or o.summary for o in report.checks if o.reason or o.summary), "")
@@ -226,6 +234,10 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
                               else "the findings could not be correlated")
             else:
                 res.outcome = "ok"
+            if unmeasured and res.outcome in COLLECTED:
+                # The question's own period could not be counted here: never "fully read".
+                res.outcome = "partial"
+                res.reason = "; ".join(x for x in [res.reason, *unmeasured] if x)
     except cancel.Cancelled:
         res.outcome, res.reason = "timeout", f"still running after {limit:.0f} s; its commands were stopped"
     except Exception as e:  # noqa: BLE001 -- one machine failing must not stop the others

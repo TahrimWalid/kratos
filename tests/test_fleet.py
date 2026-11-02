@@ -620,3 +620,25 @@ def test_a_fleet_answer_may_not_invent_an_act_decision_for_a_machine(dd, lab, mo
     assert "MACHINE m1: REJECTED (decision not made by Kratos)" in chat.prompts[1]
     assert "MACHINE m2: REJECTED" not in chat.prompts[1]
     assert all(m.passed for m in out.answer.machines)
+
+
+def test_a_machine_whose_period_could_not_be_measured_is_partly_read_not_fully(dd, lab, monkeypatch):
+    orig = lab.dispatch
+
+    def failing(tool, args, data_dir):
+        if tool == "measure_auth_activity" and kratos_config.get_active_target() == B:
+            return {"status": "error", "observation": "measurement failed: No route to host"}
+        return orig(tool, args, data_dir)
+
+    from kratos.collect import runner
+
+    monkeypatch.setattr(runner, "_default_dispatch", lambda: failing)
+    G.create_group(dd, "pair", ME, members=[A, B])
+    # m2's period was never measured: Guard 6 sends m2 back (twice), then NOTEs it.
+    chat = Chat(*[_machines_reply({"m1": "Nothing new.", "m2": "Nothing new."})] * 3)
+    out = _ask(dd, "@pair", chat, monkeypatch)
+    by = {r.machine: r for r in out.results}
+    assert "MACHINE m2: REJECTED (time period not queried)" in chat.prompts[1]
+    assert by[A].outcome == "ok"
+    assert by[B].outcome == "partial" and "not measured (measurement failed: No route to host)" in by[B].reason
+    assert "1 partly read" in out.answer.summary
