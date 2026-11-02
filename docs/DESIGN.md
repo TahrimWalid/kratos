@@ -1165,6 +1165,83 @@ replaced in place), registered as a snapshot source with rule prefix `WEB-`.
   packages from outside the distribution are installed (the origin judgement stored with the
   package list). Distribution PHP gives only a digest line: the package check covers it.
 
+## Containers (D.5)
+
+`adapters/containers.py` ships in the agent bundle (stdlib, Python 3.8; agent **0.11.0**,
+probes `container_inventory`, `container_packages`, `container_logs`; core refuses them to an
+older agent with "update the agent"). `kratos/containers/` judges on Kratos.
+
+**Engine API (agent only).** `ApiClient` speaks HTTP/1.1 over the engine's Unix socket with
+one method, `GET`, and one closed path list: `/version`, `/info`, `/containers/json?all=1`,
+`/containers/<64-hex id>/json`, `/networks` — anything else raises before connecting. Sockets
+tried: `/run/docker.sock`, `/var/run/docker.sock`, `/run/podman/podman.sock` and each
+`/run/user/<uid>/podman/podman.sock` (owned by that user or root). A socket must resolve inside
+`/run` and its last component may not be a symbolic link. Caps: 2 MiB per response, 20 MiB per
+read, JSON depth 32, 200 containers. The agent reduces each inspect document to the judged
+facts (`distill_container`) before anything leaves: environment variables as **keys only**,
+label values only for Compose / OCI image metadata.
+
+**`/proc` (both transports).** One record format, printed by stdlib Python on the agent and by
+a fixed sh+awk script over SSH (`build_script`, as the SSH user, writes nothing): per container
+process its pid, engine, 64-hex id (from the cgroup: `docker-<id>.scope`, `/docker/<id>`,
+`libpod-<id>.scope`), effective uid, `CapEff`, parent pid, name and — rootless Podman — the
+owning user (`user@<uid>.service`); per container its listening sockets from one process's
+`/proc/<pid>/net/*`; default-route interfaces from `/proc/net/route` and `ipv6_route`. A
+field the reader can't open is a `PG` record, never an empty value. Measured on Ubuntu 24.04:
+a non-root SSH user reads every container process's cgroup, `status` (uid, `CapEff`), `comm`
+and network tables, but not `exe`, `root` or `environ`.
+
+**Firewall listings.** `iptables-save`, `ip6tables-save`, `nft -j list ruleset` — fixed argv,
+read-only — as root on the agent; over SSH only via `sudo -n` on exactly those argument lists
+(the checklist's pinned sudoers lines). Without them `CONT-004` is "can't tell".
+
+**The firewall model (`containers/firewall.py`).** One imaginary packet — a new TCP/UDP
+connection from an internet address (203.0.113.10 / 2001:db8::10) arriving on the
+default-route interface — is walked through the rules. Before Docker's DNAT it is addressed to
+the published port; after it, to the container's address and port with the original
+destination in conntrack (what `--ctorigdstport` and `ct original proto-dst` match). iptables:
+the built-in chain from the top, into user chains (jump/goto, RETURN, policies), with
+non-terminating targets skipped. nftables: every `filter` base chain on the hook, skipping
+iptables-nft's own tables (walked as iptables) and Docker's `docker-bridges`. A hook passes the
+packet when no chain drops it (accept ends one chain, drop is final), so priorities don't
+change the verdict. Verdicts: accept / drop / unknown — a construct the model doesn't know is
+*unknown*, never accept, unless an evaluable condition already rules the rule out. Per
+published port and family: proxied (an IPv6 binding on a network without IPv6, rootless
+Podman) → INPUT governs, no bypass; INPUT accepts → open on purpose; forward drops → no;
+forward accepts and INPUT drops → **bypass**; anything unknown → can't tell (CONT-008).
+`published_from_rules` recovers the port map from Docker's own NAT rules, so an SSH login with
+only the pinned listings can be judged too. A bypass is confirmed by one TCP connect from
+Kratos, closed at once (≤ 20 per read; never for Kratos's own machine).
+
+**Findings.** `CONT-001..007` are conditions, `CONT-008` a run note; subject = container name,
+entities = image digest + the setting (`privileged`, `mount:/etc`, `port:8080/tcp/…`); titles
+are Kratos's words only (A.4). Snapshot `containers/containers_<hash8>.json`, one per machine,
+replaced in place. ATT&CK: Posture (each names T1611). A finding's `fix` field holds
+copy-safe command blocks built from evidence (Compose change, `DOCKER-USER` rule, nftables
+table); shown in `/findings` (`x`), `findings show` and the report; never run.
+
+**Packages inside images.** For each distinct running image (≤ 50), the agent opens
+`/proc/<pid>/root` of one of its processes and walks every component with `O_NOFOLLOW`
+(a link out of the container's root is refused): dpkg `status` and `status.d/*`, apk
+`installed`, `rpmdb.sqlite` (headers decoded in stdlib; BerkeleyDB → "old rpm database
+format"), `os-release`. The records are the host read's own; Kratos stores them in
+`pkg_inventory` with `scope = image:<id>` and matches them with `pkgvuln.record.match_image`.
+`PKG-001` subject `<image>:<package>`, `PKG-002` subject `<image>`; the colon tells them from
+the machine's own (`lifecycle.rules.RuleInfo.covering_for`: re-checked by the
+`container_packages` read, never closed by the machine's package check). SSVC exposure comes
+from the containers' published ports (`ssvc.exposure.for_container_image`), minus any port
+the firewall model says the forwarding path drops.
+
+**Container logs.** Sync source `containers` (dataset `kratos.container`, ECS `container.*`
+fields): journald-driver lines through the journal (`_COMM=dockerd` / `conmon`, entries
+without `CONTAINER_ID_FULL` skipped); json-file / k8s-file files through the agent
+(`container_logs`: the path must be the shape the engine writes under its own data root, read
+through the hardened opener, 512 KiB per chunk, first read from 1 MiB before the end, `.1`
+followed after rotation). Positions in `sync_cursors` (kind `ctr:<id>`), spans in
+`sync_coverage`; a removed container ends with position `ended`. Not a `read_host_logs`
+source (the model's tool list is unchanged), and no shipped Sigma rule's log source fits
+container output today.
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources

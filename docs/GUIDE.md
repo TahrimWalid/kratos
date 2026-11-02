@@ -1158,6 +1158,139 @@ Where the crash lines come from: the kernel's lines are read from the journal by
 logs to its host, not to the container), shows no kernel crash lines — run Kratos on the
 host for those.
 
+## Containers (Docker and Podman)
+
+On a machine running Docker or Podman, Kratos checks what a careful admin would — **without
+ever needing the `docker` group or `sudo docker` for its own login**. Both of those are root
+on the machine (anyone in the docker group can start a privileged container), so Kratos never
+asks for them. It checks:
+
+- which containers run, from which image, as which user, with which published ports;
+- the settings that hand a container the host: privileged mode (`CONT-001`), the Docker or
+  Podman API socket mounted inside (`CONT-002`), the host's network, process or IPC namespace
+  (`CONT-003`), a host system folder mounted writable — `/`, `/etc`, `/root`, `/boot`, `/usr`,
+  `/var/lib/docker`, `/proc`, `/sys`, `/dev` (`CONT-005`), powerful capabilities such as
+  `SYS_ADMIN` (`CONT-006`) and seccomp / AppArmor / SELinux turned off (`CONT-007`);
+- **published ports reachable even though your firewall says no** (`CONT-004`, below);
+- **known vulnerabilities in the packages inside each running container**, matched offline
+  like the machine's own packages;
+- **what the containers write to their logs**, kept like any other log, so detection rules
+  and `/hunt` see inside containers too.
+
+Each finding names the container (and its Compose project and file, if it has one), quotes the
+matching CIS Docker Benchmark v1.7.0 section number, and comes with a fix to copy. Settings
+are reported on running containers only; stopped ones are listed in `/containers` but raise
+nothing until they run. If a setting is deliberate — Portainer or Traefik need the Docker
+socket — accept the risk in `/findings` with a reason and an expiry. Re-creating the
+container from a new image counts as a change and asks you again.
+
+`/containers` (TUI) and `kratos containers [--machine M] [--refresh]` show the table: name,
+image, user, ports (with *reachable despite firewall* marks) and risky settings. Enter shows
+the details: mounts, added capabilities, labels, and the environment variables **by name
+only** — their values never leave the machine.
+
+### Why Docker ports can ignore ufw
+
+A firewall like ufw filters traffic addressed to the machine itself (its INPUT rules). Docker
+publishes a container port by rewriting the destination to the container's own address
+*before* those rules run, and the rewritten traffic travels through the forwarding path
+instead — which Docker opens for it:
+
+```
+internet ──> machine:8080 ──(Docker rewrites to 172.17.0.2:80)──> FORWARD ──> container
+                                                          ✗ ufw's INPUT rules never see it
+```
+
+So `ufw default deny incoming` plus `docker run -p 8080:80 nginx` leaves 8080 open to the
+world. Kratos reads the firewall rules, walks one imaginary packet from the internet through
+them (both Docker's iptables mode and its nftables mode, IPv4 and IPv6 separately), and when
+the forwarding path lets it through while the firewall would refuse the same port, raises
+`CONT-004`. It then tries **one TCP connection** from the Kratos machine (no data sent): if it
+connects, the finding is *confirmed* (high); if not, it says the rules allow it but Kratos's
+network position couldn't confirm it (medium). A rule Kratos can't read for certain (an ipset
+match, for example) makes the answer *can't tell* — never "safe".
+
+Two things that surprise people, both measured on Kratos's lab:
+
+- An IPv6 binding (`[::]:8080`) on a network without IPv6 is answered by Docker's own proxy
+  on the machine, so the firewall *does* filter it — only the IPv4 side was reachable.
+- With Docker's nftables mode and ufw left at its default "deny (routed)", ufw's own forward
+  rules drop the published traffic, so nothing is reachable. With an nftables firewall that
+  only filters input, the bypass is back.
+
+Rootless Podman publishes through a small proxy on the machine itself, so the firewall filters
+those ports like any other service.
+
+### The two fixes
+
+1. **Bind the port to the loopback address** when only a local reverse proxy needs it — in
+   the Compose file (`ports: - "127.0.0.1:8080:80"`, then `docker compose up -d`) or
+   `docker run -p 127.0.0.1:8080:80`. The finding shows the exact change in your Compose file.
+2. **Filter where Docker's traffic passes:**
+   - *iptables mode:* a rule in the `DOCKER-USER` chain, added at the end of
+     `/etc/ufw/after.rules` (and `after6.rules` for IPv6), then `sudo ufw reload`. Note:
+     removing it from the file later doesn't remove it from the running firewall —
+     `sudo iptables -F DOCKER-USER` (or a reboot) does.
+   - *nftables mode:* there is no `DOCKER-USER` chain; add your own table with a forward chain
+     (for example in `/etc/nftables.conf`).
+
+Kratos never runs these. Copy them from `/findings` (press `x`), run them yourself, then press
+`t` (retest): the finding moves to *fixed* when a fresh read no longer sees the bypass.
+
+### Packages inside containers
+
+For each distinct image among running containers (up to 50 per check), the sub-agent reads the
+package database through one of the container's processes — never following a link out of
+the container — and Kratos matches it offline, exactly like the machine's own packages. The
+findings are named after the image (`nginx:1.27:openssl`) with the containers running it, and
+their exposure comes from the ports those containers publish. Nothing is pulled from a
+registry. Two limits:
+
+- An image with **no package database** (distroless or static images, such as Kubernetes'
+  `pause`) is reported as *not checked* — never as "no vulnerabilities".
+- Most images delete apt's package lists, so Kratos can't tell where each package inside came
+  from: a package from another vendor's repository (nginx.org's nginx in the official image)
+  is matched against the distribution's advisories.
+
+The fix for an image is to pull or rebuild a newer one and re-create its containers.
+
+### Container logs
+
+Lines a container writes become events of dataset `kratos.container`, with the container's
+name, id, image and runtime. Containers using Docker's **journald** log driver are read from
+the journal; **json-file** (Docker's default) and Podman's **k8s-file** logs are read through
+the sub-agent, from where the last sync stopped, following rotation. A removed container is a
+stated end, not an error. The `local` log driver's binary format isn't read (stated as a gap).
+Settings: `containers.logs.max_containers` (50), `containers.logs.max_lines` (5,000 per
+container per sync; beyond that the span is marked incomplete) and `containers.logs.exclude`
+(name patterns such as `noisy-*`). Log lines are masked for secrets before they are stored.
+
+### What the sub-agent adds
+
+| | Through the sub-agent (root) | Over SSH (Kratos's login) |
+|---|---|---|
+| Containers and their programs, users, capabilities, listening sockets | yes | yes, from `/proc` |
+| Settings (mounts, privileged, published ports, Compose labels) | yes, the engine's own API, read-only | no — stated as not checked |
+| Firewall rules | yes | only with the three pinned sudo lines below |
+| Firewall bypass (`CONT-004`) | yes | yes with the sudo lines (from Docker's own NAT rules; the finding names the container's address) |
+| Packages inside images, container log files | yes | no — stated as not checked |
+
+The setup checklist offers three sudoers lines, each allowing exactly one **read-only** listing
+with exactly those arguments — nothing that changes a rule:
+
+```
+<user> ALL=(root) NOPASSWD: /usr/sbin/iptables-save ""
+<user> ALL=(root) NOPASSWD: /usr/sbin/ip6tables-save ""
+<user> ALL=(root) NOPASSWD: /usr/sbin/nft -j list ruleset
+```
+
+The agent reads the engine through its local socket with GET requests to a fixed list of
+paths only — no exec, no logs streaming, no image pulls — and sends environment variable
+*names*, never values. Rootless Podman is read through each user's own socket; if that socket
+is off, Kratos says so and how to turn it on (`systemctl --user enable --now podman.socket`).
+Agent **0.11.0** or newer is needed (press `g` in `/subagent`); an older agent gets a plain
+"update the agent" note.
+
 ## Detection rules
 
 Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**
@@ -1683,7 +1816,8 @@ but here's the map. Everything starts with `/`.
 | `/run` | the standard fixed audit (no model steering) |
 | `/plan` | preview exactly which steps a run will take; fixed audits show this preview and ask first by default (`/plan gate off` skips it) |
 | `/report` | this session's findings: new, still open, fixed, not rechecked, hidden |
-| `/findings` (or `/f`) | findings remembered across checks — verify, accept a risk, mark false positive or out of scope |
+| `/findings` (or `/f`) | findings remembered across checks — verify, accept a risk, mark false positive or out of scope; `x` copies a finding's fix |
+| `/containers` | Docker / Podman containers on this machine: risky settings, ports reachable despite the firewall, enter for details — see [Containers](#containers-docker-and-podman) |
 | `/detect` | the detection rules (SigmaHQ, with their authors): which run, on/off for this machine, what couldn't be checked, run them now — see [Detection rules](#detection-rules) |
 | `/hunt <indicator>` | has this address, hash, account, domain, program or path been seen on your machines? Searches what Kratos holds and says what that covered — see [Hunting](#hunting-for-an-address-account-or-file) |
 | `/investigate-host` | investigate the Kratos machine itself, not the target |
