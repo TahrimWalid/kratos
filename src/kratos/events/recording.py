@@ -137,7 +137,8 @@ def events_for_log_read(target: str, read: Any) -> list[Event]:
         return []
     if read.source in ("sudo", "auth"):
         return _convert(items, lambda ev: C.from_auth_event(ev, ctx=ctx))
-    dataset = catalog.SOURCES[read.source].dataset
+    src = catalog.SOURCES.get(read.source) or catalog.SYNC_SOURCES[read.source]   # D.5: sync-only sources too
+    dataset = src.dataset
     return _convert(items, lambda p: C.from_parsed(p, ctx=ctx, dataset=dataset))
 
 

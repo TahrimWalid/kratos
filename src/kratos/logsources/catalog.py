@@ -67,6 +67,9 @@ JOURNAL_MATCHES: dict[str, tuple[str, ...]] = {
              "SYSLOG_IDENTIFIER=crond", "SYSLOG_IDENTIFIER=crontab"),   # crontab: a user's table changed (C.1)
     "systemd_pid1": ("_PID=1",),
     "kernel": ("_TRANSPORT=kernel",),
+    # D.5: container output sent to the journal by the journald log driver (dockerd / Podman's conmon);
+    # the daemons' own lines come too and are skipped by the parser (no CONTAINER_ID_FULL)
+    "container": ("_COMM=dockerd", "_COMM=conmon"),
 }
 
 _FW_KEEP = r"\[UFW |IN=[^ ]* OUT=[^ ]* .*SRC="
@@ -190,6 +193,11 @@ SYNC_SOURCES: dict[str, SyncSource] = {s.name: s for s in (
     SyncSource("auditd", "kratos.auditd", SOURCES["auditd"].doc, files=SOURCES["auditd"].files),
     SyncSource("packages", "kratos.package", SOURCES["packages"].doc, files=SOURCES["packages"].files),
     SyncSource("web", "kratos.web", SOURCES["web"].doc, files=SOURCES["web"].files, default=False),
+    # D.5: sync-only (not a read_host_logs source -- the model's tool list stays as it is). The journal
+    # part here; json-file / k8s-file container logs are synced by kratos.containers.logs
+    SyncSource("containers", "kratos.container",
+               "What Docker and Podman containers wrote: journald-driver lines from the journal, and each "
+               "container's own json-file / k8s-file log through the sub-agent.", journal="container"),
 )}
 SYNC_SOURCE_NAMES: tuple[str, ...] = tuple(SYNC_SOURCES)
 DEFAULT_SYNC_SOURCES: tuple[str, ...] = tuple(n for n, s in SYNC_SOURCES.items() if s.default)

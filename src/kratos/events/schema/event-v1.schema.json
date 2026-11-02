@@ -112,7 +112,7 @@
         "dataset": {
           "type": "string",
           "maxLength": 64,
-          "description": "Which read it came from: kratos.auth, kratos.journal, kratos.privileged_accounts, kratos.auditd, kratos.cron, kratos.systemd, kratos.firewall, kratos.package or kratos.web."
+          "description": "Which read it came from: kratos.auth, kratos.journal, kratos.privileged_accounts, kratos.auditd, kratos.cron, kratos.systemd, kratos.firewall, kratos.package, kratos.web or kratos.container."
         },
         "provider": {
           "type": "string",
@@ -690,6 +690,53 @@
         "transport",
         "parser"
       ],
+      "additionalProperties": false
+    },
+    "container": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The container's full ID."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "The container's name."
+        },
+        "image": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "The image the container runs, as it was named (e.g. nginx:1.27)."
+            },
+            "hash": {
+              "type": "object",
+              "properties": {
+                "all": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "uniqueItems": true,
+                  "description": "The image's digests (sha256:...)."
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "runtime": {
+          "type": "string",
+          "maxLength": 32,
+          "description": "docker or podman."
+        }
+      },
       "additionalProperties": false
     }
   },

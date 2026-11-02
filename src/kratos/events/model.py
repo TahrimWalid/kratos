@@ -99,6 +99,11 @@ class Event:
     detect_level: str | None = None
     detect_group: str | None = None
     detect_count: int | None = None
+    container_id: str | None = None
+    container_name: str | None = None
+    container_image_name: str | None = None
+    container_image_hash: tuple[str, ...] = ()
+    container_runtime: str | None = None
 
     def __post_init__(self) -> None:
         _replace_lone_surrogates(self)

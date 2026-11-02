@@ -85,7 +85,7 @@ FIELDS: tuple[Field, ...] = (
     Field("event.outcome", "outcome", "keyword", indexed="outcome", doc="success / failure / unknown."),
     Field("event.dataset", "dataset", "keyword", required=True, indexed="dataset", max_len=64,
           doc="Which read it came from: kratos.auth, kratos.journal, kratos.privileged_accounts, kratos.auditd, "
-              "kratos.cron, kratos.systemd, kratos.firewall, kratos.package or kratos.web."),
+              "kratos.cron, kratos.systemd, kratos.firewall, kratos.package, kratos.web or kratos.container."),
     Field("event.provider", "provider", "keyword", max_len=256, doc="The program that logged it: sshd, sudo, ..."),
     Field("event.original", "original", "keyword", max_len=ORIGINAL_MAX_BYTES,
           doc="The raw line, credentials masked, capped at 2048 bytes."),
@@ -184,6 +184,14 @@ FIELDS: tuple[Field, ...] = (
     Field("kratos.detect.group", "detect_group", "keyword", max_len=256,
           doc="For a counting rule: the value its events were grouped by (e.g. the source address)."),
     Field("kratos.detect.count", "detect_count", "long", doc="For a counting rule: how many events fell in its window."),
+    # D.5: a line a container wrote (dataset kratos.container). Optional and additive, so the schema stays v1.
+    Field("container.id", "container_id", "keyword", max_len=64, doc="The container's full ID."),
+    Field("container.name", "container_name", "keyword", max_len=256, doc="The container's name."),
+    Field("container.image.name", "container_image_name", "keyword", max_len=512,
+          doc="The image the container runs, as it was named (e.g. nginx:1.27)."),
+    Field("container.image.hash.all", "container_image_hash", "keyword[]", max_len=128,
+          doc="The image's digests (sha256:...)."),
+    Field("container.runtime", "container_runtime", "keyword", max_len=32, doc="docker or podman."),
 )
 
 BY_NAME = {f.name: f for f in FIELDS}
