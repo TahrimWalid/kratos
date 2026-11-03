@@ -294,8 +294,14 @@ def resolve(data_dir: Path | str, ref: str | Iterable[str], *, scope: Iterable[s
             entries = [canonical_machine(conn, m) for m in ref]
         agent_of = _agent_of(conn)
     res = Resolved(name=name)
+    # Scope first, then duplicates: a scoped caller must never see an out-of-scope name,
+    # not even as "X is Y (counted once)", and an in-scope alias is never dropped in
+    # favour of an out-of-scope twin (security review, D.2).
+    allowed = {target_key(s) for s in scope} if scope is not None else None
+    visible = [m for m in entries if allowed is None or m in allowed]
+    hidden = [m for m in entries if allowed is not None and m not in allowed]
     seen_agents: dict[str, str] = {}
-    for m in entries:
+    for m in visible:
         if m in res.machines:
             res.duplicates.append((m, m))
             continue
@@ -306,11 +312,15 @@ def resolve(data_dir: Path | str, ref: str | Iterable[str], *, scope: Iterable[s
         if tid is not None:
             seen_agents[tid] = m
         res.machines.append(m)
-    if scope is not None:
-        allowed = {target_key(s) for s in scope}
-        visible = [m for m in res.machines if m in allowed]
-        res.outside_scope = len(res.machines) - len(visible)
-        res.machines = visible
+    # Out of scope: counted as machines (two names of one box are one), never named; an
+    # alias of a machine the caller can see is that machine, not one more outside it.
+    hidden_ids: set[str] = set()
+    for m in hidden:
+        tid = agent_of.get(m)
+        if tid is not None and tid in seen_agents:
+            continue
+        hidden_ids.add(f"agent:{tid}" if tid is not None else m)
+    res.outside_scope = len(hidden_ids)
     if not res.machines:
         raise GroupError(f"no machines to ask about in {res.label or 'that group'}"
                          + (" that you may see" if res.outside_scope else ""))

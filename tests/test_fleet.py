@@ -674,3 +674,29 @@ def test_fifty_machines_stay_bounded_and_every_one_is_in_the_digest(dd, lab, mon
     assert all(f"MACHINE m{i} " in d.text for i in range(1, 51))      # nobody silently dropped
     first = d.text.index("MACHINE m1 ")
     assert first < d.text.index("MACHINE m4 ")              # the HIGH machines lead
+
+
+def test_scope_is_applied_before_duplicates_so_no_out_of_scope_name_is_shown(dd):
+    """Security review: a token scoped to A saw "B is A (counted once)" for a twin address
+    B of its own machine, and "D is C" for another machine it may not see at all."""
+    import sqlite3
+
+    from kratos.storage.subagent_store import SubAgentStore
+
+    SubAgentStore(dd / "kratos.db")
+    conn = sqlite3.connect(dd / "kratos.db")
+    for tid in ("tgt_1", "tgt_2"):
+        conn.execute("INSERT INTO subagent_targets (target_id, name, token, paired_at) VALUES (?, ?, ?, 'x')",
+                     (tid, tid, tid + "tok"))
+    for host, tid in (("10.0.0.12", "tgt_1"), ("10.0.0.11", "tgt_1"), ("10.0.0.13", "tgt_2"), ("10.0.0.14", "tgt_2")):
+        conn.execute("INSERT INTO subagent_links (host, target_id, mode, created_at, updated_at) "
+                     "VALUES (?, ?, 'subagent', 'x', 'x')", (host, tid))
+    conn.commit()
+    conn.close()
+    G.create_group(dd, "web", ME, members=[B, A, C, D])   # B is A's twin (listed first), C and D one other box
+    r = G.resolve(dd, "@web", scope=[A])
+    assert r.machines == [A]                              # the in-scope alias is kept, not dropped for B
+    assert r.duplicates == []                             # nothing outside the scope is named
+    assert r.outside_scope == 1                           # C+D are one machine; B is A itself
+    full = G.resolve(dd, "@web")
+    assert full.machines == [B, C] and full.duplicates == [(A, B), (D, C)]
