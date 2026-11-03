@@ -50,6 +50,18 @@ _POOLED_RE = re.compile(
 from kratos.agent.answer_checks.checks import _NO_SUSPICIOUS_ACTIVITY_CLAIM_RE as _DISMISSIVE_RE  # noqa: E402
 
 
+# A machine Kratos DID read, called unreachable in its answer (seen live: a partly read
+# agent machine answered "Machine unreachable; status unknown").
+_CALLED_UNREACHABLE_RE = re.compile(
+    r"\b(?:unreachable|not reached|could(?:n't| not) be reached|was offline|is offline|no connection)\b", re.IGNORECASE)
+_UNREACH_NEGATION_RE = re.compile(r"\b(?:not|never|wasn't|isn't)\s+(?:\w+\s+)?$", re.IGNORECASE)
+
+
+def called_unreachable(text: str) -> bool:
+    return any(not _UNREACH_NEGATION_RE.search(text[max(0, m.start() - 25): m.start()])
+               for m in _CALLED_UNREACHABLE_RE.finditer(text or ""))
+
+
 def extra_read_tools() -> list[str]:
     from kratos.agent.tools import TOOL_REGISTRY, tool_reaches_approval
 
@@ -332,6 +344,10 @@ def answer_fleet(question: str, results: list[MachineResult], data_dir: Path | s
             evaluations[mid] = (evaluation, ev, text, claims)
             violations, corr = AC.rejections(evaluation, ev, counts[mid], final_iteration=final)
             corrections.extend(f"MACHINE {mid}: {c}" for c in corr)
+            if called_unreachable(text) and not final and cross_rejects[mid] < 2:
+                cross_rejects[mid] += 1
+                corrections.append(f"MACHINE {mid}: REJECTED (called unreachable): Kratos DID read {mid} "
+                                   f"({res.status_text}); answer from its block, and name what wasn't read.")
             own = json.dumps([s.get("observation") for s in res.steps] + [b[mid]], default=str)
             others = other_machine_mentions(text, mid, by_mid, own)
             if others and not final and cross_rejects[mid] < 1:
@@ -457,6 +473,10 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
         notes_text = noted.text[: len(noted.text) - len(text)] if noted.text.endswith(text) else ""
         own = json.dumps([s.get("observation") for s in res.steps] + [blocks.get(mid, "")], default=str)
         others = other_machine_mentions(text, mid, by_mid, own)
+        miscalled = called_unreachable(text)
+        if miscalled:
+            notes_text = (f"[NOTE: Kratos did read this machine ({res.status_text}); the answer's \"unreachable\" "
+                          "is wrong -- trust what Kratos found above.]\n\n") + notes_text
         if others:
             notes_text = (f"[NOTE: this answer names another machine ({', '.join(others)}); a machine's answer is "
                           "checked only against its own evidence -- treat that part as unverified.]\n\n") + notes_text
@@ -465,7 +485,7 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
         ma.block = finding_facts.answer_block(ev.findings, noted.text)
         ma.claims = list(evaluation.verified_claims or [])
         ma.noted = noted.noted(evaluation)
-        ma.passed = not any(ma.noted.values()) and not others
+        ma.passed = not any(ma.noted.values()) and not others and not miscalled
         if not ma.passed:
             names_failed.add(mid)
         answer.machines.append(ma)

@@ -642,3 +642,16 @@ def test_a_machine_whose_period_could_not_be_measured_is_partly_read_not_fully(d
     assert by[A].outcome == "ok"
     assert by[B].outcome == "partial" and "not measured (measurement failed: No route to host)" in by[B].reason
     assert "1 partly read" in out.answer.summary
+
+
+def test_a_machine_kratos_read_may_not_be_called_unreachable(dd, lab, monkeypatch):
+    G.create_group(dd, "pair", ME, members=[A, B])
+    lab.reports[B] = make_report(B, statuses=("ok", "skipped"))
+    chat = Chat(_machines_reply({"m1": "Nothing new.", "m2": "Machine unreachable; status unknown."}),
+                _machines_reply({"m1": "Nothing new.", "m2": "Machine unreachable."}),
+                _machines_reply({"m1": "Nothing new.", "m2": "Machine unreachable."}))
+    out = _ask(dd, "@pair", chat, monkeypatch)
+    assert "MACHINE m2: REJECTED (called unreachable): Kratos DID read m2 (partly read" in chat.prompts[1]
+    m2 = out.answer.machines[1]
+    assert not m2.passed and "the answer's \"unreachable\" is wrong" in m2.notes
+    assert fleet_answer.called_unreachable("It was not unreachable.") is False
