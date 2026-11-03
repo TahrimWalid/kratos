@@ -25,6 +25,16 @@ path = "~/kratos_eval_artifacts/phaseD3/vulndb.sqlite"
 package = "nghttp2"
 cve = "CVE-2023-44487"
 
+[fleet]
+# The group a fleet scenario (D2_fleet) asks about, in key or certificate mode as the lab is.
+machines = ["10.136.28.168", "10.136.28.108", "10.136.28.149"]
+
+[expect.D2_fleet]
+# The external harness plants this account on ONE machine of the group (in its sudo/wheel group)
+# and removes it after the run. The answer must name it for that machine and no other.
+machine = "10.136.28.149"
+account = "evalfleet"
+
 [recordings]
 # Recordings may hold only lab data. tests/test_eval_recordings.py fails on any address
 # outside private, loopback, link-local and documentation ranges unless it is listed

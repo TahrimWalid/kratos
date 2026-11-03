@@ -655,3 +655,22 @@ def test_a_machine_kratos_read_may_not_be_called_unreachable(dd, lab, monkeypatc
     m2 = out.answer.machines[1]
     assert not m2.passed and "the answer's \"unreachable\" is wrong" in m2.notes
     assert fleet_answer.called_unreachable("It was not unreachable.") is False
+
+
+def test_fifty_machines_stay_bounded_and_every_one_is_in_the_digest(dd, lab, monkeypatch):
+    from kratos.fleet import digest
+
+    machines = [f"10.1.0.{i}" for i in range(1, 51)]
+    for m in machines[:3]:
+        lab.reports[m] = make_report(m, [HIGH])
+    t0 = time.monotonic()
+    res = fleet_collect.collect_fleet(machines, dd, max_parallel=4, machine_seconds=20)
+    wall = time.monotonic() - t0
+    assert lab.max_active <= 4 and all(r.outcome == "ok" for r in res)
+    assert wall < 50 * 0.05                                  # parallel: well under the serial time
+    d = digest.build("q", res, ids=digest.assign_ids(res), time_block="", cap=16000, run_tag="t")
+    assert len(d.text) <= 16000                              # the cap holds
+    assert d.shortened and f"{len(d.shortened)} machine block(s) were shortened" in d.text
+    assert all(f"MACHINE m{i} " in d.text for i in range(1, 51))      # nobody silently dropped
+    first = d.text.index("MACHINE m1 ")
+    assert first < d.text.index("MACHINE m4 ")              # the HIGH machines lead

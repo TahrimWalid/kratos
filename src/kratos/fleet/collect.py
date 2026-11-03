@@ -141,12 +141,13 @@ def machine_info(data_dir: Path, machine: str) -> dict[str, Any]:
 
 
 class _Box:
-    __slots__ = ("result", "done", "scope")
+    __slots__ = ("result", "done", "scope", "wake")
 
-    def __init__(self) -> None:
+    def __init__(self, wake: threading.Event | None = None) -> None:
         self.result: MachineResult | None = None
         self.done = threading.Event()
         self.scope = cancel.CancelScope()
+        self.wake = wake                      # the orchestrator's: a free slot is used at once
 
 
 def _measure_windows(res: MachineResult, data_dir: Path, dispatch: Callable[..., dict[str, Any]]) -> list[str]:
@@ -249,6 +250,8 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
         res.elapsed = time.monotonic() - t0
         box.result = res
         box.done.set()
+        if box.wake is not None:
+            box.wake.set()
 
 
 def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[str, ...] = ("quick",),
@@ -265,6 +268,7 @@ def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[s
     results: dict[str, MachineResult] = {}
     pending = list(dict.fromkeys(machines))
     running: dict[str, tuple[threading.Thread, _Box, float, Any]] = {}
+    wake = threading.Event()
 
     def say(line: str) -> None:
         if on_progress is not None:
@@ -287,7 +291,7 @@ def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[s
                 results[m] = MachineResult(machine=m, outcome="stopped")
                 continue
             sp = _trace.start_span("fleet_machine", m, machine=m)
-            box = _Box()
+            box = _Box(wake)
             t = threading.Thread(target=contextvars.copy_context().run,
                                  args=(_collect_one, m, data_dir),
                                  kwargs={"classes": classes, "force": force, "limit": limit,
@@ -297,7 +301,8 @@ def collect_fleet(machines: list[str], data_dir: Path | str, *, classes: tuple[s
             running[m] = (t, box, time.monotonic(), sp)
             say(f"collecting {m}…")
             t.start()
-        time.sleep(POLL_SECONDS)
+        wake.wait(POLL_SECONDS)               # a machine finished, or time to check the limits
+        wake.clear()
         for m in list(running):
             t, box, started, sp = running[m]
             if box.done.is_set() and box.result is not None:

@@ -127,29 +127,41 @@ def assign_ids(results: list[MachineResult]) -> dict[str, str]:
 
 def build(question: str, results: list[MachineResult], *, ids: dict[str, str], time_block: str, cap: int,
           run_tag: str, outside_scope: int = 0) -> FleetDigest:
-    """The whole digest, every machine block framed as data with its own random id."""
+    """The whole digest, each full machine block framed as data with its own random id.
+
+    The cap holds by construction: room for every machine's one-line form is reserved
+    first, and a full block is used only while it still fits beside the one-line forms
+    of the machines after it -- so a machine is shortened, never left out. The
+    shortened machines share one framed block."""
     by_machine = {r.machine: r for r in results}
     order = sorted(ids, key=lambda mid: priority(by_machine[ids[mid]]))
-    framed: dict[str, str] = {}
-    shortened: list[str] = []
-    used = len(question) + len(time_block) + 400
-    for n, mid in enumerate(order, 1):
-        res = by_machine[ids[mid]]
-        block = untrusted.frame_text(machine_block(mid, res), kind="machine", run_id=run_tag,
-                                     call_id=untrusted.new_call_id(n))
-        if used + len(block) > cap:
-            block = untrusted.frame_text(short_line(mid, res), kind="machine", run_id=run_tag,
-                                         call_id=untrusted.new_call_id(n))
-            shortened.append(mid)
-        used += len(block)
-        framed[mid] = block
+    shorts = {mid: short_line(mid, by_machine[ids[mid]]) for mid in order}
+    frame_overhead = len(untrusted.frame_text("", kind="machine", run_id=run_tag, call_id="0-000000")) + 2
     head = [f"QUESTION (about {len(ids)} machine{'s' if len(ids) != 1 else ''}): {question}"]
     if time_block:
         head.append(time_block)
+    if outside_scope:
+        head.append(f"{outside_scope} machine(s) in this group are outside the asker's access and are not listed.")
+    note_room = 120 + 5 * len(order)               # the "N were shortened: m7, m8 ..." line
+    used = sum(len(h) + 1 for h in head) + note_room + frame_overhead
+    full: dict[str, str] = {}
+    shortened: list[str] = []
+    for n, mid in enumerate(order):
+        res = by_machine[ids[mid]]
+        block = untrusted.frame_text(machine_block(mid, res), kind="machine", run_id=run_tag,
+                                     call_id=untrusted.new_call_id(n + 1))
+        rest_short = sum(len(shorts[m]) + 1 for m in order[n + 1:])
+        if used + len(block) + 2 + rest_short <= cap:
+            full[mid] = block
+            used += len(block) + 2
+        else:
+            shortened.append(mid)
+            used += len(shorts[mid]) + 1
     if shortened:
         head.append(f"{len(shortened)} machine block(s) were shortened to one line to fit: {', '.join(shortened)}. "
                     "For those, answer only from that line.")
-    if outside_scope:
-        head.append(f"{outside_scope} machine(s) in this group are outside the asker's access and are not listed.")
-    body = "\n\n".join(framed[mid] for mid in order)
-    return FleetDigest("\n".join(head) + "\n\n" + body, ids, shortened)
+    parts = [full[mid] for mid in order if mid in full]
+    if shortened:
+        parts.append(untrusted.frame_text("\n".join(shorts[mid] for mid in shortened), kind="machine",
+                                          run_id=run_tag, call_id=untrusted.new_call_id(len(order) + 1)))
+    return FleetDigest("\n".join(head) + "\n\n" + "\n\n".join(parts), ids, shortened)
