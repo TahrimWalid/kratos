@@ -212,7 +212,7 @@ def run_fleet_question(*, goal: str, group: str, data_dir: Path, source: str, ac
         return {"status": "error", "final_answer": str(e), "findings": [], "recommended_commands": []}
     a = out.answer
     machines = [{"machine": m.machine, "name": m.label, "outcome": m.outcome, "reason": m.reason,
-                 "checked": m.passed, "answer": m.text} for m in (a.machines if a else [])]
+                 "checked": None if m.kratos_text else m.passed, "answer": m.text} for m in (a.machines if a else [])]
     findings = [f for r in out.results for f in r.findings]
     return {"status": {"refused_by_budget": "refused_by_budget"}.get(out.status, "final_answer"
                        if out.status in ("final_answer", "fallback", "audit") else out.status),

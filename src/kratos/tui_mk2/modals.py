@@ -440,7 +440,14 @@ class HelpModal(ModalScreen[None]):
                 ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
                  "checked, run them now"),
                 ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "
-                 "machines? Searches what Kratos holds and says what that covered (--since 30d, --machine, --type)"),
+                 "machines? Searches what Kratos holds and says what that covered (--since 30d, --machine, --group, "
+                 "--type)"),
+                ("/groups", "Groups of machines (@web, @db; @all is built in): /groups create web <machine…>, "
+                 "/groups add|remove|delete — then /target @web asks every machine of it at once"),
+                ("/fleet [refresh]", "A group's machines — link, agent version, certificate, last collected, "
+                 "open findings; refresh collects them all now (no model)"),
+                ("/look <machine>", "In a group session: open one machine as a normal investigation, last "
+                 "question carried over"),
                 ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
                 ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
                 ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
