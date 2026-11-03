@@ -98,6 +98,10 @@ RULES:
 - Answer each machine ONLY from its own block. Never use one machine's evidence for another, and never name another
   machine (its id, address or name) inside a machine's answer -- unless that address appears in this machine's own
   block (e.g. as a login source).
+- Machines are called m1, m2 ... (the MACHINE line of each block). The ids inside the <<...>> markers are not
+  machine names; never use them.
+- In each machine's answer, name the facts its block shows that answer the question -- the account, address,
+  package, process or file -- not just a count or a finding id.
 - Say "nothing found" only as far as that machine was read: name what its block says was NOT read.
 - A machine's "claims" list follows the TIME CONTEXT rules when the question names a period (copy counts exactly).
 - Never invent data. Findings in a block were raised by Kratos's rule engine; don't call them unimportant, and
