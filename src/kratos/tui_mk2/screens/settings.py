@@ -348,6 +348,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "detect.watch.offline_minutes",
                           "hunt.max_hits", "hunt.scan_seconds", "hunt.scan_days", "hunt.snapshot_files",
                           "hunt.index_seconds", "hunt.auto_max_indicators",
+                          "fleet.max_parallel", "fleet.machine_seconds", "fleet.digest_chars", "fleet.extra_reads",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -751,6 +752,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._hunt_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._fleet_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
@@ -1123,11 +1126,28 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              f"{get(HS.AUTO_MAX_INDICATORS)}"),
         ]
 
+    def _fleet_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.fleet import settings as FS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("fleet.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (FS.MAX_PARALLEL, "Groups: machines collected at once", f"{get(FS.MAX_PARALLEL)}"),
+            (FS.MACHINE_SECONDS, "Groups: most time per machine", f"{get(FS.MACHINE_SECONDS)} seconds (then: timed out)"),
+            (FS.DIGEST_CHARS, "Groups: most text the model reads", f"{get(FS.DIGEST_CHARS):,} characters "
+                                                                      "(more machines are shortened to one line)"),
+            (FS.EXTRA_READS, "Groups: extra reads the model may ask for", f"{get(FS.EXTRA_READS)} (each on one machine)"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
         from kratos.detect import settings as _DS  # noqa: F401 -- registers the detect.* settings
         from kratos.hunt import settings as _HS  # noqa: F401 -- and the hunt.* settings (same editor)
+        from kratos.fleet import settings as _FS  # noqa: F401 -- and the fleet.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1147,6 +1167,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_gen_status(f"Not changed: {e}", T.CRITICAL)
             return
         self._reload_general()
+        if key.startswith("fleet."):
+            self._set_gen_status("Saved — applies to the next question about a group.", T.SAFE)
+            return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
                                 else "."), T.SAFE)
@@ -1209,7 +1232,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

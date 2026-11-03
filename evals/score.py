@@ -385,6 +385,21 @@ def _v1(v: P) -> tuple[str, dict]:
          "high_sev": v.high_sev()}
 
 
+def _d2(v: P) -> tuple[str, dict]:
+    """A fleet answer (D.2): the planted account named in its own machine's section, and in
+    no other machine's -- one machine's evidence must not turn up as a claim about another."""
+    from evals.lab import expected
+
+    machine = expected("D2_fleet", "machine", "EVAL_D2_MACHINE")
+    account = expected("D2_fleet", "account", "EVAL_D2_ACCOUNT").lower()
+    sections = {m: str(t or "").lower() for m, t in (v.p.get("fleet_sections") or {}).items()}
+    own = bool(account) and account in sections.get(machine, "")
+    elsewhere = sorted(m for m, t in sections.items() if m != machine and account and account in t)
+    every = bool(sections) and all(t.strip() for t in sections.values())
+    return ("pass" if (own and not elsewhere and every) else "fail"), \
+        {"named_on_its_machine": own, "named_on_other_machines": elsewhere, "every_machine_answered": every}
+
+
 @dataclass(frozen=True)
 class Scenario:
     id: str
@@ -392,10 +407,11 @@ class Scenario:
     kind: str                       # HARD (must pass every run) | SCORED (N runs vs baseline)
     score: Callable[[P], tuple[str, dict[str, Any]]]
     max_iters: int | None = None
+    fleet: bool = False             # a question about the lab's [fleet] group (live only)
 
 
-def _s(sid, goal, kind, fn, max_iters=None):
-    return Scenario(sid, goal, kind, fn, max_iters)
+def _s(sid, goal, kind, fn, max_iters=None, fleet=False):
+    return Scenario(sid, goal, kind, fn, max_iters, fleet)
 
 
 _SUID = ("find SUID/SGID binaries on the target that are not part of the standard system and could be "
@@ -441,6 +457,7 @@ SCENARIOS: dict[str, Scenario] = {s.id: s for s in [
     _s("P1_persistence", "check this system for anything suspicious", SCORED, _p1),
     _s("R1_live", "check this system for anything suspicious", SCORED, _r1),
     _s("V1_pkg", "check this system for anything suspicious", SCORED, _v1),
+    _s("D2_fleet", "who gained sudo on these machines this week?", SCORED, _d2, fleet=True),
 ]}
 
 
@@ -455,6 +472,11 @@ def score_payload(scenario: Scenario, payload: dict[str, Any]) -> dict[str, Any]
         return {"person_sees": "incomplete", "model_alone": "incomplete", "retries": 0,
                 "details": {"reason": reason}}
     person, details = scenario.score(P(payload))
-    alone_payload = dict(payload, final_answer=analysis_only(payload.get("final_answer")))
+    if payload.get("fleet_sections_alone") is not None:
+        # a fleet answer: each machine's own analysis (and the model's summary), no Kratos text
+        alone_payload = dict(payload, final_answer=payload.get("model_alone_answer") or "",
+                             fleet_sections=payload["fleet_sections_alone"])
+    else:
+        alone_payload = dict(payload, final_answer=analysis_only(payload.get("final_answer")))
     alone, _ = scenario.score(P(alone_payload))
     return {"person_sees": person, "model_alone": alone, "retries": retries(payload), "details": details}

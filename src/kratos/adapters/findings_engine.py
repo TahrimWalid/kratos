@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kratos import __version__ as KRATOS_VERSION
-from kratos.utils.latest_file import latest_file
 from kratos.utils.timeutil import epoch_to_utc_iso, utc_now_iso
 from kratos.target_key import target_key
 
@@ -151,8 +150,10 @@ def find_latest_inputs(data_dir: Path, target: Any = _ACTIVE,
         "system_context": pick(ctx_dir, "system_context_*.json", "system_context"),
         "auth_trends": pick(reports_dir, "auth_trends_*.json", "auth_trends"),
         "file_integrity": pick(baseline_dir, "file_integrity_diff_*.json", "file_integrity"),
-        # Filtered by its own loader (_load_recent_privileged_snapshot).
-        "privileged_accounts": latest_file(ctx_dir, "privileged_accounts_*.json"),
+        # This machine's newest snapshot: the newest of ANY machine was dropped by its loader
+        # whenever another machine had been read later, so with several machines most lost
+        # their PRIV-* findings silently (D.2). The loader still checks the machine.
+        "privileged_accounts": pick(ctx_dir, "privileged_accounts_*.json", "privileged_accounts"),
         # sshd's login settings for this machine (adapters/ssh_guessing.load_recent: <= 24 h).
         "config_audit": pick(ctx_dir, "config_audit_*.json", "config_audit"),
         # check_log_integrity (0.3): the newest result for this machine; freshness
@@ -2418,10 +2419,11 @@ def write_findings_report(
         report_obj["lifecycle_error"] = lifecycle_error
 
     reports_dir = data_dir / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # One name per report, never shared: two machines correlated in the same second
+    # used to write (and read back) the same findings_<date>_<time>.json (D.2).
+    from kratos.utils.stamped import reserve
 
-    out_json = reports_dir / f"findings_{ts}.json"
+    out_json, ts = reserve(reports_dir, "findings", ".json")
     out_md = reports_dir / f"findings_{ts}.md"
 
     out_json.write_text(json.dumps(report_obj, indent=2), encoding="utf-8")

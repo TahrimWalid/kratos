@@ -2062,6 +2062,74 @@ If a certificate login ever fails, `kratos ssh-ca diagnose <machine>` says why i
 words — the address changed, the machine stopped trusting the CA, a principal is missing, or
 the clocks disagree — and what to do.
 
+## Asking about several machines
+
+Put machines in a **group** and ask one question about all of them: "who gained sudo
+anywhere this week?", "which web servers still run the vulnerable OpenSSL?", "anything
+odd on the database machines since Friday?".
+
+```bash
+kratos groups create web 10.0.0.5 10.0.0.6 db-01
+kratos fleet ask @web "who gained sudo this week?"
+```
+
+In the app, `/groups create web 10.0.0.5 10.0.0.6` makes a group and `/target @web` (or
+`@web` when you start a new session) turns the session into a group session: every
+question is asked of each machine. `@all` is built in: every machine you have set up
+in `/assets`. A machine can be in several groups; a paired sub-agent can be added by its
+name. Every group change is recorded with your name.
+
+**What you get back** is one answer per machine, not one blended answer:
+
+```
+5 machines · 2 with HIGH/CRITICAL findings · 3 fully read · 1 partly read ·
+1 not checked (10.0.0.9 not reached: ssh: connect to host 10.0.0.9 port 22: No route to host)
+
+== 10.0.0.5 -- fully read
+Kratos found (checked by Kratos itself -- not written by the model):
+  - HIGH PRIV-001 Recently granted privileged access: deploy2 -- deploy2:sudo
+deploy2 was added to the sudo group on 2026-11-02 ...
+```
+
+- The **first line is written by Kratos**, from what it read: how many machines, how many
+  have serious findings or an Act decision, how many were fully read, and each machine it
+  couldn't read, with the reason. A machine that was off, busy with another Kratos run, or
+  too slow (90 s by default) is named there, never quietly left out.
+- Each machine's section is **checked against that machine's own evidence**, with the same
+  checks a single-machine answer gets. One machine's findings can't make another machine's
+  "nothing found" pass, and an answer that names another machine is sent back.
+- "Nothing found" is only ever said **per machine, and only as far as it was read**. The
+  model's one-sentence summary of the whole group is shown only when every machine it
+  names passed its checks; one that speaks for the whole group ("no machine ...") is shown
+  only when every machine was fully read.
+
+**Cost.** Kratos reads the machines itself (no model), several at once (4 by default),
+then makes **one model call for the whole group**. The model may ask for a few extra
+reads (3 by default, each on one machine) and answers sent back for a fix cost a call
+each. Before starting, Kratos shows an estimate. On the lab, five machines took about
+13 seconds and 14–35 thousand tokens, against about 90 seconds and 218 thousand tokens
+for five separate investigations of the same question. A scheduled run on a group is
+refused before it reads anything when the estimate is over what is left of today's
+unattended limit.
+
+**Looking deeper at one machine.** `/look 10.0.0.5` (or `/look m1`) in a group session
+opens a normal investigation of that machine, with your question carried over. Fixes
+(`/run-fix`) work only on one machine at a time: they are refused in a group session.
+
+**`/fleet`** lists a group's machines: how each is reached (SSH key, certificate or
+sub-agent), its agent version (and how many need an update -- `g` in /subagent),
+certificate state, when it was last collected, open findings by severity, and how the
+last group question went for it. `/fleet refresh` collects them all now (no model).
+
+**Elsewhere.** `kratos fleet audit @web` runs the standard audit on every machine (no
+model). A schedule's target may be a group (`@web`): kind audit audits each machine,
+kind preset asks the preset's goal as one group question, and either sends **one**
+notification for the whole run. `/hunt <indicator> --group web` searches only that
+group's machines. A chat app sees a model `kratos/@web` for each group with machines
+its token may use, and gets only those machines -- the answer says how many others are
+outside its access, never what they are. Over MCP, give `kratos_investigate` a target of
+`@web`. Settings -> General -> Groups has the limits.
+
 ## Building a new tool with /evolve
 
 This is Kratos's most unusual feature, and it's built to be safe. If Kratos needs

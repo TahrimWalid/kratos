@@ -2587,6 +2587,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     from kratos.cli import assets_cmd
     assets_cmd.add_parser(sub)
+    from kratos.cli import fleet_cmd
+    fleet_cmd.add_parser(sub)
     from kratos.cli import containers_cmd
     containers_cmd.add_parser(sub)
 

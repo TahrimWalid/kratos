@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime
 from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
@@ -117,7 +116,8 @@ def write_parsed_json(data_dir: Path, parsed: dict[str, Any]) -> Path:
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_json = scans_dir / f"parsed_{ts}.json"
+    from kratos.utils.stamped import reserve
+
+    out_json, _ts = reserve(scans_dir, "parsed", ".json")
     out_json.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
     return out_json

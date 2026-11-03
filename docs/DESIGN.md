@@ -1989,6 +1989,63 @@ Prompt and context changes moved those numbers only within noise. Making the fin
 answer by construction is what makes the answer trustworthy; the model explains, it doesn't decide
 what the person gets to see.
 
+## Questions about a group of machines (D.2)
+
+**The answer checks are one module.** Guards 1-13 live in `agent/answer_checks/` as pure
+functions over a `MachineEvidence` (the machine, its latest successful correlation, coverage
+gaps, time context and measurements, the tools that ran, comparison verdicts, host mode,
+what grounds the addresses an answer may name). `evaluate()` gives each check's verdict,
+`rejections()` the one combined rejection (bounded per check), `apply_notes()` the NOTEs.
+`run_agent` builds one `MachineEvidence` per final-answer attempt; the extraction changed
+nothing it decides or says (the guard tests pass unchanged; replay gate 100% vs 100%).
+Guard 13 (added with D.2): an answer may not claim an SSVC decision (Act/Attend/Track*) that
+Kratos did not compute for that machine.
+
+**A fleet run** (`kratos/fleet/`, front door `fleet.run.run_fleet`, used by the TUI, CLI,
+chat server, MCP and schedules):
+
+1. `groups.resolve` -- the group's machines (`machine_groups`, `group_members`; `@all` =
+   asset rows), deduplicated through `subagent_links` (two names for one sub-agent are one
+   machine), narrowed to the caller's scope (a token's machines; the rest are only counted).
+2. Estimate; an unattended run over the unattended or per-run cap is refused before any read.
+3. `collect.collect_fleet` -- one thread per machine, at most `fleet.max_parallel`, each with
+   `pinned_target`, its own target lock (waited for up to `fleet.machine_seconds`, else
+   *busy*), a reachability read first (`ssh_remote.probe_reachable`: one `date` through the
+   machine's transport, so *not reached* is told apart from *nothing found*), its own
+   `TimeContext` (one window resolved for the question, measured on each machine by code), its
+   own `prepare()` and correlation. A machine still running past its limit is *timed out* and
+   its commands are killed. Outcomes: ok / partial / unreachable / busy / timeout / failed /
+   stopped; a period that could not be measured makes a machine *partial*, never *ok*.
+4. `digest.build` -- one Kratos-written block per machine (`m1`, `m2` ...), each framed as data
+   (A.4), Act decisions and HIGH findings first, under `fleet.digest_chars` by construction:
+   room for every machine's one-line form is reserved first, so a machine is shortened, never
+   dropped.
+5. `answer.answer_fleet` -- one model call; a reply is `{"machines": [{machine, answer,
+   claims}], "summary"}` or `{"reads": [{read, machine, args}]}` (at most `fleet.extra_reads`,
+   read-only tools only, each run through `execute_tool_call` pinned to its machine and added
+   to that machine's evidence only). Each machine's answer is evaluated with **its own**
+   `MachineEvidence`; an answer naming another machine (unless that address is in its own
+   evidence, e.g. as a login source) or calling a machine Kratos read "unreachable" is sent
+   back. Corrections go back in one rejection per round, bounded. Machines that weren't read get
+   Kratos's own text. The summary line is code; the model's sentence is shown only when every
+   machine it names passed and, if it speaks for the group, every machine was fully read.
+   Invalid JSON gets one correction, then Kratos writes each machine's findings itself.
+6. `record` -- `fleet_runs` (question, group, window, actor, estimate, cost, summary) and
+   `fleet_run_machines` (outcome, why, transport, coverage, finding counts, the run-record
+   span of its collection). One run record per fleet run, one `fleet_machine` span per machine.
+
+**Isolation in shared files.** Several machines correlated at once share one data folder.
+Two leaks were found on the lab and closed: the findings report (and other stamped inputs:
+nmap, auth measurements, vulnerability scans, file-integrity diffs) was named to the second,
+so two machines correlated in the same second wrote -- and read back -- the same file; and the
+privileged-accounts input was "the newest snapshot of any machine", dropped by its loader for
+every other machine. Stamped names now come from `utils/stamped.reserve` (microseconds, a
+counter, created with O_EXCL), and every input is chosen by the machine it describes.
+
+**Never fleet-wide:** the fix channel (`/run-fix` is refused in a group session and from a group
+model), cross-machine findings (E.1), and any decision -- each machine's findings, SSVC
+decisions and lifecycle stay its own.
+
 ## Untrusted input
 
 Text that came from a monitored machine is attacker-controlled: usernames in failed

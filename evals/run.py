@@ -114,8 +114,11 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
         setup_err = traceback.format_exc()
         print(f"    setup error: {e}", file=sys.stderr)
     try:
-        with run_scope("cli"):
-            payload = run_agent(sc.goal, data_dir, max_iters=sc.max_iters or extras.get("max_iters") or 8)
+        if sc.fleet:
+            payload = _run_fleet(sc, data_dir)
+        else:
+            with run_scope("cli"):
+                payload = run_agent(sc.goal, data_dir, max_iters=sc.max_iters or extras.get("max_iters") or 8)
     finally:
         try:
             teardown(ctx)
@@ -123,6 +126,33 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
             print(f"    teardown error: {e}", file=sys.stderr)
     payload["setup_error"] = setup_err
     return payload
+
+
+def _run_fleet(sc: score.Scenario, data_dir: Path) -> dict[str, Any]:
+    """A fleet question over the lab's [fleet] group, as a payload the scorers read: the whole
+    answer, each machine's section (person sees) and each machine's own analysis (model alone)."""
+    from evals.lab import lab
+    from kratos.fleet import groups as G
+    from kratos.fleet import run as R
+    from kratos.lifecycle.decide import Actor
+
+    actor = Actor(user="kratos-eval", interface="cli")
+    machines = list(lab().fleet)
+    if not machines:
+        return {"status": "no_fleet", "final_answer": "", "transcript": [],
+                "setup_error": "no [fleet] machines in evals/config/lab.toml"}
+    G.create_group(data_dir, "evalfleet", actor, members=machines)
+    out = R.run_fleet(R.FleetRequest(question=sc.goal, group="@evalfleet", data_dir=data_dir, actor=actor,
+                                     source="cli"))
+    a = out.answer
+    steps = [s for r in out.results for s in r.steps]
+    return {"status": "final_answer" if out.status in ("final_answer", "fallback") else out.status,
+            "final_answer": out.text, "run_id": out.run_id, "transcript": steps,
+            "tools_called": sorted({str(s.get("tool")) for s in steps if s.get("tool")}),
+            "fleet_sections": {m.machine: m.text for m in (a.machines if a else [])},
+            "fleet_sections_alone": {m.machine: m.analysis for m in (a.machines if a else [])},
+            "model_alone_answer": "\n".join([a.model_summary if a else ""] + [m.analysis for m in (a.machines if a else [])]),
+            "token_usage": out.token_usage, "fleet_outcomes": {r.machine: r.outcome for r in out.results}}
 
 
 # Live scenarios that judge package findings: without an index they can only fail, so they

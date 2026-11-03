@@ -537,7 +537,13 @@ def run_scheduled(
     those become a recorded + notified result. Returns the run record.
 
     Opens the run's scope (kratos.run_context): `source` is "schedule" for a
-    timer, "interactive" when a person pressed "run now"."""
+    timer, "interactive" when a person pressed "run now".
+
+    A schedule whose target is a group (``@web``) runs on every machine of it
+    (D.2): kind audit = the standard audit per machine, kind preset (a goal) = one
+    fleet question; one grouped notification for the run."""
+    if str(schedule.target or "").startswith("@"):
+        return _run_fleet_schedule(schedule, data_dir, deliver=deliver, notifier=notifier, source=source)
     with _run_context.run_scope(source, target=schedule.target or _kconfig.get_active_target(),
                                 session_id=session_id):
         from kratos.trace import recorder as _trace
@@ -767,6 +773,94 @@ def _run_scheduled(
     }
     _append_record(data_dir, schedule.name, record)
     _target_lock.release_target(lock)  # (also released by the process exiting)
+    return record
+
+
+def _run_fleet_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver: bool,
+                        notifier: Optional[Notifier], source: str) -> dict[str, Any]:
+    """A schedule on a group of machines: every machine collected in parallel under its
+    own lock (a busy one is reported, never waited on forever), per-machine triggers
+    evaluated as for one machine, and ONE grouped notification for the whole run --
+    trigger notifications included in it, not sent one per machine."""
+    from kratos.agent import presets as _presets
+    from kratos.fleet import run as FR
+    from kratos.lifecycle.decide import Actor
+
+    notifier = notifier or _default_notifier
+    data_dir = Path(data_dir)
+    started_at = utc_now_iso()
+    record: dict[str, Any] = {"schedule": schedule.name, "started_at": started_at, "target": schedule.target,
+                              "kind": schedule.kind, "fleet": True, "findings_count": 0, "severity_tally": {},
+                              "omitted_gated_tools": [], "report_json": None, "report_md": None, "delivered": None,
+                              "notified": False, "triggers_fired": [], "jobs": [], "error": None}
+    question, kind = "", "audit"
+    if schedule.kind == "preset":
+        preset = _presets.load_preset(data_dir, schedule.preset or "")
+        if preset is None or preset.is_runnable_pipeline or not str(getattr(preset, "goal", "") or "").strip():
+            record.update(status="error", finished_at=utc_now_iso(),
+                          error="a schedule on a group runs an audit or a goal preset (a question); "
+                                f"'{schedule.preset}' isn't a goal preset")
+            _append_record(data_dir, schedule.name, record)
+            return record
+        question, kind = str(preset.goal), "question"
+    elif schedule.kind != "audit":
+        record.update(status="error", finished_at=utc_now_iso(),
+                      error=f"a schedule of kind '{schedule.kind}' can't target a group (use audit or preset)")
+        _append_record(data_dir, schedule.name, record)
+        return record
+    prior_provider = _tools._approval_prompt_provider
+    _tools.set_approval_prompt_provider(lambda tool, details: False)
+    try:
+        out = FR.run_fleet(FR.FleetRequest(question=question, group=str(schedule.target), data_dir=data_dir,
+                                           actor=Actor(user=f"schedule:{schedule.name}", interface="schedule"),
+                                           source=source, kind=kind, slow=kind == "audit", name=schedule.name))
+    except FR.FleetError as e:
+        out = None
+        record.update(status="error", error=str(e))
+    finally:
+        _tools.set_approval_prompt_provider(prior_provider)
+    buffered: list[str] = []
+    if out is not None:
+        findings = [f for r in out.results for f in r.findings]
+        record.update(status="completed" if out.status in ("audit", "final_answer", "fallback") else out.status,
+                      findings_count=len(findings), severity_tally=_severity_tally(findings),
+                      run_id=out.run_id, summary=out.answer.summary if out.answer else out.text,
+                      machines={r.machine: r.outcome for r in out.results},
+                      error=out.refusal)
+
+        def hold(message: str, severity: str) -> dict[str, Any]:
+            buffered.append(message.splitlines()[0][:200] if message else "")
+            return {"status": "grouped", "detail": "sent in the run's one grouped notification"}
+
+        from kratos.agent.trigger_eval import evaluate_triggers
+
+        for r in out.results:
+            if not r.collected:
+                continue
+            try:
+                from kratos.fleet.collect import host_for
+
+                with _kconfig.pinned_target(host_for(r.machine)):
+                    fired = evaluate_triggers(data_dir, r.findings, host_for(r.machine), notifier=hold,
+                                              deliver=deliver)
+                record["triggers_fired"].extend(f"{t.get('trigger')} on {r.machine}" for t in fired)
+            except Exception as e:  # noqa: BLE001 -- one machine's triggers never sink the run
+                record["error"] = (record["error"] + "; " if record["error"] else "") + \
+                    f"trigger evaluation failed on {r.machine}: {e}"
+        if deliver and "ntfy" in schedule.deliver:
+            from kratos.fleet.run import _grouped_notification
+
+            req = FR.FleetRequest(question=question, group=str(schedule.target), data_dir=data_dir,
+                                  actor=Actor(user=f"schedule:{schedule.name}", interface="schedule"),
+                                  notifier=notifier, name=schedule.name)
+            sent = _grouped_notification(req, out.group_label, out.results, out.answer, data_dir,
+                                         extra_lines=[f"trigger: {b}" for b in buffered if b][:5])
+            record["notified"] = sent
+    elif deliver and "ntfy" in schedule.deliver:
+        record["delivered"] = notifier(f"Scheduled run '{schedule.name}' did not run: {record['error']}", "warning")
+        record["notified"] = _sent(record["delivered"])
+    record["finished_at"] = utc_now_iso()
+    _append_record(data_dir, schedule.name, record)
     return record
 
 

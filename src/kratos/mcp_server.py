@@ -160,7 +160,13 @@ def _mcp_investigation(goal: str, target: str, max_iters: int, data_dir: Path,
                        timezone: str | None = None) -> dict[str, Any]:
     """One stdio-MCP investigation through the shared headless runner: budget precheck
     (source "mcp"), a new session, the machine pinned for this run, the per-run tool
-    filter / deny approval / no clarify, transcript saved. Same result shape as before."""
+    filter / deny approval / no clarify, transcript saved. Same result shape as before.
+    A `target` of "@group" is a fleet question (D.2): one checked answer per machine."""
+    if target.startswith("@"):
+        out = _runs.run_fleet_question(goal=goal, group=target, data_dir=Path(data_dir), source="mcp",
+                                       actor_user="mcp-stdio", actor_interface="mcp")
+        out.pop("run_id", None)
+        return out
     outcome = _runs.run_investigation(_runs.RunRequest(goal=goal, target=target, data_dir=Path(data_dir),
                                                        source="mcp", max_iters=max_iters, timezone=timezone))
     out = outcome.as_dict()
@@ -179,7 +185,9 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
     threat-intel escalation, evolving a new tool) are never reachable from this call.
     Returns the investigation's outcome, final answer, and any findings correlate_findings
     produced. `target` is required and explicit -- an MCP call has no prior session/`/target`
-    state to fall back on.
+    state to fall back on. A `target` of "@group" (e.g. "@web", "@all") asks every machine of
+    that group: one answer per machine, each checked against that machine's own evidence,
+    machines Kratos couldn't read named with the reason (`fleet` in the result).
 
     IMPORTANT for the calling client: this call blocks this MCP connection for its full
     duration (commonly 10-40+ minutes on the local backend) -- no other tool call on the same

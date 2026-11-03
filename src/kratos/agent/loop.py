@@ -71,10 +71,7 @@ from kratos.timewin.agentwin import (
     prepare_time_context as _prepare_time_context,
     render_time_block as _render_time_block,
     result_metadata as _time_result_metadata,
-    unqueried_goal_windows as _unqueried_goal_windows,
 )
-from kratos.timewin.claims import is_time_scoped as _is_time_scoped, verify_claims as _verify_claims
-from kratos.timewin.yes_no import yes_no_problem as _yes_no_problem
 from kratos.timewin.windows import (
     TimeIntentError as _TimeIntentError,
     reset_current_context as _reset_time_context,
@@ -88,6 +85,23 @@ from kratos.llm_interface import (
 )
 from kratos.llm_config import MAX_TOKENS_QUESTION
 from kratos.budget.guard import BudgetExceeded
+from kratos.agent import answer_checks as _answer_checks
+from kratos.agent.answer_checks.patterns import (  # noqa: F401 -- moved there (D.2), names kept here
+    _CAPABILITY_GAP_RE,
+    _GAP_ACKNOWLEDGED_RE,
+    _HOST_AS_TARGET_RE,
+    _IPV4_RE,
+    _KNOWN_COVERAGE_LIMIT_RE,
+    _NO_RECORD_ACK_RE,
+    _SSH_LOGIN_FIX,
+    _SSH_LOGIN_LIMIT,
+    _coverage_note,
+    _gap_sentence,
+    _names_finding,
+    _plain_claim_problem,
+    _ungrounded_ips,
+    _unstated_coverage_gaps,
+)
 
 DEFAULT_MAX_ITERS = 10
 
@@ -325,42 +339,6 @@ _INLINE_CLAIMS_LABEL_RE = re.compile(r"""(?:\*\*)?["'`]?\bclaims["'`]?(?:\*\*)?\
                                      re.IGNORECASE)
 
 
-def _plain_claim_problem(problem: str, time_ctx: Any) -> str:
-    """A Guard 7 problem as the USER reads it: without the instruction meant for the
-    model (after ' -- ') or the 'claim #N:' tag, and with window ids as their period
-    ('w1' -> 'the last 24 hours')."""
-    text = re.sub(r"^claim #\d+:\s*", "", problem.split(" -- ")[0]).strip()
-    windows = getattr(time_ctx, "windows", None) or {}
-
-    def period(wid: str) -> str | None:
-        w = windows.get(wid)
-        lab = str(getattr(w, "label", "") or "") if w is not None else ""
-        if not lab:
-            return None
-        return f"the {lab}" if re.match(r"(last|past|previous|first)\b", lab) else lab
-
-    def with_preposition(m: re.Match) -> str:
-        p = period(m.group(1))
-        if p is None:
-            return m.group(0)
-        return p if p.startswith("since ") else f"for {p}"     # "in yesterday" -> "for yesterday"
-
-    def bare(m: re.Match) -> str:
-        return period(m.group(0)) or m.group(0)
-
-    text = re.sub(r"\bin (w\d+)\b", with_preposition, text)
-    text = re.sub(r"\bw\d+\b", bare, text)
-    return re.sub(r"\b([a-z]+(?:_[a-z]+)+)\b", lambda m: m.group(1).replace("_", " "), text)
-
-
-def _names_finding(answer: str, finding: dict[str, Any]) -> bool:
-    ids = [str(finding.get("id") or "")] + [str(x) for x in finding.get("also_matched") or []]
-    if any(i and re.search(rf"\b{re.escape(i)}\b", answer) for i in ids):
-        return True
-    title = str(finding.get("title") or "").strip().lower()
-    return bool(title) and title in answer.lower()
-
-
 def _window_phrase(window: Any) -> str:
     """'yesterday (2026-10-03 00:00 → 2026-10-04 00:00 UTC)' from a tool's window chip
     ('w1 yesterday: 2026-10-03 00:00 → 2026-10-04 00:00 (UTC)')."""
@@ -428,57 +406,6 @@ def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
     return text, None
 
 
-# Guard 10: an /investigate-host answer calls Kratos's own machine "the target"
-# (seen live despite the prompt saying not to) -- the user then can't tell which
-# machine it's about. Asked once to reword; never rewritten silently.
-_HOST_AS_TARGET_RE = re.compile(
-    r"\bthe (?:monitored )?target(?: device| system| machine| host)?\b|\btarget device\b"
-    r"|\bmonitored (?:device|system|machine|host|server)\b",
-    re.IGNORECASE)
-
-# Guard 9: state_as_of said Kratos has NO record of a past state (e.g. open ports
-# yesterday); an answer must say so instead of inferring that state from other data.
-# Live incident (2026-10-04): "was port 22 open yesterday?" -> state_as_of "no
-# record" -> answer "confirmed open" because sudo sessions were logged.
-_NO_RECORD_ACK_RE = re.compile(
-    r"\bno (?:saved |stored |earlier |prior |such )?(?:record|snapshot|scan|data|history)s?\b"
-    r"|\bnot (?:recorded|saved|captured)\b|\bhas no (?:record|snapshot)|\bhave no (?:record|snapshot)"
-    r"|\b(?:do|does)(?:n't| not) have (?:a |any )?(?:saved |stored )?(?:record|snapshot|scan)"
-    r"|\b(?:can(?:no|')t|could(?:n't| not)|unable to) (?:tell|say|confirm|determine|verify)\b"
-    r"|\bunknown\b",
-    re.IGNORECASE,
-)
-
-# Guard 8: the answer states Kratos lacks a capability. Deliberately narrow --
-# the subject must be Kratos/the agent (or a check that "was not performed
-# because" of a missing capability), and it must name a tool/capability, so an
-# ordinary "no evidence of X" never matches.
-_CAPABILITY_GAP_RE = re.compile(
-    r"\b(?:kratos|i|we)\b[^.\n]{0,40}?\b(?:lacks?|do(?:es)?(?:n't| not) (?:currently )?(?:have|possess|include|provide|offer)|"
-    r"has no|have no|is missing)\b[^.\n]{0,60}?\b(?:tool|capabilit(?:y|ies)|integration|feature)"
-    r"|\bno (?:[\w-]+ ){0,3}tools? (?:is |are |was |were )?(?:currently )?(?:available|exists|in (?:my|the|kratos'?s?) (?:registry|suite|toolset))"
-    r"|\bno (?:[\w-]+ ){0,3}tools?\b[^.\n]{0,60}?\b(?:is|are) (?:currently )?available"
-    r"|\b(?:not (?:possible|supported|available)|unsupported) (?:with|by|in|using) (?:the )?(?:current|available|existing) (?:kratos )?tool"
-    r"|\b(?:such a |this |that |the required )?capability (?:is |was )?(?:currently )?(?:unavailable|not available)"
-    r"|\bnot part of (?:my|kratos'?s?|the) (?:current )?(?:toolkit|toolset|tools|registry)"
-    r"|\b(?:could not|couldn't|cannot|can't|(?:am|was|is) unable to|unable to) (?:\w+ ){0,3}"
-    r"(?:enumerate|list|scan|audit|check|map|determine|identify|perform|search|inspect)\b[^.\n]{0,80}?"
-    r"\b(?:because|as|since|due to)\b[^.\n]{0,80}?"
-    r"\b(?:tool|toolkit|capabilit|inability to (?:run|execute)|shell (?:access|execution)|not supported)"
-    r"|\bkratos\b[^.\n]{0,20}?\b(?:does(?:n't| not)|cannot|can't) support\b"
-    r"|\bno (?:existing|available|built-in|suitable|dedicated|current|registered) (?:kratos )?(?:tool|capability)"
-    r"|\b(?:was|were|could) not (?:be )?(?:performed|audited|checked|done|determined|mapped|enumerated)\b"
-    r"[^.\n]{0,40}?\b(?:because|as|since)\b[^.\n]{0,80}?\b(?:tool|not supported|capabilit|requires local)",
-    re.IGNORECASE,
-)
-
-
-# A stated "Kratos can't ..." that is really a reported coverage limit of how the
-# target is reached (no network path through a sub-agent), not a missing tool.
-_KNOWN_COVERAGE_LIMIT_RE = re.compile(
-    r"sub-?agent|network (?:scan|exposure|path)|open ports?|port scan|nmap|vulnerabilit", re.IGNORECASE)
-
-
 # A proposed tool that would run arbitrary commands on the target, or change its
 # state there. Deliberately narrow: read-only tools that use a FIXED command
 # ("lists SUID binaries on the target using find") don't match.
@@ -500,14 +427,6 @@ _TARGET_EXECUTION_NAME_RE = re.compile(r"(?:^|_)(?:exec|execute|run)_(?:target|r
 def _proposes_target_execution(name: str, description: str) -> bool:
     return bool(_TARGET_EXECUTION_NAME_RE.search(name or "")
                 or _TARGET_EXECUTION_PROPOSAL_RE.search(description or ""))
-
-
-def _gap_sentence(text: str, match: re.Match[str]) -> str:
-    """The sentence of `text` containing `match`, trimmed."""
-    start = max(text.rfind(". ", 0, match.start()), text.rfind("\n", 0, match.start())) + 1
-    ends = [e for e in (text.find(". ", match.end()), text.find("\n", match.end())) if e != -1]
-    end = min(ends) + 1 if ends else len(text)
-    return text[start:end].strip()[:400]
 
 
 # State-changing command patterns rejected for run_linux_command DURING an
@@ -1100,20 +1019,6 @@ def _finding_notes(parsed: dict[str, Any], findings: list[dict[str, Any]] | None
         return []
 
 
-_GAP_ACKNOWLEDGED_RE = re.compile(
-    r"\b(not|n't|never|unable to|could ?not|couldn't|cannot|can't)\b[^.]{0,60}\b(check|checked|scan|scanned|"
-    r"available|covered|examined|assessed|verified)", re.IGNORECASE)
-
-
-def _unstated_coverage_gaps(gaps: list[str], answer: str) -> list[str]:
-    """Gaps the answer doesn't acknowledge. Deliberately simple: an answer that
-    says anything was not checked/scanned is taken as acknowledging them; the
-    NOTE is the backstop for one that says nothing at all."""
-    if not gaps or _GAP_ACKNOWLEDGED_RE.search(answer or ""):
-        return []
-    return gaps
-
-
 # correlate_findings result keys that are bookkeeping for people (where the report was
 # written, which input file each category came from): in the model's 1,500-character
 # window they came before the first finding and pushed its evidence -- e.g. the
@@ -1132,34 +1037,6 @@ def _for_model(tool_name: str | None, exec_result: Any) -> Any:
     if isinstance(inner, dict):
         out["result"] = {k: v for k, v in inner.items() if k not in hidden}
     return {k: v for k, v in out.items() if k not in hidden}
-
-
-# not inside a longer dotted number; a sentence-ending "." after the address is fine
-_IPV4_RE = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?!\d|\.\d)")
-
-
-def _ungrounded_ips(answer: str, goal: str, transcript: list[dict[str, Any]]) -> list[str]:
-    """IPv4 addresses in the answer that appear in no observation, digest or the goal."""
-    named = {m for m in _IPV4_RE.findall(answer or "") if _finding_facts.is_ip(m)}
-    if not named:
-        return []
-    seen = json.dumps([e.get("observation") for e in transcript] + [e.get("digest") for e in transcript]
-                      + [goal], default=str)
-    seen_ips = set(_IPV4_RE.findall(seen))       # whole addresses: 10.136.28.1 is not in 10.136.28.168
-    return sorted(ip for ip in named if ip not in seen_ips)
-
-
-_SSH_LOGIN_LIMIT = "over this SSH login"
-_SSH_LOGIN_FIX = ("A normal SSH login can't read what belongs to other users or root; the machine's sub-agent "
-                  "(it reads as root) covers it.")
-
-
-def _coverage_note(gaps: list[str]) -> str:
-    """The answer's "not checked" NOTE: one short line per gap, and the shared fix for
-    what a normal SSH login cannot read said once, not after every line."""
-    text = "; ".join(g.rstrip(" .") for g in gaps)
-    fix = f" {_SSH_LOGIN_FIX}" if any(_SSH_LOGIN_LIMIT in g for g in gaps) else ""
-    return f"[NOTE: not checked in this investigation: {text}. Nothing above covers it.{fix}]\n\n"
 
 
 def _cap(text: str, limit: int = OBSERVATION_CHAR_CAP) -> str:
@@ -1759,7 +1636,7 @@ def _run_agent_loop(
     # verbatim, matching the retry pattern already proven to work in this
     # exact investigation (the model self-corrected a YARA timeout from a
     # clear, specific error message with no extra prompting needed).
-    # correlate_findings_reject_count bounds how many times a final_answer
+    # reject_counts["guard1"] bounds how many times a final_answer
     # submitted without a SUCCESSFUL call gets rejected: the first rejection
     # is unconditional (forces the model to actually consider calling it or
     # retrying it), the second is only waived (for the never-attempted case)
@@ -1768,10 +1645,10 @@ def _run_agent_loop(
     # this into a new max_iters_reached failure by refusing to comply
     # indefinitely.
     correlate_findings_called = False
+    # How many times each answer check has sent an answer back (bounded per check by
+    # answer_checks.MAX_REJECTIONS).
+    reject_counts: dict[str, int] = {}
     last_correlate_findings_error: str | None = None
-    correlate_findings_reject_count = 0
-    MAX_CORRELATE_REJECTIONS = 2
-    _CORRELATION_EXPLAINED_RE = re.compile(r"correlat|rule engine", re.IGNORECASE)
     # The explain-and-skip exemption above used to apply whenever the answer merely
     # CONTAINED "correlat" -- live incident (docs/time_window_design.md E26): an answer
     # saying "...may affect correlation with other logs" skipped the counting engine
@@ -1786,37 +1663,19 @@ def _run_agent_loop(
     any_data_tool_ok = False
     # Guard 6 (time scope, design §12 item 10): a goal that names a period must get that
     # period queried by a time-aware tool -- otherwise the answer isn't about that period.
-    time_scope_reject_count = 0
-    MAX_TIME_SCOPE_REJECTIONS = 2
     # Guard 7 (structured claims, design §14): a time-scoped answer's counts, "none"s and
     # periods must match what this run actually measured.
-    claims_reject_count = 0
-    MAX_CLAIMS_REJECTIONS = 2
     verified_claims: list[dict[str, Any]] = []
     # Guard 8 (unproposed capability gap, eval G1): the answer says Kratos can't
     # do something, but no tool_proposal was made -- ask once for the structured
     # proposal (or a correction). Advisory only: never tags the answer.
-    gap_claim_reject_count = 0
-    MAX_GAP_CLAIM_REJECTIONS = 1
     # Guard 9 (no-record honesty): category -> "open_ports at 2026-10-03 12:00" for
     # each state_as_of that found no record (a later successful lookup clears it).
     state_no_records: dict[str, str] = {}
-    no_record_reject_count = 0
-    MAX_NO_RECORD_REJECTIONS = 1
-    host_wording_reject_count = 0
-    MAX_HOST_WORDING_REJECTIONS = 1
     # Guard 11 (yes/no vs comparison): every compare_periods verdict pair this run.
     comparison_pairs: list[dict[str, Any]] = []
-    yes_no_reject_count = 0
-    MAX_YES_NO_REJECTIONS = 1
     tool_proposals_made = 0
     # Guard 5 (tool claims): an answer may not name a Kratos tool it never called.
-    tool_claim_reject_count = 0
-    MAX_TOOL_CLAIM_REJECTIONS = 2
-    _TOOL_NEGATION_RE = re.compile(
-        r"(without|not|never|didn't|did not|no|couldn't|could not|unable to|skipped|instead of)\W+(?:\w+\W+){0,3}$",
-        re.IGNORECASE,
-    )
 
     # Structural guard against a specific, confirmed hallucination pattern
     # (not a general fact-checker -- deliberately narrow, see comment at its
@@ -1830,16 +1689,6 @@ def _run_agent_loop(
     # catches "concluded without running correlate_findings" structurally,
     # rather than continuing to chase the underlying cause.
     last_file_integrity_diff: dict[str, Any] | None = None
-    file_integrity_reject_count = 0
-    MAX_FILE_INTEGRITY_REJECTIONS = 2
-    _FILE_INTEGRITY_NO_CHANGE_CLAIM_RE = re.compile(
-        r"(?:files?|configs?|configuration)\b[^.]{0,40}\bnot\s+(?:been\s+)?(?:tampered|modified|altered|changed)\b"
-        r"|\bnot\s+(?:been\s+)?tampered\s+with\b"
-        r"|\bno\s+(?:unauthorized\s+)?tampering\b"
-        r"|\bintegrity\s+(?:is\s+|remains\s+|appears\s+)?(?:intact|verified|confirmed)\b"
-        r"|(?:files?|configs?|configuration)\b[^.]{0,40}\bunchanged\b",
-        re.IGNORECASE,
-    )
 
     # Structural guard against a second, distinct hallucination pattern found
     # during live testing: a final_answer's OWN opening framing contradicting
@@ -1855,21 +1704,9 @@ def _run_agent_loop(
     # mentions low/medium findings without an alarmist verdict is not a
     # contradiction and must not be flagged.
     last_correlate_findings: list[dict[str, Any]] | None = None
-    dismissive_contradiction_reject_count = 0
-    MAX_DISMISSIVE_CONTRADICTION_REJECTIONS = 2
     # Guard 12 (phase A audit): an open HIGH/CRITICAL finding the analysis leaves out.
     # One rejection asks the model to cover it; whatever it writes, Kratos's own
     # findings block at the top of the answer always lists it (finding_facts).
-    serious_omission_reject_count = 0
-    MAX_SERIOUS_OMISSION_REJECTIONS = 1
-    _NO_SUSPICIOUS_ACTIVITY_CLAIM_RE = re.compile(
-        r"no\s+suspicious\s+activity"
-        r"|nothing\s+suspicious"
-        r"|no\s+(?:signs?\s+of\s+)?(?:compromise|intrusion|attack)\b"
-        r"|system\s+(?:appears?\s+|looks?\s+)?(?:to\s+be\s+)?(?:clean|fine|normal|secure|safe)\b"
-        r"|no\s+(?:issues?|problems?|concerns?)\s+(?:were\s+|was\s+)?(?:found|detected|identified)\b",
-        re.IGNORECASE,
-    )
 
     # Structural guard against a fourth, distinct hallucination pattern: a
     # final_answer confidently stating a specific claimed timeframe ("last
@@ -1888,13 +1725,6 @@ def _run_agent_loop(
     # last_file_integrity_diff's "latest wins" pattern below) -- a later,
     # fresher call genuinely clearing the warning must un-arm this guard.
     last_staleness_warning: str | None = None
-    staleness_timeframe_reject_count = 0
-    MAX_STALENESS_TIMEFRAME_REJECTIONS = 2
-    _TIMEFRAME_CLAIM_RE = re.compile(
-        r"\b(?:last|past|over\s+the\s+last|over\s+the\s+past|within\s+the\s+last|within\s+the\s+past)"
-        r"\s+(?:\d+\s*)?(?:hours?|days?|weeks?|months?)\b",
-        re.IGNORECASE,
-    )
 
     # Lever 2 (docs/clarify_expansion.md): a short clarification ROUND, not
     # just one question -- counts every clarify question actually PUT to the
@@ -2116,358 +1946,29 @@ def _run_agent_loop(
             # at the return (not on a rejected-and-retried attempt).
             finding_notes = _finding_notes(parsed, last_correlate_findings)
 
-            # Each guard's violated/can-reject condition is computed up front
-            # (against the model's raw answer) before any rejection or
-            # NOTE-tagging happens, so a final_answer tripping multiple
-            # guards at once can be handled in ONE combined pass below rather
-            # than each guard independently rejecting-and-retrying (which
-            # previously cost one iteration PER violated guard on the same
-            # bad answer).
-
-            # --- Guard 1: correlate_findings must have SUCCEEDED ---
-            # last_correlate_findings is not None <=> a real findings list was
-            # returned -- see the tracking-var comment above for why success,
-            # not attempt, is the actual condition now.
-            correlate_never_attempted = not correlate_findings_called
-            correlate_attempted_and_failed = correlate_findings_called and last_correlate_findings is None
-            correlate_missing = correlate_never_attempted or correlate_attempted_and_failed
-            # The "explain and skip" bypass only applies to the never-attempted
-            # case (genuinely nothing to correlate from). A failed attempt has
-            # a real, fixable error available -- that must be retried with a
-            # corrected call, not talked past with an explanation sentence.
-            explains_skip = (
-                correlate_never_attempted
-                and not any_data_tool_ok
-                and bool(_CORRELATION_EXPLAINED_RE.search(final_answer_text))
+            # Every check is evaluated up front against the model's raw answer, then every
+            # violated-and-rejectable one goes back in ONE combined rejection (one bad
+            # final_answer tripping several checks costs one retried iteration, not one per
+            # check). The checks themselves live in agent/answer_checks (D.2 §5.1) so a fleet
+            # answer holds each machine to the same ones with that machine's evidence only.
+            evidence = _answer_checks.MachineEvidence(
+                machine=get_active_target(), goal=goal, findings=last_correlate_findings,
+                correlate_called=correlate_findings_called, correlate_error=last_correlate_findings_error,
+                any_data_tool_ok=any_data_tool_ok, file_integrity_diff=last_file_integrity_diff,
+                staleness_warning=last_staleness_warning, tools_called=tools_called, known_tools=TOOL_REGISTRY,
+                tool_proposals_made=tool_proposals_made, coverage_gaps=coverage_gaps,
+                state_no_records=state_no_records, comparison_pairs=comparison_pairs, time_ctx=time_ctx,
+                host_mode=_is_host_mode(), transcript=transcript,
             )
-            guard1_violated = correlate_missing and not explains_skip
-            guard1_can_reject = (
-                guard1_violated
-                and not is_final_iteration
-                and correlate_findings_reject_count < MAX_CORRELATE_REJECTIONS
-            )
-
-            # --- Guard 2: file-integrity contradiction (Fix F) ---
-            # Deliberately narrow (file-integrity claims only, via a small
-            # fixed phrase set) rather than a general fact-checker -- broader
-            # scope risks false-triggering on unrelated phrasing. Only the
-            # "false negative" direction (claims clean when it wasn't) is
-            # checked, since that's the concrete failure pattern observed;
-            # the reverse (claims tampering when it was clean) is a
-            # different, rarer failure mode not covered here.
-            has_real_file_changes = bool(
-                last_file_integrity_diff
-                and (
-                    last_file_integrity_diff.get("changed")
-                    or last_file_integrity_diff.get("added")
-                    or last_file_integrity_diff.get("removed")
-                )
-            )
-            guard2_violated = has_real_file_changes and bool(
-                _FILE_INTEGRITY_NO_CHANGE_CLAIM_RE.search(final_answer_text)
-            )
-            guard2_can_reject = (
-                guard2_violated
-                and not is_final_iteration
-                and file_integrity_reject_count < MAX_FILE_INTEGRITY_REJECTIONS
-            )
-
-            # --- Guard 3: dismissive-verdict contradiction ---
-            # Severity-gated, fixed phrase set, not a general consistency
-            # checker -- see the tracking-var comment above for why this is
-            # scoped narrowly. Only fires on a real HIGH/CRITICAL finding.
-            high_severity_findings = [
-                f for f in (last_correlate_findings or [])
-                if isinstance(f, dict) and str(f.get("severity", "")).lower() in ("high", "critical")
-            ]
-            # A finding the answer names (id, an absorbed rule id, or its title) is
-            # acknowledged, not dismissed. Seen live: "no current evidence of malware ...
-            # however the machine is actively targeted ... (finding CORR-SSH-001)" was
-            # tagged as conflicting with CORR-SSH-001 because of "no signs of compromise".
-            unacknowledged_high = [f for f in high_severity_findings if not _names_finding(final_answer_text, f)]
-            guard3_violated = bool(unacknowledged_high) and bool(
-                _NO_SUSPICIOUS_ACTIVITY_CLAIM_RE.search(final_answer_text)
-            )
-            # D.3: naming a vulnerability whose SSVC decision is Act while calling it
-            # unimportant ("low priority", "can wait") is dismissive too -- the decision is
-            # Kratos's computation from CISA's tree, not the model's to lower.
-            downplayed_act = [
-                f for f in (last_correlate_findings or [])
-                if isinstance(f, dict) and str((f.get("ssvc") or {}).get("outcome") or "") == "act"
-                and str(f.get("state") or "") not in _finding_facts.DECIDED_STATES
-                and _finding_facts.downplays(final_answer_text, f)
-            ]
-            if downplayed_act:
-                guard3_violated = True
-                unacknowledged_high = unacknowledged_high + [
-                    {**f, "title": f"{f.get('title')} (CISA SSVC decision: Act -- remediate as soon as possible; "
-                                   "the answer calls it unimportant)"} for f in downplayed_act
-                    if f not in unacknowledged_high]
-            guard3_can_reject = (
-                guard3_violated
-                and not is_final_iteration
-                and dismissive_contradiction_reject_count < MAX_DISMISSIVE_CONTRADICTION_REJECTIONS
-            )
-
-            # --- Guard 12: a serious finding the analysis leaves out ---
-            # Sent back only for findings the question is about (all of them for a broad
-            # question); the others are listed by Kratos at the top regardless.
-            serious_left_out = [(f, m) for f, m in _finding_facts.left_out(final_answer_text, last_correlate_findings)
-                                if _finding_facts.relevant_to(goal, f)]
-            guard12_can_reject = (
-                bool(serious_left_out)
-                and not is_final_iteration
-                and serious_omission_reject_count < MAX_SERIOUS_OMISSION_REJECTIONS
-            )
-
-            # --- Guard 4: staleness-vs-claimed-timeframe contradiction ---
-            # Deliberately narrow (fixed timeframe-phrase regex, only fires
-            # when correlate_findings' OWN staleness_warning is non-null) --
-            # see the tracking-var comment above for the scope limits.
-            guard4_violated = bool(last_staleness_warning) and bool(
-                _TIMEFRAME_CLAIM_RE.search(final_answer_text)
-            )
-            guard4_can_reject = (
-                guard4_violated
-                and not is_final_iteration
-                and staleness_timeframe_reject_count < MAX_STALENESS_TIMEFRAME_REJECTIONS
-            )
-
-            # --- Guard 5: the answer must not claim a tool that never ran ---
-            claimed_uncalled = sorted(
-                name for name in TOOL_REGISTRY
-                if name not in tools_called
-                and any(
-                    not _TOOL_NEGATION_RE.search(final_answer_text[: m.start()])
-                    for m in re.finditer(rf"\b{re.escape(name)}\b", final_answer_text)
-                )
-            )
-            guard5_violated = bool(claimed_uncalled)
-            guard5_can_reject = (
-                guard5_violated
-                and not is_final_iteration
-                and tool_claim_reject_count < MAX_TOOL_CLAIM_REJECTIONS
-            )
-
-            # --- Guard 6: the goal's time periods must actually have been queried ---
-            unqueried = _unqueried_goal_windows(time_ctx)
-            guard6_violated = bool(unqueried)
-            guard6_can_reject = (
-                guard6_violated
-                and not is_final_iteration
-                and time_scope_reject_count < MAX_TIME_SCOPE_REJECTIONS
-            )
-
-            # --- Guard 7: structured claims verified against this run's measurements ---
-            claim_problems: list[str] = []
-            if _is_time_scoped(time_ctx):
-                claim_problems, verified_claims = _verify_claims(time_ctx, final_answer_text, parsed.get("claims"))
-            guard7_violated = bool(claim_problems)
-            guard7_can_reject = (
-                guard7_violated
-                and not is_final_iteration
-                and claims_reject_count < MAX_CLAIMS_REJECTIONS
-            )
-
-            # --- Guard 8: a capability gap stated in prose but never proposed ---
-            gap_claim = None if tool_proposals_made else _CAPABILITY_GAP_RE.search(final_answer_text)
-            if gap_claim is not None and coverage_gaps and _KNOWN_COVERAGE_LIMIT_RE.search(
-                    _gap_sentence(final_answer_text, gap_claim)):
-                # The "can't" is a tool's own reported coverage gap (e.g. no network
-                # scan through a sub-agent) -- already named in the answer, and not
-                # something a new tool could fix.
-                gap_claim = None
-            guard8_can_reject = (
-                gap_claim is not None
-                and not is_final_iteration
-                and gap_claim_reject_count < MAX_GAP_CLAIM_REJECTIONS
-            )
-
-            # --- Guard 9: a past state with no record must be said, not inferred ---
-            guard9_violated = bool(state_no_records) and not _NO_RECORD_ACK_RE.search(final_answer_text)
-            guard9_can_reject = (
-                guard9_violated
-                and not is_final_iteration
-                and no_record_reject_count < MAX_NO_RECORD_REJECTIONS
-            )
-
-            # --- Guard 10: in host mode, Kratos's own machine is not "the target" ---
-            guard10_can_reject = (
-                _is_host_mode() and bool(_HOST_AS_TARGET_RE.search(final_answer_text))
-                and not is_final_iteration and host_wording_reject_count < MAX_HOST_WORDING_REJECTIONS
-            )
-
-            # --- Guard 11: a Yes/No to "more/fewer ... than ...?" must match the verdict ---
-            yes_no = (_yes_no_problem(goal, final_answer_text, comparison_pairs,
-                                      getattr(time_ctx, "windows", {}) or {})
-                      if comparison_pairs else None)
-            guard11_can_reject = (
-                yes_no is not None and not is_final_iteration and yes_no_reject_count < MAX_YES_NO_REJECTIONS
-            )
-
-            corrections: list[str] = []
-            violations: list[str] = []
-
-            if guard11_can_reject:
-                yes_no_reject_count += 1
-                violations.append("yes_no_contradicts_comparison")
-                corrections.append(
-                    f"REJECTED (yes/no contradicts the comparison): {yes_no['why']}, so the answer to the "
-                    f"question as asked is \"{yes_no['expected']}\", but your answer starts with "
-                    f"\"{yes_no['got']}\". Start the answer with \"{yes_no['expected']}\" and keep the same numbers."
-                )
-
-            if guard1_can_reject:
-                correlate_findings_reject_count += 1
-                violations.append("missing_correlation")
-                if correlate_attempted_and_failed:
-                    corrections.append(
-                        "REJECTED (correlate_findings attempted but never succeeded): your "
-                        "correlate_findings call did not return a real result -- concluding on raw "
-                        "tool observations without a successful correlation pass risks missing "
-                        f"evidence you already collected. The real error was: "
-                        f"{last_correlate_findings_error!r}. If this was caused by a guessed file "
-                        "path, retry correlate_findings using the EXACT path string from a prior "
-                        "tool's own Observation in this conversation (e.g. run_nmap_scan's "
-                        "parsed_json_file, collect_system_context's context_file, parse_auth_log's "
-                        "stats_file) -- or omit the argument entirely to auto-discover the latest "
-                        "file. Do not guess a new path."
-                    )
-                else:
-                    corrections.append(
-                        "REJECTED (correlate_findings not called): correlate_findings has not been "
-                        "called yet in this investigation. It is the deterministic rule engine that "
-                        "reliably classifies raw observations into real findings -- concluding without "
-                        "ever running it risks missing evidence you already collected. Either call "
-                        "correlate_findings now to synthesize what you've gathered, or if it genuinely "
-                        "cannot run (e.g. no collection tool succeeded that it could use as input), your "
-                        "final_answer text itself must explicitly say so (e.g. 'concluding without "
-                        "correlate_findings because ...') -- a reasoning field alone is not enough, and "
-                        "this cannot be omitted silently."
-                    )
-
-            if guard2_can_reject:
-                file_integrity_reject_count += 1
-                violations.append("file_integrity_contradiction")
-                corrections.append(
-                    "REJECTED (file-integrity contradiction): this final_answer's "
-                    "characterization of file/config integrity conflicts with "
-                    "check_file_integrity's actual result from THIS investigation. The real diff "
-                    f"was: {json.dumps(last_file_integrity_diff)}. Revise your final_answer so it "
-                    "accurately reflects this -- do not claim files are unchanged/not tampered "
-                    "with when this diff shows real changes."
-                )
-
-            if guard3_can_reject:
-                dismissive_contradiction_reject_count += 1
-                violations.append("dismissive_verdict_contradiction")
-                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in unacknowledged_high)
-                corrections.append(
-                    "REJECTED (dismissive-verdict contradiction): this final_answer's overall "
-                    "verdict (e.g. 'no suspicious activity') contradicts real HIGH/CRITICAL "
-                    f"finding(s) correlate_findings just produced in THIS investigation: "
-                    f"{finding_summary}. Revise your final_answer so its overall characterization "
-                    "is consistent with these findings -- do not describe the investigation as "
-                    "clean/unsuspicious while also citing evidence that contradicts that."
-                )
-
-            if guard12_can_reject:
-                serious_omission_reject_count += 1
-                violations.append("serious_finding_left_out")
-                listed = "; ".join(f"{_finding_facts.model_line(f)} [missing from your answer: {', '.join(m)}]"
-                                   for f, m in serious_left_out)
-                corrections.append(
-                    "REJECTED (serious finding left out): these HIGH/CRITICAL findings are open on this machine "
-                    f"and your final_answer does not cover them: {listed}. Rewrite your final_answer so it "
-                    "addresses each one -- what it means and what to do -- and names its facts (the source "
-                    "address, a known-malicious match, the process id or package). Keep everything else that is right."
-                )
-
-            if guard4_can_reject:
-                staleness_timeframe_reject_count += 1
-                violations.append("staleness_timeframe_contradiction")
-                corrections.append(
-                    "REJECTED (staleness-vs-timeframe contradiction): this final_answer states a "
-                    "specific recency window (e.g. 'in the last 24 hours'), but correlate_findings' "
-                    f"own staleness_warning from THIS investigation says: {last_staleness_warning!r} "
-                    "-- the data you correlated is not actually known to be confined to that window. "
-                    "Revise your final_answer to either drop the specific timeframe claim, or "
-                    "explicitly caveat that the underlying data spans a wider/uncertain window than "
-                    "what was asked."
-                )
-
-            if guard5_can_reject:
-                tool_claim_reject_count += 1
-                violations.append("claims_uncalled_tool")
-                corrections.append(
-                    "REJECTED (claims a tool that was never run): this final_answer names "
-                    f"{', '.join(claimed_uncalled)}, but that tool was NOT called in this investigation. "
-                    "Either call it now and use its real result, or remove the claim. If you are "
-                    "recommending it as a follow-up, say so explicitly (e.g. 'I did not run X')."
-                )
-
-            if guard6_can_reject:
-                time_scope_reject_count += 1
-                violations.append("time_scope_not_queried")
-                corrections.append(
-                    "REJECTED (time period not queried): the goal asks about "
-                    + "; ".join(f"\"{w.phrase}\" = {w.summary()}" for w in unqueried)
-                    + ", but no tool has queried that window yet. Call a time-aware tool (e.g. "
-                    "read_journalctl) with \"window\": {\"id\": \"<id above>\"} before concluding. If no "
-                    "available tool can cover that period, say so explicitly in the answer."
-                )
-
-            if guard7_can_reject:
-                claims_reject_count += 1
-                violations.append("claims_not_verified")
-                corrections.append(
-                    "REJECTED (claims do not match what was measured):\n- " + "\n- ".join(claim_problems)
-                    + "\nFix the answer and its \"claims\" list: every count must equal the measured value, "
-                    "'none' needs 100% coverage of that window (otherwise say which part is unknown), and every "
-                    "period you mention must be a window you queried. If a period was not measured, run "
-                    "measure_auth_activity for it first."
-                )
-
-            if guard10_can_reject:
-                host_wording_reject_count += 1
-                violations.append("host_called_target")
-                corrections.append(
-                    "CHECK (wording): this investigation is about KRATOS'S OWN MACHINE, not a monitored "
-                    "target. Reword the answer to say \"this Kratos machine\" instead of \"the target\", "
-                    "and send it again (same facts)."
-                )
-
-            if guard9_can_reject:
-                no_record_reject_count += 1
-                violations.append("past_state_without_record")
-                corrections.append(
-                    "REJECTED (past state without a record): state_as_of found NO saved record of "
-                    + "; ".join(state_no_records.values())
-                    + ". Say plainly that Kratos has no record of that, and do not infer the past state "
-                    "from other data (login or sudo events say nothing about which ports were open). "
-                    "If useful, say what WOULD answer it next time (e.g. a scan saved at that time)."
-                )
-
-            if guard8_can_reject:
-                gap_claim_reject_count += 1
-                violations.append("unproposed_capability_gap")
-                corrections.append(
-                    "CHECK (capability gap not proposed): your answer says Kratos can't do something "
-                    f"(\"{gap_claim.group(0).strip()}\"). If that is a real gap for THIS goal, respond now with "
-                    'a tool_proposal ({"reasoning": "...", "tool_proposal": {"name": "...", "description": '
-                    '"..."}}) so a human can decide whether to build it -- it does not end the '
-                    "investigation -- and then send your final_answer again. If an existing tool already "
-                    "covers it, use that tool instead. If the gap isn't real, reword the answer."
-                )
+            checked = _answer_checks.evaluate(final_answer_text, evidence, parsed.get("claims"))
+            if checked.verified_claims is not None:
+                verified_claims = checked.verified_claims
+            serious_left_out = checked["guard12"].data["left_out"]
+            gap_claim = checked["guard8"].data["gap"]
+            violations, corrections = _answer_checks.rejections(
+                checked, evidence, reject_counts, final_iteration=is_final_iteration)
 
             if corrections:
-                # Rejecting-and-retrying needs a next iteration to retry into,
-                # so each guard above only contributes here when one exists
-                # and its own retry budget isn't spent (guard*_can_reject).
-                # Combining every violated-and-rejectable guard into a single
-                # correction + single continue means one bad final_answer
-                # tripping multiple guards costs one retried iteration, not
-                # one per guard.
                 correction = "\n\n".join(corrections)
                 for _gi, _gname in enumerate(violations):
                     _trace_guard(_gname, "rejected", corrections[_gi] if _gi < len(corrections) else "", i)
@@ -2487,99 +1988,12 @@ def _run_agent_loop(
             # as sanitized prose) -- see `answer_parts` on the result.
             _analysis_text = final_answer_text if isinstance(final_answer_text, str) else ""
 
-            # No guard rejected this attempt (either none were violated, or
-            # the final iteration/rejection budget forecloses rejecting) --
-            # the visibility requirement still applies regardless, so any
-            # guard that's STILL violated gets tagged directly in the answer
-            # text rather than silently accepted as a fully-corroborated
+            # No check rejected this attempt (none violated, or the final iteration /
+            # rejection budget forecloses it) -- a check that's STILL violated is tagged
+            # in the answer text rather than silently accepted as a corroborated
             # conclusion it isn't.
-            if guard1_violated:
-                if correlate_attempted_and_failed:
-                    final_answer_text = (
-                        "[NOTE: correlate_findings (the deterministic rule engine) was attempted "
-                        "during this investigation but never returned a successful result (last "
-                        f"error: {last_correlate_findings_error!r}), and this conclusion does not "
-                        "explain why -- treat it as a lower-confidence, observation-only "
-                        "conclusion, not one corroborated by the rule engine.]\n\n" + final_answer_text
-                    )
-                else:
-                    final_answer_text = (
-                        "[NOTE: correlate_findings (the deterministic rule engine) was never run "
-                        "during this investigation, and this conclusion does not explain why -- "
-                        "treat it as a lower-confidence, observation-only conclusion, not one "
-                        "corroborated by the rule engine.]\n\n" + final_answer_text
-                    )
-
-            if guard2_violated:
-                final_answer_text = (
-                    "[NOTE: this answer's characterization of file/config integrity conflicts "
-                    f"with check_file_integrity's actual result from this investigation: "
-                    f"{json.dumps(last_file_integrity_diff)}. Treat the file-integrity portion of "
-                    "this answer as unreliable -- trust the diff above instead.]\n\n" + final_answer_text
-                )
-
-            if guard3_violated:
-                finding_summary = "; ".join(f"{f.get('id')}: {f.get('title')}" for f in unacknowledged_high)
-                final_answer_text = (
-                    "[NOTE: this answer's overall verdict conflicts with real HIGH/CRITICAL "
-                    f"finding(s) from this investigation: {finding_summary}. Treat the dismissive "
-                    "framing above as unreliable.]\n\n" + final_answer_text
-                )
-
-            if guard4_violated:
-                final_answer_text = (
-                    "[NOTE: this answer states a specific recency window, but correlate_findings' "
-                    f"own staleness_warning from this investigation says: {last_staleness_warning!r} "
-                    "-- the underlying data is not actually confirmed to be confined to that window. "
-                    "Treat the claimed timeframe as unreliable.]\n\n" + final_answer_text
-                )
-
-            if guard7_violated:
-                plain = [_plain_claim_problem(p, time_ctx) for p in claim_problems[:4]]
-                final_answer_text = (
-                    "[NOTE: parts of this answer could not be verified against Kratos's own measurements: "
-                    + "; ".join(plain) + (" (and more)" if len(claim_problems) > 4 else "")
-                    + " -- treat those statements as unverified.]\n\n" + final_answer_text
-                )
-
-            if yes_no is not None:
-                final_answer_text = (
-                    f"[NOTE: {yes_no['why']}, so the answer to the question is {yes_no['expected']}.]\n\n"
-                    + final_answer_text
-                )
-
-            if guard9_violated:
-                final_answer_text = (
-                    "[NOTE: Kratos has no saved record of " + "; ".join(state_no_records.values())
-                    + " -- anything above about that past state is inferred from other data, not "
-                    "observed.]\n\n" + final_answer_text
-                )
-
-            if guard6_violated:
-                final_answer_text = (
-                    "[NOTE: the goal asked about "
-                    + "; ".join(f"\"{w.phrase}\" ({w.id})" for w in unqueried)
-                    + ", but no data for that period was queried -- this answer is not scoped to it.]\n\n"
-                    + final_answer_text
-                )
-
-            if guard5_violated:
-                final_answer_text = (
-                    f"[NOTE: this answer refers to {', '.join(claimed_uncalled)}, which was never run in "
-                    "this investigation -- anything attributed to it above is unverified.]\n\n" + final_answer_text
-                )
-
-            unstated_gaps = _unstated_coverage_gaps(coverage_gaps, final_answer_text)
-            if unstated_gaps:
-                final_answer_text = _coverage_note(unstated_gaps) + final_answer_text
-
-            # An address the answer names that nothing Kratos read contains is the model's
-            # invention (phase A audit: an answer blamed 10.136.28.1 for an attack from .52).
-            invented = _ungrounded_ips(final_answer_text, goal, transcript)
-            if invented:
-                final_answer_text = (
-                    f"[NOTE: this answer mentions {', '.join(invented)}, which appears in nothing Kratos read "
-                    "in this investigation -- treat it as unverified.]\n\n" + final_answer_text)
+            noted_answer = _answer_checks.apply_notes(final_answer_text, checked, evidence)
+            final_answer_text = noted_answer.text
 
             # On top: what Kratos found, written by Kratos. Every open HIGH/CRITICAL finding
             # with the fact that matters -- whatever the analysis below says or leaves out.
@@ -2594,13 +2008,7 @@ def _run_agent_loop(
             _trace_answer_composition(
                 i=i, model_text=model_answer_text,
                 with_notes=_notes_before_block, final=final_answer_text, findings=last_correlate_findings,
-                noted={"missing_correlation": guard1_violated, "file_integrity_contradiction": guard2_violated,
-                       "dismissive_verdict_contradiction": guard3_violated,
-                       "staleness_timeframe_contradiction": guard4_violated, "claims_uncalled_tool": guard5_violated,
-                       "time_scope_not_queried": guard6_violated, "claims_not_verified": guard7_violated,
-                       "past_state_without_record": guard9_violated,
-                       "yes_no_contradicts_comparison": yes_no is not None,
-                       "unstated_coverage_gap": bool(unstated_gaps), "ungrounded_ip": bool(invented)},
+                noted=noted_answer.noted(checked),
                 serious_left_out=[str(f.get("id")) for f, _m in serious_left_out])
 
 

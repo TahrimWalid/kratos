@@ -368,8 +368,10 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         )
 
         default_target = _kconfig.get_active_target()
-        hint = (f"Target(s), space-separated [default: {default_target}] — add a login as name@host" if default_target
-                else "Target(s), space-separated — the machine(s) to investigate (name@host to say who to log in as)")
+        hint = (f"Target(s), space-separated [default: {default_target}] — add a login as name@host, or @group "
+                "for a group of machines" if default_target
+                else "Target(s), space-separated — the machine(s) to investigate (name@host to say who to log in as; "
+                     "@group for a group)")
         while True:
             answer = await self.app.push_screen_wait(PromptModal(
                 "New session",
@@ -390,6 +392,19 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                     continue
                 targets = [default_target]
                 break
+            if answer.strip().startswith("@"):
+                # D.2: a group of machines (@web, @all) -- every question is asked of each.
+                from kratos.fleet import groups as G
+
+                try:
+                    G.resolve(self._data_dir, answer.strip())
+                except G.GroupError as e:
+                    self.app.notify(str(e), severity="error", timeout=6)
+                    continue
+                targets = ["@" + G._normal_name(answer.strip())]
+                session_id = self._store.create_session(targets, self.app.model_label())  # type: ignore[attr-defined]
+                self._open_session(session_id, targets, "")
+                return
             typed = expand_host_aliases(answer.split())
             targets, err = validate_targets(typed, allow_login=True)
             if err:

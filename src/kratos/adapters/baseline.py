@@ -401,8 +401,9 @@ def save_file_integrity_diff(
     baseline_dir = data_dir / "baseline"
     baseline_dir.mkdir(parents=True, exist_ok=True)
     safe_name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in baseline_name) or "default"
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = baseline_dir / f"file_integrity_diff_{safe_name}_{ts}.json"
+    from kratos.utils.stamped import reserve
+
+    out, _ts = reserve(baseline_dir, f"file_integrity_diff_{safe_name}", ".json")
     out.write_text(
         json.dumps(
             {

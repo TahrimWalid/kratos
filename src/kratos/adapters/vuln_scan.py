@@ -373,9 +373,10 @@ def run_nmap_vulscan(target: str, data_dir: Path, *, use_vulscan: bool = True) -
     """
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    from kratos.utils.stamped import reserve
+
     safe_target = target.replace("/", "_").replace(":", "_")
-    out_xml = scans_dir / f"vulscan_{safe_target}_{ts}.xml"
+    out_xml, _ts = reserve(scans_dir, f"vulscan_{safe_target}", ".xml")
 
     if use_vulscan and not VULSCAN_NSE_PATH.exists():
         raise RuntimeError(f"vulscan isn't installed ({VULSCAN_NSE_PATH} is missing) -- {VULSCAN_INSTALL_HINT}.")
@@ -468,9 +469,10 @@ def run_nuclei_scan(target: str, data_dir: Path, tags: str = DEFAULT_NUCLEI_TAGS
     """
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    from kratos.utils.stamped import reserve
+
     safe_target = target.replace("/", "_").replace(":", "_")
-    out_jsonl = scans_dir / f"nuclei_{safe_target}_{ts}.jsonl"
+    out_jsonl, _ts = reserve(scans_dir, f"nuclei_{safe_target}", ".jsonl")
 
     target_url = target if "://" in target else f"http://{target}"
     cmd = [

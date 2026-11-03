@@ -26,12 +26,12 @@ def cmd_hunt(args: argparse.Namespace) -> int:
     if args.from_intel:
         return _cmd_auto(data_dir, args)
     req = front.Request(words=list(args.indicators or []), kind=args.type, since=args.since, until=args.until,
-                        machines=list(args.machine or []))
+                        machines=list(args.machine or []), groups=list(getattr(args, "group", None) or []))
     if not req.words:
         print("[KRATOS] " + front.USAGE.replace("/hunt", "kratos hunt"), file=sys.stderr)
         return 2
     try:
-        prepared = front.resolve_hunt(req)
+        prepared = front.resolve_hunt(req, data_dir=data_dir)
         if prepared.ambiguous:
             a = prepared.ambiguous[0]
             print(f"[KRATOS] {a.question()} Run again with --type {' or --type '.join(a.options)}.",
@@ -118,6 +118,7 @@ def register(sub: argparse._SubParsersAction) -> None:
                         f"(up to 10)")
     h.add_argument("--type", default=None, help="force the kind: ip, sha256, account, domain, program, path")
     h.add_argument("--machine", action="append", default=None, help="only this machine (repeatable)")
+    h.add_argument("--group", action="append", default=None, help="only the machines of this group (repeatable)")
     h.add_argument("--since", default=None, help="e.g. 30d, 24h, '7 days ago', 2026-10-01 (default: everything)")
     h.add_argument("--until", default=None, help="the end of the window (default: now)")
     h.add_argument("--json", action="store_true", help="one JSON document (lists up to hunt.max_hits hits)")

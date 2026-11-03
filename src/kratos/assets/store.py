@@ -109,6 +109,9 @@ def connect(data_dir: Path) -> sqlite3.Connection:
     conn = connect_store(path)
     try:
         migrate_once(conn, path, COMPONENT, STEPS)
+        from kratos.fleet import groups as _groups   # D.2: `groups` is the membership table
+
+        _groups.ensure_schema(conn, path)
     except BaseException:
         conn.close()
         raise
@@ -124,11 +127,24 @@ def opened(data_dir: Path) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def _row_asset(r: sqlite3.Row) -> Asset:
+def _membership(conn: sqlite3.Connection | None, target: str) -> tuple[str, ...] | None:
+    if conn is None:
+        return None
     try:
-        groups = tuple(str(g) for g in json.loads(r["groups"] or "[]"))
-    except (TypeError, ValueError):
-        groups = ()
+        return tuple(r[0] for r in conn.execute(
+            "SELECT m.group_name FROM group_members m JOIN machine_groups g ON g.name = m.group_name "
+            "WHERE m.target = ? AND m.removed_at IS NULL AND g.deleted_at IS NULL ORDER BY m.rowid", (target,)))
+    except sqlite3.Error:
+        return None
+
+
+def _row_asset(r: sqlite3.Row, conn: sqlite3.Connection | None = None) -> Asset:
+    groups = _membership(conn, r["target"])
+    if groups is None:
+        try:
+            groups = tuple(str(g) for g in json.loads(r["groups"] or "[]"))
+        except (TypeError, ValueError):
+            groups = ()
     return Asset(r["target"], r["criticality"], r["wellbeing"] or "minimal", r["exposure_override"],
                  r["role"] or "", groups, r["owner_note"] or "", r["asked_at"], r["updated_at"], r["updated_by"] or "")
 
@@ -140,9 +156,9 @@ def get(data_dir: Path, target: str) -> Asset | None:
     try:
         with opened(data_dir) as conn:
             r = conn.execute("SELECT * FROM assets WHERE target = ?", (target_key(target),)).fetchone()
+            return _row_asset(r, conn) if r else None
     except sqlite3.Error:
         return None
-    return _row_asset(r) if r else None
 
 
 def _check_actor(actor: Actor) -> None:
@@ -217,14 +233,27 @@ def update(data_dir: Path, target: str, actor: Actor, **changes: Any) -> Asset:
                              (key, now, now, who))
                 r = conn.execute("SELECT * FROM assets WHERE target = ?", (key,)).fetchone()
             for name, value in cleaned.items():
-                stored = json.dumps(value) if name == "groups" else value
-                old = r[name]
-                if (old or None) == (stored or None) and name != "groups":
+                if name == "groups":
+                    from kratos.fleet import groups as _groups
+
+                    old_groups = list(_membership(conn, key) or ())
+                    if set(old_groups) == set(value):
+                        continue
+                    try:
+                        _groups.set_machine_groups_in(conn, key, value, actor, now)
+                    except _groups.GroupError as e:
+                        raise AssetError(str(e)) from None
+                    conn.execute("UPDATE assets SET updated_at = ?, updated_by = ? WHERE target = ?", (now, who, key))
+                    conn.execute("INSERT INTO asset_events (target, at, field, old_value, new_value, actor, interface) "
+                                 "VALUES (?, ?, 'groups', ?, ?, ?, ?)",
+                                 (key, now, json.dumps(old_groups), json.dumps(value), who, actor.interface))
                     continue
-                if name == "groups" and json.loads(old or "[]") == value:
+                stored = value
+                old = r[name]
+                if (old or None) == (stored or None):
                     continue
                 conn.execute(f"UPDATE assets SET {name} = ?, updated_at = ?, updated_by = ? WHERE target = ?",
-                             (stored if name == "groups" else value, now, who, key))
+                             (value, now, who, key))
                 conn.execute("INSERT INTO asset_events (target, at, field, old_value, new_value, actor, interface) "
                              "VALUES (?, ?, ?, ?, ?, ?, ?)", (key, now, name, old, stored, who, actor.interface))
             conn.execute("COMMIT")
@@ -232,7 +261,7 @@ def update(data_dir: Path, target: str, actor: Actor, **changes: Any) -> Asset:
             conn.execute("ROLLBACK")
             raise
         r = conn.execute("SELECT * FROM assets WHERE target = ?", (key,)).fetchone()
-    return _row_asset(r)
+        return _row_asset(r, conn)
 
 
 def mark_asked(data_dir: Path, target: str, actor: Actor) -> None:
@@ -287,8 +316,8 @@ def known_machines(data_dir: Path, *, configured: str | None = None) -> list[Ass
     seen: dict[str, set[str]] = {}
     if db_path(data_dir).exists():
         with opened(data_dir) as conn:
-            for r in conn.execute("SELECT * FROM assets ORDER BY target"):
-                rows[r["target"]] = _row_asset(r)
+            for r in conn.execute("SELECT * FROM assets ORDER BY target").fetchall():
+                rows[r["target"]] = _row_asset(r, conn)
             for label, sql in (("findings", "SELECT DISTINCT target FROM finding_records"),
                                ("packages", "SELECT DISTINCT target FROM pkg_inventory"),
                                ("checks", "SELECT DISTINCT target FROM collect_state")):

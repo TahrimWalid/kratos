@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, asdict
-from datetime import datetime
 from kratos.utils.timeutil import utc_now_iso
 from pathlib import Path
 from typing import Any
@@ -123,8 +122,9 @@ def build_auth_trends_report(
     # conservative trigger condition for your optional thesis finding
     trigger = bool(delta >= min_delta)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_json = reports_dir / f"auth_trends_{ts}.json"
+    from kratos.utils.stamped import reserve
+
+    out_json, ts = reserve(reports_dir, "auth_trends", ".json")
     out_md = reports_dir / f"auth_trends_{ts}.md"
 
     report: dict[str, Any] = {

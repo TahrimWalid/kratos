@@ -10,7 +10,6 @@ import contextlib
 import contextvars
 import subprocess
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Iterator
 
@@ -39,9 +38,10 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     scans_dir = data_dir / "scans"
     scans_dir.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    from kratos.utils.stamped import reserve
+
     safe_target = target.replace("/", "_").replace(":", "_")
-    out_xml = scans_dir / f"nmap_{safe_target}_{ts}.xml"
+    out_xml, _ts = reserve(scans_dir, f"nmap_{safe_target}", ".xml")
 
     # -Pn: skip host-discovery ping probes and treat the target as up. Without
     # this, a firewalled target that drops ICMP/discovery probes but has real

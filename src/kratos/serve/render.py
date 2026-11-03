@@ -101,6 +101,33 @@ def answer_markdown(final_answer: str, parts: dict[str, str] | None = None,
     return "\n\n".join(p for p in out if p)
 
 
+def fleet_markdown(answer: Any, *, link_hosts: Any = ()) -> str:
+    """A fleet answer (kratos.fleet.answer.FleetAnswer) for a chat client: Kratos's
+    summary, then one section per machine -- Kratos's block and NOTEs verbatim, the
+    model's analysis as sanitized prose, Kratos's own text for a machine it didn't read."""
+    out = [_kratos_lines(answer.summary)]
+    if answer.model_summary:
+        out.append(untrusted.for_markdown(answer.model_summary, link_hosts=link_hosts))
+    if answer.model_summary_dropped:
+        out.append(_kratos_lines(f"[NOTE: {answer.model_summary_dropped}]", quote=True))
+    if answer.extra_reads:
+        out.append(_kratos_lines("Extra reads: " + "; ".join(
+            f"{r['tool']} on {r['machine']}" + ("" if r.get("ran") else f" (not run: {r.get('why')})")
+            for r in answer.extra_reads)))
+    from kratos.fleet.answer import fleet_digest_outcome
+
+    for m in answer.machines:
+        name = f" ({m.label})" if m.label else ""
+        out.append("### " + untrusted.md_code(m.machine + name, max_len=120) + " -- "
+                   + untrusted.for_markdown(fleet_digest_outcome(m)))
+        if m.kratos_text:
+            out.append(_kratos_lines(m.kratos_text))
+            continue
+        out.append(answer_markdown(m.text, {"block": m.block, "notes": m.notes, "analysis": m.analysis}, (),
+                                   link_hosts=link_hosts))
+    return "\n\n".join(p for p in out if p)
+
+
 def chat_markdown(reply: str, *, link_hosts: Any = ()) -> str:
     """A plain chat reply from the model (no investigation ran)."""
     return untrusted.for_markdown(reply or "", link_hosts=link_hosts)

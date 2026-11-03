@@ -35,6 +35,7 @@ class Lab:
     allowed_public: dict[str, str] = field(default_factory=dict)
     vulndb: str = ""                                   # index linked into live runs ([vulndb] path)
     expect: dict[str, dict[str, str]] = field(default_factory=dict)   # per-scenario expectations
+    fleet: tuple[str, ...] = ()                        # the machines a fleet scenario asks about ([fleet])
 
 
 @lru_cache(maxsize=None)
@@ -47,7 +48,8 @@ def lab() -> Lab:
                allowed_public=dict(d.get("recordings", {}).get("allowed_public_addresses", {})),
                vulndb=str(Path(str(d.get("vulndb", {}).get("path") or "")).expanduser())
                if d.get("vulndb", {}).get("path") else "",
-               expect={k: dict(v) for k, v in (d.get("expect") or {}).items() if isinstance(v, dict)})
+               expect={k: dict(v) for k, v in (d.get("expect") or {}).items() if isinstance(v, dict)},
+               fleet=tuple(str(m) for m in (d.get("fleet") or {}).get("machines") or ()))
 
 
 def vulndb_path() -> Path | None:
@@ -65,7 +67,7 @@ def expected(scenario_id: str, key: str, env: str) -> str:
 def lab_addresses() -> set[str]:
     """Addresses that are legitimately part of the lab, so a recording may mention them."""
     L = lab()
-    return {L.target, L.attacker_ip}
+    return {L.target, L.attacker_ip, *L.fleet}
 
 
 def is_private_or_documentation(ip: str) -> bool:
