@@ -203,6 +203,9 @@ def enqueue(conn: sqlite3.Connection, *, channel: str, kind: str, message_id: st
     if not message_id or len(message_id) > 200:
         raise ValueError("a message needs a message_id of at most 200 characters")
     now = time.time() if now is None else now
+    from kratos.privacy.secrets import redact
+
+    summary, _n = redact(str(summary or ""))
     cur = conn.execute(
         "INSERT OR IGNORE INTO outbox (channel, kind, message_id, order_key, payload, summary, severity, machine,"
         " status, created_at, next_attempt_at, source, run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",

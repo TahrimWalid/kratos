@@ -225,6 +225,11 @@ class Worker:
                     outcome = S.Outcome(False, True, clean_reason(f"sender failed: {e}", *secrets.values()))
         if note and outcome.ok:
             outcome = S.Outcome(True, False, f"{outcome.detail} ({note})", outcome.status_code)
+        # whatever a sender says goes through the same cleaning before it is stored, logged
+        # or announced: the channel's own secrets and secret-shaped values never survive it
+        from dataclasses import replace as _replace
+
+        outcome = _replace(outcome, detail=clean_reason(outcome.detail, *secrets.values()))
         now = time.time()
         with S.opened(self.data_dir) as conn:
             status = S.finish(conn, oid, attempt_id, holder=self.holder, outcome=outcome, now=now)

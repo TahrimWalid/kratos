@@ -120,7 +120,10 @@ def enqueue_alert(text: str, severity: str = "info", *, deliver: Iterable[str] |
 
     ctx = run_context.current()
     machines = tuple(m for m in (machines or ((machine,) if machine else ())) if m)
-    a = Alert(text=str(text or ""), bucket=bucket, worst=worst, machine=machine or (machines[0] if len(machines) == 1
+    from kratos.outbox.render import redact_obj
+
+    text = redact_obj(str(text or ""))              # secrets out before anything is stored, summary included
+    a = Alert(text=text, bucket=bucket, worst=worst, machine=machine or (machines[0] if len(machines) == 1
                                                                                    else None),
               findings=_finding_summary(findings), kind=kind, source=source or (ctx.source if ctx else None),
               name=name, at=time.time(), message_id=message_id or f"{kind}:{uuid.uuid4().hex}")
