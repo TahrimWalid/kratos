@@ -240,3 +240,21 @@ def test_the_guide_receiver_snippet_verifies_a_real_delivery(dd, rx):
     exec(m.group(1), ns)  # noqa: S102 -- our own documentation's code
     assert ns["verify"](secret, headers, body) is True
     assert ns["verify"](secret, headers, body + b"x") is False
+
+
+def test_a_bulk_answer_with_item_errors_is_not_counted_as_delivered(dd, rx):
+    """Elasticsearch / OpenSearch answer _bulk with 200 even when a document was rejected."""
+    C.add_channel(dd, name="soc", kind="webhook", config={"url": rx.url, "ca_file": str(rx.ca), "framing": "es_bulk"},
+                  scopes=["alerts"], actor=ACTOR)
+    rx.body_out = json.dumps({"took": 3, "errors": True, "items": [{"index": {
+        "_id": "abc", "status": 400, "error": {"type": "mapper_parsing_exception",
+                                               "reason": "failed to parse field [time]"}}}]}).encode()
+    res = A.enqueue_alert("x", deliver=["soc"], data_dir=dd)
+    W.flush(dd, label="t")
+    with S.opened(dd) as conn:
+        row = S.get(conn, res["outbox_ids"][0])
+    assert row["status"] == "dead" and "mapper_parsing_exception" in row["last_error"]
+    from kratos.outbox.channels.webhook import bulk_item_failure
+
+    assert bulk_item_failure(b'{"took":1,"errors":false,"items":[]}') is None
+    assert bulk_item_failure(b'{"errors":true,"items":[{"index":{"status":429,"error":{"type":"x"}}}]}')[0] is True

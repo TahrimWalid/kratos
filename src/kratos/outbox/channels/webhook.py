@@ -74,6 +74,30 @@ def build_request(delivery: Delivery, channel: Any, secrets: dict[str, str], dat
     return str(channel.config["url"]), headers, body
 
 
+def bulk_item_failure(raw: bytes) -> tuple[bool, str] | None:
+    """Elasticsearch / OpenSearch answer a ``_bulk`` request with 200 even when documents in
+    it failed; the body says ``"errors": true`` and why per item. (retryable, reason) when
+    something failed, else None. Only the first 4 KB are read: a cut-off body that says
+    errors is still a failure (retried: the reason can't be seen)."""
+    import json
+
+    text = raw.decode("utf-8", "replace")
+    if '"errors":true' not in text.replace(" ", ""):
+        return None
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return True, "the response was too long to read the reason"
+    for item in doc.get("items") or []:
+        res = next(iter(item.values()), {}) if isinstance(item, dict) else {}
+        if res.get("error"):
+            err = res["error"]
+            status = int(res.get("status") or 0)
+            reason = f"{err.get('type')}: {err.get('reason')}" if isinstance(err, dict) else str(err)
+            return status in (429, 503) or status >= 500, f"document {res.get('_id')}: {reason}"
+    return True, "a document failed"
+
+
 def _retry_after(resp: Any) -> float | None:
     v = (resp.headers or {}).get("retry-after")
     try:
@@ -111,6 +135,11 @@ def send(delivery: Delivery, channel: Any, secrets: dict[str, str], data_dir: Pa
         resp.close()
     code = int(resp.status_code)
     if 200 <= code < 300:
+        if (channel.config.get("framing") or "json") == "es_bulk":
+            failed = bulk_item_failure(raw)
+            if failed is not None:
+                return Outcome(False, failed[0], clean_reason(f"HTTP {code} but the bulk request had errors: {failed[1]}",
+                                                              *hidden), code)
         return Outcome(True, False, f"HTTP {code}", code)
     text = raw.decode("utf-8", "replace")
     if 300 <= code < 400:
