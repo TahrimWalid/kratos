@@ -2046,6 +2046,70 @@ counter, created with O_EXCL), and every input is chosen by the machine it descr
 model), cross-machine findings (E.1), and any decision -- each machine's findings, SSVC
 decisions and lifecycle stay its own.
 
+## Integrations: the outbox (D.4)
+
+Everything that leaves Kratos for a receiver goes through **one durable outbox** in
+`kratos.db` (`kratos/outbox/`). Producers only enqueue; a delivery worker sends. No feature
+sends directly: triggers, schedules (including fleet schedules), live detection alerts, budget
+notices, the disk-fill alert, the model's `send_notification` tool and MCP's
+`kratos_notify_findings` all go through `outbox.alerts.OutboxNotifier`, which keeps the old
+`notifier(message, severity) -> dict` shape so injected test notifiers still work.
+
+- **Tables** (component `outbox`): `outbox` (one row per message per channel; `UNIQUE(channel,
+  message_id)` makes a re-enqueue a no-op; the rendered, redacted payload; status `pending |
+  failed | delivered | dead`), `outbox_attempts`, `outbox_lease`, `forward_cursors`, `channels`,
+  `channel_events` (append-only, who changed a channel). Nothing is deleted on its own: `kratos
+  outbox prune` is the person's command (and in the no-deletion scan's reviewed list).
+- **One worker at a time.** The worker holds the `outbox_lease` row (claimed with a 30 s TTL in
+  `BEGIN IMMEDIATE`, renewed every cycle). It runs in the always-on listener, the TUI, `kratos
+  serve` and `kratos mcp-serve`; whichever holds the lease delivers. A scheduled run flushes
+  before it exits when no other process holds it; `kratos outbox flush` does it on demand.
+  Each attempt **claims its message** first (`claimed_until`, counted before sending), so two
+  threads or processes never send a message at once; a message whose sender died is sent again,
+  with the same `message_id`, once its claim runs out. That is at-least-once delivery with a
+  receiver-side idempotency key: the webhook's `webhook-id`, an email's `Message-ID`, an
+  Elasticsearch document `_id` (stable, so a retry overwrites).
+- **Retries:** after 5 s, 5 min, 30 min, 2 h, 5 h, 10 h, 14 h, 20 h, 24 h, each ±10 % jitter; then
+  dead. A 4xx other than 408/429 (and a 3xx: redirects are never followed) is dead at once;
+  `Retry-After` is honoured. Messages that share an `order_key` (one finding; a channel's events
+  stream) go out in id order: an undelivered earlier one holds later ones back.
+- **Concurrency and caps:** sends run on an 8-thread pool, at most 1 at a time per syslog or
+  email channel and 4 per webhook; at most `max_per_minute` attempts per channel per minute (a
+  flood queues). A channel failing for `outbox.alert_after_minutes` is announced once through the
+  other alert channels (claimed in its row) and once on recovery.
+- **Channels** (`outbox/config.py`): kind, scopes (`alerts`, `findings`, `events`), format
+  (`text`, `kratos`, `ocsf`, `ecs` — which combinations a kind accepts is a closed table),
+  filters, masking, rate. Edits need an `Actor` from the TUI or CLI and are refused inside a tool
+  run. Secrets live in `data_dir/channel-secrets/<name>.json` (0700/0600), never in the row. ntfy
+  is a built-in row whose topic still comes from `KRATOS_NTFY_*`; its sender
+  (`agent.notify.send_notification`) is unchanged, so a ntfy user gets byte-identical requests.
+- **Forwarding** (`outbox/forward.py`) reads append-only sources by row id after a per-channel
+  cursor: `finding_events` (every lifecycle change, from any path) → one message per change
+  (`finding:<finding_key>:<event id>`), or one digest per run for email; `host_events` → batches
+  of ≤500 events / 1 MB. An events message stores the row ids, not a copy, and is rendered from
+  `host_events` when sent; while a channel has 20 batches waiting the cursor stops (the events
+  stay stored). The cursor moves in the transaction that enqueues, and only if no other producer
+  moved it. A findings report and a person's decision wake the in-process worker to forward at
+  once; otherwise every 5 s.
+- **Rendering** (`outbox/render.py`, `outbox/formats/`): secrets removed from every string value
+  first (`privacy.secrets` + the channel's own), machine text cleaned for text formats; optional
+  per-channel masking (B.2 placeholders, scope `channel:<name>`, never restored). Webhook bodies
+  are compact sorted JSON (the bytes signed are the bytes sent), Standard Webhooks headers, `v1`
+  HMAC-SHA256 and optional `v1a` Ed25519 with Kratos's signing key (`kratos/signing/`,
+  `data_dir/signing/`, backup copy at creation, rotation keeps old public keys). Syslog is RFC 5424
+  over TLS with octet counting, kept under 8 KB (JSON formats drop evidence first so they stay
+  valid). Email is text + a small HTML part, never attachments.
+- **OCSF 1.9.0**, host profile. Rule → class: `PKG-*`/`VULN-*` → Vulnerability Finding (2002);
+  every detection rule and every ATT&CK *Behaviour* rule → Detection Finding (2004); every
+  *Posture* rule → Compliance Finding (2003) — so the mapping follows `attack/mapping.py`, and a
+  test checks every rule id. Lifecycle change → activity (new → Create, fixed/gone/decided →
+  Close, else Update) and status (New / In Progress / Suppressed / Resolved). Host events map to
+  Authentication, Process Activity, Network Activity and File System Activity by ECS
+  `event.category`; others are skipped and counted. Every produced object is validated in tests
+  against the schema the OCSF server publishes for 1.9.0 (`tests/fixtures/ocsf`, Apache-2.0).
+  **ECS**: stored events go out unchanged; a finding change is its own ECS document (`rule.*`,
+  `vulnerability.id`, `threat.*`, Kratos fields under `kratos.*`).
+
 ## Untrusted input
 
 Text that came from a monitored machine is attacker-controlled: usernames in failed

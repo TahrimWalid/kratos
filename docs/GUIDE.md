@@ -1762,6 +1762,14 @@ map*). A conversation's map is removed when you prune that conversation; `kratos
 real IP address is sent to that service — a lookup needs it. That is separate from the model
 and asks you first every time.
 
+**Channels send what you point them at.** Each channel you add (see [Sending findings
+elsewhere](#sending-findings-elsewhere-webhooks-syslog-email-a-siem)) sends to its receiver:
+ntfy gets alert texts (no accounts, addresses or paths); a webhook or syslog server gets alert
+texts and, if you chose them, every change of a matching finding with its evidence, or the
+stored log events; an email inbox gets alerts and a digest of finding changes. Secrets are
+always removed first; masking (per channel) replaces names and addresses with placeholders that
+are never turned back. Nothing is sent to a channel you haven't added.
+
 ---
 
 ## Two ways to analyze
@@ -2228,6 +2236,126 @@ Fixed · Hidden by your decisions*) and names any risk acceptance that ran out. 
 trigger can be told to fire only for findings that are new, came back, or whose
 acceptance expired — so a problem you already know about doesn't page you every
 run.
+
+### Sending findings elsewhere (webhooks, syslog, email, a SIEM)
+
+Besides your phone, Kratos can send what it finds to the places you already watch: a
+**webhook** (any HTTPS endpoint, including a SIEM's HTTP collector), a **syslog server** over
+TLS, an **email** inbox, or a **SIEM** that takes OCSF or ECS. Each place is a *channel*. ntfy
+is one too, built in; it keeps working exactly as before.
+
+**Nothing is sent directly — everything goes through the outbox.** When a trigger fires, a
+schedule finishes or a finding changes, Kratos writes the message to its outbox first and a
+delivery worker sends it. If the receiver is down, the message waits and is tried again after
+5 seconds, 5 minutes, 30 minutes, 2, 5, 10, 14, 20 and 24 hours (the Standard Webhooks
+schedule). A receiver that rejects a message outright (an HTTP 4xx other than 408 or 429, a
+refused mail login) makes it a *dead letter* at once, with the receiver's reason. Each message
+carries the same id on every try, so a receiver can drop a repeat. Delivered and dead messages
+are kept until you prune them (`kratos outbox prune`, which shows what it would delete first).
+
+Who delivers: the always-on listener (`L` in `/subagent`) when it's installed, otherwise
+whichever Kratos window is open (the TUI, `kratos serve`, `kratos mcp-serve`). A scheduled run
+delivers its own messages before it exits. `/doctor` says which process delivers, and warns
+when nothing long-running does ("messages wait until Kratos next runs"); `kratos outbox flush`
+sends now.
+
+**Adding a channel.** In the TUI, `/channels`, then `a`: pick the kind, answer a few questions,
+and Kratos shows what will be sent and to whom before it saves. Press `t` to send a test
+message and watch what happened. From the command line:
+
+```
+kratos channels add webhook soc --url https://siem.example/kratos --scope alerts,findings
+kratos channels add syslog logs --host logs.example --port 6514 --format text --scope alerts,findings
+kratos channels add email ops --host smtp.example --security starttls --from kratos@example.com \
+    --to you@example.com --username kratos          # asks for the password; it is never on the command line
+kratos channels test soc
+```
+
+What a channel receives is its *scope*: **alerts** (what triggers, schedules and Kratos's own
+notices send), **findings** (every change of a matching finding: new, worse, back, reopened,
+fixed, gone, decided — not the same finding again every run) and **events** (the log events
+Kratos stored, in batches). Filters narrow it: `--min-severity`, `--min-ssvc` (an SSVC decision,
+for vulnerabilities), `--rules PKG-,CORR-`, `--machines`, `--groups`, `--only-new-or-worse`.
+`--max-per-minute` (default 60) holds a flood back: messages queue rather than hammer the
+receiver, and the backlog is shown. Forwarding starts from when you add the channel; findings
+and events already stored aren't sent.
+
+**Choosing channels for an alert.** Triggers and schedules send to every channel that receives
+alerts unless they name their own: `deliver = ["ntfy", "soc"]` in the trigger's or schedule's
+file. A channel that keeps failing for an hour (Settings → General → *Delivery*) is announced
+once through your other channels — *Kratos can't reach soc since 14:10: connection refused* —
+and once more when it recovers. The TUI's bottom line shows *delivery failing: soc* meanwhile.
+
+**Webhooks are signed** per [Standard Webhooks](https://www.standardwebhooks.com/): every
+request has `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. The signing
+secret (`whsec_…`) is made when you add the channel and shown once — give it to your receiver.
+HTTPS is required (plain HTTP only if you allow it, and only to this machine or a private
+address), the certificate is always checked (`--ca-file` for your own CA), and redirects are
+never followed. Your receiver checks a request like this (Python, standard library only):
+
+```python
+# verify a Kratos webhook (Standard Webhooks v1 = HMAC-SHA256); body = the raw request bytes
+import base64, hashlib, hmac, time
+
+def verify(secret, headers, body, tolerance=300):
+    key = base64.b64decode(secret.removeprefix("whsec_"))
+    msg_id, ts = headers["webhook-id"], headers["webhook-timestamp"]
+    if abs(time.time() - int(ts)) > tolerance:
+        return False                      # too old (or from the future): a replay
+    mac = hmac.new(key, f"{msg_id}.{ts}.".encode() + body, hashlib.sha256).digest()
+    want = base64.b64encode(mac).decode()
+    return any(hmac.compare_digest(s[3:], want) for s in headers["webhook-signature"].split() if s.startswith("v1,"))
+```
+
+Keep the `webhook-id`s you've seen for a few minutes and ignore a repeat. With `--sign-v1a` a
+second signature, made with Kratos's own Ed25519 key, lets a receiver check messages without
+holding a shared secret (`kratos signing status` prints its public key, `whpk_…`).
+
+**Syslog** goes over TLS only (RFC 5425, RFC 5424 messages, octet-counted). Plain TCP and UDP
+aren't offered: one loses messages without a trace, the other is readable on the wire. On an
+rsyslog server, with its own certificate:
+
+```
+global(DefaultNetstreamDriver="gtls" DefaultNetstreamDriverCAFile="/etc/rsyslog-tls/ca.pem"
+       DefaultNetstreamDriverCertFile="/etc/rsyslog-tls/server.pem" DefaultNetstreamDriverKeyFile="/etc/rsyslog-tls/server.key")
+module(load="imtcp" StreamDriver.Name="gtls" StreamDriver.Mode="1" StreamDriver.AuthMode="anon")
+input(type="imtcp" port="6514")
+```
+
+Give Kratos that CA with `--ca-file`. Messages say `kratos` as the program and the message kind
+(`alert`, `finding`, `event`) as the MSGID; the finding's rule, severity, change and machine are
+in structured data (`[kratos@32473 …]` — set `--pen` to your organisation's enterprise number if
+it has one).
+
+**Email** is sent over STARTTLS or TLS only, the server's certificate checked; one email per run
+or detection batch, never one per finding, and never with evidence attached — it names the
+findings and says where to look.
+
+**SIEMs.** Choose `--format ocsf` (OCSF 1.9.0: findings as Detection, Vulnerability or
+Compliance Findings; events as Authentication, Process, Network or File System Activity) or
+`--format ecs` (Elastic Common Schema; stored events go out exactly as Kratos keeps them).
+Recipes:
+
+- **Elasticsearch / OpenSearch:** `kratos channels add webhook siem --url https://search.example:9200/_bulk
+  --framing es_bulk --index kratos-findings --format ocsf --scope findings --auth-header Authorization`
+  (it asks for the header's value, e.g. `Basic …` or `ApiKey …`). Each document has a stable id, so a
+  retry overwrites rather than duplicates.
+- **Splunk HEC-style collectors:** `--framing hec --auth-header Authorization` (value `Splunk <token>`).
+- **Wazuh, and any other syslog-fed SIEM:** a syslog channel with `--format ocsf` or `--format ecs`
+  (the JSON is in the message).
+- **Anything else with an HTTP input:** `--framing ndjson` (one JSON document per line) or `json`.
+
+**What is sent, and masking.** `kratos channels show <name>` (and `/channels` → Enter) says exactly
+what leaves through a channel and to whom. Alerts carry Kratos's own wording; findings changes and
+events carry what Kratos found — account names, addresses, paths and evidence lines. Secrets
+(keys, tokens, passwords) are always removed first. `--mask-values` replaces account names,
+addresses and host names with placeholders before sending; the receiver never gets the real
+values back. A channel's own secrets live in `channel-secrets/` in your data folder (readable only
+by you), never in the database, the run records, `/doctor` or the logs.
+
+**The outbox.** `/outbox` (or `kratos outbox`) lists what was sent and what waits, with each
+attempt; `d` shows the dead letters with their reasons, and `r` sends one again once you've fixed
+the receiver (`kratos outbox retry --dead` from the command line).
 
 ---
 
