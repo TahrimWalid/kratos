@@ -258,3 +258,19 @@ def test_a_bulk_answer_with_item_errors_is_not_counted_as_delivered(dd, rx):
 
     assert bulk_item_failure(b'{"took":1,"errors":false,"items":[]}') is None
     assert bulk_item_failure(b'{"errors":true,"items":[{"index":{"status":429,"error":{"type":"x"}}}]}')[0] is True
+
+
+def test_a_receiver_that_is_down_is_named_in_plain_words(dd):
+    import socket
+
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()                                         # nothing listens there now
+    C.add_channel(dd, name="soc", kind="webhook", config={"url": f"https://127.0.0.1:{port}/in"}, scopes=["alerts"],
+                  actor=ACTOR)
+    res = A.enqueue_alert("x", deliver=["soc"], data_dir=dd)
+    W.flush(dd, label="t")
+    with S.opened(dd) as conn:
+        err = S.get(conn, res["outbox_ids"][0])["last_error"]
+    assert err == f"connection refused by 127.0.0.1:{port} (is the receiver running?)"

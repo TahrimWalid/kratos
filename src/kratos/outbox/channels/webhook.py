@@ -98,6 +98,32 @@ def bulk_item_failure(raw: bytes) -> tuple[bool, str] | None:
     return True, "a document failed"
 
 
+def plain_connection_error(e: BaseException, url: str) -> str:
+    """'connection refused by host:port' rather than urllib3's pool message."""
+    import socket
+    from urllib.parse import urlparse
+
+    u = urlparse(url)
+    where = f"{u.hostname}:{u.port or (443 if u.scheme == 'https' else 80)}"
+    seen: set[int] = set()
+    cur: BaseException | None = e
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, ConnectionRefusedError):
+            return f"connection refused by {where} (is the receiver running?)"
+        if isinstance(cur, socket.gaierror):
+            return f"{u.hostname} doesn't resolve to an address"
+        if isinstance(cur, (TimeoutError, socket.timeout)):
+            return f"{where} didn't answer"
+        if isinstance(cur, OSError) and cur.strerror:
+            return f"connection to {where} failed: {cur.strerror}"
+        nxt = getattr(cur, "reason", None) if isinstance(getattr(cur, "reason", None), BaseException) else None
+        cur = nxt or cur.__cause__ or cur.__context__ or (cur.args[0] if cur.args and isinstance(cur.args[0],
+                                                                                                    BaseException)
+                                                          else None)
+    return f"connection to {where} failed: {e}"
+
+
 def _retry_after(resp: Any) -> float | None:
     v = (resp.headers or {}).get("retry-after")
     try:
@@ -124,7 +150,7 @@ def send(delivery: Delivery, channel: Any, secrets: dict[str, str], data_dir: Pa
     except requests.exceptions.Timeout:
         return Outcome(False, True, f"no answer within {TIMEOUT_SECONDS['webhook']} s")
     except requests.exceptions.ConnectionError as e:
-        return Outcome(False, True, clean_reason(f"connection failed: {e}", *hidden))
+        return Outcome(False, True, clean_reason(plain_connection_error(e, url), *hidden))
     except requests.RequestException as e:
         return Outcome(False, True, clean_reason(f"request failed: {e}", *hidden))
     try:
