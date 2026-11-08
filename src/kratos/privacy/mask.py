@@ -484,3 +484,17 @@ def request_masker(*, local: bool | None = None, base_url: str | None = None) ->
     machine = _machine()
     known = _values.gather(machine, data_dir) if machine else KnownValues()
     return Masker(mode=mode, scope=_scope(), data_dir=data_dir, machine=machine, values=known)
+
+
+def outbound_masker(*, scope: str, machine: str, data_dir: Path) -> Masker:
+    """D.4: the masker for a message going to a receiver (a channel with "mask values" on),
+    not to the model. Standard mode, its own placeholder scope (``channel:<name>``), the
+    machine's known names as for the model. Its placeholders are never restored: the
+    receiver sees them."""
+    from kratos.privacy import values as _values
+
+    try:
+        known = _values.gather(machine, data_dir) if machine else KnownValues()
+    except Exception:  # noqa: BLE001 -- masking still runs on what the text shows
+        known = KnownValues()
+    return Masker(mode="standard", scope=scope, data_dir=data_dir, machine=machine, values=known)

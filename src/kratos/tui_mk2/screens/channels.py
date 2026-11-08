@@ -90,8 +90,8 @@ class ChannelsScreen(Screen):
             yield Static(id="ch-banner")
             yield DataTable(id="ch-table", cursor_type="row")
             yield VerticalScroll(id="ch-log")
-            yield Static(Text("↑↓ select · a add · t test · space on/off · enter details · x remove · o outbox · "
-                              "esc back", style=T.TEXT_DIM), id="ch-hints")
+            yield Static(Text("a add · t test · space on/off · enter details · x remove · o outbox · esc back",
+                              style=T.TEXT_DIM), id="ch-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -398,7 +398,7 @@ class OutboxScreen(Screen):
         with Vertical():
             yield Static(id="ob-banner")
             yield DataTable(id="ob-table", cursor_type="row")
-            yield Static(Text("↑↓ select · enter attempts · r retry now · d dead letters · f failing · a all · esc back",
+            yield Static(Text("enter attempts · r retry now · d dead letters · f failing · a all · esc back",
                               style=T.TEXT_DIM), id="ob-hints")
 
     def on_mount(self) -> None:

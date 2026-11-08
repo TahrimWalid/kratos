@@ -43,15 +43,9 @@ def redact_obj(obj: Any, extra: tuple[str, ...] = ()) -> Any:
 
 
 def _masker(channel: Channel, machine: str | None, data_dir: Any) -> Any:
-    from kratos.privacy.mask import KnownValues, Masker
-    from kratos.privacy import values as _values
+    from kratos.privacy.mask import outbound_masker
 
-    m = machine or ""
-    try:
-        known = _values.gather(m, data_dir) if m else KnownValues()
-    except Exception:  # noqa: BLE001 -- masking still runs on what the text shows
-        known = KnownValues()
-    return Masker(mode="standard", scope=f"channel:{channel.name}", data_dir=data_dir, machine=m, values=known)
+    return outbound_masker(scope=f"channel:{channel.name}", machine=machine or "", data_dir=data_dir)
 
 
 def _keys(obj: Any) -> Any:

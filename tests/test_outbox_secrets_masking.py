@@ -122,7 +122,10 @@ def test_no_registered_tool_module_imports_channel_editing():
     import inspect
 
     for name, tool in TOOL_REGISTRY.items():
-        src = inspect.getsource(inspect.getmodule(tool.handler))
+        mod = inspect.getmodule(tool.handler)
+        if mod is None or not mod.__name__.startswith("kratos."):
+            continue                                  # a tool another test registered
+        src = inspect.getsource(mod)
         for forbidden in ("add_channel(", "edit_channel(", "remove_channel(", "set_secret(", "retry_now("):
             assert forbidden not in src, (name, forbidden)
 
