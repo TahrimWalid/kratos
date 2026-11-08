@@ -1935,8 +1935,8 @@ def cmd_scheduled_run(args: argparse.Namespace) -> int:
         print("[KRATOS]   findings: " + "  ".join(f"{tally[k]} {k}" for k in order if tally.get(k)))
     if record.get("report_md"):
         print(f"[KRATOS]   report: {record['report_md']}")
-    if record.get("notified"):
-        d = record.get("delivered") or {}
+    d = record.get("delivered") if isinstance(record.get("delivered"), dict) else None
+    if d:
         print(f"[KRATOS]   notify: {d.get('status', 'sent')}")
         if d.get("status") != "sent" and d.get("observation"):
             print(f"[KRATOS]     {d['observation']}")

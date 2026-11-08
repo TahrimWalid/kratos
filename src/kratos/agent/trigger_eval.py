@@ -149,7 +149,7 @@ def evaluate_triggers(
     ``investigate`` action into a notify that says the deeper look will run on the
     scheduled cadence, instead of blocking on an LLM call inline."""
     now = now or datetime.now(timezone.utc)
-    notifier = notifier or _default_notifier()
+    notifier = notifier or _default_notifier(data_dir)
     if investigate_fn is None:
         from kratos.agent.scheduled_run import run_headless_investigation
         investigate_fn = run_headless_investigation
@@ -378,7 +378,7 @@ def _fire(data_dir, trigger, matched, target, now, notifier, deliver,
     return record
 
 
-def _default_notifier() -> Notifier:
+def _default_notifier(data_dir: Any = None) -> Notifier:
     from kratos.outbox.alerts import OutboxNotifier
 
-    return OutboxNotifier(source="trigger")
+    return OutboxNotifier(data_dir=data_dir, source="trigger")

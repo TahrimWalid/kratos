@@ -310,7 +310,7 @@ def _grouped_notification(req: FleetRequest, label: str, results: list[Any], ans
     if notifier is None:
         from kratos.outbox.alerts import OutboxNotifier
 
-        notifier = OutboxNotifier(source="fleet", name=req.name)
+        notifier = OutboxNotifier(data_dir=data_dir, source="fleet", name=req.name)
     serious = [r for r in results if finding_facts.serious(r.findings)]
     act = [r for r in results if any(str((f.get("ssvc") or {}).get("outcome") or "") == "act" for f in _open(r.findings))]
     missing = [r for r in results if not r.collected]

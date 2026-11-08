@@ -3162,7 +3162,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         try:
             sch = _S.save_schedule(
                 self._data_dir, name=name_raw, kind=kind, preset=preset_name,
-                cadence=cadence, deliver=["ntfy"], min_severity=(min_sev or None),
+                cadence=cadence, deliver=list(_S.DEFAULT_DELIVER), min_severity=(min_sev or None),
                 jobs=jobs, on_failure=on_failure)
         except _S.ScheduleError as e:
             self._emit(R.error_line(str(e)))

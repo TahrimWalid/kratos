@@ -44,11 +44,15 @@ _live: "set[Worker]" = set()
 _live_lock = threading.Lock()
 
 
-def wake() -> None:
-    """Tell this process's workers there is something to send now (an enqueue happened)."""
+def wake(*, produce: bool = False) -> None:
+    """Tell this process's workers there is something to send now (an enqueue happened);
+    ``produce``: also look for new findings changes and events at once (a report was
+    written, a person decided)."""
     with _live_lock:
         workers = list(_live)
     for w in workers:
+        if produce:
+            w._produce_now = True
         w._wake.set()
 
 
@@ -75,6 +79,7 @@ class Worker:
         self._inflight: dict[str, int] = {}
         self._lock = threading.Lock()
         self._last_produce = 0.0
+        self._produce_now = False
         self.holding = False
 
     # --- lifecycle -------------------------------------------------------------------
@@ -133,8 +138,8 @@ class Worker:
             return stats
         now = time.time() if now is None else now
         channels = C.list_channels(self.data_dir)
-        if now - self._last_produce >= self.produce_every:
-            self._last_produce = now
+        if self._produce_now or now - self._last_produce >= self.produce_every:
+            self._last_produce, self._produce_now = now, False
             from kratos.outbox import forward
 
             stats["produced"] = forward.produce_findings(self.data_dir, channels=channels) \
