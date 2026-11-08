@@ -1,0 +1,11 @@
+OCSF schema 1.9.0 (released 2026-08-03), JSON Schema export for each class with the 'host' profile,
+downloaded 2026-11-08 from https://schema.ocsf.io/schema/1.9.0/classes/<class>?profiles=host
+and stored here re-serialised (sorted keys, compact) and gzipped. Licence: Apache-2.0 (LICENSE,
+from https://github.com/ocsf/ocsf-schema/blob/1.9.0/LICENSE). SHA-256 of each downloaded file:
+783ee0583726840260ce156d3577af723a3f038db47cba165ede3703bbd94dfb  authentication.json
+03bb4b8dd4243b18c128d29545cdf585449b114d91ea70d983893c246a6140b6  compliance_finding.json
+ff2d866acf3b83958d4e1966fe833ba072d48e8c216b2a69c2dea975932c9040  detection_finding.json
+0bfb465d7041f9c0c5a64fa49f198b3a829783c607a127714d3319194bbf5045  file_activity.json
+478d0dfa9d8aa78fb3d237eb6ed56c186779cf12ad113ce5669b96e66998dc55  network_activity.json
+0a74bcf1b45e22633f989bd6c9d190b25d0d4257f922d741de555bd822652ee7  process_activity.json
+678707f47a398b9ca42901340cb8d8da7e5cbfec0b6ce6d777935de0472ee429  vulnerability_finding.json

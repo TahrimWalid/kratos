@@ -156,10 +156,14 @@ def finding(c: FindingChange) -> dict[str, Any]:
         "device": _device(c.machine, c.machine_label),
     }
     recs = [str(r) for r in f.get("recommendation") or [] if str(r).strip()]
-    if recs:
-        out["remediation"] = {"desc": " ".join(recs)[:4000]}
-    if cls == VULNERABILITY_FINDING:
+    remediation = {"desc": " ".join(recs)[:4000]} if recs else None
+    if cls == VULNERABILITY_FINDING:            # a Vulnerability Finding carries remediation per vulnerability
         out["vulnerabilities"] = _vulnerabilities(c)
+        if remediation:
+            for v in out["vulnerabilities"]:
+                v["remediation"] = remediation
+    elif remediation:
+        out["remediation"] = remediation
     if cls == COMPLIANCE_FINDING:
         out["compliance"] = {"control": c.rule_id, "status_id": 3 if c.state in ("open", "verified") else 1,
                              "status": "Fail" if c.state in ("open", "verified") else "Pass"}
@@ -196,8 +200,9 @@ def _vulnerabilities(c: FindingChange) -> list[dict[str, Any]]:
         if pkg or package:
             v["desc"] = f"package {pkg or package}"
         out.append(v)
-    if not out:            # a service finding with no CVE named (e.g. VULN-002): still one vulnerability entry
-        out.append({"title": c.title[:500], "severity": c.severity.capitalize(), "desc": c.rule_id})
+    if not out:            # a service finding with no CVE named (e.g. VULN-002): Kratos's rule as the advisory
+        out.append({"advisory": {"uid": c.rule_id, "title": c.title[:500]}, "title": c.title[:500],
+                    "severity": c.severity.capitalize()})
     return out
 
 
@@ -262,6 +267,11 @@ def event(doc: dict[str, Any], *, machine: str, row_id: int) -> dict[str, Any] |
     if cls == AUTHENTICATION:
         activity = 2 if "end" in types else 1
         out["user"] = {"name": str(user)} if user else {"name": "unknown"}
+        # the machine signed in to, and the program that took the sign-in (OCSF asks for one)
+        out["dst_endpoint"] = {k: v for k, v in _device(machine, "").items() if k in ("ip", "hostname")}
+        provider = _get(doc, "event.provider") or _get(doc, "process.name")
+        if provider:
+            out["service"] = {"name": str(provider)}
         if src:
             ep: dict[str, Any] = {"ip": str(src)}
             if _get(doc, "source.port"):
@@ -272,6 +282,8 @@ def event(doc: dict[str, Any], *, machine: str, row_id: int) -> dict[str, Any] |
         proc: dict[str, Any] = {"name": str(_get(doc, "process.name"))}
         if _get(doc, "process.pid") is not None:
             proc["pid"] = int(_get(doc, "process.pid"))
+        else:              # OCSF needs one identifier: the stored event's own id stands in when no pid was logged
+            proc["uid"] = uid
         if _get(doc, "process.command_line"):
             proc["cmd_line"] = str(_get(doc, "process.command_line"))[:4000]
         out["process"] = proc
