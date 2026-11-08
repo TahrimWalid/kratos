@@ -511,9 +511,9 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_serve_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_detect_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_agent_link_setting_flow", lambda key: fired.append(key))
-            assert gen.row_count == 47           # name / theme / timezone / two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+            assert gen.row_count == 49           # name / theme / timezone / two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
             for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, ""),
-                                  (13, ""), (18, ""), (21, ""), (45, ""), (46, "")]:
+                                  (13, ""), (18, ""), (21, ""), (47, ""), (48, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
                 await pilot.pause()
@@ -575,7 +575,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 47     # name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+    assert gen == 49     # name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):

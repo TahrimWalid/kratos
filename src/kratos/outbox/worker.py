@@ -153,6 +153,7 @@ class Worker:
         stats["started"] = len(futures)
         for ch in channels:
             self._check_outage(ch, now)
+        self._check_disk(now)
         if wait:
             for f in futures:
                 f.result()
@@ -236,6 +237,26 @@ class Worker:
         log("outbox: %s #%d to %s: %s (%s)", row["kind"], oid, ch.name, status or "superseded", outcome.detail)
         return status
 
+    # --- the data folder's disk (Phase D README §3: "alert under 14 days, through the outbox")
+    _DISK_EVERY = 3600.0
+
+    def _check_disk(self, now: float) -> None:
+        if now - getattr(self, "_last_disk", 0.0) < self._DISK_EVERY:
+            return
+        self._last_disk = now
+        try:
+            from kratos import diskgrowth
+
+            diskgrowth.record_sample(self.data_dir, now=now)          # one sample a day, while Kratos runs
+            p = diskgrowth.project(self.data_dir, now=now)
+        except Exception:  # noqa: BLE001
+            return
+        if p.status != "fail":
+            return
+        day = time.strftime("%Y-%m-%d", time.gmtime(now))
+        self._notice(f"Kratos's data folder is filling its disk: {p.text}. Nothing is deleted automatically; "
+                     "see `kratos data list` to choose what to prune.", f"disk:{day}", "", "warning")
+
     # --- outage notices ----------------------------------------------------------------------
     def _check_outage(self, ch: C.Channel, now: float) -> None:
         if ch.failing_since is None or ch.outage_notified_at is not None:
@@ -266,7 +287,7 @@ class Worker:
 
         try:
             enqueue_alert(text, severity, deliver=None, data_dir=self.data_dir, kind="notice", source="outbox",
-                          message_id=message_id, exclude=(channel,))
+                          message_id=message_id, exclude=(channel,) if channel else ())
         except Exception:  # noqa: BLE001
             logger.warning("outbox: could not enqueue a notice about %s", channel, exc_info=True)
 

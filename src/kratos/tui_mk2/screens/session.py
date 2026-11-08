@@ -117,6 +117,8 @@ _PALETTE_COMMANDS = [
     ("/preset-import", "import a preset from a .toml file"),
     ("/report", "investigation summary — new, still open, fixed, hidden by your decisions"),
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
+    ("/channels", "where Kratos sends what it finds: webhooks, syslog (TLS), email, ntfy, a SIEM (OCSF / ECS)"),
+    ("/outbox", "what Kratos sent and what waits: attempts, failures, dead letters (retry them here)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
     ("/groups", "groups of machines (@web, @db; @all is built in) — /groups create web 10.0.0.5 10.0.0.6, "
@@ -350,6 +352,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._refresh_header()
         self._refresh_footer()
         self.set_interval(1.0, self._refresh_header)  # live clock
+        self.set_interval(15.0, self._refresh_footer)  # a delivery problem shows up while you're idle
         self.set_interval(0.12, self._tick_activity)  # "working…" spinner while busy
         self._render_idle()
         if self._full_replay:
@@ -623,6 +626,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         budget = self._budget_hint()
         budget_note = f"  ·  {budget}" if budget else ""
+        delivery = self._delivery_hint()               # D.4: "delivery failing: soc-webhook"
+        if delivery:
+            budget_note += f"  ·  {delivery}"
         notes = ([budget_note + "  ·  updated on disk — restart Kratos", budget_note + "  ·  restart: updated"]
                  if rebuilt else [budget_note])
         candidates = [(parts[i:], note) for note in notes[:1] for i in range(len(parts) + 1)]
@@ -652,6 +658,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
         except Exception:  # noqa: BLE001 -- the footer never fails over this
             hint = None
         self._budget_hint_cache = (now, hint)
+        return hint
+
+    def _delivery_hint(self) -> str | None:
+        """D.4: 'delivery failing: <channel>' while a channel's attempts keep failing (the
+        outbox retries; /outbox shows why). Read at most every few seconds."""
+        now = time.monotonic()
+        cached = getattr(self, "_delivery_hint_cache", None)
+        if cached is not None and now - cached[0] < self._BUDGET_HINT_TTL:
+            return cached[1]
+        try:
+            from kratos.outbox.health import status_bar_text
+
+            hint = status_bar_text(self._data_dir)
+        except Exception:  # noqa: BLE001 -- the footer never fails over this
+            hint = None
+        self._delivery_hint_cache = (now, hint)
         return hint
 
     def refresh_theme(self) -> None:
@@ -1065,6 +1087,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.containers import ContainersScreen
 
             self.app.push_screen(ContainersScreen(self._data_dir, target=_kconfig.get_active_target()))
+        elif cmd in ("/channels", "/integrations"):
+            from kratos.tui_mk2.screens.channels import ChannelsScreen
+
+            self.app.push_screen(ChannelsScreen(self._data_dir))
+        elif cmd == "/outbox":
+            from kratos.tui_mk2.screens.channels import OutboxScreen
+
+            self.app.push_screen(OutboxScreen(self._data_dir))
         elif cmd in ("/assets", "/machines"):
             from kratos.tui_mk2.screens.assets import AssetsScreen
 
