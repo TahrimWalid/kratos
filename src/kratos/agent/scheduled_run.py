@@ -75,9 +75,60 @@ def active_backend_is_cloud() -> bool:
 
 
 def _default_notifier(message: str, severity: str) -> dict[str, Any]:
-    from kratos.agent.notify import send_notification
+    """Every channel that receives alerts (kratos.outbox): ntfy alone on an install that
+    has set up nothing else. Enqueues only; the delivery worker sends."""
+    from kratos.outbox.alerts import OutboxNotifier
 
-    return send_notification(message, severity)
+    return OutboxNotifier(source="schedule")(message, severity)
+
+
+def _schedule_notifier(schedule: "_sched.Schedule", data_dir: Path) -> Notifier:
+    from kratos.outbox.alerts import OutboxNotifier
+
+    return OutboxNotifier(schedule.deliver or None, data_dir=data_dir, source="schedule", name=schedule.name)
+
+
+def settle_delivery(data_dir: Path, *results: Any) -> None:
+    """D.4: before a short-lived run exits, deliver what it queued -- unless a long-running
+    Kratos process (the always-on listener, the TUI) delivers -- then write each result's
+    real state back into it: ``sent`` when every message went out, ``queued`` while some
+    are waiting for a retry (the observation says when and why), ``failed`` when a
+    receiver refused it for good. Never raises."""
+    ids = [i for r in results if isinstance(r, dict) and r.get("status") == "queued" for i in r.get("outbox_ids") or []]
+    if not ids:
+        return
+    try:
+        from kratos.outbox import store as S
+        from kratos.outbox import worker
+        from kratos.outbox.settings import scheduled_flush_seconds
+
+        wait = scheduled_flush_seconds(data_dir)
+        flushed = worker.flush(data_dir, label="scheduled run", deadline_seconds=wait) if wait else {}
+        with S.opened(data_dir) as conn:
+            states = S.statuses(conn, ids)
+            errors = {int(r["id"]): r["last_error"] for r in conn.execute(
+                f"SELECT id, last_error FROM outbox WHERE id IN ({','.join('?' * len(ids))})", ids)}
+    except Exception:  # noqa: BLE001 -- the run record must still be written
+        import logging
+
+        logging.getLogger(__name__).warning("outbox: could not settle a scheduled run's delivery", exc_info=True)
+        return
+    for r in results:
+        if not isinstance(r, dict) or r.get("status") != "queued":
+            continue
+        mine = [states.get(i) for i in r.get("outbox_ids") or []]
+        if mine and all(m == "delivered" for m in mine):
+            r["status"] = "sent"
+        elif any(m == "dead" for m in mine):
+            r["status"] = "failed"
+            r["observation"] = "; ".join(e for i in r.get("outbox_ids") or [] if (e := errors.get(i))) or \
+                "a receiver refused the message"
+        else:
+            by = flushed.get("delivered_by") if isinstance(flushed, dict) else None
+            why = "; ".join(e for i in r.get("outbox_ids") or [] if (e := errors.get(i)))
+            r["observation"] = ("queued: " + (f"{by} delivers it" if by and by != "scheduled run" else
+                                               "Kratos retries it" + (f" ({why})" if why else "")) +
+                                " -- see /outbox")
 
 
 def _extract_findings(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -569,8 +620,8 @@ def _run_scheduled(
     deliver: bool,
     notifier: Optional[Notifier],
 ) -> dict[str, Any]:
-    notifier = notifier or _default_notifier
     data_dir = Path(data_dir)
+    notifier = notifier or _schedule_notifier(schedule, data_dir)
     started_at = utc_now_iso()
 
     # Guardrail 1a: nothing can EVER block on approval in a headless run.
@@ -597,9 +648,10 @@ def _run_scheduled(
             "omitted_gated_tools": [], "report_json": None, "report_md": None,
             "delivered": None, "notified": False, "error": _kconfig.NO_TARGET_MESSAGE,
         }
-        if deliver and "ntfy" in schedule.deliver:
+        if deliver and schedule.deliver:
             record["delivered"] = notifier(
                 f"Scheduled run '{schedule.name}' did not run — {_kconfig.NO_TARGET_MESSAGE}", "warning")
+            settle_delivery(data_dir, record["delivered"])
             record["notified"] = _sent(record["delivered"])
         _append_record(data_dir, schedule.name, record)
         return record
@@ -622,10 +674,11 @@ def _run_scheduled(
             "delivered": None, "notified": False,
             "error": f"another Kratos run is active on {target}; deferred to the next scheduled time",
         }
-        if deliver and "ntfy" in schedule.deliver:
+        if deliver and schedule.deliver:
             record["delivered"] = notifier(
                 f"Scheduled run '{schedule.name}' skipped — another run is active on "
                 f"{target}. It will run at the next scheduled time.", "info")
+            settle_delivery(data_dir, record["delivered"])
             record["notified"] = _sent(record["delivered"])
         _append_record(data_dir, schedule.name, record)
         return record
@@ -723,14 +776,17 @@ def _run_scheduled(
         or (worst is not None and _SEVERITY_RANK.get(worst, 0)
             >= _SEVERITY_RANK.get(schedule.min_severity, 0))
     )
-    if deliver and "ntfy" in schedule.deliver and threshold_met:
+    if deliver and schedule.deliver and threshold_met:
         ntfy_sev = _NTFY_BUCKET.get(worst or "info", "info")
         if status != "completed":
             ntfy_sev = "warning"
         message = _build_message(schedule_name=schedule.name, target=target, status=status,
                                  findings=findings, report_path=report_md, error=error,
                                  omitted=omitted, jobs=job_records, lifecycle=lifecycle)
-        delivered = notifier(message, ntfy_sev)
+        from kratos.outbox.alerts import call as _notify
+
+        delivered = _notify(notifier, message, ntfy_sev, worst=worst, machine=target, findings=findings,
+                            message_id=f"schedule:{schedule.name}:{started_at}")
 
     # A6.4: evaluate triggers against this run's structured findings (the
     # monitoring step rides the scheduled cadence). Investigations may run here
@@ -746,6 +802,8 @@ def _run_scheduled(
                                                notifier=notifier, deliver=deliver)
     except Exception as e:  # noqa: BLE001
         error = (error + "; " if error else "") + f"trigger evaluation failed: {e}"
+    # D.4: deliver what this run queued (its report + its triggers' alerts) before it exits
+    settle_delivery(data_dir, delivered, *[t.get("delivered") for t in triggers_fired])
 
     record = {
         "schedule": schedule.name,
@@ -786,8 +844,8 @@ def _run_fleet_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver:
     from kratos.fleet import run as FR
     from kratos.lifecycle.decide import Actor
 
-    notifier = notifier or _default_notifier
     data_dir = Path(data_dir)
+    notifier = notifier or _schedule_notifier(schedule, data_dir)
     started_at = utc_now_iso()
     record: dict[str, Any] = {"schedule": schedule.name, "started_at": started_at, "target": schedule.target,
                               "kind": schedule.kind, "fleet": True, "findings_count": 0, "severity_tally": {},
@@ -847,17 +905,20 @@ def _run_fleet_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver:
             except Exception as e:  # noqa: BLE001 -- one machine's triggers never sink the run
                 record["error"] = (record["error"] + "; " if record["error"] else "") + \
                     f"trigger evaluation failed on {r.machine}: {e}"
-        if deliver and "ntfy" in schedule.deliver:
+        if deliver and schedule.deliver:
             from kratos.fleet.run import _grouped_notification
 
             req = FR.FleetRequest(question=question, group=str(schedule.target), data_dir=data_dir,
                                   actor=Actor(user=f"schedule:{schedule.name}", interface="schedule"),
                                   notifier=notifier, name=schedule.name)
-            sent = _grouped_notification(req, out.group_label, out.results, out.answer, data_dir,
-                                         extra_lines=[f"trigger: {b}" for b in buffered if b][:5])
-            record["notified"] = sent
-    elif deliver and "ntfy" in schedule.deliver:
+            res = _grouped_notification(req, out.group_label, out.results, out.answer, data_dir,
+                                        extra_lines=[f"trigger: {b}" for b in buffered if b][:5])
+            settle_delivery(data_dir, res)
+            record["delivered"] = res
+            record["notified"] = _sent(res)
+    elif deliver and schedule.deliver:
         record["delivered"] = notifier(f"Scheduled run '{schedule.name}' did not run: {record['error']}", "warning")
+        settle_delivery(data_dir, record["delivered"])
         record["notified"] = _sent(record["delivered"])
     record["finished_at"] = utc_now_iso()
     _append_record(data_dir, schedule.name, record)

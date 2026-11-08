@@ -314,7 +314,19 @@ def apply_run(findings: list[dict[str, Any]], *, target: str, coverage: Coverage
     summary["hidden_total"] = sum(summary["hidden"].values())
     summary["target"] = target
     summary["run_id"] = run_id
+    wake_forwarding()
     return annotated, summary
+
+
+def wake_forwarding() -> None:
+    """D.4: findings changes were just committed -- let this process's outbox worker (if it
+    runs one) forward them now rather than on its next pass. Never raises."""
+    try:
+        from kratos.outbox import worker
+
+        worker.wake(produce=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def footer_line(summary: dict[str, Any] | None) -> str | None:

@@ -302,6 +302,15 @@ def _check_notifications(out: list[Check]) -> None:
         out.append(_row("notifications", "pass", detail))
 
 
+def _check_delivery(out: list[Check], data_dir: Path) -> None:
+    """D.4: which process delivers the outbox, and each channel's last success / error /
+    dead letters. Never shows a channel secret."""
+    from kratos.outbox.health import doctor_rows
+
+    for r in doctor_rows(data_dir):
+        out.append(_row(r["check"], r["status"], r["detail"], fix=r.get("fix") or ""))
+
+
 _SECTIONS = (
     ("Kratos build", _check_build),
     ("Python", _check_python),
@@ -624,6 +633,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
+        sections.append(("delivery", lambda o: _check_delivery(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("detection rules", lambda o: _check_detection(o, Path(data_dir))))
         sections.append(("agent link", lambda o: _check_agent_link(o, Path(data_dir))))

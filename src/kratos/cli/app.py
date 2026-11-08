@@ -574,6 +574,12 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
         return 2
     print(f"[KRATOS] Sub-agent telemetry server listening on {server.host} port {args.port} (Ctrl+C to stop)")
 
+    # D.4: the always-on listener is the outbox's natural delivery worker (it runs
+    # all day, so alerts go out while no other Kratos window is open).
+    from kratos.outbox import worker as _outbox_worker
+
+    delivery = _outbox_worker.start_background(args.data_dir, label="the always-on listener")
+
     async def _main() -> None:
         # SIGTERM (systemctl stop/restart) and Ctrl+C both shut down cleanly,
         # so connected targets are recorded as "listener stopped" at once
@@ -596,6 +602,9 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+    finally:
+        if delivery is not None:
+            delivery.stop(timeout=10)
     if server.restart_for_update:
         # A service restarting itself to load newer code: systemd starts it
         # again (EX_TEMPFAIL also counts as a failure for Restart=on-failure).
@@ -1926,8 +1935,8 @@ def cmd_scheduled_run(args: argparse.Namespace) -> int:
         print("[KRATOS]   findings: " + "  ".join(f"{tally[k]} {k}" for k in order if tally.get(k)))
     if record.get("report_md"):
         print(f"[KRATOS]   report: {record['report_md']}")
-    if record.get("notified"):
-        d = record.get("delivered") or {}
+    d = record.get("delivered") if isinstance(record.get("delivered"), dict) else None
+    if d:
         print(f"[KRATOS]   notify: {d.get('status', 'sent')}")
         if d.get("status") != "sent" and d.get("observation"):
             print(f"[KRATOS]     {d['observation']}")
@@ -2591,6 +2600,8 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_cmd.add_parser(sub)
     from kratos.cli import containers_cmd
     containers_cmd.add_parser(sub)
+    from kratos.cli import outbox_cmd
+    outbox_cmd.add_parser(sub)
 
     attack_p = sub.add_parser(
         "attack-layer",

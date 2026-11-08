@@ -168,6 +168,9 @@ def _decide(key: str, kind: str, *, actor: Actor, reason: str, scope: str, expir
                        reason=reason, now=now,
                        details={"exception_id": exc_id, "scope": scope, "expires_at": expires, "owner": owner_text})
                 changed.append(r["finding_key"])
+    from kratos.lifecycle.apply import wake_forwarding
+
+    wake_forwarding()
     return {"exception_id": exc_id, "finding_key": full, "scope": scope, "kind": kind, "expires_at": expires,
             "changed": changed}
 
@@ -203,6 +206,9 @@ def verify(key: str, *, actor: Actor, reason: str, data_dir: Path, now: float | 
         _revoke_key_scope(conn, full, actor=actor, reason="verified instead", now=now)
         S.set_state(conn, full, "verified")
         _event(conn, full, kind="state_changed", frm=rec["state"], to="verified", actor=actor, reason=reason, now=now)
+    from kratos.lifecycle.apply import wake_forwarding
+
+    wake_forwarding()
     return {"finding_key": full, "state": "verified", "previous": rec["state"]}
 
 
@@ -219,6 +225,9 @@ def reopen(key: str, *, actor: Actor, reason: str, data_dir: Path, now: float | 
         _revoke_key_scope(conn, full, actor=actor, reason="reopened", now=now)
         S.set_state(conn, full, "open")
         _event(conn, full, kind="reopened", frm=rec["state"], to="open", actor=actor, reason=reason, now=now)
+    from kratos.lifecycle.apply import wake_forwarding
+
+    wake_forwarding()
     return {"finding_key": full, "state": "open", "previous": rec["state"]}
 
 

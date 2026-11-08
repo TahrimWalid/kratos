@@ -11,7 +11,6 @@ import time
 
 import pytest
 
-from kratos.agent import scheduled_run
 from kratos.agent import triggers as T
 from kratos.detect import live as L
 from kratos.events.store import EventStore
@@ -65,15 +64,24 @@ def _agent(tmp_path, port, code=None) -> SubAgent:
 
 
 @pytest.fixture
-def notes(monkeypatch):
+def notes(monkeypatch, tmp_path):
+    """The one path since D.4: live alert -> trigger -> outbox -> delivery worker -> the ntfy
+    sender (agent.notify.send_notification, replaced here so nothing leaves the test)."""
+    from kratos import kratos_config as kc
+    from kratos.agent import notify
+    from kratos.outbox import worker
+
     sent: list[tuple[str, str, float]] = []
 
-    def notifier(body: str, severity: str) -> dict:
+    def fake_send(body: str, severity: str = "info") -> dict:
         sent.append((body, severity, time.time()))
-        return {"status": "sent"}
+        return {"status": "sent", "http_status": 200}
 
-    monkeypatch.setattr(scheduled_run, "_default_notifier", notifier)
-    return sent
+    monkeypatch.setattr(kc, "NTFY_TOPIC", "kratos-" + "0" * 24)
+    monkeypatch.setattr(notify, "send_notification", fake_send)
+    w = worker.Worker(tmp_path, label="test", poll=0.2).start()
+    yield sent
+    w.stop(timeout=5)
 
 
 def test_a_matching_line_reaches_the_phone_once_through_the_one_path(tmp_path, notes):

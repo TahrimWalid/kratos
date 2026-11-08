@@ -934,9 +934,10 @@ def scheduled_run_result_panel(record: dict) -> Panel:
         body.append(f"\nreport: {record['report_md']}", style=T.TEXT_FAINT)
     delivered = record.get("delivered") if isinstance(record.get("delivered"), dict) else {}
     why = "" if record.get("notified") else {
-        "not_configured": " (notifications aren't set up: KRATOS_NTFY_TOPIC)",
+        "not_configured": " (notifications aren't set up: KRATOS_NTFY_TOPIC, or a channel in /channels)",
         "refused": " (the ntfy topic was refused — see /doctor)",
-        "failed": " (delivery failed)",
+        "failed": " (delivery failed — see /outbox)",
+        "queued": " (queued: Kratos keeps retrying — see /outbox)",
     }.get(str(delivered.get("status")), "")
     body.append(f"\nnotified: {'yes' if record.get('notified') else 'no'}{why}", style=T.TEXT_FAINT)
     if record.get("error"):
@@ -957,6 +958,8 @@ def trigger_fire_line(record: dict) -> Text:
         t.append(f"  — {record['error']}", style=T.CRITICAL)
     elif record.get("notified"):
         t.append("  · notified", style=T.TEXT_FAINT)
+    elif record.get("queued"):
+        t.append("  · queued for delivery", style=T.TEXT_FAINT)
     return t
 
 

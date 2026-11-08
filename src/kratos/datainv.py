@@ -279,6 +279,36 @@ CATEGORIES: tuple[Category, ...] = (
         note="kept until you remove them; groups are edited with /groups or `kratos groups`",
     ),
     Category(
+        "outbox", "Outbox: messages sent to your channels",
+        "Every message Kratos sent or will send to a webhook, syslog server, email inbox, SIEM or ntfy: the "
+        "rendered alert or finding change (titles, severities, machines, the accounts, addresses and paths a "
+        "finding names, evidence lines; secrets removed), each delivery attempt and its result, the channels "
+        "you set up (where they send, what, filters -- never their secrets), who changed a channel and when, "
+        "and how far each channel has forwarded findings and events. Forwarded host events are not copied: a "
+        "message holds their row numbers and is rendered from the stored events when sent.",
+        PERSONAL, "one row per message per channel (an alert, a finding change, a batch of up to 500 events) and "
+                  "one per attempt; a few rows per channel",
+        tables=(TableRef(DB, ("outbox", "outbox_attempts", "outbox_lease", "forward_cursors", "channels",
+                              "channel_events"), ("outbox", "created_at")),),
+        note="delivered and dead messages are kept until you prune them: `kratos outbox prune` (shown first)",
+    ),
+    Category(
+        "channel_secrets", "Channel secrets",
+        "The secrets your channels use: webhook signing secrets (whsec_) and Authorization values, mail server "
+        "passwords, syslog client keys. Never stored in the database, never shown.",
+        SECRET, "one small file per channel that has a secret",
+        files=("channel-secrets",),
+    ),
+    Category(
+        "signing_key", "Kratos signing key",
+        "Kratos's Ed25519 key that signs webhook messages (v1a) and, later, exported incident bundles; with a "
+        "backup copy and the public keys of rotated-out keys. Keep it private and keep a copy.",
+        SECRET, "fixed: the active key, its backup copies, retired public keys",
+        files=("signing",),
+        note="its fingerprint is shown by /doctor and `kratos signing status`; `kratos signing rotate` keeps old "
+             "public keys verifiable",
+    ),
+    Category(
         "kept_tools", "Kept tools",
         "Tools you approved with /evolve, their metadata and the test that defines each.",
         NOT_PERSONAL, "one file per tool you keep",

@@ -331,10 +331,15 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
     @contextlib.asynccontextmanager
     async def lifespan(_app: Any):
         state.note_runs(running=True)
+        from kratos.outbox import worker as _outbox_worker
+
+        delivery = _outbox_worker.start_background(data_dir, label="kratos serve")
         try:
             async with session_manager.run():
                 yield
         finally:
+            if delivery is not None:
+                await asyncio.to_thread(delivery.stop, 5)
             # Stopping: running MCP investigations are told to stop and waited for (off the
             # event loop), so nothing keeps reading a machine after the server is gone.
             await asyncio.to_thread(state.investigations.shutdown)

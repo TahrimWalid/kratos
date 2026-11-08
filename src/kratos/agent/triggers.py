@@ -84,6 +84,10 @@ class Trigger:
     # D.3: fire only for vulnerability findings whose SSVC decision is at least this
     # (track | track* | attend | act). Kratos computes the decision; nothing else counts.
     min_ssvc: Optional[str] = None
+    # D.4: which channels the alert goes to, by name (kratos.outbox). None = every
+    # enabled channel that receives alerts ("all") -- ntfy alone on an install that
+    # has set up nothing else, exactly as before the outbox.
+    deliver: Optional[list[str]] = None
 
     @property
     def is_valid(self) -> bool:
@@ -158,6 +162,7 @@ def _dump_trigger_toml(
     *, name: str, min_severity: Optional[str], finding_id: Optional[str],
     target: Optional[str], action: str, cooldown_minutes: int,
     created_at: Optional[str], only_new_or_reopened: bool = False, min_ssvc: Optional[str] = None,
+    deliver: Optional[list[str]] = None,
 ) -> str:
     lines = [
         "# Kratos trigger — 'if a matching finding is detected, do <action>'.",
@@ -176,6 +181,8 @@ def _dump_trigger_toml(
         lines.append(f"target = {_toml_basic_string(target)}")
     if only_new_or_reopened:
         lines.append("only_new_or_reopened = true")
+    if deliver:
+        lines.append("deliver = [" + ", ".join(_toml_basic_string(d) for d in deliver) + "]")
     if created_at:
         lines.append(f"created_at = {_toml_basic_string(created_at)}")
     return "\n".join(lines) + "\n"
@@ -207,10 +214,18 @@ def _trigger_from_dict(data: dict[str, Any], path: Path, stem: str) -> Trigger:
         cooldown = DEFAULT_COOLDOWN_MINUTES
     created_at = str(data["created_at"]) if data.get("created_at") else None
     min_ssvc = _clean_ssvc(data.get("min_ssvc")) if data.get("min_ssvc") else None
+    raw_deliver = data.get("deliver")
+    if isinstance(raw_deliver, list):
+        deliver: Optional[list[str]] = [str(x).strip().lower() for x in raw_deliver if str(x).strip()] or None
+    elif raw_deliver:
+        deliver = [str(raw_deliver).strip().lower()]
+    else:
+        deliver = None
     return Trigger(name=name, min_severity=min_sev, finding_id=fid, target=target,
                    action=action, cooldown_minutes=max(0, cooldown),
                    created_at=created_at, path=path, raw=dict(data),
-                   only_new_or_reopened=data.get("only_new_or_reopened") is True, min_ssvc=min_ssvc)
+                   only_new_or_reopened=data.get("only_new_or_reopened") is True, min_ssvc=min_ssvc,
+                   deliver=deliver)
 
 
 def _clean_ssvc(value: Any) -> Optional[str]:
@@ -271,6 +286,7 @@ def save_trigger(
     created_at: Optional[str] = None,
     only_new_or_reopened: bool = False,
     min_ssvc: Optional[str] = None,
+    deliver: Optional[list[str]] = None,
 ) -> Trigger:
     ok, canonical, err = validate_trigger_name(name)
     if not ok:
@@ -292,6 +308,13 @@ def save_trigger(
         if cleaned is None:
             raise TriggerError("Unknown decision. Use one of: track, track*, attend, act.")
         min_ssvc = cleaned
+    if deliver is not None:
+        from kratos.outbox.config import ChannelError, check_deliver
+
+        try:
+            deliver = check_deliver(data_dir, deliver) or None
+        except ChannelError as e:
+            raise TriggerError(str(e)) from None
     if not (min_severity or finding_id or min_ssvc):
         raise TriggerError("A trigger needs a condition: a severity threshold, a decision and/or a finding-ID.")
     try:
@@ -309,7 +332,7 @@ def save_trigger(
         name=canonical, min_severity=min_severity, finding_id=finding_id,
         target=(target or None), action=action, cooldown_minutes=cooldown_minutes,
         created_at=(created_at or utc_now_iso()), only_new_or_reopened=bool(only_new_or_reopened),
-        min_ssvc=min_ssvc,
+        min_ssvc=min_ssvc, deliver=deliver,
     )
     _atomic_write(path, text)
     reloaded = load_trigger(data_dir, canonical)

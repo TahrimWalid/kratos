@@ -112,7 +112,6 @@ from mcp.server.fastmcp import FastMCP
 
 from kratos import paths as _paths
 from kratos.agent.loop import DEFAULT_MAX_ITERS
-from kratos.agent.notify import send_notification
 from kratos.agent.tools import tool_reaches_approval
 from kratos.storage.session_store import SessionStore
 from kratos import untrusted as _untrusted
@@ -354,6 +353,15 @@ def _build_findings_notification_message(session: dict[str, Any], findings: list
     return _untrusted.for_display("\n".join(lines))
 
 
+def send_notification(message: str, severity: str = "info") -> dict[str, Any]:
+    """D.4: a notification goes through the outbox -- enqueued for every channel that
+    receives alerts and sent by the delivery worker (this server runs one), retried while
+    a receiver is down. Nothing here sends directly."""
+    from kratos.outbox.alerts import enqueue_alert
+
+    return enqueue_alert(message, severity, data_dir=_data_dir, source="mcp")
+
+
 @mcp.tool()
 @_clean_for_client
 def kratos_notify_findings(session_id: str) -> dict[str, Any]:
@@ -397,4 +405,11 @@ def run_stdio_server(data_dir: Path | None = None) -> None:
     from kratos import kratos_config as _kc
 
     _kc.set_active_data_dir(_data_dir)
-    mcp.run(transport="stdio")
+    from kratos.outbox import worker as _outbox_worker
+
+    delivery = _outbox_worker.start_background(_data_dir, label="kratos mcp-serve")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        if delivery is not None:
+            delivery.stop(timeout=5)

@@ -63,9 +63,12 @@ CADENCE_ONCALENDAR = {
     "monthly": "monthly",
 }
 
-# Delivery channels this slice supports. Email/SMTP is a deliberately deferred
-# later slice (new secret + privacy surface), so it is not a valid value yet.
-DELIVERY_CHANNELS = {"ntfy"}
+# Delivery (D.4): any channel that receives alerts, by name (kratos.outbox -- ntfy is
+# built in; webhook, syslog and email channels are added with /channels), or "all" for
+# every enabled alert channel. A new schedule delivers to "all": on an install that set
+# up only ntfy, that is ntfy, as before.
+DELIVERY_CHANNELS = {"ntfy", "all"}
+DEFAULT_DELIVER = ["all"]
 
 _SEVERITIES = ("info", "low", "medium", "high", "critical")
 
@@ -277,7 +280,7 @@ def _schedule_from_dict(data: dict[str, Any], path: Path, stem: str) -> Schedule
     elif deliver_raw:
         deliver = [str(deliver_raw).strip().lower()]
     else:
-        deliver = ["ntfy"]
+        deliver = list(DEFAULT_DELIVER)
     min_sev = str(data["min_severity"]).strip().lower() if data.get("min_severity") else None
     created_at = str(data["created_at"]) if data.get("created_at") else None
     jobs_raw = data.get("jobs")
@@ -391,13 +394,15 @@ def save_schedule(
     if cadence not in CADENCE_ONCALENDAR:
         raise ScheduleError(
             f"Unknown cadence '{cadence}'. Use one of: {', '.join(sorted(CADENCE_ONCALENDAR))}.")
-    deliver = [d.strip().lower() for d in (deliver or ["ntfy"]) if d.strip()]
-    bad = [d for d in deliver if d not in DELIVERY_CHANNELS]
-    if bad:
-        raise ScheduleError(
-            f"Unsupported delivery channel(s): {', '.join(bad)}. Supported: {', '.join(sorted(DELIVERY_CHANNELS))}.")
+    deliver = [d.strip().lower() for d in (deliver or DEFAULT_DELIVER) if d.strip()]
+    from kratos.outbox.config import ChannelError, check_deliver
+
+    try:
+        deliver = check_deliver(data_dir, deliver)
+    except ChannelError as e:
+        raise ScheduleError(f"Delivery: {e}") from None
     if not deliver:
-        deliver = ["ntfy"]
+        deliver = list(DEFAULT_DELIVER)
     if min_severity is not None:
         min_severity = min_severity.strip().lower()
         if min_severity not in _SEVERITIES:

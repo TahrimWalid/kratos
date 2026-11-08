@@ -149,7 +149,7 @@ def evaluate_triggers(
     ``investigate`` action into a notify that says the deeper look will run on the
     scheduled cadence, instead of blocking on an LLM call inline."""
     now = now or datetime.now(timezone.utc)
-    notifier = notifier or _default_notifier()
+    notifier = notifier or _default_notifier(data_dir)
     if investigate_fn is None:
         from kratos.agent.scheduled_run import run_headless_investigation
         investigate_fn = run_headless_investigation
@@ -221,8 +221,11 @@ def _cap_reached(data_dir: Path, trigger: "_triggers.Trigger", now: datetime, ca
 
     day = local_day(now.timestamp(), data_dir)
     if BudgetLedger(data_dir).state_claim(f"notified:trigger_cap:{trigger.name}:{day}"):
-        notifier(f"Trigger '{trigger.name}' reached its limit of {cap} fires today and stops firing until "
-                 "tomorrow (local time). Change the limit in Settings -> Budget.", "warning")
+        from kratos.outbox.alerts import call
+
+        call(notifier, f"Trigger '{trigger.name}' reached its limit of {cap} fires today and stops firing until "
+             "tomorrow (local time). Change the limit in Settings -> Budget.", "warning", kind="notice",
+             deliver=trigger.deliver, name=trigger.name, message_id=f"trigger_cap:{trigger.name}:{day}")
 
 
 _INVESTIGATIONS_OFF = (
@@ -351,7 +354,11 @@ def _fire(data_dir, trigger, matched, target, now, notifier, deliver,
 
     delivered = None
     if deliver:
-        delivered = notifier(body, ntfy_sev)
+        from kratos.outbox.alerts import call
+
+        delivered = call(notifier, body, ntfy_sev, worst=worst, machine=target, findings=matched,
+                         deliver=trigger.deliver, name=trigger.name, source="trigger",
+                         message_id=f"trigger:{trigger.name}:{stamp}")
 
     record = {
         "trigger": trigger.name,
@@ -361,6 +368,8 @@ def _fire(data_dir, trigger, matched, target, now, notifier, deliver,
         "matched_ids": matched_ids,
         "worst_severity": worst,
         "notified": isinstance(delivered, dict) and delivered.get("status") == "sent",
+        # D.4: "queued" -- in the outbox, delivered by the worker (and retried); see /outbox
+        "queued": isinstance(delivered, dict) and delivered.get("status") == "queued",
         "delivered": delivered,
         "investigation_status": (investigation or {}).get("status") if investigation else None,
         "error": None,
@@ -369,6 +378,7 @@ def _fire(data_dir, trigger, matched, target, now, notifier, deliver,
     return record
 
 
-def _default_notifier() -> Notifier:
-    from kratos.agent.scheduled_run import _default_notifier as d
-    return d
+def _default_notifier(data_dir: Any = None) -> Notifier:
+    from kratos.outbox.alerts import OutboxNotifier
+
+    return OutboxNotifier(data_dir=data_dir, source="trigger")
