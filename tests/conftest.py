@@ -135,4 +135,15 @@ def _budget_isolated(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyte
                         {"status": "sent"})
     monkeypatch.setattr(guard, "_prompt_provider", None)
     monkeypatch.setattr(guard, "_notice_listener", None)
+    # D.4: the outbox must never be opened in the real data folder either
+    from kratos.outbox import store as _outbox_store
+
+    original_connect = _outbox_store.connect
+
+    def guarded_connect(data_dir):
+        if Path(data_dir).resolve() == real:
+            raise AssertionError(f"a test opened the outbox in the real data folder {real}")
+        return original_connect(data_dir)
+
+    monkeypatch.setattr(_outbox_store, "connect", guarded_connect)
     yield sent

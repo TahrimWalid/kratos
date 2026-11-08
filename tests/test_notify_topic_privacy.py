@@ -117,10 +117,15 @@ def test_doctor_reports_notifications(monkeypatch):
     assert rows[-1]["check"] == "notifications" and rows[-1]["status"] == "info" and rows[-1]["fix"]
 
 
-def test_the_send_notification_tool_and_mcp_path_still_go_through_notify(monkeypatch, posts):
+def test_the_send_notification_tool_and_mcp_path_still_go_through_notify(monkeypatch, posts, tmp_path):
+    """D.4: the tool only enqueues; the delivery worker sends it through notify, unchanged."""
     from kratos.agent import tools
+    from kratos.outbox import worker
 
+    monkeypatch.setattr(kc, "_active_data_dir", tmp_path)
     _config(monkeypatch, topic=None)
     assert tools.tool_send_notification("x")["status"] == "not_configured"
     _config(monkeypatch, topic="kratos-0123456789abcdef01234567")
-    assert tools.tool_send_notification("x", "info")["status"] == "sent" and len(posts) == 1
+    assert tools.tool_send_notification("x", "info")["status"] == "queued" and posts == []
+    worker.flush(tmp_path, label="test")
+    assert len(posts) == 1 and posts[0][0] == "https://ntfy.sh/kratos-0123456789abcdef01234567"

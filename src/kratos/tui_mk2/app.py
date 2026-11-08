@@ -243,6 +243,11 @@ class KratosTUI(ResilientWorkerHost, App):
 
         _budget.set_prompt_provider(make_textual_budget_provider(self), actor="tui")
         _budget.set_notice_listener(make_textual_budget_notice_listener(self))
+        # D.4: deliver the outbox while the TUI is open (it takes over only when no other
+        # Kratos process -- the always-on listener -- holds the delivery lease).
+        from kratos.outbox import worker as _outbox_worker
+
+        self._outbox_worker = _outbox_worker.start_background(self.data_dir, label="the TUI")
         # Detect-once-and-save the ACTIVE model's context window if it has none
         # saved (e.g. a profile set up before detection existed). Background
         # thread: it's a network call and must never delay startup.
@@ -330,6 +335,12 @@ class KratosTUI(ResilientWorkerHost, App):
     def on_unmount(self) -> None:
         set_approval_prompt_provider(None)
         set_clarify_provider(None)
+        delivery = getattr(self, "_outbox_worker", None)
+        if delivery is not None:
+            try:
+                delivery.stop(timeout=3)
+            except Exception:  # noqa: BLE001 -- the lease runs out on its own
+                pass
         from kratos.budget import guard as _budget
 
         _budget.set_prompt_provider(None)

@@ -574,6 +574,12 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
         return 2
     print(f"[KRATOS] Sub-agent telemetry server listening on {server.host} port {args.port} (Ctrl+C to stop)")
 
+    # D.4: the always-on listener is the outbox's natural delivery worker (it runs
+    # all day, so alerts go out while no other Kratos window is open).
+    from kratos.outbox import worker as _outbox_worker
+
+    delivery = _outbox_worker.start_background(args.data_dir, label="the always-on listener")
+
     async def _main() -> None:
         # SIGTERM (systemctl stop/restart) and Ctrl+C both shut down cleanly,
         # so connected targets are recorded as "listener stopped" at once
@@ -596,6 +602,9 @@ def cmd_subagent_serve(args: argparse.Namespace) -> int:
         asyncio.run(_main())
     except KeyboardInterrupt:
         pass
+    finally:
+        if delivery is not None:
+            delivery.stop(timeout=10)
     if server.restart_for_update:
         # A service restarting itself to load newer code: systemd starts it
         # again (EX_TEMPFAIL also counts as a failure for Restart=on-failure).

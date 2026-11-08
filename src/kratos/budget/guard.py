@@ -149,7 +149,9 @@ def notify(message: str, severity: str) -> Any:
     findings or keys (callers pass fixed wording plus numbers)."""
     sender = _notifier
     if sender is None:
-        from kratos.agent.notify import send_notification as sender
+        from kratos.outbox.alerts import OutboxNotifier
+
+        sender = OutboxNotifier(kind="notice", source="budget")
     try:
         return sender(message, severity)
     except Exception as e:  # noqa: BLE001 -- a notification must never break a model call

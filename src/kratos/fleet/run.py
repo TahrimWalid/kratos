@@ -244,7 +244,10 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
                               not_checked=sum(1 for r in results if not r.collected))
             notified = False
             if req.notify:
-                notified = _grouped_notification(req, label, results, answer, data_dir)
+                from kratos.agent.scheduled_run import _sent
+
+                res = _grouped_notification(req, label, results, answer, data_dir)
+                notified = _sent(res) or (isinstance(res, dict) and res.get("status") == "queued")
             return FleetOutcome(answer.status, answer.render(), run_id=run_id, group_label=label, estimate=est,
                                 answer=answer, results=results, resolved=resolved, notified=notified,
                                 token_usage={"total_tokens": tokens, "cost_usd": cost})
@@ -296,7 +299,7 @@ def _audit_answer(results: list[Any]) -> Any:
 
 
 def _grouped_notification(req: FleetRequest, label: str, results: list[Any], answer: Any, data_dir: Path,
-                          extra_lines: list[str] | None = None) -> bool:
+                          extra_lines: list[str] | None = None) -> dict[str, Any] | None:
     """ONE notification for the run: worst severity, the group, the machines with open
     serious findings or Act decisions, the ones not checked. No accounts, addresses
     of attackers or paths (it may cross a public ntfy server); machine names only."""
@@ -305,7 +308,9 @@ def _grouped_notification(req: FleetRequest, label: str, results: list[Any], ans
 
     notifier = req.notifier
     if notifier is None:
-        from kratos.agent.notify import send_notification as notifier
+        from kratos.outbox.alerts import OutboxNotifier
+
+        notifier = OutboxNotifier(source="fleet", name=req.name)
     serious = [r for r in results if finding_facts.serious(r.findings)]
     act = [r for r in results if any(str((f.get("ssvc") or {}).get("outcome") or "") == "act" for f in _open(r.findings))]
     missing = [r for r in results if not r.collected]
@@ -328,10 +333,10 @@ def _grouped_notification(req: FleetRequest, label: str, results: list[Any], ans
         lines.append(f"({req.name})")
     sev = "critical" if worst in ("critical", "high") else "warning" if worst == "medium" or missing else "info"
     try:
-        out = notifier("\n".join(lines), sev)
+        from kratos.outbox.alerts import call
+
+        return call(notifier, "\n".join(lines), sev, worst=worst, machines=[r.machine for r in results],
+                    findings=[f for r in results for f in _open(r.findings)])
     except Exception:  # noqa: BLE001 -- a notification must never sink the run
         logger.warning("fleet: grouped notification failed", exc_info=True)
-        return False
-    from kratos.agent.scheduled_run import _sent
-
-    return _sent(out)
+        return None

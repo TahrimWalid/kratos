@@ -109,7 +109,6 @@ from kratos.adapters.threat_intel import (
     lookup_ip_cache as _lookup_ip_cache,
     lookup_ip_live_abuseipdb as _lookup_ip_live_abuseipdb,
 )
-from kratos.agent.notify import send_notification as _send_notification
 
 
 @dataclass
@@ -1708,9 +1707,9 @@ def tool_run_config_audit() -> dict[str, Any]:
 @register_tool(
     name="send_notification",
     description=(
-        "Send an alert notification via ntfy (not tied to the SSH target -- an external push "
-        "notification service). Never crashes the caller if ntfy is unreachable; failure is reported "
-        "in the returned status instead."
+        "Send an alert notification via ntfy and the person's other alert channels (not tied to the "
+        "SSH target -- an external push notification service). Never crashes the caller if a receiver "
+        "is unreachable; the message is queued and retried, and the returned status says so."
     ),
     parameters={
         "message": {"type": "str", "description": "Notification body text"},
@@ -1718,7 +1717,11 @@ def tool_run_config_audit() -> dict[str, Any]:
     },
 )
 def tool_send_notification(message: str, severity: str = "info") -> dict[str, Any]:
-    return _send_notification(message, severity)
+    # D.4: through the outbox -- enqueued for every channel that receives alerts, sent by
+    # the delivery worker (retried while a receiver is down), never sent from here.
+    from kratos.outbox.alerts import enqueue_alert
+
+    return enqueue_alert(message, severity, data_dir=_kconfig.get_active_data_dir(), source=None)
 
 
 @register_tool(
