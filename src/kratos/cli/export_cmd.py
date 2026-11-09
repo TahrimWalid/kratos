@@ -113,6 +113,7 @@ def cmd_export(args: argparse.Namespace) -> int:
         cap = float(ES.get(ES.NARRATIVE_MAX_USD, data_dir))
         print(f"  written summary: by the model ({_narrative_cost(p, data_dir, N)}; at most ${cap:.2f} -- "
               "export.narrative_max_usd)")
+    sys.stdout.flush()          # the summary before the progress lines (stderr), also when piped
     if not args.yes:
         try:
             ans = input("Make it? [y/N] ").strip().lower()
