@@ -150,8 +150,10 @@ def _print_result(r: Any) -> None:
     if r.narrative and r.narrative.get("skipped"):
         print(f"[KRATOS] {r.narrative['skipped']}")
     print("[KRATOS] Anyone can check it with OpenSSH, in the bundle folder:")
-    print("  ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig < manifest.json")
-    print("  sha256sum -c SHA256SUMS")
+    from kratos.export.manifest import VERIFY_COMMANDS
+
+    for c in VERIFY_COMMANDS:
+        print(f"  {c}")
 
 
 def _verify(bundle: Path, data_dir: Path) -> int:
@@ -159,7 +161,8 @@ def _verify(bundle: Path, data_dir: Path) -> int:
 
     rep = V.verify(bundle, data_dir=data_dir)
     mark = {True: "ok", False: "FAILED", None: "not checked"}
-    print(f"[KRATOS] Signature: {mark[rep.signature_ok]}" + (f" ({rep.signer})" if rep.signer else ""))
+    print(f"[KRATOS] Signature on SHA256SUMS: {mark[rep.sums_signature_ok]}" + (f" ({rep.signer})" if rep.signer else ""))
+    print(f"[KRATOS] Signature on manifest.json: {mark[rep.signature_ok]}")
     if rep.signer_is_this_kratos is not None:
         print(f"[KRATOS] Signed by this Kratos's key: {'yes' if rep.signer_is_this_kratos else 'NO'}")
     print(f"[KRATOS] SHA256SUMS: {mark[rep.sums_ok]}")

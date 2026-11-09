@@ -120,9 +120,9 @@ async def export_flow(app: Any, data_dir: Path, *, active: str | None, run_creat
 
 
 def show_result(app: Any, r: Any) -> None:
-    cmd = (f"cd {r.bundle}\n"
-           "ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig < manifest.json\n"
-           "sha256sum -c SHA256SUMS")
+    from kratos.export.manifest import VERIFY_COMMANDS
+
+    cmd = "\n".join([f"cd {r.bundle}", *VERIFY_COMMANDS])
     note = (f"Signed by {r.fingerprint} (the 'signing key' /doctor shows). "
             + (f"Archive SHA-256: {r.archive_sha256} -- note it down or send it separately from the file. "
                if r.archive_sha256 else "")

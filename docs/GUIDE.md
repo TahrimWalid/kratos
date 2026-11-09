@@ -2387,13 +2387,14 @@ had to leave out — and makes it only when you say yes.
   for one, a written summary.
 - `manifest.json` — every file with its SHA-256, when Kratos collected it, from which machine, by
   which read and transport, in which run, with which Kratos build — signed (`manifest.json.sig`).
-- `SHA256SUMS`, `allowed_signers`, `VERIFY.txt` (the two commands below, in plain words),
+- `SHA256SUMS` — the SHA-256 of every file (the manifest included), signed too (`SHA256SUMS.sig`);
+  `allowed_signers`, `VERIFY.txt` (the two commands below, in plain words),
   `case.jsonld` (the same facts as a CASE/UCO graph, for forensic tools that read it).
 
 **Checking a bundle on another computer.** In the bundle folder:
 
 ```bash
-ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig < manifest.json
+ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s SHA256SUMS.sig < SHA256SUMS
 sha256sum -c SHA256SUMS
 ```
 
@@ -2401,8 +2402,9 @@ The first must say `Good "kratos-export" signature for kratos with ED25519 key S
 that fingerprint with the one `/doctor` shows as **signing key** — read it to the other person, or
 send it some other way than with the bundle (the bundle's own `allowed_signers` only proves the
 bundle wasn't changed after that key signed it). The second must say `OK` for every file. On macOS
-use `shasum -a 256 -c SHA256SUMS`. Changing any byte of any file makes one of the two fail;
-`kratos export verify <folder>` says which file.
+use `shasum -a 256 -c SHA256SUMS`. Changing any byte of any file makes one of the two fail — even if
+whoever changed it also rewrote `SHA256SUMS`, because that list is signed. `kratos export verify
+<folder>` checks both signatures and the manifest, and says which file changed.
 
 **When the hash was taken.** Kratos records every evidence file's SHA-256 *at the moment it writes
 it*, in its **evidence ledger** — a chain where each row includes the previous row's hash, so an

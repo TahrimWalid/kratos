@@ -2144,9 +2144,13 @@ dataset, with a per-line index (`line, event_id, sha256`); findings (with histor
 ATT&CK) and per-machine coverage (`hunt.coverage` plus fleet-run outcomes) are generated files.
 `ledger.ndjson` is the chain from the first exported file's row to the head: full rows for the
 bundle's files and checkpoints, number-and-hashes only for other machines' rows (redacted: no full
-rows). The manifest is sorted JSON listing every file but itself, its signature, `SHA256SUMS`,
-`allowed_signers` and `VERIFY.txt`; `SHA256SUMS` (coreutils format) lists every file but itself and
-the signature. The archive is deterministic (sorted PAX entries, uid/gid 0, fixed mode and mtime,
+rows). The manifest is sorted JSON listing every file but itself, the two signatures, `SHA256SUMS`,
+`allowed_signers` and `VERIFY.txt`, signed as `manifest.json.sig`. `SHA256SUMS` (coreutils format)
+lists every file but itself and its own signature — the manifest and `manifest.json.sig` included —
+and is signed as `SHA256SUMS.sig`; the two stock commands are `ssh-keygen -Y verify … -s
+SHA256SUMS.sig < SHA256SUMS` and `sha256sum -c SHA256SUMS`. (Signing only the manifest, as first
+designed, let someone change a file and regenerate `SHA256SUMS` with both commands still passing —
+found by the lab check.) The archive is deterministic (sorted PAX entries, uid/gid 0, fixed mode and mtime,
 gzip header mtime from the manifest, no name).
 
 **SSHSIG** (`export/sshsig.py`): OpenSSH's `PROTOCOL.sshsig` written in Python — magic `SSHSIG`,

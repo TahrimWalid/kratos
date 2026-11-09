@@ -29,11 +29,17 @@ def _make(d: Path, *, variant="full", machines=(FX.M1,), **kw):
     return info, C.create(d, req, ME)
 
 
-def _ssh_verify(bundle: Path, signers: Path | None = None, namespace="kratos-export") -> subprocess.CompletedProcess:
-    with open(bundle / "manifest.json", "rb") as fh:
+def _ssh_verify(bundle: Path, signers: Path | None = None, namespace="kratos-export",
+                signed: str = "manifest.json") -> subprocess.CompletedProcess:
+    with open(bundle / signed, "rb") as fh:
         return subprocess.run(["ssh-keygen", "-Y", "verify", "-f", str(signers or bundle / "allowed_signers"),
-                               "-I", "kratos", "-n", namespace, "-s", str(bundle / "manifest.json.sig")],
+                               "-I", "kratos", "-n", namespace, "-s", str(bundle / f"{signed}.sig")],
                               stdin=fh, capture_output=True, text=True)
+
+
+def _stock_pair_passes(bundle: Path) -> bool:
+    """The two commands VERIFY.txt gives a responder."""
+    return _ssh_verify(bundle, signed="SHA256SUMS").returncode == 0 and _sums(bundle).returncode == 0
 
 
 def _sums(bundle: Path) -> subprocess.CompletedProcess:
@@ -48,7 +54,8 @@ def made(tmp_path):
 def test_the_bundle_holds_what_the_spec_lists(made):
     _info, r = made
     names = {p.name for p in r.bundle.iterdir()}
-    assert {"manifest.json", "manifest.json.sig", "allowed_signers", "SHA256SUMS", "report.html", "case.jsonld",
+    assert {"manifest.json", "manifest.json.sig", "allowed_signers", "SHA256SUMS", "SHA256SUMS.sig", "report.html",
+            "case.jsonld",
             "VERIFY.txt", "evidence", "ledger.ndjson"} <= names
     man = json.loads((r.bundle / "manifest.json").read_text())
     kinds = {f["kind"] for f in man["files"]}
@@ -67,7 +74,9 @@ def test_stock_openssh_and_coreutils_verify_the_bundle(made):
     assert r.fingerprint in sig.stdout + sig.stderr
     s = _sums(r.bundle)
     assert s.returncode == 0, s.stdout + s.stderr
+    assert _ssh_verify(r.bundle, signed="SHA256SUMS").returncode == 0
     assert V.verify(r.bundle).ok
+    assert "SHA256SUMS.sig < SHA256SUMS" in (r.bundle / "VERIFY.txt").read_text()
 
 
 @pytest.mark.skipif(not HAVE_SSH_KEYGEN, reason="needs OpenSSH")
@@ -92,8 +101,7 @@ def _flip(p: Path) -> None:
 
 
 def _every_file(bundle: Path) -> list[str]:
-    return sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()
-                  and p.relative_to(bundle).as_posix() not in (M.SIGNATURE,))
+    return sorted(p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file())
 
 
 @pytest.mark.skipif(not HAVE_SHA256SUM, reason="needs coreutils")
@@ -111,15 +119,31 @@ def test_one_changed_byte_in_any_file_fails_verification(tmp_path):
         _flip(work / rel)
         rep = V.verify(work)
         assert not rep.ok, rel
+        if HAVE_SSH_KEYGEN:
+            assert not _stock_pair_passes(work), rel          # the responder's two commands catch it
         if rel == M.MANIFEST:
             assert not rep.signature_ok
-            if HAVE_SSH_KEYGEN:
-                assert _ssh_verify(work).returncode != 0
-        elif rel != M.SUMS:
+        elif rel in (M.SUMS, M.SUMS_SIG):
+            assert not rep.sums_signature_ok or not rep.sums_ok
+        elif rel != M.SIGNATURE:
             assert _sums(work).returncode != 0, rel
             assert any(rel in p for p in rep.problems), (rel, rep.problems)
-        else:
-            assert not rep.sums_ok
+
+
+@pytest.mark.skipif(not (HAVE_SSH_KEYGEN and HAVE_SHA256SUM), reason="needs OpenSSH and coreutils")
+def test_a_changed_file_with_a_regenerated_sha256sums_still_fails_the_stock_commands(made):
+    """Signing only the manifest let this through: edit an evidence file, rewrite SHA256SUMS to
+    match, and both commands passed. SHA256SUMS is signed now."""
+    _info, r = made
+    man = json.loads((r.bundle / "manifest.json").read_text())
+    ev = next(f for f in man["files"] if f["kind"] == "evidence")
+    _flip(r.bundle / ev["path"])
+    (r.bundle / M.SUMS).write_text(M.sums_text(r.bundle))
+    assert _sums(r.bundle).returncode == 0                      # the rewritten list matches the files...
+    assert _ssh_verify(r.bundle, signed="SHA256SUMS").returncode != 0   # ...but its signature doesn't
+    assert not _stock_pair_passes(r.bundle)
+    rep = V.verify(r.bundle)
+    assert not rep.ok and not rep.sums_signature_ok and any(ev["path"] in p for p in rep.problems)
 
 
 def test_kratos_verify_names_the_changed_evidence_file(made):

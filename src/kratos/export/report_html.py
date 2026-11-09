@@ -81,11 +81,13 @@ def _rows(head: list[str], rows: list[list[str]]) -> str:
 def _verify_box(manifest: dict[str, Any]) -> str:
     fp = esc(manifest["signing_key"]["fingerprint"])
     return f"""<div class="panel"><b>Check this bundle on any computer with OpenSSH</b> (no Kratos needed), in the
-bundle folder:<pre>ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig &lt; manifest.json
+bundle folder:<pre>ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s SHA256SUMS.sig &lt; SHA256SUMS
 sha256sum -c SHA256SUMS</pre>
 The first must say <i>Good "kratos-export" signature</i> with key <code>{fp}</code> -- compare it with the
 fingerprint Kratos's <code>/doctor</code> shows ("signing key"); the bundle's own <code>allowed_signers</code>
-file only proves the bundle wasn't changed after this key signed it. The second must say OK for every file.</div>"""
+file only proves the bundle wasn't changed after this key signed it. The second must say OK for every file. Together they prove no file changed since Kratos signed the bundle;
+<code>manifest.json</code> (signed on its own too, <code>manifest.json.sig</code>) holds each evidence file's hash
+as Kratos recorded it when it collected the file.</div>"""
 
 
 def render(manifest: dict[str, Any], collected: Any, *, narrative: dict[str, Any] | None = None,

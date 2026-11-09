@@ -29,7 +29,8 @@ from kratos.export import sshsig
 @dataclass
 class VerifyReport:
     bundle: Path
-    signature_ok: bool = False
+    signature_ok: bool = False             # manifest.json.sig
+    sums_signature_ok: bool = False        # SHA256SUMS.sig (what the two stock commands check)
     signer: str | None = None              # fingerprint of the key that signed
     signer_is_this_kratos: bool | None = None
     sums_ok: bool = False
@@ -42,7 +43,7 @@ class VerifyReport:
 
     @property
     def ok(self) -> bool:
-        return (self.signature_ok and self.sums_ok and self.manifest_ok and self.ledger_ok is not False
+        return (self.signature_ok and self.sums_signature_ok and self.sums_ok and self.manifest_ok and self.ledger_ok is not False
                 and self.local_ok is not False and self.signer_is_this_kratos is not False)
 
 
@@ -105,12 +106,24 @@ def verify(bundle: Path | str, *, data_dir: Path | str | None = None) -> VerifyR
                 rep.notes.append(f"signed by {rep.signer}, which is not this Kratos's signing key (current or "
                                  "retired): this bundle was made by another Kratos, or by someone else")
 
-    # 2. SHA256SUMS
+    # 2. SHA256SUMS, and its own signature (the one the stock `ssh-keygen -Y verify` checks)
     try:
-        sums = M.parse_sums((bundle / M.SUMS).read_text(encoding="utf-8"))
-    except OSError:
-        sums = {}
-        rep.problems.append(f"{M.SUMS} is missing")
+        sums_bytes = (bundle / M.SUMS).read_bytes()
+        sums = M.parse_sums(sums_bytes.decode("utf-8"))
+    except (OSError, UnicodeDecodeError):
+        sums_bytes, sums = b"", {}
+        rep.problems.append(f"{M.SUMS} is missing or unreadable")
+    try:
+        p2 = sshsig.verify(sums_bytes, (bundle / M.SUMS_SIG).read_text(encoding="ascii"))
+        if rep.signer and _fp(p2.public_openssh) != rep.signer:
+            rep.problems.append(f"{M.SUMS_SIG}: signed by a different key than {M.SIGNATURE}")
+        else:
+            rep.sums_signature_ok = bool(sums_bytes)
+            rep.signer = rep.signer or _fp(p2.public_openssh)
+    except (OSError, UnicodeDecodeError) as e:
+        rep.problems.append(f"{M.SUMS_SIG}: can't be read ({type(e).__name__})")
+    except sshsig.SignatureError as e:
+        rep.problems.append(f"{M.SUMS_SIG}: {e} -- {M.SUMS} was changed after it was signed")
     on_disk = {p.relative_to(bundle).as_posix() for p in bundle.rglob("*") if p.is_file()}
     expected = on_disk - M.NOT_IN_SUMS
     bad_sum = False

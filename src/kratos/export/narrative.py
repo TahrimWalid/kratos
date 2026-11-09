@@ -48,6 +48,7 @@ Reply with JSON only, exactly this shape:
 class Narrative:
     text: str = ""
     machines: dict[str, str] = field(default_factory=dict)
+    raw: dict[str, str] = field(default_factory=dict)       # the model's own text, before Kratos's NOTEs
     notes: list[str] = field(default_factory=list)
     skipped: str | None = None
     model: str | None = None
@@ -56,7 +57,7 @@ class Narrative:
     prompt_tokens: int = 0
 
     def as_dict(self) -> dict[str, Any]:
-        return {"text": self.text, "notes": self.notes, "skipped": self.skipped, "model": self.model,
+        return {"text": self.text, "raw": dict(self.raw), "notes": self.notes, "skipped": self.skipped, "model": self.model,
                 "rounds": self.rounds, "estimate_usd": self.estimate_usd}
 
     def markdown(self) -> str:
@@ -221,6 +222,7 @@ def write_summary(findings: dict[str, list[dict[str, Any]]], coverage: dict[str,
         if not text:
             n.notes.append(f"{m}: the model wrote no summary for this machine.")
             continue
+        n.raw[m] = untrusted.for_display(text)
         noted = AC.apply_notes(text, pending_eval[m], evid[m])
         n.machines[m] = untrusted.for_display(noted.text)
         if noted.text != text:

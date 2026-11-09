@@ -2,7 +2,7 @@
 
 A responder verifies a bundle with stock OpenSSH:
 
-    ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig < manifest.json
+    ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s SHA256SUMS.sig < SHA256SUMS
 
 The format is small. The signed data is::
 

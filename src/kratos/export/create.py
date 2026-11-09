@@ -45,9 +45,7 @@ class ExportResult:
     narrative: dict[str, Any] | None = None
 
     def verify_commands(self) -> list[str]:
-        return [f"cd {self.bundle}",
-                "ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s manifest.json.sig < manifest.json",
-                "sha256sum -c SHA256SUMS"]
+        return [f"cd {self.bundle}", *M.VERIFY_COMMANDS]
 
 
 def exports_dir(data_dir: Path | str) -> Path:
@@ -162,7 +160,9 @@ def create(data_dir: Path | str, req: ExportRequest, actor: Any, *, progress: Pr
         B.write_text(tmp, M.SIGNATURE, sshsig.sign(man_bytes, key))
         B.write_text(tmp, M.SIGNERS, sshsig.allowed_signers_line(pub))
         B.write_text(tmp, M.VERIFY, M.verify_text(fp, p.export_id))
-        B.write_text(tmp, M.SUMS, M.sums_text(tmp))
+        sums = M.sums_text(tmp)
+        B.write_text(tmp, M.SUMS, sums)
+        B.write_text(tmp, M.SUMS_SIG, sshsig.sign(sums.encode("utf-8"), key))
         tmp.rename(out)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
