@@ -55,6 +55,8 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("dataprune.py", "apply_prune", "DELETE FROM"): PERSON + " (`kratos data prune --apply`)",
     ("hunt/terms.py", "delete_older_than", "DELETE FROM"): PERSON + " (the hunt index entries of the log lines "
                                                                     "`kratos data prune --category host_events` removes)",
+    ("export/create.py", "create", "rmtree"): TEMP + " (this export's own unfinished .<id>.building folder, removed "
+                                               "when the export fails or before it is rebuilt -- never a finished bundle)",
     ("outbox/store.py", "prune", "DELETE FROM"): PERSON + " (`kratos outbox prune --apply`: delivered / dead messages)",
     ("outbox/config.py", "remove_channel", "DELETE FROM"): PERSON + " (`kratos channels remove`; its messages stay)",
     ("outbox/config.py", "remove_channel", "unlink"): PERSON + " (the removed channel's secrets file)",
