@@ -77,3 +77,20 @@ The Python that runs Kratos needs security fixes too. `kratos doctor` (and `/doc
 warns 90 days before python.org stops them for your version and after it has; Python 3.10
 reaches that point at the end of October 2026. A Python that came with your Linux
 distribution keeps getting fixes from the distribution, so for it the doctor only says so.
+
+## The signing key
+
+Kratos's Ed25519 signing key (`<data folder>/signing/`, folder `0700`, key `0600`) signs incident
+bundles (`/export`, OpenSSH `SSHSIG`, namespace `kratos-export`), the evidence ledger's daily
+checkpoints, and — when you turn it on — webhook messages (`v1a`). It never leaves this computer and
+is never used for SSH logins or the agent link.
+
+- A bundle's signature proves the bundle wasn't changed after this key signed it. That is worth
+  something only if the person checking knows the key is yours: **give them the fingerprint some
+  other way than with the bundle** (`/doctor` → "signing key", or `kratos signing status`).
+- Whoever holds a copy of the key can sign bundles as you, and — with write access to `kratos.db` —
+  rebuild the evidence ledger's chain. Keep it private.
+- **Back it up** with your other keys: a copy is made in `signing/backup/` when the key is created;
+  copy the whole `signing/` folder somewhere safe with your database backup.
+- `kratos signing rotate` makes a new key and keeps the old public key in `signing/retired/`, so
+  bundles and checkpoints signed before the change still verify.
