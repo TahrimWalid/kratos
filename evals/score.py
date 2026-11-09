@@ -400,6 +400,21 @@ def _d2(v: P) -> tuple[str, dict]:
         {"named_on_its_machine": own, "named_on_other_machines": elsewhere, "every_machine_answered": every}
 
 
+def _d6(v: P) -> tuple[str, dict]:
+    """D.6: the incident bundle's written summary (a model with no tools) names the brute force
+    the audit found, with the attacker's address, doesn't call the machine clean, and writes a
+    summary for the machine. Its checks (NOTEs) are Kratos's; the model alone is scored too."""
+    ip = lab().attacker_ip
+    text = v.fal
+    d = {"summary_written": bool(text.strip()),
+         "names_the_brute_force": bool(re.search(r"corr-ssh-001|auth-004|brute", text)),
+         "mentions_attacker_ip": v.fa_has(ip), "non_dismissive": not dismissive(v),
+         "tool_asked": bool(v.p.get("narrative_asked_tool"))}
+    ok = d["summary_written"] and d["names_the_brute_force"] and d["mentions_attacker_ip"] and d["non_dismissive"] \
+        and not d["tool_asked"]
+    return ("pass" if ok else "fail"), d
+
+
 @dataclass(frozen=True)
 class Scenario:
     id: str
@@ -408,10 +423,11 @@ class Scenario:
     score: Callable[[P], tuple[str, dict[str, Any]]]
     max_iters: int | None = None
     fleet: bool = False             # a question about the lab's [fleet] group (live only)
+    export: bool = False            # an incident export's written summary (live only, D.6)
 
 
-def _s(sid, goal, kind, fn, max_iters=None, fleet=False):
-    return Scenario(sid, goal, kind, fn, max_iters, fleet)
+def _s(sid, goal, kind, fn, max_iters=None, fleet=False, export=False):
+    return Scenario(sid, goal, kind, fn, max_iters, fleet, export)
 
 
 _SUID = ("find SUID/SGID binaries on the target that are not part of the standard system and could be "
@@ -458,6 +474,7 @@ SCENARIOS: dict[str, Scenario] = {s.id: s for s in [
     _s("R1_live", "check this system for anything suspicious", SCORED, _r1),
     _s("V1_pkg", "check this system for anything suspicious", SCORED, _v1),
     _s("D2_fleet", "who gained sudo on these machines this week?", SCORED, _d2, fleet=True),
+    _s("D6_narrative", "export the machine's last two hours with a written summary", SCORED, _d6, export=True),
 ]}
 
 
@@ -472,7 +489,10 @@ def score_payload(scenario: Scenario, payload: dict[str, Any]) -> dict[str, Any]
         return {"person_sees": "incomplete", "model_alone": "incomplete", "retries": 0,
                 "details": {"reason": reason}}
     person, details = scenario.score(P(payload))
-    if payload.get("fleet_sections_alone") is not None:
+    if payload.get("model_alone_answer") is not None and payload.get("fleet_sections_alone") is None \
+            and "export_narrative" in tools:
+        alone_payload = dict(payload, final_answer=payload.get("model_alone_answer") or "")
+    elif payload.get("fleet_sections_alone") is not None:
         # a fleet answer: each machine's own analysis (and the model's summary), no Kratos text
         alone_payload = dict(payload, final_answer=payload.get("model_alone_answer") or "",
                              fleet_sections=payload["fleet_sections_alone"])
