@@ -169,6 +169,9 @@ def create(data_dir: Path | str, req: ExportRequest, actor: Any, *, progress: Pr
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)
         raise
+    finally:
+        if "red" in locals():
+            red.close()
 
     arc_path = arc_sha = None
     if req.archive:

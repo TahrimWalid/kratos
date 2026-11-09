@@ -36,6 +36,12 @@ class Redactor:
     def machine(self, m: str) -> str:
         return m
 
+    def known_event_id(self, tok: str) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
     def opaque(self, value: str) -> str:
         """An identifier derived from real values (a finding key, an event id)."""
         return value
@@ -99,6 +105,14 @@ class BundleRedactor(Redactor):
         # tie a placeholder back (security review, D.6). In this variant they become keyed
         # hashes under a secret drawn here and never written anywhere.
         self._opaque_key = _secrets.token_bytes(32)
+        # The same identifiers appear inside copied evidence (findings reports, detection results):
+        # every hex token that IS one of these machines' finding keys or stored event ids is
+        # swapped too. Other hashes (a file's SHA-256, an MD5 indicator) are evidence and stay.
+        self._data_dir = Path(data_dir)
+        self._machines = list(machines)
+        self._finding_keys = _finding_keys(self._data_dir, self._machines)
+        self._key_prefixes = {k[:n]: k for k in self._finding_keys for n in _KEY_PREFIXES}
+        self._event_id_cache: dict[str, bool] = {}
         self._machine_labels: dict[str, str] = {}
 
     @property
@@ -112,6 +126,7 @@ class BundleRedactor(Redactor):
         # an address glued to other text (nmap_10.0.0.5_2026...): '_' is a word character, so the
         # masker's word-bounded address pattern skips it
         out = _GLUED_IPV4.sub(lambda m: self._masker.mask(m.group(0)), out)
+        out = _HEX_ID.sub(self._swap_id, out)
         if self._glued_names is not None:
             out = self._glued_names.sub(lambda m: self._masker.mask(m.group(0)), out)
         if self._quoted_names is not None:
@@ -121,6 +136,38 @@ class BundleRedactor(Redactor):
         for label in _labels(out, self.tag):
             self._kinds[re.sub(rf"(?:_\d+)?_{re.escape(self.tag)}$", "", label)] += 1
         return out
+
+    def _swap_id(self, m: "re.Match[str]") -> str:
+        tok = m.group(0)
+        if len(tok) == 64 and tok in self._finding_keys:
+            return self.opaque(tok)
+        if len(tok) in _KEY_PREFIXES and tok in self._key_prefixes:
+            return self.opaque(self._key_prefixes[tok])[:len(tok)]
+        if len(tok) == 32 and self._is_event_id(tok):
+            return self.opaque(tok)
+        return tok
+
+    def _is_event_id(self, tok: str) -> bool:
+        if tok not in self._event_id_cache:
+            self._event_id_cache[tok] = _event_id_exists(self._conn(), self._machines, tok)
+        return self._event_id_cache[tok]
+
+    def known_event_id(self, tok: str) -> None:
+        """An event being copied: its id needs no lookup."""
+        self._event_id_cache[tok] = True
+
+    def _conn(self) -> Any:
+        if getattr(self, "_db", None) is None:
+            from kratos.storage.sqlite_files import connect_store
+
+            db = self._data_dir / "kratos.db"
+            self._db = connect_store(db) if db.exists() else None
+        return self._db
+
+    def close(self) -> None:
+        if getattr(self, "_db", None) is not None:
+            self._db.close()
+            self._db = None
 
     def opaque(self, value: str) -> str:
         if not value:
@@ -146,6 +193,40 @@ class BundleRedactor(Redactor):
         return {"mode": "strict", "placeholder_tag": self.tag,
                 "replaced_kinds": dict(sorted(self._kinds.items())),
                 "secrets_redacted": self._secrets}
+
+
+_HEX_ID = re.compile(r"(?<![0-9a-fA-F])(?:[0-9a-f]{64}|[0-9a-f]{32}|[0-9a-f]{16}|[0-9a-f]{12})(?![0-9a-fA-F])")
+_KEY_PREFIXES = (12, 16)     # how reports and screens shorten a finding key
+
+
+def _finding_keys(data_dir: Path, machines: list[str]) -> frozenset[str]:
+    from kratos.storage.sqlite_files import connect_store
+
+    db = data_dir / "kratos.db"
+    if not db.exists() or not machines:
+        return frozenset()
+    conn = connect_store(db)
+    try:
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='finding_records'").fetchone():
+            return frozenset()
+        q = ",".join("?" * len(machines))
+        return frozenset(r[0] for r in conn.execute(f"SELECT finding_key FROM finding_records WHERE target IN ({q})",
+                                                    machines))
+    finally:
+        conn.close()
+
+
+def _event_id_exists(conn: Any, machines: list[str], tok: str) -> bool:
+    import sqlite3
+
+    if conn is None or not machines:
+        return False
+    q = ",".join("?" * len(machines))
+    try:
+        return conn.execute(f"SELECT 1 FROM host_events WHERE event_id = ? AND target IN ({q}) LIMIT 1",
+                            (tok, *machines)).fetchone() is not None
+    except sqlite3.OperationalError:      # no event table yet
+        return False
 
 
 _GLUED_IPV4 = re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d])")

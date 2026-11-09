@@ -313,6 +313,15 @@ def test_finding_keys_and_event_ids_are_not_copied_into_a_redacted_bundle(tmp_pa
     c = connect_store(d / "kratos.db")
     ids = [r[0] for r in c.execute("SELECT event_id FROM host_events")]
     c.close()
+    # found on the lab: copied evidence carries them too (a findings report, detection results)
+    from kratos import evidence
+
+    md5_ioc = "d41d8cd98f00b204e9800998ecf8427e"
+    p = FX._write(d, "detect/results/detections_x.json", {"target": FX.M1, "finding_key": keys[0],
+                                                          "event_ids": ids[:2], "ioc_md5": md5_ioc})
+    evidence.record(p, data_dir=d, category="detections_schedule", machine=FX.M1)
+    md = FX._write(d, "reports/findings_x.md", "\n".join(f"- [HIGH] X `{k[:12]}`" for k in keys))
+    evidence.record(md, data_dir=d, category="findings_report_md", machine=FX.M1)
     from kratos.export.scope import plan
 
     req = ExportRequest(machines=[FX.M1, FX.M2], start=info["now"] - 86400, end=info["now"] + 60, variant="redacted")
@@ -322,6 +331,7 @@ def test_finding_keys_and_event_ids_are_not_copied_into_a_redacted_bundle(tmp_pa
     text = _all_text(r.bundle)
     leaked = [k for k in keys if k[:12] in text] + [i for i in ids if i in text]
     assert keys and ids and not leaked
+    assert md5_ioc in text                     # an ordinary hash in the evidence is kept
     man = json.loads((r.bundle / "manifest.json").read_text())
     assert man["cuts"] and all(c["machine"] not in (FX.M1, FX.M2) for c in man["cuts"])
     assert V.verify(r.bundle).ok

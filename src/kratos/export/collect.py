@@ -202,6 +202,7 @@ def _collect_events(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: Col
                     n += 1
                     if red.active:
                         # the document carries its own event.id: replaced with the same opaque value
+                        red.known_event_id(row["event_id"])
                         text = red.text(row["doc"]).replace(row["event_id"], red.opaque(row["event_id"]))
                     else:
                         text = row["doc"]
