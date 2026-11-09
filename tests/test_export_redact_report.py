@@ -260,3 +260,39 @@ def test_the_case_uco_graph_validates(tmp_path, variant):
     types = {n["@type"] for n in g["@graph"]}
     assert {"uco-observable:File", "case-investigation:InvestigativeAction",
             "case-investigation:ProvenanceRecord", "uco-tool:Tool", "uco-observable:Device"} <= types
+
+
+def test_glued_addresses_and_the_exporters_login_are_replaced_too(tmp_path):
+    """Found on the lab: nmap's output names its file `nmap_<address>_<time>.xml` ('_' is a word
+    character, so the word-bounded address pattern skipped it) and records its command line with
+    this computer's home folder; the manifest named the exporting person."""
+    from kratos import evidence
+
+    d = tmp_path / "data"
+    info = FX.build(d)
+    p = FX._write(d, f"scans/parsed_{FX.M1}.json",
+                  {"target": FX.M1, "source_file": f"nmap_{FX.M1}_20261109_153201.xml",
+                   "args": f"nmap -sV -Pn -oX /home/carol/kratos/data/scans/nmap_{FX.M1}_x.xml {FX.M1}",
+                   "note": "path /srv/carol-tools/x and host-web-01.test-alias"})
+    evidence.record(p, data_dir=d, category="open_ports", machine=FX.M1)
+    # an attacker tried "admin" -- also one of Kratos's own words, so never replaced as a free word
+    from datetime import datetime, timezone
+
+    from kratos.adapters.auth_log_parse import classify_auth_message
+    from kratos.events import converters as EC
+    from kratos.events.store import EventStore
+
+    msg = f"Failed password for invalid user admin from {FX.ATTACKER} port 40999 ssh2"
+    ts = datetime.fromtimestamp(info["now"] - 120, timezone.utc).isoformat()
+    ctx = EC.ReadContext(target=FX.M1, transport="ssh", read=EC.READ_JOURNAL_AUTH,
+                         created=datetime.fromtimestamp(info["now"], timezone.utc), run_id="r2")
+    msg2 = f"Connection closed by invalid user admin {FX.ATTACKER} port 40999 [preauth]"
+    EventStore(d / "kratos.db").add([EC.from_auth_event(classify_auth_message(ts, FX.M1, "sshd", m, m), ctx=ctx)
+                                     for m in (msg, msg2)])
+    r = C.create(d, ExportRequest(machines=[FX.M1], start=info["now"] - 86400, end=info["now"] + 60,
+                                  variant="redacted"), Actor(user="carol", interface="cli"))
+    text = _all_text(r.bundle)
+    assert FX.M1 not in text and "carol" not in text
+    assert '"name": "admin"' not in text and '"name":"admin"' not in text and "user admin" not in text
+    man = json.loads((r.bundle / "manifest.json").read_text())
+    assert man["created_by"]["user"] != "carol" and man["created_by"]["user"].startswith("USER_")

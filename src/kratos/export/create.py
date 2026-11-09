@@ -90,7 +90,7 @@ def create(data_dir: Path | str, req: ExportRequest, actor: Any, *, progress: Pr
         shutil.rmtree(tmp)   # a crashed export's unfinished folder from this same id (never another's)
     tmp.mkdir(mode=0o700)
     try:
-        red = redactor_for(req.variant, data_dir, p.export_id, req.machines)
+        red = redactor_for(req.variant, data_dir, p.export_id, req.machines, people=(str(actor.user),))
         say("copying evidence")
         col = collect(data_dir, p, tmp, red, progress=say)
         files: list[BundleFile] = list(col.files)

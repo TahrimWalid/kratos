@@ -23,7 +23,7 @@ from typing import Any
 from kratos import untrusted
 
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; script-src 'none'; "
-       "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+       "base-uri 'none'; form-action 'none'")
 
 STYLE = """
 :root{--fg:#1d2433;--muted:#5b6474;--line:#d9dee7;--bg:#ffffff;--panel:#f6f8fb;--high:#b42318;
