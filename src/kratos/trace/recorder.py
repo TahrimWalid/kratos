@@ -240,6 +240,7 @@ class Trace:
                 self._write(self.partial_path)   # a run that raised: the .partial is its record
                 return
             self._write(self.path)
+            self._record_evidence()
             with contextlib.suppress(OSError):
                 self.partial_path.unlink()  # the partial copy this trace wrote while running
         except Exception:  # noqa: BLE001
@@ -253,8 +254,17 @@ class Trace:
         try:
             target = self.path if self.path.exists() else self.partial_path
             self._write(target)
+            if target == self.path:
+                self._record_evidence()
         except Exception:  # noqa: BLE001
             logger.debug("trace: late rewrite failed", exc_info=True)
+
+    def _record_evidence(self) -> None:
+        """The finished run record goes into the evidence ledger (D.6); the .partial never does."""
+        from kratos import evidence as _evidence
+
+        _evidence.record(self.path, data_dir=self.data_dir, category="run_record", machine=self.target or None,
+                         run_id=self.run_id, read=self.kind, transport="local")
 
 
 def _safe_active_target() -> str | None:

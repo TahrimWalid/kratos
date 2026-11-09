@@ -131,6 +131,8 @@ _PALETTE_COMMANDS = [
     ("/detect", "detection rules (SigmaHQ) — which run, by whom, on/off per machine, what wasn't checked, run now"),
     ("/hunt", "has this address / hash / account / domain / program / path been seen? searches what Kratos holds, "
               "with its coverage (no model)"),
+    ("/export", "an incident bundle someone else can check with OpenSSH: evidence with the hashes taken when "
+                "Kratos collected it, signed, an HTML report, CASE/UCO (full or redacted)"),
     ("/schedule", "run an audit/preset on a cadence + deliver the report (systemd)"),
     ("/trigger", "if a finding is detected → notify / show playbook / investigate"),
     ("/doctor", "self-diagnostic — LLM, target setup, and tools health"),
@@ -1083,6 +1085,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.app.push_screen(DetectScreen(self._data_dir, target=_kconfig.get_active_target()))
         elif cmd == "/hunt":
             self._hunt_flow(rest)
+        elif cmd == "/export":
+            self._export_flow()
         elif cmd in ("/containers", "/docker"):
             from kratos.tui_mk2.screens.containers import ContainersScreen
 
@@ -1383,6 +1387,39 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 return
         prepared.ambiguous = []
         self._hunt_run(prepared, rest.strip())
+
+    @work(exclusive=True)
+    async def _export_flow(self) -> None:
+        """/export: the questions (machines, period, variant, summary), then the export on a worker."""
+        from kratos.tui_mk2.screens import export as EX
+
+        await EX.export_flow(self.app, self._data_dir, active=_kconfig.get_active_target(),
+                             run_create=self._export_run, emit=lambda m: self._emit(R.note_line(m)))
+
+    @work(thread=True, exclusive=True, group="turn")
+    @_with_run_scope()
+    def _export_run(self, req: Any, plan: Any) -> None:
+        from kratos.export import create as C
+        from kratos.tui_mk2.screens import export as EX
+
+        self._set_busy(True)
+        try:
+            r = C.create(self._data_dir, req, EX.actor(), plan=plan,
+                         progress=lambda m: self._emit_from_worker(R.note_line(f"export: {m}...")))
+        except Exception as e:  # noqa: BLE001 -- said in plain words, nothing half-written is left
+            self._emit_from_worker(R.error_line(f"/export failed: {type(e).__name__}: {e}"))
+            return
+        finally:
+            self._set_busy(False)
+        self._emit_from_worker(Text(f"Bundle: {r.bundle}", style=f"bold {T.TEXT_BRIGHT}"))
+        self._emit_from_worker(Text(f"{r.files} files, {r.events:,} events, {r.bytes / 1e6:.1f} MB · signed by "
+                                    f"{r.fingerprint}" + (f" · archive SHA-256 {r.archive_sha256}"
+                                                         if r.archive_sha256 else ""), style=T.TEXT))
+        for w in r.warnings:
+            self._emit_from_worker(Text(f"! {w}", style=T.ATTENTION))
+        if r.narrative and r.narrative.get("skipped"):
+            self._emit_from_worker(R.note_line(r.narrative["skipped"]))
+        self.app.call_from_thread(EX.show_result, self.app, r)
 
     @work(thread=True, exclusive=True, group="turn")
     @_with_run_scope()

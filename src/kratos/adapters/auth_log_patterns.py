@@ -193,4 +193,7 @@ def analyze_auth_patterns(
 
     out, _ts = reserve(logs_dir, "auth_patterns", ".json")
     out.write_text(json.dumps(patterns, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out, data_dir=data_dir, category="auth_patterns", read="analyze_auth_patterns")
     return out

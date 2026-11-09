@@ -68,5 +68,8 @@ def write_event_excerpt_from_events_file(
     ts_out = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = excerpts_dir / f"excerpt_{safe_type}_{ts_out}.log"
     out_path.write_text("\n".join(selected) + ("\n" if selected else ""), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out_path, data_dir=data_dir, category="log_excerpt", read="log_window")
 
     return out_path

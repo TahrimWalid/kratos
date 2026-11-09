@@ -148,6 +148,11 @@ def build_auth_trends_report(
 
     out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
     out_md.write_text(_render_md(report), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    for _p, _cat in ((out_json, "auth_trends"), (out_md, "auth_trends_md")):
+        _evidence.record(_p, data_dir=data_dir, category=_cat, machine=target or None, read="auth_trends",
+                         transport="local")
     return out_json, out_md, report
 
 

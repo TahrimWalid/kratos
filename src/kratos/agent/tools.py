@@ -680,6 +680,10 @@ def _persist_target_auth_correlation_data(
     stats_out = logs_dir / f"auth_stats_{ts_tag}.json"
     events_out.write_text(json.dumps([asdict(e) for e in events], indent=2), encoding="utf-8")
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    for _p, _cat in ((events_out, "auth_events"), (stats_out, "auth_stats")):
+        _evidence.record(_p, data_dir=data_dir, category=_cat, machine=target, read="read_journalctl")
 
     patterns_out = _analyze_auth_patterns(data_dir, events_file=events_out, target=target)
     _events_recording.record_target_auth(data_dir, target, entries, windows,  # best-effort, result unchanged
@@ -925,6 +929,10 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
         stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
         patterns_out.write_text(json.dumps({"target": _ssh_target_label(), **m.as_auth_patterns()}, indent=2),
                                 encoding="utf-8")
+        from kratos import evidence as _evidence
+
+        for _p, _cat in ((stats_out, "auth_stats"), (patterns_out, "auth_patterns")):
+            _evidence.record(_p, data_dir=data_dir, category=_cat, read="measure_auth_activity")
 
     top_ips = sorted(m.by_ip.items(), key=lambda kv: -kv[1]["count"])[:10]
     return m, block, {
@@ -1214,6 +1222,9 @@ def tool_list_privileged_accounts(data_dir: Path, lookback_days: int = 30) -> di
     local_accounts = {u: (inv.accounts.get(u) or {}).get("uid") for u in sorted(inv.local_users)}
     snap.write_text(json.dumps({**result, "accounts": inv.accounts, "local_accounts": local_accounts},
                                indent=2, default=str), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(snap, data_dir=data_dir, category="privileged_accounts", read="list_privileged_accounts")
     result["snapshot_file"] = str(snap)
     return result
 
@@ -1602,6 +1613,10 @@ def tool_run_vuln_scan(data_dir: Path, target: str | None = None, nuclei_tags: s
         snap = snap_dir / f"vuln_scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
         snap.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
         result["snapshot_file"] = str(snap)
+        from kratos import evidence as _evidence
+
+        _evidence.record(snap, data_dir=data_dir, category="vuln_scan_result", machine=result.get("target"),
+                         read="run_vuln_scan", transport="network scan from this computer")
     except OSError as e:
         result["errors"] = [*errors, f"could not save the scan for the findings report: {e.__class__.__name__}"]
     return result

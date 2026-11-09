@@ -2357,6 +2357,88 @@ by you), never in the database, the run records, `/doctor` or the logs.
 attempt; `d` shows the dead letters with their reasons, and `r` sends one again once you've fixed
 the receiver (`kratos outbox retry --dead` from the command line).
 
+### Exporting an incident
+
+When something happened and someone else needs to see it — your team, an incident-response
+firm, an insurer, the police — `/export` (or `kratos export create`) puts what Kratos collected
+into an **incident bundle**: a folder (and a `.tar.gz` of it) that anyone can check **without
+installing Kratos**, with two commands every computer with OpenSSH already has.
+
+```bash
+kratos export create --machine 10.0.0.5 --since 3d
+kratos export create --group web --since 2026-11-01 --redacted
+```
+
+You choose the machines (one, a list, or a group), the period, and **full** or **redacted**.
+Kratos shows what the bundle will hold — how many files and events, how big, and anything it
+had to leave out — and makes it only when you say yes.
+
+**What's in a bundle.**
+
+- `evidence/<machine>/…` — every file Kratos wrote for that machine in the period (port scans,
+  saved reads of persistence, running processes, packages, log integrity, findings reports, run
+  records…), the stored log events as one JSON line each with a per-line index, the findings with
+  their history, and the **coverage**: which periods of which logs Kratos holds completely and
+  every gap (a period Kratos couldn't read is said, never shown as "nothing happened").
+- `report.html` — one page that opens offline in any browser (no network, no scripts). Part 1,
+  **Observed**, holds only what Kratos collected: coverage and gaps, a timeline, findings with
+  their evidence, every file with its hash. Part 2, **Analysis**, holds Kratos's rule-made
+  decisions (severity, state, re-check verdict, SSVC decision, ATT&CK labels) and, if you asked
+  for one, a written summary.
+- `manifest.json` — every file with its SHA-256, when Kratos collected it, from which machine, by
+  which read and transport, in which run, with which Kratos build — signed (`manifest.json.sig`).
+- `SHA256SUMS` — the SHA-256 of every file (the manifest included), signed too (`SHA256SUMS.sig`);
+  `allowed_signers`, `VERIFY.txt` (the two commands below, in plain words),
+  `case.jsonld` (the same facts as a CASE/UCO graph, for forensic tools that read it).
+
+**Checking a bundle on another computer.** In the bundle folder:
+
+```bash
+ssh-keygen -Y verify -f allowed_signers -I kratos -n kratos-export -s SHA256SUMS.sig < SHA256SUMS
+sha256sum -c SHA256SUMS
+```
+
+The first must say `Good "kratos-export" signature for kratos with ED25519 key SHA256:…`. Compare
+that fingerprint with the one `/doctor` shows as **signing key** — read it to the other person, or
+send it some other way than with the bundle (the bundle's own `allowed_signers` only proves the
+bundle wasn't changed after that key signed it). The second must say `OK` for every file. On macOS
+use `shasum -a 256 -c SHA256SUMS`. Changing any byte of any file makes one of the two fail — even if
+whoever changed it also rewrote `SHA256SUMS`, because that list is signed. `kratos export verify
+<folder>` checks both signatures and the manifest, and says which file changed.
+
+**When the hash was taken.** Kratos records every evidence file's SHA-256 *at the moment it writes
+it*, in its **evidence ledger** — a chain where each row includes the previous row's hash, so an
+edited, deleted or moved row breaks the chain, signed once a day (`kratos evidence verify` checks
+it). A bundle's hashes come from that ledger, so they prove a file is exactly what Kratos collected
+then. A file Kratos wrote before it had the ledger is marked **"hash taken when exporting"**: its
+hash only proves it didn't change *after the export*. A file that no longer matches what the ledger
+recorded is exported with a warning, never as collection-time.
+
+**Full or redacted.** A **full** bundle has everything as collected — keep it inside your team. A
+**redacted** bundle replaces account names, machine names and addresses with placeholders
+(`USER_1_k7qm`, `PUBLIC_IP_2_k7qm`) — the same placeholder in every file — and removes secrets
+(keys, tokens, passwords) as `[REDACTED]`. File names inside it are neutral (`0003_persistence.json`).
+The map from placeholders back to real values stays in your Kratos and is never in the bundle.
+Its hashes are of the redacted files; each file also lists the original's collection-time hash, so
+whoever holds the full data can prove the two belong together.
+
+**A written summary (optional).** `--narrative` (or "add it" in `/export`) asks the model for a short
+summary per machine. That model **holds no tools** — it reads the collected facts as data and writes
+text only — and each machine's part is held to the same checks as any Kratos answer, against that
+machine's own findings and gaps. You see its cost estimate first; above `export.narrative_max_usd`
+(Settings → General) it is skipped and the bundle says so. Like every model request, what it sees is
+masked as Settings → model privacy says.
+
+**What leaves, and to whom.** Nothing is sent anywhere by an export: the bundle is written into your
+data folder (`exports/`) and **you** decide who gets the file. A full bundle holds the personal data
+Kratos collected about those machines (account names, addresses, log lines); a redacted one doesn't.
+`kratos export list` shows every export made here — who, when, what, and its hashes; each export is
+itself recorded in the evidence ledger. Bundles stay until you delete their folders.
+
+**Limits.** Exports copy at most `export.max_events` (2 million) events and stop there with the cut
+stated in the manifest and report. An export taken while log sync is writing holds what was stored up
+to the moment it started. Nothing in a bundle is a disk or memory image.
+
 ---
 
 ## Keeping model costs under control
@@ -2497,6 +2579,8 @@ logs, the questions you asked. `kratos data -v` adds the exact files and tables.
 | Host events | yes | the log lines Kratos read from your machines |
 | Findings and decisions | yes | what was found, its history, your accept/ignore decisions, reports |
 | Collected snapshots | yes | port scans, logs, processes, packages, persistence, each machine's account list — what each check read |
+| Evidence ledger | yes | one row per evidence file Kratos wrote: its hash taken when written, chained and signed daily ([Exporting an incident](#exporting-an-incident)) |
+| Incident exports | yes (a redacted one: placeholders) | each bundle you made with `/export`, until you delete it |
 | Hunts | yes | each hunt: when, who, what was hunted (the address or account you typed), which machines and period, how many matched ([Hunting](#hunting-for-an-address-account-or-file)) |
 | Placeholder map (masking) | yes | which placeholder stood for which real name or address in each conversation ([What the model sees](#what-the-model-sees)) |
 | Chat-client server | yes | chat-app tokens (only a hash of each), which session holds each chat, one audit row per request ([Using Kratos from a chat app](#using-kratos-from-a-chat-app)) |
@@ -3029,6 +3113,10 @@ permission prompt, pressing Enter is always the safe "no."
 - **Listener** — the part of Kratos that sub-agents connect to.
 - **Allowlist** — the fixed set of actions a machine's sub-agent will accept, if
   the experimental fix channel is on for it.
+- **Incident bundle** — a folder `/export` makes for someone else: the evidence, its hashes,
+  a signed manifest and a report, checkable with OpenSSH alone.
+- **Evidence ledger** — Kratos's record of the hash of every evidence file, taken when the
+  file was written, chained so a changed record shows.
 - **Sandbox** — the locked-down space where a newly written tool is tested safely.
 - **Approval / "requires approval"** — a yes/no gate before something with real
   consequences happens. A non-answer always means no.

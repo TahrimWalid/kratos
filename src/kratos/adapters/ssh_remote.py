@@ -339,8 +339,12 @@ def _route(probe: str, params: dict[str, Any], ssh_call: Any, *, agent_call: Any
     the agent (remembered briefly so one investigation doesn't wait out the
     SSH timeout on every read). Leaves a transport note either way.
     `agent_call(link)` overrides the default raw-output conversion."""
+    from kratos.evidence.transport import note_transport
+
     link = _routing.active_link()
+    machine = _kconfig.get_active_target()
     if link is None:
+        note_transport(machine, "ssh")
         return ssh_call()
 
     def via_agent() -> Any:
@@ -350,15 +354,18 @@ def _route(probe: str, params: dict[str, Any], ssh_call: Any, *, agent_call: Any
 
     if link.mode == _routing.MODE_SUBAGENT:
         _routing.note(f"read through its sub-agent ({link.label})")
+        note_transport(machine, "agent")
         return via_agent()
     down = _routing.ssh_down_reason(link.host)
     if down is None:
         result = ssh_call()
         if not (isinstance(result, SSHResult) and _ssh_unreachable(result)):
+            note_transport(machine, "ssh")
             return result
         down = _first_line(result.stderr)
         _routing.mark_ssh_down(link.host, down)
     out = via_agent()
+    note_transport(machine, "agent (SSH failed)")
     _routing.note(f"SSH to {link.host} failed ({down}); read through its sub-agent ({link.label}) instead")
     if isinstance(out, SSHResult) and not out.ok and out.via == "subagent":
         out.stderr = f"SSH failed ({down}); {out.stderr}"

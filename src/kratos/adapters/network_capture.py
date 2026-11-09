@@ -122,6 +122,10 @@ def capture_traffic(
         
         # Write summary JSON
         output_file.write_text(json.dumps(conn_summary, indent=2), encoding="utf-8")
+        from kratos import evidence as _evidence
+
+        _evidence.record(output_file, data_dir=output_file.parent.parent, category="traffic_capture",
+                         machine="loopback", read="capture_traffic", transport="local")
         print(f"[KRATOS-NET] Connection summary written -> {output_file}", flush=True, file=sys.stderr)
         
         # Clean up pcap file

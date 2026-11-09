@@ -114,6 +114,10 @@ def cmd_baseline_compare(args) -> int:
             md_lines.append(f"- {unit}: {base_str} → {cur_str}")
 
     out_md.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    for _p, _cat in ((out_json, "baseline_compare"), (out_md, "baseline_compare_md")):
+        _evidence.record(_p, data_dir=args.data_dir, category=_cat, read="baseline_compare", transport="local")
 
     print(f"[KRATOS] Baseline compared -> {out_json}")
     print(f"[KRATOS] Report written     -> {out_md}")

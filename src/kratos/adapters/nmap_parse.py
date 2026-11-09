@@ -120,4 +120,10 @@ def write_parsed_json(data_dir: Path, parsed: dict[str, Any]) -> Path:
 
     out_json, _ts = reserve(scans_dir, "parsed", ".json")
     out_json.write_text(json.dumps(parsed, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    hosts = parsed.get("hosts") if isinstance(parsed, dict) else None
+    machine = hosts[0].get("ip") if isinstance(hosts, list) and hosts and isinstance(hosts[0], dict) else None
+    _evidence.record(out_json, data_dir=data_dir, category="open_ports", machine=machine, read="run_nmap_scan",
+                     transport="network scan from this computer")
     return out_json

@@ -350,6 +350,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "hunt.index_seconds", "hunt.auto_max_indicators",
                           "fleet.max_parallel", "fleet.machine_seconds", "fleet.digest_chars", "fleet.extra_reads",
                           "outbox.alert_after_minutes", "outbox.scheduled_flush_seconds",
+                          "export.max_events", "export.narrative_max_usd", "export.timeline_rows",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -757,6 +758,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._outbox_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._export_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
@@ -1160,6 +1163,22 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              f"{get(OS.SCHEDULED_FLUSH)} seconds (when nothing always-on delivers)"),
         ]
 
+    def _export_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.export import settings as ES
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("export.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (ES.MAX_EVENTS, "Incident export: most log events copied", f"{get(ES.MAX_EVENTS):,} (past it: stops and "
+                                                                       "says where -- /export)"),
+            (ES.NARRATIVE_MAX_USD, "Incident export: most a written summary may cost",
+             f"${float(get(ES.NARRATIVE_MAX_USD)):.2f} (above: no summary, said so)"),
+            (ES.TIMELINE_ROWS, "Incident export: timeline rows in the report", f"{get(ES.TIMELINE_ROWS):,}"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1167,6 +1186,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.hunt import settings as _HS  # noqa: F401 -- and the hunt.* settings (same editor)
         from kratos.fleet import settings as _FS  # noqa: F401 -- and the fleet.* settings
         from kratos.outbox import settings as _OS  # noqa: F401 -- and the outbox.* settings
+        from kratos.export import settings as _ES  # noqa: F401 -- and the export.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1191,6 +1211,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         if key.startswith("outbox."):
             self._set_gen_status("Saved — the delivery worker reads it on its next pass.", T.SAFE)
+            return
+        if key.startswith("export."):
+            self._set_gen_status("Saved — applies to the next /export.", T.SAFE)
             return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
@@ -1254,7 +1277,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

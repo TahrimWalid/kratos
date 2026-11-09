@@ -2427,6 +2427,10 @@ def write_findings_report(
     out_md = reports_dir / f"findings_{ts}.md"
 
     out_json.write_text(json.dumps(report_obj, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out_json, data_dir=data_dir, category="findings_report", machine=report_target or None,
+                     read="correlate_findings", transport="local")
 
     # Markdown report (thesis/demo friendly)
     md_lines: list[str] = []
@@ -2497,6 +2501,8 @@ def write_findings_report(
             md_lines.append("")
 
     out_md.write_text("\n".join(md_lines).strip() + "\n", encoding="utf-8")
+    _evidence.record(out_md, data_dir=data_dir, category="findings_report_md", machine=report_target or None,
+                     read="correlate_findings", transport="local")
     if lifecycle_summary is not None:
         try:
             from kratos.lifecycle import migrate as _lc_migrate

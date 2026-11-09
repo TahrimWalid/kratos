@@ -101,7 +101,7 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
         return {"status": "no_vulndb", "final_answer": "", "transcript": [], "setup_error": (
             "no vulnerability index for live runs: set EVAL_VULNDB or [vulndb] path in evals/config/lab.toml "
             "(build one with `kratos vulndb-update`)")}
-    setup, teardown, extras = harness_bridge.setup_teardown(sc.id)
+    setup, teardown, extras = harness_bridge.setup_teardown(HARNESS_SETUP.get(sc.id, sc.id))
     kratos_config.set_active_target(lab().target)
     ctx = {"data_dir": data_dir}
     if extras.get("needs_baseline"):
@@ -116,6 +116,8 @@ def _run_once(sc: score.Scenario, *, mode: str, data_dir: Path, mask_mode: str |
     try:
         if sc.fleet:
             payload = _run_fleet(sc, data_dir)
+        elif sc.export:
+            payload = _run_export(sc, data_dir)
         else:
             with run_scope("cli"):
                 payload = run_agent(sc.goal, data_dir, max_iters=sc.max_iters or extras.get("max_iters") or 8)
@@ -153,6 +155,37 @@ def _run_fleet(sc: score.Scenario, data_dir: Path) -> dict[str, Any]:
             "fleet_sections_alone": {m.machine: m.analysis for m in (a.machines if a else [])},
             "model_alone_answer": "\n".join([a.model_summary if a else ""] + [m.analysis for m in (a.machines if a else [])]),
             "token_usage": out.token_usage, "fleet_outcomes": {r.machine: r.outcome for r in out.results}}
+
+
+# Scenarios that reuse another scenario's lab setup from the external harness.
+HARNESS_SETUP = {"D6_narrative": "A1"}
+
+
+def _run_export(sc: score.Scenario, data_dir: Path) -> dict[str, Any]:
+    """D.6: the standard audit (no model) collects and correlates, then an incident export of the
+    lab target for the last two hours WITH the written summary -- the model-facing step scored.
+    Person sees: the summary as written into the bundle (with any NOTE); model alone: its own text."""
+    import time as _time
+
+    from evals.lab import lab
+    from kratos.agent.pipeline import run_standard_audit
+    from kratos.export import create as C
+    from kratos.export.scope import ExportRequest
+    from kratos.lifecycle.decide import Actor
+    from kratos.run_context import run_scope
+
+    target = lab().target
+    with run_scope("cli", target=target):
+        run_standard_audit(data_dir, target=target)
+    now = _time.time()
+    r = C.create(data_dir, ExportRequest(machines=[target], start=now - 7200, end=now + 60, narrative=True,
+                                         archive=False), Actor(user="kratos-eval", interface="cli"))
+    n = r.narrative or {}
+    return {"status": "final_answer" if n.get("text") else (n.get("skipped") or "no_summary"),
+            "final_answer": n.get("text") or "", "model_alone_answer": "\n".join((n.get("raw") or {}).values()),
+            "narrative_asked_tool": any("asked for a tool" in x for x in n.get("notes") or []),
+            "tools_called": ["run_standard_audit", "export_narrative"], "transcript": [], "bundle": str(r.bundle),
+            "export_seconds": r.seconds}
 
 
 # Live scenarios that judge package findings: without an index they can only fail, so they

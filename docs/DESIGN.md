@@ -2110,6 +2110,85 @@ notices, the disk-fill alert, the model's `send_notification` tool and MCP's
   **ECS**: stored events go out unchanged; a finding change is its own ECS document (`rule.*`,
   `vulnerability.id`, `threat.*`, Kratos fields under `kratos.*`).
 
+## Evidence ledger and incident export (D.6)
+
+**The evidence ledger** (`kratos/evidence/`, table `evidence_ledger` in `kratos.db`). Every
+writer of an evidence file — anything in `scans/ logs/ context/ baseline/ integrity/
+persistence/ live/ packages/ web_signals/ sshguess/ containers/ reports/ detect/results/
+hunt/results/ traces/` and an export's `manifest.json` — calls `evidence.record(path, …)` right
+after the file is complete (after the rename, for a file written to a temp name). The row holds
+the path relative to the data folder, SHA-256, size, the time, a category, the machine (explicit,
+else the pinned target, else the run's), the read, the transport (noted by `ssh_remote._route`
+per read: `ssh`, `agent`, `agent (SSH failed)`), the run id and the running build.
+`entry_hash = sha256(prev_hash ‖ canonical row)`; the canonical row carries its own sequence
+number, so editing, deleting, inserting or reordering a row breaks the chain from there. Rows are
+appended in `BEGIN IMMEDIATE` (many writers at once keep one chain); SQL triggers refuse
+`UPDATE`/`DELETE`. At the first write of each UTC day a `checkpoint` row signs the head the day
+before left, with the Ed25519 signing key; checkpoints are in the chain themselves. `record` never
+raises — a file without a row is exported as "hash taken when exporting", which is true.
+`tests/test_evidence_hooks.py` scans the source: in a module that writes into an evidence folder,
+every function that writes a file must call `evidence.record` or be listed with its reason; the
+runtime twin is `ledger.unrecorded_files` (`kratos evidence verify` lists evidence files newer than
+the ledger with no row). The honest limit: whoever can write `kratos.db` and read the signing key
+can rebuild a consistent chain; a head sent away in an export pins everything before it.
+
+**The bundle** (`kratos/export/`). `scope.plan` takes the snapshot point first — the event store's
+newest row id and the ledger head — so an export while log sync writes is consistent; it selects
+ledger rows of the chosen machines written in the period (newest row per path; a file replaced in
+place is matched against it), pre-ledger files by their content's capture time and machine, events
+by `(target, ts, id ≤ snapshot)` up to `export.max_events` (a cut is stated, never silent), and
+lifecycle records whose first/last sightings overlap the period. `collect` copies (streamed and
+hashed) and marks each file `hashed_at = collection` only when its bytes equal the ledger row's
+hash; events are exported as the store's canonical documents, one NDJSON file per machine and
+dataset, with a per-line index (`line, event_id, sha256`); findings (with history, verdict, SSVC,
+ATT&CK) and per-machine coverage (`hunt.coverage` plus fleet-run outcomes) are generated files.
+`ledger.ndjson` is the chain from the first exported file's row to the head: full rows for the
+bundle's files and checkpoints, number-and-hashes only for other machines' rows (redacted: no full
+rows). The manifest is sorted JSON listing every file but itself, the two signatures, `SHA256SUMS`,
+`allowed_signers` and `VERIFY.txt`, signed as `manifest.json.sig`. `SHA256SUMS` (coreutils format)
+lists every file but itself and its own signature — the manifest and `manifest.json.sig` included —
+and is signed as `SHA256SUMS.sig`; the two stock commands are `ssh-keygen -Y verify … -s
+SHA256SUMS.sig < SHA256SUMS` and `sha256sum -c SHA256SUMS`. (Signing only the manifest, as first
+designed, let someone change a file and regenerate `SHA256SUMS` with both commands still passing —
+found by the lab check.) The archive is deterministic (sorted PAX entries, uid/gid 0, fixed mode and mtime,
+gzip header mtime from the manifest, no name).
+
+**SSHSIG** (`export/sshsig.py`): OpenSSH's `PROTOCOL.sshsig` written in Python — magic `SSHSIG`,
+version 1, the ssh-ed25519 public key blob, namespace `kratos-export`, empty reserved, `sha512`, and
+an Ed25519 signature over `SSHSIG ‖ namespace ‖ reserved ‖ "sha512" ‖ SHA-512(manifest)`, armored at
+70 columns. Tests verify it with the real `ssh-keygen -Y verify` and read signatures `ssh-keygen -Y
+sign` made. `kratos export verify` checks the signature, `SHA256SUMS`, the manifest against the
+files (no file added or missing), each events file against its index, the ledger excerpt's links
+and that it ends at the signed head, each collection-time file against its ledger row — and on the
+Kratos that made it, that its own ledger still holds those rows and (full variant) that every event
+line is the store's document for that event id. A bundle from another Kratos is a note, not a
+failure; one this Kratos signed whose head its ledger no longer holds is a failure.
+
+**Report and graph.** `report_html` writes one page with a strict CSP (`default-src 'none'`, no
+script, no external resource): *Observed* (coverage and gaps, timeline, findings with evidence,
+files with hashes and where each hash comes from) and *Analysis* (rule-made decisions; the
+narrative). Machine text goes through `untrusted.for_display`, every URL scheme is defanged, then
+HTML-escaped. `case_uco` maps files to `uco-observable:File` (FileFacet + ContentDataFacet with a
+SHA256 `uco-types:Hash`), machines to `uco-observable:Device`, each read that produced a file to a
+`case-investigation:InvestigativeAction` (instrument Kratos, object the device, result the file,
+end time the collection time), and the export to an action whose result is a
+`case-investigation:ProvenanceRecord` (exhibit number = export id) over every file; node ids end in
+a UUIDv5. CASE 1.5.0 / UCO 1.5.0, validated in tests with `case_validate` 0.18.0 (test extra only).
+
+**Redaction and narrative.** The redacted variant runs every text through one strict-mode masker
+(scope `export:<id>`, so one placeholder per value across the bundle; JSON keys are masked too;
+names seen in logs are replaced as whole words; every machine's own names are plain known values,
+not the single-machine `TARGET` label). File names become neutral. Finding keys and event ids are unsalted
+hashes over the real machine name, so in this variant every one of them -- in findings, the report, the event index,
+each event's `event.id` and inside copied evidence, short forms included -- becomes an HMAC under a per-export secret
+that is never stored (security review); ordinary content hashes stay. Event cuts and warnings name placeholders. The narrative (`export/narrative.py`)
+is a model call with **no tool list** through the one metered call path (masking, budget): the facts
+are framed as data, the reply is a fixed JSON shape of one summary per machine; each is evaluated
+with `agent.answer_checks` against that machine's own findings and coverage, a summary naming another
+machine is sent back, one correction round, then NOTE-tagged. An export is a person's action: it takes
+an `Actor`, is refused inside a tool call, and is recorded as the manifest's ledger row (who, when,
+scope, variant, hashes, key fingerprint; `kratos export list`).
+
 ## Untrusted input
 
 Text that came from a monitored machine is attacker-controlled: usernames in failed

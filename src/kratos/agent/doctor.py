@@ -311,6 +311,25 @@ def _check_delivery(out: list[Check], data_dir: Path) -> None:
         out.append(_row(r["check"], r["status"], r["detail"], fix=r.get("fix") or ""))
 
 
+def _check_evidence(out: list[Check], data_dir: Path) -> None:
+    """D.6: the evidence ledger's hash chain (rows, signed checkpoints). Files are compared
+    with their recorded hashes by `kratos evidence verify` (it reads every file)."""
+    from kratos.evidence import ledger as L
+
+    rep = L.verify_chain(data_dir, check_files=False)
+    if rep.rows == 0:
+        out.append(_row("evidence ledger", "info", "no evidence file recorded yet (rows start with the next read)"))
+        return
+    if rep.problems:
+        out.append(_row("evidence ledger", "fail", f"hash chain BROKEN: {rep.problems[0]}"
+                        + (f" (+{len(rep.problems) - 1} more)" if len(rep.problems) > 1 else ""),
+                        "kratos evidence verify   (every problem, and every file against its hash)"))
+        return
+    out.append(_row("evidence ledger", "pass", f"{rep.rows} row(s), chain intact, {rep.checkpoints} signed daily "
+                                             f"checkpoint(s); head row {rep.head_seq} {rep.head_hash[:12]}...",
+                    "kratos evidence verify   (also checks every file against the hash taken when it was written)"))
+
+
 _SECTIONS = (
     ("Kratos build", _check_build),
     ("Python", _check_python),
@@ -634,6 +653,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("delivery", lambda o: _check_delivery(o, Path(data_dir))))
+        sections.append(("evidence ledger", lambda o: _check_evidence(o, Path(data_dir))))
         sections.append(("collection", lambda o: _check_collection(o, Path(data_dir))))
         sections.append(("detection rules", lambda o: _check_detection(o, Path(data_dir))))
         sections.append(("agent link", lambda o: _check_agent_link(o, Path(data_dir))))

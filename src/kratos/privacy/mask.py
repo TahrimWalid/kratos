@@ -183,8 +183,11 @@ class Masker:
     """One request's masking. `mode` "off" makes both directions the identity."""
 
     def __init__(self, *, mode: str, scope: str | None, data_dir: Path | None, machine: str,
-                 values: KnownValues | None = None):
+                 values: KnownValues | None = None, protect_field_names: bool = True):
         self.mode = mode
+        # A request's JSON field names are never masked (they are Kratos's own schema). An
+        # incident export (D.6) turns this off: there a name can be a key ({"alice": 1000}).
+        self.protect_field_names = protect_field_names
         self.machine = machine or ""
         self.stats = MaskStats()
         self.span: Any = None
@@ -209,7 +212,8 @@ class Masker:
         if not self.active:
             return system_prompt, prompt
         t0 = time.perf_counter()
-        self._vocabulary = request_vocabulary((system_prompt, prompt))
+        self._vocabulary = (request_vocabulary((system_prompt, prompt)) if self.protect_field_names
+                            else request_vocabulary(()))
         system_m, prompt_m = self._mask_pair(system_prompt or "", prompt or "")
         assert self._map is not None
         if self._map._pending:
@@ -498,3 +502,12 @@ def outbound_masker(*, scope: str, machine: str, data_dir: Path) -> Masker:
     except Exception:  # noqa: BLE001 -- masking still runs on what the text shows
         known = KnownValues()
     return Masker(mode="standard", scope=scope, data_dir=data_dir, machine=machine, values=known)
+
+
+def export_masker(*, export_id: str, data_dir: Path, values: KnownValues) -> Masker:
+    """D.6: the masker for a redacted incident bundle, not for the model. Strict mode, one
+    placeholder scope for the whole bundle (``export:<id>``), JSON keys masked too (a name
+    can be a key there). Its placeholders are never restored; the map stays in this
+    Kratos's database and never goes into the bundle."""
+    return Masker(mode="strict", scope=f"export:{export_id}", data_dir=data_dir, machine="", values=values,
+                  protect_field_names=False)

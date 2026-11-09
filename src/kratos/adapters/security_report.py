@@ -139,6 +139,9 @@ def generate_daily_report(
     """
     
     report_path.write_text(html, encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(report_path, data_dir=data_dir, category="daily_report", read="daily_report", transport="local")
     print(f"[KRATOS-REPORT] Daily report written -> {report_path}", flush=True, file=sys.stderr)
     
     return report_path
@@ -318,6 +321,9 @@ def generate_weekly_report(
     """
     
     report_path.write_text(html, encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(report_path, data_dir=data_dir, category="weekly_report", read="weekly_report", transport="local")
     print(f"[KRATOS-REPORT] Weekly report written -> {report_path}", flush=True, file=sys.stderr)
     
     return report_path

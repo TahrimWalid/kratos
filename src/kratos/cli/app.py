@@ -2602,6 +2602,8 @@ def build_parser() -> argparse.ArgumentParser:
     containers_cmd.add_parser(sub)
     from kratos.cli import outbox_cmd
     outbox_cmd.add_parser(sub)
+    from kratos.cli import export_cmd
+    export_cmd.add_parser(sub)
 
     attack_p = sub.add_parser(
         "attack-layer",

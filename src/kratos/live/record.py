@@ -95,6 +95,10 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"live_response_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.json"
     path.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="live_response", machine=target, read="live_inventory",
+                     transport=doc.get("via"))
     return {**doc, "status": "ok", "file": str(path)}
 
 

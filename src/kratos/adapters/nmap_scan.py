@@ -73,4 +73,8 @@ def run_nmap_scan(data_dir: Path, target: str) -> Path:
     if report.strip() and not _QUIET.get():
         print(report.rstrip(), file=sys.stderr)
 
+    from kratos import evidence as _evidence
+
+    _evidence.record(out_xml, data_dir=data_dir, category="nmap_scan", machine=target, read="run_nmap_scan",
+                     transport="network scan from this computer")
     return out_xml

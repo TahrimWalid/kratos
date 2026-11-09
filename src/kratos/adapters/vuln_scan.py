@@ -393,6 +393,10 @@ def run_nmap_vulscan(target: str, data_dir: Path, *, use_vulscan: bool = True) -
         raise RuntimeError(f"nmap+vulscan failed with exit code {e.returncode}: {e.stderr}") from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"nmap+vulscan timed out after {NMAP_VULSCAN_TIMEOUT_SECONDS}s") from e
+    from kratos import evidence as _evidence
+
+    _evidence.record(out_xml, data_dir=data_dir, category="vuln_scan", machine=target, read="run_vuln_scan",
+                     transport="network scan from this computer")
     return out_xml
 
 
@@ -495,6 +499,11 @@ def run_nuclei_scan(target: str, data_dir: Path, tags: str = DEFAULT_NUCLEI_TAGS
         ) from e
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"nuclei scan timed out after {NUCLEI_TIMEOUT_SECONDS}s") from e
+    from kratos import evidence as _evidence
+
+    if out_jsonl.exists():
+        _evidence.record(out_jsonl, data_dir=data_dir, category="nuclei_scan", machine=target,
+                         read="run_vuln_scan", transport="network scan from this computer")
     return out_jsonl
 
 

@@ -194,6 +194,9 @@ def cmd_prepare_bundle(args) -> int:
 
     out = reports_dir / f"bundle_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
     out.write_text(bundle_text, encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out, data_dir=data_dir, category="findings_bundle", read="prepare_bundle", transport="local")
 
     print(f"[KRATOS] Bundle written -> {out}")
     print(f"[KRATOS] Words: {_word_count(bundle_text)} (limit: {getattr(args, 'max_words', 500)})")
