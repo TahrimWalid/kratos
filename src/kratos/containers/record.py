@@ -165,6 +165,10 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None, now: float
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, path)
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="containers", machine=target, read="container_inventory",
+                     transport=doc.get("via"))
     return {**doc, "status": "ok", "file": str(path)}
 
 

@@ -156,4 +156,8 @@ def write_system_context(data_dir: Path) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = ctx_dir / f"system_context_{ts}.json"
     out.write_text(json.dumps(ctx, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out, data_dir=data_dir, category="system_context", machine="loopback",
+                     read="collect_system_context", transport="local")
     return out

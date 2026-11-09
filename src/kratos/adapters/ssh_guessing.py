@@ -71,6 +71,10 @@ def save_snapshot(data_dir: Path | None, target: str, checks: list[dict[str, Any
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     tmp.replace(path)
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="config_audit", machine=target, read="run_config_audit",
+                     transport=via or None)
     return path
 
 

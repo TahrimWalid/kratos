@@ -301,12 +301,33 @@ CATEGORIES: tuple[Category, ...] = (
     ),
     Category(
         "signing_key", "Kratos signing key",
-        "Kratos's Ed25519 key that signs webhook messages (v1a) and, later, exported incident bundles; with a "
+        "Kratos's Ed25519 key that signs webhook messages (v1a), exported incident bundles and the evidence "
+        "ledger's daily checkpoints; with a "
         "backup copy and the public keys of rotated-out keys. Keep it private and keep a copy.",
         SECRET, "fixed: the active key, its backup copies, retired public keys",
         files=("signing",),
         note="its fingerprint is shown by /doctor and `kratos signing status`; `kratos signing rotate` keeps old "
              "public keys verifiable",
+    ),
+    Category(
+        "evidence_ledger", "Evidence ledger",
+        "One row per evidence file Kratos writes (scans, logs, saved reads, findings reports, run records, export "
+        "manifests): its path, SHA-256, size, when, which machine, read and transport -- the hash taken when the "
+        "file was written, chained so an edited, deleted or moved row is detected, signed once a day.",
+        PERSONAL, "one ~400-byte row per evidence file written, plus one signed checkpoint row per day",
+        tables=(TableRef(DB, ("evidence_ledger",), ("evidence_ledger", "written_at")),),
+        note="append-only (SQL refuses an edit or delete); `kratos evidence verify` checks the chain and every "
+             "recorded file against it",
+    ),
+    Category(
+        "exports", "Incident exports",
+        "Incident bundles you made with /export or `kratos export create`: copies of the evidence files and "
+        "events for the machines and period you chose, findings, coverage, the HTML report, the CASE/UCO graph, "
+        "the signed manifest -- and each bundle's .tar.gz.",
+        PERSONAL, "one folder (and one .tar.gz) per export you make; the size of what you chose to include",
+        files=("exports",),
+        note="a redacted bundle holds placeholders, not names; each export is listed by `kratos export list` (who, "
+             "when, scope, hashes) and stays until you delete its folder",
     ),
     Category(
         "kept_tools", "Kept tools",

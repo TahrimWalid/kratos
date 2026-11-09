@@ -252,6 +252,10 @@ def build_anomaly_report(
     }
     
     out_json.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out_json, data_dir=data_dir, category="network_anomalies", read="network_anomalies",
+                     transport="local")
     print(f"[KRATOS-NET] Anomaly report written -> {out_json}", flush=True, file=sys.stderr)
     print(f"[KRATOS-NET] Found {metadata['anomaly_count']} anomalies ({metadata['high_severity']} HIGH)", flush=True, file=sys.stderr)
     

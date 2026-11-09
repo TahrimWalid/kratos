@@ -434,6 +434,10 @@ def _judge(data_dir: Path, target: str, inv: dict[str, Any], choice: Any, family
                        gaps, rematched)
     path = out_dir / f"packages_{key}.json"
     _write(path, doc)
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="packages", machine=target, read="package_inventory",
+                     transport=doc.get("via"))
     return {**doc, "status": "ok", "file": str(path)}
 
 

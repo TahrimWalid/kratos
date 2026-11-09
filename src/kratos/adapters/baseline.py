@@ -175,6 +175,9 @@ def save_baseline(data_dir: Path, snapshot: BaselineSnapshot) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = baseline_dir / f"baseline_{ts}.json"
     out.write_text(json.dumps(asdict(snapshot), indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(out, data_dir=data_dir, category="baseline", read="baseline")
     return out
 
 
@@ -316,6 +319,10 @@ def save_file_integrity_baseline(
         "hashes": hashes,
     }
     path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="integrity_baseline", machine=target,
+                     read="check_file_integrity")
     return path
 
 
@@ -416,4 +423,7 @@ def save_file_integrity_diff(
         ),
         encoding="utf-8",
     )
+    from kratos import evidence as _evidence
+
+    _evidence.record(out, data_dir=data_dir, category="integrity_check", machine=target, read="check_file_integrity")
     return out

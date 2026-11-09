@@ -504,6 +504,11 @@ def parse_auth_log_file(
 
     events_out.write_text(json.dumps([asdict(e) for e in events], indent=2), encoding="utf-8")
     stats_out.write_text(json.dumps(stats, indent=2), encoding="utf-8")
+    from kratos import evidence as _evidence
+
+    for _p, _cat in ((events_out, "auth_events"), (stats_out, "auth_stats")):
+        _evidence.record(_p, data_dir=data_dir, category=_cat, machine="loopback", read="parse_auth_log",
+                         transport="local")
 
     # Return warning flag for CLI to display
     if warn_explicit_not_found:

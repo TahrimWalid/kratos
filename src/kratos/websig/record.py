@@ -111,6 +111,10 @@ def run(data_dir: Path, target: str, *, now: float | None = None) -> dict[str, A
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2, default=str), encoding="utf-8")
     os.replace(tmp, path)
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="web_signals", machine=target, read="web_signals",
+                     transport="local")
     return {**doc, "status": "ok", "file": str(path)}
 
 

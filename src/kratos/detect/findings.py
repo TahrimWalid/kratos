@@ -210,6 +210,10 @@ def write_snapshot(data_dir: Path | str, target: str, report: Any, loaded: Any, 
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         path = folder / f"detections_{stamp}_{machine}.json"
     paths.write_private_text(path, json.dumps(doc, indent=1, sort_keys=True) + "\n")
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="detections_" + source, machine=target,
+                     read="detect", transport="agent (live)" if source == "live" else "local")
     return path
 
 

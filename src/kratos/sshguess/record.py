@@ -70,6 +70,10 @@ def run(data_dir: Path, target: str, *, now: float | None = None, fingerprint: A
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(doc, indent=2), encoding="utf-8")
     os.replace(tmp, path)
+    from kratos import evidence as _evidence
+
+    _evidence.record(path, data_dir=data_dir, category="ssh_guessing", machine=target, read="ssh_guess",
+                     transport="local")
     return {**doc, "file": str(path)}
 
 
