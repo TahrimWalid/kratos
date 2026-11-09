@@ -296,3 +296,34 @@ def test_glued_addresses_and_the_exporters_login_are_replaced_too(tmp_path):
     assert '"name": "admin"' not in text and '"name":"admin"' not in text and "user admin" not in text
     man = json.loads((r.bundle / "manifest.json").read_text())
     assert man["created_by"]["user"] != "carol" and man["created_by"]["user"].startswith("USER_")
+
+
+def test_finding_keys_and_event_ids_are_not_copied_into_a_redacted_bundle(tmp_path):
+    """Security review (D.6): a finding key is sha256(rule ␟ machine ␟ subject) and an event id a
+    hash over the machine name and the line -- unsalted, so a copied one lets a holder test guesses
+    of the real machine until one matches. A redacted bundle carries keyed hashes instead; event
+    cuts and warnings name the placeholder, not the machine."""
+    from kratos.lifecycle import store as LS
+    from kratos.storage.sqlite_files import connect_store
+
+    d = tmp_path / "data"
+    info = FX.build(d)
+    with LS.opened(d) as conn:
+        keys = [r["finding_key"] for r in conn.execute("SELECT finding_key FROM finding_records")]
+    c = connect_store(d / "kratos.db")
+    ids = [r[0] for r in c.execute("SELECT event_id FROM host_events")]
+    c.close()
+    from kratos.export.scope import plan
+
+    req = ExportRequest(machines=[FX.M1, FX.M2], start=info["now"] - 86400, end=info["now"] + 60, variant="redacted")
+    p = plan(d, req)
+    p.events = [type(e)(e.machine, e.dataset, e.count, min(e.count, 2)) for e in p.events]   # force a cut
+    r = C.create(d, req, ME, plan=p)
+    text = _all_text(r.bundle)
+    leaked = [k for k in keys if k[:12] in text] + [i for i in ids if i in text]
+    assert keys and ids and not leaked
+    man = json.loads((r.bundle / "manifest.json").read_text())
+    assert man["cuts"] and all(c["machine"] not in (FX.M1, FX.M2) for c in man["cuts"])
+    assert V.verify(r.bundle).ok
+    full = C.create(d, ExportRequest(machines=[FX.M1], start=info["now"] - 86400, end=info["now"] + 60), ME)
+    assert any(k[:12] in _all_text(full.bundle) for k in keys)     # the full variant keeps the real keys

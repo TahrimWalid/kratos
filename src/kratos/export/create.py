@@ -138,7 +138,9 @@ def create(data_dir: Path | str, req: ExportRequest, actor: Any, *, progress: Pr
                           "findings": len(col.findings.get(col.machine_names[m], [])),
                           "gaps": (col.coverage.get(col.machine_names[m]) or {}).get("gaps") or []}
                          for m in req.machines],
-            "cuts": p.cuts(), "unattributed_files_left_out": p.unattributed,
+            "cuts": [{**c, "machine": col.machine_names.get(c["machine"], red.machine(c["machine"]))}
+                     for c in p.cuts()],
+            "unattributed_files_left_out": p.unattributed,
             "warnings": col.warnings, "files": [],
         }
         man["files"] = [f.as_dict() for f in files]

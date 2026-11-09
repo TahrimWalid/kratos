@@ -134,7 +134,7 @@ def collect(data_dir: Path, plan: Plan, out: Path, red: Redactor, *, progress: P
                 digest, size = _copy_hashed(src, dst)
                 orig = digest
         except OSError as e:
-            c.warnings.append(f"{f.source_rel}: couldn't be read ({type(e).__name__}); left out")
+            c.warnings.append(f"{rel if red.active else f.source_rel}: couldn't be read ({type(e).__name__}); left out")
             continue
         e = f.entry
         bf = BundleFile(rel, digest, size, "evidence", shown[f.machine], f.category,
@@ -200,11 +200,16 @@ def _collect_events(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: Col
                 hi.update(INDEX_HEADER)
                 for row in conn.execute(sql, args):
                     n += 1
-                    line = (red.text(row["doc"]) if red.active else row["doc"]).encode("utf-8")
+                    if red.active:
+                        # the document carries its own event.id: replaced with the same opaque value
+                        text = red.text(row["doc"]).replace(row["event_id"], red.opaque(row["event_id"]))
+                    else:
+                        text = row["doc"]
+                    line = text.encode("utf-8")
                     fo.write(line + b"\n")
                     h.update(line + b"\n")
                     size += len(line) + 1
-                    rec = f"{n}\t{row['event_id']}\t{_sha256_bytes(line)}\n".encode("ascii")
+                    rec = f"{n}\t{red.opaque(row['event_id'])}\t{_sha256_bytes(line)}\n".encode("ascii")
                     fx.write(rec)
                     hi.update(rec)
                     isize += len(rec)
@@ -247,7 +252,7 @@ def _finding_view(rec: dict[str, Any], latest: dict[str, Any], verdict: Any, his
     labels = [{"id": lab.get("id"), "name": lab.get("name"), "tactics": lab.get("tactics")}
               for lab in attack.attack_of(latest)]
     out = {
-        "finding_key": rec["finding_key"], "rule_id": rec["rule_id"], "subject": red.text(rec["subject"]),
+        "finding_key": red.opaque(rec["finding_key"]), "rule_id": rec["rule_id"], "subject": red.text(rec["subject"]),
         "kind": rec["kind"], "state": rec["state"], "severity": rec["severity"], "title": red.text(rec["title"]),
         "entities": [red.text(str(x)) for x in json.loads(rec["entities"] or "[]")],
         "first_seen": _iso(rec["first_seen"]), "last_seen": _iso(rec["last_seen"]),
@@ -292,7 +297,7 @@ def _collect_findings(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: C
                     c.timeline.append({"at": h["at"], "machine": c.machine_names[m], "kind": "finding",
                                        "what": f"{r['rule_id']} {h['kind']}" + (f" -> {h['to_state']}"
                                                                                 if h['to_state'] else ""),
-                                       "ref": r["finding_key"][:12]})
+                                       "ref": red.opaque(r["finding_key"])[:12]})
             shown = c.machine_names[m]
             c.findings[shown] = views
             rel = f"evidence/{_safe_dir(shown)}/findings.json"

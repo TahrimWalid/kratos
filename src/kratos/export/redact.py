@@ -15,7 +15,10 @@ carry machine addresses.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import re
+import secrets as _secrets
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -32,6 +35,10 @@ class Redactor:
 
     def machine(self, m: str) -> str:
         return m
+
+    def opaque(self, value: str) -> str:
+        """An identifier derived from real values (a finding key, an event id)."""
+        return value
 
     def stats(self) -> dict[str, Any]:
         return {}
@@ -87,6 +94,11 @@ class BundleRedactor(Redactor):
         self._masker = export_masker(export_id=export_id, data_dir=data_dir, values=known)
         self._kinds: Counter[str] = Counter()
         self._secrets = 0
+        # Finding keys and event ids are unsalted hashes OF the real machine name (and rule,
+        # time, text): copied as they are, a holder could test guesses until one matched and
+        # tie a placeholder back (security review, D.6). In this variant they become keyed
+        # hashes under a secret drawn here and never written anywhere.
+        self._opaque_key = _secrets.token_bytes(32)
         self._machine_labels: dict[str, str] = {}
 
     @property
@@ -109,6 +121,12 @@ class BundleRedactor(Redactor):
         for label in _labels(out, self.tag):
             self._kinds[re.sub(rf"(?:_\d+)?_{re.escape(self.tag)}$", "", label)] += 1
         return out
+
+    def opaque(self, value: str) -> str:
+        if not value:
+            return value
+        digest = hmac.new(self._opaque_key, value.encode("utf-8"), hashlib.sha256).hexdigest()
+        return digest[:max(len(value), 16)] if len(value) <= 64 else digest
 
     def _label_for_seen(self, name: str) -> str:
         """The placeholder of a name seen in the logs (the same one its log lines got)."""
