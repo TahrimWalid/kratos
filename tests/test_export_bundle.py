@@ -300,9 +300,17 @@ def test_no_registered_tool_can_export():
 
     from kratos.agent.tools import TOOL_REGISTRY
 
+    pkg = Path(__file__).resolve().parents[1] / "src" / "kratos"
+    checked = 0
     for name, tool in TOOL_REGISTRY.items():
-        src = inspect.getsource(inspect.getmodule(tool.handler))
+        mod = inspect.getmodule(tool.handler)
+        path = Path(getattr(mod, "__file__", "") or "")
+        if not path.is_file() or pkg not in path.resolve().parents:
+            continue          # a tool another test registered on the fly, not Kratos's own
+        src = path.read_text(encoding="utf-8")
         assert "kratos.export" not in src and "export.create" not in src, name
+        checked += 1
+    assert checked >= 10
 
 
 def test_a_group_export_states_an_unreachable_machine_s_gaps(tmp_path):
