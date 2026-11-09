@@ -2178,7 +2178,10 @@ a UUIDv5. CASE 1.5.0 / UCO 1.5.0, validated in tests with `case_validate` 0.18.0
 **Redaction and narrative.** The redacted variant runs every text through one strict-mode masker
 (scope `export:<id>`, so one placeholder per value across the bundle; JSON keys are masked too;
 names seen in logs are replaced as whole words; every machine's own names are plain known values,
-not the single-machine `TARGET` label). File names become neutral. The narrative (`export/narrative.py`)
+not the single-machine `TARGET` label). File names become neutral. Finding keys and event ids are unsalted
+hashes over the real machine name, so in this variant every one of them -- in findings, the report, the event index,
+each event's `event.id` and inside copied evidence, short forms included -- becomes an HMAC under a per-export secret
+that is never stored (security review); ordinary content hashes stay. Event cuts and warnings name placeholders. The narrative (`export/narrative.py`)
 is a model call with **no tool list** through the one metered call path (masking, budget): the facts
 are framed as data, the reply is a fixed JSON shape of one summary per machine; each is evaluated
 with `agent.answer_checks` against that machine's own findings and coverage, a summary naming another
