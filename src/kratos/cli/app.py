@@ -387,7 +387,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from kratos.agent import doctor
     from kratos.untrusted import safe_print
 
-    checks = doctor.run_diagnostics(Path(args.data_dir))
+    checks = doctor.run_diagnostics(Path(args.data_dir), offline=bool(getattr(args, "offline", False)))
     passes, warns, fails = doctor.summarize(checks)
     width = max((len(c["check"]) for c in checks), default=10)
     for c in checks:
@@ -2468,6 +2468,8 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="Check your setup: model endpoint, settings, the machine you investigate, data (same as /doctor)",
     )
+    doctor_p.add_argument("--offline", action="store_true",
+                          help="Don't contact the model endpoint or the target (a backup drill uses this)")
     doctor_p.set_defaults(func=cmd_doctor)
 
     vulscan_p = sub.add_parser(
@@ -2611,6 +2613,8 @@ def build_parser() -> argparse.ArgumentParser:
     users_cmd.add_parser(sub)
     from kratos.cli import export_cmd
     export_cmd.add_parser(sub)
+    from kratos.cli import backup_cmd
+    backup_cmd.add_parser(sub)   # D.8: encrypted backups, drills, restore
 
     attack_p = sub.add_parser(
         "attack-layer",
@@ -2993,6 +2997,16 @@ def main(argv: list[str] | None = None) -> int:
     except authz.Denied as e:
         print(f"[KRATOS] refused: {e}", file=sys.stderr)
         return 2
+    if args.command in _HOLDS_DATA_OPEN:
+        # D.8: a long-running process marks the data as in use, so a restore refuses while
+        # it runs (and it refuses to start while a restore runs).
+        from kratos.backup import inuse as _inuse
+
+        try:
+            _inuse.hold(args.data_dir, f"kratos {args.command}")
+        except _inuse.InUseError as e:
+            print(f"[KRATOS] {e}", file=sys.stderr)
+            return 2
     with authz.acting_as(_actor):
         # One run (kratos.run_context) per command, so model spending and stored
         # events are attributed. Commands that start their own runs open their own
@@ -3012,6 +3026,9 @@ def main(argv: list[str] | None = None) -> int:
         except _budget.BudgetExceeded as e:
             print(f"[KRATOS] {e.user_message()}", file=sys.stderr)
             return 3
+
+
+_HOLDS_DATA_OPEN = frozenset({"serve", "mcp-serve", "subagent-serve", "scheduled-run"})
 
 
 if __name__ == "__main__":

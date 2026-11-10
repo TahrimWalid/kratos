@@ -256,8 +256,9 @@ class PromptModal(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "cancel", "cancel", show=True)]
 
     def __init__(self, title: str, hint: str = "", initial: str = "",
-                 quick_value: str = "", quick_label: str = "") -> None:
+                 quick_value: str = "", quick_label: str = "", password: bool = False) -> None:
         super().__init__()
+        self._password = password   # a secret: shown as dots, never echoed
         self._title = title
         self._hint = hint
         self._initial = initial
@@ -274,7 +275,7 @@ class PromptModal(ModalScreen[str | None]):
                 yield Static(Text(self._hint, style=T.TEXT_DIM))
             # Pre-filled text is there to be edited: Textual selects it on focus by
             # default, so the first keystroke would erase it.
-            yield Input(value=self._initial, id="prompt-input", select_on_focus=False)
+            yield Input(value=self._initial, id="prompt-input", select_on_focus=False, password=self._password)
             if self._quick_label:
                 yield Button(self._quick_label, id="prompt-quick", variant="primary")
                 yield Static(Text("Enter uses what you typed · Tab then Enter picks the option · esc cancel",

@@ -123,6 +123,7 @@ _PALETTE_COMMANDS = [
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/channels", "where Kratos sends what it finds: webhooks, syslog (TLS), email, ntfy, a SIEM (OCSF / ECS)"),
     ("/outbox", "what Kratos sent and what waits: attempts, failures, dead letters (retry them here)"),
+    ("/backup", "encrypted backups: back up now, drill (prove it restores), the backup key, the schedule"),
     ("/users", "people who may use Kratos through a chat client or MCP: roles, machines, tokens, Open WebUI "
                "mappings (owner only)"),
     ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
@@ -1132,6 +1133,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.channels import ChannelsScreen
 
             self.app.push_screen(ChannelsScreen(self._data_dir))
+        elif cmd in ("/backup", "/backups"):
+            from kratos.tui_mk2.screens.backup import BackupScreen
+
+            self.app.push_screen(BackupScreen(self._data_dir))
         elif cmd == "/outbox":
             from kratos.tui_mk2.screens.channels import OutboxScreen
 
