@@ -2955,7 +2955,9 @@ secret, made by Open WebUI, valid for minutes). Kratos never trusts Open WebUI's
 unsigned user headers: without a valid signature, or for an Open WebUI user you
 haven't mapped ("ask the Kratos owner to add you"), every request is refused.
 **The gateway token and its secret together can act as every mapped user** —
-keep both as private as an admin password; `/doctor` says so too.
+keep both as private as an admin password; `/doctor` says so too. One shared Open
+WebUI per Kratos: a second gateway token is refused while one is live (rotate it
+instead).
 
 **Budgets per person.** Each user other than you has their own daily model
 budget, `budget.user_daily_usd` (default $0.50). When it's used up they get their

@@ -2493,7 +2493,11 @@ reason. Inside an agent tool call, people-only actions are refused outright.
 - *Every read inside a run*: `execute_tool_call` → `authz.check_run_access()` re-checks
   the run's person, the action that started the run (so a demotion counts) and the
   pinned machine; so do the agent loop's stop points, the fleet collector per machine
-  and the headless runner's start. Narrowing a scope, disabling a user or revoking a
+  and the headless runner's start. For anyone but the owner at the Kratos host, a tool
+  that reads the Kratos computer itself (`parse_auth_log`, `collect_system_context`,
+  `run_linux_command`, `capture_traffic`) or names a `target` (a loopback scan included)
+  is checked against that machine, and `send_notification` (the owner's channels) is
+  refused -- a refused tool call, recorded; the run goes on. Narrowing a scope, disabling a user or revoking a
   token stops the run at its next read (`AccessRemoved`, status `access_removed`).
 - *Unattended runs* act as `run_as` (schedules and triggers; default the owner) via
   `authz.unattended_refusal`; a disabled or narrowed user makes them refuse.
