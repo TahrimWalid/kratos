@@ -48,8 +48,8 @@ def _edit(tree: Path, rel: str, old: str, new: str) -> None:
     ("lifecycle/decide.py", "authz.require(actor, authz.P.FINDING_DECIDE,", "(lambda *a, **k: None)(actor, None,",
      "_authorize"),
     # the per-read check in tool dispatch
-    ("agent/loop.py", "    authz.check_run_access(data_dir=data_dir)\n    _kconfig.set_active_data_dir", "    _kconfig.set_active_data_dir",
-     "_dispatch_tool_call"),
+    ("agent/loop.py", "    authz.check_run_access(data_dir=data_dir)\n    refused = _person_tool_refusal",
+     "    refused = _person_tool_refusal", "_dispatch_tool_call"),
     # the fleet collector's per-machine check
     ("fleet/collect.py", "authz.check_run_access(host, data_dir=data_dir)", "(lambda *a, **k: None)(host)",
      "_collect_one"),
