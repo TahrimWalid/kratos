@@ -646,3 +646,38 @@ def test_slow_verify_check_respects_the_off_switch(tmp_path, monkeypatch):
                        dispatch=lambda *a, **k: {}, deadline=9e18, now=0.0)
     res = registry.get("persistence_verify").run(ctx)
     assert res.status == "skipped" and called["n"] == 0
+
+
+# ==================================================================== container image layers (audit D)
+_LAYER_SUIDS = (
+    "var/lib/docker/overlay2/3f2a/diff/usr/bin/passwd",
+    "var/lib/docker/overlay2/3f2a/merged/usr/bin/su",
+    "var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/12/fs/usr/bin/chage",
+    "var/lib/containers/storage/overlay/aa11/diff/usr/bin/newgrp",
+    "home/ubuntu/.local/share/containers/storage/overlay/bb22/diff/usr/bin/mount",
+    "home/ubuntu/.local/share/docker/overlay2/cc33/diff/bin/umount",
+)
+
+
+def _plant_layers(r: Path) -> None:
+    for rel in _LAYER_SUIDS:
+        (r / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy("/bin/true", r / rel)
+        (r / rel).chmod(0o4755)
+    # a setuid backdoor next to the layers (not inside one) is still host persistence
+    (r / "var/lib/docker/.hidden").parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy("/bin/true", r / "var/lib/docker/.hidden")
+    (r / "var/lib/docker/.hidden").chmod(0o4755)
+
+
+@pytest.mark.parametrize("transport", ["ssh", "agent"])
+def test_setuid_programs_inside_container_image_layers_are_not_host_persistence(tmp_path, transport):
+    """A Docker 29 host keeps image layers in plain folders on /, so every image's `su` and
+    `passwd` used to read as 'setuid program from no package' (lab: 23 on one Docker VM)."""
+    r = make_machine(tmp_path, "debian", planted=True)
+    _plant_layers(r)
+    inv = run_ssh(tmp_path, r) if transport == "ssh" else run_agent(r)
+    suid = {p for p, it in inv["items"].items() if it.get("suid_bits")}
+    assert not [p for p in suid if any(p.endswith(rel) for rel in _LAYER_SUIDS)], sorted(suid)
+    assert any(p.endswith("/usr/local/bin/.sysbash") for p in suid)
+    assert any(p.endswith("/var/lib/docker/.hidden") for p in suid)
