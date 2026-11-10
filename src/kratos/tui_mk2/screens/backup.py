@@ -204,11 +204,16 @@ class BackupScreen(Screen):
                       T.ATTENTION)
             return
         ident = K.new_identity()
+        from kratos.backup import origin
+
+        signer = origin.signer_fingerprint(self._data_dir, create=True)
         await self.app.push_screen_wait(CommandModal(
-            ident.secret, title="Your backup key -- shown this one time",
-            note="Keep it OFF this computer: a password manager, a printout or a USB stick. Kratos keeps only the "
-                 "public half, so nothing here can open a backup. Anyone holding this key can open every backup -- "
-                 "and a backup can act as this Kratos to your agents and sign SSH certificates for your machines."))
+            f"# {origin.SIGNER_LINE}: {signer}\n{ident.secret}", title="Your backup key -- shown this one time",
+            note="Keep both lines OFF this computer: a password manager, a printout or a USB stick. Kratos keeps "
+                 "only the public half, so nothing here can open a backup. Anyone holding this key can open every "
+                 "backup -- and a backup can act as this Kratos to your agents and sign SSH certificates for your "
+                 "machines. The first line is the fingerprint this Kratos signs backups with: a restore on a new "
+                 "computer checks it."))
         typed = await self.app.push_screen_wait(PromptModal(
             "Confirm you saved it", hint="Type the key's last 6 characters (esc: nothing is set up)"))
         if not typed or typed.strip().upper() != ident.secret[-6:]:

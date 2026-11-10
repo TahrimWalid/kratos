@@ -45,6 +45,7 @@ class Check:
     notes: list[str] = field(default_factory=list)
     manifest: dict[str, Any] | None = None
     seconds: float = 0.0
+    origin: Any = None
 
     def fail(self, text: str) -> None:
         self.ok = False
@@ -61,8 +62,9 @@ def _sha(path: Path) -> tuple[str, int]:
     return h.hexdigest(), n
 
 
-def quick(path: Path | str) -> Check:
-    """No secret needed."""
+def quick(path: Path | str, *, data_dir: Path | None = None) -> Check:
+    """No secret needed. With `data_dir`, also says whether this Kratos signed it."""
+    from kratos.backup import origin as O
     from kratos.backup.create import read_sidecar
 
     t0 = time.monotonic()
@@ -87,6 +89,7 @@ def quick(path: Path | str) -> Check:
         c.fail("the file is shorter than an age file can be: it is truncated")
     side = path.with_name(path.name + ".sha256")
     meta = read_sidecar(side)
+    sha = n = None
     if meta is None:
         c.notes.append(f"no sidecar ({side.name}); only the header and size were checked")
     else:
@@ -98,6 +101,13 @@ def quick(path: Path | str) -> Check:
         if meta.get("name") and meta["name"] != path.name:
             c.notes.append(f"the sidecar names {meta['name']} (this file was renamed)")
         c.notes.append(f"made by Kratos {meta.get('kratos', '?')} at {meta.get('created', '?')}")
+    c.origin = O.origin_of(meta, sha, n, data_dir)
+    if c.origin.status == "bad":
+        c.fail(f"who made it: {c.origin.describe()}")
+    elif data_dir is not None or c.origin.status == "unsigned":
+        c.notes.append(c.origin.describe())
+    else:
+        c.notes.append(f"signed by {c.origin.signer}")
     c.seconds = time.monotonic() - t0
     return c
 
@@ -175,7 +185,7 @@ def full(path: Path | str, identities: list[object], *, data_dir: Path, progress
 
     t0 = time.monotonic()
     path = Path(path)
-    c = quick(path)
+    c = quick(path, data_dir=Path(data_dir))
     if not c.ok and any("not a readable" in p for p in c.problems):
         return c
     from kratos.backup import inuse
@@ -260,9 +270,14 @@ class DrillResult(Check):
 
 
 def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: Any,
-          progress: Progress = _noop) -> DrillResult:
+          progress: Progress = _noop, accept_signer: str | None = None,
+          accept_unsigned: bool = False) -> DrillResult:
     """`full`, then a real restore into a scratch home, then `kratos doctor --offline`
-    against it; the scratch home is removed. Recorded in this Kratos's backup_runs."""
+    against it; the scratch home is removed. Recorded in this Kratos's backup_runs.
+
+    Only a backup this Kratos signed (or one whose signer the person confirms) is drilled,
+    and the health check never runs code or settings from the backup: kept tools are not
+    imported, the restored .env is not loaded, and Python runs isolated (-I)."""
     from kratos.backup import restore as RS
     from kratos.backup.create import work_dir
     from kratos.backup.plan import Roots
@@ -280,6 +295,12 @@ def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: 
     try:
         if lock is None:
             raise RuntimeError("another backup, check, drill or restore of this data is running; try again later")
+        from kratos.backup import origin as O
+
+        meta = _sidecar_of(path) if path.is_file() else None
+        o = O.origin_of(meta, *(_sha(path) if meta else (None, None)), data_dir)
+        O.require_trusted(o, accept_signer=accept_signer, accept_unsigned=accept_unsigned, action="drill it",
+                          has_local_key=O.signer_fingerprint(data_dir) is not None)
         progress("checking every file")
         c = full(path, identities, data_dir=data_dir, progress=progress, _lock_held=True)
         res.problems, res.notes, res.manifest = list(c.problems), list(c.notes), c.manifest
@@ -290,8 +311,11 @@ def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: 
             os.mkdir(home, 0o700)
             roots = Roots(home / "data", home, home)
             r = RS.restore(path, identities, roots=roots, actor=actor, authorize=False, check_running=False,
-                           kind="drill")
+                           kind="drill")    # who made it was checked above, before anything was decrypted
             res.restored_files = r.files
+            env = roots.config / ".env"
+            if env.exists():
+                os.rename(env, env.with_name(".env.restored-not-loaded"))   # the check never loads its settings
             progress("running `kratos doctor --offline` on the restored copy")
             code, lines = _doctor(home)
             res.doctor = lines
@@ -300,7 +324,9 @@ def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: 
                 res.fail("the restored copy's health check failed: " + ("; ".join(fails[:5]) or f"exit {code}"))
         res.ok = not res.problems
     except Exception as e:  # noqa: BLE001 -- the drill says why it failed
-        res.fail(f"{type(e).__name__}: {e}")
+        from kratos.backup.origin import UntrustedBackup
+
+        res.fail(str(e) if isinstance(e, UntrustedBackup) else f"{type(e).__name__}: {e}")
     finally:
         if home.exists():
             shutil.rmtree(home, ignore_errors=True)   # deletion-scan: the drill's own scratch home
@@ -314,10 +340,21 @@ def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: 
     return res
 
 
+def _sidecar_of(path: Path) -> dict[str, Any] | None:
+    from kratos.backup.create import read_sidecar
+
+    return read_sidecar(path.with_name(path.name + ".sha256"))
+
+
 def _doctor(home: Path) -> tuple[int, list[str]]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("KRATOS_", "LLM_", "XDG_"))}
-    env.update(KRATOS_HOME=str(home), HOME=os.environ.get("HOME", str(home)), NO_COLOR="1")
-    proc = subprocess.run([sys.executable, "-m", "kratos.cli.app", "doctor", "--offline"], env=env,
+    """`kratos doctor --offline` against the scratch home, without running anything the
+    backup brought: KRATOS_NO_KEPT_TOOLS keeps its kept tools unimported, -I keeps the
+    scratch folder (and PYTHON* variables) off the import path."""
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("KRATOS_", "LLM_", "XDG_", "PYTHON", "LD_"))}
+    env.update(KRATOS_HOME=str(home), HOME=os.environ.get("HOME", str(home)), NO_COLOR="1",
+               KRATOS_NO_KEPT_TOOLS="1")
+    proc = subprocess.run([sys.executable, "-I", "-m", "kratos.cli.app", "doctor", "--offline"], env=env,
                           capture_output=True, timeout=300, stdin=subprocess.DEVNULL, cwd=str(home))
     text = proc.stdout.decode("utf-8", "replace")
     return proc.returncode, [ln.rstrip() for ln in text.splitlines() if ln.strip()]

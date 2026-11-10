@@ -142,5 +142,14 @@ finding and log line.
   restore writes to a staging folder and moves the current data aside (never deletes it).
   Restore and prune are done only from the command line on the Kratos computer; no backup
   action is reachable from MCP, the chat server or a model tool.
+- **Every backup is signed by the Kratos that made it** (its Ed25519 signing key, over the
+  encrypted file's SHA-256, size and time; the signature is in the public sidecar). Because age
+  doesn't say who wrote a file, a drill or a restore refuses a backup this Kratos didn't sign:
+  on a new computer it asks for the signer fingerprint you wrote down with your backup key
+  (`kratos backup key new` prints it; the key file carries it, so piping the whole file in is
+  enough), and a backup with no sidecar needs `--unsigned-ok`. A changed file or a copied-over
+  signature fails `kratos backup verify` without the secret key.
+- The drill's health check never runs what a backup brings: kept tools are not imported, the
+  restored `.env` is not loaded, and Python runs isolated.
 - Check where a backup came from before restoring it: the restore shows the computer and
-  time it was made and the fingerprints of the keys in it.
+  time it was made, who signed it and the fingerprints of the keys in it.

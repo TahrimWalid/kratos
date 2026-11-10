@@ -2984,8 +2984,10 @@ def main(argv: list[str] | None = None) -> int:
     # kratos run, everything else) -- they all go through this same main()
     # dispatch, so there's no second entry point to separately wire up.
     # Safe on a fresh install with no kept_tools/ directory at all: returns
-    # an empty list, no error.
-    load_kept_tools()
+    # an empty list, no error. A backup drill's health check sets KRATOS_NO_KEPT_TOOLS: the
+    # scratch home it checks holds the backup's kept tools, which must not run.
+    if os.environ.get("KRATOS_NO_KEPT_TOOLS") != "1":
+        load_kept_tools()
 
     # D.7: the CLI is the owner at the Kratos host. Every subcommand is listed in
     # kratos.authz.entrypoints and checked here (recorded in the audit trail); an

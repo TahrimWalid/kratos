@@ -2732,7 +2732,18 @@ member is `MANIFEST.json` (format and versions, layout, time, host, lock mode an
 fingerprints, every category with its reason, every file's path/size/mode/SHA-256, database
 row counts and schema versions, key fingerprints, the paired agents with the name each dials
 and the listener's port). The public sidecar `<name>.age.sha256` is a `sha256sum -c` line plus
-size and version -- nothing personal.
+size, version and the backup's **origin signature** -- nothing personal.
+
+**Who made it (`backup/origin.py`).** age has no sender authentication: anyone who knows a
+recipient's public key can write a file that opens with its secret key. So Kratos signs every
+backup with its Ed25519 signing key (`kratos.signing`) over `kratos-backup-origin-v1`, the
+encrypted file's SHA-256, its size and its creation time, and puts the signer fingerprint, the
+public key and the signature in the sidecar. `verify` (no secret) checks the signature against
+the real hash and size and says whether the signer is this Kratos (its active or a retired key).
+A drill and a restore decrypt nothing until the origin is trusted: signed by this Kratos, or by
+the fingerprint the person gives (`--signer`, or the `# kratos-backup-signer:` line of the key
+file `kratos backup key new --write-to` writes), or `--unsigned-ok` for a backup whose sidecar
+was lost. A swapped or copied signature, or a changed file, is "invalid" and refused outright.
 
 **Keys, by protection mode.**
 
@@ -2750,7 +2761,10 @@ database's integrity and that it opens with this Kratos's migrations (`backup/st
 every store; a test fails if a new store isn't listed), the agent-link keys against the
 recorded pins, the seal keys. A **drill** is `--full` plus a real restore into a scratch home
 in `.backup-work` and `kratos doctor --offline` against it; only then is a backup
-*verified*. `backup/archive.py` treats a backup as untrusted (anyone with a recipient's public
+*verified*. The drill's doctor runs nothing the backup brought: `KRATOS_NO_KEPT_TOOLS=1` keeps
+`main()` from importing the restored kept tools, the restored `.env` is renamed before the
+check so it is never loaded, and the subprocess is `python -I` without `PYTHON*`/`LD_*`
+variables (found by the D.8 security review: before, a forged backup's kept tool ran on drill). `backup/archive.py` treats a backup as untrusted (anyone with a recipient's public
 key can make one): the manifest is first and closed-schema; each member must be a regular
 file, under `data/`, `state/` or `config/` where a non-`never` category keeps data, with no
 `..` or control characters, listed once in the manifest, of the listed size, and its SHA-256 is

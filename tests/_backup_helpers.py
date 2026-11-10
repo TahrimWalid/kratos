@@ -126,3 +126,12 @@ def reg(name: str, data: bytes) -> tuple[tarfile.TarInfo, bytes]:
     ti.size = len(data)
     ti.mode = 0o600
     return ti, data
+
+
+def signer_of(backup: Path) -> str | None:
+    """The signer a backup's sidecar names -- for tests that restore onto a "new computer"
+    and are about something else than who made the backup."""
+    from kratos.backup.create import read_sidecar
+
+    meta = read_sidecar(Path(backup).with_name(Path(backup).name + ".sha256")) or {}
+    return meta.get("signer")

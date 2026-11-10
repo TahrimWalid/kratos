@@ -406,11 +406,12 @@ def _tarinfo(name: str, size: int, mtime: float) -> tarfile.TarInfo:
     return ti
 
 
-def _sidecar_text(name: str, sha: str, size: int, created: str) -> str:
+def _sidecar_text(name: str, sha: str, size: int, created: str, data_dir: Path) -> str:
     from kratos import __version__
+    from kratos.backup import origin
 
     return (f"{sha}  {name}\n# kratos-backup-sidecar 1\n# size: {size}\n# kratos: {__version__}\n"
-            f"# created: {created}\n")
+            f"# created: {created}\n" + origin.sidecar_lines(data_dir, sha, size, created))
 
 
 def read_sidecar(path: Path) -> dict[str, Any] | None:
@@ -422,7 +423,7 @@ def read_sidecar(path: Path) -> dict[str, Any] | None:
     for line in text.splitlines():
         if line.startswith("# "):
             k, _, v = line[2:].partition(": ")
-            if k in ("size", "kratos", "created"):
+            if k in ("size", "kratos", "created", "signer", "signing-key", "signature"):
                 out[k] = v.strip()
         elif re.match(r"^[0-9a-f]{64}  \S", line):
             out["sha256"], out["name"] = line[:64], line[66:]
@@ -490,6 +491,9 @@ def create(data_dir: Path | str, *, actor: Any, dest: Path | str | None = None, 
         swept = sweep_partials(dest_dir)
         work = work_dir(data_dir) / f"create-{os.getpid()}-{int(time.time() * 1000)}"
         os.mkdir(work, 0o700)
+        from kratos.backup import origin
+
+        origin.signer_fingerprint(data_dir, create=True)   # the key that signs this backup goes into it too
         the_plan = P.build(data_dir, exclude=tuple(exclude), include_rebuildable=include_rebuildable,
                            without_secrets=without_secrets, roots=roots)
         _check_space(work, dest_dir, the_plan)
@@ -590,7 +594,7 @@ def create(data_dir: Path | str, *, actor: Any, dest: Path | str | None = None, 
         side_tmp = dest_dir / (name + ".sha256.partial")
         fd = os.open(side_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_sidecar_text(name, sha, size, created))
+            f.write(_sidecar_text(name, sha, size, created, data_dir))
             f.flush()
             os.fsync(f.fileno())
         os.replace(side_tmp, side)

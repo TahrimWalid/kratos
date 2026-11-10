@@ -68,6 +68,7 @@ def add_parser(sub: Any) -> None:
     d = bs.add_parser("drill", help="Prove a backup restores: full check + a real restore into a scratch home + "
                                     "doctor, then the scratch home is removed")
     d.add_argument("file", type=Path)
+    _trust_args(d)
 
     r = bs.add_parser("restore", help="Restore a backup onto this computer (CLI only)")
     r.add_argument("file", type=Path)
@@ -79,6 +80,7 @@ def add_parser(sub: Any) -> None:
     r.add_argument("--hub-address", default=None, help="The address agents should dial to reach this computer")
     r.add_argument("--no-wait", action="store_true", help="Don't wait for the agents to reconnect")
     r.add_argument("--yes", action="store_true", help="Don't ask for confirmation")
+    _trust_args(r)
 
     x = bs.add_parser("extract", help="Unpack a backup into an empty folder, to look inside (installs nothing)")
     x.add_argument("file", type=Path)
@@ -104,13 +106,37 @@ def _cli_actor(args: argparse.Namespace) -> Any:
 
 
 def _read_secret(prompt: str) -> list[object]:
+    return _read_secret_and_signer(prompt)[0]
+
+
+def _read_secret_and_signer(prompt: str) -> tuple[list[object], str | None]:
+    """The identities, and the signer fingerprint when a whole key file was piped in."""
     from kratos.backup import keys as K
+    from kratos.backup import origin
 
     if not sys.stdin.isatty():
         text = sys.stdin.read()
     else:
         text = getpass.getpass(prompt)
-    return K.read_identities(text)
+    return K.read_identities(text), origin.fingerprint_in(text)
+
+
+def _trust_args(p: Any) -> None:
+    p.add_argument("--signer", default=None, metavar="SHA256:…",
+                   help="Accept a backup signed by this signing-key fingerprint (the one you wrote down with your "
+                        "backup key); needed on a new computer")
+    p.add_argument("--unsigned-ok", action="store_true",
+                   help="Accept a backup with no signature (its .sha256 sidecar lost) -- only if you know where it "
+                        "came from")
+
+
+def _signer_choice(args: argparse.Namespace, from_key_file: str | None) -> str | None:
+    from kratos.backup import origin
+
+    given = getattr(args, "signer", None)
+    if given and not origin.valid_fingerprint(given):
+        raise SystemExit("[KRATOS] --signer takes a fingerprint like SHA256:abc… (43 characters after the colon)")
+    return given or from_key_file
 
 
 def cmd_backup(args: argparse.Namespace) -> int:
@@ -194,7 +220,11 @@ def _key(args: argparse.Namespace) -> int:
         print("[KRATOS] not at a terminal: give --write-to FILE so the secret key isn't lost", file=sys.stderr)
         return 2
     K.add_recipient(dd, pub, actor="cli:backup key new")
+    from kratos.backup import origin
+
     print(f"[KRATOS] Backups are now encrypted to {K.fingerprint(pub)} ({pub}).")
+    print(f"         They are signed by this Kratos's key {origin.signer_fingerprint(dd, create=True)} -- write it "
+          "down with your backup key: restoring onto a new computer asks for it.")
     print("         Next: kratos backup create, then kratos backup drill <file>.")
     return 0
 
@@ -215,8 +245,11 @@ def _write_identity(path: Path, ident: Any, data_dir: Path) -> None:
             continue
     from kratos.backup.create import utc_iso
 
-    text = (f"# created: {utc_iso()}\n# public key: {ident.recipient()}\n# Kratos backup key. Keep it off the "
-            f"Kratos computer.\n{ident.secret}\n")
+    from kratos.backup import origin
+
+    signer = origin.signer_fingerprint(Path(data_dir), create=True)
+    text = (f"# created: {utc_iso()}\n# public key: {ident.recipient()}\n# {origin.SIGNER_LINE}: {signer}\n"
+            f"# Kratos backup key. Keep it off the Kratos computer.\n{ident.secret}\n")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="ascii") as f:
         f.write(text)
@@ -295,6 +328,10 @@ def _create(args: argparse.Namespace) -> int:
     lock = m["lock"]
     print("         Locked to " + (f"{len(lock['recipients'])} recipient key(s): " + ", ".join(lock["recipients"])
                                    if lock["mode"] == "recipients" else "the passphrase"))
+    from kratos.backup import origin
+
+    print(f"         Signed by this Kratos: {origin.signer_fingerprint(Path(args.data_dir))} (keep this fingerprint "
+          "with your backup key: a restore on a new computer asks for it)")
     for c in res.copies:
         print(f"         copy -> {c['target']}: " + ("verified (" + str(c.get("verified")) + ")" if c.get("ok")
                                                      else f"FAILED: {c.get('error')}"))
@@ -364,10 +401,11 @@ def _verify(args: argparse.Namespace) -> int:
 def _drill(args: argparse.Namespace) -> int:
     from kratos.backup import verify as V
 
-    ids = _read_secret("Backup key (AGE-SECRET-KEY-1…) or passphrase: ")
+    ids, hint = _read_secret_and_signer("Backup key (AGE-SECRET-KEY-1…) or passphrase: ")
     t0 = time.monotonic()
     r = V.drill(args.file, ids, data_dir=Path(args.data_dir), actor=_cli_actor(args),
-                progress=lambda t: print(f"[KRATOS] {t} ...", flush=True))
+                progress=lambda t: print(f"[KRATOS] {t} ...", flush=True),
+                accept_signer=_signer_choice(args, hint), accept_unsigned=args.unsigned_ok)
     if r.ok:
         print(f"[KRATOS] Drill PASSED in {time.monotonic() - t0:.1f} s: {r.restored_files} files restored into a "
               "scratch home, the health check passed, the scratch home removed. This backup is verified.")
@@ -385,9 +423,10 @@ def _restore(args: argparse.Namespace) -> int:
 
     roots = Roots(Path(args.data_dir), paths.STATE_ROOT, paths.CONFIG_DIR)
     actor = _cli_actor(args)
-    ids = _read_secret("Backup key (AGE-SECRET-KEY-1…) or passphrase: ")
+    ids, hint = _read_secret_and_signer("Backup key (AGE-SECRET-KEY-1…) or passphrase: ")
+    trust = {"accept_signer": _signer_choice(args, hint), "accept_unsigned": args.unsigned_ok}
     print("[KRATOS] Checking the whole backup first (nothing is written yet) ...", flush=True)
-    dry = RS.restore(args.file, ids, roots=roots, actor=actor, replace=args.replace, dry_run=True)
+    dry = RS.restore(args.file, ids, roots=roots, actor=actor, replace=args.replace, dry_run=True, **trust)
     m = dry.manifest
     print(f"         made {m.get('created')} on {m.get('host')} by Kratos {m.get('kratos_version')}; "
           f"{m['totals']['files']} files; {len(m.get('agents') or [])} paired agent(s)")
@@ -422,7 +461,7 @@ def _restore(args: argparse.Namespace) -> int:
     since = time.time()
     res = RS.restore(args.file, ids, roots=roots, actor=actor, replace=args.replace, ca_mode=args.ca_mode,
                      hub_address=args.hub_address, pre_backup_passphrase=pre_phrase,
-                     progress=lambda t: print(f"[KRATOS] {t} ...", flush=True))
+                     progress=lambda t: print(f"[KRATOS] {t} ...", flush=True), **trust)
     print(f"[KRATOS] Restored {res.files} files into {roots.data}.")
     if res.pre_backup:
         print(f"         The state before the restore was backed up first: {res.pre_backup}")

@@ -105,7 +105,7 @@ def test_the_drill_fails_honestly_on_a_damaged_backup(made, tmp_path):
 def test_restore_onto_a_fresh_home_brings_everything_back(made, tmp_path):
     r, ident, res = made
     new = H.home(tmp_path, "new")
-    out = RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    out = RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     old_files = H.all_files(r.state)
     new_files = H.all_files(new.state)
     for rel, data in old_files.items():
@@ -125,7 +125,7 @@ def test_restore_onto_a_fresh_home_brings_everything_back(made, tmp_path):
 def test_restore_refuses_a_home_that_holds_data(made, tmp_path):
     r, ident, res = made
     with pytest.raises(RS.RestoreError, match="already holds data"):
-        RS.restore(res.file, [ident], roots=r, actor=H.CLI)
+        RS.restore(res.file, [ident], roots=r, actor=H.CLI, accept_signer=H.signer_of(res.file))
 
 
 def test_replace_backs_up_first_and_moves_aside_deleting_nothing(made, tmp_path):
@@ -133,7 +133,7 @@ def test_replace_backs_up_first_and_moves_aside_deleting_nothing(made, tmp_path)
     before = H.all_files(r.state)
     (r.data / "sessions" / "newer.json").write_text("made after the backup")
     before = H.all_files(r.state)
-    out = RS.restore(res.file, [ident], roots=r, actor=H.CLI, replace=True)
+    out = RS.restore(res.file, [ident], roots=r, actor=H.CLI, accept_signer=H.signer_of(res.file), replace=True)
     assert out.pre_backup and Path(out.pre_backup).exists()
     aside = [Path(b) for _a, b in out.moved_aside]
     kept = {}
@@ -165,7 +165,7 @@ def test_restore_refuses_while_something_holds_the_data(made, tmp_path):
     try:
         assert holder.stdout.readline().strip() == b"held"
         with pytest.raises(RS.RestoreError, match="using this data"):
-            RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+            RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     finally:
         holder.kill()
         holder.wait()
@@ -188,14 +188,14 @@ def test_restore_refuses_while_the_listener_is_running(made, tmp_path):
 
     SubAgentStore(new.data / "kratos.db").register_listener("l1", pid=4242, host="192.0.2.1", port=8765, mode="service", build="b")
     with pytest.raises(RS.RestoreError, match="agent listener"):
-        RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+        RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
 
 
 def test_restore_is_cli_only(made, tmp_path):
     _r, ident, res = made
     new = H.home(tmp_path, "new")
     with pytest.raises(RS.RestoreError, match="command line"):
-        RS.restore(res.file, [ident], roots=new, actor=H.TUI)
+        RS.restore(res.file, [ident], roots=new, actor=H.TUI, accept_signer=H.signer_of(res.file))
 
 
 def _crafted_manifest(files, version="0.1.0"):
@@ -215,7 +215,7 @@ def test_a_newer_backup_is_refused_with_the_version_needed(tmp_path):
                 _crafted_manifest([_entry("data/sessions/a.json", data)], version="99.0"))
     new = H.home(tmp_path, "new")
     with pytest.raises(RS.RestoreError, match="Kratos 99.0"):
-        RS.restore(f, [ident], roots=new, actor=H.CLI)
+        RS.restore(f, [ident], roots=new, actor=H.CLI, accept_unsigned=True)
 
 
 def test_an_older_database_is_migrated_on_restore(tmp_path):
@@ -230,7 +230,7 @@ def test_an_older_database_is_migrated_on_restore(tmp_path):
     f = H.craft(tmp_path / "o.age", ident.recipient(), [H.reg("data/kratos.db", data)],
                 _crafted_manifest([_entry("data/kratos.db", data, kind="db")]))
     new = H.home(tmp_path, "new")
-    RS.restore(f, [ident], roots=new, actor=H.CLI)
+    RS.restore(f, [ident], roots=new, actor=H.CLI, accept_unsigned=True)
     with sqlite3.connect(new.data / "kratos.db") as c:
         comps = {r[0] for r in c.execute("SELECT component FROM schema_versions")}
     assert {"events", "backup", "authz", "outbox", "settings"} <= comps
@@ -282,7 +282,7 @@ def test_every_hostile_archive_is_refused_and_nothing_is_written(case, tmp_path)
     new = H.home(tmp_path, "new")
     before = H.all_files(new.state)
     with pytest.raises((AR.ArchiveError, RS.RestoreError)):
-        RS.restore(f, [ident], roots=new, actor=H.CLI)
+        RS.restore(f, [ident], roots=new, actor=H.CLI, accept_unsigned=True)
     after = {k: v for k, v in H.all_files(new.state).items() if "/locks/" not in k}
     assert {k: v for k, v in after.items() if "kratos.db" not in k} == {k: v for k, v in before.items()
                                                                        if "kratos.db" not in k and "/locks/" not in k}
@@ -335,7 +335,7 @@ def test_agents_that_dial_this_computer_wait_and_others_get_an_upgrade_installer
     m["agents"] = [{"target_id": "t1", "name": "web-01", "dials": "192.0.2.1"},
                    {"target_id": "t2", "name": "db-01", "dials": "198.51.100.200", "port": 8772}]
     new = H.home(tmp_path, "new")
-    RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     monkeypatch.setattr(RS, "_local_addresses", lambda: {"192.0.2.1"})
     rows, written = RS.agent_step(new, m, hub_address="192.0.2.99")
     by = {x["name"]: x for x in rows}
@@ -368,7 +368,7 @@ def test_a_tpm_ca_key_restores_into_file_mode_without_a_tpm(tmp_path, monkeypatc
     res = CR.create(r.data, actor=H.CLI, dest=tmp_path / "bk", roots=r, copy_to=[])
     new = H.home(tmp_path, "new")
     monkeypatch.setattr(_ca, "has_tpm2", lambda: False)
-    out = RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    out = RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     assert (new.data / "ssh-ca" / "user_ca-abc").read_bytes() == plain
     assert (new.data / "ssh-ca" / "user_ca-abc").stat().st_mode & 0o777 == 0o600
     with sqlite3.connect(new.data / "kratos.db") as c:
@@ -396,7 +396,7 @@ def test_a_tpm_ca_key_is_sealed_again_without_touching_disk(tmp_path, monkeypatc
     monkeypatch.setattr(_ca, "_seal_private", lambda dd, p, b: (sealed.append(b), (p.with_name(p.name + ".cred"))
                                                                 .write_bytes(b"NEWSEAL")))
     new = H.home(tmp_path, "new")
-    RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     assert sealed == [plain]
     for f in new.state.rglob("*"):
         if f.is_file():
@@ -409,7 +409,7 @@ def test_a_without_secrets_restore_says_what_to_redo(tmp_path):
     ident = H.identity()
     H.set_recipient(r, ident)
     res = CR.create(r.data, actor=H.CLI, dest=tmp_path / "bk", roots=r, copy_to=[], without_secrets=True)
-    out = RS.restore(res.file, [ident], roots=H.home(tmp_path, "new"), actor=H.CLI)
+    out = RS.restore(res.file, [ident], roots=H.home(tmp_path, "new"), actor=H.CLI, accept_signer=H.signer_of(res.file))
     assert any("pair your agents again" in n for n in out.notes)
 
 

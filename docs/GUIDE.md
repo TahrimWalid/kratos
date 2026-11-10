@@ -2644,6 +2644,10 @@ scheduled backup needs no secret at all. Up to five keys can open a backup: add 
 admin's own `age1…` key with `kratos backup key add age1…`; `kratos backup key list` shows
 them. Lose every secret key and no backup can be restored.
 
+It also prints **the fingerprint Kratos signs backups with** (`SHA256:…`; `--write-to` puts it
+in the key file too). Write it down with the key: a restore on a new computer asks for it, so
+that a file someone else made with your *public* key can't pass as your backup.
+
 A one-off backup can use a passphrase instead (`--passphrase`, asked twice, at least 16
 characters; `--generate-passphrase` gives you six random words). Kratos stores neither.
 Scheduled backups can't use a passphrase — nobody is there to type it.
@@ -2657,7 +2661,8 @@ kratos backup create --copy-to /media/usb/kratos
 
 Backups go to `~/kratos-backups` (owner-only; Kratos's data folder is refused). Each is one
 file, `kratos-backup-<UTC time>.age`, plus a small public sidecar `….age.sha256` with its
-SHA-256, size and Kratos version — nothing personal. It is safe to take while Kratos is
+SHA-256, size, Kratos version and this Kratos's signature — nothing personal. Keep the two
+together: the signature is how a drill or a restore knows the backup is yours. It is safe to take while Kratos is
 running: the database is copied in one consistent step while the listener keeps writing.
 
 **What's in, and what isn't** (`--dry-run` lists every kind with its reason):
@@ -2706,6 +2711,12 @@ last successful drill were, and warns after 30 days without a drill
 (`backup.drill_warn_days`). The key or passphrase is read from the pipe, or asked for
 without showing it.
 
+A drill only runs on a backup this Kratos signed, and its health check runs nothing the
+backup brings (no kept tools, not its `.env`). A backup signed by another Kratos is refused
+with that key's fingerprint: if you know it (you moved Kratos, or a colleague made it), give
+`--signer SHA256:…`. A backup whose `.sha256` file was lost needs `--unsigned-ok`, only when
+you know where the file came from — `kratos backup extract` lets you look inside first.
+
 ### On a schedule
 
 ```bash
@@ -2726,9 +2737,11 @@ disk is 80% full.
 
 1. Install Kratos on the new computer (don't set anything up yet).
 2. Copy the backup file there and check it: `kratos backup verify kratos-backup-….age`.
-3. `kratos backup restore kratos-backup-….age < key.txt` — it checks the whole backup first,
+3. `kratos backup restore kratos-backup-….age < key.txt` — it checks who signed the backup
+   (the new computer has no key of its own yet, so it uses the signer line in the key file you
+   pipe in, or `--signer SHA256:…` with the fingerprint you wrote down), checks the whole backup,
    shows where and when it was made and the key fingerprints in it, and asks you to type
-   `restore`.
+   `restore`. Keep the `.sha256` file next to the backup.
 4. Start Kratos's listener (`systemctl --user start kratos-core-listener`, or
    `kratos subagent-serve`). The restore waits two minutes and shows each agent coming back.
 

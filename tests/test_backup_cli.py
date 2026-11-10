@@ -362,8 +362,11 @@ def test_the_backup_screen_sets_up_a_key_and_backs_up(tmp_path, monkeypatch):
                 if K.recipients(r.data):
                     break
             assert K.recipients(r.data)
-            secret = shown[0]._command
+            signer_line, secret = shown[0]._command.split("\n")
             assert secret.startswith("AGE-SECRET-KEY-1")
+            from kratos.backup import origin as O
+
+            assert O.fingerprint_in(signer_line) == O.signer_fingerprint(r.data)   # the box is a key file
             assert secret not in str(BR.runs(r.data)) and secret not in str(K.recipients(r.data))
             await pilot.press("n")
             for _ in range(300):
@@ -386,7 +389,7 @@ def test_after_a_restore_the_old_computers_backups_dont_count(tmp_path):
     H.set_recipient(old, ident)
     res = CR.create(old.data, actor=H.CLI, dest=tmp_path / "bk", roots=old, copy_to=[])
     new = H.home(tmp_path, "new")
-    RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
     rows = {x["check"]: x for x in ST.doctor_rows(new.data)}
     assert rows["last backup"]["detail"] == "none made yet" and "restored from" in rows
     assert "backup on same disk" not in rows
@@ -414,7 +417,9 @@ def test_a_hostile_backup_gets_a_plain_message_not_a_traceback(tmp_path):
                  "totals": {"files": 0, "bytes": 0}})
     home = tmp_path / "h"
     home.mkdir()
-    out = _cli(home, "backup", "restore", str(f), "--yes", stdin=ident.secret.encode())
+    unsigned = _cli(home, "backup", "restore", str(f), "--yes", stdin=ident.secret.encode())
+    assert unsigned.returncode == 2 and b"not signed" in unsigned.stderr and b"Traceback" not in unsigned.stderr
+    out = _cli(home, "backup", "restore", str(f), "--yes", "--unsigned-ok", stdin=ident.secret.encode())
     assert out.returncode == 2 and b"Traceback" not in out.stderr and b"can't be trusted" in out.stderr
-    wrong = _cli(home, "backup", "restore", str(f), "--yes", stdin=H.identity().secret.encode())
+    wrong = _cli(home, "backup", "restore", str(f), "--yes", "--unsigned-ok", stdin=H.identity().secret.encode())
     assert wrong.returncode == 2 and b"doesn't open this backup" in wrong.stderr

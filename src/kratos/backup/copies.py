@@ -106,8 +106,9 @@ def copy_to_folder(target: Target, backup: Path, sidecar: Path, sha256: str, *, 
     os.replace(tmp, out)
     side = dest / sidecar.name
     side_tmp = dest / (sidecar.name + ".partial")
-    side_tmp.write_bytes(sidecar.read_bytes())
-    os.chmod(side_tmp, 0o600)
+    fd = os.open(side_tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as w:
+        w.write(sidecar.read_bytes())
     os.replace(side_tmp, side)
     _fsync_dir(dest)
     same = _same_disk(dest, data_dir)

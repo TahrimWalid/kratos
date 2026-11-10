@@ -317,6 +317,23 @@ def _authorize(actor: Any, data_dir: Path) -> None:
         raise RestoreError(f"refused: {e}") from None
 
 
+def _check_origin(backup: Path, data_dir: Path, *, accept_signer: str | None, accept_unsigned: bool) -> None:
+    from kratos.backup import origin as O
+    from kratos.backup.create import read_sidecar
+    from kratos.backup.verify import _sha
+
+    if not backup.is_file():
+        raise RestoreError(f"{backup} is not a file")
+    meta = read_sidecar(backup.with_name(backup.name + ".sha256"))
+    sha, size = _sha(backup) if meta else (None, None)
+    o = O.origin_of(meta, sha, size, data_dir)
+    try:
+        O.require_trusted(o, accept_signer=accept_signer, accept_unsigned=accept_unsigned, action="restore it",
+                          has_local_key=O.signer_fingerprint(data_dir) is not None)
+    except O.UntrustedBackup as e:
+        raise RestoreError(str(e)) from None
+
+
 def _state_patterns() -> list[str]:
     from kratos import datainv
 
@@ -594,13 +611,19 @@ def ssh_certificate_step(roots: Roots, *, local: set[str] | None = None) -> list
 def restore(backup: Path, identities: list[object], *, roots: Roots, actor: Any, replace: bool = False,
             ca_mode: str | None = None, hub_address: str | None = None, dry_run: bool = False,
             pre_backup_passphrase: str | None = None, progress: Progress = _noop,
-            authorize: bool = True, check_running: bool = True, kind: str = "restore") -> RestoreResult:
+            authorize: bool = True, check_running: bool = True, kind: str = "restore",
+            accept_signer: str | None = None, accept_unsigned: bool = False) -> RestoreResult:
     """Restore `backup` into `roots`. `authorize`/`check_running` are off only for the
-    drill, which restores into its own scratch home."""
+    drill, which restores into its own scratch home (and checks who made it itself).
+
+    Nothing is decrypted until Kratos knows who made the backup (kratos.backup.origin): this
+    Kratos's signature, or a signer fingerprint the person gave (`accept_signer`), or the
+    person's explicit `accept_unsigned`."""
     backup = Path(backup)
     paths.ensure_private_dir(roots.data)
     if authorize:
         _authorize(actor, roots.data)
+        _check_origin(backup, roots.data, accept_signer=accept_signer, accept_unsigned=accept_unsigned)
     lock = inuse.exclusive(roots.data) if check_running else None
     if check_running and lock is None:
         stop, start = stop_start_lines()
