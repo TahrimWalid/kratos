@@ -2440,6 +2440,85 @@ process list tagged by run id); an MCP investigation id is a bearer secret withi
 its token. Known limits: the hourly reservation is per process (two `kratos serve`
 processes on one data folder would each count only their own requests in flight).
 
+## Users and permissions (D.7)
+
+**Identity.** Kratos users are its own (`users` in kratos.db), not OS accounts. The OS
+account that owns the data folder is the **owner** (`user_id = 'owner'`, always admin,
+every machine, never disabled); its row is made by the `authz` migration, so a
+single-owner install keeps working untouched. The owner is the identity of the TUI,
+the CLI, stdio MCP and (by default) schedules. Everyone else reaches Kratos only
+through `kratos serve`: a **person token** (`serve_tokens.user_id`) or a **gateway
+token** plus Open WebUI's signed forwarded identity.
+
+Who acted is an `Actor(user, interface, user_id, credential)`
+(`kratos.lifecycle.decide`). It travels with the run in a context variable
+(`authz.acting_as`, copied into every worker thread); `authz.current_actor()` reads it.
+A local process with none set acts as the owner; the chat server never falls back
+(`authz.set_network_process`, and a `web` run with no actor gets `None`).
+
+**Permissions.** One literal table, `kratos/authz/permissions.py`: three fixed roles
+(viewer ⊂ investigator ⊂ admin) × named actions. Admin actions (users, tokens,
+channels, settings, budgets, enrolment, keys, the fix channel, full exports, groups,
+assets, schedules, detection, prune, audit) are **local-only**: refused unless the
+interface is `tui`/`cli` *and* the user is the owner — so even an admin-role user, or
+the owner through a token, can't do them over the network.
+
+**Scope.** effective scope = the user's scope (machines, plus each `@group`'s current
+members) ∩ the token's machines (`kratos.authz.scope`). Resolved fresh on every
+check. A machine outside it doesn't exist for that user: not a model, not counted
+except as "N outside your access", refusals don't confirm it exists.
+
+**`require(actor, action, machine)`** (`kratos.authz.check`) is the one check. Fail
+closed: no actor, no user id over the network, an unknown or disabled user, an
+unknown role, a token that is gone, revoked, expired or someone else's, a scope that
+can't be read, or an audit row that can't be written — each is a refusal with a plain
+reason. Inside an agent tool call, people-only actions are refused outright.
+
+**Enforcement points.**
+
+- *Network doors*: `KratosGate` resolves the person (person token → its user; gateway
+  token → `authz.openwebui.verify` the `X-OpenWebUI-User-Jwt` HS256 JWT with the
+  gateway's secret, `iss=open-webui`, current `exp`, lifetime ≤ 1 h → mapping in
+  `user_gateway_ids`); unsigned `X-OpenWebUI-User-*` headers are never trusted. Each
+  route, chat sub-action (chat, investigate, fleet, `/retest`, `/hunt`, `/findings`,
+  `/decide`) and MCP tool (HTTP and stdio) calls `require`.
+- *People-only core functions*: decisions, settings, assets, groups, channels, exports,
+  keys, detection overrides, whitelist/fix-channel, pairing, enrolment, schedules,
+  triggers, presets, outbox retry/prune, data prune, tokens, users, audit prune — each
+  calls `require` itself, so every surface that reaches them is covered.
+- *Local dispatch*: every CLI subcommand and TUI slash command is listed in
+  `kratos/authz/entrypoints.py` (an action checked at `cli.app.main` /
+  `SessionScreen._dispatch_slash`, the core functions it goes through, or read-only
+  with a reason).
+- *Every read inside a run*: `execute_tool_call` → `authz.check_run_access()` re-checks
+  the run's person, the action that started the run (so a demotion counts) and the
+  pinned machine; so do the agent loop's stop points, the fleet collector per machine
+  and the headless runner's start. Narrowing a scope, disabling a user or revoking a
+  token stops the run at its next read (`AccessRemoved`, status `access_removed`).
+- *Unattended runs* act as `run_as` (schedules and triggers; default the owner) via
+  `authz.unattended_refusal`; a disabled or narrowed user makes them refuse.
+
+`tests/_authz_scan.py` (with `tests/test_authz_scan.py`) lists these entry points from
+the source and fails when one stops calling `require` (or a call to a function that
+does — name-based and strict about same-named functions), when a function that
+refuses inside a tool call has no check, or when a subcommand or slash command is
+missing from the table. Mutation tests remove a check from each kind and expect the
+scan to fail.
+
+**Per-user state.** `sessions.owner_user_id` (existing sessions → owner; users list
+only theirs, the owner sees all, others' read-only). `budget_ledger.user_id` and the
+per-user daily cap `budget.user_daily_usd` (checked first, refused with the user's own
+figure; the over-cap prompt never covers it). With a gateway token the hourly request
+limit and the client-chat → session mapping are keyed per person.
+
+**Audit trail.** `audit_log`: time, user, interface, credential (`token:<id>` or
+`gateway:<id>+openwebui:<sub>`), action, machine, object, allowed/refused, reason,
+run id. Triggers refuse `UPDATE`, and `DELETE` unless `kratos audit prune` has opened
+a permit inside its own transaction; the prune is recorded afterwards. Every refusal
+is recorded; allowed actions are recorded except the per-read re-checks and model-list
+polls (the run's start is the recorded action). `serve_audit` and `finding_events`
+keep their detail and link by run id.
+
 ## MCP server surface
 
 `kratos mcp-serve` exposes five tools over stdio — `investigate`,

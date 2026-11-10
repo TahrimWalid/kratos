@@ -549,6 +549,9 @@ def main(argv: list[str] | None = None) -> int:
     _console.configure(no_color)
     _paths.ensure_private_dir(_paths.STATE_ROOT)  # kept tools, staging, vulscan live here too
     _paths.ensure_private_dir(args.data_dir)
+    from kratos import authz
+
+    authz.set_local_interface("tui")     # D.7: the owner at the TUI, in the audit trail
     from kratos.budget import guard as _budget_guard
 
     _budget_guard.migrate_at_startup(args.data_dir)  # 0.4 upgrade: keep existing investigate triggers working

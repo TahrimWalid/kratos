@@ -50,12 +50,18 @@ Commands that work here (no model call):
   /usage             today's model use and the limits
   /retest <key>      re-collect what a finding depends on and re-check it
   /hunt <indicator>  has this address, hash, account, domain, program or path been seen on
-                     the machines this token may see? Searches what Kratos holds and says
+                     the machines you may see? Searches what Kratos holds and says
                      what that covered (--since 30d, --machine <name>, --type account)
+  /decide <key> verify|false-positive|out-of-scope|reopen <reason>
+  /decide <key> accept <days> <reason>
+                     record a decision about a finding (investigators; recorded with your name)
   /help              this text
 
+What you may do depends on your Kratos role: viewers read findings, hunt and ask; investigators
+also start investigations, ask about groups, re-check and decide. You see only your machines.
+
 Not available from a chat client -- use the Kratos app: /evolve, /whitelist, /run-fix,
-accepting or dismissing findings, settings, target setup, presets.
+users, tokens, settings, channels, target setup, presets.
 
 Text Kratos quotes from a machine is shown inert: no image loads, no link is clickable.
 Your OWN messages are drawn by the chat app itself -- an image link you type there is

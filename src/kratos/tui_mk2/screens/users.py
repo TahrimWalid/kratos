@@ -94,6 +94,8 @@ class UsersScreen(Screen):
 
     def refresh_rows(self) -> None:
         table = self.query_one("#us-table", DataTable)
+        keep = self._rows[table.cursor_row].user_id if self._rows and table.cursor_row is not None \
+            and table.cursor_row < len(self._rows) else None
         self._rows = U.list_users(self._data_dir)
         tokens = _tokens(self._data_dir)
         maps = U.list_mappings(self._data_dir)
@@ -113,6 +115,9 @@ class UsersScreen(Screen):
         for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 12), (4, 16), (5, 12)],
                                             headers=self.COLUMNS)):
             table.add_row(*row, key=self._rows[i].user_id)
+        at = next((i for i, u in enumerate(self._rows) if u.user_id == keep), None)
+        if at is not None:
+            table.move_cursor(row=at)        # stay on the user just changed
         banner = Text()
         banner.append("Users", style=f"bold {T.ACCENT}")
         banner.append(f"   ({len(self._rows)})", style=T.TEXT_DIM)
@@ -156,6 +161,9 @@ class UsersScreen(Screen):
             self._done(f"Not added: {e}", ok=False)
             return
         self._done(f"Added {u.name} as {u.role}. Give them a token with t.")
+        at = next((i for i, x in enumerate(self._rows) if x.user_id == u.user_id), None)
+        if at is not None:
+            self.query_one("#us-table", DataTable).move_cursor(row=at)
 
     @work(exclusive=True)
     async def action_role(self) -> None:

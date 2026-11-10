@@ -94,3 +94,23 @@ is never used for SSH logins or the agent link.
   copy the whole `signing/` folder somewhere safe with your database backup.
 - `kratos signing rotate` makes a new key and keeps the old public key in `signing/retired/`, so
   bundles and checkpoints signed before the change still verify.
+
+## Users, tokens and the shared Open WebUI secret
+
+Other people reach Kratos only through `kratos serve` (chat and MCP over HTTP), with a
+token that belongs to a Kratos user and expires (90 days by default). Everything that
+administers Kratos — users, roles, scopes, tokens, channels, settings, budgets,
+certificates, keys, the fix channel, full exports — is done only by the owner at the
+Kratos computer (TUI or CLI) and is refused over the network for every role, admins and
+the owner's own tokens included.
+
+A **gateway token** for a shared Open WebUI has no person of its own: each request must
+carry Open WebUI's signed identity (an HS256 JWT made with
+`FORWARD_USER_INFO_HEADER_JWT_SECRET`), which Kratos verifies and maps to a Kratos user
+the owner created. Unsigned forwarded headers are never trusted. **The gateway token and
+its secret together can act as every mapped user**: keep both private, store the secret
+only in Open WebUI's environment and Kratos's owner-only `gateway-secrets/` folder. If the
+token may have leaked, `kratos tokens rotate` it (the replacement keeps the secret); if the
+secret may have leaked, make a new `--gateway` token (it comes with a new secret), update
+Open WebUI, and revoke the old token. Every allowed and refused action is in the append-only
+audit trail (`kratos audit`).

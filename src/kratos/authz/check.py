@@ -85,6 +85,17 @@ def network_process() -> bool:
     return _network_process
 
 
+_local_interface = "cli"
+
+
+def set_local_interface(interface: str) -> None:
+    """The full-screen app says it is the TUI, so actions without an explicit actor are
+    recorded as the owner at the TUI (not the CLI). Only tui / cli."""
+    global _local_interface
+    if interface in ("tui", "cli"):
+        _local_interface = interface
+
+
 def owner_actor(interface: str = "cli") -> Any:
     from kratos.lifecycle.decide import Actor
 
@@ -105,7 +116,7 @@ def current_actor() -> Any:
     if ctx is not None and ctx.source == "web":
         return None
     interface = {"mcp": "mcp", "schedule": "schedule", "trigger": "schedule", "watch": "schedule",
-                 "interactive": "tui", "evolve": "tui"}.get(ctx.source if ctx is not None else "", "cli")
+                 "interactive": "tui", "evolve": "tui"}.get(ctx.source if ctx is not None else "", _local_interface)
     return owner_actor(interface)
 
 
