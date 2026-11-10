@@ -48,7 +48,7 @@ OUTCOME_WORDS = {
     "failed": "could not be checked (Kratos hit an error)",
     "stopped": "not checked (the run was stopped)",
     "refused-by-scope": "outside your access",
-    "access-removed": "not checked (your access to it was removed during the run)",
+    "access-removed": "stopped: your access to it was removed during the run",
 }
 
 
@@ -244,8 +244,8 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
                 # The question's own period could not be counted here: never "fully read".
                 res.outcome = "partial"
                 res.reason = "; ".join(x for x in [res.reason, *unmeasured] if x)
-    except authz.AccessRemoved as e:
-        res.outcome, res.reason = "access-removed", str(e)
+    except authz.AccessRemoved:
+        res.outcome, res.reason = "access-removed", ""
         res.report = None
         res.steps = []
     except cancel.Cancelled:

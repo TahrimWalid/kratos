@@ -78,8 +78,8 @@ class UsersScreen(Screen):
             yield Static(id="us-banner")
             yield DataTable(id="us-table", cursor_type="row")
             yield VerticalScroll(id="us-log")
-            yield Static(Text("a add · r role · m machines · d disable/enable · t new token · o rotate · x revoke · "
-                              "w map Open WebUI user · esc back", style=T.TEXT_DIM), id="us-hints")
+            yield Static(Text("a add · r role · m machines · d on/off · t token · o rotate · x revoke\n"
+                              "w map an Open WebUI user · esc back", style=T.TEXT_DIM), id="us-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -367,9 +367,9 @@ class AuditScreen(Screen):
         banner.append("Audit trail", style=f"bold {T.ACCENT}")
         filt = (" · refused only" if self._refused else "") + (f" · user {self._user}" if self._user else "")
         banner.append(f"   (newest {len(self._rows)}{filt})", style=T.TEXT_DIM)
-        banner.append("\nEvery allowed and refused action: who, through which door and credential. It can't be edited; "
-                      "`kratos audit prune` removes old rows and is itself recorded.  f refused · u by user · "
-                      "enter detail · esc back", style=T.TEXT_MUTED)
+        banner.append("\nEvery allowed and refused action: who, through which door and credential.\n"
+                      "It can't be edited; `kratos audit prune` removes old rows (recorded).\n"
+                      "f refused only · u by user · enter detail · esc back", style=T.TEXT_MUTED)
         self.query_one("#au-banner", Static).update(banner)
 
     def action_detail(self) -> None:

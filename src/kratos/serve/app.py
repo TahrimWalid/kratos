@@ -302,6 +302,15 @@ class KratosGate:
             return
         actor, why = await asyncio.to_thread(self.state.resolve_actor, client, headers)
         if actor is None:
+            if client.kind == "gateway" and door == "openai" and path == "/v1/models" and \
+                    scope.get("method", "GET") == "GET":
+                # A shared Open WebUI shows its LAST good model list to a user whose list
+                # request failed (even an empty list) -- another person's machines. One
+                # placeholder model stops that; choosing it is refused like everything else.
+                await self._refuse(send, 200, why or "refused", door, path, peer, (why or "refused")[:200],
+                                   token_id=client.token_id, authz_reason=why, client=client,
+                                   body=_placeholder_models(self.state.started_at))
+                return
             await self._refuse(send, 403, why or "refused", door, path, peer, (why or "refused")[:200],
                                token_id=client.token_id, authz_reason=why, client=client)
             return
@@ -363,8 +372,9 @@ class KratosGate:
     async def _refuse(self, send: Any, status: int, message: str, door: str, path: str, peer: str, detail: str,
                       *, status_word: str = "refused", kind: str = "invalid_request_error", code: str | None = None,
                       token_id: str | None = None, extra_headers: list | None = None,
-                      authz_reason: str | None = None, client: Any = None) -> None:
-        _status, body = _json_error(status, message, kind=kind, code=code)
+                      authz_reason: str | None = None, client: Any = None, body: bytes | None = None) -> None:
+        if body is None:
+            _status, body = _json_error(status, message, kind=kind, code=code)
         try:
             await asyncio.to_thread(_store.audit, self.state.data_dir, door=door, endpoint=path, status=status_word,
                                     token_id=token_id, client_addr=peer, detail=detail, bytes_out=len(body))
@@ -395,6 +405,14 @@ class KratosGate:
 
 class _BodyTooLarge(Exception):
     pass
+
+
+NO_ACCESS_MODEL = "kratos-no-access"
+
+
+def _placeholder_models(started_at: float) -> bytes:
+    return json.dumps({"object": "list", "data": [{"id": NO_ACCESS_MODEL, "object": "model",
+                                                   "created": int(started_at), "owned_by": "kratos"}]}).encode()
 
 
 def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770) -> Any:

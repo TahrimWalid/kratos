@@ -190,8 +190,12 @@ def test_two_investigations_of_two_machines_at_once_keep_their_own_machine(tmp_p
     outcomes = {}
 
     def go(target):
-        outcomes[target] = run_investigation(RunRequest(goal="scan it", target=target, data_dir=tmp_path,
-                                                        source="web", max_iters=6))
+        from kratos import authz
+
+        # D.7: a chat-server run always carries its person (the gate sets it); here, the owner
+        with authz.acting_as(authz.owner_actor("cli")):
+            outcomes[target] = run_investigation(RunRequest(goal="scan it", target=target, data_dir=tmp_path,
+                                                            source="web", max_iters=6))
 
     threads = [threading.Thread(target=go, args=(t,)) for t in ("10.0.0.1", "10.0.0.2")]
     for t in threads:

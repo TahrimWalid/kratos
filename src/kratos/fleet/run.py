@@ -135,8 +135,8 @@ def _drop_removed(results: list[Any], data_dir: Path) -> None:
         try:
             with kratos_config.pinned_target(host_for(r.machine)):
                 authz.check_run_access(host_for(r.machine), data_dir=data_dir)
-        except authz.AccessRemoved as e:
-            r.outcome, r.reason, r.report, r.steps = "access-removed", str(e), None, []
+        except authz.AccessRemoved:
+            r.outcome, r.reason, r.report, r.steps = "access-removed", "", None, []
 
 
 def _check_actor(actor: Actor) -> None:

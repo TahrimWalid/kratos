@@ -393,3 +393,27 @@ def test_migration_gives_existing_tokens_and_sessions_to_the_owner(tmp_path):
 
     assert SessionStore(db).get_session("s1")["owner_user_id"] == "owner"
     assert U.owner(tmp_path).role == "admin"
+
+
+def test_the_fleet_collector_skips_a_machine_whose_access_was_removed(dd, monkeypatch):
+    from types import SimpleNamespace
+
+    from kratos.adapters import ssh_remote
+    from kratos.collect import runner
+    from kratos.fleet import collect as FC
+
+    U.add_user(dd, "ivy", "investigator", OWNER, scopes=[M1])            # M2 is no longer hers
+    _t, row = _token(dd, "ivy")
+    read = []
+    monkeypatch.setattr(ssh_remote, "probe_reachable", lambda: (True, "", 0.0))
+
+    def fake_prepare(host, data_dir, **kw):
+        read.append(host)
+        return SimpleNamespace(checks=[], correlation_step=None, disabled_reason="test", correlation=None)
+
+    monkeypatch.setattr(runner, "prepare", fake_prepare)
+    with authz.acting_as(_serve_actor(dd, "ivy", row), action=P.FLEET_ASK):
+        results = FC.collect_fleet([M1, M2], dd, max_parallel=2, machine_seconds=20)
+    by = {r.machine: r for r in results}
+    assert by[M2].outcome == "access-removed" and M2 not in read
+    assert "removed" in by[M2].status_text

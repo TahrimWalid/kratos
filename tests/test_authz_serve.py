@@ -145,7 +145,8 @@ def test_unsigned_forwarded_headers_change_nothing(env):
     spoof = {"X-OpenWebUI-User-Id": "owui-ivy", "X-OpenWebUI-User-Email": "ivy@example.com"}
     code, text = _chat(env, _h(env["tok"]["vic"], extra=spoof), "check this machine")
     assert code == 200 and "viewers can't" in text             # still vic
-    code, body = _models(env, _h(env["gw"], extra=spoof))       # gateway + plain headers only: refused
+    assert _models(env, _h(env["gw"], extra=spoof)) == (200, ["kratos-no-access"])   # gateway + plain headers
+    code, body = _chat(env, _h(env["gw"], extra=spoof), "hello")
     assert code == 403 and "signed identity" in body["error"]["message"]
 
 
@@ -172,7 +173,9 @@ def test_a_mapped_open_webui_user_gets_exactly_their_scope(env):
      + _jwt(env, "owui-ivy").split(".")[1] + "."),
 ])
 def test_a_gateway_request_without_a_valid_mapped_jwt_is_refused(env, why, make):
-    code, body = _models(env, _h(env["gw"], make(env)))
+    # the model list: one placeholder (a shared Open WebUI would otherwise show another person's list)
+    assert _models(env, _h(env["gw"], make(env))) == (200, ["kratos-no-access"]), why
+    code, body = _chat(env, _h(env["gw"], make(env)), "hello", model="kratos-no-access")
     assert code == 403, why
     if why == "unmapped":
         assert "ask the Kratos owner to add you" in body["error"]["message"]
@@ -199,7 +202,8 @@ def test_gateway_users_have_their_own_sessions_and_hourly_limits(env):
 def test_removing_the_jwt_secret_refuses_every_gateway_request(env):
     row = next(t for t in auth._store.list_tokens(env["dir"]) if t["kind"] == "gateway")
     OW.secret_path(env["dir"], row["token_id"]).unlink()
-    assert _models(env, _h(env["gw"], _jwt(env, "owui-ivy")))[0] == 403
+    assert _models(env, _h(env["gw"], _jwt(env, "owui-ivy"))) == (200, ["kratos-no-access"])
+    assert _chat(env, _h(env["gw"], _jwt(env, "owui-ivy")), "hello")[0] == 403
 
 
 # --- MCP over HTTP ----------------------------------------------------------------------
@@ -263,3 +267,23 @@ def test_investigators_decide_findings_in_the_chat_and_viewers_cannot(env):
         ev = conn.execute("SELECT actor, interface FROM finding_events WHERE kind = 'state_changed' "
                           "ORDER BY rowid DESC LIMIT 1").fetchone()
     assert tuple(ev) == ("ivy", "serve")
+
+
+def test_a_group_model_chat_reaches_the_fleet_run_as_the_person(env, monkeypatch):
+    """Regression (lab): the door checked "@lab" as if it were a machine and refused every group chat."""
+    from kratos.fleet import groups as G
+    from kratos.fleet import run as FR
+
+    G.create_group(env["dir"], "lab", OWNER, members=[M1, M2, M3])
+    seen = {}
+
+    def fake_run(req):
+        seen.update(actor=req.actor, scope=req.scope)
+        return FR.FleetOutcome("final_answer", "summary", group_label="@lab")
+
+    monkeypatch.setattr(FR, "run_fleet", fake_run)
+    code, models = _models(env, _h(env["tok"]["ivy"]))
+    assert "kratos/@lab" in models
+    assert "kratos/@lab" not in _models(env, _h(env["tok"]["vic"]))[1]      # viewers: no group models
+    code, text = _chat(env, _h(env["tok"]["ivy"]), "who gained sudo?", model="kratos/@lab")
+    assert code == 200 and seen["actor"].user == "ivy" and seen["scope"] == [M1, M2]

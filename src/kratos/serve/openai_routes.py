@@ -141,6 +141,16 @@ def group_models_for(client: Any, data_dir: Any) -> list[tuple[str, str]]:
     (D.2). A fleet question over it is narrowed to those machines."""
     if data_dir is None:
         return []
+    from kratos import authz
+
+    actor = authz.current_actor()
+    if actor is not None and getattr(actor, "interface", "") == "serve":
+        try:   # D.7: a group model only for people who may ask about a group
+            p = authz.principal_of(actor, data_dir=data_dir)
+        except authz.Denied:
+            return []
+        if not authz.P.allowed(p.user.role, authz.P.FLEET_ASK):
+            return []
     from kratos.fleet import groups as G
 
     scope = [t for _m, t in models_for(client, data_dir)]
@@ -257,10 +267,12 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
         from kratos.budget import report as _br
 
         refused = _require_or_text(P.USAGE_READ, target, data_dir, "chat /usage")
-        return _render.kratos_text_markdown(refused or _usage_text(_br, data_dir))
+        return _render.kratos_note_markdown(refused) if refused else \
+            _render.kratos_text_markdown(_usage_text(_br, data_dir))
     if word == "/findings":
         refused = _require_or_text(P.FINDINGS_READ, target, data_dir, "chat /findings")
-        return _render.kratos_text_markdown(refused or _findings_text(target, data_dir))
+        return _render.kratos_note_markdown(refused) if refused else \
+            _render.kratos_text_markdown(_findings_text(target, data_dir))
     if word == "/decide":
         return _render.kratos_text_markdown(_decide_text(text, target, data_dir))
     if word in ("/retest", "/hunt"):
@@ -530,7 +542,7 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
                 text += ("\n\nYou can still read what Kratos already found: /findings, or ask a question that "
                          "doesn't need a new check.")
             _record_chat_turn(state.data_dir, session_id, message, text)
-            handle.finish({"status": "refused", "content": _render.kratos_text_markdown(text)})
+            handle.finish({"status": "refused", "content": _render.kratos_note_markdown(text)})
             return
     if kind == "failed":
         handle.finish({"status": "error", "content": "Kratos could not reach its model: "
@@ -697,8 +709,9 @@ def _handlers(state: Any) -> dict[str, Any]:
             return _error(404, f"The model {model[:80]!r} does not exist or this token may not use it.",
                           code="model_not_found")
         try:
-            await asyncio.to_thread(authz.require, actor, authz.P.CHAT, target, data_dir=state.data_dir,
-                                    audit_allowed=False)
+            # a group model (@lab) is checked per machine by the fleet run itself
+            await asyncio.to_thread(authz.require, actor, authz.P.CHAT, None if target.startswith("@") else target,
+                                    data_dir=state.data_dir, audit_allowed=False)
         except authz.Denied as e:
             await asyncio.to_thread(audit, "refused", model=model, target=target, detail=str(e)[:200])
             return _error(403, str(e))
