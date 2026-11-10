@@ -139,6 +139,19 @@ def _drop_removed(results: list[Any], data_dir: Path) -> None:
             r.outcome, r.reason, r.report, r.steps = "access-removed", "", None, []
 
 
+def _no_prompt_unless_a_person_is_here(actor: Actor):
+    """A fleet run from chat, MCP or a schedule has nobody at a terminal: any approval a
+    read might reach is refused for this run (the TUI and CLI keep their own prompt). No
+    quick check or extra read reaches one today; this keeps it so if that list grows."""
+    import contextlib
+
+    if getattr(actor, "interface", None) in ("tui", "cli"):
+        return contextlib.nullcontext()
+    from kratos.agent.tools import approval_provider_scope
+
+    return approval_provider_scope(lambda _tool, _details: False)
+
+
 def _check_actor(actor: Actor) -> None:
     if not isinstance(actor, Actor) or actor.interface not in RUN_INTERFACES or not str(actor.user or "").strip():
         raise FleetError("a fleet run needs an actor (who asked, and through which interface)")
@@ -227,7 +240,7 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
     if req.kind == "audit" and not question:
         question = f"standard audit of {label}"
 
-    with run_context.run_scope(req.source, target=None):
+    with run_context.run_scope(req.source, target=None), _no_prompt_unless_a_person_is_here(req.actor):
         refusal = _unattended_refusal(est, data_dir, req.source) if est.model_calls else None
         if refusal:
             return FleetOutcome("refused_by_budget", refusal, group_label=label, estimate=est,

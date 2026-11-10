@@ -396,6 +396,32 @@ def test_extra_reads_are_capped_pinned_and_attached_to_their_machine_only(dd, la
     assert "Extra reads: list_processes on 10.0.0.12" in out.text
 
 
+def test_a_machine_whose_extra_read_was_refused_is_never_shown_as_checked(dd, lab, monkeypatch):
+    """Lab (audit D): "who gained sudo?" over 5 machines, 3 reads allowed: the 4th machine's
+    read was refused and its answer read "Nothing found" with no note."""
+    G.create_group(dd, "pair", ME, members=[A, B])
+
+    def fake_dispatch(tool, args, data_dir):
+        return {"status": "ok", "result": {"findings": []} if tool == "correlate_findings" else {"x": 1}}
+
+    from kratos.agent import loop as agent_loop
+
+    monkeypatch.setattr(agent_loop, "execute_tool_call", fake_dispatch)
+    reads = {"reasoning": "need the accounts", "reads": [
+        {"read": "list_privileged_accounts", "machine": "m1", "args": {}},
+        {"read": "list_privileged_accounts", "machine": "m2", "args": {}},
+    ]}
+    chat = Chat(reads, _machines_reply({"m1": "Nothing new.", "m2": "Nothing found: no account details."}))
+    monkeypatch.setattr("kratos.fleet.settings.get",
+                        lambda key, d: {"fleet.extra_reads": 1}.get(key, __import__("kratos.settings_store",
+                                                                    fromlist=["get"]).get(key, data_dir=d)))
+    out = _ask(dd, "@pair", chat, monkeypatch)
+    m1, m2 = out.answer.machines
+    assert "was not run" not in m1.notes and m1.passed
+    assert "list_privileged_accounts (over the allowance of extra reads)" in m2.notes
+    assert "does not show the question was checked" in m2.notes and not m2.passed
+
+
 def test_a_read_result_from_a_cannot_support_a_claim_about_b(dd, lab, monkeypatch):
     G.create_group(dd, "pair", ME, members=[A, B])
 
@@ -717,3 +743,19 @@ def test_scope_is_applied_before_duplicates_so_no_out_of_scope_name_is_shown(dd)
     assert r.outside_scope == 1                           # C+D are one machine; B is A itself
     full = G.resolve(dd, "@web")
     assert full.machines == [B, C] and full.duplicates == [(A, B), (D, C)]
+
+
+@pytest.mark.parametrize("interface", ["serve", "mcp", "schedule"])
+def test_a_fleet_run_with_nobody_at_a_terminal_refuses_any_approval(interface, monkeypatch):
+    """Audit D (D.2 review note): chat, MCP and schedule fleet runs install a deny provider,
+    so a read that ever reached an approval prompt could never block on input()."""
+    from kratos.agent import tools
+
+    def no_terminal(*_a, **_k):
+        raise AssertionError("input() was called")
+
+    monkeypatch.setattr("builtins.input", no_terminal)
+    with fleet_run._no_prompt_unless_a_person_is_here(Actor(user="ivy", interface=interface)):
+        assert tools.request_approval("list_processes", {"why": "test"}) is False
+    with fleet_run._no_prompt_unless_a_person_is_here(ME):
+        assert tools._active_approval_provider() is tools._approval_prompt_provider
