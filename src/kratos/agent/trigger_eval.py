@@ -252,7 +252,17 @@ def _build_body(data_dir, trigger, matched, target, now, run_investigations, inv
     elif action == "investigate" and not investigations_allowed:
         body = header + "\n\n" + _INVESTIGATIONS_OFF
     elif action == "investigate" and run_investigations:
-        investigation = investigate_fn(_investigation_goal(matched[0]), Path(data_dir))
+        from kratos import authz
+
+        # D.7: the trigger's investigation acts as the user it runs as (refused, and said
+        # so in the alert, when that user is disabled or may no longer see the machine).
+        actor = authz.unattended_actor("trigger", trigger.name, getattr(trigger, "run_as", "owner"))
+        refusal = authz.unattended_refusal(actor, authz.P.INVESTIGATE, target or None, data_dir=data_dir)
+        if refusal is not None:
+            investigation = {"status": "refused", "findings": [], "final_answer": refusal}
+        else:
+            with authz.acting_as(actor, action=authz.P.INVESTIGATE):
+                investigation = investigate_fn(_investigation_goal(matched[0]), Path(data_dir))
         ans = str(investigation.get("final_answer") or "").strip()
         body = header + "\n\nDeeper investigation (read-only):\n" + (ans[:800] or f"(status: {investigation.get('status')})")
     else:  # investigate action but investigations disabled inline

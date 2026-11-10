@@ -227,6 +227,7 @@ class SubAgentStore:
         the new agent checks in, the old target is revoked in the same
         transaction -- so the old pairing keeps working right up until its
         replacement is actually live, and never both at once."""
+        _authorize_change(self.db_path.parent, "create pairing code")
         code = _new_pairing_code()
         now = utc_now_iso()
         expires_at = _expiry_iso(PAIRING_CODE_TTL_SECONDS)
@@ -439,6 +440,7 @@ class SubAgentStore:
         running listener drops its open connection within a heartbeat (see
         CoreServer's heartbeat loop). The agent on the box keeps running and
         retrying until someone stops it there -- the UI says so."""
+        _authorize_change(self.db_path.parent, "revoke target")
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -868,3 +870,13 @@ def _is_expired(expires_at_iso: str) -> bool:
 
     dt = parse_stored_instant(expires_at_iso)
     return dt is None or dt < utc_now()
+
+
+def _authorize_change(data_dir: Any, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.ENROL, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None

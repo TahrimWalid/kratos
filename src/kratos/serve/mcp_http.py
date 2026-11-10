@@ -53,7 +53,10 @@ class Job:
     stop: threading.Event = field(default_factory=threading.Event)
     session_id: str | None = None
     thread: threading.Thread | None = None
-    scope: tuple[str, ...] = ()                  # the token's machines (a fleet question is narrowed to them)
+    scope: tuple[str, ...] = ()                  # the caller's machines (a fleet question is narrowed to them)
+    actor: Any = None                            # D.7: the person who started it
+    meter_user: str | None = None                # per-person hourly limit (gateway tokens)
+    token: str | None = None                     # the token id (token_id above is the binding key)
 
     def view(self) -> dict[str, Any]:
         out: dict[str, Any] = {"investigation_id": self.investigation_id, "status": self.status,
@@ -185,10 +188,34 @@ def _client(ctx: Any) -> Any:
     return client
 
 
-def _scope_targets(client: Any) -> list[str]:
-    from kratos.serve.openai_routes import default_target
+def _actor(ctx: Any) -> Any:
+    """The person behind this request (resolved by the gate, D.7) -- or refused."""
+    request = getattr(getattr(ctx, "request_context", None), "request", None)
+    actor = request.scope.get("kratos.actor") if request is not None else None
+    if actor is None:
+        raise PermissionError("no Kratos user is attached to this request")
+    return actor
 
-    return list(client.targets) or ([default_target()] if default_target() else [])
+
+def _key(state: Any, client: Any, actor: Any) -> str:
+    """What an investigation is bound to: the token -- and the person, for a gateway token."""
+    return state.meter_key(client.token_id, actor.user_id if client.kind == "gateway" else None)
+
+
+def _require(state: Any, actor: Any, action: str, machine: str | None = None, *, obj: str | None = None,
+             audit_allowed: bool = True) -> None:
+    from kratos import authz
+
+    try:
+        authz.require(actor, action, machine, data_dir=state.data_dir, obj=obj, audit_allowed=audit_allowed)
+    except authz.Denied as e:
+        raise ValueError(f"refused: {e}") from None
+
+
+def _scope_targets(client: Any, data_dir: Any = None) -> list[str]:
+    from kratos.serve.openai_routes import visible_machines
+
+    return visible_machines(client, data_dir)
 
 
 def _resolve_target(client: Any, target: str, data_dir: Any = None) -> str:
@@ -200,7 +227,7 @@ def _resolve_target(client: Any, target: str, data_dir: Any = None) -> str:
     model = t if t == MODEL_PREFIX or t.startswith(MODEL_PREFIX + "/") else f"{MODEL_PREFIX}/{t}"
     resolved = target_for_model(client, model, data_dir)
     if resolved is None:
-        raise ValueError(f"this token may not investigate {t!r}")
+        raise ValueError(f"no machine {t!r} that you may investigate")
     return resolved
 
 
@@ -228,25 +255,27 @@ def build(state: Any) -> tuple[Any, Any]:
             try:
                 job.status = "running"
                 state.note_runs()
+                from kratos import authz
+
                 if job.target.startswith("@"):
                     from kratos.serve.runs import run_fleet_question
 
                     job.outcome = run_fleet_question(goal=goal, group=job.target, data_dir=state.data_dir,
-                                                     source="mcp", actor_user=f"token:{job.token_id}",
-                                                     actor_interface="serve", scope=list(job.scope),
+                                                     source="mcp", actor=job.actor, scope=list(job.scope),
                                                      should_stop=job.stop.is_set, on_progress=job.progress.append)
                     status = str(job.outcome.get("status"))
                 else:
-                    outcome = run_investigation(RunRequest(goal=goal, target=job.target, data_dir=state.data_dir,
-                                                           source="mcp", should_stop=job.stop.is_set,
-                                                           on_progress=job.progress.append,
-                                                           on_session=lambda sid: _remember(state, job, sid)))
+                    with authz.acting_as(job.actor, action=authz.P.INVESTIGATE):
+                        outcome = run_investigation(RunRequest(goal=goal, target=job.target, data_dir=state.data_dir,
+                                                               source="mcp", should_stop=job.stop.is_set,
+                                                               on_progress=job.progress.append,
+                                                               on_session=lambda sid: _remember(state, job, sid)))
                     job.outcome, status = outcome.as_dict(), outcome.status
             finally:
                 state.slots.release()
                 state.note_runs()
-            job.status = {"refused_by_budget": "refused", "stopped": "stopped", "error": "error"}.get(
-                status, "done")
+            job.status = {"refused_by_budget": "refused", "stopped": "stopped", "error": "error",
+                          "access_removed": "stopped"}.get(status, "done")
         except Exception as e:  # noqa: BLE001
             logger.warning("serve: MCP investigation failed", exc_info=True)
             job.status, job.outcome = "error", {"final_answer": f"The investigation failed: {type(e).__name__}"}
@@ -266,25 +295,41 @@ def build(state: Any) -> tuple[Any, Any]:
         checked answer: show it as it is, it already says what Kratos found."""
         import asyncio
 
-        client = _client(ctx)
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
         if not goal or not goal.strip():
             raise ValueError("goal is required")
-        resolved = await asyncio.to_thread(_resolve_target, client, target, state.data_dir)
+        with authz.acting_as(actor):
+            resolved = await asyncio.to_thread(contextvars.copy_context().run, _resolve_target, client, target,
+                                               state.data_dir)
+        group = resolved.startswith("@")
+        await asyncio.to_thread(_require, state, actor, authz.P.FLEET_ASK if group else authz.P.INVESTIGATE,
+                                None if group else resolved, obj=f"mcp investigation of {resolved}",
+                                audit_allowed=not group)       # a fleet run records its own start
         from kratos.serve.openai_routes import _hourly_limit
 
+        meter_user = actor.user_id if client.kind == "gateway" else None
         limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
-        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
-            raise ValueError(f"this token has used its {limit} investigations for this hour (serve.requests_per_hour)")
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit, meter_user):
+            raise ValueError(f"you have used your {limit} investigations for this hour (serve.requests_per_hour)")
         try:
-            job = state.investigations.new(client.token_id, resolved, goal)
+            job = state.investigations.new(_key(state, client, actor), resolved, goal)
+            job.actor, job.meter_user, job.token = actor, meter_user, client.token_id
             from kratos.serve.openai_routes import scope_machines
 
-            job.scope = tuple(scope_machines(client))
-            job.thread = threading.Thread(target=contextvars.copy_context().run, args=(_run, job, goal.strip()),
+            with authz.acting_as(actor):
+                job.scope = tuple(scope_machines(client, state.data_dir))
+
+            def _start(j: Job = job) -> None:
+                with authz.acting_as(actor):
+                    _run(j, goal.strip())
+
+            job.thread = threading.Thread(target=contextvars.copy_context().run, args=(_start,),
                                           name=f"serve-mcp-{job.investigation_id[:12]}", daemon=True)
             job.thread.start()
         except BaseException:
-            state.release_metered(client.token_id)
+            state.release_metered(client.token_id, meter_user)
             raise
         await _wait_for(job, wait_seconds)
         return untrusted.for_model(job.view(), field_cap=None)
@@ -300,13 +345,17 @@ def build(state: Any) -> tuple[Any, Any]:
         run them automatically). `wait_seconds` (0-120) waits for the result first."""
         import asyncio
 
-        client = _client(ctx)
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
+        await asyncio.to_thread(_require, state, actor, authz.P.SESSIONS_OWN, audit_allowed=False)
+        key = _key(state, client, actor)
         inv = str(investigation_id or "").strip()
-        job = state.investigations.get(client.token_id, inv) if inv else state.investigations.newest(client.token_id)
+        job = state.investigations.get(key, inv) if inv else state.investigations.newest(key)
         if job is not None:
             await _wait_for(job, wait_seconds)
             return untrusted.for_model(job.view(), field_cap=None)
-        stored = await asyncio.to_thread(view_from_store, state.data_dir, client.token_id, inv or None)
+        stored = await asyncio.to_thread(view_from_store, state.data_dir, key, inv or None)
         if stored is None:
             raise ValueError("no investigation with that id" if inv else "this token has started no investigation")
         return untrusted.for_model(stored, field_cap=None)
@@ -315,17 +364,23 @@ def build(state: Any) -> tuple[Any, Any]:
     def kratos_get_findings(ctx: Context, session_id: str | None = None) -> dict[str, Any]:
         """Findings from a Kratos session on a machine this token may reach (the most recent
         such session if `session_id` is omitted), grouped by the goal that produced them."""
-        client = _client(ctx)
-        allowed = set(_scope_targets(client))
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
+        _require(state, actor, authz.P.FINDINGS_READ, obj=f"session findings {session_id or '(newest)'}")
+        with authz.acting_as(actor):
+            allowed = set(_scope_targets(client, state.data_dir))
         from kratos.storage.session_store import SessionStore
 
         store = SessionStore(state.data_dir / "kratos.db")
+        mine = actor.user_id or "owner"
         if session_id:
             session = store.get_session(session_id)
-            if session is None or not set(t.lower() for t in session["targets"]) <= allowed:
+            if session is None or (session.get("owner_user_id") or "owner") != mine or \
+                    not set(t.lower() for t in session["targets"]) <= allowed:
                 raise ValueError("no session with that id")
         else:
-            session = next((s for s in store.list_recent_sessions(limit=200)
+            session = next((s for s in store.list_recent_sessions(limit=200, owner_user_id=mine)
                             if s["targets"] and set(t.lower() for t in s["targets"]) <= allowed), None)
             if session is None:
                 return {"session_id": None, "target": [], "turns": []}
@@ -336,13 +391,17 @@ def build(state: Any) -> tuple[Any, Any]:
     @mcp.tool()
     def kratos_list_sessions(ctx: Context, limit: int = 10) -> list[dict[str, Any]]:
         """Recent Kratos sessions on machines this token may reach, most recent first."""
-        client = _client(ctx)
-        allowed = set(_scope_targets(client))
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
+        _require(state, actor, authz.P.SESSIONS_OWN, obj="list sessions")
+        with authz.acting_as(actor):
+            allowed = set(_scope_targets(client, state.data_dir))
         from kratos.storage.session_store import SessionStore
 
         store = SessionStore(state.data_dir / "kratos.db")
         limit = max(1, min(int(limit or 10), 100))
-        rows = [s for s in store.list_recent_sessions(limit=500)
+        rows = [s for s in store.list_recent_sessions(limit=500, owner_user_id=actor.user_id or "owner")
                 if s["targets"] and set(t.lower() for t in s["targets"]) <= allowed][:limit]
         return untrusted.for_model([{"session_id": s["session_id"], "name": s.get("name"), "targets": s["targets"],
                                      "last_goal": s.get("latest_goal"), "last_active_at": s["last_active_at"]}
@@ -354,8 +413,16 @@ def build(state: Any) -> tuple[Any, Any]:
         """Read-only: the findings Kratos remembers for a machine this token may reach (or
         all of them), with each one's state and latest verdict. Changing a finding's state
         is a person-only action -- there is no tool for it."""
-        client = _client(ctx)
-        targets = [_resolve_target(client, target)] if target else _scope_targets(client)
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
+        with authz.acting_as(actor):
+            targets = [_resolve_target(client, target, state.data_dir)] if target else \
+                _scope_targets(client, state.data_dir)
+        if target and targets[0].startswith("@"):
+            raise ValueError("finding states are per machine: name one machine")
+        for t in targets or [None]:
+            _require(state, actor, authz.P.FINDINGS_READ, t, obj="finding states")
         rows: list[dict[str, Any]] = []
         for t in targets:
             rows.extend(_stdio._finding_states_for(state.data_dir, t, state_filter, limit))
@@ -378,8 +445,12 @@ def build(state: Any) -> tuple[Any, Any]:
 
         from kratos.hunt import front, report
 
-        client = _client(ctx)
-        scope = _scope_targets(client)
+        from kratos import authz
+
+        client, actor = _client(ctx), _actor(ctx)
+        _require(state, actor, authz.P.HUNT, obj="mcp hunt")
+        with authz.acting_as(actor):
+            scope = _scope_targets(client, state.data_dir)
         req = front.Request(words=[w for w in str(indicators or "").replace(",", " ").split() if w],
                             kind=kind or None, since=since or None, until=until or None,
                             machines=[machine] if machine else [])
@@ -394,9 +465,10 @@ def build(state: Any) -> tuple[Any, Any]:
             raise ValueError(f"{a.question()} Call again with kind set to one of: {', '.join(a.options)}")
         from kratos.serve.openai_routes import _hourly_limit
 
+        meter_user = actor.user_id if client.kind == "gateway" else None
         limit = await asyncio.to_thread(_hourly_limit, state.data_dir)
-        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
-            raise ValueError(f"this token has used its {limit} requests for this hour (serve.requests_per_hour)")
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit, meter_user):
+            raise ValueError(f"you have used your {limit} requests for this hour (serve.requests_per_hour)")
         started = time.time()
         status = "error"
         try:
@@ -406,8 +478,9 @@ def build(state: Any) -> tuple[Any, Any]:
                 if not state.slots.acquire():
                     return None
                 try:
-                    with run_scope("mcp"):
-                        return front.start_hunt(state.data_dir, prepared, source="mcp", actor=f"token {client.token_id}")
+                    with run_scope("mcp"), authz.acting_as(actor):
+                        return front.start_hunt(state.data_dir, prepared, source="mcp",
+                                                actor=f"{actor.user} (token {client.token_id})")
                 finally:
                     state.slots.release()
             result = await asyncio.to_thread(contextvars.copy_context().run, _hunt)
@@ -424,11 +497,11 @@ def build(state: Any) -> tuple[Any, Any]:
 
                 _store.audit(state.data_dir, door="mcp", endpoint="kratos_hunt", status=status,
                              token_id=client.token_id, target=",".join(prepared.machines or scope)[:200],
-                             metered=True, duration=time.time() - started)
+                             metered=True, duration=time.time() - started, user_id=actor.user_id)
             except Exception:  # noqa: BLE001
                 logger.debug("serve: audit failed", exc_info=True)
             finally:
-                state.release_metered(client.token_id)
+                state.release_metered(client.token_id, meter_user)
 
     app = mcp.streamable_http_app()
     return app, mcp.session_manager
@@ -449,10 +522,11 @@ def _audit(state: Any, job: Job) -> None:
         _store.audit(state.data_dir, door="mcp", endpoint="kratos_start_investigation",
                      status={"done": "ok", "refused": "budget"}.get(job.status, job.status
                                                                      if job.status in ("stopped", "error") else "ok"),
-                     token_id=job.token_id, target=job.target,
+                     token_id=job.token or job.token_id, target=job.target,
                      run_id=(job.outcome or {}).get("run_id"), metered=True,
-                     duration=(job.finished or time.time()) - job.created)
+                     duration=(job.finished or time.time()) - job.created,
+                     user_id=getattr(job.actor, "user_id", None))
     except Exception:  # noqa: BLE001
         logger.debug("serve: audit failed", exc_info=True)
     finally:
-        state.release_metered(job.token_id)
+        state.release_metered(job.token or job.token_id, job.meter_user)

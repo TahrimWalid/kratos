@@ -205,6 +205,12 @@ def set_watching(data_dir: Path | str, target_id: str, on: bool, *, actor: Any) 
         raise WatchSetupError(f"agent tools may not turn continuous detection on or off (tool {tool!r} tried)")
     if not str(getattr(actor, "user", "") or "").strip() or getattr(actor, "interface", None) not in INTERFACES:
         raise WatchSetupError("turning continuous detection on or off needs a person (the TUI or the CLI)")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require(actor, authz.P.DETECT_MANAGE, data_dir=data_dir, obj="turning continuous detection on or off")
+    except authz.Denied as e:
+        raise WatchSetupError(str(e)) from None
     store = _subagent_store(data_dir)
     target = store.get_target(target_id)
     if target is None or target.get("revoked_at"):

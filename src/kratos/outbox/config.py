@@ -328,12 +328,18 @@ def _check_shape(kind: str, fmt: str, scopes: Iterable[str]) -> tuple[str, tuple
     return fmt, sc
 
 
-def _check_actor(actor: Actor) -> str:
+def _check_actor(actor: Actor, data_dir: Path | str | None = None) -> str:
     tool = settings_store.in_tool_call()
     if tool is not None:
         raise ChannelError(f"agent tools may not change where Kratos sends findings (tool {tool!r} tried)")
     if not isinstance(actor, Actor) or actor.interface not in EDIT_INTERFACES or not str(actor.user or "").strip():
         raise ChannelError("a channel edit needs a person: an Actor from the TUI or the CLI")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require(actor, authz.P.CHANNELS_MANAGE, data_dir=data_dir, obj="channel edit")
+    except authz.Denied as e:
+        raise ChannelError(str(e)) from None
     return str(actor.user)[:120]
 
 
@@ -493,7 +499,7 @@ def add_channel(data_dir: Path | str, *, name: str, kind: str, config: dict[str,
                 actor: Actor) -> Channel:
     """Add a channel. Forwarding starts from now: findings changes and events already
     stored are not sent (their cursors start at the newest row)."""
-    who = _check_actor(actor)
+    who = _check_actor(actor, data_dir)
     name = check_name(name)
     kind = str(kind or "").strip().lower()
     if kind == "ntfy":
@@ -535,7 +541,7 @@ _EDITABLE = ("config", "scopes", "format", "filters", "mask_values", "max_per_mi
 def edit_channel(data_dir: Path | str, name: str, *, actor: Actor, **changes: Any) -> Channel:
     """Change a channel's settings (any of: config, scopes, format, filters, mask_values,
     max_per_minute). The built-in ntfy channel takes filters and the rate only."""
-    who = _check_actor(actor)
+    who = _check_actor(actor, data_dir)
     ch = get_channel(data_dir, name)
     if ch is None:
         raise ChannelError(f"no channel named {name!r}")
@@ -571,7 +577,7 @@ def edit_channel(data_dir: Path | str, name: str, *, actor: Actor, **changes: An
 
 
 def set_enabled(data_dir: Path | str, name: str, enabled: bool, *, actor: Actor) -> Channel:
-    who = _check_actor(actor)
+    who = _check_actor(actor, data_dir)
     ch = get_channel(data_dir, name)
     if ch is None:
         raise ChannelError(f"no channel named {name!r}")
@@ -584,7 +590,7 @@ def set_enabled(data_dir: Path | str, name: str, enabled: bool, *, actor: Actor)
 
 def set_secret(data_dir: Path | str, name: str, key: str, value: str | None, *, actor: Actor) -> None:
     """Set (or, with value None, clear) one secret of a channel. Recorded without the value."""
-    who = _check_actor(actor)
+    who = _check_actor(actor, data_dir)
     ch = get_channel(data_dir, name)
     if ch is None:
         raise ChannelError(f"no channel named {name!r}")
@@ -602,7 +608,7 @@ def remove_channel(data_dir: Path | str, name: str, *, actor: Actor) -> int:
     """Remove a channel on the person's own command. Its messages stay in the outbox (as
     history: pending ones are marked dead, "channel removed"); its secrets file is
     removed. Returns how many waiting messages were closed."""
-    who = _check_actor(actor)
+    who = _check_actor(actor, data_dir)
     ch = get_channel(data_dir, name)
     if ch is None:
         raise ChannelError(f"no channel named {name!r}")

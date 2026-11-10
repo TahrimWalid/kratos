@@ -273,6 +273,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     logging.getLogger("mcp").setLevel(logging.WARNING)   # the SDK's per-start INFO lines
 
+    from kratos import authz
+
+    # D.7: from here this process is the network server -- a request with no person
+    # attached is refused, never treated as the owner.
+    authz.set_network_process(True)
     app = create_app(data_dir, bind_host=host, port=port)
     print(f"Kratos chat server on http://{host}:{port} -- OpenAI-compatible: /v1 · MCP: /mcp "
           f"({len(tokens)} token{'s' if len(tokens) != 1 else ''}). Ctrl+C stops it.", file=sys.stderr)
@@ -2602,6 +2607,8 @@ def build_parser() -> argparse.ArgumentParser:
     containers_cmd.add_parser(sub)
     from kratos.cli import outbox_cmd
     outbox_cmd.add_parser(sub)
+    from kratos.cli import users_cmd
+    users_cmd.add_parser(sub)
     from kratos.cli import export_cmd
     export_cmd.add_parser(sub)
 
@@ -2973,24 +2980,38 @@ def main(argv: list[str] | None = None) -> int:
     # an empty list, no error.
     load_kept_tools()
 
-    # One run (kratos.run_context) per command, so model spending and stored
-    # events are attributed. Commands that start their own runs open their own
-    # scopes instead: a scheduled run is a "schedule" run, each MCP tool call is
-    # an "mcp" run, and the long-lived servers are not runs at all.
-    if args.command in _SELF_SCOPED_COMMANDS:
-        return int(args.func(args))
-    # Spending limits (kratos.budget): a person at this terminal is asked before
-    # a run goes over one (default no); a refused call ends the command with the
-    # limit's plain message instead of a traceback.
-    from kratos.budget import guard as _budget
+    # D.7: the CLI is the owner at the Kratos host. Every subcommand is listed in
+    # kratos.authz.entrypoints and checked here (recorded in the audit trail); an
+    # unlisted one is refused. The actor travels with the command.
+    from kratos import authz
+    from kratos.authz import entrypoints as _entrypoints
 
-    _budget.set_prompt_provider(_budget.terminal_prompt, actor="cli")
+    _actor = authz.owner_actor("cli")
     try:
-        with run_scope("cli"):
+        _entrypoints.require_cli(_actor, getattr(args.func, "__name__", "?"), command=str(args.command),
+                                 data_dir=args.data_dir)
+    except authz.Denied as e:
+        print(f"[KRATOS] refused: {e}", file=sys.stderr)
+        return 2
+    with authz.acting_as(_actor):
+        # One run (kratos.run_context) per command, so model spending and stored
+        # events are attributed. Commands that start their own runs open their own
+        # scopes instead: a scheduled run is a "schedule" run, each MCP tool call is
+        # an "mcp" run, and the long-lived servers are not runs at all.
+        if args.command in _SELF_SCOPED_COMMANDS:
             return int(args.func(args))
-    except _budget.BudgetExceeded as e:
-        print(f"[KRATOS] {e.user_message()}", file=sys.stderr)
-        return 3
+        # Spending limits (kratos.budget): a person at this terminal is asked before
+        # a run goes over one (default no); a refused call ends the command with the
+        # limit's plain message instead of a traceback.
+        from kratos.budget import guard as _budget
+
+        _budget.set_prompt_provider(_budget.terminal_prompt, actor="cli")
+        try:
+            with run_scope("cli"):
+                return int(args.func(args))
+        except _budget.BudgetExceeded as e:
+            print(f"[KRATOS] {e.user_message()}", file=sys.stderr)
+            return 3
 
 
 if __name__ == "__main__":

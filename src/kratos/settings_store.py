@@ -144,6 +144,27 @@ def set(key: str, value: Any, *, data_dir: Path, actor: str) -> None:  # noqa: A
     if not actor:
         raise SettingError("set() needs an actor -- who changed the setting")
     cleaned = spec.validate(value)
+    from kratos import authz   # D.7: settings are the owner's, at the Kratos host only
+
+    try:
+        authz.require_person(authz.P.BUDGET_CHANGE if key.startswith("budget.") else authz.P.SETTINGS_CHANGE,
+                             data_dir=data_dir, obj=f"setting {key}")
+    except authz.Denied as e:
+        raise SettingError(str(e)) from None
+    _store(key, cleaned, data_dir=data_dir, actor=actor)
+
+
+def set_by_upgrade(key: str, value: Any, *, data_dir: Path, step: str) -> None:
+    """A one-time upgrade step changing a default on its own (budget 0.4's
+    `trigger_investigations_allowed`) -- not a person's action, so no permission check;
+    recorded with `upgrade:<step>` as the actor. Refused inside an agent tool call."""
+    tool = _IN_TOOL.get()
+    if tool is not None:
+        raise SettingError(f"agent tools may not change settings (tool {tool!r} tried to change {key!r})")
+    _store(key, _spec(key).validate(value), data_dir=data_dir, actor=f"upgrade:{step}")
+
+
+def _store(key: str, cleaned: Any, *, data_dir: Path, actor: str) -> None:
     encoded = json.dumps(cleaned, sort_keys=True)
     conn = _db(data_dir)
     try:

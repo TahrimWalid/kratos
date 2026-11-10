@@ -717,6 +717,11 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
 
 
 def _dispatch_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    from kratos import authz
+
+    # D.7 §3.5: checked at every read, not only at the start -- the pinned machine against
+    # the run's person, right now (narrowed scope / disabled / revoked token -> AccessRemoved).
+    authz.check_run_access(data_dir=data_dir)
     _kconfig.set_active_data_dir(data_dir)  # SSH/sub-agent routing reads the link + socket from here
     tool = TOOL_REGISTRY.get(tool_name)
     if tool is not None and not tool_allowed(tool_name):
@@ -1475,6 +1480,9 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
             return None
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
+        from kratos import authz
+
+        authz.check_run_access(data_dir=data_dir)   # D.7: may this run's person still read this machine?
         # background: checks still running at the start budget finish while the model works,
         # and are folded in before the final answer (_settle_collection)
         _progress("collecting the basics (open ports, sign-ins, logs, accounts, persistence, what's running)…")
@@ -1486,7 +1494,11 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
         return report
     except InvestigationStopped:
         raise
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        from kratos.authz import AccessRemoved
+
+        if isinstance(e, AccessRemoved):
+            raise
         logging.getLogger(__name__).warning("collection before the investigation failed", exc_info=True)
         return None
 
@@ -1754,6 +1766,12 @@ def _run_agent_loop(
     def _check_stop() -> None:
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
+        # D.7: a person whose access to this machine was removed, who was disabled or
+        # demoted, or whose token was revoked, stops here -- before the next model call or
+        # read -- with "stopped: your access to <machine> was removed".
+        from kratos import authz
+
+        authz.check_run_access(data_dir=data_dir)
 
     corr_signature: tuple | None = None   # the inputs correlate_findings last saw (see _inputs_changed)
 

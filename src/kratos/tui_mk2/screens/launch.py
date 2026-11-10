@@ -179,6 +179,9 @@ class LaunchScreen(ResilientWorkerHost, Screen):
                                  Text(""), Text(""), Text("")])
             n += 1
             name = s.get("name") or "(unnamed)"
+            owner_id = s.get("owner_user_id") or "owner"
+            if owner_id != "owner":   # D.7: another user's session -- the owner sees it read-only
+                name = f"{name} · {self._user_name(owner_id)}'s (read-only)"
             targets = ", ".join(s["targets"]) if s["targets"] else "(none)"
             goal = s.get("latest_goal") or "(no turns yet)"
             last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
@@ -474,6 +477,15 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         if tier == "f":
             return _build_full_resume_context(history, self._data_dir)
         return _build_light_resume_context(history)
+
+    def _user_name(self, user_id: str) -> str:
+        from kratos.authz import users as U
+
+        try:
+            u = U.get(self._data_dir, user_id)
+        except Exception:  # noqa: BLE001
+            u = None
+        return u.name if u is not None else user_id
 
     def _open_session(
         self, session_id: str, targets: list[str], resume_context: str, full_replay: bool = False

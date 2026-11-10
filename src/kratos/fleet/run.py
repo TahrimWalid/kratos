@@ -123,6 +123,22 @@ class FleetOutcome:
         return [r.machine for r in self.results]
 
 
+def _drop_removed(results: list[Any], data_dir: Path) -> None:
+    """A machine whose reader lost access while the others were still being read is not
+    answered about (D.7): its collected evidence is set aside and it is named as removed."""
+    from kratos import authz
+    from kratos.fleet.collect import host_for
+
+    for r in results:
+        if not r.collected:
+            continue
+        try:
+            with kratos_config.pinned_target(host_for(r.machine)):
+                authz.check_run_access(host_for(r.machine), data_dir=data_dir)
+        except authz.AccessRemoved as e:
+            r.outcome, r.reason, r.report, r.steps = "access-removed", str(e), None, []
+
+
 def _check_actor(actor: Actor) -> None:
     if not isinstance(actor, Actor) or actor.interface not in RUN_INTERFACES or not str(actor.user or "").strip():
         raise FleetError("a fleet run needs an actor (who asked, and through which interface)")
@@ -179,14 +195,26 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
     from kratos.fleet.collect import collect_fleet
     from kratos.trace import recorder as _trace
 
+    from kratos import authz
+
     _check_actor(req.actor)
     if req.kind not in KINDS:
         raise FleetError(f"unknown fleet run kind {req.kind!r}")
     data_dir = Path(req.data_dir)
     if kratos_config.get_active_data_dir() is None:
         kratos_config.set_active_data_dir(data_dir)
+    # D.7: who asked may ask about a group, and only about the machines they may see.
     try:
-        resolved = fleet_groups.resolve(data_dir, req.group, scope=req.scope)
+        who = authz.require(req.actor, authz.P.FLEET_ASK, data_dir=data_dir,
+                            obj=f"fleet {req.kind} over {req.group if isinstance(req.group, str) else 'a list'}")
+    except authz.Denied as e:
+        raise FleetError(str(e)) from None
+    scope = req.scope
+    if not who.scope.every:
+        mine = list(who.scope.names)
+        scope = mine if scope is None else [m for m in scope if authz.scope_allows(mine, m)]
+    try:
+        resolved = fleet_groups.resolve(data_dir, req.group, scope=scope)
     except fleet_groups.GroupError as e:
         raise FleetError(str(e)) from None
     label = resolved.label
@@ -221,9 +249,11 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
                 return prepare_time_context(question, data_dir, timezone_name=req.timezone, now=now)[0]
 
             classes = ("quick", "slow") if (req.slow or req.kind == "audit") else ("quick",)
-            results = collect_fleet(resolved.machines, data_dir, classes=classes, force=req.kind == "audit",
-                                    make_time_ctx=make_ctx, on_progress=req.on_progress,
-                                    should_stop=req.should_stop)
+            with authz.acting_as(req.actor, action=authz.P.FLEET_ASK):
+                results = collect_fleet(resolved.machines, data_dir, classes=classes, force=req.kind == "audit",
+                                        make_time_ctx=make_ctx, on_progress=req.on_progress,
+                                        should_stop=req.should_stop)
+                _drop_removed(results, data_dir)
             if req.kind == "audit":
                 answer = _audit_answer(results)
             else:

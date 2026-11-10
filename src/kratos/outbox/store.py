@@ -428,6 +428,7 @@ def retry_now(conn: sqlite3.Connection, *, ids: Sequence[int] | None = None, cha
               statuses_: Sequence[str] = ("dead", "failed")) -> int:
     """Make failed / dead messages due again at once, with a fresh retry schedule (the
     person fixed the receiver). Returns how many were moved."""
+    _authorize_change(_conn_data_dir(conn), "outbox retry now")
     now = time.time()
     where = [f"status IN ({','.join('?' * len(statuses_))})"]
     args: list[Any] = list(statuses_)
@@ -460,6 +461,7 @@ def prune_candidates(conn: sqlite3.Connection, *, statuses_: Sequence[str], befo
 def prune(conn: sqlite3.Connection, ids: Sequence[int]) -> int:
     """Delete these delivered / dead messages and their attempts -- only on the person's
     own ``kratos outbox prune --apply`` (nothing in Kratos calls this on its own)."""
+    _authorize_change(_conn_data_dir(conn), "outbox prune")
     if not ids:
         return 0
     n = 0
@@ -471,3 +473,21 @@ def prune(conn: sqlite3.Connection, ids: Sequence[int]) -> int:
             n += conn.execute(f"DELETE FROM outbox WHERE id IN ({marks}) AND status IN ('delivered', 'dead')",
                               chunk).rowcount
     return n
+
+
+def _authorize_change(data_dir, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.CHANNELS_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None
+
+
+def _conn_data_dir(conn: sqlite3.Connection):
+    """The data folder a kratos.db connection belongs to."""
+    from pathlib import Path
+
+    row = conn.execute("PRAGMA database_list").fetchone()
+    return Path(row[2]).parent if row and row[2] else None

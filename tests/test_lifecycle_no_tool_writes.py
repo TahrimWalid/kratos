@@ -40,6 +40,11 @@ def test_no_tool_module_or_mcp_server_reaches_decisions():
 
     files = {inspect.getsourcefile(t.handler) for t in TOOL_REGISTRY.values()}
     files.add(inspect.getsourcefile(mcp_server))
+    # D.7: MCP over HTTP is model-driven too -- an investigator decides only by typing
+    # /decide in a chat (kratos.serve.openai_routes), never through an MCP tool.
+    from kratos.serve import mcp_http
+
+    files.add(inspect.getsourcefile(mcp_http))
     assert None not in files and len(files) > 1
     offenders = {f: hits for f in files if (hits := _decide_refs(Path(f).read_text(encoding="utf-8")))}
     assert offenders == {}

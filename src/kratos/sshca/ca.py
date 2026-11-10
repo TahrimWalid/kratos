@@ -522,6 +522,15 @@ def sign_host_cert(data_dir: Path, *, host_pubkey_path: Path, principals: list[s
     return cert
 
 
+def _authorize_ca(data_dir: Path, what: str) -> None:
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require_person(authz.P.KEYS_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise CAError(str(e)) from None
+
+
 # --------------------------------------------------------------------------- rotation
 def rotate_user_ca(data_dir: Path, *, actor: str) -> LoadedCA:
     """Make the 'next' user CA key (people-only). Both active and next go in every
@@ -530,6 +539,7 @@ def rotate_user_ca(data_dir: Path, *, actor: str) -> LoadedCA:
     tool = settings_store.in_tool_call()
     if tool:
         raise CAError(f"rotating the CA is a person's decision -- refused inside the tool call {tool!r}")
+    _authorize_ca(data_dir, "rotate the user CA")
     if _store.ca_key(data_dir, kind="user", role="next") is not None:
         raise CAError("a 'next' CA key already exists -- finish the rotation (promote it) or discard it first")
     if active_user_ca(data_dir) is None:
@@ -557,6 +567,7 @@ def promote_next(data_dir: Path, *, actor: str, force: bool = False) -> LoadedCA
     tool = settings_store.in_tool_call()
     if tool:
         raise CAError(f"promoting the CA is a person's decision -- refused inside the tool call {tool!r}")
+    _authorize_ca(data_dir, "promote the next user CA")
     nxt = _store.ca_key(data_dir, kind="user", role="next")
     if nxt is None:
         raise CAError("there is no 'next' CA to promote -- run `kratos ssh-ca rotate` first")

@@ -62,7 +62,11 @@ def env(tmp_path, monkeypatch):
 
 
 def _set(tmp_path, key, value):
-    settings_store.set(key, value, data_dir=tmp_path, actor="test")
+    # A person changing the limit in Settings (the TUI), while a run is going on elsewhere.
+    from kratos import authz
+
+    with authz.acting_as(authz.owner_actor("tui")):
+        settings_store.set(key, value, data_dir=tmp_path, actor="test")
 
 
 def _call(prompt="x" * 35, max_tokens=100):

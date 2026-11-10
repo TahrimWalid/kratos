@@ -138,12 +138,18 @@ def check_name(name: str) -> str:
     return n
 
 
-def _check_actor(actor: Actor) -> None:
+def _check_actor(actor: Actor, data_dir: Path | str | None = None, obj: str = "group edit") -> None:
     tool = settings_store.in_tool_call()
     if tool is not None:
         raise GroupError(f"agent tools may not change groups (tool {tool!r} tried)")
     if not isinstance(actor, Actor) or actor.interface not in EDIT_INTERFACES or not str(actor.user or "").strip():
         raise GroupError("a group edit needs a person: an Actor from the TUI or the CLI")
+    from kratos import authz   # D.7: groups shape every user's scope -- the owner's, at the Kratos host
+
+    try:
+        authz.require(actor, authz.P.GROUPS_MANAGE, data_dir=data_dir, obj=obj)
+    except authz.Denied as e:
+        raise GroupError(str(e)) from None
 
 
 def _who(actor: Actor) -> str:
@@ -356,7 +362,7 @@ def _sync_asset_groups(conn: sqlite3.Connection, target: str) -> None:
 
 def create_group(data_dir: Path | str, name: str, actor: Actor, *, members: Iterable[str] = (),
                  note: str = "") -> Group:
-    _check_actor(actor)
+    _check_actor(actor, data_dir)
     n = check_name(name)
     note = " ".join(str(note or "").split())[:MAX_NOTE]
     now = time.time()
@@ -421,7 +427,7 @@ def _require_group(conn: sqlite3.Connection, name: str) -> str:
 
 def add_members(data_dir: Path | str, name: str, members: Iterable[str], actor: Actor) -> list[str]:
     """Add machines to a group; returns the ones newly added (target_key form)."""
-    _check_actor(actor)
+    _check_actor(actor, data_dir)
     now = time.time()
     with opened(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -435,7 +441,7 @@ def add_members(data_dir: Path | str, name: str, members: Iterable[str], actor: 
 
 
 def remove_members(data_dir: Path | str, name: str, members: Iterable[str], actor: Actor) -> list[str]:
-    _check_actor(actor)
+    _check_actor(actor, data_dir)
     now = time.time()
     removed: list[str] = []
     with opened(data_dir) as conn:
@@ -460,7 +466,7 @@ def remove_members(data_dir: Path | str, name: str, members: Iterable[str], acto
 
 def delete_group(data_dir: Path | str, name: str, actor: Actor) -> None:
     """Mark a group deleted (its rows stay, with when and by whom); members lose it."""
-    _check_actor(actor)
+    _check_actor(actor, data_dir)
     now = time.time()
     with opened(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")

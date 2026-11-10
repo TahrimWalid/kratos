@@ -547,6 +547,7 @@ def save_preset(
     rejection, because a referenced kept tool may load only at run time. Any
     warnings are returned on the reloaded Preset via `save_preset_with_warnings`;
     this thin wrapper keeps the common (warning-free) call site simple."""
+    _authorize_change(data_dir, f"save preset {name}")
     preset, _warnings = save_preset_with_warnings(
         data_dir, name=name, goal=goal, target=target, kind=kind,
         created_at=created_at, steps=steps, generated=generated)
@@ -669,6 +670,7 @@ def delete_preset(data_dir: Path, name: str) -> bool:
     """Delete the named preset. Returns True if a file was removed, False if the
     name was invalid or no such preset existed. Also prunes its run-history
     sidecar entry (best-effort)."""
+    _authorize_change(data_dir, f"delete preset {name}")
     ok, canonical, _ = validate_preset_name(name)
     if not ok:
         return False
@@ -782,3 +784,14 @@ def import_preset_file(
         return preset, []
     raise PresetError(
         f"Can't import a '{kind}' preset — this build only understands 'goal' and 'pipeline'.")
+
+
+def _authorize_change(data_dir: Path, what: str) -> None:
+    """D.7: schedules, triggers and presets run unattended with someone's access -- the
+    owner manages them, at the Kratos host; recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.SCHEDULES_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PresetError(str(e)) from None

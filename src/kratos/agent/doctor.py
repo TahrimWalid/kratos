@@ -442,6 +442,79 @@ def _check_chat_server(out: list[Check], data_dir: Path) -> None:
         out.append(_row("chat server", "info", detail))
 
 
+def _check_users(out: list[Check], data_dir: Path) -> None:
+    """D.7: users by role, tokens per user (never-expiring / expiring soon), shared-gateway
+    tokens and whether their JWT secret is set, schedules/triggers whose user can't run,
+    and the last refusals."""
+    from kratos import settings_store
+    from kratos.authz import audit as AU
+    from kratos.authz import openwebui
+    from kratos.authz import settings as AS
+    from kratos.authz import users as U
+    from kratos.serve import store as SS
+
+    users = U.list_users(data_dir)
+    by_role: dict[str, int] = {}
+    for u in users:
+        if not u.disabled:
+            by_role[u.role] = by_role.get(u.role, 0) + 1
+    disabled = sum(1 for u in users if u.disabled)
+    out.append(_row("users", "info", ", ".join(f"{n} {r}" for r, n in sorted(by_role.items()))
+                    + (f", {disabled} disabled" if disabled else "") + " (the owner is an admin)"))
+    live = [t for t in SS.list_tokens(data_dir) if not t.get("revoked_at")]
+    now = time.time()
+    warn_s = settings_store.get(AS.EXPIRY_WARN_DAYS, data_dir=data_dir) * 86400
+    names = {u.user_id: u.name for u in users}
+    per_user: dict[str, int] = {}
+    for t in live:
+        per_user[names.get(t.get("user_id") or "owner", "?")] = per_user.get(names.get(t.get("user_id") or "owner",
+                                                                                         "?"), 0) + 1
+    never = [t["name"] for t in live if t.get("expires_at") is None]
+    soon = [t["name"] for t in live if t.get("expires_at") is not None and now < float(t["expires_at"]) < now + warn_s]
+    expired = [t["name"] for t in live if t.get("expires_at") is not None and float(t["expires_at"]) <= now]
+    detail = ("tokens: " + ", ".join(f"{n} {w}" for w, n in sorted(per_user.items()))) if live else "no tokens"
+    if never:
+        detail += f"; never expire: {', '.join(never[:5])}"
+    status = "warn" if soon or expired else "info"
+    if soon:
+        detail += f"; expire soon: {', '.join(soon[:5])}"
+    if expired:
+        detail += f"; expired: {', '.join(expired[:5])}"
+    out.append(_row("tokens", status, detail, "kratos tokens rotate <id>" if status == "warn" else ""))
+    for t in (x for x in live if x.get("kind") == "gateway"):
+        has = bool(openwebui.read_secret(data_dir, t["token_id"]))
+        maps = len(U.list_mappings(data_dir))
+        out.append(_row("shared Open WebUI", "info" if has else "fail",
+                        f"gateway token {t['name']}: JWT secret {'set' if has else 'MISSING (every request refused)'}"
+                        f", {maps} mapped user(s). The token and its secret together can act as every mapped user "
+                        "-- keep both private.", "" if has else "kratos tokens rotate " + t["token_id"]))
+    blocked = _blocked_unattended(data_dir, {u.user_id: u for u in users})
+    if blocked:
+        out.append(_row("schedules and triggers", "warn", "; ".join(blocked[:4]), "kratos users run-as ... or /users"))
+    refusals = AU.recent_refusals(data_dir, limit=3)
+    if refusals:
+        out.append(_row("last refusals", "info", "; ".join(
+            f"{time.strftime('%m-%d %H:%M', time.localtime(r['at']))} {r['user_name'] or r['user_id'] or 'nobody'}: "
+            f"{r['action']} ({(r['reason'] or '')[:80]})" for r in refusals)))
+
+
+def _blocked_unattended(data_dir: Path, users: dict) -> list[str]:
+    """Schedules and triggers whose user is gone or disabled (they refuse, D.7 §3.9)."""
+    from kratos.agent import schedules, triggers
+
+    out = []
+    for kind, items in (("schedule", schedules.list_schedules(data_dir)[0]),
+                        ("trigger", triggers.list_triggers(data_dir)[0])):
+        for it in items:
+            uid = getattr(it, "run_as", "owner") or "owner"
+            u = users.get(uid)
+            if u is None:
+                out.append(f"{kind} {it.name} runs as {uid}, who no longer exists -- it refuses")
+            elif u.disabled:
+                out.append(f"{kind} {it.name} runs as {u.name}, who is disabled -- it refuses")
+    return out
+
+
 def _loopback(host: str) -> bool:
     import ipaddress
 
@@ -651,6 +724,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
     if data_dir is not None:
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
+        sections.append(("users", lambda o: _check_users(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("delivery", lambda o: _check_delivery(o, Path(data_dir))))
         sections.append(("evidence ledger", lambda o: _check_evidence(o, Path(data_dir))))

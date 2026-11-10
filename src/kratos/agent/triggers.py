@@ -88,6 +88,8 @@ class Trigger:
     # enabled channel that receives alerts ("all") -- ntfy alone on an install that
     # has set up nothing else, exactly as before the outbox.
     deliver: Optional[list[str]] = None
+    # D.7: the Kratos user whose scope and budget its investigation runs with.
+    run_as: str = "owner"
 
     @property
     def is_valid(self) -> bool:
@@ -162,7 +164,7 @@ def _dump_trigger_toml(
     *, name: str, min_severity: Optional[str], finding_id: Optional[str],
     target: Optional[str], action: str, cooldown_minutes: int,
     created_at: Optional[str], only_new_or_reopened: bool = False, min_ssvc: Optional[str] = None,
-    deliver: Optional[list[str]] = None,
+    deliver: Optional[list[str]] = None, run_as: Optional[str] = None,
 ) -> str:
     lines = [
         "# Kratos trigger — 'if a matching finding is detected, do <action>'.",
@@ -183,6 +185,8 @@ def _dump_trigger_toml(
         lines.append("only_new_or_reopened = true")
     if deliver:
         lines.append("deliver = [" + ", ".join(_toml_basic_string(d) for d in deliver) + "]")
+    if run_as and run_as != "owner":
+        lines.append(f"run_as = {_toml_basic_string(run_as)}")
     if created_at:
         lines.append(f"created_at = {_toml_basic_string(created_at)}")
     return "\n".join(lines) + "\n"
@@ -225,7 +229,7 @@ def _trigger_from_dict(data: dict[str, Any], path: Path, stem: str) -> Trigger:
                    action=action, cooldown_minutes=max(0, cooldown),
                    created_at=created_at, path=path, raw=dict(data),
                    only_new_or_reopened=data.get("only_new_or_reopened") is True, min_ssvc=min_ssvc,
-                   deliver=deliver)
+                   deliver=deliver, run_as=str(data.get("run_as") or "owner").strip() or "owner")
 
 
 def _clean_ssvc(value: Any) -> Optional[str]:
@@ -287,7 +291,9 @@ def save_trigger(
     only_new_or_reopened: bool = False,
     min_ssvc: Optional[str] = None,
     deliver: Optional[list[str]] = None,
+    run_as: Optional[str] = None,
 ) -> Trigger:
+    _authorize_change(data_dir, f"save trigger {name}")
     ok, canonical, err = validate_trigger_name(name)
     if not ok:
         raise TriggerError(err or "Invalid trigger name.")
@@ -328,11 +334,14 @@ def save_trigger(
     if path.resolve().parent != d.resolve():
         raise TriggerError("Refusing to write a trigger outside the triggers directory.")
 
+    if run_as is None:   # an edit keeps who the trigger runs as (never silently the owner)
+        existing = load_trigger(data_dir, canonical) if path.exists() else None
+        run_as = existing.run_as if existing is not None else "owner"
     text = _dump_trigger_toml(
         name=canonical, min_severity=min_severity, finding_id=finding_id,
         target=(target or None), action=action, cooldown_minutes=cooldown_minutes,
         created_at=(created_at or utc_now_iso()), only_new_or_reopened=bool(only_new_or_reopened),
-        min_ssvc=min_ssvc, deliver=deliver,
+        min_ssvc=min_ssvc, deliver=deliver, run_as=run_as,
     )
     _atomic_write(path, text)
     reloaded = load_trigger(data_dir, canonical)
@@ -341,6 +350,7 @@ def save_trigger(
 
 
 def delete_trigger(data_dir: Path, name: str) -> bool:
+    _authorize_change(data_dir, f"delete trigger {name}")
     ok, canonical, _ = validate_trigger_name(name)
     if not ok:
         return False
@@ -407,3 +417,25 @@ def read_fire_records(data_dir: Path, name: str, limit: Optional[int] = None) ->
 def last_fire_record(data_dir: Path, name: str) -> Optional[dict[str, Any]]:
     recs = read_fire_records(data_dir, name, limit=1)
     return recs[-1] if recs else None
+
+
+def _authorize_change(data_dir: Path, what: str) -> None:
+    """D.7: schedules, triggers and presets run unattended with someone's access -- the
+    owner manages them, at the Kratos host; recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.SCHEDULES_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise TriggerError(str(e)) from None
+
+
+def set_run_as(data_dir: Path, name: str, user_id: str) -> Trigger:
+    """Make a trigger's investigation run as another Kratos user (D.7 §3.9). The owner's action."""
+    t = load_trigger(data_dir, name)
+    if t is None:
+        raise TriggerError(f"No trigger named '{name}'.")
+    return save_trigger(data_dir, name=t.name, action=t.action, min_severity=t.min_severity, finding_id=t.finding_id,
+                        target=t.target, cooldown_minutes=t.cooldown_minutes, created_at=t.created_at,
+                        only_new_or_reopened=t.only_new_or_reopened, min_ssvc=t.min_ssvc, deliver=t.deliver,
+                        run_as=user_id)

@@ -115,7 +115,7 @@ def _progress_for_step(step: dict[str, Any]) -> str | None:
 def run_investigation(req: RunRequest) -> RunOutcome:
     """Run one investigation for a headless door. Never raises for an ordinary failure:
     the outcome says what happened in plain words."""
-    from kratos import kratos_config
+    from kratos import authz, kratos_config
     from kratos.agent.loop import InvestigationStopped, clarify_provider_scope, run_agent as _run_agent
     from kratos.agent.tools import approval_provider_scope
     from kratos.budget import breaker as _breaker
@@ -135,6 +135,15 @@ def run_investigation(req: RunRequest) -> RunOutcome:
             except Exception:  # noqa: BLE001 -- a progress reader never breaks the run
                 logger.debug("progress callback failed", exc_info=True)
 
+    # D.7: the person behind this run may still investigate this machine (the door
+    # checked at the start of the request; this re-check also fails closed when no
+    # person is attached at all).
+    try:
+        with kratos_config.pinned_target(target):
+            authz.check_run_access(target, data_dir=data_dir)
+    except authz.AccessRemoved as e:
+        return RunOutcome(status="access_removed", session_id=req.session_id, final_answer=str(e),
+                          error=str(e), duration=time.monotonic() - started)
     with run_scope(req.source, target=target, session_id=req.session_id):
         refusal = _guard.precheck(req.source, data_dir_=data_dir)
     if refusal is not None:
@@ -167,6 +176,10 @@ def run_investigation(req: RunRequest) -> RunOutcome:
             status = str(result.get("status") or "error")
         except InvestigationStopped:
             status = "stopped"
+        except authz.AccessRemoved as e:
+            # The person's access was narrowed, their account disabled or their token
+            # revoked mid-run: stopped at the next read (D.7 §3.5).
+            status, error = "access_removed", str(e)
         except Exception as e:  # noqa: BLE001 -- reported in plain words, recorded below
             logger.warning("headless investigation failed", exc_info=True)
             status, error = "error", f"{type(e).__name__}: {str(e)[:200]}"
@@ -179,12 +192,16 @@ def run_investigation(req: RunRequest) -> RunOutcome:
     transcripts_dir.mkdir(parents=True, exist_ok=True)
     transcript_path = transcripts_dir / f"{session_id}_turn{turn_id}.json"
     transcript_path.write_text(json.dumps(transcript, indent=2, default=str), encoding="utf-8")
-    store.complete_turn(turn_id, status if status != "stopped" else "cancelled", transcript_ref=str(transcript_path))
+    store.complete_turn(turn_id, "cancelled" if status in ("stopped", "access_removed") else status,
+                        transcript_ref=str(transcript_path))
 
     r = result or {}
     final = r.get("final_answer") or ""
     if status == "stopped":
         final = "Stopped: the investigation was stopped before it finished, so this is no answer."
+    elif status == "access_removed":
+        final = (error or "stopped: your access was removed") + \
+            " -- the investigation ended at its next read, so this is no answer."
     elif status == "error" and not final:
         final = "The investigation could not finish: " + (error or "an unexpected error")
     return RunOutcome(status=status, session_id=session_id, run_id=r.get("run_id"), final_answer=final,
@@ -194,20 +211,22 @@ def run_investigation(req: RunRequest) -> RunOutcome:
                       error=error, duration=time.monotonic() - started)
 
 
-def run_fleet_question(*, goal: str, group: str, data_dir: Path, source: str, actor_user: str,
-                       actor_interface: str, scope: list[str] | None = None,
+def run_fleet_question(*, goal: str, group: str, data_dir: Path, source: str, actor: Any = None,
+                       scope: list[str] | None = None,
                        should_stop: Callable[[], bool] | None = None,
                        on_progress: Callable[[str], None] | None = None) -> dict[str, Any]:
     """A fleet question from a headless door (MCP stdio / HTTP): one checked answer per
     machine of `group` that `scope` allows (D.2). Same outcome keys as an investigation,
     plus `fleet` -- the code summary and each machine's outcome, never the others' names."""
+    from kratos import authz
     from kratos.fleet import run as FR
-    from kratos.lifecycle.decide import Actor
 
+    actor = actor if actor is not None else authz.current_actor()
     try:
-        out = FR.run_fleet(FR.FleetRequest(question=goal, group=group, data_dir=Path(data_dir), source=source,
-                                           actor=Actor(user=actor_user, interface=actor_interface), scope=scope,
-                                           should_stop=should_stop, on_progress=on_progress))
+        with authz.acting_as(actor, action=authz.P.FLEET_ASK):
+            out = FR.run_fleet(FR.FleetRequest(question=goal, group=group, data_dir=Path(data_dir), source=source,
+                                               actor=actor, scope=scope,
+                                               should_stop=should_stop, on_progress=on_progress))
     except FR.FleetError as e:
         return {"status": "error", "final_answer": str(e), "findings": [], "recommended_commands": []}
     a = out.answer

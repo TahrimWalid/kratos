@@ -570,9 +570,26 @@ def test_a_chat_fleet_turn_is_narrowed_to_the_tokens_machines_and_refuses_comman
 
     res = asyncio.run(go("/run-fix"))
     assert "never runs a fix on several machines" in res["content"] and not seen
-    asyncio.run(go("who gained sudo?"))
+    # D.7: the fleet run acts as the request's person (set by the gate), narrowed to that
+    # person's machines through their token.
+    from kratos import authz
+    from kratos.lifecycle.decide import Actor
+    from kratos.serve import auth as serve_auth
+
+    _tok, row = serve_auth.create_token(dd, name="fleet-chat", targets=[A, B])
+    client = serve_auth.client_from_row(row)
+    person = Actor(user="alice", interface="serve", user_id="owner", credential=f"token:{row['token_id']}")
+
+    async def go_as(message):
+        h = O.TurnHandle()
+        O._serve_fleet_turn(h, state=state, client=client, group="@lab", message=message, session_id="s",
+                            link_hosts=[])
+        return h.result
+
+    with authz.acting_as(person):
+        asyncio.run(go_as("who gained sudo?"))
     assert seen["scope"] == [A, B] and seen["source"] == "web"
-    assert seen["actor"].interface == "serve" and seen["actor"].user == "token:tok1"
+    assert seen["actor"] is person
 
 
 def test_mcp_stdio_investigate_with_a_group_is_a_fleet_question(dd, lab, monkeypatch):

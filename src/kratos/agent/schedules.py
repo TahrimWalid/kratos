@@ -102,6 +102,7 @@ class Schedule:
     raw: dict[str, Any] = field(default_factory=dict)
     jobs: list[dict[str, Any]] = field(default_factory=list)   # kind == "group": ordered [{kind, preset, label}]
     on_failure: str = "continue"                                # kind == "group": ON_FAILURE_POLICIES
+    run_as: str = "owner"           # D.7: the Kratos user whose scope and budget it runs with
 
     @property
     def is_runnable(self) -> bool:
@@ -220,7 +221,7 @@ def _dump_schedule_toml(
     *, name: str, kind: str, preset: Optional[str], target: Optional[str],
     cadence: str, deliver: list[str], min_severity: Optional[str],
     created_at: Optional[str], jobs: Optional[list[dict[str, Any]]] = None,
-    on_failure: Optional[str] = None,
+    on_failure: Optional[str] = None, run_as: Optional[str] = None,
 ) -> str:
     lines = [
         "# Kratos schedule — a saved 'run X on a cadence, deliver the report'.",
@@ -238,6 +239,8 @@ def _dump_schedule_toml(
         lines.append(f"min_severity = {_toml_basic_string(min_severity)}")
     if kind == "group" and on_failure:
         lines.append(f"on_failure = {_toml_basic_string(on_failure)}")
+    if run_as and run_as != "owner":
+        lines.append(f"run_as = {_toml_basic_string(run_as)}")
     if created_at:
         lines.append(f"created_at = {_toml_basic_string(created_at)}")
     # A group's ordered jobs, as a TOML array-of-tables ([[jobs]]).
@@ -291,7 +294,7 @@ def _schedule_from_dict(data: dict[str, Any], path: Path, stem: str) -> Schedule
     return Schedule(name=name, kind=kind, preset=preset, target=target,
                     cadence=cadence, deliver=deliver, min_severity=min_sev,
                     created_at=created_at, path=path, raw=dict(data),
-                    jobs=jobs, on_failure=on_failure)
+                    jobs=jobs, on_failure=on_failure, run_as=str(data.get("run_as") or "owner").strip() or "owner")
 
 
 def schedule_exists(data_dir: Path, name: str) -> bool:
@@ -367,9 +370,11 @@ def save_schedule(
     created_at: Optional[str] = None,
     jobs: Optional[list[dict[str, Any]]] = None,
     on_failure: str = "continue",
+    run_as: Optional[str] = None,
 ) -> Schedule:
     """Validate and atomically write a schedule, returning the reloaded object.
     Raises ScheduleError on any invalid field (the TUI surfaces the message)."""
+    _authorize_change(data_dir, f"save schedule {name}")
     ok, canonical, err = validate_schedule_name(name)
     if not ok:
         raise ScheduleError(err or "Invalid schedule name.")
@@ -414,11 +419,14 @@ def save_schedule(
     if path.resolve().parent != d.resolve():
         raise ScheduleError("Refusing to write a schedule outside the schedules directory.")
 
+    if run_as is None:   # an edit keeps who the schedule runs as (never silently the owner)
+        existing = load_schedule(data_dir, canonical) if path.exists() else None
+        run_as = existing.run_as if existing is not None else "owner"
     text = _dump_schedule_toml(
         name=canonical, kind=kind, preset=(preset.strip() if preset else None),
         target=(target or None), cadence=cadence, deliver=deliver,
         min_severity=min_severity, created_at=(created_at or utc_now_iso()),
-        jobs=norm_jobs, on_failure=on_failure,
+        jobs=norm_jobs, on_failure=on_failure, run_as=run_as,
     )
     _atomic_write(path, text)
     reloaded = load_schedule(data_dir, canonical)
@@ -430,6 +438,7 @@ def delete_schedule(data_dir: Path, name: str) -> bool:
     """Delete the schedule definition (and its run ledger). Returns True if a
     definition file was removed. Does NOT touch installed systemd units -- the
     caller surfaces the uninstall command, since Kratos never runs systemctl."""
+    _authorize_change(data_dir, f"delete schedule {name}")
     ok, canonical, _ = validate_schedule_name(name)
     if not ok:
         return False
@@ -500,3 +509,25 @@ def read_run_records(data_dir: Path, name: str, limit: Optional[int] = None) -> 
 def last_run_record(data_dir: Path, name: str) -> Optional[dict[str, Any]]:
     recs = read_run_records(data_dir, name, limit=1)
     return recs[-1] if recs else None
+
+
+def _authorize_change(data_dir: Path, what: str) -> None:
+    """D.7: schedules, triggers and presets run unattended with someone's access -- the
+    owner manages them, at the Kratos host; recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.SCHEDULES_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise ScheduleError(str(e)) from None
+
+
+def set_run_as(data_dir: Path, name: str, user_id: str) -> Schedule:
+    """Make a schedule run as another Kratos user (D.7 §3.9): with that user's scope and
+    budget, refused when they are disabled or narrowed. The owner's action."""
+    s = load_schedule(data_dir, name)
+    if s is None:
+        raise ScheduleError(f"No schedule named '{name}'.")
+    return save_schedule(data_dir, name=s.name, kind=s.kind, preset=s.preset, target=s.target, cadence=s.cadence,
+                         deliver=s.deliver, min_severity=s.min_severity, created_at=s.created_at, jobs=s.jobs,
+                         on_failure=s.on_failure, run_as=user_id)

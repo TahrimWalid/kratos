@@ -315,6 +315,7 @@ class WhitelistStore:
         T.TemplateInstanceError / W.ActionSpecError / W.HardExclusionError on
         anything unsafe) BEFORE writing a single byte -- never persists an
         entry that wouldn't itself pass `whitelist.validate_spec`."""
+        _authorize_change(self.db_path.parent, "create user entry")
         if not target_id:
             raise ValueError("target_id is required -- whitelist entries are per-target scoped (design doc §6)")
         template = T.get_template(template_id)
@@ -357,6 +358,7 @@ class WhitelistStore:
         selected_values: dict[str, tuple[str, ...]] | None = None,
         extra_values: dict[str, tuple[str, ...]] | None = None,
     ) -> None:
+        _authorize_change(self.db_path.parent, "update user entry")
         row = self._get_user_entry_row(entry_id)
         if row is None:
             raise ValueError(f"no such whitelist entry {entry_id!r}")
@@ -387,6 +389,7 @@ class WhitelistStore:
         doc §9 #3/architecture doc 3a: 'enabling/disabling ... cannot create a
         new capability'). No re-validation needed: toggling never changes
         WHAT the entry could do, only whether it currently may."""
+        _authorize_change(self.db_path.parent, "set user entry enabled")
         row, table = self._find_entry(entry_id)
         if row is None:
             raise ValueError(f"no such whitelist entry {entry_id!r}")
@@ -408,6 +411,7 @@ class WhitelistStore:
         self._bump_whitelist_version(row["target_id"])
 
     def delete_user_entry(self, entry_id: str) -> None:
+        _authorize_change(self.db_path.parent, "delete user entry")
         row, table = self._find_entry(entry_id)
         if row is None:
             return
@@ -494,6 +498,7 @@ class WhitelistStore:
     # redefine, only opt out of -- or, for a high-tier default, opt into).
     # ------------------------------------------------------------------
     def set_maintainer_override(self, target_id: str, action_id: str, enabled: bool) -> None:
+        _authorize_change(self.db_path.parent, "set maintainer override")
         if T.get_template(action_id) is None and action_id not in {s.id for s in W.list_builtin_action_specs()}:
             raise ValueError(f"no such maintainer action {action_id!r}")
         conn = _connect(self.db_path)
@@ -517,6 +522,7 @@ class WhitelistStore:
 
     def clear_maintainer_override(self, target_id: str, action_id: str) -> None:
         """Removes any override, reverting to the tier-derived default."""
+        _authorize_change(self.db_path.parent, "clear maintainer override")
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -577,6 +583,7 @@ class WhitelistStore:
         what the approval screen shows, so they must be written by the human.
         The shown tier is raised to the ceiling's floor: a user can declare
         MORE risk than the ceiling assumes, never less."""
+        _authorize_change(self.db_path.parent, "create custom entry")
         if not target_id:
             raise ValueError("target_id is required -- whitelist entries are per-target scoped (design doc §6)")
         entry_id = _new_entry_id()
@@ -639,6 +646,7 @@ class WhitelistStore:
         """Edit a custom entry's approval texts and/or narrow its blanks. The
         command itself is fixed -- a different command is a new entry.
         Re-validated against the ceiling before anything is written."""
+        _authorize_change(self.db_path.parent, "update custom entry")
         row, table = self._find_entry(entry_id)
         if row is None or table != "whitelist_custom_entries":
             raise ValueError(f"no such custom whitelist entry {entry_id!r}")
@@ -717,6 +725,7 @@ class WhitelistStore:
         nothing to catch up to, or when the agent's version is already at the
         top of the range -- then only the target's admin can reset it
         (`--reset-whitelist-floor`, see installer.reset_whitelist_floor_command)."""
+        _authorize_change(self.db_path.parent, "catch up whitelist version")
         refusal = self.get_push_refusal(target_id)
         floor = refusal["agent_floor"] if refusal else None
         if floor is None:
@@ -730,6 +739,7 @@ class WhitelistStore:
         """Ask core to re-push this target's whitelist on its next watch-loop
         tick; the agent's ack reports its current allow file back. Pushing an
         unchanged action set is harmless (the agent applies it idempotently)."""
+        _authorize_change(self.db_path.parent, "request resync")
         return self._bump_whitelist_version(target_id)
 
     def _check_custom(self, target_id: str, spec: W.ActionSpec) -> list[C.Shape]:
@@ -898,6 +908,7 @@ class WhitelistStore:
         return bool(row["enabled"]) if row else False
 
     def set_execution_opt_in(self, target_id: str, enabled: bool) -> None:
+        _authorize_change(self.db_path.parent, "set execution opt in")
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -926,6 +937,7 @@ class WhitelistStore:
         execution. It is sent only if `claim_dispatch_request` still finds
         that consent (and the request fresh) at the moment of sending; the
         action itself is re-validated by core and again by the agent."""
+        _authorize_change(self.db_path.parent, "create dispatch request")
         if not self.get_execution_opt_in(target_id):
             raise ValueError(f"target {target_id!r} has not opted into direct execution (control 6)")
         request_id = secrets.token_hex(8)
@@ -1081,3 +1093,13 @@ class WhitelistStore:
             raise
         finally:
             conn.close()
+
+
+def _authorize_change(data_dir: Any, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.FIXCHANNEL_CONSENT, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None

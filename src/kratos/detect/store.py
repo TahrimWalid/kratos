@@ -267,6 +267,12 @@ def set_rule_enabled(data_dir: Path | str, rule_id: str, enabled: bool, *, targe
         raise OverrideError(f"agent tools may not turn detection rules on or off (tool {tool!r} tried)")
     if not str(getattr(actor, "user", "") or "").strip() or getattr(actor, "interface", None) not in INTERFACES:
         raise OverrideError("turning a rule on or off needs a person: an Actor from the TUI or the CLI")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require(actor, authz.P.DETECT_MANAGE, data_dir=data_dir, obj="turning a rule on or off")
+    except authz.Denied as e:
+        raise OverrideError(str(e)) from None
     text = str(reason or "")
     if not text.strip():
         raise OverrideError("a reason is required")
