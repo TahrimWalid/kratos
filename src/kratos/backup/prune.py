@@ -7,6 +7,9 @@ how many, how big) and `backup_runs`.
 
 Only files Kratos named itself are considered: `kratos-backup-<UTC time>.age` and their
 `.sha256` sidecars in the backup folder. Copies on other disks or servers are never touched.
+And only THIS Kratos's backups (its signer in the sidecar): two Kratos homes sharing the
+default folder each keep their own N; a backup another Kratos made, or one with no sidecar,
+is never removed here.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ class PrunePlan:
     folder: Path
     keep: list[Path] = field(default_factory=list)
     remove: list[Path] = field(default_factory=list)
+    others: list[Path] = field(default_factory=list)      # not this Kratos's: never removed here
 
     @property
     def bytes(self) -> int:
@@ -46,12 +50,21 @@ def _authorize(actor: Any, data_dir: Path) -> None:
         raise PruneError(f"refused: {e}") from None
 
 
-def plan(folder: Path, keep: int) -> PrunePlan:
+def plan(folder: Path, keep: int, *, data_dir: Path) -> PrunePlan:
+    """Which of THIS Kratos's backups in `folder` would go, keeping the newest `keep`."""
+    from kratos.backup import origin
+    from kratos.backup.create import read_sidecar
+
     if keep < 1:
         raise PruneError("--keep must be at least 1 (Kratos never removes your last backup)")
-    files = sorted((p for p in Path(folder).iterdir() if NAME_RE.match(p.name) and p.is_file()),
+    every = sorted((p for p in Path(folder).iterdir() if NAME_RE.match(p.name) and p.is_file()),
                    key=lambda p: p.name) if Path(folder).is_dir() else []
-    pp = PrunePlan(Path(folder))
+    mine_keys = origin.local_fingerprints(Path(data_dir))
+    files, others = [], []
+    for p in every:
+        meta = read_sidecar(p.with_name(p.name + ".sha256")) or {}
+        (files if meta.get("signer") in mine_keys else others).append(p)
+    pp = PrunePlan(Path(folder), others=others)
     pp.keep = files[-keep:]
     pp.remove = files[:-keep] if len(files) > keep else []
     return pp
@@ -61,7 +74,7 @@ def apply(data_dir: Path, pp: PrunePlan, *, actor: Any) -> dict[str, Any]:
     _authorize(actor, data_dir)
     done, size = [], 0
     for p in pp.remove:
-        if not NAME_RE.match(p.name):
+        if not NAME_RE.match(p.name) or p in pp.others:
             continue
         size += p.stat().st_size
         p.unlink()                                   # deletion-scan: the person's own `kratos backup prune --apply`

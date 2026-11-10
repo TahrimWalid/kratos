@@ -38,6 +38,7 @@ from typing import Any, BinaryIO, Callable
 
 from kratos import paths
 from kratos.backup import agefmt as A
+from kratos.backup.fsutil import fsync_dir, inside, same_disk, sha_file
 from kratos.backup import inuse, plan as P
 from kratos.backup import store as BR
 
@@ -126,26 +127,15 @@ def resolve_destination(data_dir: Path, dest: Path | str | None) -> Path:
         raise BackupError("the backup folder must be an absolute path")
     real = Path(os.path.realpath(d))
     data_real = Path(os.path.realpath(data_dir))
-    if real == data_real or _inside(real, data_real):
+    if real == data_real or inside(real, data_real):
         raise BackupError(f"{d} is inside Kratos's data folder -- a backup there would be lost with the data; "
                           "choose another folder (the default is ~/kratos-backups)")
     paths.ensure_private_dir(d)
     return d
 
 
-def _inside(path: Path, folder: Path) -> bool:
-    try:
-        path.relative_to(folder)
-        return True
-    except ValueError:
-        return False
 
 
-def same_disk(a: Path, b: Path) -> bool:
-    try:
-        return os.stat(a).st_dev == os.stat(b).st_dev
-    except OSError:
-        return False
 
 
 # --------------------------------------------------------------------------- databases
@@ -514,7 +504,7 @@ def create(data_dir: Path | str, *, actor: Any, dest: Path | str | None = None, 
                                  scrub=without_secrets and is_main)
             if is_main:
                 db_copy = local
-            sha, size = _sha_file(local)
+            sha, size = sha_file(local)
             members.append({"path": item.archive, "category": item.category, "kind": "db", "size": size,
                             "mode": 0o600, "sha256": sha, "mtime": int(time.time())})
             databases.append({"path": item.archive, **info})
@@ -598,7 +588,7 @@ def create(data_dir: Path | str, *, actor: Any, dest: Path | str | None = None, 
             f.flush()
             os.fsync(f.fileno())
         os.replace(side_tmp, side)
-        _fsync_dir(dest_dir)
+        fsync_dir(dest_dir)
         stages["encrypt"] = time.monotonic() - s
         # 4. copies
         s = time.monotonic()
@@ -664,25 +654,8 @@ def _maybe_fail(fail_at: str | None, stage: str) -> None:
         raise BackupError(f"test: stopped at {stage}")
 
 
-def _sha_file(p: Path) -> tuple[str, int]:
-    h = hashlib.sha256()
-    n = 0
-    with open(p, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-            n += len(block)
-    return h.hexdigest(), n
 
 
-def _fsync_dir(folder: Path) -> None:
-    try:
-        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def _free_name(dest: Path) -> str:
@@ -738,7 +711,7 @@ def dry_run(data_dir: Path | str, *, dest: Path | str | None = None, exclude: tu
     destination = Path(text).expanduser() if text else DEFAULT_DEST
     probe = destination if destination.exists() else destination.parent
     d.update(destination=str(destination), same_disk=same_disk(probe, data_dir),
-             inside_data=_inside(Path(os.path.realpath(destination)), Path(os.path.realpath(data_dir))),
+             inside_data=inside(Path(os.path.realpath(destination)), Path(os.path.realpath(data_dir))),
              recipients=[K.fingerprint(r) for r in _safe_recipients(data_dir)],
              copy_targets=_safe_copy_targets(data_dir), data_dir=str(data_dir), layout=paths.LAYOUT,
              kratos_version=_kratos_version())

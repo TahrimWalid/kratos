@@ -385,7 +385,7 @@ def _verify(args: argparse.Namespace) -> int:
         ids = _read_secret("Backup key (AGE-SECRET-KEY-1…) or passphrase: ")
         c = V.full(args.file, ids, data_dir=dd, progress=lambda t: print(f"[KRATOS] {t} ...", flush=True))
     else:
-        c = V.quick(args.file)
+        c = V.quick(args.file, data_dir=dd)
     V.record_verify(dd, Path(args.file), actor, c, depth="full" if args.full else "quick")
     for n in c.notes:
         print(f"         {n}")
@@ -544,12 +544,14 @@ def _prune(args: argparse.Namespace) -> int:
 
     dd = Path(args.data_dir)
     folder = Path(args.dest).expanduser() if args.dest else ST.destination(dd)
-    pp = PR.plan(folder, args.keep)
+    pp = PR.plan(folder, args.keep, data_dir=dd)
     print(f"In {folder}: keeping the newest {len(pp.keep)}, removing {len(pp.remove)} ({human_size(pp.bytes)}):")
     for p in pp.remove:
         print(f"  remove  {p.name}")
     for p in pp.keep:
         print(f"  keep    {p.name}")
+    for p in pp.others:
+        print(f"  leave   {p.name}  (not this Kratos's: another Kratos made it, or its .sha256 is missing)")
     if not args.apply:
         print("Nothing removed. Add --apply to remove them (copies elsewhere are never touched).")
         return 0

@@ -473,3 +473,35 @@ def test_certificates_are_rebound_to_this_computers_address(tmp_path, monkeypatc
     assert _st.get_enrolment(r.data, "192.0.2.20").apparent_address == "192.0.2.5"
     assert _st.get_enrolment(r.data, "192.0.2.21").apparent_address == "192.0.2.5"   # already right: untouched
     assert len(notes) == 1 and "now bound to 192.0.2.5" in notes[0] and "ssh-ca verify 192.0.2.20" in notes[0]
+
+
+def test_a_restore_holds_messages_that_were_still_waiting_instead_of_sending_them_again(made, tmp_path):
+    """Audit D: messages pending at backup time may have been sent by the old computer since;
+    ntfy, syslog and email can't drop a repeat, so a restore holds them for the person."""
+    import sqlite3 as _sq
+
+    from kratos.outbox import store as OS
+
+    r, ident, _res = made
+    with OS.opened(r.data) as conn:
+        for i, status in enumerate(("pending", "failed", "delivered")):
+            OS.enqueue(conn, channel="ntfy", kind="alert", message_id=f"m{i}", payload={"text": "x"},
+                       summary=f"alert {i}")
+            conn.execute("UPDATE outbox SET status = ? WHERE message_id = ?", (status, f"m{i}"))
+        OS.acquire_lease(conn, holder="old-computer", label="listener", pid=1, host="old", ttl=3600)
+        conn.commit()
+        conn.execute("INSERT INTO channels (name, kind, config, scopes, format, filters, created_at, created_by, "
+                     "updated_at, updated_by) VALUES ('rx', 'webhook', ?, '[\"alerts\"]', 'kratos', '{}', 0, 't', 0, "
+                     "'t')", ('{"url": "https://127.0.0.1:18443/hook"}',))
+        conn.commit()
+    res = CR.create(r.data, actor=H.CLI, dest=tmp_path / "bk2", roots=r, copy_to=[])
+    new = H.home(tmp_path, "new")
+    out = RS.restore(res.file, [ident], roots=new, actor=H.CLI, accept_signer=H.signer_of(res.file))
+    conn = _sq.connect(new.data / "kratos.db")
+    rows = dict(conn.execute("SELECT message_id, status FROM outbox").fetchall())
+    assert rows == {"m0": "dead", "m1": "dead", "m2": "delivered"}
+    why = conn.execute("SELECT last_error FROM outbox WHERE message_id = 'm0'").fetchone()[0]
+    assert "held after a restore" in why and "kratos outbox retry" in why
+    assert conn.execute("SELECT expires_at FROM outbox_lease").fetchone()[0] == 0
+    assert any("2 message(s)" in n and "held, not re-sent" in n for n in out.notes)
+    assert any("rx (127.0.0.1)" in n for n in out.notes)

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kratos.backup.fsutil import fsync_dir, inside, same_disk, sha_file
 from kratos.paths import ensure_private_dir
 from kratos.utils.hostnames import is_ip_or_hostname
 
@@ -73,19 +74,13 @@ def parse_target(text: str) -> Target:
     return Target(str(p), "folder", folder=p)
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def copy_to_folder(target: Target, backup: Path, sidecar: Path, sha256: str, *, data_dir: Path) -> dict[str, Any]:
     assert target.folder is not None
     dest = target.folder
     real = Path(os.path.realpath(dest))
-    if _inside(real, Path(os.path.realpath(data_dir))):
+    if inside(real, Path(os.path.realpath(data_dir))):
         return {"target": target.text, "ok": False, "error": "a copy can't go inside Kratos's data folder"}
     ensure_private_dir(dest)
     out = dest / backup.name
@@ -100,7 +95,7 @@ def copy_to_folder(target: Target, backup: Path, sidecar: Path, sha256: str, *, 
             w.write(block)
         w.flush()
         os.fsync(w.fileno())
-    if h.hexdigest() != sha256 or _sha256_file(tmp) != sha256:
+    if h.hexdigest() != sha256 or sha_file(tmp)[0] != sha256:
         return {"target": target.text, "ok": False, "error": "the copy's SHA-256 doesn't match (left as "
                 f"{tmp.name} for you to look at)"}
     os.replace(tmp, out)
@@ -110,35 +105,15 @@ def copy_to_folder(target: Target, backup: Path, sidecar: Path, sha256: str, *, 
     with os.fdopen(fd, "wb") as w:
         w.write(sidecar.read_bytes())
     os.replace(side_tmp, side)
-    _fsync_dir(dest)
-    same = _same_disk(dest, data_dir)
+    fsync_dir(dest)
+    same = same_disk(dest, data_dir)
     return {"target": target.text, "ok": True, "file": str(out), "verified": "sha256", "same_disk": same}
 
 
-def _inside(path: Path, folder: Path) -> bool:
-    try:
-        path.relative_to(folder)
-        return True
-    except ValueError:
-        return False
 
 
-def _fsync_dir(folder: Path) -> None:
-    try:
-        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
-def _same_disk(a: Path, b: Path) -> bool:
-    try:
-        return os.stat(a).st_dev == os.stat(b).st_dev
-    except OSError:
-        return False
 
 
 def _sftp_argv(target: Target, batch: Path) -> list[str]:

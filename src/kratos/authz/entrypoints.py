@@ -105,6 +105,7 @@ CLI: dict[str, Entry] = {
     "cmd_subagent_install": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
     "cmd_subagent_pair": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
     "cmd_subagent_serve": A(P.LOCAL_RUN),
+    "cmd_subagent_link": A(P.LOCAL_RUN),
     "cmd_subagent_status": READ("lists paired machines"),
     "cmd_subagent_tls": CORE("kratos.subagent.tls:rotate"),
     "cmd_threat_intel_sync": A(P.LOCAL_RUN),

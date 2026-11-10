@@ -537,7 +537,8 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
         out = Path(args.output)
         out.write_text(script, encoding="utf-8")
         print(f"[KRATOS] Installer written to {out}{ttl_note}")
-        print(f"[KRATOS] 1. Make sure this core is listening:  kratos subagent-serve --host {args.core_host}")
+        port = "" if args.core_port == _installer.DEFAULT_CORE_PORT else f" --port {args.core_port}"
+        print(f"[KRATOS] 1. Make sure this core is listening:  kratos subagent-serve --host {args.core_host}{port}")
         print(f"[KRATOS] 2. Copy {out.name} to the target and run:  sh {out.name}")
     else:
         print(script)
@@ -1201,6 +1202,48 @@ def _cmd_findings_triage(args: argparse.Namespace, data_dir: Path, tz) -> int:
         print(f"  the re-collection was incomplete ({out['incomplete']}) -- left open.")
     v = out["verdict"]
     print(f"  verdict: {v['tag']} -- {v['sentence']}")
+    return 0
+
+
+def cmd_subagent_link(args: argparse.Namespace) -> int:
+    """`kratos subagent-link HOST [AGENT]`: read HOST through a paired sub-agent (the CLI
+    twin of the app's /target link). Without AGENT it says how HOST is reached; --remove
+    goes back to SSH. A link is only ever made when a person names the agent."""
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent import routing
+    from kratos.untrusted import safe_print
+
+    store = SubAgentStore(args.data_dir / "kratos.db")
+    host = routing.normalize_host(args.host)
+    if not host or host in {"127.0.0.1", "localhost", "::1"}:
+        print("[KRATOS] give the address or name of a monitored machine (Kratos's own host is read locally)",
+              file=sys.stderr)
+        return 2
+    if args.remove:
+        if store.remove_link(host):
+            safe_print(f"[KRATOS] {host} is reached over SSH again (no sub-agent link).")
+            return 0
+        safe_print(f"[KRATOS] {host} had no sub-agent link.")
+        return 1
+    if not args.agent:
+        link = routing.link_for(host, args.data_dir)
+        if link is None:
+            safe_print(f"[KRATOS] {host} is reached over SSH. Link it: kratos subagent-link {host} <agent name>")
+        else:
+            safe_print(f"[KRATOS] {host} is read {routing.MODE_LABELS.get(link.mode, link.mode)} ({link.label})"
+                       + (" -- that agent is no longer paired" if link.revoked else ""))
+        return 0
+    want = args.agent.strip()
+    hits = [t for t in store.list_targets(include_revoked=False)
+            if want in (t.get("target_id"), t.get("name"), t.get("hostname"))]
+    if len(hits) != 1:
+        names = ", ".join(sorted(str(t.get("name") or t["target_id"]) for t in store.list_targets()))
+        print(f"[KRATOS] {'no' if not hits else 'more than one'} paired agent is called {want!r}"
+              + (f" (paired: {names})" if names else " (none is paired: kratos subagent-install)"), file=sys.stderr)
+        return 2
+    store.set_link(host, hits[0]["target_id"], args.mode)
+    safe_print(f"[KRATOS] {host} is now read {routing.MODE_LABELS[args.mode]} "
+               f"({hits[0].get('name') or hits[0]['target_id']}).")
     return 0
 
 
@@ -2530,6 +2573,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="An interface on the target that encrypts by itself (e.g. your WireGuard wg0); Tailscale needs none",
     )
     subagent_install.set_defaults(func=cmd_subagent_install)
+
+    subagent_link = sub.add_parser(
+        "subagent-link",
+        help="Read a machine through a paired sub-agent (or show / remove how it is reached)",
+    )
+    subagent_link.add_argument("host", help="the machine's address or name, as you investigate it")
+    subagent_link.add_argument("agent", nargs="?", help="the paired agent's name (kratos subagent-status)")
+    subagent_link.add_argument("--mode", choices=("subagent", "ssh_first"), default="subagent",
+                               help="subagent: only through it (default); ssh_first: SSH, the agent if SSH fails")
+    subagent_link.add_argument("--remove", action="store_true", help="Go back to SSH for this machine")
+    subagent_link.set_defaults(func=cmd_subagent_link)
 
     subagent_status = sub.add_parser(
         "subagent-status",
