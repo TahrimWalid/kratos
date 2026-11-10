@@ -335,7 +335,9 @@ def cmd_subagent_pair(args: argparse.Namespace) -> int:
     from kratos.storage.subagent_store import SubAgentStore
 
     store = SubAgentStore(args.data_dir / "kratos.db")
-    result = store.create_pairing_code(name=args.name)
+    # Record the address the agent will dial: a restore onto a new computer (D.8) and an
+    # in-place update compare and reuse it.
+    result = store.create_pairing_code(name=args.name, core_host=args.core_host)
     print(f"[KRATOS] Pairing code: {result['code']}  (expires in {result['ttl_seconds'] // 60} min)")
     pin_flags = ""
     try:
@@ -387,7 +389,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from kratos.agent import doctor
     from kratos.untrusted import safe_print
 
-    checks = doctor.run_diagnostics(Path(args.data_dir))
+    offline = {"offline": True} if getattr(args, "offline", False) else {}
+    checks = doctor.run_diagnostics(Path(args.data_dir), **offline)
     passes, warns, fails = doctor.summarize(checks)
     width = max((len(c["check"]) for c in checks), default=10)
     for c in checks:
@@ -510,7 +513,7 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
     ttl_note = ""
     if not code:
         store = SubAgentStore(args.data_dir / "kratos.db")
-        result = store.create_pairing_code(name=args.name)
+        result = store.create_pairing_code(name=args.name, core_host=args.core_host)  # the address it will dial
         code = result["code"]
         ttl_note = f"  (pairing code expires in {result['ttl_seconds'] // 60} min)"
 
@@ -2468,6 +2471,8 @@ def build_parser() -> argparse.ArgumentParser:
         "doctor",
         help="Check your setup: model endpoint, settings, the machine you investigate, data (same as /doctor)",
     )
+    doctor_p.add_argument("--offline", action="store_true",
+                          help="Don't contact the model endpoint or the target (a backup drill uses this)")
     doctor_p.set_defaults(func=cmd_doctor)
 
     vulscan_p = sub.add_parser(
@@ -2611,6 +2616,8 @@ def build_parser() -> argparse.ArgumentParser:
     users_cmd.add_parser(sub)
     from kratos.cli import export_cmd
     export_cmd.add_parser(sub)
+    from kratos.cli import backup_cmd
+    backup_cmd.add_parser(sub)   # D.8: encrypted backups, drills, restore
 
     attack_p = sub.add_parser(
         "attack-layer",
@@ -2977,8 +2984,10 @@ def main(argv: list[str] | None = None) -> int:
     # kratos run, everything else) -- they all go through this same main()
     # dispatch, so there's no second entry point to separately wire up.
     # Safe on a fresh install with no kept_tools/ directory at all: returns
-    # an empty list, no error.
-    load_kept_tools()
+    # an empty list, no error. A backup drill's health check sets KRATOS_NO_KEPT_TOOLS: the
+    # scratch home it checks holds the backup's kept tools, which must not run.
+    if os.environ.get("KRATOS_NO_KEPT_TOOLS") != "1":
+        load_kept_tools()
 
     # D.7: the CLI is the owner at the Kratos host. Every subcommand is listed in
     # kratos.authz.entrypoints and checked here (recorded in the audit trail); an
@@ -2993,6 +3002,16 @@ def main(argv: list[str] | None = None) -> int:
     except authz.Denied as e:
         print(f"[KRATOS] refused: {e}", file=sys.stderr)
         return 2
+    if args.command in _HOLDS_DATA_OPEN:
+        # D.8: a long-running process marks the data as in use, so a restore refuses while
+        # it runs (and it refuses to start while a restore runs).
+        from kratos.backup import inuse as _inuse
+
+        try:
+            _inuse.hold(args.data_dir, f"kratos {args.command}")
+        except _inuse.InUseError as e:
+            print(f"[KRATOS] {e}", file=sys.stderr)
+            return 2
     with authz.acting_as(_actor):
         # One run (kratos.run_context) per command, so model spending and stored
         # events are attributed. Commands that start their own runs open their own
@@ -3012,6 +3031,9 @@ def main(argv: list[str] | None = None) -> int:
         except _budget.BudgetExceeded as e:
             print(f"[KRATOS] {e.user_message()}", file=sys.stderr)
             return 3
+
+
+_HOLDS_DATA_OPEN = frozenset({"serve", "mcp-serve", "subagent-serve", "scheduled-run"})
 
 
 if __name__ == "__main__":

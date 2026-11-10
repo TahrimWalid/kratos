@@ -20,6 +20,7 @@ venv/
 
 # Kratos outputs (important)
 data/
+!src/kratos/backup/data/
 *.log
 
 # Self-writing loop: staged tool candidates (Part A output) -- never live,
@@ -106,6 +107,7 @@ llm/work/
 !src/kratos/yara_rules/README.md
 !scripts/attacks/README.md
 !scripts/attacks/wordlists/README.md
+!src/kratos/backup/data/bip39_english.txt
 # Test fixtures are shipped data, not scratch -- keep them tracked despite the
 # blanket *.sh/*.md/*.txt ignores above.
 !tests/fixtures/**

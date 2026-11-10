@@ -26,6 +26,7 @@ at the top and go in order. If you just want a reminder of one thing, jump to it
 21. [Saving and repeating work](#saving-and-repeating-work)
 22. [Keeping model costs under control](#keeping-model-costs-under-control)
 23. [Keeping an eye on things](#keeping-an-eye-on-things)
+    - [Backing up Kratos](#backing-up-kratos)
 24. [Using Kratos from the command line and other tools](#using-kratos-from-the-command-line-and-other-tools)
 25. [Using Kratos from a chat app](#using-kratos-from-a-chat-app)
 26. [The experimental fix channel](#the-experimental-fix-channel)
@@ -1991,9 +1992,9 @@ machine behind NAT. Direct execution stays off either way.
   the listener starts, in the `subagent-tls` folder of your data folder (only you
   can read it; Kratos refuses to use the keys if anyone else can). The backup key
   isn't used yet — it exists so you can switch keys without touching any machine.
-  Copy the whole `subagent-tls` folder somewhere safe together with your Kratos
-  database backup. If both keys are lost, every agent has to be paired again
-  (`/subagent`, `p` on each).
+  `kratos backup` keeps both keys (see [Backing up Kratos](#backing-up-kratos)); a
+  restored Kratos has the same keys, so agents reconnect without being paired again.
+  If both keys are lost, every agent has to be paired again (`/subagent`, `p` on each).
 - **Switching keys.** `kratos subagent-tls rotate` makes the backup key the active
   one and makes a new backup. Within seconds the listener starts using it and sends
   the new pair to every connected machine. A machine that was off at the time still
@@ -2058,8 +2059,9 @@ at setup (`kratos ssh-ca setup --mode …`), shown in `kratos ssh-ca status` and
   tpm2 system libraries.
 - **token**: the key lives on a hardware security token (PKCS#11).
 
-**Keep a copy.** Back up the `ssh-ca/` folder somewhere safe (with your database backup):
-losing it means re-enrolling every machine.
+**Keep a copy.** `kratos backup` includes the CA (see [Backing up Kratos](#backing-up-kratos));
+losing it means re-enrolling every machine. A TPM-sealed CA is unsealed into the encrypted
+backup in memory and sealed again on the new computer; a token-held CA stays on the token.
 
 **Rotation.** `kratos ssh-ca rotate` makes a second CA key and shows the line to add on each
 machine; once every enrolled machine trusts it, `kratos ssh-ca promote` switches signing to
@@ -2613,6 +2615,166 @@ the prune says so and stops; `--force-orphans` removes the dependent part too.
 `kratos data history` lists every prune you've run. Old snapshots have their own
 command, `kratos snapshots prune`, which thins them (keeps one a day, then one a
 week, then one a month) and never removes the newest of each.
+
+## Backing up Kratos
+
+One command makes an encrypted backup of everything Kratos keeps — conversations,
+findings and your decisions, host events, presets and schedules, settings, the keys that
+pair your agents and sign SSH certificates. Another proves it restores. A third restores it
+onto a new computer, and that computer carries on as the same Kratos: your agents
+reconnect without being paired again, enrolled machines accept its SSH certificates, and
+journal seals still verify.
+
+**A backup is as powerful as the Kratos computer.** Whoever can open it can act as this
+Kratos to every paired agent and sign SSH certificates for every enrolled machine. That is
+why backups are encrypted to a key that is **not** kept on the Kratos computer.
+
+### The backup key
+
+```bash
+kratos backup key new
+```
+
+shows a secret key **once** (`AGE-SECRET-KEY-1…`) and asks you to type its last six
+characters to confirm you saved it. Keep it **off this computer**: in a password manager, on
+paper, or on a USB stick (`--write-to /media/usb/kratos-backup-key.txt` writes it there).
+Kratos keeps only the public half (`age1…`), so nothing on the Kratos computer can open a
+backup — someone who takes over the computer can't read your older backups, and a
+scheduled backup needs no secret at all. Up to five keys can open a backup: add a second
+admin's own `age1…` key with `kratos backup key add age1…`; `kratos backup key list` shows
+them. Lose every secret key and no backup can be restored.
+
+It also prints **the fingerprint Kratos signs backups with** (`SHA256:…`; `--write-to` puts it
+in the key file too). Write it down with the key: a restore on a new computer asks for it, so
+that a file someone else made with your *public* key can't pass as your backup.
+
+A one-off backup can use a passphrase instead (`--passphrase`, asked twice, at least 16
+characters; `--generate-passphrase` gives you six random words). Kratos stores neither.
+Scheduled backups can't use a passphrase — nobody is there to type it.
+
+### Making one
+
+```bash
+kratos backup create --dry-run      # what would go in, and why each thing is in or out
+kratos backup create --copy-to /media/usb/kratos
+```
+
+Backups go to `~/kratos-backups` (owner-only; Kratos's data folder is refused). Each is one
+file, `kratos-backup-<UTC time>.age`, plus a small public sidecar `….age.sha256` with its
+SHA-256, size, Kratos version and this Kratos's signature — nothing personal. Keep the two
+together: the signature is how a drill or a restore knows the backup is yours. It is safe to take while Kratos is
+running: the database is copied in one consistent step while the listener keeps writing.
+
+**What's in, and what isn't** (`--dry-run` lists every kind with its reason):
+
+| | |
+| --- | --- |
+| In | everything in [What Kratos keeps](#what-kratos-keeps), the settings file (`.env`), kept tools and their tests |
+| Secret, in | agent-link keys, the SSH certificate authority, the signing key, journal seal keys, channel and Open WebUI secrets, `.env` — `--without-secrets` leaves them all out (and the pairing tokens in the database) |
+| Left out, rebuildable | vulnerability data, the threat-intel cache, the vulscan CVE list, local model files — `--include-rebuildable` adds them; otherwise `kratos vulndb-update`, `kratos threat-intel-sync` and `kratos vulscan-install` download them again |
+| Never | sub-agent installer scripts (they hold one-time pairing codes; Kratos writes new ones), tool candidates waiting for a test, per-run SSH keys |
+| Not Kratos's | Kratos's SSH key when it lives in `~/.ssh` (you may use it for other things) — back it up yourself, or [enrol your machines in SSH certificates](#ssh-certificates) so it isn't needed |
+
+An SSH CA sealed to this computer's TPM is unsealed in memory straight into the encrypted
+backup (it never touches the disk) and sealed again on the new computer. A CA on a
+hardware token stays on the token: the backup holds its public half — keep the token.
+
+`--without-secrets` makes a backup without any of the keys. It can't act as this Kratos, but
+restoring it means pairing every agent again, setting up SSH certificates again, re-entering
+your API keys and setting seal keys again.
+
+**Keep it off the computer.** A backup on the same disk as the data is lost with that disk.
+Kratos says so whenever a backup lands on the data's own disk, and `/doctor` keeps saying it
+until a copy is elsewhere. `--copy-to` takes a folder (a USB drive, a synced folder) or
+`sftp://user@host/path` (Kratos runs `sftp` in batch mode with your own SSH login to that
+server); each copy is checked where it landed. If you already run restic or borg, the
+encrypted file can go there as it is.
+
+**What leaves, and to whom.** Nothing, unless you say so: a backup is written to your own
+folder. `--copy-to` sends the *encrypted* file and its sidecar (hash, size, Kratos version) to
+the folder or SFTP server you name -- nobody without one of your backup keys can read it.
+
+### Checking it, and the drill
+
+```bash
+kratos backup verify kratos-backup-….age          # no secret: header, size, sidecar hash
+kratos backup verify kratos-backup-….age --full < key.txt
+kratos backup drill  kratos-backup-….age < key.txt
+```
+
+`verify` needs no secret: it catches a truncated file or bit rot on a backup drive (so does
+`sha256sum -c kratos-backup-….age.sha256`). `--full` decrypts everything and checks every
+file's hash, the database and the keys. A **drill** goes further: it really restores the
+backup into a scratch folder, runs the health check on it, and removes it again. A backup
+counts as verified only once a drill has passed. `/doctor` shows when the last backup and the
+last successful drill were, and warns after 30 days without a drill
+(`backup.drill_warn_days`). The key or passphrase is read from the pipe, or asked for
+without showing it.
+
+A drill only runs on a backup this Kratos signed, and its health check runs nothing the
+backup brings (no kept tools, not its `.env`). A backup signed by another Kratos is refused
+with that key's fingerprint: if you know it (you moved Kratos, or a colleague made it), give
+`--signer SHA256:…`. A backup whose `.sha256` file was lost needs `--unsigned-ok`, only when
+you know where the file came from — `kratos backup extract` lets you look inside first.
+
+### On a schedule
+
+```bash
+kratos backup schedule daily --copy-to /media/usb/kratos
+```
+
+writes a systemd timer for you to install (Kratos prints the commands; it doesn't run
+`systemctl` itself). It needs a backup key. A failed scheduled backup, a failed copy, or no
+successful drill in 30 days is sent to your notification channels.
+
+**Old backups stay until you remove them.** Kratos never deletes a backup on its own.
+`kratos backup prune --keep 10` shows which would go; add `--apply` to remove them (only
+files Kratos named itself in the backup folder — copies elsewhere are never touched). The
+removal is recorded. `/doctor` shows the backup folder's size and growth, and warns when its
+disk is 80% full.
+
+### Restoring onto a new computer
+
+1. Install Kratos on the new computer (don't set anything up yet).
+2. Copy the backup file there and check it: `kratos backup verify kratos-backup-….age`.
+3. `kratos backup restore kratos-backup-….age < key.txt` — it checks who signed the backup
+   (the new computer has no key of its own yet, so it uses the signer line in the key file you
+   pipe in, or `--signer SHA256:…` with the fingerprint you wrote down), checks the whole backup,
+   shows where and when it was made and the key fingerprints in it, and asks you to type
+   `restore`. Keep the `.sha256` file next to the backup.
+4. Start Kratos's listener (`systemctl --user start kratos-core-listener`, or
+   `kratos subagent-serve`). The restore waits two minutes and shows each agent coming back.
+
+Restore only goes into an empty Kratos. `--replace` restores over an existing one: it backs
+up the current state first, then **moves** its folders aside to
+`<folder>.pre-restore-<time>` — nothing is deleted. It refuses while the app, the listener,
+`kratos serve`, `kratos mcp-serve` or a scheduled run has the data open, and prints the
+lines to stop and start them. A backup from a newer Kratos is refused (update first); an
+older one is restored and brought up to date. Restoring is only done from the command line
+on the Kratos computer.
+
+**If the new computer has a different address.** Agents dial the address they were paired
+with. If that name now points at the new computer (a tailnet MagicDNS name, your own DNS
+name), they reconnect on their own. If they dialled the old computer's IP address, the
+restore writes an upgrade installer for each agent (`kratos-subagent-upgrade-<name>.sh` in
+the data folder): run it on that machine and the agent reconnects to the new address with
+the same pairing — no new pairing code. Next time, pair agents with a name that moves with
+you. SSH certificates are tied to the address each machine sees Kratos from, so the restore
+re-ties them to the new computer's address and tells you to confirm with
+`kratos ssh-ca verify <machine>`. Timers (schedules, backups, vulnerability-data updates)
+are files Kratos wrote: install them again on the new computer.
+
+**Opening a backup without Kratos.** The format is [age](https://age-encryption.org), so the
+standard `age` tool opens it on any computer:
+
+```bash
+age -d -i key.txt kratos-backup-….age | tar tz       # list it
+age -d -i key.txt kratos-backup-….age | tar xz       # unpack it
+```
+
+`kratos backup extract kratos-backup-….age --to <empty folder>` does the same with every
+file checked, and installs nothing. Either way the result holds secrets: delete it when you
+are done.
 
 ## Run records
 

@@ -2685,6 +2685,107 @@ anyone with any CA could write it — so a forged `kratos:` id under a foreign C
 aside. The old key-fingerprint match stays for machines not yet enrolled. This keeps the
 C.1/C.2 detections and CORR-SSH-002 from reporting Kratos itself as an intruder.
 
+## Backup and restore (D.8)
+
+`kratos.backup` makes one complete, encrypted, verifiable backup of everything Kratos keeps,
+proves it with a restore drill, and restores it onto a new computer that carries on as the
+same Kratos (agents reconnect without re-pairing, enrolled machines accept its certificates,
+seals verify).
+
+**Format: age v1** (`backup/agefmt.py`, C2SP age.md). Kratos writes the format itself from
+`cryptography`'s primitives -- X25519, ChaCha20-Poly1305, HKDF-SHA-256, HMAC-SHA-256, scrypt --
+and implements no primitive and no construction the spec doesn't define. Header with
+recipient stanzas and its MAC, STREAM payload (64 KiB chunks, 11-byte counter + last-chunk
+flag), armor read-only. It is checked against every C2SP CCTV vector that doesn't need a
+post-quantum identity, and round-tripped both ways (X25519 and scrypt) with the real `age`
+1.3.2 binary. Post-quantum recipients are not offered: `cryptography` 49 has HPKE with the
+X-Wing KEM but no way to build the age identity's 32-byte seed form short of assembling
+ML-KEM and X25519 by hand. So a person can always open their own backup with plain `age`.
+
+**What goes in comes from the inventory.** Every `datainv.Category` carries a backup class --
+`include`, `secret` (in, left out by `--without-secrets`), `rebuildable` (out unless
+`--include-rebuildable`, with the rebuild command) or `never` (with the reason) -- and
+`tests/test_datainv.py` fails on a category without one, so a new table or folder can't be
+silently left out. `backup/plan.py` turns the inventory and the options into the list of
+files and databases (pure: it lists and stats, nothing more), which is exactly what
+`--dry-run` prints. Archive paths start with the root they came from -- `data/`, `state/`
+(kept tools, harnesses, vulscan) or `config/` (`.env`) -- and a restore maps them onto the new
+computer's own folders, never onto a path written in the backup. Anything outside the three
+roots (Kratos's SSH key in `~/.ssh`, an external known_hosts) is named, not taken.
+
+**A consistent copy.** `kratos.db` and `vulndb.sqlite` are copied with SQLite's online backup
+API from a read-only connection in one step, so each copy is one point in time while the
+listener keeps writing (WAL); a test writes pairs of rows in one transaction and the copy
+never holds half a pair. The copy is checked (`PRAGMA integrity_check`, row counts and
+`schema_versions` into the manifest). An excluded category's tables are emptied in the copy
+only (an append-only trigger is lifted, the rows deleted, the trigger put back);
+`--without-secrets` withholds pairing tokens and unused pairing codes, then `VACUUM`s so no
+freed page keeps them. Other files are read once each, hashed as they are copied. Every
+scratch copy lives in `<data>/.backup-work/` (owner-only, the data's own disk -- the live data is
+plaintext there already), in a per-run folder removed when the run ends and swept at the
+start of the next.
+
+**One encrypted stream.** tar (PAX, regular files only, mode 0600) → gzip 6 → age STREAM →
+`<name>.age.partial`, renamed to `<name>.age` only after the last chunk is written and
+fsynced: a kill at any stage leaves only a `.partial`, which the next run removes. The first
+member is `MANIFEST.json` (format and versions, layout, time, host, lock mode and recipient
+fingerprints, every category with its reason, every file's path/size/mode/SHA-256, database
+row counts and schema versions, key fingerprints, the paired agents with the name each dials
+and the listener's port). The public sidecar `<name>.age.sha256` is a `sha256sum -c` line plus
+size, version and the backup's **origin signature** -- nothing personal.
+
+**Who made it (`backup/origin.py`).** age has no sender authentication: anyone who knows a
+recipient's public key can write a file that opens with its secret key. So Kratos signs every
+backup with its Ed25519 signing key (`kratos.signing`) over `kratos-backup-origin-v1`, the
+encrypted file's SHA-256, its size and its creation time, and puts the signer fingerprint, the
+public key and the signature in the sidecar. `verify` (no secret) checks the signature against
+the real hash and size and says whether the signer is this Kratos (its active or a retired key).
+A drill and a restore decrypt nothing until the origin is trusted: signed by this Kratos, or by
+the fingerprint the person gives (`--signer`, or the `# kratos-backup-signer:` line of the key
+file `kratos backup key new --write-to` writes), or `--unsigned-ok` for a backup whose sidecar
+was lost. A swapped or copied signature, or a changed file, is "invalid" and refused outright.
+
+**Keys, by protection mode.**
+
+| Key | In the backup |
+| --- | --- |
+| agent-link TLS keys, signing key, FSS keys, channel and gateway secrets, `.env` | copied (secret class) |
+| SSH CA, file or agent mode | the files as they are |
+| SSH CA, tpm mode | unsealed with `systemd-creds decrypt` into memory and written only into the encrypted stream; sealed again on restore (or kept in the mode the person picks) |
+| SSH CA, token mode | the public half; the backup says "the CA is on your token" |
+| Kratos's SSH key outside Kratos's folders | not included; named |
+
+**Verify, drill, restore.** `verify` (no secret) checks the header, size and sidecar hash.
+`verify --full` decrypts everything and checks every member against the manifest, each
+database's integrity and that it opens with this Kratos's migrations (`backup/stores.py` opens
+every store; a test fails if a new store isn't listed), the agent-link keys against the
+recorded pins, the seal keys. A **drill** is `--full` plus a real restore into a scratch home
+in `.backup-work` and `kratos doctor --offline` against it; only then is a backup
+*verified*. The drill's doctor runs nothing the backup brought: `KRATOS_NO_KEPT_TOOLS=1` keeps
+`main()` from importing the restored kept tools, the restored `.env` is renamed before the
+check so it is never loaded, and the subprocess is `python -I` without `PYTHON*`/`LD_*`
+variables (found by the D.8 security review: before, a forged backup's kept tool ran on drill). `backup/archive.py` treats a backup as untrusted (anyone with a recipient's public
+key can make one): the manifest is first and closed-schema; each member must be a regular
+file, under `data/`, `state/` or `config/` where a non-`never` category keeps data, with no
+`..` or control characters, listed once in the manifest, of the listed size, and its SHA-256 is
+checked as it is written to a staging folder; Python's tar data filter is applied as one more
+check, but nothing is ever extracted by `tarfile`. Restore goes only into an empty home
+(`--replace` backs up first and moves the current folders aside); it refuses while the
+in-use lock is held -- the TUI, `kratos serve`, `kratos mcp-serve`, the listener and scheduled
+runs hold it shared (`backup/inuse.py`), a restore takes it exclusively -- or a listener row is
+fresh, and refuses a newer Kratos's backup. Afterwards it seals a TPM CA again, re-binds
+certificate `source-address` to the address this computer reaches each enrolled machine from,
+compares the name each agent dials with this computer's addresses and, where an agent must
+dial somewhere new, writes an upgrade installer with the same token and pins.
+
+**Scheduling and deletion.** `kratos backup schedule` writes a systemd user timer with the same
+writer as the vulnerability-data timer (`Persistent=true`, recipient mode only); failures and
+an overdue drill go out through the outbox. Kratos never deletes a backup on its own (owner
+decision, 2026-11-10: no `backup.keep`); `kratos backup prune --keep N` is manual, CLI-only,
+preview first and recorded in `data_prunes`. Create, verify, drill and schedule are admin
+actions (`backup.manage`); restore and prune also need the CLI (`backup.restore`). No backup
+code is imported by MCP, the chat server or any agent tool (a source-scan test).
+
 ## Known limitations
 
 - **CVE matching is textual**: vulscan matches nmap's detected product and

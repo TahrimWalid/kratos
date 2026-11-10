@@ -147,3 +147,12 @@ def _budget_isolated(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pyte
 
     monkeypatch.setattr(_outbox_store, "connect", guarded_connect)
     yield sent
+
+
+@pytest.fixture(autouse=True)
+def _backups_never_go_to_the_real_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch):
+    """D.8: a backup made without an explicit folder goes to ~/kratos-backups -- never in a
+    test (an early run of the restore tests wrote there)."""
+    from kratos.backup import create as _bc
+
+    monkeypatch.setattr(_bc, "DEFAULT_DEST", tmp_path_factory.mktemp("kratos-backups"))

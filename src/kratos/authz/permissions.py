@@ -45,6 +45,8 @@ AUDIT_PRUNE = "audit.prune"
 KEYS_MANAGE = "keys.manage"               # signing key, sealing keys, TLS keys
 TOOLS_MANAGE = "tools.manage"             # evo-loop: write and keep a new tool
 SESSIONS_ALL = "sessions.all"             # see every user's sessions (read-only)
+BACKUP_MANAGE = "backup.manage"           # D.8: create, verify, drill and schedule backups; backup keys
+BACKUP_RESTORE = "backup.restore"         # D.8: restore and prune backups (CLI only, too)
 LOCAL_RUN = "local.run"                   # anything else done at the Kratos host's TUI/CLI (owner only)
 
 VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN})
@@ -52,7 +54,7 @@ INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECID
 ADMIN = INVESTIGATOR | frozenset({
     USERS_MANAGE, TOKENS_MANAGE, CHANNELS_MANAGE, SETTINGS_CHANGE, BUDGET_CHANGE, ENROL, FIXCHANNEL_CONSENT,
     EXPORT_FULL, GROUPS_MANAGE, ASSETS_MANAGE, SCHEDULES_MANAGE, DETECT_MANAGE, DATA_PRUNE, AUDIT_READ,
-    AUDIT_PRUNE, KEYS_MANAGE, TOOLS_MANAGE, SESSIONS_ALL, LOCAL_RUN,
+    AUDIT_PRUNE, KEYS_MANAGE, TOOLS_MANAGE, SESSIONS_ALL, LOCAL_RUN, BACKUP_MANAGE, BACKUP_RESTORE,
 })
 
 TABLE: dict[str, frozenset[str]] = {"viewer": VIEWER, "investigator": INVESTIGATOR, "admin": ADMIN}

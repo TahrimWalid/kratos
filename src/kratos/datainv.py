@@ -32,6 +32,15 @@ PERSONAL = "yes"
 NOT_PERSONAL = "no"
 SECRET = "secret"
 
+# What a backup does with a category (docs/phaseD/D.8 §3.3). Every category has one;
+# tests/test_datainv.py fails on a category without it, so new data can't be silently
+# left out of `kratos backup`.
+BACKUP_INCLUDE = "include"          # in every backup
+BACKUP_SECRET = "secret"            # in, listed separately, left out by --without-secrets
+BACKUP_REBUILDABLE = "rebuildable"  # out by default (backup_note names the rebuild command); --include-rebuildable
+BACKUP_NEVER = "never"              # scratch that must not travel (backup_note says why)
+BACKUP_CLASSES = (BACKUP_INCLUDE, BACKUP_SECRET, BACKUP_REBUILDABLE, BACKUP_NEVER)
+
 
 @dataclass(frozen=True)
 class TableRef:
@@ -54,6 +63,9 @@ class Category:
     state_files: tuple[str, ...] = ()  # globs relative to Kratos's own folder (outside the data folder)
     prunable: bool = False           # `kratos data prune --category <key>` handles it
     note: str = ""                   # anything the person should know (e.g. a rolling buffer)
+    backup: str = ""                 # one of BACKUP_CLASSES (required)
+    backup_note: str = ""            # why it is never backed up, or how to rebuild it
+    config_files: tuple[str, ...] = ()  # globs relative to the settings folder (paths.CONFIG_DIR)
 
 
 CATEGORIES: tuple[Category, ...] = (
@@ -64,6 +76,7 @@ CATEGORIES: tuple[Category, ...] = (
         files=("sessions",),
         tables=(TableRef(DB, ("sessions", "goal_history", "session_usage"), ("goal_history", "started_at")),),
         prunable=True,
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "chat_server", "Chat-client server (kratos serve)",
@@ -76,6 +89,7 @@ CATEGORIES: tuple[Category, ...] = (
         files=("serve",),
         tables=(TableRef(DB, ("serve_tokens", "serve_sessions", "serve_audit"), ("serve_audit", "at")),),
         note="revoke a token with `kratos serve token revoke`; nothing here is pruned automatically",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "traces", "Run records (traces)",
@@ -84,6 +98,7 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one file per run (usually tens to hundreds of KB)",
         files=("traces",),
         prunable=True,
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "host_events", "Host events",
@@ -93,6 +108,7 @@ CATEGORIES: tuple[Category, ...] = (
         prunable=True,
         note="host_event_terms is the hunt's search index over these lines (addresses, accounts, hashes, programs, "
              "paths, domains); it is pruned with them",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "hunts", "Hunts",
@@ -106,6 +122,7 @@ CATEGORIES: tuple[Category, ...] = (
         files=("hunt",),
         note="the indicator typed is personal data; HUNT-001 findings from automatic hunts are kept with the "
              "findings; `kratos data prune --category hunts` removes old hunt records",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "pseudonyms", "Placeholder map (masking)",
@@ -116,6 +133,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("pseudonym_map",), ("pseudonym_map", "first_seen")),),
         prunable=True,
         note="a conversation's map goes when you prune that conversation; maps of runs without one by age",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "findings", "Findings and decisions",
@@ -127,6 +145,7 @@ CATEGORIES: tuple[Category, ...] = (
                               "anomalies", "daily_summary", "findings"), ("finding_events", "at")),),
         note="open decisions point at findings history; code verdicts and the model's suggestions sit "
              "alongside; kept unless you delete it yourself",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "snapshots", "Collected snapshots",
@@ -140,6 +159,7 @@ CATEGORIES: tuple[Category, ...] = (
                "containers"),
         tables=(TableRef(DB, ("persistence_baseline", "pkg_inventory"), ("pkg_inventory", "taken_at")),),
         note="`kratos snapshots prune` thins old ones (preview first)",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "collection_state", "Collection bookkeeping",
@@ -147,6 +167,7 @@ CATEGORIES: tuple[Category, ...] = (
         NOT_PERSONAL, "a few rows per check per machine",
         tables=(TableRef(DB, ("collect_state", "snapshots", "log_file_state", "seal_verifications", "disk_samples"),
                          ("collect_state", "started_at")),),
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "detection", "Detection rules: passes, results and your rule changes",
@@ -159,6 +180,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("detect_runs", "detect_rule_overrides", "detect_own_sessions"),
                          ("detect_runs", "started_at")),),
         note="kept unless you delete it yourself; the matches are pruned with host events",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "watch", "Continuous detection on agents",
@@ -171,12 +193,14 @@ CATEGORIES: tuple[Category, ...] = (
                       "(newest 500)",
         tables=(TableRef(DB, ("detect_pack_state", "detect_watch"), ("detect_watch", "updated_at")),),
         note="kept unless you delete it yourself",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "log_sync", "Log-sync positions and coverage",
         "Where Kratos stopped reading each log, and which periods it has read completely.",
         NOT_PERSONAL, "one row per log source per machine, plus one per gap",
         tables=(TableRef(DB, ("sync_cursors", "sync_coverage"), ("sync_coverage", "end_ts")),),
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "vulndb", "Vulnerability data",
@@ -187,18 +211,21 @@ CATEGORIES: tuple[Category, ...] = (
                                   "advisory_cves", "precise_cves", "seen", "kev", "epss", "cvss",
                                   "ssvc_inputs")),),
         note="public data, rebuilt from its sources on update",
+        backup=BACKUP_REBUILDABLE, backup_note='public data: `kratos vulndb-update` downloads it again',
     ),
     Category(
         "threat_intel", "Threat-intel cache",
         "The offline AlienVault OTX reputation list.",
         NOT_PERSONAL, "replaced on each refresh",
         files=("threat_intel_cache",),
+        backup=BACKUP_REBUILDABLE, backup_note='public data: `kratos threat-intel-sync` downloads it again',
     ),
     Category(
         "budget", "Budget ledger",
         "Every model call's tokens and cost, and spending-limit notices.",
         NOT_PERSONAL, "one row per model call",
         tables=(TableRef(DB, ("budget_ledger", "budget_state"), ("budget_ledger", "at")),),
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "subagent", "Sub-agent pairing and telemetry",
@@ -212,6 +239,7 @@ CATEGORIES: tuple[Category, ...] = (
                          ("subagent_connection_events", "at")),),
         note=("live status keeps the newest 500 telemetry rows and 200 connection events per machine; "
               "unused pairing codes are removed a week after they expire"),
+        backup=BACKUP_INCLUDE, backup_note='the pairing tokens in it are withheld by --without-secrets (the agents must then be paired again)',
     ),
     Category(
         "subagent_installers", "Sub-agent installer scripts",
@@ -219,6 +247,7 @@ CATEGORIES: tuple[Category, ...] = (
         "a one-time pairing code.",
         SECRET, "one file per machine you set up",
         files=("kratos-subagent-install-*", "kratos-subagent-upgrade-*"),
+        backup=BACKUP_NEVER, backup_note='an install script holds a one-time pairing code; Kratos writes a new one when you set up or update a machine',
     ),
     Category(
         "ssh_certificates", "SSH certificates",
@@ -228,6 +257,7 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one row per enrolled machine, one per certificate issued, a few CA-key records",
         tables=(TableRef(DB, ("ssh_ca_keys", "ssh_certs", "ssh_enrolment"), ("ssh_certs", "issued_at")),),
         note="kept unless you remove them; manage with `kratos ssh-ca`",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "ssh_ca", "SSH certificate authority keys",
@@ -238,12 +268,14 @@ CATEGORIES: tuple[Category, ...] = (
         files=("ssh-ca",),
         note="protection mode (file/agent/token/tpm) is shown by `kratos ssh-ca status`; this folder never leaves "
              "the Kratos host",
+        backup=BACKUP_SECRET, backup_note='a TPM-sealed key is unsealed in memory into the encrypted backup; a key held on a token stays on the token (keep the token)',
     ),
     Category(
         "seal_keys", "Journal seal keys",
         "The keys that verify each machine's sealed journal. Keep them private.",
         SECRET, "one small file per machine",
         files=("fss",),
+        backup=BACKUP_SECRET,
     ),
     Category(
         "agent_link_keys", "Agent link keys",
@@ -253,6 +285,7 @@ CATEGORIES: tuple[Category, ...] = (
         SECRET, "fixed: one active key with its certificate and one backup key",
         files=("subagent-tls",),
         note="replaced only when you run `kratos subagent-tls rotate`",
+        backup=BACKUP_SECRET,
     ),
     Category(
         "settings", "Settings, presets, schedules and triggers",
@@ -260,6 +293,7 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one file per preset/schedule/trigger; a line per scheduled run",
         files=("presets", "schedules", "triggers", "kratos_local_config.json"),
         tables=(TableRef(DB, ("app_settings", "schema_versions", "data_prunes"), ("data_prunes", "at")),),
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "assets", "Machines (asset records)",
@@ -268,6 +302,7 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one row per machine; one row per edit",
         tables=(TableRef(DB, ("assets", "asset_events"), ("asset_events", "at")),),
         note="kept until you remove them; edit with /assets or `kratos assets set`",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "fleet", "Groups and fleet runs",
@@ -277,6 +312,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("machine_groups", "group_members", "fleet_runs", "fleet_run_machines"),
                          ("fleet_runs", "started_at")),),
         note="kept until you remove them; groups are edited with /groups or `kratos groups`",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "outbox", "Outbox: messages sent to your channels",
@@ -291,6 +327,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("outbox", "outbox_attempts", "outbox_lease", "forward_cursors", "channels",
                               "channel_events"), ("outbox", "created_at")),),
         note="delivered and dead messages are kept until you prune them: `kratos outbox prune` (shown first)",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "channel_secrets", "Channel secrets",
@@ -298,6 +335,7 @@ CATEGORIES: tuple[Category, ...] = (
         "passwords, syslog client keys. Never stored in the database, never shown.",
         SECRET, "one small file per channel that has a secret",
         files=("channel-secrets",),
+        backup=BACKUP_SECRET,
     ),
     Category(
         "users", "Users and their machines",
@@ -307,6 +345,7 @@ CATEGORIES: tuple[Category, ...] = (
         PERSONAL, "one row per user, per scope entry and per Open WebUI mapping",
         tables=(TableRef(DB, ("users", "user_scopes", "user_gateway_ids"), ("users", "created_at")),),
         note="changed only by the owner (`kratos users`, /users); disabling keeps the row",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "audit", "Audit trail",
@@ -317,6 +356,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("audit_log", "audit_log_prune_permit"), ("audit_log", "at")),),
         note="`kratos audit prune --older-than 365d --apply` removes old rows (preview first; the prune itself is "
              "recorded)",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "gateway_secrets", "Shared Open WebUI secrets",
@@ -324,6 +364,7 @@ CATEGORIES: tuple[Category, ...] = (
         "token it can act as every mapped user -- keep both private.",
         SECRET, "one small file per gateway token",
         files=("gateway-secrets",),
+        backup=BACKUP_SECRET,
     ),
     Category(
         "signing_key", "Kratos signing key",
@@ -334,6 +375,7 @@ CATEGORIES: tuple[Category, ...] = (
         files=("signing",),
         note="its fingerprint is shown by /doctor and `kratos signing status`; `kratos signing rotate` keeps old "
              "public keys verifiable",
+        backup=BACKUP_SECRET,
     ),
     Category(
         "evidence_ledger", "Evidence ledger",
@@ -344,6 +386,7 @@ CATEGORIES: tuple[Category, ...] = (
         tables=(TableRef(DB, ("evidence_ledger",), ("evidence_ledger", "written_at")),),
         note="append-only (SQL refuses an edit or delete); `kratos evidence verify` checks the chain and every "
              "recorded file against it",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "exports", "Incident exports",
@@ -354,25 +397,63 @@ CATEGORIES: tuple[Category, ...] = (
         files=("exports",),
         note="a redacted bundle holds placeholders, not names; each export is listed by `kratos export list` (who, "
              "when, scope, hashes) and stays until you delete its folder",
+        backup=BACKUP_INCLUDE,
     ),
     Category(
         "kept_tools", "Kept tools",
         "Tools you approved with /evolve, their metadata and the test that defines each.",
         NOT_PERSONAL, "one file per tool you keep",
-        state_files=("kept_tools", "evolve_harnesses", "sandbox_staging"),
+        state_files=("kept_tools", "evolve_harnesses", "tests/self_write_harnesses"),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
+        "sandbox", "Tool candidates waiting for their sandbox test",
+        "Code /evolve wrote that hasn't passed its test or been approved yet.",
+        NOT_PERSONAL, "one file per candidate; disposable",
+        state_files=("sandbox_staging",),
+        backup=BACKUP_NEVER, backup_note="unapproved candidate code, disposable by design",
+    ),
+    Category(
+        "settings_file", "Settings file (.env)",
+        "The model you use and its API key, the SSH login Kratos uses, notification settings and other "
+        "connection settings.",
+        SECRET, "fixed: one small file",
+        config_files=(".env",),
+        backup=BACKUP_SECRET,
+        note="holds API keys; `kratos init` writes it",
+    ),
+    Category(
+        "llm_models", "Local model files",
+        "Model files for running a model on this computer (only if you set one up).",
+        NOT_PERSONAL, "one large file per model you download",
+        state_files=("llm/models",),
+        backup=BACKUP_REBUILDABLE, backup_note="download the model file again",
+    ),
+    Category(
+        "backups", "Backup runs",
+        "Every backup made, checked, drilled, restored or pruned: when, by whom, the file and its SHA-256, the "
+        "size, which categories went in, the fingerprints of the keys it was encrypted to (never a secret), and "
+        "how it ended -- plus the timer files `kratos backup schedule` writes. The backups themselves are "
+        "outside the data folder (~/kratos-backups by default) and are encrypted.",
+        PERSONAL, "one row per backup, check, drill, restore or prune",
+        files=("backup",),
+        tables=(TableRef(DB, ("backup_runs",), ("backup_runs", "started_at")),),
+        backup=BACKUP_INCLUDE,
+        note="the backup files stay until you prune them yourself: `kratos backup prune --keep N`",
     ),
     Category(
         "vulscan", "nmap vulscan CVE list",
         "The CVE list nmap's vulscan script matches services against.",
         NOT_PERSONAL, "replaced by `kratos vulscan-install`",
         state_files=("vulscan",),
+        backup=BACKUP_REBUILDABLE, backup_note='public data: `kratos vulscan-install` downloads it again',
     ),
 )
 
 # Things in the data folder that are not stored data: lock files, sockets and the
 # scratch folder a step creates and empties again.
 RUNTIME_ENTRIES: tuple[str, ...] = ("locks", "tmp", "subagent-reads.sock", "*.tmp", ".*.tmp", "kratos.db-wal",
-                                    "kratos.db-shm", "kratos.db-journal")
+                                    "kratos.db-shm", "kratos.db-journal", ".backup-work")
 
 # The database file itself is accounted table by table.
 DATABASE_FILES: tuple[str, ...] = (DB,)
@@ -537,10 +618,11 @@ def _measure_tables(m: Measured, data_dir: Path, ref: TableRef, cache: dict[str,
                 m.newest = t if m.newest is None else max(m.newest, t)
 
 
-def measure(data_dir: Path, *, state_root: Path | None = None) -> list[Measured]:
+def measure(data_dir: Path, *, state_root: Path | None = None, config_root: Path | None = None) -> list[Measured]:
     """Every category, measured. Read-only."""
     data_dir = Path(data_dir)
     root = Path(state_root) if state_root is not None else paths.STATE_ROOT
+    croot = Path(config_root) if config_root is not None else (root if state_root is not None else paths.CONFIG_DIR)
     cache: dict[str, Any] = {}
     out = []
     try:
@@ -550,6 +632,8 @@ def measure(data_dir: Path, *, state_root: Path | None = None) -> list[Measured]
                 _measure_glob(m, data_dir, f)
             for f in c.state_files:
                 _measure_glob(m, root, f)
+            for f in c.config_files:
+                _measure_glob(m, croot, f)
             for ref in c.tables:
                 try:
                     _measure_tables(m, data_dir, ref, cache)

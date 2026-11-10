@@ -1,0 +1,8 @@
+bip39_english.txt -- the English word list of BIP-0039 ("Mnemonic code for generating
+deterministic keys"), unchanged. Used by `kratos backup create --generate-passphrase` to
+offer six random words.
+
+Source:  https://github.com/bitcoin/bips/blob/master/bip-0039/english.txt
+sha256:  2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda
+Licence: MIT (BIP-0039's header: "License: MIT"; checked 2026-11-10)
+Authors: Marek Palatinus, Pavol Rusnak, Aaron Voisine, Sean Bowe

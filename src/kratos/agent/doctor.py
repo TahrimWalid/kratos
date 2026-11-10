@@ -734,12 +734,26 @@ def _check_ssh_certificates(out: list[Check], data_dir: Path) -> None:
                         fix="remove the old key on each, then `kratos ssh-ca verify <machine> --finish`"))
 
 
-def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
+_NETWORK_SECTIONS = ("LLM endpoint", "target")
+
+
+def _check_backups(out: list[Check], data_dir: Path) -> None:
+    from kratos.backup import status as backup_status
+
+    for row in backup_status.doctor_rows(data_dir):
+        out.append(_row(row["check"], row["status"], row["detail"], row.get("fix", "")))
+
+
+def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> list[Check]:
     """Run every diagnostic section, isolated so one failure can't abort the
     rest. Returns the flat list of {check, status, detail} rows. With `data_dir`, also
-    reports the saved-history horizon."""
+    reports the saved-history horizon. `offline` skips the sections that reach the
+    network or a machine (the model endpoint, the target) -- a backup drill runs it on a
+    restored copy."""
     out: list[Check] = []
-    sections = list(_SECTIONS)
+    sections = [s for s in _SECTIONS if not (offline and s[0] in _NETWORK_SECTIONS)]
+    if offline:
+        out.append(_row("offline", "info", "the model endpoint and the target were not contacted (--offline)"))
     if data_dir is not None:
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
@@ -754,6 +768,7 @@ def run_diagnostics(data_dir: Path | None = None) -> list[Check]:
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
+        sections.append(("backups", lambda o: _check_backups(o, Path(data_dir))))
     for name, fn in sections:
         try:
             fn(out)

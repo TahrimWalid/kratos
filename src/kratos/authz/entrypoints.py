@@ -55,6 +55,8 @@ CLI: dict[str, Entry] = {
     "cmd_assets": CORE("kratos.assets.store:_check_actor"),
     "cmd_attack_layer": READ("writes an ATT&CK Navigator file from stored findings"),
     "cmd_audit": A(P.AUDIT_READ, "kratos.authz.audit:prune"),
+    "cmd_backup": CORE("kratos.backup.create:_authorize", "kratos.backup.restore:_authorize",
+                       "kratos.backup.prune:_authorize"),
     "cmd_baseline_compare": A(P.INVESTIGATE),
     "cmd_baseline_create": A(P.INVESTIGATE),
     "cmd_budget": CORE("kratos.settings_store:set", "kratos.budget.breaker:resume"),
@@ -171,6 +173,7 @@ TUI: dict[str, Entry] = {
     "/scan": A(P.INVESTIGATE), "/logs-parse": A(P.INVESTIGATE), "/findings-generate": A(P.INVESTIGATE),
     "/users": CORE("kratos.authz.users:_require", "kratos.serve.auth:_people_only"),
     "/audit": A(P.AUDIT_READ),
+    "/backup": CORE("kratos.backup.create:_authorize"), "/backups": CORE("kratos.backup.create:_authorize"),
 }
 
 

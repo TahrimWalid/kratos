@@ -552,6 +552,13 @@ def main(argv: list[str] | None = None) -> int:
     from kratos import authz
 
     authz.set_local_interface("tui")     # D.7: the owner at the TUI, in the audit trail
+    from kratos.backup import inuse as _inuse
+
+    try:
+        _inuse.hold(args.data_dir, "the Kratos app")   # D.8: a restore refuses while the app has the data open
+    except _inuse.InUseError as e:
+        print(f"[KRATOS] {e}", file=sys.stderr)
+        return 2
     from kratos.budget import guard as _budget_guard
 
     _budget_guard.migrate_at_startup(args.data_dir)  # 0.4 upgrade: keep existing investigate triggers working
