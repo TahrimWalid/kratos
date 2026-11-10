@@ -87,7 +87,15 @@ def _step_1(conn: sqlite3.Connection) -> None:
     )
 
 
-_STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    """D.7: which Kratos user each call was for (per-user daily caps). NULL = before users
+    existed, or a run of the owner's."""
+    if "user_id" not in {r[1] for r in conn.execute("PRAGMA table_info(budget_ledger)")}:
+        conn.execute("ALTER TABLE budget_ledger ADD COLUMN user_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS budget_ledger_user_day ON budget_ledger(user_id, day)")
+
+
+_STEPS = (_step_1, _step_2)
 
 
 @dataclass(frozen=True)
@@ -177,16 +185,16 @@ class BudgetLedger:
                est_tokens: int | None = None, est_cost_usd: float | None = None,
                prompt_tokens: int | None = None, completion_tokens: int | None = None,
                total_tokens: int | None = None, cost_usd: float | None = None,
-               cost_source: str | None = None, note: str | None = None) -> int:
+               cost_source: str | None = None, note: str | None = None, user_id: str | None = None) -> int:
         if status not in STATUSES:
             raise ValueError(f"unknown ledger status {status!r}")
         cur = conn.execute(
             "INSERT INTO budget_ledger (at, day, status, source, run_id, parent_run_id, session_id, target, "
             "model, local, prompt_tokens, completion_tokens, total_tokens, est_tokens, est_cost_usd, cost_usd, "
-            "cost_source, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "cost_source, note, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (at, day, status, source, run_id, parent_run_id, session_id, target, model or "unknown",
              int(bool(local)), prompt_tokens, completion_tokens, total_tokens, est_tokens, est_cost_usd,
-             cost_usd, cost_source, note))
+             cost_usd, cost_source, note, user_id))
         return int(cur.lastrowid)
 
     def settle(self, row_id: int, *, prompt_tokens: int, completion_tokens: int, total_tokens: int,
@@ -213,6 +221,19 @@ class BudgetLedger:
             f"FROM budget_ledger WHERE day = ? AND status IN ({calls})", (day,)).fetchone()
         return DayTotals(cost_usd=float(row["cost"]), unattended_cost_usd=float(row["ucost"]),
                          unpriced_tokens=int(row["utok"]), tokens=int(row["tok"]), calls=int(row["calls"]))
+
+    @staticmethod
+    def user_day_cost(conn: sqlite3.Connection, day: str, user_id: str) -> float:
+        """One user's spending today (reservations at their estimate) -- D.7's per-user cap."""
+        calls = ",".join(f"'{s}'" for s in _CALL_STATUSES)
+        row = conn.execute(f"SELECT COALESCE(SUM({_row_cost_sql()}), 0) AS cost FROM budget_ledger "
+                           f"WHERE day = ? AND user_id = ? AND status IN ({calls})", (day, user_id)).fetchone()
+        return float(row["cost"])
+
+    def user_cost_for_day(self, day: str, user_id: str) -> float:
+        with self.connect() as conn:
+            self.expire_stale(conn, time.time())
+            return self.user_day_cost(conn, day, user_id)
 
     @staticmethod
     def run_totals(conn: sqlite3.Connection, run_id: str) -> RunTotals:

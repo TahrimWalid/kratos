@@ -70,6 +70,10 @@ class BudgetExceeded(Exception):
             return (f"Model use by {self.source} runs is paused{(' ' + self.detail) if self.detail else ''} "
                     "-- resume it in Settings -> Budget.")
         label = L.SCOPE_LABEL.get(self.scope, self.scope)
+        if self.scope == L.SCOPE_USER_COST:
+            return (f"Stopped by budget: {label} is used up ({L.format_amount(self.scope, self.spent)} of "
+                    f"{L.format_amount(self.scope, self.limit)} today). It resets tomorrow; the Kratos owner "
+                    "can change it (budget.user_daily_usd).")
         return (f"Stopped by budget: {label} is used up ({L.format_amount(self.scope, self.spent)} of "
                 f"{L.format_amount(self.scope, self.limit)}). Change it in Settings -> Budget.")
 
@@ -257,9 +261,14 @@ def _ask(question: OverCapQuestion) -> bool:
 
 
 def _first_exceeded(conn: Any, lim: L.Limits, *, source: str, run_id: str | None, overrides: set[str],
-                    day: str, est_tokens: int, est_cost: float | None, local: bool
-                    ) -> tuple[str, float, float] | None:
+                    day: str, est_tokens: int, est_cost: float | None, local: bool,
+                    user_id: str | None = None) -> tuple[str, float, float] | None:
     """(scope, limit, spent so far) for the first cap this call would cross."""
+    priced_call = not local and est_cost is not None
+    if user_id and priced_call:   # D.7: a user's own cap comes first -- their figure, not the server's
+        mine = BudgetLedger.user_day_cost(conn, day, user_id)
+        if mine + est_cost > lim.user_daily_cost_usd + _EPS:
+            return L.SCOPE_USER_COST, lim.user_daily_cost_usd, mine
     if run_id is not None:
         run = BudgetLedger.run_totals(conn, run_id)
         if L.SCOPE_RUN_TOKENS not in overrides and run.tokens + est_tokens > lim.run_tokens:
@@ -279,11 +288,21 @@ def _first_exceeded(conn: Any, lim: L.Limits, *, source: str, run_id: str | None
     return None
 
 
+def _metered_user() -> str | None:
+    """The Kratos user a model call is spent for (D.7) -- None for the owner, whose
+    spending the per-source caps already govern."""
+    from kratos import authz
+
+    actor = authz.current_actor()
+    uid = getattr(actor, "user_id", None)
+    return uid if uid and uid != "owner" else None
+
+
 def _row_fields(source: str, ctx: Any) -> dict[str, Any]:
     if ctx is None:
-        return {"source": source}
+        return {"source": source, "user_id": _metered_user()}
     return {"source": source, "run_id": ctx.run_id, "parent_run_id": ctx.parent_run_id,
-            "session_id": ctx.session_id, "target": ctx.target}
+            "session_id": ctx.session_id, "target": ctx.target, "user_id": _metered_user()}
 
 
 def _hard_limit_notification(ledger: BudgetLedger, scope: str, limit: float, spent: float, day: str) -> None:
@@ -331,7 +350,8 @@ def before_call(*, est_prompt_tokens: int, max_completion_tokens: int, model: st
             ledger.expire_stale(conn, now)
             overrides = BudgetLedger.run_overrides(conn, run_id) if run_id else set()
             over = _first_exceeded(conn, lim, source=source, run_id=run_id, overrides=overrides, day=day,
-                                   est_tokens=est_tokens, est_cost=est_cost, local=local)
+                                   est_tokens=est_tokens, est_cost=est_cost, local=local,
+                                   user_id=fields.get("user_id"))
             if over is None:
                 row_id = ledger.insert(conn, at=now, day=day, status=RESERVED, model=model, local=local,
                                        est_tokens=est_tokens, est_cost_usd=est_cost,
@@ -339,7 +359,7 @@ def before_call(*, est_prompt_tokens: int, max_completion_tokens: int, model: st
                 return Reservation(row_id, ledger, model, local, est_tokens, source, run_id)
         scope, limit, spent = over
         question = OverCapQuestion(scope, limit, spent, source)
-        if _attended(source) and _ask(question):
+        if _attended(source) and scope != L.SCOPE_USER_COST and _ask(question):
             with ledger.transaction() as conn:
                 ledger.insert(conn, at=time.time(), day=day, status=OVERRIDE, model=model, local=local,
                               note=json.dumps({"scope": scope, "limit": limit, "spent": spent,
@@ -443,7 +463,11 @@ def precheck(source: str, *, data_dir_: Path | None = None, breaker_key: str | N
         lim = L.read(dd)
         totals = ledger.totals_for_day(day)
         priced = not local and pricing.rate_for(model, dd) is not None
-        if priced and totals.cost_usd >= lim.daily_cost_usd - _EPS:
+        user = _metered_user()
+        mine = ledger.user_cost_for_day(day, user) if user and priced else 0.0
+        if user and priced and mine >= lim.user_daily_cost_usd - _EPS:
+            refusal = BudgetExceeded(L.SCOPE_USER_COST, lim.user_daily_cost_usd, mine, source=source)
+        elif priced and totals.cost_usd >= lim.daily_cost_usd - _EPS:
             refusal = BudgetExceeded(L.SCOPE_DAILY_COST, lim.daily_cost_usd, totals.cost_usd, source=source)
         elif not priced and totals.unpriced_tokens >= lim.daily_tokens:
             refusal = BudgetExceeded(L.SCOPE_DAILY_TOKENS, lim.daily_tokens, totals.unpriced_tokens, source=source)
@@ -498,7 +522,7 @@ def ensure_upgrade_migration(dd: Path, ledger: BudgetLedger | None = None) -> No
         investigating = sorted(t.name for t in found if getattr(t, "action", None) == "investigate")
         if ledger.state_claim(MIGRATION_KEY, {"at": time.time(), "triggers": investigating}):
             if investigating:
-                settings_store.set(L.TRIGGER_INVESTIGATIONS, True, data_dir=dd, actor="upgrade:0.4")
+                settings_store.set_by_upgrade(L.TRIGGER_INVESTIGATIONS, True, data_dir=dd, step="0.4")
                 text = ("Budget caps are new: triggers that start an investigation ("
                         + ", ".join(investigating) + ") keep doing so -- 'Triggers may start investigations' "
                         "was turned on for you. Settings -> Budget to change it.")

@@ -167,6 +167,12 @@ def resume(data_dir: Path, key: str, *, actor: str) -> bool:
     if tool:
         raise settings_store.SettingError(f"resuming a paused source is a person's decision -- refused inside "
                                           f"the tool call {tool!r}")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require_person(authz.P.BUDGET_CHANGE, data_dir=data_dir, obj=f"resume {key}")
+    except authz.Denied as e:
+        raise settings_store.SettingError(str(e)) from None
     ledger = BudgetLedger(data_dir)
     pause = active_pause(ledger, key)
     if pause is None:
