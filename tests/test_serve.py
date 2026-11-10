@@ -587,7 +587,7 @@ def test_mcp_start_returns_at_once_then_poll_gives_progress_and_the_answer(env):
 
 def test_mcp_start_refuses_a_machine_outside_the_tokens_scope(env):
     out = _mcp_call(env, "kratos_start_investigation", {"goal": "x", "target": OTHER})
-    assert "may not investigate" in out["error"]
+    assert "that you may investigate" in out["error"]
     assert env["calls"]["agent"] == []
 
 

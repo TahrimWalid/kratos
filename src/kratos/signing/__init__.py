@@ -137,6 +137,7 @@ def retired_public_keys(data_dir: Path | str) -> list[str]:
 def rotate(data_dir: Path | str) -> KeyInfo:
     """A new active key; the old public key goes to ``retired/`` (still verifiable), its
     private copy stays in ``backup/``. A person's command (``kratos signing rotate``)."""
+    _authorize_change(data_dir, "rotate the signing key")
     old = load_key(data_dir, create=False)
     d = folder(data_dir)
     if old is not None:
@@ -161,3 +162,13 @@ def verify(signature: bytes, data: bytes, public_openssh: str) -> bool:
         return True
     except InvalidSignature:
         return False
+
+
+def _authorize_change(data_dir, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.KEYS_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None

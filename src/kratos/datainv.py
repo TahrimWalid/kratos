@@ -300,6 +300,32 @@ CATEGORIES: tuple[Category, ...] = (
         files=("channel-secrets",),
     ),
     Category(
+        "users", "Users and their machines",
+        "The people who may use Kratos through the chat server: name, role (viewer / investigator / admin), "
+        "disabled or not, the machines and groups each may see, and which shared Open WebUI user ids map to whom "
+        "(with the email shown to the owner). The owner is always here.",
+        PERSONAL, "one row per user, per scope entry and per Open WebUI mapping",
+        tables=(TableRef(DB, ("users", "user_scopes", "user_gateway_ids"), ("users", "created_at")),),
+        note="changed only by the owner (`kratos users`, /users); disabling keeps the row",
+    ),
+    Category(
+        "audit", "Audit trail",
+        "Every allowed and refused action, with the person, the door (TUI, CLI, MCP, chat server, schedule), the "
+        "credential (token id, or the gateway token and forwarded Open WebUI user), the machine, what it was about "
+        "and why a refusal happened. Append-only.",
+        PERSONAL, "one row per recorded action (each investigation, decision, change and refusal)",
+        tables=(TableRef(DB, ("audit_log", "audit_log_prune_permit"), ("audit_log", "at")),),
+        note="`kratos audit prune --older-than 365d --apply` removes old rows (preview first; the prune itself is "
+             "recorded)",
+    ),
+    Category(
+        "gateway_secrets", "Shared Open WebUI secrets",
+        "The secret a shared Open WebUI signs each user's identity with (one per gateway token). Together with its "
+        "token it can act as every mapped user -- keep both private.",
+        SECRET, "one small file per gateway token",
+        files=("gateway-secrets",),
+    ),
+    Category(
         "signing_key", "Kratos signing key",
         "Kratos's Ed25519 key that signs webhook messages (v1a), exported incident bundles and the evidence "
         "ledger's daily checkpoints; with a "

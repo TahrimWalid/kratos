@@ -114,6 +114,10 @@ class SessionStore:
                 # empty string (which /rename's own validation rejects
                 # outright, see cli/repl.py).
                 conn.execute("ALTER TABLE sessions ADD COLUMN name TEXT")
+            if "owner_user_id" not in existing_session_cols:
+                # D.7: a session belongs to the Kratos user who started it; every
+                # session made before users existed is the owner's.
+                conn.execute("ALTER TABLE sessions ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT 'owner'")
             existing_goal_cols = {r["name"] for r in conn.execute("PRAGMA table_info(goal_history)").fetchall()}
             if "archived_at" not in existing_goal_cols:
                 conn.execute("ALTER TABLE goal_history ADD COLUMN archived_at TEXT")
@@ -128,16 +132,25 @@ class SessionStore:
     # Sessions
     # ------------------------------------------------------------------
 
-    def create_session(self, targets: list[str], model_backend: str) -> str:
+    def create_session(self, targets: list[str], model_backend: str, owner_user_id: str | None = None) -> str:
+        """`owner_user_id`: the Kratos user the session belongs to (D.7) -- default the
+        person acting right now (the owner at the TUI/CLI)."""
+        if owner_user_id is None:
+            from kratos import authz
+
+            actor = authz.current_actor()
+            if actor is None:
+                raise PermissionError("a session needs a person: no Kratos user is attached to this request")
+            owner_user_id = getattr(actor, "user_id", None) or "owner"
         session_id = uuid.uuid4().hex[:12]
         now = utc_now_iso()
         conn = _connect(self.db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
-                "INSERT INTO sessions (session_id, created_at, last_active_at, targets, model_backend) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (session_id, now, now, json.dumps(targets), model_backend),
+                "INSERT INTO sessions (session_id, created_at, last_active_at, targets, model_backend, owner_user_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, now, now, json.dumps(targets), model_backend, owner_user_id),
             )
             conn.execute("COMMIT")
         except Exception:
@@ -235,7 +248,8 @@ class SessionStore:
         finally:
             conn.close()
 
-    def list_recent_sessions(self, limit: int = 10, offset: int = 0) -> list[dict[str, Any]]:
+    def list_recent_sessions(self, limit: int = 10, offset: int = 0,
+                             owner_user_id: str | None = None) -> list[dict[str, Any]]:
         """Most recent first, each annotated with its most recent NON-
         ARCHIVED goal (for the chooser's "goal snippet" column) -- a
         session with no (unarchived) turns yet, either genuinely new or
@@ -251,10 +265,17 @@ class SessionStore:
         behavior, unaffected."""
         conn = _connect(self.db_path)
         try:
-            rows = conn.execute(
-                "SELECT * FROM sessions WHERE status != 'archived' ORDER BY last_active_at DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
+            if owner_user_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE status != 'archived' ORDER BY last_active_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+            else:   # D.7: one user's own sessions
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE status != 'archived' AND owner_user_id = ? "
+                    "ORDER BY last_active_at DESC LIMIT ? OFFSET ?",
+                    (owner_user_id, limit, offset),
+                ).fetchall()
             out = []
             for row in rows:
                 d = dict(row)

@@ -306,6 +306,12 @@ def apply_prune(data_dir: Path, plan: Plan, *, actor: str, force_orphans: bool =
     actor = str(actor or "").strip()
     if not actor:
         raise PruneError("a prune needs an actor -- who asked for it")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require_person(authz.P.DATA_PRUNE, data_dir=data_dir, obj=f"prune {plan.category}")
+    except authz.Denied as e:
+        raise PruneError(str(e)) from None
     if plan.blockers and not force_orphans:
         raise PruneError("other data depends on this: " + " ".join(plan.blockers))
     data_dir = Path(data_dir)

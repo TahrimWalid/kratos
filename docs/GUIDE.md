@@ -2730,9 +2730,9 @@ the app, Kratos is a **model named after a machine**: pick `kratos/web-01` and a
 comes from the model you picked, never from the words in your message — with the
 same checks, answer checks, masking and spending limits as in the Kratos app.
 
-It is meant for **your own** chat app. Several people sharing one Open WebUI
-through one Kratos isn't supported yet: there are no per-person permissions or
-budgets.
+On your own it just works: every token is yours. To let other people in — each
+with their own machines, role and budget, through their own tokens or a shared
+Open WebUI — see *Sharing Kratos with other people* below.
 
 ### Setting it up
 
@@ -2745,7 +2745,10 @@ budgets.
 
    `--targets` lists the machines this token may investigate (each becomes a
    model). Without it, the token reaches only your default machine. Add `--mcp`
-   if an agent host should use the MCP door too.
+   if an agent host should use the MCP door too. New tokens expire after 90 days
+   (`users.token_days`); `kratos tokens rotate <id>` gives a replacement, and
+   `kratos tokens create --name owui --days never` makes one of your own that
+   never expires (`/doctor` lists those).
 
 2. **Start the server.** It listens on `127.0.0.1:8770` — this computer only:
 
@@ -2768,7 +2771,7 @@ container):
 
 | Variable | Why |
 | --- | --- |
-| `ENABLE_FORWARD_USER_INFO_HEADERS=true` | Open WebUI then sends the chat's id, so each chat in Open WebUI is one Kratos session (follow-up questions keep their context). The user name it sends is written to Kratos's audit log only — never used for permissions. |
+| `ENABLE_FORWARD_USER_INFO_HEADERS=true` | Open WebUI then sends the chat's id, so each chat in Open WebUI is one Kratos session (follow-up questions keep their context). The plain user name it sends is written to Kratos's audit log only — never used for permissions. (A *shared* Open WebUI signs who each user is; see below.) |
 | `AIOHTTP_CLIENT_TIMEOUT=900` | Open WebUI gives up on a reply after 300 s by default; a slow investigation can take longer. |
 
 Open WebUI also asks the selected model for a chat title and tags after each
@@ -2803,10 +2806,14 @@ so they cost nothing.
 
 These work without using the model: `/findings` (open findings for the
 machine), `/usage` (today's spending), `/retest <key>` (re-collect and re-check a
-finding), `/hunt <indicator>` (search what Kratos holds — only on the machines this
-token may see; it takes a slot and counts in the hourly limit like `/retest`), `/help`. **Not available from a chat app** — use the Kratos app:
-`/evolve`, `/whitelist`, `/run-fix`, accepting or dismissing findings, settings,
-target setup, presets, and anything that would ask for your approval. Tools that
+finding), `/hunt <indicator>` (search what Kratos holds — only on the machines you
+may see; it takes a slot and counts in the hourly limit like `/retest`),
+`/decide <key> false-positive <reason>` (and `verify`, `out-of-scope`, `reopen`,
+`accept <days> <reason>` — record a decision about one finding on this machine,
+recorded with your name; investigators and admins), `/help`. **Not available from
+a chat app** — use the Kratos app: `/evolve`, `/whitelist`, `/run-fix`, users,
+tokens, settings, channels, target setup, presets, a decision for every machine
+at once, and anything that would ask for your approval. Tools that
 could stop to ask you are left out of investigations started from a chat app, so
 nothing there can change a machine.
 
@@ -2891,6 +2898,91 @@ reverse proxy every client shares one address, and a stranger's guesses must not
 user name the app forwarded, the run it started, how it ended (ok, refused,
 stopped, error, budget) and how much was sent back — never your message; that is
 in the session. Nothing in it is deleted automatically.
+
+### Sharing Kratos with other people
+
+One Kratos can serve several people — typically through a shared Open WebUI, or
+each with their own chat or MCP client. Each person is a **Kratos user** with a
+**role** and the **machines they may see**:
+
+| Role | May |
+| --- | --- |
+| **viewer** | read findings and reports, hunt, ask questions Kratos can answer from what it already knows — for their machines |
+| **investigator** | also start investigations, ask about a group of machines, re-check findings (`/retest`) and record decisions (`/decide`) |
+| **admin** | over the network, the same as an investigator |
+
+Managing users, tokens, channels, settings, budgets, certificates, the fix
+channel and full exports is **only ever done by you, at this computer** (the TUI
+or the CLI) — never over the network, whatever someone's role. You are the
+**owner**: always an admin, with every machine. Existing installs need nothing:
+your tokens and sessions are yours.
+
+**Add a person and give them a token:**
+
+```bash
+kratos users add alice --role viewer --scope web-01,@prod
+kratos tokens create --name alice-laptop --user alice
+```
+
+`--scope` lists machines and groups (`@prod` follows the group: a machine you add
+to it later becomes visible to Alice too). A machine outside someone's scope
+doesn't exist for them: it isn't a model, isn't searched by `/hunt`, isn't read
+by a fleet question — at most counted as "N machines outside your access". A
+token can narrow it further (`--machines web-01`); what a person may see is their
+scope **and** the token's machines.
+
+**Change it later** — `kratos users role alice investigator`,
+`kratos users scope alice --add db-01`, `kratos users disable alice`, or the
+**/users** screen. It applies at once, also to a running investigation: when you
+take a machine out of someone's scope, disable them, demote them or revoke their
+token, their investigation stops at its next read with "stopped: your access to
+<machine> was removed".
+
+**A shared Open WebUI.** Open WebUI can sign who each of its users is. Give it
+one *gateway* token and a shared secret, and map each Open WebUI user to a Kratos
+user:
+
+1. `kratos tokens create --name owui-shared --gateway` — prints the token and the
+   two lines to add to Open WebUI's environment:
+   `ENABLE_FORWARD_USER_INFO_HEADERS=true` and
+   `FORWARD_USER_INFO_HEADER_JWT_SECRET=<secret>`. Restart Open WebUI.
+2. Add the connection in Open WebUI with the gateway token as the API key.
+3. For each person: find their user id in Open WebUI (*Admin Panel → Users*) and
+   `kratos users map openwebui <their id> alice --email alice@example.com`.
+
+Each request then carries a signed identity that Kratos checks (HS256 with your
+secret, made by Open WebUI, valid for minutes). Kratos never trusts Open WebUI's
+unsigned user headers: without a valid signature, or for an Open WebUI user you
+haven't mapped ("ask the Kratos owner to add you"), every request is refused.
+**The gateway token and its secret together can act as every mapped user** —
+keep both as private as an admin password; `/doctor` says so too. One shared Open
+WebUI per Kratos: a second gateway token is refused while one is live (rotate it
+instead).
+
+**Budgets per person.** Each user other than you has their own daily model
+budget, `budget.user_daily_usd` (default $0.50). When it's used up they get their
+own figure ("your own daily model budget is used up ($0.50 of $0.50 today)");
+nobody else is affected. With a shared gateway token, the hourly request limit
+counts per person too.
+
+**Sessions.** Each person's chats are their own sessions; they list and resume
+only theirs. In the TUI you see everyone's: someone else's session is marked
+"(read-only)" and opens for reading only. Findings belong to machines, so
+everyone who can see a machine sees its findings — and every decision says who
+made it.
+
+**Schedules and triggers** run as you unless you say otherwise:
+`kratos users run-as --schedule nightly alice` makes one run with Alice's
+machines and budget. If Alice is disabled or loses access to the machine, it
+refuses and says why (in the notification, `/schedules` and `/doctor`) — it never
+quietly runs as someone else.
+
+**The audit trail.** Every investigation, decision, change and refusal is recorded
+with the person, the door (TUI, CLI, MCP, chat server, schedule) and the
+credential: **/audit** in the TUI, `kratos audit` (`--refused`, `--user alice`,
+`--since 7d`). It can't be edited; `kratos audit prune --older-than 365d --apply`
+removes old rows, and the prune itself is recorded. It is personal data (in
+`kratos data`).
 
 ---
 

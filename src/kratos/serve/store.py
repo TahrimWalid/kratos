@@ -84,7 +84,21 @@ def _step_1(conn: sqlite3.Connection) -> None:
     )
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    """D.7: a token belongs to a user (existing tokens -> the owner, keeping their machine
+    lists), may expire, may be a shared-gateway token; the audit row names the user."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(serve_tokens)")}
+    for name, ddl in (("user_id", "TEXT NOT NULL DEFAULT 'owner'"), ("kind", "TEXT NOT NULL DEFAULT 'person'"),
+                      ("expires_at", "REAL"), ("rotated_from", "TEXT"), ("rotated_to", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE serve_tokens ADD COLUMN {name} {ddl}")
+    if "user_id" not in {r[1] for r in conn.execute("PRAGMA table_info(serve_audit)")}:
+        conn.execute("ALTER TABLE serve_audit ADD COLUMN user_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS serve_audit_token_user_at ON serve_audit(token_id, user_id, at)")
+
+
+STEPS = (_step_1, _step_2)
+TOKEN_KINDS = ("person", "gateway")
 
 
 def connect(data_dir: Path) -> sqlite3.Connection:
@@ -105,9 +119,11 @@ def insert_token(data_dir: Path, row: dict[str, Any]) -> None:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO serve_tokens (token_id, name, secret_hash, salt, kdf, targets, doors, created_at, "
-            "created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_by, user_id, kind, expires_at, rotated_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (row["token_id"], row["name"], row["secret_hash"], row["salt"], json.dumps(row["kdf"]),
-             json.dumps(row["targets"]), json.dumps(row["doors"]), row["created_at"], row["created_by"]),
+             json.dumps(row["targets"]), json.dumps(row["doors"]), row["created_at"], row["created_by"],
+             row.get("user_id") or "owner", row.get("kind") or "person", row.get("expires_at"),
+             row.get("rotated_from")),
         )
         conn.execute("COMMIT")
     finally:
@@ -118,7 +134,9 @@ def _token_dict(r: sqlite3.Row) -> dict[str, Any]:
     return {"token_id": r["token_id"], "name": r["name"], "secret_hash": r["secret_hash"], "salt": r["salt"],
             "kdf": json.loads(r["kdf"]), "targets": json.loads(r["targets"]), "doors": json.loads(r["doors"]),
             "created_at": float(r["created_at"]), "created_by": r["created_by"],
-            "revoked_at": r["revoked_at"], "last_used_at": r["last_used_at"]}
+            "revoked_at": r["revoked_at"], "last_used_at": r["last_used_at"],
+            "user_id": r["user_id"] or "owner", "kind": r["kind"] or "person", "expires_at": r["expires_at"],
+            "rotated_from": r["rotated_from"], "rotated_to": r["rotated_to"]}
 
 
 def get_token(data_dir: Path, token_id: str) -> dict[str, Any] | None:
@@ -148,13 +166,13 @@ def name_in_use(data_dir: Path, name: str) -> bool:
     return r is not None
 
 
-def revoke_token(data_dir: Path, token_id: str, now: float | None = None) -> bool:
+def revoke_token(data_dir: Path, token_id: str, now: float | None = None, *, rotated_to: str | None = None) -> bool:
     now = time.time() if now is None else now
     conn = connect(data_dir)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        cur = conn.execute("UPDATE serve_tokens SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL",
-                           (now, token_id))
+        cur = conn.execute("UPDATE serve_tokens SET revoked_at = ?, rotated_to = coalesce(?, rotated_to) "
+                           "WHERE token_id = ? AND revoked_at IS NULL", (now, rotated_to, token_id))
         conn.execute("COMMIT")
         return cur.rowcount > 0
     finally:
@@ -224,7 +242,7 @@ def audit(data_dir: Path, *, door: str, endpoint: str, status: str, token_id: st
           model: str | None = None, target: str | None = None, client_addr: str | None = None,
           client_user: str | None = None, run_id: str | None = None, metered: bool = False,
           duration: float = 0.0, bytes_out: int = 0, detail: str | None = None,
-          now: float | None = None) -> None:
+          now: float | None = None, user_id: str | None = None) -> None:
     if status not in AUDIT_STATUSES:
         raise ValueError(f"unknown audit status {status!r}")
     now = time.time() if now is None else now
@@ -232,20 +250,27 @@ def audit(data_dir: Path, *, door: str, endpoint: str, status: str, token_id: st
     try:
         conn.execute(
             "INSERT INTO serve_audit (at, token_id, door, endpoint, model, target, client_addr, client_user, "
-            "run_id, status, metered, duration, bytes_out, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "run_id, status, metered, duration, bytes_out, detail, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (now, token_id, door, endpoint[:120], (model or None) and str(model)[:200], target, client_addr,
              (client_user or None) and str(client_user)[:200], run_id, status, 1 if metered else 0,
-             float(duration), int(bytes_out), (detail or None) and str(detail)[:300]),
+             float(duration), int(bytes_out), (detail or None) and str(detail)[:300], user_id),
         )
     finally:
         conn.close()
 
 
-def metered_requests_since(data_dir: Path, token_id: str, since: float) -> int:
+def metered_requests_since(data_dir: Path, token_id: str, since: float, user_id: str | None = None) -> int:
+    """This token's metered requests since `since` -- per user for a shared gateway token
+    (one person must not use up everyone's hour)."""
     conn = connect(data_dir)
     try:
-        r = conn.execute("SELECT COUNT(*) AS n FROM serve_audit WHERE token_id = ? AND metered = 1 AND at >= ?",
-                         (token_id, since)).fetchone()
+        if user_id is None:
+            r = conn.execute("SELECT COUNT(*) AS n FROM serve_audit WHERE token_id = ? AND metered = 1 AND at >= ?",
+                             (token_id, since)).fetchone()
+        else:
+            r = conn.execute("SELECT COUNT(*) AS n FROM serve_audit WHERE token_id = ? AND user_id = ? AND metered = 1 "
+                             "AND at >= ?", (token_id, user_id, since)).fetchone()
     finally:
         conn.close()
     return int(r["n"])

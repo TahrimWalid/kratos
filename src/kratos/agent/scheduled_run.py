@@ -595,8 +595,17 @@ def run_scheduled(
     fleet question; one grouped notification for the run."""
     if str(schedule.target or "").startswith("@"):
         return _run_fleet_schedule(schedule, data_dir, deliver=deliver, notifier=notifier, source=source)
+    from kratos import authz
+
+    # D.7: a schedule acts as the user it runs as -- their scope and budget; refused (and
+    # recorded + notified) when that user is disabled, demoted or narrowed.
+    actor = authz.unattended_actor("schedule", schedule.name, getattr(schedule, "run_as", "owner"))
+    refusal = authz.unattended_refusal(actor, authz.P.INVESTIGATE, schedule.target or _kconfig.get_active_target()
+                                       or None, data_dir=data_dir)
+    if refusal is not None:
+        return _refused_record(schedule, Path(data_dir), refusal, deliver=deliver, notifier=notifier)
     with _run_context.run_scope(source, target=schedule.target or _kconfig.get_active_target(),
-                                session_id=session_id):
+                                session_id=session_id), authz.acting_as(actor, action=authz.P.INVESTIGATE):
         from kratos.trace import recorder as _trace
 
         token = _CURRENT_SCHEDULE_NAME.set(schedule.name)
@@ -611,6 +620,28 @@ def run_scheduled(
                 return record
         finally:
             _CURRENT_SCHEDULE_NAME.reset(token)
+
+
+def _refused_record(schedule: "_sched.Schedule", data_dir: Path, reason: str, *, deliver: bool,
+                    notifier: Optional[Notifier]) -> dict[str, Any]:
+    """A schedule that may not run as its user: recorded, shown in /schedules and /doctor,
+    and notified -- never silently run as someone else."""
+    now = utc_now_iso()
+    record = {"schedule": schedule.name, "started_at": now, "finished_at": now, "status": "refused",
+              "target": schedule.target, "kind": schedule.kind, "findings_count": 0, "severity_tally": {},
+              "omitted_gated_tools": [], "report_json": None, "report_md": None, "delivered": None,
+              "notified": False, "error": reason}
+    if deliver and schedule.deliver:
+        notifier = notifier or _schedule_notifier(schedule, data_dir)
+        # No machine address or account name in the alert (it may cross a public ntfy server):
+        # the reason is in the run record, /schedules and /doctor.
+        record["delivered"] = notifier(f"Scheduled run '{schedule.name}' did not run: the Kratos user it runs as may "
+                                       "not run it now (disabled, or no longer allowed). Next: open Kratos and type "
+                                       "/doctor.", "warning")
+        settle_delivery(data_dir, record["delivered"])
+        record["notified"] = _sent(record["delivered"])
+    _append_record(data_dir, schedule.name, record)
+    return record
 
 
 def _run_scheduled(
@@ -870,7 +901,8 @@ def _run_fleet_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver:
     _tools.set_approval_prompt_provider(lambda tool, details: False)
     try:
         out = FR.run_fleet(FR.FleetRequest(question=question, group=str(schedule.target), data_dir=data_dir,
-                                           actor=Actor(user=f"schedule:{schedule.name}", interface="schedule"),
+                                           actor=Actor(user=f"schedule:{schedule.name}", interface="schedule",
+                                                       user_id=getattr(schedule, "run_as", "owner") or "owner"),
                                            source=source, kind=kind, slow=kind == "audit", name=schedule.name))
     except FR.FleetError as e:
         out = None
@@ -909,7 +941,8 @@ def _run_fleet_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver:
             from kratos.fleet.run import _grouped_notification
 
             req = FR.FleetRequest(question=question, group=str(schedule.target), data_dir=data_dir,
-                                  actor=Actor(user=f"schedule:{schedule.name}", interface="schedule"),
+                                  actor=Actor(user=f"schedule:{schedule.name}", interface="schedule",
+                                                       user_id=getattr(schedule, "run_as", "owner") or "owner"),
                                   notifier=notifier, name=schedule.name)
             res = _grouped_notification(req, out.group_label, out.results, out.answer, data_dir,
                                         extra_lines=[f"trigger: {b}" for b in buffered if b][:5])

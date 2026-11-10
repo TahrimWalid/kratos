@@ -138,9 +138,23 @@ def _clean_for_client(fn):
     nothing is capped, the client asked for the whole result."""
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        return _untrusted.for_model(fn(*args, **kwargs), field_cap=None)
+        from kratos import authz
+
+        # The stdio server is the owner (it runs as the data folder's OS account, D.7 §3.1).
+        with authz.acting_as(authz.owner_actor("mcp")):
+            return _untrusted.for_model(fn(*args, **kwargs), field_cap=None)
 
     return wrapper
+
+
+def _authorize(action: str, machine: str | None = None, obj: str | None = None) -> None:
+    """The owner over stdio: recorded in the audit trail like every other door (D.7)."""
+    from kratos import authz
+
+    try:
+        authz.require(authz.current_actor(), action, machine, data_dir=_data_dir, obj=obj)
+    except authz.Denied as e:
+        raise ValueError(f"refused: {e}") from None
 
 
 # Which tools to exclude from an MCP-invoked investigation (anything that could
@@ -162,8 +176,10 @@ def _mcp_investigation(goal: str, target: str, max_iters: int, data_dir: Path,
     filter / deny approval / no clarify, transcript saved. Same result shape as before.
     A `target` of "@group" is a fleet question (D.2): one checked answer per machine."""
     if target.startswith("@"):
+        from kratos import authz
+
         out = _runs.run_fleet_question(goal=goal, group=target, data_dir=Path(data_dir), source="mcp",
-                                       actor_user="mcp-stdio", actor_interface="mcp")
+                                       actor=authz.current_actor())
         out.pop("run_id", None)
         return out
     outcome = _runs.run_investigation(_runs.RunRequest(goal=goal, target=target, data_dir=Path(data_dir),
@@ -213,6 +229,11 @@ def kratos_investigate(goal: str, target: str, max_iters: int = DEFAULT_MAX_ITER
         raise ValueError("target is required (no implicit session state exists over MCP)")
     if not goal or not goal.strip():
         raise ValueError("goal is required")
+    from kratos.authz import permissions as P
+
+    group = target.strip().startswith("@")
+    if not group:      # a fleet question records its own start (fleet.run)
+        _authorize(P.INVESTIGATE, target.strip(), obj="mcp-stdio investigation")
     return _mcp_investigation(goal.strip(), target.strip(), max_iters, _data_dir, timezone=timezone)
 
 
@@ -250,6 +271,9 @@ def kratos_get_findings(session_id: str | None = None) -> dict[str, Any]:
     that session that called correlate_findings, grouped by the goal that produced them --
     a session with several investigations returns all of their findings, not just the
     latest one."""
+    from kratos.authz import permissions as P
+
+    _authorize(P.FINDINGS_READ, obj=f"session findings {session_id or '(newest)'}")
     store = SessionStore(_data_dir / "kratos.db")
     if session_id:
         session = store.get_session(session_id)
@@ -271,6 +295,9 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
     """Lists recent Kratos sessions (most recently active first) -- id, target(s), the most
     recent goal, and when it was last active. Same data the interactive REPL's own session
     chooser shows."""
+    from kratos.authz import permissions as P
+
+    _authorize(P.SESSIONS_OWN, obj="list sessions")
     store = SessionStore(_data_dir / "kratos.db")
     return [
         {
@@ -279,6 +306,7 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
             "targets": s["targets"],
             "last_goal": s.get("latest_goal"),
             "last_active_at": s["last_active_at"],
+            "belongs_to": s.get("owner_user_id") or "owner",    # D.7: the owner sees every user's sessions
         }
         for s in store.list_recent_sessions(limit=limit)
     ]
@@ -294,8 +322,10 @@ def kratos_finding_states(target: str | None = None, state: str | None = None, l
     risk_accepted, false_positive, out_of_scope, decided, open_verified, fixed, all
     (default: all). Changing a finding's state is a person-only action -- there is no
     MCP tool for it."""
+    from kratos.authz import permissions as P
     from kratos.lifecycle import query as _lc_query
 
+    _authorize(P.FINDINGS_READ, target or None, obj="finding states")
     state = (state or "all").strip().lower().replace("-", "_")
     rows = _finding_states_for(_data_dir, target or None, state, limit)
     hidden = _lc_query.hidden_counts(_data_dir, target or None)
@@ -373,7 +403,9 @@ def kratos_notify_findings(session_id: str) -> dict[str, Any]:
     if not session_id or not session_id.strip():
         raise ValueError("session_id is required")
     session_id = session_id.strip()
+    from kratos.authz import permissions as P
 
+    _authorize(P.FINDINGS_READ, obj=f"notify findings of session {session_id}")
     store = SessionStore(_data_dir / "kratos.db")
     session = store.get_session(session_id)
     if session is None:

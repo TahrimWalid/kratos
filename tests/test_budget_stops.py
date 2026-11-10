@@ -224,6 +224,7 @@ def test_cli_command_ends_with_the_plain_message(setup, monkeypatch, capsys):
     def refuse(args):
         raise guard.BudgetExceeded(L.SCOPE_DAILY_COST, 2.0, 2.0, source="cli")
 
+    refuse.__name__ = "cmd_findings_show"   # D.7: an unlisted entry point would be refused before it ran
     parser = app.build_parser()
     monkeypatch.setattr(app, "build_parser", lambda: parser)
     parser._subparsers._group_actions[0].choices["findings-show"].set_defaults(func=refuse)
@@ -239,8 +240,10 @@ def test_cli_installs_the_terminal_prompt(setup, monkeypatch):
     monkeypatch.setattr(app, "load_kept_tools", lambda: [])
     parser = app.build_parser()
     monkeypatch.setattr(app, "build_parser", lambda: parser)
-    parser._subparsers._group_actions[0].choices["findings-show"].set_defaults(
-        func=lambda args: seen.setdefault("provider", guard.prompt_provider()) and 0)
+    def cmd_findings_show(args):     # D.7: named like the real entry point (unlisted ones are refused)
+        return seen.setdefault("provider", guard.prompt_provider()) and 0
+
+    parser._subparsers._group_actions[0].choices["findings-show"].set_defaults(func=cmd_findings_show)
     app.main(["--data-dir", str(setup), "findings-show"])
     assert seen["provider"] is guard.terminal_prompt
 

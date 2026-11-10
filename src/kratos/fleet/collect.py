@@ -34,7 +34,8 @@ from kratos.utils import cancel
 
 logger = logging.getLogger(__name__)
 
-OUTCOMES = ("ok", "partial", "unreachable", "busy", "timeout", "failed", "stopped", "refused-by-scope")
+OUTCOMES = ("ok", "partial", "unreachable", "busy", "timeout", "failed", "stopped", "refused-by-scope",
+            "access-removed")
 COLLECTED = frozenset({"ok", "partial"})
 POLL_SECONDS = 0.2
 CLOCK_SKEW_NOTE_SECONDS = 60.0
@@ -47,6 +48,7 @@ OUTCOME_WORDS = {
     "failed": "could not be checked (Kratos hit an error)",
     "stopped": "not checked (the run was stopped)",
     "refused-by-scope": "outside your access",
+    "access-removed": "stopped: your access to it was removed during the run",
 }
 
 
@@ -185,6 +187,7 @@ def _measure_windows(res: MachineResult, data_dir: Path, dispatch: Callable[...,
 def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], force: bool, limit: float,
                  make_time_ctx: Callable[[], Any], dispatch: Callable[..., dict[str, Any]] | None,
                  box: _Box, span: Any, should_stop: Callable[[], bool] | None) -> None:
+    from kratos import authz
     from kratos.adapters import ssh_remote
     from kratos.agent import target_lock
     from kratos.collect import runner
@@ -199,6 +202,7 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
     try:
         with kratos_config.pinned_target(host), cancel.bound(box.scope), \
                 _trace.use_span(span if span is not None else _trace.NO_SPAN):
+            authz.check_run_access(host, data_dir=data_dir)    # D.7: checked per machine, at its first read
             handle = target_lock.acquire_target_blocking(data_dir, host, timeout=limit, should_stop=should_stop)
             if handle is None:
                 stopped = should_stop is not None and should_stop()
@@ -215,6 +219,7 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
             remaining = limit - (time.monotonic() - t0)
             report = runner.prepare(host, data_dir, classes=classes, budget=max(5.0, remaining - 5.0),
                                     force=force, dispatch=dispatch)
+            authz.check_run_access(host, data_dir=data_dir)    # removed while it was being read?
             res.report = report
             for o in report.checks:
                 res.steps.extend(o.steps)
@@ -239,6 +244,10 @@ def _collect_one(machine: str, data_dir: Path, *, classes: tuple[str, ...], forc
                 # The question's own period could not be counted here: never "fully read".
                 res.outcome = "partial"
                 res.reason = "; ".join(x for x in [res.reason, *unmeasured] if x)
+    except authz.AccessRemoved:
+        res.outcome, res.reason = "access-removed", ""
+        res.report = None
+        res.steps = []
     except cancel.Cancelled:
         res.outcome, res.reason = "timeout", f"still running after {limit:.0f} s; its commands were stopped"
     except Exception as e:  # noqa: BLE001 -- one machine failing must not stop the others

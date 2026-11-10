@@ -21,7 +21,7 @@ def test_tables_created_from_an_empty_db_and_versioned(tmp_path):
     conn = sqlite3.connect(tmp_path / "kratos.db")
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
     assert {"budget_ledger", "budget_state", "budget_ledger_day", "budget_ledger_run"} <= names
-    assert conn.execute("SELECT version FROM schema_versions WHERE component = 'budget'").fetchone()[0] == 1
+    assert conn.execute("SELECT version FROM schema_versions WHERE component = 'budget'").fetchone()[0] == 2
     BudgetLedger(tmp_path)  # opening again is a no-op
     assert conn.execute("SELECT COUNT(*) FROM schema_versions WHERE component = 'budget'").fetchone()[0] == 1
 

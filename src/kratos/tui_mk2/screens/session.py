@@ -102,6 +102,10 @@ def _with_run_scope(source: str = "interactive", *, target: str | None = None):
         return wrapper
     return deco
 
+# Commands that work in another user's session opened read-only (D.7): leaving and help.
+_READ_ONLY_COMMANDS = frozenset({"/exit", "/quit", "/sessions", "/back", "/help", "/guide", "/report", "/usage",
+                                 "/context", "/trace", "/traces", "/audit"})
+
 _PALETTE_COMMANDS = [
     ("/run", "standard audit — deterministic security sweep of the target (no LLM)"),
     ("/plan", "preview a run's steps before it runs (or /plan gate on|off)"),
@@ -119,6 +123,9 @@ _PALETTE_COMMANDS = [
     ("/findings", "findings remembered across runs — verify, accept a risk, mark false positive (alias /f)"),
     ("/channels", "where Kratos sends what it finds: webhooks, syslog (TLS), email, ntfy, a SIEM (OCSF / ECS)"),
     ("/outbox", "what Kratos sent and what waits: attempts, failures, dead letters (retry them here)"),
+    ("/users", "people who may use Kratos through a chat client or MCP: roles, machines, tokens, Open WebUI "
+               "mappings (owner only)"),
+    ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
     ("/groups", "groups of machines (@web, @db; @all is built in) — /groups create web 10.0.0.5 10.0.0.6, "
@@ -283,6 +290,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._store = store
         self._data_dir = data_dir
         self._full_replay = full_replay
+        # D.7: a session belongs to the user who started it; the owner may open another
+        # user's session to read it, never to add to it.
+        try:
+            row = store.get_session(session_id) or {}
+        except Exception:  # noqa: BLE001
+            row = {}
+        self._owner_user_id = row.get("owner_user_id") or "owner"
+        self._read_only = self._owner_user_id != "owner"
         self.session_state: dict[str, Any] = {
             "session_id": session_id,
             "targets": targets,
@@ -359,6 +374,12 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._render_idle()
         if self._full_replay:
             self._render_full_replay()
+        if self._read_only:
+            from kratos.authz import users as _U
+
+            owner = _U.get(self._data_dir, self._owner_user_id)
+            self._emit(R.note_line(f"Read-only: this session belongs to {owner.name if owner else self._owner_user_id}. "
+                                   "You can read it; new messages go in your own sessions (Ctrl+B)."))
         # A note left by whatever opened this session (e.g. "web-01 is already set
         # up") -- shown here, where it stays, rather than as a toast a prompt hides.
         note = getattr(self.app, "pending_session_note", None)
@@ -940,6 +961,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._reset_recall()  # sending clears any ↑/↓ history navigation
         if not text:
             return
+        if self._read_only and text.split(maxsplit=1)[0].lower() not in _READ_ONLY_COMMANDS:
+            self._emit(R.note_line(
+                "This is another user's session -- you can read it here, not add to it. "
+                "Ctrl+B goes back to the session list; start your own session there."))
+            return
         # echo the user's line (with a trailing timestamp / date divider)
         t, d = self._stamp_now()
         self._emit_stamped(self._you_header(text), t, d)
@@ -970,6 +996,17 @@ class SessionScreen(ResilientWorkerHost, Screen):
         Without this, an unhandled exception here crashes the whole TUI -- Textual
         re-raises exceptions thrown inside an event handler."""
         try:
+            # D.7: the TUI is the owner at the Kratos host; each built-in command is
+            # checked (and recorded) against kratos.authz.entrypoints before it runs.
+            from kratos import authz
+            from kratos.authz import entrypoints as _entrypoints
+
+            word = text.split(maxsplit=1)[0].lower() if text.strip() else ""
+            try:
+                _entrypoints.require_tui(authz.owner_actor("tui"), word, data_dir=self._data_dir)
+            except authz.Denied as e:
+                self._emit(R.error_line(f"Refused: {e}"))
+                return
             self._dispatch_slash_impl(text)
         except Exception as e:  # noqa: BLE001 -- a command must never crash the session
             self._emit(R.error_line(
@@ -1107,6 +1144,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.findings import FindingsScreen
 
             self.app.push_screen(FindingsScreen(self._data_dir, target=_kconfig.get_active_target()))
+        elif cmd == "/users":
+            from kratos.tui_mk2.screens.users import UsersScreen
+
+            self.app.push_screen(UsersScreen(self._data_dir))
+        elif cmd == "/audit":
+            from kratos.tui_mk2.screens.users import AuditScreen
+
+            self.app.push_screen(AuditScreen(self._data_dir))
         elif cmd == "/whitelist":
             from kratos.tui_mk2.screens.whitelist import WhitelistScreen
 
@@ -3047,6 +3092,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
             if not self._schedule_referenced_presets(s).issubset(existing)
         }
         self._emit(R.schedule_table(schedules, errors, last, missing_preset=missing))
+        self._schedule_run_as_notes(schedules)
+
+    def _schedule_run_as_notes(self, schedules: list) -> None:
+        """D.7: who each schedule runs as (when not you), and the reason its last run
+        was refused."""
+        from kratos.agent import schedules as _S
+        from kratos.authz import users as _U
+
+        for sch in schedules:
+            uid = getattr(sch, "run_as", "owner") or "owner"
+            rec = _S.last_run_record(self._data_dir, sch.name) or {}
+            if uid != "owner":
+                u = _U.get(self._data_dir, uid)
+                self._emit(R.note_line(f"{sch.name} runs as {u.name if u else uid} -- their machines and budget"))
+            if rec.get("status") == "refused":
+                self._emit(R.error_line(f"{sch.name}'s last run was refused: {rec.get('error')}"))
 
     @staticmethod
     def _schedule_referenced_presets(schedule: Any) -> set[str]:

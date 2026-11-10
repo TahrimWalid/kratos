@@ -107,27 +107,78 @@ class ServeState:
         self.turn_pool.shutdown(wait=False, cancel_futures=True)
         return self._open_turns
 
-    def reserve_metered(self, token_id: str, limit: int) -> bool:
+    @staticmethod
+    def meter_key(token_id: str, user_id: str | None = None) -> str:
+        """What the hourly limit counts against: the token -- and, for a shared gateway
+        token, the person behind it (one person must not use up everyone's hour)."""
+        return f"{token_id}/{user_id}" if user_id else token_id
+
+    def reserve_metered(self, token_id: str, limit: int, user_id: str | None = None) -> bool:
         """Take one of this token's hourly model-using requests, or False when the hour's
         limit is used. Counts the audit log's metered rows AND the requests of this process
         still running (their row is written when they end), under one lock -- so requests
-        arriving together can't all pass the same check. Pair with release_metered."""
+        arriving together can't all pass the same check. Pair with release_metered.
+        `user_id`: count per person (gateway tokens)."""
         since = time.time() - 3600
+        key = self.meter_key(token_id, user_id)
         with self._metered_lock:
-            used = _store.metered_requests_since(self.data_dir, token_id, since) + self._in_flight.get(token_id, 0)
+            used = _store.metered_requests_since(self.data_dir, token_id, since, user_id) + self._in_flight.get(key, 0)
             if used >= limit:
                 return False
-            self._in_flight[token_id] = self._in_flight.get(token_id, 0) + 1
+            self._in_flight[key] = self._in_flight.get(key, 0) + 1
             return True
 
-    def release_metered(self, token_id: str) -> None:
+    def release_metered(self, token_id: str, user_id: str | None = None) -> None:
         """The request's metered audit row is written (or it never used the model)."""
+        key = self.meter_key(token_id, user_id)
         with self._metered_lock:
-            left = self._in_flight.get(token_id, 0) - 1
+            left = self._in_flight.get(key, 0) - 1
             if left > 0:
-                self._in_flight[token_id] = left
+                self._in_flight[key] = left
             else:
-                self._in_flight.pop(token_id, None)
+                self._in_flight.pop(key, None)
+
+    # -- who is calling (D.7)
+    def resolve_actor(self, client: _auth.Client, headers: dict[str, str]) -> tuple[Any, str | None]:
+        """(the Actor for this request, None) or (None, the plain reason it is refused).
+
+        A person token is its user. A gateway token (a shared Open WebUI) carries no person
+        itself: the person is Open WebUI's SIGNED forwarded identity (an HS256 JWT checked
+        with the gateway's secret), mapped by the owner to a Kratos user. Unsigned
+        X-OpenWebUI-User-* headers are never trusted. Disabled users, unknown users and
+        expired tokens are refused (fail closed)."""
+        from kratos import authz
+        from kratos.authz import openwebui
+        from kratos.authz import users as U
+        from kratos.lifecycle.decide import Actor
+
+        try:
+            if client.kind == "gateway":
+                secret = openwebui.read_secret(self.data_dir, client.token_id)
+                try:
+                    fwd = openwebui.verify(headers.get(openwebui.HEADER), secret or "")
+                except openwebui.JWTError as e:
+                    return None, f"{e} -- the shared Open WebUI must send a signed identity"
+                m = U.mapping_for(self.data_dir, "openwebui", fwd.sub)
+                if m is None:
+                    who = fwd.email or fwd.name or fwd.sub
+                    return None, (f"the Open WebUI user {who} is not a Kratos user -- ask the Kratos owner to add you "
+                                  f"(kratos users map openwebui {fwd.sub} <user>)")
+                actor = Actor(user=m.user_name, interface="serve", user_id=m.user_id,
+                              credential=f"gateway:{client.token_id}+openwebui:{fwd.sub}")
+            else:
+                user = U.get(self.data_dir, client.user_id)
+                if user is None:
+                    return None, "this token's Kratos user no longer exists"
+                actor = Actor(user=user.name, interface="serve", user_id=user.user_id,
+                              credential=f"token:{client.token_id}")
+            authz.principal_of(actor, data_dir=self.data_dir)
+        except authz.Denied as e:
+            return None, e.reason
+        except Exception as e:  # noqa: BLE001 -- fail closed with the reason
+            logger.warning("serve: could not resolve the caller", exc_info=True)
+            return None, f"Kratos could not work out who is calling ({type(e).__name__})"
+        return actor, None
 
     def note_runs(self, *, running: bool = True) -> None:
         """Refresh the status file (`kratos serve status`, /doctor read it)."""
@@ -179,8 +230,7 @@ class ServeState:
             if row is None or row.get("revoked_at"):
                 self._verified.pop(digest, None)
                 return None
-            return _auth.Client(token_id=hit, name=row["name"], targets=tuple(row["targets"]),
-                                doors=tuple(d for d in row["doors"] if d in _auth.DOORS))
+            return _auth.client_from_row(row)
         client = _auth.verify(self.data_dir, presented)
         if client is not None:
             if len(self._verified) > 256:
@@ -240,15 +290,39 @@ class KratosGate:
                                peer, "no or wrong token", status_word="unauthorized", kind="invalid_request_error",
                                code="invalid_api_key", extra_headers=[(b"www-authenticate", b"Bearer")])
             return
+        if client.expired:
+            await self._refuse(send, 401, client.expired_text + " -- ask the Kratos owner for a new one "
+                               "(kratos tokens rotate)", door, path, peer, "token expired",
+                               status_word="unauthorized", token_id=client.token_id, code="invalid_api_key",
+                               authz_reason=client.expired_text, client=client)
+            return
         if not client.may_use(door):
             await self._refuse(send, 403, f"this token may not use the {door} door", door, path, peer,
                                "door not allowed for token", token_id=client.token_id)
             return
+        actor, why = await asyncio.to_thread(self.state.resolve_actor, client, headers)
+        if actor is None:
+            if client.kind == "gateway" and door == "openai" and path == "/v1/models" and \
+                    scope.get("method", "GET") == "GET":
+                # A shared Open WebUI shows its LAST good model list to a user whose list
+                # request failed (even an empty list) -- another person's machines. One
+                # placeholder model stops that; choosing it is refused like everything else.
+                await self._refuse(send, 200, why or "refused", door, path, peer, (why or "refused")[:200],
+                                   token_id=client.token_id, authz_reason=why, client=client,
+                                   body=_placeholder_models(self.state.started_at))
+                return
+            await self._refuse(send, 403, why or "refused", door, path, peer, (why or "refused")[:200],
+                               token_id=client.token_id, authz_reason=why, client=client)
+            return
         scope.setdefault("state", {})
         scope["state"]["kratos_client"] = client
         scope["kratos.client"] = client
+        scope["kratos.actor"] = actor
+        from kratos import authz
+
         if door != "mcp":
-            await self.app(scope, self._limited(receive, limit), send)   # the OpenAI routes audit themselves
+            with authz.acting_as(actor):
+                await self.app(scope, self._limited(receive, limit), send)   # the OpenAI routes audit themselves
             return
         # MCP: one audit row per request, written when the response has gone out.
         started, seen = time.monotonic(), {"status": 500, "bytes": 0}
@@ -261,12 +335,13 @@ class KratosGate:
             await send(message)
 
         try:
-            await self.app(scope, self._limited(receive, limit), counting_send)
+            with authz.acting_as(actor):
+                await self.app(scope, self._limited(receive, limit), counting_send)
         finally:
             word = "ok" if seen["status"] < 400 else ("refused" if seen["status"] < 500 else "error")
             try:
                 await asyncio.to_thread(_store.audit, self.state.data_dir, door="mcp", endpoint=path, status=word,
-                                        token_id=client.token_id, client_addr=peer,
+                                        token_id=client.token_id, client_addr=peer, user_id=actor.user_id,
                                         duration=time.monotonic() - started, bytes_out=seen["bytes"])
             except Exception:  # noqa: BLE001
                 logger.debug("serve: audit failed", exc_info=True)
@@ -296,13 +371,28 @@ class KratosGate:
 
     async def _refuse(self, send: Any, status: int, message: str, door: str, path: str, peer: str, detail: str,
                       *, status_word: str = "refused", kind: str = "invalid_request_error", code: str | None = None,
-                      token_id: str | None = None, extra_headers: list | None = None) -> None:
-        _status, body = _json_error(status, message, kind=kind, code=code)
+                      token_id: str | None = None, extra_headers: list | None = None,
+                      authz_reason: str | None = None, client: Any = None, body: bytes | None = None) -> None:
+        if body is None:
+            _status, body = _json_error(status, message, kind=kind, code=code)
         try:
             await asyncio.to_thread(_store.audit, self.state.data_dir, door=door, endpoint=path, status=status_word,
                                     token_id=token_id, client_addr=peer, detail=detail, bytes_out=len(body))
         except Exception:  # noqa: BLE001 -- an audit write never changes the answer
             logger.debug("serve: audit failed", exc_info=True)
+        if authz_reason is not None:
+            # A token that verified but whose person is refused (expired, unmapped, disabled,
+            # unsigned identity): the one audit trail records it with the credential.
+            from kratos.authz import audit as _aa
+
+            cred = (f"gateway:{token_id}" if getattr(client, "kind", "") == "gateway" else f"token:{token_id}")
+            try:
+                await asyncio.to_thread(_aa.record, self.state.data_dir, interface="serve", action="read",
+                                        result="refused", user_id=getattr(client, "user_id", None)
+                                        if getattr(client, "kind", "") != "gateway" else None,
+                                        credential=cred, obj=f"{door} {path}"[:120], reason=authz_reason)
+            except Exception:  # noqa: BLE001
+                logger.warning("serve: could not record a refusal in the audit trail", exc_info=True)
         await self._respond(send, status, body, extra_headers=extra_headers)
 
     @staticmethod
@@ -315,6 +405,14 @@ class KratosGate:
 
 class _BodyTooLarge(Exception):
     pass
+
+
+NO_ACCESS_MODEL = "kratos-no-access"
+
+
+def _placeholder_models(started_at: float) -> bytes:
+    return json.dumps({"object": "list", "data": [{"id": NO_ACCESS_MODEL, "object": "model",
+                                                   "created": int(started_at), "owned_by": "kratos"}]}).encode()
 
 
 def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770) -> Any:

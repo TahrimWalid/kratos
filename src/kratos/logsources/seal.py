@@ -103,12 +103,19 @@ def _key_file(data_dir: Path, target: str) -> Path:
     return Path(data_dir) / FSS_DIR / f"{safe}.json"
 
 
-def _people_only(what: str) -> None:
+def _people_only(what: str, data_dir: Path | None = None) -> None:
     """The model suggests, people decide: a sealing key is set or removed only by a
-    person (TUI, CLI), never inside an agent tool call (README §3)."""
+    person (TUI, CLI), never inside an agent tool call (README §3) -- and only the
+    owner, at the Kratos host (D.7)."""
     tool = settings_store.in_tool_call()
     if tool:
         raise SealKeyError(f"{what} is a person's decision -- refused inside the tool call {tool!r}")
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.KEYS_MANAGE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise SealKeyError(str(e)) from None
 
 
 def set_key(data_dir: Path, target: str, key: str, *, set_by: str, machine_id: str | None = None,
@@ -117,7 +124,7 @@ def set_key(data_dir: Path, target: str, key: str, *, set_by: str, machine_id: s
     existing key. Never logs the key."""
     from kratos import paths as kpaths
 
-    _people_only("setting a journal verification key")
+    _people_only("setting a journal verification key", data_dir)
     key = validate_key(key)
     path = _key_file(data_dir, target)
     if path.is_symlink():
@@ -154,7 +161,7 @@ def has_key(data_dir: Path, target: str) -> bool:
 
 
 def remove_key(data_dir: Path, target: str) -> bool:
-    _people_only("removing a journal verification key")
+    _people_only("removing a journal verification key", data_dir)
     path = _key_file(data_dir, target)
     if not path.exists():
         return False

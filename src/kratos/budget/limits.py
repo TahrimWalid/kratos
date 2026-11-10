@@ -36,6 +36,8 @@ SCOPE_DAILY_COST = "daily_cost"
 SCOPE_DAILY_TOKENS = "daily_tokens"
 SCOPE_UNATTENDED_COST = "unattended_daily_cost"
 SCOPE_PAUSED = "paused"
+SCOPE_USER_COST = "user_daily_cost"         # D.7: one Kratos user's own daily cap
+USER_DAILY_COST = "budget.user_daily_usd"
 
 SCOPE_SETTING = {
     SCOPE_RUN_TOKENS: RUN_TOKENS,
@@ -43,6 +45,7 @@ SCOPE_SETTING = {
     SCOPE_DAILY_COST: DAILY_COST,
     SCOPE_DAILY_TOKENS: DAILY_TOKENS,
     SCOPE_UNATTENDED_COST: UNATTENDED_DAILY_COST,
+    SCOPE_USER_COST: USER_DAILY_COST,
 }
 
 # Plain names for messages ("this would go over <label>").
@@ -53,6 +56,7 @@ SCOPE_LABEL = {
     SCOPE_DAILY_TOKENS: "today's token limit (local or unpriced models)",
     SCOPE_UNATTENDED_COST: "today's budget for unattended runs (schedules, triggers, MCP, chat clients)",
     SCOPE_PAUSED: "a pause after repeated failures",
+    SCOPE_USER_COST: "your own daily model budget",
 }
 
 _MAX_TOKENS_LIMIT = 10_000_000_000
@@ -117,6 +121,8 @@ _SPECS = (
                 "The most tokens per day on models with no price on file or served from this machine."),
     SettingSpec(UNATTENDED_DAILY_COST, 0.50, _dollars,
                 "The most schedules, triggers, MCP and chat clients may spend per day, with nobody watching (USD)."),
+    SettingSpec(USER_DAILY_COST, 0.50, _dollars,
+                "The most one person other than the owner (a chat or MCP user) may spend per day (USD)."),
     SettingSpec(TRIGGER_FIRES_PER_DAY, 10, _whole(0, 10_000, "fires"),
                 "How many times one trigger may fire per day; after that it waits for the next day."),
     SettingSpec(TRIGGER_INVESTIGATIONS, False, _on_off,
@@ -149,6 +155,7 @@ class Limits:
     breaker_failures: int
     breaker_window_minutes: int
     breaker_pause_minutes: int
+    user_daily_cost_usd: float = 0.50     # D.7: each non-owner user's own daily cap
 
     def for_scope(self, scope: str) -> float:
         return {
@@ -157,6 +164,7 @@ class Limits:
             SCOPE_DAILY_COST: self.daily_cost_usd,
             SCOPE_DAILY_TOKENS: self.daily_tokens,
             SCOPE_UNATTENDED_COST: self.unattended_daily_cost_usd,
+            SCOPE_USER_COST: self.user_daily_cost_usd,
         }[scope]
 
 
@@ -175,11 +183,12 @@ def read(data_dir: Path) -> Limits:
         breaker_failures=get(BREAKER_FAILURES),
         breaker_window_minutes=get(BREAKER_WINDOW),
         breaker_pause_minutes=get(BREAKER_PAUSE),
+        user_daily_cost_usd=get(USER_DAILY_COST),
     )
 
 
 def is_money_scope(scope: str) -> bool:
-    return scope in (SCOPE_DAILY_COST, SCOPE_UNATTENDED_COST)
+    return scope in (SCOPE_DAILY_COST, SCOPE_UNATTENDED_COST, SCOPE_USER_COST)
 
 
 def format_amount(scope: str, value: float) -> str:

@@ -212,6 +212,7 @@ def build_checklist(data_dir: Path, host: str, *, login: str | None = None, simp
                     host_cert: bool = True, actor: str | None = None) -> EnrolmentPlan:
     """Make the CA keys if needed, (optionally) sign this machine's host key, record the
     enrolment at state 'pending', and return the copy-safe setup block for the person."""
+    _authorize_change(data_dir, f"ssh-ca build_checklist {host}")
     data_dir = Path(data_dir)
     login = login or _kconfig.ssh_user_for(host, data_dir)
     _ca.ensure_user_ca(data_dir, actor=actor)
@@ -459,5 +460,16 @@ def run_full_verification(data_dir: Path, host: str, *, include_old_key_refused:
 def unenrol(data_dir: Path, host: str) -> None:
     """Forget an enrolment (does not touch the machine). The person removes the Kratos CA
     lines from the machine's sshd_config themselves if they want to."""
+    _authorize_change(data_dir, f"ssh-ca unenrol {host}")
     _store.delete_enrolment(Path(data_dir), host)
     rebuild_known_hosts(Path(data_dir))
+
+
+def _authorize_change(data_dir, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.ENROL, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None

@@ -161,12 +161,18 @@ def get(data_dir: Path, target: str) -> Asset | None:
         return None
 
 
-def _check_actor(actor: Actor) -> None:
+def _check_actor(actor: Actor, data_dir: Path | str | None = None, *, machine: str | None = None) -> None:
     tool = settings_store.in_tool_call()
     if tool is not None:
         raise AssetError(f"agent tools may not change what a person says about a machine (tool {tool!r} tried)")
     if not isinstance(actor, Actor) or actor.interface not in ACTOR_INTERFACES or not str(actor.user or "").strip():
         raise AssetError("an asset edit needs a person: an Actor from the TUI or the CLI")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require(actor, authz.P.ASSETS_MANAGE, data_dir=data_dir, obj=f"asset {machine or ''}".strip())
+    except authz.Denied as e:
+        raise AssetError(str(e)) from None
 
 
 def _text(value: Any, name: str) -> str:
@@ -217,7 +223,7 @@ def _clean(field_name: str, value: Any) -> Any:
 def update(data_dir: Path, target: str, actor: Actor, **changes: Any) -> Asset:
     """Set fields of a machine's asset record (creating it), each change recorded with
     the actor. Raises AssetError for a bad value or caller; nothing is written then."""
-    _check_actor(actor)
+    _check_actor(actor, data_dir, machine=target)
     key = target_key(target)
     if not key:
         raise AssetError("which machine?")
@@ -267,7 +273,7 @@ def update(data_dir: Path, target: str, actor: Actor, **changes: Any) -> Asset:
 def mark_asked(data_dir: Path, target: str, actor: Actor) -> None:
     """Record that the person was asked this machine's criticality (whatever they answered),
     so it is asked once per machine."""
-    _check_actor(actor)
+    _check_actor(actor, data_dir, machine=target)
     key = target_key(target)
     now = time.time()
     with opened(data_dir) as conn:

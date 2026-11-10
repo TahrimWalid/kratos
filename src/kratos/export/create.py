@@ -67,6 +67,14 @@ def create(data_dir: Path | str, req: ExportRequest, actor: Any, *, progress: Pr
     from kratos.export import settings as ES
 
     _refuse_in_tool()
+    from kratos import authz   # D.7: a full (unredacted) export is the owner's, at the Kratos host
+
+    action = authz.P.EXPORT_REDACTED if getattr(req, "variant", "full") == "redacted" else authz.P.EXPORT_FULL
+    try:
+        for machine in list(getattr(req, "machines", None) or [None]):
+            authz.require(actor, action, machine, data_dir=data_dir, obj=f"{req.variant} export")
+    except authz.Denied as e:
+        raise ExportError(str(e)) from None
     if actor is None or not getattr(actor, "user", None):
         raise ExportError("an export needs a person (actor)")
     say = progress or (lambda _m: None)

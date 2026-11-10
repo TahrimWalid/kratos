@@ -348,6 +348,7 @@ def plan_retention(data_dir: Path, now: float | None = None, *, keep_all_days: i
 def apply_retention(data_dir: Path, plan: dict[str, Any]) -> int:
     """Delete exactly the files a plan listed (and only if they still exist and are still
     Kratos snapshot files under data_dir). Returns how many were removed."""
+    _authorize_change(data_dir, "snapshots prune")
     root = Path(data_dir).resolve()
     removed = 0
     for item in plan.get("delete", []):
@@ -358,3 +359,13 @@ def apply_retention(data_dir: Path, plan: dict[str, Any]) -> int:
         removed += 1
     reindex(data_dir)
     return removed
+
+
+def _authorize_change(data_dir, what: str) -> None:
+    """D.7: the owner, at the Kratos host -- recorded in the audit trail."""
+    from kratos import authz
+
+    try:
+        authz.require_person(authz.P.DATA_PRUNE, data_dir=data_dir, obj=what)
+    except authz.Denied as e:
+        raise PermissionError(str(e)) from None

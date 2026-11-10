@@ -29,6 +29,8 @@ from kratos.lifecycle import store as S
 from kratos.lifecycle.rules import is_run_note
 
 INTERFACES = ("tui", "cli")
+# D.7: an investigator may also decide from the chat door (person-typed /decide; never an MCP tool).
+DECIDE_INTERFACES = INTERFACES + ("serve",)
 MAX_REASON = 500
 MAX_OWNER = 120
 # Picking "180 days" and confirming takes a moment; don't refuse the cap itself.
@@ -45,8 +47,16 @@ class DecisionError(ValueError):
 
 @dataclass(frozen=True)
 class Actor:
-    user: str          # getpass.getuser()
-    interface: str     # "tui" | "cli"
+    """Who did something, through which door (docs/phaseD/README.md §4.1, D.7).
+
+    `user` is a display name (the OS login at the Kratos host, `token:<id>`, a schedule's
+    name); `user_id` is the Kratos user (kratos.authz.users -- None at the TUI/CLI means
+    the owner); `credential` is the token behind a network request
+    (`token:<id>` or `gateway:<id>+openwebui:<sub>`)."""
+    user: str          # getpass.getuser() at the Kratos host
+    interface: str     # "tui" | "cli" | "mcp" | "serve" | "schedule"
+    user_id: str | None = None
+    credential: str | None = None
 
     @classmethod
     def current(cls, interface: str) -> "Actor":
@@ -54,15 +64,32 @@ class Actor:
             user = getpass.getuser()
         except Exception:  # noqa: BLE001 -- no login name (containers): still attributable
             user = "unknown"
-        return cls(user=user, interface=interface)
+        return cls(user=user, interface=interface, user_id="owner")
 
 
 def _check_actor(actor: Actor) -> None:
     tool = settings_store.in_tool_call()
     if tool is not None:
         raise DecisionError(f"agent tools may not decide about findings (tool {tool!r} tried)")
-    if not isinstance(actor, Actor) or actor.interface not in INTERFACES or not str(actor.user or "").strip():
-        raise DecisionError("a decision needs a person: an Actor from the TUI or the CLI")
+    if not isinstance(actor, Actor) or actor.interface not in DECIDE_INTERFACES or not str(actor.user or "").strip():
+        raise DecisionError("a decision needs a person: an Actor from the TUI, the CLI or a person's chat")
+
+
+def _authorize(actor: Actor, key: str, data_dir: Path, *, kind: str, scope: str = "key") -> None:
+    """D.7: may this person decide about this finding's machine? Checked (and recorded)
+    BEFORE the write transaction opens. A decision for every machine ("this rule
+    everywhere") reaches machines outside any one user's scope: the owner's only."""
+    from kratos import authz
+
+    with S.opened(data_dir) as conn:
+        rec = _record(conn, key)
+    if scope == "rule" and not authz.is_local_owner(actor):
+        raise DecisionError("a decision for every machine is made by the Kratos owner, in the app")
+    try:
+        authz.require(actor, authz.P.FINDING_DECIDE, rec["target"], data_dir=data_dir,
+                      obj=f"{kind} {rec['finding_key'][:16]} ({rec['rule_id']})")
+    except authz.Denied as e:
+        raise DecisionError(str(e)) from None
 
 
 def _check_reason(reason: str) -> str:
@@ -129,6 +156,7 @@ def _decide(key: str, kind: str, *, actor: Actor, reason: str, scope: str, expir
     _check_actor(actor)
     reason = _check_reason(reason)
     scope = _check_scope(scope)
+    _authorize(actor, key, data_dir, kind=kind, scope=scope)
     now = time.time() if now is None else now
     cap = max_accept_seconds(data_dir) if kind == "risk_accepted" else None
     expires = _check_expiry(expires_at, required=kind == "risk_accepted", cap=cap, now=now)
@@ -197,6 +225,7 @@ def verify(key: str, *, actor: Actor, reason: str, data_dir: Path, now: float | 
     """Confirmed real: still shown. Takes the finding out of any decision."""
     _check_actor(actor)
     reason = _check_reason(reason)
+    _authorize(actor, key, data_dir, kind="verified")
     now = time.time() if now is None else now
     with S.opened(data_dir) as conn, S.immediate(conn):
         rec = _record(conn, key)
@@ -216,6 +245,7 @@ def reopen(key: str, *, actor: Actor, reason: str, data_dir: Path, now: float | 
     """Undo a decision: the finding is shown again (open)."""
     _check_actor(actor)
     reason = _check_reason(reason)
+    _authorize(actor, key, data_dir, kind="reopen")
     now = time.time() if now is None else now
     with S.opened(data_dir) as conn, S.immediate(conn):
         rec = _record(conn, key)

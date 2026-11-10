@@ -716,7 +716,53 @@ def execute_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> d
     return out
 
 
+# Tools that read or act on the KRATOS computer itself, whatever the run's machine is.
+_KRATOS_HOST_TOOLS = frozenset({"parse_auth_log", "collect_system_context", "run_linux_command", "capture_traffic"})
+# Tools that write to the owner's own channels (phone, webhooks, SIEM).
+_OWNER_CHANNEL_TOOLS = frozenset({"send_notification"})
+
+
+def _person_tool_refusal(tool_name: str, args: dict[str, Any], data_dir: Path) -> str | None:
+    """D.7: a run for anyone but the owner at the Kratos host may read only machines in
+    that person's scope -- not the Kratos computer (its own-host tools, or a scan of
+    127.0.0.1), not another machine named in a `target` argument -- and may not write to
+    the owner's alert channels. Refused as a tool error (recorded); the run goes on."""
+    from kratos import authz
+
+    actor = authz.current_actor()
+    if authz.is_local_owner(actor):
+        return None
+    if tool_name in _OWNER_CHANNEL_TOOLS:
+        authz.record_refusal(actor, authz.P.READ, f"{tool_name} writes to the Kratos owner's alert channels",
+                             obj=f"tool {tool_name}", data_dir=data_dir)
+        return (f"{tool_name} is not available in this investigation: it writes to the Kratos owner's own "
+                "channels. Say what should be sent in the final_answer instead.")
+    machines = []
+    if tool_name in _KRATOS_HOST_TOOLS:
+        machines.append("127.0.0.1")
+    target = (args or {}).get("target")
+    if isinstance(target, str) and target.strip():
+        machines.append(target.strip())
+    for machine in machines:
+        try:
+            authz.require(actor, authz.run_action() or authz.P.READ, machine, data_dir=data_dir, audit_allowed=False,
+                          obj=f"tool {tool_name}")
+        except authz.Denied:
+            where = "the Kratos computer itself" if machine == "127.0.0.1" else machine
+            return (f"{tool_name} would read {where}, which is outside what this person may see -- not run. "
+                    "Investigate only the machine of this run, and say in the final_answer what you could not check.")
+    return None
+
+
 def _dispatch_tool_call(tool_name: str, args: dict[str, Any], data_dir: Path) -> dict[str, Any]:
+    from kratos import authz
+
+    # D.7 §3.5: checked at every read, not only at the start -- the pinned machine against
+    # the run's person, right now (narrowed scope / disabled / revoked token -> AccessRemoved).
+    authz.check_run_access(data_dir=data_dir)
+    refused = _person_tool_refusal(tool_name, args, data_dir)
+    if refused is not None:
+        return {"status": "error", "observation": refused}
     _kconfig.set_active_data_dir(data_dir)  # SSH/sub-agent routing reads the link + socket from here
     tool = TOOL_REGISTRY.get(tool_name)
     if tool is not None and not tool_allowed(tool_name):
@@ -1475,6 +1521,9 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
             return None
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
+        from kratos import authz
+
+        authz.check_run_access(data_dir=data_dir)   # D.7: may this run's person still read this machine?
         # background: checks still running at the start budget finish while the model works,
         # and are folded in before the final answer (_settle_collection)
         _progress("collecting the basics (open ports, sign-ins, logs, accounts, persistence, what's running)…")
@@ -1486,7 +1535,11 @@ def _collect_first(data_dir: Path, should_stop: Callable[[], bool] | None) -> An
         return report
     except InvestigationStopped:
         raise
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        from kratos.authz import AccessRemoved
+
+        if isinstance(e, AccessRemoved):
+            raise
         logging.getLogger(__name__).warning("collection before the investigation failed", exc_info=True)
         return None
 
@@ -1754,6 +1807,12 @@ def _run_agent_loop(
     def _check_stop() -> None:
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
+        # D.7: a person whose access to this machine was removed, who was disabled or
+        # demoted, or whose token was revoked, stops here -- before the next model call or
+        # read -- with "stopped: your access to <machine> was removed".
+        from kratos import authz
+
+        authz.check_run_access(data_dir=data_dir)
 
     corr_signature: tuple | None = None   # the inputs correlate_findings last saw (see _inputs_changed)
 

@@ -50,18 +50,44 @@ Commands that work here (no model call):
   /usage             today's model use and the limits
   /retest <key>      re-collect what a finding depends on and re-check it
   /hunt <indicator>  has this address, hash, account, domain, program or path been seen on
-                     the machines this token may see? Searches what Kratos holds and says
+                     the machines you may see? Searches what Kratos holds and says
                      what that covered (--since 30d, --machine <name>, --type account)
+  /decide <key> verify|false-positive|out-of-scope|reopen <reason>
+  /decide <key> accept <days> <reason>
+                     record a decision about a finding (investigators; recorded with your name)
   /help              this text
 
+What you may do depends on your Kratos role: viewers read findings, hunt and ask; investigators
+also start investigations, ask about groups, re-check and decide. You see only your machines.
+
 Not available from a chat client -- use the Kratos app: /evolve, /whitelist, /run-fix,
-accepting or dismissing findings, settings, target setup, presets.
+users, tokens, settings, channels, target setup, presets.
 
 Text Kratos quotes from a machine is shown inert: no image loads, no link is clickable.
 Your OWN messages are drawn by the chat app itself -- an image link you type there is
 loaded by the app, not by Kratos."""
 
-_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help")
+_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide")
+
+
+def _actor_label(client: Any) -> str:
+    """Who did it, for records written by the run: the person (D.7) and the token."""
+    from kratos import authz
+
+    a = authz.current_actor()
+    name = getattr(a, "user", None) if a is not None else None
+    return f"{name} (token {client.token_id})" if name else f"token {client.token_id}"
+
+
+def _require_or_text(action: str, machine: str | None, data_dir: Path, obj: str) -> str | None:
+    """None when the caller may do it (recorded), else the refusal in plain words."""
+    from kratos import authz
+
+    try:
+        authz.require(authz.current_actor(), action, machine, data_dir=data_dir, obj=obj)
+    except authz.Denied as e:
+        return f"Refused: {e}"
+    return None
 
 
 # --------------------------------------------------------------------------- helpers
@@ -78,12 +104,31 @@ def default_target() -> str:
     return kratos_config.process_target().rsplit("@", 1)[-1].strip().strip("[]").lower()
 
 
-def models_for(client: Any) -> list[tuple[str, str]]:
-    """(model id, target) for each machine this token may investigate. `kratos` is the
-    default machine when the token may reach it."""
+def visible_machines(client: Any, data_dir: Any = None) -> list[str]:
+    """The machines this caller may see (D.7): the person's effective scope -- their user
+    scope ∩ the token's machines. Outside a request (no actor) only an owner token keeps
+    B.3's meaning; anyone else sees nothing (fail closed)."""
+    from kratos import authz
+
+    actor = authz.current_actor() if data_dir is not None else None
+    if actor is not None and getattr(actor, "interface", "") == "serve":
+        try:
+            p = authz.principal_of(actor, data_dir=data_dir)
+        except authz.Denied:
+            return []
+        return [] if p.scope.every else list(p.scope.names)
+    if getattr(client, "user_id", "owner") != "owner" or getattr(client, "kind", "person") != "person":
+        return []
+    default = default_target()
+    return list(client.targets) or ([default] if default else [])
+
+
+def models_for(client: Any, data_dir: Any = None) -> list[tuple[str, str]]:
+    """(model id, target) for each machine this caller may investigate. `kratos` is the
+    default machine when the caller may reach it."""
     out: list[tuple[str, str]] = []
     default = default_target()
-    scope = list(client.targets) or ([default] if default else [])
+    scope = visible_machines(client, data_dir)
     if default and default in scope:
         out.append((MODEL_PREFIX, default))
     for t in scope:
@@ -96,9 +141,19 @@ def group_models_for(client: Any, data_dir: Any) -> list[tuple[str, str]]:
     (D.2). A fleet question over it is narrowed to those machines."""
     if data_dir is None:
         return []
+    from kratos import authz
+
+    actor = authz.current_actor()
+    if actor is not None and getattr(actor, "interface", "") == "serve":
+        try:   # D.7: a group model only for people who may ask about a group
+            p = authz.principal_of(actor, data_dir=data_dir)
+        except authz.Denied:
+            return []
+        if not authz.P.allowed(p.user.role, authz.P.FLEET_ASK):
+            return []
     from kratos.fleet import groups as G
 
-    scope = [t for _m, t in models_for(client)]
+    scope = [t for _m, t in models_for(client, data_dir)]
     out: list[tuple[str, str]] = []
     try:
         groups = G.list_groups(data_dir)
@@ -113,16 +168,16 @@ def group_models_for(client: Any, data_dir: Any) -> list[tuple[str, str]]:
     return out
 
 
-def scope_machines(client: Any) -> list[str]:
-    """The machines (never groups) this token may see."""
-    return sorted({t for _m, t in models_for(client)})
+def scope_machines(client: Any, data_dir: Any = None) -> list[str]:
+    """The machines (never groups) this caller may see."""
+    return sorted({t for _m, t in models_for(client, data_dir)})
 
 
 def target_for_model(client: Any, model: str, data_dir: Any = None) -> str | None:
     """The machine (or, with `data_dir`, the '@group') a model name stands for, if this
     token may reach it. It comes from the model name only -- never from the message."""
     wanted = str(model or "").strip().lower()
-    for mid, target in models_for(client) + group_models_for(client, data_dir):
+    for mid, target in models_for(client, data_dir) + group_models_for(client, data_dir):
         if mid == wanted:
             return target
     return None
@@ -206,12 +261,20 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
                 "use the Kratos app. Type /help for what works here.")
     if word == "/help":
         return _render.kratos_text_markdown(HELP_TEXT)
+    from kratos.authz import permissions as P
+
     if word == "/usage":
         from kratos.budget import report as _br
 
-        return _render.kratos_text_markdown(_usage_text(_br, data_dir))
+        refused = _require_or_text(P.USAGE_READ, target, data_dir, "chat /usage")
+        return _render.kratos_note_markdown(refused) if refused else \
+            _render.kratos_text_markdown(_usage_text(_br, data_dir))
     if word == "/findings":
-        return _render.kratos_text_markdown(_findings_text(target, data_dir))
+        refused = _require_or_text(P.FINDINGS_READ, target, data_dir, "chat /findings")
+        return _render.kratos_note_markdown(refused) if refused else \
+            _render.kratos_text_markdown(_findings_text(target, data_dir))
+    if word == "/decide":
+        return _render.kratos_text_markdown(_decide_text(text, target, data_dir))
     if word in ("/retest", "/hunt"):
         return None          # a turn of its own (slots, hourly limit) -- _serve_turn
     return None
@@ -230,16 +293,24 @@ def _hunt_text(arg: str, client: Any, data_dir: Path, progress: Any) -> str:
     from kratos.hunt import front, report
     from kratos.run_context import run_scope
 
-    scope = sorted({t for _mid, t in models_for(client)})
+    from kratos import authz
+
+    scope = sorted({t for _mid, t in models_for(client, data_dir)})
+    try:
+        authz.require(authz.current_actor(), authz.P.HUNT, data_dir=data_dir, obj="chat /hunt")
+    except authz.Denied as e:
+        return f"Refused: {e}"
     try:
         prepared = front.resolve_hunt(front.parse_command(arg), scope=scope, data_dir=data_dir)
         if prepared.ambiguous:
             a = prepared.ambiguous[0]
             return f"{a.question()} Send it again with --type {' or --type '.join(a.options)}."
         with run_scope("web"):
-            result = front.start_hunt(data_dir, prepared, source="chat", actor=f"token {client.token_id}",
+            result = front.start_hunt(data_dir, prepared, source="chat", actor=_actor_label(client),
                                progress=progress)
     except front.HuntUsageError as e:
+        if "not a machine you may search" in str(e):
+            authz.record_refusal(authz.current_actor(), authz.P.HUNT, str(e), obj="chat /hunt", data_dir=data_dir)
         return f"{e}\n{front.USAGE}"
     return report.render(result)
 
@@ -272,8 +343,58 @@ def _findings_text(target: str, data_dir: Path) -> str:
         credit = credit_line(r)            # C.1: a Sigma rule's author (DRL 1.1)
         lines.append(f"- {short(r['finding_key'])}  {str(r.get('severity') or '').upper():<8} {r.get('rule_id')}  "
                      f"{str(r.get('title') or '')[:100]}" + (f" ({credit})" if credit else "") + tag)
-    lines.append("Re-check one: /retest <key>. Decide on one (accept, false positive): in the Kratos app.")
+    lines.append("Re-check one: /retest <key>. Decide on one: /decide <key> verify|false-positive|out-of-scope|"
+                 "reopen <reason>, or /decide <key> accept <days> <reason> (investigators).")
     return "\n".join(lines)
+
+
+_DECIDE_USAGE = ("Usage: /decide <key> verify <reason> | false-positive <reason> | out-of-scope <reason> | "
+                 "reopen <reason> | accept <days> <reason>")
+
+
+def _decide_text(text: str, target: str, data_dir: Path) -> str:
+    """A finding decision typed by a person in the chat (investigators and admins, D.7).
+    Deterministic -- no model reads or writes it -- and recorded with the person's name.
+    Only for this machine's findings; "this rule everywhere" is the owner's, in the app."""
+    from kratos import authz
+    from kratos.lifecycle import decide as D
+    from kratos.lifecycle import store as _lc
+    from kratos.target_key import target_key
+
+    parts = text.split(maxsplit=3)
+    if len(parts) < 3 or not re.fullmatch(r"[0-9a-f]{6,64}", parts[1]):
+        return _DECIDE_USAGE
+    key, kind = parts[1], parts[2].lower()
+    rest = parts[3] if len(parts) > 3 else ""
+    try:
+        with _lc.opened(data_dir) as conn:
+            full = _lc.resolve_key(conn, key)
+            rec = _lc.get_record(conn, full)
+    except Exception:  # noqa: BLE001
+        return f"No finding {key}."
+    if target_key(rec["target"]) != target_key(target):
+        return f"No finding {key} on {target}."
+    actor = authz.current_actor()
+    try:
+        if kind == "verify":
+            out = D.verify(full, actor=actor, reason=rest, data_dir=data_dir)
+        elif kind in ("false-positive", "fp"):
+            out = D.mark_false_positive(full, actor=actor, reason=rest, data_dir=data_dir)
+        elif kind in ("out-of-scope", "oos"):
+            out = D.mark_out_of_scope(full, actor=actor, reason=rest, data_dir=data_dir)
+        elif kind == "reopen":
+            out = D.reopen(full, actor=actor, reason=rest, data_dir=data_dir)
+        elif kind == "accept":
+            days, _, reason = rest.partition(" ")
+            out = D.accept_risk(full, actor=actor, reason=reason, owner=None,
+                                expires_at=D.expiry_from_days(days or "0"), data_dir=data_dir)
+        else:
+            return _DECIDE_USAGE
+    except (D.DecisionError, authz.Denied) as e:
+        return f"Not recorded: {e}"
+    who = getattr(actor, "user", "you")
+    return (f"Recorded for {rec['rule_id']} on {rec['target']}: {kind.replace('-', ' ')} (by {who}). "
+            f"State now: {out.get('state') or out.get('kind')}.")
 
 
 def _retest_text(key: str, target: str, data_dir: Path) -> str:
@@ -291,9 +412,13 @@ def _retest_text(key: str, target: str, data_dir: Path) -> str:
         return f"No finding {key}."
     if target_key(rec["target"]) != target_key(target):
         return f"No finding {key} on {target}."
+    from kratos import authz
     from kratos.run_context import run_scope
 
-    with run_scope("web", target=target):
+    refused = _require_or_text(authz.P.RETEST, target, data_dir, f"retest {full[:12]}")
+    if refused:
+        return refused
+    with run_scope("web", target=target), authz.acting_as(authz.current_actor(), action=authz.P.RETEST):
         out = retest(full, data_dir=data_dir, target=target)
     lines = [f"Retest of {out['rule_id']} on {out['target']}: {out['before_state']} -> {out['after_state']}",
              f"verdict: {out['verdict']['tag']} -- {out['verdict']['sentence']}"]
@@ -352,6 +477,8 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
     from kratos.serve.runs import RunRequest, run_investigation
     from kratos.tui_mk2.command_intent import route_message
 
+    from kratos import authz
+
     link_hosts = settings_store.get(_s.LINK_HOSTS, data_dir=state.data_dir) or []
     if target.startswith("@"):
         _serve_fleet_turn(handle, state=state, client=client, group=target, message=message, session_id=session_id,
@@ -406,6 +533,19 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
         handle.finish({"status": "error", "content": "Kratos could not reach its model to read the message."})
         return
     kind = route.kind
+    if kind in ("chat", "investigate", "clarify_host") or route.command == "report":
+        action = {"chat": authz.P.CHAT}.get(kind, authz.P.INVESTIGATE)
+        if route.command == "report" and kind not in ("investigate", "clarify_host"):
+            action = authz.P.FINDINGS_READ
+        refused = _require_or_text(action, target, state.data_dir, f"chat message ({kind})")
+        if refused:
+            text = refused
+            if action == authz.P.INVESTIGATE:
+                text += ("\n\nYou can still read what Kratos already found: /findings, or ask a question that "
+                         "doesn't need a new check.")
+            _record_chat_turn(state.data_dir, session_id, message, text)
+            handle.finish({"status": "refused", "content": _render.kratos_note_markdown(text)})
+            return
     if kind == "failed":
         handle.finish({"status": "error", "content": "Kratos could not reach its model: "
                        + untrusted.md_code(route.reason or "no detail", max_len=200)})
@@ -438,14 +578,16 @@ def _serve_turn(handle: TurnHandle, *, state: Any, client: Any, target: str, mod
         return
     try:
         state.note_runs()
-        outcome = run_investigation(RunRequest(goal=message, target=target, data_dir=state.data_dir, source="web",
-                                               session_id=session_id, prior_context=history or None,
-                                               should_stop=handle.stop.is_set, on_progress=handle.progress))
+        with authz.acting_as(authz.current_actor(), action=authz.P.INVESTIGATE):
+            outcome = run_investigation(RunRequest(goal=message, target=target, data_dir=state.data_dir,
+                                                   source="web", session_id=session_id,
+                                                   prior_context=history or None,
+                                                   should_stop=handle.stop.is_set, on_progress=handle.progress))
     finally:
         state.slots.release()
         state.note_runs()
     status = {"refused_by_budget": "budget", "stopped_by_budget": "budget", "stopped": "stopped",
-              "error": "error"}.get(outcome.status, "ok")
+              "access_removed": "refused", "error": "error"}.get(outcome.status, "ok")
     content = _render.answer_markdown(outcome.final_answer, outcome.answer_parts, outcome.recommended_commands,
                                       link_hosts=link_hosts)
     handle.finish({"status": status, "content": content, "run_id": outcome.run_id, "usage": outcome.token_usage})
@@ -456,8 +598,8 @@ def _serve_fleet_turn(handle: TurnHandle, *, state: Any, client: Any, group: str
     """A message to `kratos/@<group>`: a fleet question over the machines of the group this
     token may see (D.2 §3.8) -- never the others, which are only counted. One slot, like an
     investigation; /retest, /hunt and fixes stay single-machine."""
+    from kratos import authz
     from kratos.fleet import run as FR
-    from kratos.lifecycle.decide import Actor
 
     first = message.strip().split(maxsplit=1)[0].lower() if message.strip() else ""
     if first.startswith("/"):
@@ -472,10 +614,12 @@ def _serve_fleet_turn(handle: TurnHandle, *, state: Any, client: Any, group: str
         return
     try:
         state.note_runs()
-        out = FR.run_fleet(FR.FleetRequest(
-            question=message, group=group, data_dir=state.data_dir, source="web",
-            actor=Actor(user=f"token:{client.token_id}", interface="serve"), scope=scope_machines(client),
-            on_progress=handle.progress, should_stop=handle.stop.is_set))
+        actor = authz.current_actor()
+        with authz.acting_as(actor, action=authz.P.FLEET_ASK):
+            out = FR.run_fleet(FR.FleetRequest(
+                question=message, group=group, data_dir=state.data_dir, source="web",
+                actor=actor, scope=scope_machines(client, state.data_dir),
+                on_progress=handle.progress, should_stop=handle.stop.is_set))
     except FR.FleetError as e:
         handle.finish({"status": "error", "content": _render.kratos_note_markdown(str(e))})
         return
@@ -507,17 +651,30 @@ def _handlers(state: Any) -> dict[str, Any]:
     from starlette.responses import JSONResponse, StreamingResponse
 
     async def list_models(request: Request) -> Any:
+        from kratos import authz
+
         client = request.scope["kratos.client"]
+        actor = request.scope.get("kratos.actor")
+        try:
+            await asyncio.to_thread(authz.require, actor, authz.P.READ, data_dir=state.data_dir, audit_allowed=False)
+        except authz.Denied as e:
+            return _error(403, str(e))
         now = int(state.started_at)
-        models = models_for(client) + await asyncio.to_thread(group_models_for, client, state.data_dir)
+        models = await asyncio.to_thread(models_for, client, state.data_dir) + \
+            await asyncio.to_thread(group_models_for, client, state.data_dir)
         data = [{"id": mid, "object": "model", "created": now, "owned_by": "kratos"} for mid, _t in models]
         body = {"object": "list", "data": data}
         await asyncio.to_thread(_store.audit, state.data_dir, door="openai", endpoint=MODELS_PATH, status="ok",
-                                token_id=client.token_id, client_addr=_peer(request), bytes_out=len(json.dumps(body)))
+                                token_id=client.token_id, client_addr=_peer(request), bytes_out=len(json.dumps(body)),
+                                user_id=getattr(actor, "user_id", None))
         return JSONResponse(body)
 
     async def chat_completions(request: Request) -> Any:
+        from kratos import authz
+
         client = request.scope["kratos.client"]
+        actor = request.scope.get("kratos.actor")
+        meter_user = actor.user_id if client.kind == "gateway" and actor is not None else None
         started = time.monotonic()
         peer = _peer(request)
         headers = {k.lower(): v for k, v in request.headers.items()}
@@ -529,7 +686,8 @@ def _handlers(state: Any) -> dict[str, Any]:
                 _store.audit(state.data_dir, door="openai", endpoint=COMPLETIONS_PATH, status=status,
                              token_id=client.token_id, model=model, target=target, client_addr=peer,
                              client_user=user, run_id=run_id, metered=metered,
-                             duration=time.monotonic() - started, bytes_out=bytes_out, detail=detail)
+                             duration=time.monotonic() - started, bytes_out=bytes_out, detail=detail,
+                             user_id=getattr(actor, "user_id", None))
             except Exception:  # noqa: BLE001
                 logger.debug("serve: audit failed", exc_info=True)
 
@@ -550,8 +708,17 @@ def _handlers(state: Any) -> dict[str, Any]:
         target = await asyncio.to_thread(target_for_model, client, model, state.data_dir)
         if target is None:
             await asyncio.to_thread(audit, "refused", model=model[:200], detail="model not in this token's scope")
+            await asyncio.to_thread(authz.record_refusal, actor, authz.P.READ, "a model this person may not use",
+                                    obj=f"model {model[:80]}", data_dir=state.data_dir)
             return _error(404, f"The model {model[:80]!r} does not exist or this token may not use it.",
                           code="model_not_found")
+        try:
+            # a group model (@lab) is checked per machine by the fleet run itself
+            await asyncio.to_thread(authz.require, actor, authz.P.CHAT, None if target.startswith("@") else target,
+                                    data_dir=state.data_dir, audit_allowed=False)
+        except authz.Denied as e:
+            await asyncio.to_thread(audit, "refused", model=model, target=target, detail=str(e)[:200])
+            return _error(403, str(e))
         try:
             message, earlier = split_messages(body.get("messages"))
         except ValueError as e:
@@ -577,7 +744,7 @@ def _handlers(state: Any) -> dict[str, Any]:
         except BaseException:
             state.close_turn()
             raise
-        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit):
+        if not await asyncio.to_thread(state.reserve_metered, client.token_id, limit, meter_user):
             state.close_turn()
             await asyncio.to_thread(audit, "refused", model=model, target=target, detail="hourly limit")
             return _error(429, f"This token has used its {limit} messages for this hour (serve.requests_per_hour).",
@@ -590,14 +757,15 @@ def _handlers(state: Any) -> dict[str, Any]:
                 await asyncio.to_thread(_precheck, target, state.data_dir)
             if refusal is not None:
                 await asyncio.to_thread(audit, "budget", model=model, target=target, detail="budget refused")
-                state.release_metered(client.token_id)
+                state.release_metered(client.token_id, meter_user)
                 state.close_turn()
                 return _respond_text(_render.kratos_note_markdown(refusal), model=model, stream=stream)
             convo = [*earlier, ("user", message)]
-            key = chat_key(headers, client.token_id, model, convo, message)
-            session_id = await asyncio.to_thread(_session_for, state, client.token_id, key, target)
+            owner_key = state.meter_key(client.token_id, meter_user)
+            key = chat_key(headers, owner_key, model, convo, message)
+            session_id = await asyncio.to_thread(_session_for, state, owner_key, key, target)
         except BaseException:
-            state.release_metered(client.token_id)
+            state.release_metered(client.token_id, meter_user)
             state.close_turn()
             raise
         handle = TurnHandle()
@@ -611,7 +779,7 @@ def _handlers(state: Any) -> dict[str, Any]:
             worker = asyncio.get_running_loop().run_in_executor(state.turn_pool, call)
         except BaseException:
             state.untrack_turn(handle)
-            state.release_metered(client.token_id)
+            state.release_metered(client.token_id, meter_user)
             state.close_turn()
             raise
         worker.add_done_callback(lambda _f: (state.untrack_turn(handle), state.close_turn()))
@@ -621,7 +789,7 @@ def _handlers(state: Any) -> dict[str, Any]:
                 audit(result.get("status") or "error", model=model, target=target, run_id=result.get("run_id"),
                       metered=True, bytes_out=sent)
             finally:
-                state.release_metered(client.token_id)
+                state.release_metered(client.token_id, meter_user)
 
         if stream:
             return StreamingResponse(_sse(handle, worker, model=model, on_done=finished, request=request),
@@ -665,16 +833,21 @@ def _precheck(target: str, data_dir: Path) -> str | None:
 
 
 def _session_for(state: Any, token_id: str, key: str, target: str) -> str:
+    """The Kratos session holding this client chat -- always one the caller owns (D.7)."""
+    from kratos import authz
     from kratos.llm_config import get_active_llm_model
     from kratos.storage.session_store import SessionStore
 
+    actor = authz.current_actor()
+    me = getattr(actor, "user_id", None) or "owner"
     found = _store.session_for(state.data_dir, token_id, key, target)
     if found:
         store = SessionStore(state.data_dir / "kratos.db")
-        if store.get_session(found) is not None:
+        row = store.get_session(found)
+        if row is not None and (row.get("owner_user_id") or "owner") == me:
             return found
     store = SessionStore(state.data_dir / "kratos.db")
-    new = store.create_session([target], get_active_llm_model())
+    new = store.create_session([target], get_active_llm_model(), owner_user_id=me)
     return _store.remember_session(state.data_dir, token_id, key, target, new)
 
 

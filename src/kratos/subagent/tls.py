@@ -342,6 +342,12 @@ def rotate(data_dir: Path, *, actor: str) -> tuple[KeySet, KeySet]:
     tool = settings_store.in_tool_call()
     if tool:
         raise TLSKeyError(f"rotating the agent link keys is a person's decision -- refused inside the tool call {tool!r}")
+    from kratos import authz   # D.7: the owner, at the Kratos host
+
+    try:
+        authz.require_person(authz.P.KEYS_MANAGE, data_dir=data_dir, obj="rotate the agent link keys")
+    except authz.Denied as e:
+        raise TLSKeyError(str(e)) from None
     directory = tls_dir(data_dir)
     _ensure_dir(directory)
     with _locked(directory):
