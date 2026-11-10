@@ -1,6 +1,8 @@
 """D.1 minting, ephemeral key lifecycle, the SSH argv hook and multiplexing."""
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +22,13 @@ def dd(tmp_path, monkeypatch):
     kratos_config.set_active_data_dir(data)
     yield data
     kratos_config.set_active_data_dir(None)
+    # agent mode starts a dedicated ssh-agent; stop it (it outlived every suite run before)
+    pid_file = _ca.ca_dir(data) / _ca.AGENT_PID_NAME
+    if pid_file.exists():
+        try:
+            os.kill(int(pid_file.read_text().strip()), signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
 
 
 def _enrol_cert(data: Path, host: str, principal: str = "kratos-m1", addr: str = "192.0.2.5"):
