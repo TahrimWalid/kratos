@@ -375,3 +375,46 @@ def test_the_backup_screen_sets_up_a_key_and_backs_up(tmp_path, monkeypatch):
             assert "kratos backup restore" in text
 
     asyncio.run(go())
+
+
+def test_after_a_restore_the_old_computers_backups_dont_count(tmp_path):
+    from kratos.backup import restore as RS
+
+    old = H.home(tmp_path, "old")
+    H.seed(old, with_keys=False, events=0)
+    ident = H.identity()
+    H.set_recipient(old, ident)
+    res = CR.create(old.data, actor=H.CLI, dest=tmp_path / "bk", roots=old, copy_to=[])
+    new = H.home(tmp_path, "new")
+    RS.restore(res.file, [ident], roots=new, actor=H.CLI)
+    rows = {x["check"]: x for x in ST.doctor_rows(new.data)}
+    assert rows["last backup"]["detail"] == "none made yet" and "restored from" in rows
+    assert "backup on same disk" not in rows
+
+
+def test_subagent_install_records_the_address_the_agent_will_dial(tmp_path):
+    home = tmp_path / "h"
+    home.mkdir()
+    out = _cli(home, "subagent-install", "--core-host", "core.example.test", "--name", "web-01", "--out",
+               str(tmp_path / "i.sh"))
+    assert out.returncode == 0, out.stderr
+    with sqlite3.connect(home / "data" / "kratos.db") as c:
+        assert c.execute("SELECT core_host FROM subagent_pairing_codes").fetchall() == [("core.example.test",)]
+
+
+def test_a_hostile_backup_gets_a_plain_message_not_a_traceback(tmp_path):
+    ident = H.identity()
+    import tarfile as _tf
+
+    ti = _tf.TarInfo("data/sessions/x.json")
+    ti.type = _tf.SYMTYPE
+    ti.linkname = "/etc/passwd"
+    f = H.craft(tmp_path / "evil.age", ident.recipient(), [(ti, None)],
+                {"format": "kratos-backup/1", "kratos_version": "0.1.0", "files": [],
+                 "totals": {"files": 0, "bytes": 0}})
+    home = tmp_path / "h"
+    home.mkdir()
+    out = _cli(home, "backup", "restore", str(f), "--yes", stdin=ident.secret.encode())
+    assert out.returncode == 2 and b"Traceback" not in out.stderr and b"can't be trusted" in out.stderr
+    wrong = _cli(home, "backup", "restore", str(f), "--yes", stdin=H.identity().secret.encode())
+    assert wrong.returncode == 2 and b"doesn't open this backup" in wrong.stderr

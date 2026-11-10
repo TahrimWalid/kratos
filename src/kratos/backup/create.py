@@ -319,6 +319,11 @@ def _agents(db_copy: Path | None) -> list[dict[str, Any]]:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(subagent_targets)")}
         has_codes = "subagent_pairing_codes" in names and "core_host" in {
             r[1] for r in conn.execute("PRAGMA table_info(subagent_pairing_codes)")}
+        port = None
+        if "subagent_listeners" in names:
+            row = conn.execute("SELECT port FROM subagent_listeners WHERE port IS NOT NULL ORDER BY heartbeat_at DESC "
+                               "LIMIT 1").fetchone()
+            port = int(row[0]) if row and row[0] else None
         out = []
         for r in conn.execute("SELECT * FROM subagent_targets WHERE revoked_at IS NULL ORDER BY target_id"):
             dial = r["core_addr"] if "core_addr" in cols else None
@@ -329,7 +334,10 @@ def _agents(db_copy: Path | None) -> list[dict[str, Any]]:
                                    (r["target_id"],)).fetchone()
                 paired = row[0] if row else None
             out.append({"target_id": r["target_id"], "name": r["name"], "hostname": r["hostname"],
-                        "agent_version": r["agent_version"], "dials": dial or paired, "paired_with": paired})
+                        # what the agent dials is the name on its command line (its pairing's
+                        # address); where its connection last arrived is only the fallback
+                        "agent_version": r["agent_version"], "dials": paired or dial, "arrived_at": dial,
+                        "port": port})
         return out
     finally:
         conn.close()

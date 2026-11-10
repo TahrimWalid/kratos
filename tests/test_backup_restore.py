@@ -333,7 +333,7 @@ def test_agents_that_dial_this_computer_wait_and_others_get_an_upgrade_installer
     r, ident, res = made
     m = dict(res.manifest)
     m["agents"] = [{"target_id": "t1", "name": "web-01", "dials": "192.0.2.1"},
-                   {"target_id": "t2", "name": "db-01", "dials": "198.51.100.200"}]
+                   {"target_id": "t2", "name": "db-01", "dials": "198.51.100.200", "port": 8772}]
     new = H.home(tmp_path, "new")
     RS.restore(res.file, [ident], roots=new, actor=H.CLI)
     monkeypatch.setattr(RS, "_local_addresses", lambda: {"192.0.2.1"})
@@ -345,7 +345,7 @@ def test_agents_that_dial_this_computer_wait_and_others_get_an_upgrade_installer
     from kratos.subagent import tls
 
     pins = tls.load_keys(new.data).pins()
-    assert "192.0.2.99" in script and all(p in script for p in pins)
+    assert "192.0.2.99" in script and all(p in script for p in pins) and "8772" in script
     assert Path(by["db-01"]["installer"]).stat().st_mode & 0o777 == 0o600
     assert pins == tls.load_keys(r.data).pins()          # the same keys: no re-pairing
 
@@ -457,3 +457,19 @@ def test_manifest_schema_is_closed():
         mutate(m)
         with pytest.raises(AR.ArchiveError):
             AR.validate_manifest(m)
+
+
+def test_certificates_are_rebound_to_this_computers_address(tmp_path, monkeypatch):
+    from kratos.sshca import store as _st
+
+    r = H.home(tmp_path, "new")
+    H.seed(r, with_keys=False, events=0)
+    _st.upsert_enrolment(r.data, "192.0.2.20", login="ubuntu", principal="kratos-x", principal_mode="machine",
+                         actor="t", apparent_address="198.51.100.1")
+    _st.upsert_enrolment(r.data, "192.0.2.21", login="ubuntu", principal="kratos-y", principal_mode="machine",
+                         actor="t", apparent_address="192.0.2.5")
+    monkeypatch.setattr(RS, "_outgoing_address", lambda host: "192.0.2.5")
+    notes = RS.ssh_certificate_step(r, local={"192.0.2.5"})
+    assert _st.get_enrolment(r.data, "192.0.2.20").apparent_address == "192.0.2.5"
+    assert _st.get_enrolment(r.data, "192.0.2.21").apparent_address == "192.0.2.5"   # already right: untouched
+    assert len(notes) == 1 and "now bound to 192.0.2.5" in notes[0] and "ssh-ca verify 192.0.2.20" in notes[0]

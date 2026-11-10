@@ -48,9 +48,18 @@ def summary(data_dir: Path) -> dict[str, Any]:
     data_dir = Path(data_dir)
     now = time.time()
     recips = list(BS.get(BS.RECIPIENTS, data_dir))
-    last_ok = BR.last(data_dir, "create", outcome="ok")
-    last_any = (BR.runs(data_dir, kind="create", limit=1) or [None])[0]
-    drill = BR.last(data_dir, "drill", outcome="ok")
+    # After a restore, the history in backup_runs describes the OLD computer's backups and
+    # disks: only what was done here since the newest restore counts.
+    restored = BR.last(data_dir, "restore", outcome="ok")
+    since = restored["id"] if restored else 0
+
+    def newest(kind: str, outcome: str | None) -> dict | None:
+        rows = [r for r in BR.runs(data_dir, kind=kind, outcome=outcome, limit=200) if r["id"] > since]
+        return rows[0] if rows else None
+
+    last_ok = newest("create", "ok")
+    last_any = newest("create", None)
+    drill = newest("drill", "ok")
     dest = destination(data_dir)
     files = backup_files(dest)
     total = sum(p.stat().st_size for p in files)
@@ -62,7 +71,7 @@ def summary(data_dir: Path) -> dict[str, Any]:
     return {
         "recipients": recips, "schedule": BS.get(BS.SCHEDULE, data_dir), "destination": str(dest),
         "copy_targets": list(BS.get(BS.COPY_TARGETS, data_dir)), "drill_warn_days": BS.get(BS.DRILL_WARN_DAYS, data_dir),
-        "last_ok": last_ok, "last_attempt": last_any, "last_drill": drill,
+        "last_ok": last_ok, "last_attempt": last_any, "last_drill": drill, "restored": restored,
         "last_ok_age": (now - epoch_of(last_ok["started_at"])) if last_ok else None,
         "last_drill_age": (now - epoch_of(drill["started_at"])) if drill else None,
         "files": len(files), "bytes": total, "bytes_30d": month,
@@ -89,6 +98,12 @@ def doctor_rows(data_dir: Path) -> list[dict[str, str]]:
     else:
         row("backup lock", "warn", "no backup key set up: backups can only be made by hand with a passphrase",
             fix="`kratos backup key new` (the secret half goes off this computer; scheduled backups need it)")
+    restored = s.get("restored")
+    if restored:
+        d = restored.get("detail") or {}
+        row("restored from", "info", f"a backup made {d.get('made', '?')} on {d.get('from_host', '?')}, restored "
+                                     f"{ago(time.time() - (epoch_of(restored['started_at']) or time.time()))} ago "
+                                     "(backups and drills before that were the old computer's)")
     last = s["last_ok"]
     if last is None:
         row("last backup", "warn", "none made yet", fix="`kratos backup create`, then `kratos backup drill <file>`")

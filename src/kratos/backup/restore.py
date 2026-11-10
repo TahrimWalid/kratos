@@ -529,7 +529,10 @@ def agent_step(roots: Roots, manifest: dict[str, Any], *, hub_address: str | Non
                 if not is_ip_or_hostname(new_host):
                     row["note"] = f"{new_host!r} is not an address"
                 else:
-                    script = installer.generate_installer(new_host, None, upgrade=True, server_pins=pins)
+                    port = a.get("port") if isinstance(a.get("port"), int) else installer.DEFAULT_CORE_PORT
+                    script = installer.generate_installer(new_host, None, core_port=port, upgrade=True,
+                                                          server_pins=pins)
+                    row["port"] = port
                     slug = "".join(ch if ch.isalnum() or ch in "-_." else "-" for ch in label)[:40] or "agent"
                     path = roots.data / f"kratos-subagent-upgrade-{slug}.sh"
                     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -540,6 +543,52 @@ def agent_step(roots: Roots, manifest: dict[str, Any], *, hub_address: str | Non
                     written.append(str(path))
         out.append(row)
     return out, written
+
+
+def _outgoing_address(host: str) -> str | None:
+    """The address this computer sends from to reach `host` (a routing lookup; no packet
+    leaves the computer)."""
+    try:
+        infos = socket.getaddrinfo(host, 22, type=socket.SOCK_DGRAM)
+    except OSError:
+        return None
+    for family, _t, _p, _c, addr in infos:
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sk:
+                sk.connect(addr)
+                return sk.getsockname()[0]
+        except OSError:
+            continue
+    return None
+
+
+def ssh_certificate_step(roots: Roots, *, local: set[str] | None = None) -> list[str]:
+    """D.1 certificates carry a `source-address`: the address each machine saw Kratos from.
+    On a computer with a different address, those certificates would be refused -- and a
+    certificate-only machine has no old key to fall back on. Each enrolment is bound to the
+    address this computer reaches that machine from, and the person is told to confirm with
+    `kratos ssh-ca verify`."""
+    notes: list[str] = []
+    try:
+        from kratos.sshca import store as _st
+
+        enrolments = _st.list_enrolments(roots.data)
+    except Exception:  # noqa: BLE001 -- no enrolments, or no CA in this backup
+        return notes
+    local = _local_addresses() if local is None else local
+    for enr in enrolments:
+        if not enr.source_address_enabled or not enr.apparent_address or enr.apparent_address in local:
+            continue
+        new = _outgoing_address(enr.host)
+        if not new or new == enr.apparent_address:
+            notes.append(f"{enr.host}: its SSH certificates were bound to {enr.apparent_address}; this computer's "
+                         f"address there is unknown -- run `kratos ssh-ca verify {enr.host}` from here")
+            continue
+        _st.set_apparent_address(roots.data, enr.host, new)
+        notes.append(f"{enr.host}: SSH certificates are now bound to {new}, the address this computer reaches it "
+                     f"from (was {enr.apparent_address}); confirm with `kratos ssh-ca verify {enr.host}` (behind NAT, "
+                     "the machine may see another address)")
+    return notes
 
 
 def restore(backup: Path, identities: list[object], *, roots: Roots, actor: Any, replace: bool = False,
@@ -609,6 +658,8 @@ def restore(backup: Path, identities: list[object], *, roots: Roots, actor: Any,
 
             stores.migrate_all(db)
         _restore_ca(st, roots, ca_mode, result.notes)
+        if kind == "restore":
+            result.notes += ssh_certificate_step(roots)
         result.notes += _summary_notes(st.manifest, tops, roots, fresh, found, done=True)
         result.agents, result.installers = agent_step(roots, st.manifest, hub_address=hub_address)
         BR.record(roots.data, kind, actor, "ok", file=str(backup), size=backup.stat().st_size,
@@ -664,9 +715,9 @@ def _summary_notes(m: dict[str, Any], tops: dict[str, set[str]], roots: Roots, f
         notes.append("left out of the backup, rebuild them: " + "; ".join(str(c.get("reason", "")).split(": ", 1)[-1]
                                                                            for c in out))
     if any(p.endswith("systemd") or p == "schedules" for p in tops["data"]):
-        notes.append("timers (schedules, the backup and vulnerability-data timers) are files Kratos wrote; "
-                     "install them on this computer again with the commands `kratos schedule install`, "
-                     "`kratos backup schedule` and `kratos vulndb-update --timer` print")
+        notes.append("timers are files Kratos wrote, not installed on this computer yet: install your schedules' "
+                     "timers again from /schedules in the app, and re-run `kratos backup schedule …` and "
+                     "`kratos vulndb-update --timer …` if you used them")
     if not fresh and not done:
         notes.append("--replace: this home holds data; it would be backed up and moved aside")
     return notes

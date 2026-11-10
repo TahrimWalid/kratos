@@ -76,6 +76,7 @@ class Decision:
     reason: str
     files: int = 0
     bytes: int = 0
+    in_database: bool = False   # its tables travel inside the kratos.db copy
 
 
 @dataclass
@@ -229,7 +230,8 @@ def build(data_dir: Path | str, *, exclude: tuple[str, ...] | list[str] = (), in
                       datainv.BACKUP_REBUILDABLE: "rebuildable, included by --include-rebuildable"}.get(c.backup, "in")
             if c.backup_note and c.backup in (datainv.BACKUP_SECRET, datainv.BACKUP_INCLUDE):
                 reason += f" ({c.backup_note})"
-        d = Decision(c.key, c.name, c.backup, included, reason)
+        d = Decision(c.key, c.name, c.backup, included, reason,
+                     in_database=included and any(ref.db == datainv.DB for ref in c.tables))
         plan.decisions.append(d)
         if not included:
             db_tables_out += [t for ref in c.tables if ref.db == datainv.DB for t in ref.tables]

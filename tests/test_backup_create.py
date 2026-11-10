@@ -119,7 +119,7 @@ def test_without_secrets_withholds_tokens_and_leaves_no_trace_in_the_copy(tmp_pa
     r = H.home(tmp_path)
     H.seed(r)
     st = SubAgentStore(r.data / "kratos.db")
-    code = st.create_pairing_code("web-01")
+    code = st.create_pairing_code("web-01")["code"]
     token = "tok-" + "q" * 40
     with sqlite3.connect(r.data / "kratos.db") as c:
         c.execute("INSERT INTO subagent_targets (target_id, name, token, paired_at) VALUES ('t1','web-01',?, '2026')",
@@ -130,7 +130,9 @@ def test_without_secrets_withholds_tokens_and_leaves_no_trace_in_the_copy(tmp_pa
     m, files = _members(res.file, ident)
     assert "config/.env" not in files and not any(p.startswith("data/subagent-tls") for p in files)
     db = files["data/kratos.db"]
-    assert token.encode() not in db and str(code).encode() not in db
+    assert token.encode() not in db and code.encode() not in db
+    with sqlite3.connect(r.data / "kratos.db") as c:   # the live database keeps both
+        assert c.execute("SELECT COUNT(*) FROM subagent_pairing_codes WHERE code=?", (code,)).fetchone()[0] == 1
     assert m["databases"][0]["scrubbed"] == ["subagent_targets.token", "subagent_pairing_codes.rows"]
 
 
@@ -314,3 +316,22 @@ def test_backup_names_are_utc_whatever_the_zone(tmp_path, monkeypatch):
     finally:
         monkeypatch.delenv("TZ", raising=False)
         time.tzset()
+
+
+def test_the_manifest_records_the_name_an_agent_dials_not_where_it_arrived(tmp_path):
+    from kratos.storage.subagent_store import SubAgentStore
+
+    r = H.home(tmp_path)
+    H.seed(r)
+    st = SubAgentStore(r.data / "kratos.db")
+    code = st.create_pairing_code("web-01", core_host="core.example.test")["code"]
+    with sqlite3.connect(r.data / "kratos.db") as c:
+        c.execute("INSERT INTO subagent_targets (target_id, name, token, paired_at, core_addr) "
+                  "VALUES ('t1','web-01','tok-x','2026','192.0.2.1')")
+        c.execute("UPDATE subagent_pairing_codes SET used_at='2026', used_by_target_id='t1' WHERE code=?", (code,))
+    st.register_listener("l1", pid=1, host="192.0.2.1", port=8772, mode="process", build="b")
+    ident = H.identity()
+    H.set_recipient(r, ident)
+    res = CR.create(r.data, actor=H.CLI, dest=tmp_path / "bk", roots=r, copy_to=[])
+    a = res.manifest["agents"][0]
+    assert a["dials"] == "core.example.test" and a["arrived_at"] == "192.0.2.1" and a["port"] == 8772

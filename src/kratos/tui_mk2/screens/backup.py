@@ -54,9 +54,10 @@ class BackupScreen(Screen):
             yield Static(id="bk-status")
             with VerticalScroll(id="bk-log"):
                 yield Static(id="bk-log-text")
-            yield Static(Text("n back up now · d drill · k set up the backup key · s schedule · r refresh · esc back\n"
-                              "Restoring is done on the command line: `kratos backup restore <file>` (the app holds "
-                              "the data open, so it can't restore over itself).", style=T.TEXT_DIM), id="bk-hints")
+            yield Static(Text("n back up now · d drill · k backup key · s schedule · r refresh · esc back\n"
+                              "Restoring is done on the command line: kratos backup restore <file>\n"
+                              "(the app holds the data open, so it can't restore over itself).", style=T.TEXT_DIM),
+                         id="bk-hints")
 
     def on_mount(self) -> None:
         self.action_refresh()

@@ -122,10 +122,25 @@ def cmd_backup(args: argparse.Namespace) -> int:
     from kratos.backup.restore import RestoreError
     from kratos.backup.schedule import ScheduleError
 
+    from kratos.backup import agefmt as _A
+    from kratos.backup.archive import ArchiveError
+
     try:
         return int(_HANDLERS[args.backup_action](args))
     except (BackupError, RestoreError, PruneError, ScheduleError, KeyError_) as e:
         print(f"[KRATOS] {e}", file=sys.stderr)
+        return 2
+    except ArchiveError as e:
+        print(f"[KRATOS] This backup can't be trusted, so nothing was written: {e}", file=sys.stderr)
+        return 2
+    except _A.NoMatchError:
+        print("[KRATOS] The key or passphrase given doesn't open this backup.", file=sys.stderr)
+        return 2
+    except _A.PayloadError as e:
+        print(f"[KRATOS] The backup is damaged at chunk {e.chunk} (nothing was written): {e}", file=sys.stderr)
+        return 2
+    except _A.AgeError as e:
+        print(f"[KRATOS] The backup can't be decrypted (nothing was written): {e}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print("[KRATOS] stopped.", file=sys.stderr)
@@ -302,11 +317,13 @@ def _print_dry_run(d: dict[str, Any]) -> None:
                            "no backup key set up -- `kratos backup key new` (or --passphrase)"))
     for t in d["copy_targets"]:
         print(f"Copied to: {t}")
-    print(f"\n{d['files']} files, {human_size(d['bytes'])} ({d['secret_files']} of them secrets); databases: "
-          + ", ".join(d["databases"]))
-    print("\n  category              class        in?   files       size  why")
+    print(f"\n{d['files']} files, {human_size(d['bytes'])} ({d['secret_files']} of them secrets); databases "
+          "(each copied once, consistently, while Kratos keeps writing): " + ", ".join(d["databases"]))
+    print("\n  category              class        in?   files       size  why   (+db: its tables are in the "
+          "kratos.db copy)")
     for c in d["categories"]:
-        print(f"  {c['key']:<21} {c['cls']:<12} {'yes' if c['included'] else 'no ':<5} {c['files']:>5} "
+        files = f"{c['files']}{'+db' if c.get('in_database') else ''}"
+        print(f"  {c['key']:<21} {c['cls']:<12} {'yes' if c['included'] else 'no ':<5} {files:>6} "
               f"{human_size(c['bytes']):>10}  {c['reason']}")
     if d["emptied_tables"]:
         print("\nTables emptied in the database copy (their category is left out): " + ", ".join(d["emptied_tables"]))
@@ -412,7 +429,8 @@ def _restore(args: argparse.Namespace) -> int:
     for a, b in res.moved_aside:
         print(f"         moved aside (not deleted): {a} -> {b}")
     for n in res.notes:
-        print(f"[KRATOS] {n}")
+        if n not in dry.notes:          # the dry run above already said the rest
+            print(f"[KRATOS] {n}")
     _, start = RS.stop_start_lines()
     if res.agents:
         same = [a for a in res.agents if a.get("same")]

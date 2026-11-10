@@ -335,7 +335,9 @@ def cmd_subagent_pair(args: argparse.Namespace) -> int:
     from kratos.storage.subagent_store import SubAgentStore
 
     store = SubAgentStore(args.data_dir / "kratos.db")
-    result = store.create_pairing_code(name=args.name)
+    # Record the address the agent will dial: a restore onto a new computer (D.8) and an
+    # in-place update compare and reuse it.
+    result = store.create_pairing_code(name=args.name, core_host=args.core_host)
     print(f"[KRATOS] Pairing code: {result['code']}  (expires in {result['ttl_seconds'] // 60} min)")
     pin_flags = ""
     try:
@@ -387,7 +389,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     from kratos.agent import doctor
     from kratos.untrusted import safe_print
 
-    checks = doctor.run_diagnostics(Path(args.data_dir), offline=bool(getattr(args, "offline", False)))
+    offline = {"offline": True} if getattr(args, "offline", False) else {}
+    checks = doctor.run_diagnostics(Path(args.data_dir), **offline)
     passes, warns, fails = doctor.summarize(checks)
     width = max((len(c["check"]) for c in checks), default=10)
     for c in checks:
@@ -510,7 +513,7 @@ def cmd_subagent_install(args: argparse.Namespace) -> int:
     ttl_note = ""
     if not code:
         store = SubAgentStore(args.data_dir / "kratos.db")
-        result = store.create_pairing_code(name=args.name)
+        result = store.create_pairing_code(name=args.name, core_host=args.core_host)  # the address it will dial
         code = result["code"]
         ttl_note = f"  (pairing code expires in {result['ttl_seconds'] // 60} min)"
 
