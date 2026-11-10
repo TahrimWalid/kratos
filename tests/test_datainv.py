@@ -139,7 +139,7 @@ def test_every_category_says_what_it_is():
     for c in datainv.CATEGORIES:
         assert c.name and c.description and c.grows
         assert c.personal in (datainv.PERSONAL, datainv.NOT_PERSONAL, datainv.SECRET)
-        assert c.files or c.tables or c.state_files
+        assert c.files or c.tables or c.state_files or c.config_files
     assert datainv.category("traces").personal == datainv.PERSONAL
     assert datainv.category("seal_keys").personal == datainv.SECRET
 
@@ -204,3 +204,33 @@ def test_to_epoch_reads_a_naive_time_like_every_other_stored_time():
     from kratos.utils.timeutil import parse_stored_instant
 
     assert datainv.to_epoch("2026-10-01T10:00:00") == parse_stored_instant("2026-10-01T10:00:00").timestamp()
+
+
+# --- D.8: every category says what a backup does with it ------------------------------
+def test_every_category_has_a_backup_class():
+    for c in datainv.CATEGORIES:
+        assert c.backup in datainv.BACKUP_CLASSES, f"{c.key}: backup class {c.backup!r} (one of {datainv.BACKUP_CLASSES})"
+        if c.backup in (datainv.BACKUP_NEVER, datainv.BACKUP_REBUILDABLE):
+            assert len(c.backup_note) > 10, f"{c.key}: say why it is never backed up, or how to rebuild it"
+
+
+def test_a_new_category_without_a_backup_class_fails(monkeypatch):
+    fake = datainv.Category("brand_new", "New", "A new store.", datainv.PERSONAL, "rows", files=("brand_new",))
+    monkeypatch.setattr(datainv, "CATEGORIES", datainv.CATEGORIES + (fake,))
+    with pytest.raises(AssertionError, match="brand_new"):
+        test_every_category_has_a_backup_class()
+
+
+def test_secret_categories_hold_no_tables():
+    # --without-secrets drops whole secret categories; a table inside kratos.db can't be
+    # dropped that way, so secrets in the database go through backup.plan.DB_SECRETS instead.
+    for c in datainv.CATEGORIES:
+        if c.backup == datainv.BACKUP_SECRET:
+            assert not c.tables, c.key
+
+
+def test_the_settings_file_and_backups_are_covered():
+    assert datainv.category("settings_file").config_files == (".env",)
+    assert datainv.category("backups").backup == datainv.BACKUP_INCLUDE
+    assert datainv.category("sandbox").backup == datainv.BACKUP_NEVER
+    assert datainv.owner_of(".backup-work") == "runtime"
