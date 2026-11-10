@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,6 +83,9 @@ def verify(token: str | None, secret: str | bytes, *, now: float | None = None) 
         exp, iat = float(claims["exp"]), float(claims["iat"])
     except (KeyError, TypeError, ValueError):
         raise JWTError("the forwarded identity has no valid time") from None
+    if not (math.isfinite(exp) and math.isfinite(iat)) or isinstance(claims["exp"], bool) \
+            or isinstance(claims["iat"], bool):
+        raise JWTError("the forwarded identity has no valid time")   # NaN passes every comparison below
     if exp <= t - CLOCK_SKEW:
         raise JWTError("the forwarded identity has expired")
     if iat > t + CLOCK_SKEW:
