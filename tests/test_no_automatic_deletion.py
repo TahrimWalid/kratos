@@ -118,6 +118,32 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("sshca/enrol.py", "_sign_host_cert_line", "unlink"): TEMP + " (the host public key and signed cert copies)",
     ("sshca/enrol.py", "verify_host_cert", "unlink"): TEMP + " (the throwaway @cert-authority known_hosts)",
     ("sshca/store.py", "delete_enrolment", "DELETE FROM"): PERSON + " (`kratos ssh-ca unenrol`)",
+    # D.8 backups: the backup's own scratch folder and unfinished output, the person's prune
+    ("backup/create.py", "sweep_work", "rmtree"): "empties <data>/.backup-work: the backup's own scratch copies "
+                                                  "(plaintext), left by the previous run",
+    ("backup/create.py", "sweep_work", "unlink"): "empties <data>/.backup-work: the backup's own scratch copies",
+    ("backup/create.py", "sweep_partials", "unlink"): "a <name>.age.partial an interrupted backup left (never a "
+                                                      "finished backup: those have a final name)",
+    ("backup/create.py", "copy_database", "VACUUM"): "compacts the scratch COPY after rows were left out (no "
+                                                     "freed page keeps a withheld secret) -- never the live database",
+    ("backup/create.py", "_empty_table", "DELETE FROM"): "empties an excluded category's table in the scratch COPY "
+                                                          "of kratos.db -- never the live database",
+    ("backup/create.py", "create", "unlink"): TEMP + " (this run's own unfinished .partial when it fails)",
+    ("backup/create.py", "create", "rmtree"): "this run's own scratch folder in .backup-work (plaintext copies)",
+    ("backup/plan.py", "_walk", "remove"): LIST + " (os.walk's dirs list: a link is not followed)",
+    ("backup/prune.py", "apply", "unlink"): PERSON + " (`kratos backup prune --keep N --apply`, CLI only, shown "
+                                                     "first, recorded in data_prunes; the owner decided 2026-11-10 "
+                                                     "that Kratos never removes a backup on its own)",
+    ("backup/restore.py", "_write_member", "unlink"): "a restored file that failed its hash check, in the "
+                                                      "restore's own staging folder",
+    ("backup/restore.py", "stage", "rmtree"): "the restore's own staging folder when the backup didn't check out",
+    ("backup/restore.py", "_install", "rmdir"): "the restore's own staging folder, once empty",
+    ("backup/restore.py", "_rmdirs", "rmdir"): "empty folders of the restore's own staging folder",
+    ("backup/restore.py", "restore", "rmtree"): "the restore's own staging folder when putting it in place failed",
+    ("backup/verify.py", "full", "rmtree"): "the full check's own scratch database copies in .backup-work",
+    ("backup/verify.py", "drill", "rmtree"): "the drill's own scratch Kratos home in .backup-work",
+    ("cli/backup_cmd.py", "_extract", "rmdir"): PERSON + " (the EMPTY folder `kratos backup extract --to` names, "
+                                                         "made again owner-only)",
 }
 
 

@@ -69,28 +69,34 @@ def timer_text(cadence: str, data_dir: Path) -> str:
 
 
 def write_units(cadence: str, data_dir: Path, *, bin_path: str | None = None) -> tuple[Path, Path]:
-    d = units_dir(data_dir)
-    d.mkdir(parents=True, exist_ok=True)
-    service, timer = d / f"{UNIT}.service", d / f"{UNIT}.timer"
-    service.write_text(service_text(data_dir, bin_path=bin_path), encoding="utf-8")
-    timer.write_text(timer_text(cadence, data_dir), encoding="utf-8")
-    return service, timer
+    return write_timer_units(units_dir(data_dir), UNIT, service_text(data_dir, bin_path=bin_path),
+                             timer_text(cadence, data_dir))
 
 
-def install_commands(service: Path, timer: Path) -> list[str]:
+def write_timer_units(folder: Path, unit: str, service: str, timer: str) -> tuple[Path, Path]:
+    """Write `<unit>.service` and `<unit>.timer` into `folder` (shared with the backup
+    timer, kratos.backup.schedule)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    s, t = folder / f"{unit}.service", folder / f"{unit}.timer"
+    s.write_text(service, encoding="utf-8")
+    t.write_text(timer, encoding="utf-8")
+    return s, t
+
+
+def install_commands(service: Path, timer: Path, unit: str = UNIT) -> list[str]:
     return [
         "loginctl enable-linger $USER   # so the timer runs even when you're logged out",
         "mkdir -p ~/.config/systemd/user",
         f"cp {service} {timer} ~/.config/systemd/user/",
         "systemctl --user daemon-reload",
-        f"systemctl --user enable --now {UNIT}.timer",
-        f"systemctl --user list-timers {UNIT}.timer   # verify it's scheduled",
+        f"systemctl --user enable --now {unit}.timer",
+        f"systemctl --user list-timers {unit}.timer   # verify it's scheduled",
     ]
 
 
-def uninstall_commands() -> list[str]:
+def uninstall_commands(unit: str = UNIT) -> list[str]:
     return [
-        f"systemctl --user disable --now {UNIT}.timer",
-        f"rm -f ~/.config/systemd/user/{UNIT}.service ~/.config/systemd/user/{UNIT}.timer",
+        f"systemctl --user disable --now {unit}.timer",
+        f"rm -f ~/.config/systemd/user/{unit}.service ~/.config/systemd/user/{unit}.timer",
         "systemctl --user daemon-reload",
     ]

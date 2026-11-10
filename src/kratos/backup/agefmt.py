@@ -21,11 +21,12 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import io
 import os
 import re
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import BinaryIO, Callable, Iterable, Sequence
+from typing import Any, BinaryIO, Callable, Iterable, Sequence
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -500,11 +501,10 @@ class Encryptor:
             self.close()
 
 
-def decrypt(stream: BinaryIO, identities: Sequence[object], sink: Callable[[bytes], None]) -> int:
-    """Decrypt an age file from `stream`, handing each verified chunk to `sink` as soon as
-    it is authenticated. Returns the plaintext length. Raises a typed `AgeError`; on a
-    PayloadError the chunks already handed to `sink` were authentic but the file is not
-    complete -- callers must treat the result as failed."""
+def iter_plaintext(stream: BinaryIO, identities: Sequence[object]):
+    """Yield each verified plaintext chunk of an age file, in order. Raises a typed
+    `AgeError`; a PayloadError means the chunks already yielded were authentic but the
+    file is not complete -- callers must treat the whole result as failed."""
     r = _Reader(stream)
     header = parse_header(r)
     file_key = _unwrap(header, identities)
@@ -514,6 +514,7 @@ def decrypt(stream: BinaryIO, identities: Sequence[object], sink: Callable[[byte
     if len(nonce) != NONCE_LEN:
         raise HeaderError("the file ends before the payload nonce")
     aead = ChaCha20Poly1305(_hkdf(file_key, nonce, b"payload"))
+    del file_key
     counter = released = 0
     while True:
         chunk = r.read(ENC_CHUNK)
@@ -538,13 +539,49 @@ def decrypt(stream: BinaryIO, identities: Sequence[object], sink: Callable[[byte
         if last and not plain and counter > 0:
             raise PayloadError("the final chunk is empty (not allowed after other chunks)", chunk=counter,
                                released=released)
-        sink(plain)
+        yield plain
         released += len(plain)
         if last:
             if r.read(1):
                 raise PayloadError("data after the final chunk", chunk=counter + 1, released=released)
-            return released
+            return
         counter += 1
+
+
+def decrypt(stream: BinaryIO, identities: Sequence[object], sink: Callable[[bytes], None]) -> int:
+    """Decrypt an age file from `stream`, handing each verified chunk to `sink`. Returns the
+    plaintext length."""
+    n = 0
+    for plain in iter_plaintext(stream, identities):
+        sink(plain)
+        n += len(plain)
+    return n
+
+
+class Decryptor(io.RawIOBase):
+    """A readable plaintext stream over an age file (for gzip/tar reading). Errors surface
+    from `read` as the typed `AgeError`s."""
+
+    def __init__(self, stream: BinaryIO, identities: Sequence[object]) -> None:
+        self._it = iter_plaintext(stream, identities)
+        self._buf = b""
+        self._done = False
+        self.position = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b: Any) -> int:
+        while not self._buf and not self._done:
+            try:
+                self._buf = next(self._it)
+            except StopIteration:
+                self._done = True
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        self.position += n
+        return n
 
 
 def decrypt_bytes(data: bytes, identities: Sequence[object]) -> bytes:
