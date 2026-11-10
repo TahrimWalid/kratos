@@ -499,7 +499,10 @@ def _check_users(out: list[Check], data_dir: Path) -> None:
 
 
 def _blocked_unattended(data_dir: Path, users: dict) -> list[str]:
-    """Schedules and triggers whose user is gone or disabled (they refuse, D.7 §3.9)."""
+    """Schedules and triggers that would refuse now (D.7 §3.9): their user is gone,
+    disabled, may not investigate, or may no longer see the schedule's machine. Read
+    only -- nothing is recorded in the audit trail by looking."""
+    from kratos import authz
     from kratos.agent import schedules, triggers
 
     out = []
@@ -510,8 +513,24 @@ def _blocked_unattended(data_dir: Path, users: dict) -> list[str]:
             u = users.get(uid)
             if u is None:
                 out.append(f"{kind} {it.name} runs as {uid}, who no longer exists -- it refuses")
-            elif u.disabled:
+                continue
+            if u.disabled:
                 out.append(f"{kind} {it.name} runs as {u.name}, who is disabled -- it refuses")
+                continue
+            if u.is_owner:
+                continue
+            if not authz.P.allowed(u.role, authz.P.INVESTIGATE):
+                out.append(f"{kind} {it.name} runs as {u.name}, a {u.role}, who may not investigate -- it refuses")
+                continue
+            target = getattr(it, "target", None)
+            if target and not str(target).startswith("@"):
+                try:
+                    p = authz.principal_of(authz.unattended_actor(kind, it.name, uid), data_dir=data_dir)
+                except authz.Denied as e:
+                    out.append(f"{kind} {it.name}: {e.reason} -- it refuses")
+                    continue
+                if not p.scope.allows(target):
+                    out.append(f"{kind} {it.name} runs as {u.name}, who may no longer see {target} -- it refuses")
     return out
 
 

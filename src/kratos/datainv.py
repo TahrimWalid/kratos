@@ -301,7 +301,7 @@ CATEGORIES: tuple[Category, ...] = (
     ),
     Category(
         "users", "Users and their machines",
-        "The people who may use Kratos through the chat server (D.7): name, role (viewer / investigator / admin), "
+        "The people who may use Kratos through the chat server: name, role (viewer / investigator / admin), "
         "disabled or not, the machines and groups each may see, and which shared Open WebUI user ids map to whom "
         "(with the email shown to the owner). The owner is always here.",
         PERSONAL, "one row per user, per scope entry and per Open WebUI mapping",

@@ -306,6 +306,7 @@ def kratos_list_sessions(limit: int = 10) -> list[dict[str, Any]]:
             "targets": s["targets"],
             "last_goal": s.get("latest_goal"),
             "last_active_at": s["last_active_at"],
+            "belongs_to": s.get("owner_user_id") or "owner",    # D.7: the owner sees every user's sessions
         }
         for s in store.list_recent_sessions(limit=limit)
     ]

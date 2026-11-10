@@ -319,6 +319,14 @@ def unattended_refusal(actor: Any, action: str, machine: str | None, *, data_dir
     try:
         require(actor, action, machine, data_dir=data_dir, obj=f"unattended run {actor.user}")
     except Denied as e:
-        who = actor.user_id if actor.user_id != OWNER_ID else "the owner"
+        who = "the owner"
+        if actor.user_id != OWNER_ID:
+            try:
+                from kratos.authz import users as U
+
+                u = U.get(_data_dir(data_dir), actor.user_id)
+                who = u.name if u is not None else f"{actor.user_id} (no longer a user)"
+            except Exception:  # noqa: BLE001
+                who = actor.user_id
         return f"{actor.user} runs as {who} and was refused: {e.reason}"
     return None

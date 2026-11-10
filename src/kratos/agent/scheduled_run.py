@@ -633,7 +633,11 @@ def _refused_record(schedule: "_sched.Schedule", data_dir: Path, reason: str, *,
               "notified": False, "error": reason}
     if deliver and schedule.deliver:
         notifier = notifier or _schedule_notifier(schedule, data_dir)
-        record["delivered"] = notifier(f"Scheduled run '{schedule.name}' did not run -- {reason}", "warning")
+        # No machine address or account name in the alert (it may cross a public ntfy server):
+        # the reason is in the run record, /schedules and /doctor.
+        record["delivered"] = notifier(f"Scheduled run '{schedule.name}' did not run: the Kratos user it runs as may "
+                                       "not run it now (disabled, or no longer allowed). Next: open Kratos and type "
+                                       "/doctor.", "warning")
         settle_delivery(data_dir, record["delivered"])
         record["notified"] = _sent(record["delivered"])
     _append_record(data_dir, schedule.name, record)

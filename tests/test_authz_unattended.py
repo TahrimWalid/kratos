@@ -131,6 +131,7 @@ def test_a_schedule_refuses_when_its_user_is_disabled_or_narrowed(sched):
     rec = SR.run_scheduled(schedules.load_schedule(dd, "nightly"), dd, deliver=True, notifier=note)
     assert rec["status"] == "refused" and "disabled" in rec["error"] and not seen
     assert sent and "did not run" in sent[-1]
+    assert "ivy" not in sent[-1] and "192.0.2" not in sent[-1]     # no account or address in the alert
     U.set_disabled(dd, "ivy", False, OWNER)
     schedules.save_schedule(dd, name="other", kind="audit", target=M2)
     schedules.set_run_as(dd, "other", U.find(dd, "ivy").user_id)

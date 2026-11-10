@@ -963,7 +963,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         if self._read_only and text.split(maxsplit=1)[0].lower() not in _READ_ONLY_COMMANDS:
             self._emit(R.note_line(
-                "This is another user's session -- you can read it here, not add to it (D.7). "
+                "This is another user's session -- you can read it here, not add to it. "
                 "Ctrl+B goes back to the session list; start your own session there."))
             return
         # echo the user's line (with a trailing timestamp / date divider)
