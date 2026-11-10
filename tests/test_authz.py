@@ -427,3 +427,51 @@ def test_a_dropped_audit_trigger_comes_back_at_the_next_open(dd):
     with sqlite3.connect(dd / "kratos.db") as c:
         with pytest.raises(sqlite3.IntegrityError):
             c.execute("DELETE FROM audit_log")
+
+
+@pytest.mark.parametrize("tool, args", [("parse_auth_log", {}), ("collect_system_context", {}),
+                                        ("run_nmap_scan", {"target": "127.0.0.1"}),
+                                        ("run_vuln_scan", {"target": "localhost"}),
+                                        ("send_notification", {"message": "click here", "severity": "critical"})])
+def test_a_scoped_person_cannot_make_the_model_read_the_kratos_host_or_page_the_owner(dd, tool, args):
+    """Security review (D.7): the per-read check looked only at the run's machine; a scoped
+    investigator could ask for the Kratos host's own logs, a loopback scan, or a push to the
+    owner's phone."""
+    from kratos import kratos_config
+    from kratos.agent import loop as L
+    from kratos.agent.tools import TOOL_REGISTRY
+
+    U.add_user(dd, "ivy", "investigator", OWNER, scopes=[M1])
+    _t, row = _token(dd, "ivy")
+    ran = []
+    real = TOOL_REGISTRY[tool]
+    TOOL_REGISTRY[tool] = type(real)(name=tool, description=real.description, parameters=real.parameters,
+                                     handler=lambda **k: ran.append(k) or {"ok": 1},
+                                     requires_approval=False)
+    try:
+        with authz.acting_as(_serve_actor(dd, "ivy", row), action=P.INVESTIGATE), kratos_config.pinned_target(M1):
+            out = L.execute_tool_call(tool, dict(args), dd)
+    finally:
+        TOOL_REGISTRY[tool] = real
+    assert out["status"] == "error" and not ran
+    assert AU.query(dd, result="refused", user="ivy")
+    # the owner at the Kratos host is unaffected
+    TOOL_REGISTRY[tool] = type(real)(name=tool, description=real.description, parameters=real.parameters,
+                                     handler=lambda **k: ran.append(k) or {"ok": 1}, requires_approval=False)
+    try:
+        with kratos_config.pinned_target(M1):
+            assert L.execute_tool_call(tool, dict(args), dd)["status"] == "ok"
+    finally:
+        TOOL_REGISTRY[tool] = real
+
+
+def test_only_one_live_gateway_token_and_rotation_keeps_its_secret(dd):
+    from kratos.authz import openwebui as OW
+    from kratos.serve import auth
+
+    _t, gw = auth.create_token(dd, name="gw", gateway=True)
+    OW.write_secret(dd, gw["token_id"], "s" * 43)
+    with pytest.raises(auth.TokenError, match="one shared Open WebUI"):
+        auth.create_token(dd, name="gw2", gateway=True)
+    _t, new, _old = auth.rotate(dd, "gw")
+    assert new["kind"] == "gateway" and OW.read_secret(dd, new["token_id"]) == "s" * 43

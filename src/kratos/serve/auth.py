@@ -147,6 +147,12 @@ def create_token(data_dir: Path, *, name: str, targets: Any = (), mcp: bool = Fa
         raise TokenError(f"{owner_row.name} is disabled")
     if gateway and not owner_row.is_owner:
         raise TokenError("a gateway token belongs to the owner (it acts for the mapped Open WebUI users)")
+    if gateway and not rotated_from and any(t.get("kind") == "gateway" and not t.get("revoked_at")
+                                            for t in _store.list_tokens(data_dir)):
+        # Open WebUI user mappings are not tied to one gateway: a second shared Open WebUI
+        # could sign as a user mapped from the first. One shared Open WebUI per Kratos.
+        raise TokenError("a gateway token already exists -- one shared Open WebUI per Kratos; rotate or revoke it "
+                         "(kratos tokens rotate / revoke)")
     now = time.time() if now is None else now
     expires_at = _expiry(data_dir, expires, owner_row.user_id, now)
     cleaned = _clean_targets(targets)
