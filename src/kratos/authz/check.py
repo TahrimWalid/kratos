@@ -272,6 +272,13 @@ def require(actor: Any, action: str, machine: str | None = None, *, data_dir: Pa
     return p
 
 
+def record_refusal(actor: Any, action: str, reason: str, *, machine: str | None = None, obj: str | None = None,
+                   data_dir: Path | str | None = None) -> None:
+    """Record a refusal decided before `require` could run (a model or machine the
+    caller may not see, refused by the door's own lookup) -- every refusal is in the trail."""
+    _refuse(_data_dir(data_dir), actor, action, reason, machine=machine, obj=obj)
+
+
 def check_run_access(machine: str | None = None, *, data_dir: Path | str | None = None) -> None:
     """The per-read check inside a run (execute_tool_call, the fleet collector): may this
     run's person still do what started the run, on this machine? Raises AccessRemoved."""

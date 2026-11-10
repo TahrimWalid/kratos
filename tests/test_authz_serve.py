@@ -287,3 +287,12 @@ def test_a_group_model_chat_reaches_the_fleet_run_as_the_person(env, monkeypatch
     assert "kratos/@lab" not in _models(env, _h(env["tok"]["vic"]))[1]      # viewers: no group models
     code, text = _chat(env, _h(env["tok"]["ivy"]), "who gained sudo?", model="kratos/@lab")
     assert code == 200 and seen["actor"].user == "ivy" and seen["scope"] == [M1, M2]
+
+
+def test_a_refusal_by_the_doors_own_lookup_is_recorded_too(env):
+    _chat(env, _h(env["tok"]["vic"]), "hi", model=f"kratos/{M2}")
+    _mcp(env, _h(env["tok"]["ivy"]), "kratos_start_investigation", {"goal": "x", "target": M3})
+    _mcp(env, _h(env["tok"]["ivy"]), "kratos_hunt", {"indicators": "198.51.100.7", "machine": M3})
+    rows = AU.query(env["dir"], result="refused")
+    who = [(r["user_name"], r["action"]) for r in rows]
+    assert ("vic", "read") in who and ("ivy", "read") in who and ("ivy", "hunt") in who

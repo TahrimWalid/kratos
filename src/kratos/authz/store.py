@@ -34,6 +34,20 @@ def _owner_name() -> str:
     return (str(name or "").strip() or "owner")[:40]
 
 
+_TRIGGERS = (
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log "
+    "WHEN NOT EXISTS (SELECT 1 FROM audit_log_prune_permit) "
+    "BEGIN SELECT RAISE(ABORT, 'audit_log rows can only be removed by kratos audit prune'); END",
+)
+
+
+def _guard(conn: sqlite3.Connection) -> None:
+    for sql in _TRIGGERS:
+        conn.execute(sql)
+
+
 def _step_1(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
@@ -96,11 +110,7 @@ def _step_1(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log(at)")
     conn.execute("CREATE INDEX IF NOT EXISTS audit_log_user_at ON audit_log(user_id, at)")
     conn.execute("CREATE TABLE IF NOT EXISTS audit_log_prune_permit (opened_at REAL NOT NULL)")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS audit_log_no_update BEFORE UPDATE ON audit_log "
-                 "BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END")
-    conn.execute("CREATE TRIGGER IF NOT EXISTS audit_log_no_delete BEFORE DELETE ON audit_log "
-                 "WHEN NOT EXISTS (SELECT 1 FROM audit_log_prune_permit) "
-                 "BEGIN SELECT RAISE(ABORT, 'audit_log rows can only be removed by kratos audit prune'); END")
+    _guard(conn)
     conn.execute("INSERT OR IGNORE INTO users (user_id, name, role, created_at, created_by) VALUES (?, ?, 'admin', ?, ?)",
                  (OWNER_ID, _owner_name(), time.time(), "install"))
 
@@ -118,6 +128,9 @@ def connect(data_dir: Path | str) -> sqlite3.Connection:
     conn = connect_store(path)
     try:
         migrate_once(conn, path, COMPONENT, STEPS)
+        # Someone with write access to the file can drop a trigger; every open puts the
+        # append-only guards back (a no-op when they exist).
+        _guard(conn)
     except BaseException:
         conn.close()
         raise

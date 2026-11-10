@@ -227,6 +227,10 @@ def _resolve_target(client: Any, target: str, data_dir: Any = None) -> str:
     model = t if t == MODEL_PREFIX or t.startswith(MODEL_PREFIX + "/") else f"{MODEL_PREFIX}/{t}"
     resolved = target_for_model(client, model, data_dir)
     if resolved is None:
+        from kratos import authz
+
+        authz.record_refusal(authz.current_actor(), authz.P.READ, f"no machine {t!r} that you may see", machine=t,
+                             obj="mcp target", data_dir=data_dir)
         raise ValueError(f"no machine {t!r} that you may investigate")
     return resolved
 
@@ -459,6 +463,9 @@ def build(state: Any) -> tuple[Any, Any]:
                 raise front.HuntUsageError("indicators is required")
             prepared = front.resolve_hunt(req, scope=scope, data_dir=state.data_dir)
         except front.HuntUsageError as e:
+            if "not a machine you may search" in str(e):
+                authz.record_refusal(actor, authz.P.HUNT, str(e), machine=machine or None, obj="mcp hunt",
+                                     data_dir=state.data_dir)
             raise ValueError(str(e)) from None
         if prepared.ambiguous:
             a = prepared.ambiguous[0]

@@ -309,6 +309,8 @@ def _hunt_text(arg: str, client: Any, data_dir: Path, progress: Any) -> str:
             result = front.start_hunt(data_dir, prepared, source="chat", actor=_actor_label(client),
                                progress=progress)
     except front.HuntUsageError as e:
+        if "not a machine you may search" in str(e):
+            authz.record_refusal(authz.current_actor(), authz.P.HUNT, str(e), obj="chat /hunt", data_dir=data_dir)
         return f"{e}\n{front.USAGE}"
     return report.render(result)
 
@@ -706,6 +708,8 @@ def _handlers(state: Any) -> dict[str, Any]:
         target = await asyncio.to_thread(target_for_model, client, model, state.data_dir)
         if target is None:
             await asyncio.to_thread(audit, "refused", model=model[:200], detail="model not in this token's scope")
+            await asyncio.to_thread(authz.record_refusal, actor, authz.P.READ, "a model this person may not use",
+                                    obj=f"model {model[:80]}", data_dir=state.data_dir)
             return _error(404, f"The model {model[:80]!r} does not exist or this token may not use it.",
                           code="model_not_found")
         try:

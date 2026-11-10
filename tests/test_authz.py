@@ -417,3 +417,13 @@ def test_the_fleet_collector_skips_a_machine_whose_access_was_removed(dd, monkey
     by = {r.machine: r for r in results}
     assert by[M2].outcome == "access-removed" and M2 not in read
     assert "removed" in by[M2].status_text
+
+
+def test_a_dropped_audit_trigger_comes_back_at_the_next_open(dd):
+    authz.require(OWNER, P.USERS_MANAGE, data_dir=dd)
+    with sqlite3.connect(dd / "kratos.db") as c:
+        c.execute("DROP TRIGGER audit_log_no_delete")
+    authz.require(OWNER, P.USERS_MANAGE, data_dir=dd)            # any recorded action reopens the store
+    with sqlite3.connect(dd / "kratos.db") as c:
+        with pytest.raises(sqlite3.IntegrityError):
+            c.execute("DELETE FROM audit_log")
