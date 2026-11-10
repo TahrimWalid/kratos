@@ -67,9 +67,9 @@ minutes and stay bound to this computer's address, but the CA key itself must st
   is in use): **tpm** (sealed to this machine's TPM — a copied file is useless elsewhere),
   **agent** (held in a dedicated ssh-agent, unlocked after a reboot), **token** (a PKCS#11
   device), or **file** (an owner-only file; honest about the trade-off).
-- **Back it up** — copy the `ssh-ca/` folder somewhere safe, together with your database
-  backup and your agent-link keys. Losing it means re-enrolling every machine. Keep the
-  backup private; treat it like the live key.
+- **Back it up** with `kratos backup` (see "Backups" below). Losing it means re-enrolling
+  every machine. A TPM-sealed key is unsealed in memory straight into the encrypted backup;
+  a token-held key stays on the token.
 - Rotate it with `kratos ssh-ca rotate` / `promote`; the retired key is trusted for a week
   so no run fails during the change.
 
@@ -90,8 +90,8 @@ is never used for SSH logins or the agent link.
   other way than with the bundle** (`/doctor` → "signing key", or `kratos signing status`).
 - Whoever holds a copy of the key can sign bundles as you, and — with write access to `kratos.db` —
   rebuild the evidence ledger's chain. Keep it private.
-- **Back it up** with your other keys: a copy is made in `signing/backup/` when the key is created;
-  copy the whole `signing/` folder somewhere safe with your database backup.
+- **Back it up** with `kratos backup` (see "Backups" below); a copy is also made in `signing/backup/`
+  when the key is created.
 - `kratos signing rotate` makes a new key and keeps the old public key in `signing/retired/`, so
   bundles and checkpoints signed before the change still verify.
 
@@ -114,3 +114,33 @@ token may have leaked, `kratos tokens rotate` it (the replacement keeps the secr
 secret may have leaked, make a new `--gateway` token (it comes with a new secret), update
 Open WebUI, and revoke the old token. Every allowed and refused action is in the append-only
 audit trail (`kratos audit`).
+
+## Backups
+
+`kratos backup` puts everything Kratos keeps into one encrypted file (the age v1 format:
+X25519 or scrypt, ChaCha20-Poly1305, HKDF-SHA-256 -- written by Kratos with the
+`cryptography` package's primitives and checked against the C2SP CCTV test vectors and the
+real `age` tool). **A backup holds the power of the Kratos computer**: whoever opens it can
+act as this Kratos to every paired agent (the agent-link keys and pairing tokens) and sign
+SSH certificates for every enrolled machine (the CA), and holds your API keys and every
+finding and log line.
+
+- **Recipient-key mode (recommended, required for scheduled backups):** backups are
+  encrypted to the public half of a key whose secret half is shown once and never stored on
+  the Kratos computer. Nothing on that computer can open a backup, so someone who takes it
+  over can't read your older backups. Keep the secret half off the computer (a password
+  manager, paper, a USB stick); up to five people's keys can open one backup.
+- **Passphrase mode** (one-off backups): scrypt (work factor 2^18), at least 16 characters,
+  never stored.
+- **`--without-secrets`** makes a backup that can't act as Kratos at all: no keys, no `.env`,
+  pairing tokens withheld from the database copy. Restoring it means pairing agents and
+  enrolling SSH certificates again.
+- A backup is untrusted input when it is restored -- anyone who knows a recipient's PUBLIC
+  key can make a file that decrypts. Every member is checked before anything is written:
+  regular files only (no links, devices or FIFOs), relative names under Kratos's own folders,
+  each listed in the manifest with its size and SHA-256, checked as it is written; the
+  restore writes to a staging folder and moves the current data aside (never deletes it).
+  Restore and prune are done only from the command line on the Kratos computer; no backup
+  action is reachable from MCP, the chat server or a model tool.
+- Check where a backup came from before restoring it: the restore shows the computer and
+  time it was made and the fingerprints of the keys in it.
