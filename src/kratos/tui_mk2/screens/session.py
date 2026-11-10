@@ -3092,6 +3092,22 @@ class SessionScreen(ResilientWorkerHost, Screen):
             if not self._schedule_referenced_presets(s).issubset(existing)
         }
         self._emit(R.schedule_table(schedules, errors, last, missing_preset=missing))
+        self._schedule_run_as_notes(schedules)
+
+    def _schedule_run_as_notes(self, schedules: list) -> None:
+        """D.7: who each schedule runs as (when not you), and the reason its last run
+        was refused."""
+        from kratos.agent import schedules as _S
+        from kratos.authz import users as _U
+
+        for sch in schedules:
+            uid = getattr(sch, "run_as", "owner") or "owner"
+            rec = _S.last_run_record(self._data_dir, sch.name) or {}
+            if uid != "owner":
+                u = _U.get(self._data_dir, uid)
+                self._emit(R.note_line(f"{sch.name} runs as {u.name if u else uid} -- their machines and budget"))
+            if rec.get("status") == "refused":
+                self._emit(R.error_line(f"{sch.name}'s last run was refused: {rec.get('error')}"))
 
     @staticmethod
     def _schedule_referenced_presets(schedule: Any) -> set[str]:
