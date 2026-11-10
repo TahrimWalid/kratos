@@ -61,6 +61,10 @@ def test_every_backup_is_signed_and_verify_says_whether_this_kratos_signed_it(vi
     c = V.quick(res.file, data_dir=r.data)
     assert c.ok and c.origin.status == "this"
     assert any("signed by this Kratos" in n for n in c.notes)
+    from kratos.backup import status as ST
+
+    rows = {x["check"]: x for x in ST.doctor_rows(r.data)}
+    assert O.signer_fingerprint(r.data) in rows["backup signer"]["detail"]   # the fingerprint to write down
 
 
 def test_a_drill_refuses_a_backup_signed_by_another_kratos(victim, forged):
