@@ -89,7 +89,8 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
         "running_packages": running_packages(inv),
         "maps_read": bool(inv.get("maps_read")),
         "local_addresses": [str(a) for a in inv.get("local_addresses") or []][:256],
-        "hunt_index": _hunt_index(inv),      # C.3: programs, users, remote addresses a later hunt can find
+        "hunt_index": _hunt_index(inv),
+        "hash_candidates": _hash_candidates(inv),   # E.4: the executables whose reputation Kratos looks up      # C.3: programs, users, remote addresses a later hunt can find
     }
     out_dir = data_dir / LIVE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -100,6 +101,12 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
     _evidence.record(path, data_dir=data_dir, category="live_response", machine=target, read="live_inventory",
                      transport=doc.get("via"))
     return {**doc, "status": "ok", "file": str(path)}
+
+
+def _hash_candidates(inv: dict[str, Any]) -> list[dict[str, Any]]:
+    from kratos.hashdb.candidates import from_live
+
+    return from_live(inv)
 
 
 def _hunt_index(inv: dict[str, Any]) -> dict[str, Any]:

@@ -1036,6 +1036,10 @@ def cmd_findings(args: argparse.Namespace) -> int:
         from kratos.ssvc import present as _sp
         for line in _sp.detail_lines(rec.get("ssvc") or {}):
             print(f"  {line}")
+        from kratos.hashdb.annotate import text_lines as _rep_lines
+        from kratos.untrusted import safe_print as _safe_print
+        for line in _rep_lines(rec.get("reputation") or (latest or {}).get("reputation")):   # E.4: an annotation
+            _safe_print(f"  {line}")
         rule = (latest or {}).get("detection_rule") or {}
         if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
             from kratos.detect.findings import credit_line
@@ -2777,6 +2781,10 @@ def build_parser() -> argparse.ArgumentParser:
     from kratos.cli import hunt_cmds as _hunt_cmds
 
     _hunt_cmds.register(sub)   # `kratos hunt` (C.3: search what Kratos holds) and `kratos threat-intel-sync`
+
+    from kratos.cli import hashdb_cmd as _hashdb_cmd
+
+    _hashdb_cmd.register(sub)  # E.4: `kratos hashdb-update`, `kratos hashdb-key`, `kratos hash lookup`
 
     seal_p = sub.add_parser(
         "seal",

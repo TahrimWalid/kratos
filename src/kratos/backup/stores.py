@@ -25,7 +25,7 @@ MIGRATED = (
     "kratos.triage.store", "kratos.budget.ledger", "kratos.assets.store", "kratos.serve.store",
     "kratos.fleet.groups", "kratos.fleet.record", "kratos.hunt.terms", "kratos.pkgvuln.inventory_store",
     "kratos.hunt.store", "kratos.privacy.pseudonyms", "kratos.events.store", "kratos.outbox.store",
-    "kratos.backup.store",
+    "kratos.backup.store", "kratos.hashdb.datasets", "kratos.hashdb.store",
 )
 # Stores that create their tables in their constructor (no component version).
 CONSTRUCTED = (

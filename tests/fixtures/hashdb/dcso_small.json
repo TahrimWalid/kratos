@@ -1,0 +1,10 @@
+{
+ "tool": "DCSO bloom 0.2.4 (github.com/DCSO/bloom), bloom create -n 400 -p 0.01",
+ "present_template": "sha1(\"kratos-fixture-present-{i}\").upper(), i<300",
+ "absent_template": "sha1(\"kratos-fixture-absent-{i}\").upper(), i<2000",
+ "absent_reported_present": [
+  "A7B0638D15E59E210F615A56CFABAEEAD807A43C",
+  "F57F19B3C95C0CDB1A989A035ABB4887AF5B758B",
+  "39B69B45C0555292E9FDA375BA5515ED722F028B"
+ ]
+}

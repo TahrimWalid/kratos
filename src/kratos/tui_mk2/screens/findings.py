@@ -190,6 +190,7 @@ class FindingsScreen(Screen):
         Binding("slash", "search", "search", show=True),
         Binding("c", "copy_attack", "copy ATT&CK link", show=True),
         Binding("x", "show_fix", "fix to copy", show=True),
+        Binding("l", "lookup_online", "look hash up online", show=False),
     ]
 
     CSS = """
@@ -277,7 +278,7 @@ class FindingsScreen(Screen):
                 Text(r["severity"], style=T.SEVERITY_COLOR.get(r["severity"], T.TEXT)),
                 Text(_ssvc.cell(r) or "-", style=DECISION_COLOR.get(_ssvc.cell(r), T.TEXT if _ssvc.cell(r) else T.TEXT_DIM)),
                 Text(_ssvc.exposure_cell(r) or "-", style=T.TEXT if _ssvc.exposure_cell(r) else T.TEXT_DIM),
-                r["rule_id"], r["title"], self._verdict_cell(r), r["target"],
+                r["rule_id"], r["title"] + self._reputation_tag(r), self._verdict_cell(r), r["target"],
                 self._when(r["first_seen"]), self._when(r["last_seen"]),
                 self._when(until) if until else "",
             ])
@@ -375,6 +376,16 @@ class FindingsScreen(Screen):
             body.add_row(name, annotate_lookalikes(line.strip()))
         body.add_row("machine", row["target"])
         body.add_row("about", annotate_lookalikes(", ".join(row["entities"])) or "-")
+        for i, rep in enumerate(row.get("reputation") or latest.get("reputation") or []):
+            # E.4: an annotation -- it never changes this finding's severity
+            src = "; ".join(f"{s.get('source')}" + (f" {s.get('date')}" if s.get("date") else "")
+                            for s in rep.get("sources") or [])
+            body.add_row("reputation" if i == 0 else "",
+                         annotate_lookalikes(f"{rep.get('path')}: {rep.get('label')}" + (f" ({src})" if src else "")
+                                             + (f"\n{rep.get('note')}" if rep.get("note") else "")
+                                             + (f"\nchecked {rep.get('checked_at')}" if rep.get("checked_at") else "")
+                                             + ("\nl looks this hash up online (asks first)" if rep.get("sha256")
+                                                and i == 0 else "")))
         for i, lab in enumerate(row.get("attack") or []):
             body.add_row("ATT&CK" if i == 0 else "", f"{format_label(lab)}\n{lab.get('url')}")
         body.add_row("seen", f"{row['times_seen']} time(s), first {self._when(row['first_seen'])}, "
@@ -427,6 +438,68 @@ class FindingsScreen(Screen):
         self.app.push_screen(CommandModal(text, title=f"{row['rule_id']} — fix to run on the machine yourself",
                                           note="Kratos does not run this. Copy it, read it, run it on the machine, "
                                                "then re-check with t (retest)."))
+
+    @staticmethod
+    def _reputation_tag(row: dict) -> str:
+        reps = row.get("reputation") or []
+        worst = reps[0] if reps else None
+        if not worst or worst.get("verdict") in ("package", "known_good"):
+            return ""
+        return f" [{worst.get('label')}]"
+
+    @work
+    async def action_lookup_online(self) -> None:
+        """E.4 §3.10: send ONE hash of the selected finding to circl.lu (and abuse.ch with a key) -- only
+        after a plain yes, only when online lookups are on, only from here or the CLI."""
+        from kratos.hashdb import datasets as HD
+        from kratos.hashdb import lookup as L
+        from kratos.hashdb import settings as HS
+
+        row = self._need_row()
+        if row is None:
+            return
+        _rec, latest, _events = Q.get_finding(self._data_dir, row["finding_key"])
+        reps = [r for r in (row.get("reputation") or latest.get("reputation") or []) if r.get("sha256")]
+        if not reps:
+            self.note(Text("This finding names no file whose hash Kratos read.", style=T.TEXT_DIM))
+            return
+        if not settings_store.get(HS.ONLINE, data_dir=self._data_dir):
+            self.note(Text("Online hash lookups are off, so nothing was sent. Turn on \"File reputation: online hash "
+                           "lookups\" in Settings -> General to allow sending one hash at a time when you ask.",
+                           style=T.ATTENTION))
+            return
+        rep = reps[0]
+        if len(reps) > 1:
+            picked = await self.app.push_screen_wait(ListPickerModal(
+                "Which file's hash?", [(r["sha256"], f"{r['path']} ({r['label']})") for r in reps]))
+            if picked is None:
+                return
+            rep = next(r for r in reps if r["sha256"] == picked)
+        where = "circl.lu" + (" and abuse.ch" if HD.read_key(self._data_dir, "malwarebazaar") else "")
+        question = f"This sends the hash {rep['sha256']} to {where}. Send it?"
+        ok = await self.app.push_screen_wait(ConfirmModal(
+            "Look this hash up online?", question + "\n\nOnly this one hash is sent -- never the file, never "
+            "which machine it is on.", yes_label="send", no_label="don't send"))
+        if not ok:
+            self.note(Text("Not sent.", style=T.TEXT_DIM))
+            return
+        try:
+            out = await self._run_lookup(L, rep["sha256"])
+        except L.LookupRefused as e:
+            self.note(Text(str(e), style=T.ATTENTION))
+            return
+        c, m = out.get("circl") or {}, out.get("malwarebazaar")
+        lines = ["circl.lu: " + (f"found (trust {c.get('trust')})" if c.get("found") else "not found" if c else
+                                 "no answer")]
+        if m is not None:
+            lines.append("abuse.ch: " + ("LISTED as malware" if m.get("found") else "not listed"))
+        lines += [str(e) for e in out.get("errors") or []]
+        self.note(Text("Online lookup -- " + "; ".join(lines), style=T.TEXT))
+
+    async def _run_lookup(self, L: Any, sha256: str) -> dict:
+        import asyncio
+
+        return await asyncio.to_thread(L.online, self._data_dir, sha256, confirm=lambda _q: True)
 
     def action_copy_attack(self) -> None:
         """Copy the selected finding's ATT&CK technique link(s) (Kratos-generated

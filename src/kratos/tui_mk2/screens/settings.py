@@ -351,6 +351,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "fleet.max_parallel", "fleet.machine_seconds", "fleet.digest_chars", "fleet.extra_reads",
                           "outbox.alert_after_minutes", "outbox.scheduled_flush_seconds",
                           "export.max_events", "export.narrative_max_usd", "export.timeline_rows",
+                          "hashdb.online", "hashdb.max_files", "hashdb.max_file_mb", "hashdb.max_run_mb",
+                          "hashdb.seconds", "hashdb.entropy_threshold", "hashdb.malwarebazaar_every_hours",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -759,6 +761,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         for key, label, tail in self._outbox_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._export_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._hashdb_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
@@ -1179,6 +1183,29 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             (ES.TIMELINE_ROWS, "Incident export: timeline rows in the report", f"{get(ES.TIMELINE_ROWS):,}"),
         ]
 
+    # --- File reputation (kratos.hashdb, E.4) ---
+    def _hashdb_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.hashdb import settings as HS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("hashdb.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (HS.ONLINE, "File reputation: online hash lookups",
+             "on -- you may send ONE hash, when you ask, to circl.lu / abuse.ch" if get(HS.ONLINE)
+             else "off -- no hash ever leaves this computer"),
+            (HS.MAX_FILES, "File reputation: most files looked up per machine", f"{get(HS.MAX_FILES)}, most suspicious first"),
+            (HS.MAX_FILE_MB, "File reputation: larger files only within the byte budget", f"{get(HS.MAX_FILE_MB)} MB"),
+            (HS.MAX_RUN_MB, "File reputation: most bytes read per check", f"{get(HS.MAX_RUN_MB)} MB"),
+            (HS.SECONDS, "File reputation: most time per check", f"{get(HS.SECONDS)} seconds"),
+            (HS.ENTROPY, "File reputation: an unknown program counts as packed above",
+             f"{get(HS.ENTROPY)} bits per byte"),
+            (HS.MB_EVERY_HOURS, "File reputation: fetch the MalwareBazaar set at most every",
+             f"{get(HS.MB_EVERY_HOURS)} hours (abuse.ch: never more than hourly)"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1187,6 +1214,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.fleet import settings as _FS  # noqa: F401 -- and the fleet.* settings
         from kratos.outbox import settings as _OS  # noqa: F401 -- and the outbox.* settings
         from kratos.export import settings as _ES  # noqa: F401 -- and the export.* settings
+        from kratos.hashdb import settings as _HDS  # noqa: F401 -- and the hashdb.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1214,6 +1242,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         if key.startswith("export."):
             self._set_gen_status("Saved — applies to the next /export.", T.SAFE)
+            return
+        if key.startswith("hashdb."):
+            self._set_gen_status("Saved — applies to the next file-reputation check or lookup.", T.SAFE)
             return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
@@ -1277,7 +1308,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

@@ -38,15 +38,16 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, containers, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, containers, file_facts, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import containers, live_response, packages, persistence, privileged_accounts
+        from kratos.adapters import containers, file_facts, live_response, packages, persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
         import catalog  # type: ignore[no-redef]
         import containers  # type: ignore[no-redef]
+        import file_facts  # type: ignore[no-redef]
         import hostfiles  # type: ignore[no-redef]
         import live_response  # type: ignore[no-redef]
         import logread  # type: ignore[no-redef]
@@ -457,6 +458,18 @@ def v_scan_path(v: Any) -> str:
     return v
 
 
+def v_fact_paths(v: Any) -> list[str]:
+    """file_facts: base64 raw paths -- absolute, no NUL/newline/'.'/'..', at most 4096
+    bytes each, at most file_facts.MAX_PATHS. Shape only: the agent also requires each to
+    have been listed by one of its own reads in the last day (_listed). Returns the same
+    base64 strings (core validates and then signs these exact values; the probe decodes)."""
+    try:
+        file_facts.decode_paths(v)
+    except file_facts.RequestError as e:
+        raise ReadParamError(str(e)) from None
+    return list(v)
+
+
 # probe -> {param: (validator, required, default)}
 _P = tuple
 PARAM_SPECS: dict[str, dict[str, _P]] = {
@@ -544,6 +557,16 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
         "inode": (v_int_range(1, 2 ** 63 - 1), False, None),
         "offset": (v_int_range(0, 2 ** 44), False, 0),
     },
+    # phase E.4: facts about files this agent's own reads listed (agent 0.12.0). The paths
+    # are re-checked here: shape (v_fact_paths), a program or library, never a credential
+    # location, and listed by this agent's persistence / live-response / YARA reads in the
+    # last day.
+    "file_facts": {
+        "paths": (v_fact_paths, True, None),
+        "max_file_mb": (v_int_range(1, 4096), False, 64),
+        "run_mb": (v_int_range(16, 65536), False, 2048),
+        "seconds": (v_int_range(10, 1800), False, 120),
+    },
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -561,6 +584,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "container_inventory": containers.DEFAULT_BUDGET_SECONDS + 20,
     "container_packages": containers.PACKAGES_BUDGET_SECONDS + 10,
     "container_logs": 30,
+    "file_facts": 1800 + 30,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -575,6 +599,7 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "container_inventory": containers.OUTPUT_CAP_BYTES + 65536,
     "container_packages": containers.PACKAGES_OUTPUT_CAP + 65536,
     "container_logs": containers.LOG_OUTPUT_CAP + 65536,
+    "file_facts": file_facts.OUTPUT_CAP_BYTES + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1695,6 +1720,78 @@ def _p_container_logs(p: dict[str, Any]) -> dict[str, Any]:
     return containers.container_log_output(p["container_id"], p["inode"], p["offset"], opener=_open_for_read)
 
 
+# --------------------------------------------------------------------------- E.4 memory
+# The paths this agent's own reads listed (persistence items and the files they name,
+# running programs, dropped temp files, YARA matches), kept in memory for a day. A
+# file_facts request may only name these: a core -- or anyone holding the link -- can't
+# turn the read into "hash any file I name". In memory only: nothing is written on this
+# machine, and after a restart the next persistence/live read lists them again.
+LISTED_TTL_SECONDS = 24 * 3600
+LISTED_MAX = 50000
+_LISTED: dict[bytes, float] = {}
+_LISTED_LOCK = threading.Lock()
+
+
+def _remember(paths: list[str], now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    with _LISTED_LOCK:
+        for p in paths:
+            if isinstance(p, str) and p.startswith("/"):
+                try:
+                    _LISTED[os.fsencode(p)] = now
+                except (UnicodeError, ValueError):
+                    continue
+        if len(_LISTED) > LISTED_MAX:              # drop the oldest
+            for k, _t in sorted(_LISTED.items(), key=lambda kv: kv[1])[:len(_LISTED) - LISTED_MAX]:
+                del _LISTED[k]
+
+
+def _listed(path: bytes, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    with _LISTED_LOCK:
+        t = _LISTED.get(path)
+    return t is not None and now - t <= LISTED_TTL_SECONDS
+
+
+def _note_listed(probe: str, data: dict[str, Any]) -> None:
+    """After a successful read, remember the files it listed."""
+    out = str(data.get("stdout") or "")
+    paths: list[str] = []
+    try:
+        if probe == "persistence_inventory":
+            inv = persistence.parse_output(out)
+            paths += list(inv.get("items") or {})
+            paths += list(inv.get("refs") or {})
+            paths += [str(m.get("path")) for m in (inv.get("modules") or {}).values() if m.get("path")]
+        elif probe == "live_inventory":
+            inv = live_response.parse_output(out)
+            for pid, it in (inv.get("procs") or {}).items():
+                exe = str(it.get("exe") or "")
+                real = live_response._exe_real_path(exe)
+                if real:
+                    paths.append(real)
+                if exe and (exe.endswith(" (deleted)") or "memfd:" in exe):
+                    paths.append(f"/proc/{int(pid)}/exe")
+            paths += list(inv.get("temp_files") or {})
+        elif probe == "yara_scan":
+            paths += [str(m.get("file") or m.get("path") or "") for m in data.get("matches") or []
+                      if isinstance(m, dict)]
+            paths += [str(m.get("file") or "") for m in parse_yara_output(out, include_content=False)]
+    except Exception:  # noqa: BLE001 -- the memory is a lock, never a reason a read fails
+        return
+    _remember(paths)
+
+
+def _p_file_facts(p: dict[str, Any]) -> dict[str, Any]:
+    """Facts about files this agent listed itself (file_facts.facts_output): hashes, type,
+    packer marker, entropy and the package's own checksum -- never the bytes."""
+    return file_facts.facts_output(
+        file_facts.decode_paths(p["paths"]), is_credential=is_credential_path, listed=_listed,
+        max_file_bytes=p["max_file_mb"] * 1024 * 1024, run_bytes=p["run_mb"] * 1024 * 1024,
+        seconds=float(p["seconds"]),
+        run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap))
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1710,6 +1807,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "container_inventory": _p_container_inventory,
     "container_packages": _p_container_packages,
     "container_logs": _p_container_logs,
+    "file_facts": _p_file_facts,
 }
 assert set(_PROBES) == set(READ_PROBES)
 
@@ -1734,4 +1832,6 @@ def run_probe(probe: str, params: Any) -> dict[str, Any]:
         return {"status": "error", "reason": f"{probe} failed: {type(e).__name__}: {e}"}
     if data.get("status") == "error":
         return {"status": "error", "reason": data.get("reason") or f"{probe} failed"}
+    if probe in ("persistence_inventory", "live_inventory", "yara_scan"):
+        _note_listed(probe, data)
     return {"status": "ok", "data": data}

@@ -306,7 +306,7 @@ def test_the_new_probes_need_agent_0_5_0():
     assert core_server.PROBE_MIN_AGENT_VERSION["package_inventory"] == (0, 7, 0)       # A.2
     from kratos.subagent import agent
 
-    assert agent.AGENT_VERSION == "0.11.1"      # audit D: container image layers left out of the SUID search
+    assert agent.AGENT_VERSION == "0.12.0"      # E.4: the file_facts read
     assert {"journal_sync", "file_sync", "persistence_inventory", "live_inventory",
             "package_inventory"} <= set(reads.READ_PROBES)
 

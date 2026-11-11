@@ -313,12 +313,17 @@ class Finding:
     # from the evidence (e.g. a Compose change, a DOCKER-USER rule). Kratos never runs them.
     # Empty for most rules, and then left out of the finding's dict.
     fix: list[dict[str, str]] = field(default_factory=list)
+    # E.4: the reputation of each file this finding names, from the machine's latest
+    # reputation check (kratos.hashdb.annotate) -- [{path, sha256, verdict, label, note,
+    # sources, checked_at}]. An annotation: it never changes the severity. Empty for most
+    # findings, and then left out of the finding's dict.
+    reputation: list[dict[str, Any]] = field(default_factory=list)
 
 
 def finding_dict(f: "Finding") -> dict[str, Any]:
-    """A finding as a dict (dataclasses.asdict), without an empty detection_rule, ssvc or fix."""
+    """A finding as a dict (dataclasses.asdict), without an empty detection_rule, ssvc, fix or reputation."""
     d = asdict(f)
-    for key in ("detection_rule", "ssvc", "fix"):
+    for key in ("detection_rule", "ssvc", "fix", "reputation"):
         if not d.get(key):
             d.pop(key, None)
     return d
@@ -2139,6 +2144,12 @@ _container_findings.register()
 from kratos.sshguess import findings as _sshguess_findings  # noqa: E402
 
 _sshguess_findings.register()
+
+# E.4: HASH-001..003 -- known-bad files, unknown packed programs, and what the reputation
+# check could not do (kratos.hashdb).
+from kratos.hashdb import findings as _hash_findings  # noqa: E402
+
+_hash_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
@@ -2374,6 +2385,10 @@ def write_findings_report(
                         live_doc=live_doc, config_audit=config_audit, vuln_scan=vuln_scan,
                         container_packages_doc=snapshots.get("container_packages"))
     findings.sort(key=_ssvc_attach.sort_key)
+    # E.4: reputation lines on findings that name a looked-up file (an annotation only)
+    from kratos.hashdb import annotate as _hash_annotate
+
+    _hash_annotate.attach(findings, snapshots.get("hash_reputation"))
     finding_dicts = [finding_dict(f) for f in findings]
     lifecycle_summary, lifecycle_error = None, None
     try:
@@ -2468,6 +2483,12 @@ def write_findings_report(
                 md_lines.append(f"**{_md_safe(lines[0])}**\n")
                 md_lines.extend(f"- {_md_safe(x.strip())}" for x in lines[1:])
                 md_lines.append("")
+            for rep in f.reputation:   # E.4: what each named file is known to be (an annotation)
+                from kratos.untrusted import for_markdown as _md_safe
+                md_lines.append(f"**Reputation** of `{_md_safe(rep.get('path'))}`: {_md_safe(rep.get('label'))}"
+                                + (f" — {_md_safe(rep.get('note'))}" if rep.get("note") else "")
+                                + (f" (checked {_md_safe(rep.get('checked_at'))})" if rep.get("checked_at") else "")
+                                + "\n")
             if f.detection_rule:   # C.1: the Sigma rule's author goes with its finding (DRL 1.1)
                 dr = f.detection_rule
                 if dr.get("sigma_id"):

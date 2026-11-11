@@ -302,3 +302,5 @@ from kratos.sshguess import check as _sshguess_check  # noqa: E402,F401
 
 # D.5: containers -- settings, published ports vs the firewall, packages inside running images.
 from kratos.containers import check as _containers_check  # noqa: E402,F401
+# E.4: the reputation of the executables the persistence and running-process reads found
+from kratos.hashdb import check as _hash_check  # noqa: E402,F401

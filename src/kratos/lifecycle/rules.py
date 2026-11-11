@@ -124,6 +124,10 @@ RULES: dict[str, RuleInfo] = dict([
     _r("CONT-005", "condition"),
     _r("CONT-006", "condition"),
     _r("CONT-007", "condition"),
+    # E.4: a known-bad file, or an unknown packed program, is a state until the file is removed
+    # (a fresh, complete reputation check that no longer sees it closes it) or a person decides.
+    _r("HASH-001", "condition"),
+    _r("HASH-002", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
@@ -155,7 +159,8 @@ RULES: dict[str, RuleInfo] = dict([
     _r("LIVE-007", "run_note"),        # the restart-needed hint + what could not be read
     _r("PKG-004", "run_note"),         # what the package check could not cover (no data, stale data, ...)
     _r("DETECT-001", "run_note"),
-    _r("CONT-008", "run_note"),        # D.5: what the container checks could not read      # C.1: log sources the detection rules need that the machine doesn't give
+    _r("CONT-008", "run_note"),
+    _r("HASH-003", "run_note"),        # E.4: what the file-reputation check could not do        # D.5: what the container checks could not read      # C.1: log sources the detection rules need that the machine doesn't give
 ])
 
 # C.1: the detection rules' findings, SIGMA-<8 hex digits>. Their ids come from the rule

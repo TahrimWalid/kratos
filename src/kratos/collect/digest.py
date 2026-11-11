@@ -74,6 +74,11 @@ def _finding_tag(f: dict, with_title: bool) -> str:
     serious = str(f.get("severity") or "").lower() in finding_facts.SERIOUS
     if facts and (with_title or serious):
         text += " -- " + "; ".join(facts)
+    from kratos.hashdb.annotate import worst_tag
+
+    rep = worst_tag(f)                   # E.4: what a named file is known to be, in Kratos's words
+    if rep and (with_title or serious):
+        text += f" [reputation: {rep}]"
     tag = finding_facts.verdict_tag(f)   # the triage verdict (B.1), as Kratos's words
     if tag and (with_title or serious):
         text += f" [{tag}]"

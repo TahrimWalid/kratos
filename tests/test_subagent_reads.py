@@ -65,7 +65,26 @@ def test_run_probe_never_raises_and_says_why():
 
 def test_no_probe_accepts_command_or_script_text():
     for probe, spec in R.PARAM_SPECS.items():
-        assert not ({"command", "cmd", "script", "argv", "rules", "args", "paths"} & set(spec)), probe
+        banned = {"command", "cmd", "script", "argv", "rules", "args", "paths"}
+        if probe == "file_facts":
+            # E.4: the one read that names files. Each path must have been listed by this
+            # agent's own reads in the last day, be a program or library, and never a
+            # credential location (tests/test_file_facts.py proves each); never command text.
+            banned.discard("paths")
+        assert not (banned & set(spec)), probe
+
+
+def test_file_facts_paths_are_only_ever_files_the_agent_listed(tmp_path):
+    import base64
+    R._LISTED.clear()
+    target = tmp_path / "prog"
+    target.write_bytes(b"\x7fELF\x02x")
+    target.chmod(0o755)
+    req = {"paths": [base64.b64encode(str(target).encode()).decode()]}
+    assert "\tnot_listed\t" in R.run_probe("file_facts", req)["data"]["stdout"]
+    R._remember([str(target)])
+    assert "\tok\t" in R.run_probe("file_facts", req)["data"]["stdout"]
+    R._LISTED.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -369,3 +388,17 @@ def test_open_nofollow_refuses_a_symlinked_component(tmp_path):
     os.close(fd)
     with pytest.raises(OSError):
         R._open_nofollow(str(tmp_path / "link"))
+
+
+def test_file_facts_params_survive_core_validation_and_signing():
+    """The core validates read params with the agent's validators and signs the CLEANED
+    values (lab finding: raw bytes there broke the signed JSON)."""
+    import base64
+    import json
+
+    from kratos.subagent import signing
+    clean = R.validate_params("file_facts", {"paths": [base64.b64encode(b"/usr/bin/su").decode()]})
+    envelope = {"probe": "file_facts", "params": clean}
+    json.dumps(envelope)
+    assert signing.sign_envelope(b"k" * 32, envelope)
+    assert clean["paths"] == [base64.b64encode(b"/usr/bin/su").decode()]

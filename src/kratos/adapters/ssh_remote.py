@@ -1287,6 +1287,34 @@ def fetch_live_response() -> Any:
     return out
 
 
+FILE_FACTS_MARGIN_SECONDS = 60
+
+
+def fetch_file_facts(paths: list[bytes], *, max_file_mb: int = 64, run_mb: int = 2048, seconds: int = 120) -> Any:
+    """Facts about named files (phase E.4: hashes, type, packer, entropy, package checksum)
+    as a dict (adapters.file_facts.parse_output), or the failed SSHResult. The caller
+    (kratos.hashdb.facts) has already limited `paths` to files Kratos's own snapshots of
+    this machine listed. Over SSH they travel base64-encoded inside the script on standard
+    input, never on the command line, and the read runs AS THE SSH USER; through the
+    sub-agent they are its `file_facts` read's parameters (the agent re-checks them)."""
+    from kratos.adapters import file_facts
+
+    def over_ssh() -> SSHResult:
+        script = file_facts.build_script(paths, max_file_bytes=max_file_mb * 1024 * 1024,
+                                         run_bytes=run_mb * 1024 * 1024, seconds=seconds)
+        return run_remote_script(script, shell="sh", errors="replace", timeout=seconds + FILE_FACTS_MARGIN_SECONDS)
+
+    params = {"paths": file_facts.encode_paths(paths), "max_file_mb": int(max_file_mb), "run_mb": int(run_mb),
+              "seconds": int(seconds)}
+    result = _route("file_facts", params, over_ssh)
+    if not result.ok:
+        return result
+    out = file_facts.parse_output(result.stdout, len(paths))
+    out["via"] = result.via
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
 PACKAGE_INVENTORY_TIMEOUT_SECONDS = 90
 
 
