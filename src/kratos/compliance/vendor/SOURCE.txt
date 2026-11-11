@@ -1,0 +1,29 @@
+ComplianceAsCode CIS control mapping vendored by Kratos (E.2)
+
+Repository: https://github.com/ComplianceAsCode/content
+Tag:        v0.1.82
+Commit:     3da954fbccfb4ca611da86c9be9205d83c38bfc7
+Committed:  2026-09-01T09:35:25+02:00
+Licence:    BSD-3-Clause (see LICENSE.ComplianceAsCode beside this file)
+
+What is vendored (cac_cis.json): for each product below, the CIS section numbers, their
+levels, the ComplianceAsCode rule ids and variable assignments, and the automation status
+-- from the product's CIS control file. Nothing else. The CIS Benchmark texts (titles,
+descriptions, rationale, audit and remediation text) are licensed by the Center for
+Internet Security for non-commercial use only (CC BY-NC-SA) and are NOT shipped; the
+titles in Kratos's reports are Kratos's own descriptions of what its checks test.
+
+Products and CIS benchmark versions (as named in each control file):
+  ubuntu2204  CIS benchmark 2.0.0 (cis_ubuntu2204, 300 sections)
+  ubuntu2404  CIS benchmark 1.0.0 (cis_ubuntu2404, 312 sections)
+  debian12    CIS benchmark 1.1.0 (cis_debian12, 310 sections)
+  debian13    CIS benchmark 1.0.0 (cis_debian13, 343 sections)
+  rhel8       CIS benchmark 4.0.0 (cis_rhel8, 322 sections)
+  rhel9       CIS benchmark 2.0.0 (cis_rhel9, 298 sections)
+  rhel10      CIS benchmark 1.0.1 (cis_rhel10, 328 sections)
+
+Kratos never runs ComplianceAsCode's OVAL or Bash content. A CIS section Kratos has no
+check for is reported as "not checked by Kratos" with its ComplianceAsCode rule ids, so a
+person can run OpenSCAP with the same content themselves.
+
+Rebuild: scripts/dev/build_compliance_vendor.py <checkout at the commit above> --commit 3da954fbccfb4ca611da86c9be9205d83c38bfc7

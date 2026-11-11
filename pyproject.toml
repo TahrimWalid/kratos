@@ -112,7 +112,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 kratos = ["yara_rules/*.yar", "yara_rules/README.md", "yara_rules/LICENSE", "templates/env.example", "attack/*.json",
           "events/schema/*.json", "detect/packs/*.json", "detect/packs/NOTICE", "detect/packs/LICENSE.DRL",
-          "detect/packs/sigma/**/*.yml", "backup/data/bip39_english.txt", "backup/data/NOTICE"]
+          "detect/packs/sigma/**/*.yml", "backup/data/bip39_english.txt", "backup/data/NOTICE",
+          "compliance/vendor/cac_cis.json", "compliance/vendor/SOURCE.txt", "compliance/vendor/LICENSE.ComplianceAsCode"]
 
 # Lint (B.4): narrow on purpose -- real problems, not style. Syntax errors (E9),
 # invalid comparisons and statements (F63, F7), undefined names (F82), unused imports
