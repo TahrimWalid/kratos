@@ -353,6 +353,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "export.max_events", "export.narrative_max_usd", "export.timeline_rows",
                           "hashdb.online", "hashdb.max_files", "hashdb.max_file_mb", "hashdb.max_run_mb",
                           "hashdb.seconds", "hashdb.entropy_threshold", "hashdb.malwarebazaar_every_hours",
+                          "compliance.max_age_hours", "compliance.na_max_days", "compliance.show_owner_hint",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -763,6 +764,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         for key, label, tail in self._export_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._hashdb_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._compliance_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
@@ -1206,6 +1209,23 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              f"{get(HS.MB_EVERY_HOURS)} hours (abuse.ch: never more than hourly)"),
         ]
 
+    # --- Compliance (kratos.compliance, E.2) ---
+    def _compliance_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.compliance import settings as CS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("compliance.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (CS.MAX_AGE_HOURS, "Compliance: a control passes only on facts read within",
+             f"{get(CS.MAX_AGE_HOURS)} hours (older: 'not checked')"),
+            (CS.NA_MAX_DAYS, "Compliance: a 'not applicable' decision lasts at most", f"{get(CS.NA_MAX_DAYS)} days"),
+            (CS.ASK_OWNERS, "Compliance: show 'no owner yet' beside failed controls",
+             "on" if get(CS.ASK_OWNERS) else "off"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1215,6 +1235,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.outbox import settings as _OS  # noqa: F401 -- and the outbox.* settings
         from kratos.export import settings as _ES  # noqa: F401 -- and the export.* settings
         from kratos.hashdb import settings as _HDS  # noqa: F401 -- and the hashdb.* settings
+        from kratos.compliance import settings as _CPS  # noqa: F401 -- and the compliance.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1245,6 +1266,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         if key.startswith("hashdb."):
             self._set_gen_status("Saved — applies to the next file-reputation check or lookup.", T.SAFE)
+            return
+        if key.startswith("compliance."):
+            self._set_gen_status("Saved — applies to the next compliance report.", T.SAFE)
             return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
@@ -1308,7 +1332,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.", "compliance.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)
