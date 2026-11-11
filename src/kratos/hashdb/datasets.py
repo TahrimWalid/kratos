@@ -265,6 +265,19 @@ def remote_size(session: Any, url: str, *, headers: dict[str, str] | None = None
     return int(n) if n and n.isdigit() else None
 
 
+def _server_message(resp: Any) -> str:
+    """A short reason from a JSON error body ({"message": ...}), printable text only, or ''."""
+    if not str(resp.headers.get("content-type") or "").startswith("application/json"):
+        return ""
+    try:
+        raw = b"".join(resp.iter_content(chunk_size=512))[:512]
+        msg = json.loads(raw.decode("utf-8", "replace")).get("message")
+    except (ValueError, AttributeError, TypeError):
+        return ""
+    text = "".join(c for c in str(msg or "") if c.isprintable())[:120]
+    return text
+
+
 def download(session: Any, url: str, tmp: Path, *, max_bytes: int, resume: bool,
              headers: dict[str, str] | None = None, redact: str = "",
              progress: Callable[[int, int | None], None] | None = None) -> int:
@@ -297,8 +310,9 @@ def download(session: Any, url: str, tmp: Path, *, max_bytes: int, resume: bool,
                 declared = resp.headers.get("content-length")
                 total = int(declared) if declared and declared.isdigit() else None
             elif resp.status_code in (401, 403):
-                raise DatasetError(f"the server refused the request (HTTP {resp.status_code}) -- the key was refused "
-                                   "or has no access")
+                why = _server_message(resp)
+                raise DatasetError(f"the server refused the request (HTTP {resp.status_code}"
+                                   + (f": {clean(why)}" if why else "") + ") -- the key was refused or has no access")
             elif resp.status_code == 429:
                 raise DatasetError("the server says too many requests (HTTP 429) -- try again later")
             else:

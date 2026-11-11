@@ -8,7 +8,9 @@ Order, first match wins:
 2. ``package_modified`` -- a package owns the path, but the content differs from the
    checksum the package recorded (or A.1's package verification said so).
 3. ``package`` -- a package owns it and its content matches the package's checksum.
-4. ``known_good`` -- its SHA-1 is in CIRCL hashlookup's filter: "probably known-good".
+4. ``known_good`` -- no package owns it, but its content is identical to a file an installed
+   package ships (the machine's own package database), or its SHA-1 is in CIRCL hashlookup's
+   filter ("probably known-good").
 5. ``unknown`` -- none of the above.
 
 ``not_checked`` only when the file couldn't be read (or a needed set is missing) AND
@@ -94,7 +96,7 @@ def _digest_matches(fact: dict[str, Any], digests: list[dict[str, str]]) -> bool
     for d in digests or []:
         algo, value = d.get("algo"), str(d.get("digest") or "").lower()
         ours = None
-        if algo == "md5":
+        if algo in ("md5", "md5c"):
             ours = fact.get("md5")
         elif algo == "sha1":
             ours = fact.get("sha1")
@@ -143,9 +145,13 @@ def decide(fact: dict[str, Any] | None, cand: dict[str, Any], *, known_bad: Know
     # 2./3. package checksum
     if fact.get("package"):
         match = _digest_matches(fact, fact.get("pkg_digests") or [])
+        conf = any(d.get("algo") == "md5c" for d in fact.get("pkg_digests") or [])
         if match is False or (match is None and cand.get("package_verify") == "changed"):
             return Reputation("package_modified", [{"source": "package", "detail": fact["package"], "date": ""}],
-                              package=fact["package"], note="differs from the checksum its package recorded")
+                              package=fact["package"],
+                              note=("a configuration file of its package: local edits are normal, but check what "
+                                    "changed in one that runs" if conf else
+                                    "differs from the checksum its package recorded"))
         if match is True:
             return Reputation("package", [{"source": "package", "detail": fact["package"], "date": ""}],
                               package=fact["package"])
@@ -153,6 +159,13 @@ def decide(fact: dict[str, Any] | None, cand: dict[str, Any], *, known_bad: Know
     packed = bool(fact.get("packers"))
     ent = fact.get("entropy")
     high = isinstance(ent, (int, float)) and ent >= entropy_threshold
+    copies = [] if fact.get("package") else list(fact.get("package_copy") or [])
+    if copies:            # the machine's own package database: the same content as a file a package ships
+        c0 = copies[0]
+        return Reputation("known_good", [{"source": "package_copy", "detail": f"{c0['path']} from {c0['package']}",
+                                          "date": ""}], packed=packed, high_entropy=high,
+                          note=(f"the same content as {c0['path']} from the installed package {c0['package']} -- a "
+                                "copy of a packaged program; where it is and its permissions are still a risk"))
     if known_good is not None and fact.get("sha1") and fact["sha1"] in known_good:
         return Reputation("known_good", [{"source": "circl", "detail": "hashlookup Bloom filter", "date": circl_date}],
                           package=pkg, packed=packed, high_entropy=high,
@@ -180,5 +193,7 @@ def short_tag(rep: dict[str, Any]) -> str:
                                                                             else [])
         return ", ".join(bits)
     if v == "known_good":
+        if any(str(x.get("source")) == "package_copy" for x in rep.get("sources") or []):
+            return "known-good: a copy of a packaged program"
         return "probably known-good (CIRCL)"
     return LABELS.get(v, v)

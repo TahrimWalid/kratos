@@ -388,3 +388,17 @@ def test_open_nofollow_refuses_a_symlinked_component(tmp_path):
     os.close(fd)
     with pytest.raises(OSError):
         R._open_nofollow(str(tmp_path / "link"))
+
+
+def test_file_facts_params_survive_core_validation_and_signing():
+    """The core validates read params with the agent's validators and signs the CLEANED
+    values (lab finding: raw bytes there broke the signed JSON)."""
+    import base64
+    import json
+
+    from kratos.subagent import signing
+    clean = R.validate_params("file_facts", {"paths": [base64.b64encode(b"/usr/bin/su").decode()]})
+    envelope = {"probe": "file_facts", "params": clean}
+    json.dumps(envelope)
+    assert signing.sign_envelope(b"k" * 32, envelope)
+    assert clean["paths"] == [base64.b64encode(b"/usr/bin/su").decode()]

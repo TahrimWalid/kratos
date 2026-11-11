@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import resource
 import struct
 from pathlib import Path
 
@@ -76,10 +75,15 @@ def test_mmap_only_memory_stays_flat_for_a_large_filter(tmp_path):
     with open(p, "wb") as fh:
         fh.write(struct.pack("<QQdQQQ", 1, 10 ** 9, 0.0001, 14, m, 0))
         fh.truncate(48 + m // 8)
-    before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    def anon_kb() -> int:      # private memory; file pages mapped in are the kernel's page cache
+        for line in open("/proc/self/status"):
+            if line.startswith("RssAnon:"):
+                return int(line.split()[1])
+        return 0
+
+    before = anon_kb()
     with bloom.BloomFilter(p) as bf:
-        for i in range(100):       # each lookup touches at most k=14 pages of the file
+        for i in range(2000):
             assert _absent(i) not in bf
-    grew_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before
-    # 100 lookups x 14 pages x 4 KB = 5.6 MB at most -- nowhere near the 512 MB file
-    assert grew_kb < 16 * 1024, f"resident memory grew {grew_kb} KB"
+        grew_kb = anon_kb() - before
+    assert grew_kb < 16 * 1024, f"private memory grew {grew_kb} KB for a 512 MB filter"

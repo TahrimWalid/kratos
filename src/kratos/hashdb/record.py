@@ -142,7 +142,7 @@ def summary_line(doc: dict[str, Any]) -> str:
         return "no programs to look up yet (needs a recent persistence and running-process read)"
     bits = [f"{int(c.get('package') or 0)} from packages"]
     for v, word in (("known_bad", "KNOWN-BAD"), ("package_modified", "changed since installed"),
-                    ("known_good", "probably known-good"), ("unknown", "unknown"), ("not_checked", "not checked")):
+                    ("known_good", "known-good"), ("unknown", "unknown"), ("not_checked", "not checked")):
         if c.get(v):
             bits.append(f"{c[v]} {word}")
     head = f"{looked} program(s) looked up: " + ", ".join(bits)

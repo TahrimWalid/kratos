@@ -14,7 +14,8 @@ Two ways to read that print the SAME records, one parser (``parse_output``):
     path, regular file, one hard link, not swapped mid-open).
 
 Per file: size, mode, owner uid, mtime, inode, link count, SHA-256, SHA-1 (only for the
-CIRCL lookup -- never an identity), MD5 (only when the owning package records MD5s),
+CIRCL lookup -- never an identity), MD5 (on Debian, whose package database records MD5s;
+elsewhere only when the owning package does),
 the type from the first bytes (elf32 / elf64 / script / other -- never the bytes), and,
 for files no package owns, a packer marker in the first 64 KiB and the byte entropy of
 the first MiB. Package ownership and the package's own checksum for the path come from
@@ -26,7 +27,8 @@ needs escaping on the way back:
   M  now|uid|family  <value>
   F  <idx> <status> <size> <mode> <uid> <mtime> <inode> <nlink> <sha256> <sha1> <md5> <type> <packer> <entropy>
   OWN <idx> <package>
-  PK  <idx> <algo> <digest>          algo: md5 | sha1 | sha256 | sha384 | sha512 | apk-q1
+  PK  <idx> <algo> <digest>          algo: md5 | md5c (a dpkg conffile) | sha1 | sha256 | sha384 | sha512 | apk-q1
+  PC  <idx> <package> <path>         a file no package owns, identical to that file of that package
   OWNSRC / OWNERR  (as the persistence read)
   END
 
@@ -246,8 +248,16 @@ alpine)
       /^Z:/ && cur != "" { if (cur in want) { n = split(want[cur], ix, " "); for (j = 1; j <= n; j++) print "PK\t" ix[j] "\tapk-q1\t" substr($0, 3) } cur = "" }')
   fi ;;
 esac
+# a dpkg configuration file is not in md5sums: its recorded checksum is in the status file
+if [ "$FAMILY" = debian ] && [ -r @RAWROOT@/var/lib/dpkg/status ]; then
+  PKS="$PKS$NL$( { printf '%s\n' "$REAL"; printf '==ST==\n'; cat @RAWROOT@/var/lib/dpkg/status; } | awk -F'\t' -v root=@ROOTV@ '
+    $0 == "==ST==" { s = 1; FS = " "; next }
+    !s { k = substr($2, length(root) + 1); idx[k] = (k in idx) ? idx[k] " " $1 : $1; next }
+    /^Conffiles:/ { c = 1; next } /^[^ ]/ { c = 0 }
+    c && /^ \// && ($1 in idx) && $2 ~ /^[0-9a-f]+$/ && length($2) == 32 { n = split(idx[$1], a, " "); for (j = 1; j <= n; j++) print "PK\t" a[j] "\tmd5c\t" $2 }')"
+fi
 [ -n "$PKS" ] && printf '%s\n' "$PKS" | grep '^PK	'
-MD5IDX=" $(printf '%s\n' "$PKS" | awk -F'\t' '$3 == "md5" { printf "%s ", $2 }') "
+MD5IDX=" $(printf '%s\n' "$PKS" | awk -F'\t' '$3 == "md5" || $3 == "md5c" { printf "%s ", $2 }') "
 OWNED=" $(printf '%s\n' "$OWNIDX" | cut -f1 | tr '\n' ' ') "
 USED=0
 kr_dash() { printf 'F\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
@@ -289,7 +299,7 @@ kr_facts() {
   USED=$((USED + _sz))
   _s256=$(sha256sum < "$_p" 2>/dev/null | cut -c1-64); _s1=$(sha1sum < "$_p" 2>/dev/null | cut -c1-40)
   _m5=-
-  case "$MD5IDX" in *" $_i "*) _m5=$(md5sum < "$_p" 2>/dev/null | cut -c1-32) ;; esac
+  case "$FAMILY$MD5IDX" in debian*|*" $_i "*) _m5=$(md5sum < "$_p" 2>/dev/null | cut -c1-32) ;; esac
   case "$OWNED" in
     *" $_i "*) _ty=-; _pk=-; _en=- ;;
     *) _tpe=$(od -An -v -tu1 -N@PACKB@ < "$_p" 2>/dev/null | awk '
@@ -312,10 +322,46 @@ kr_facts() {
   [ "$_st2" = "$_st" ] || { kr_dash "$_i" changed "$_st	-	-	-	-	-	-"; return; }
   printf 'F\t%s\tok\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$_i" "$_st" "$_s256" "$_s1" "$_m5" "$_ty" "$_pk" "$_en"
 }
-printf '%s\n' "$REAL" | while IFS="$TAB" read -r _i _p; do
+FOUT=$(printf '%s\n' "$REAL" | while IFS="$TAB" read -r _i _p; do
   [ -n "$_i" ] || continue
   kr_facts "$_i" "$_p"
-done
+done)
+printf '%s\n' "$FOUT"
+# a file no package owns whose content is identical to a file an installed package ships
+UNOWNED=$(printf '%s\n' "$FOUT" | awk -F'\t' -v owned="$OWNED" '$1 == "F" && $3 == "ok" && index(owned, " " $2 " ") == 0 { print $2 "\t" $10 "\t" $11 "\t" $12 }')
+if [ -n "$UNOWNED" ]; then
+  case "$FAMILY" in
+  debian)
+    _pc=$( { printf '%s\n' "$UNOWNED"; printf '==MD5==\n'; for _f in @RAWROOT@/var/lib/dpkg/info/*.md5sums; do [ -r "$_f" ] && printf '==F==%s\n' "${_f##*/}" && cat "$_f"; done; } | awk -F'\t' '
+      $0 == "==MD5==" { s = 1; next }
+      !s { if ($4 != "-") w[$4] = (($4 in w) ? w[$4] " " : "") $1; next }
+      /^==F==/ { pkg = substr($0, 6); sub(/[.]md5sums$/, "", pkg); next }
+      { d = substr($0, 1, 32); if (d in w) { n = split(w[d], ix, " "); for (j = 1; j <= n; j++) if (cnt[ix[j]]++ < 3) print "PC\t" ix[j] "\t" pkg "\t/" substr($0, 35) } }')
+    [ -n "$_pc" ] && printf '%s\n' "$_pc" ;;
+  rhel)
+    _pc=$( { printf '%s\n' "$UNOWNED"; printf '==RPM==\n'; rpm -qa --qf '[%{FILEDIGESTS}\t%{FILENAMES}\t%{=NAME}\n]' 2>/dev/null; } | awk -F'\t' '
+      $0 == "==RPM==" { s = 1; next }
+      !s { w[$2] = (($2 in w) ? w[$2] " " : "") $1; if ($4 != "-") w[$4] = (($4 in w) ? w[$4] " " : "") $1; next }
+      { d = tolower($1); if (d != "" && (d in w)) { n = split(w[d], ix, " "); for (j = 1; j <= n; j++) if (cnt[ix[j]]++ < 3) print "PC\t" ix[j] "\t" $3 "\t" $2 } }')
+    [ -n "$_pc" ] && printf '%s\n' "$_pc" ;;
+  alpine)
+    [ -r @RAWROOT@/lib/apk/db/installed ] && { printf '%s\n' "$UNOWNED"; printf '==APK==\n'; cat @RAWROOT@/lib/apk/db/installed; } | awk -F'\t' '
+      function q1(hex,   b64, i, n, v, out, c1, c2, c3) {
+        b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"; n = 0
+        for (i = 1; i <= length(hex); i += 2) { v = index("0123456789abcdef", substr(hex, i, 1)) - 1
+          v = v * 16 + index("0123456789abcdef", substr(hex, i + 1, 1)) - 1; by[++n] = v }
+        out = ""
+        for (i = 1; i <= n; i += 3) { c1 = by[i]; c2 = (i + 1 <= n) ? by[i + 1] : 0; c3 = (i + 2 <= n) ? by[i + 2] : 0
+          out = out substr(b64, int(c1 / 4) + 1, 1) substr(b64, (c1 % 4) * 16 + int(c2 / 16) + 1, 1)
+          out = out ((i + 1 <= n) ? substr(b64, (c2 % 16) * 4 + int(c3 / 64) + 1, 1) : "=")
+          out = out ((i + 2 <= n) ? substr(b64, c3 % 64 + 1, 1) : "=") }
+        return "Q1" out }
+      $0 == "==APK==" { s = 1; next }
+      !s { k = q1($3); w[k] = ((k in w) ? w[k] " " : "") $1; next }
+      /^P:/ { pkg = substr($0, 3); next } /^F:/ { dir = substr($0, 3); next } /^R:/ { f = substr($0, 3); next }
+      /^Z:/ { d = substr($0, 3); if (d in w) { n = split(w[d], ix, " "); for (j = 1; j <= n; j++) if (cnt[ix[j]]++ < 3) print "PC\t" ix[j] "\t" pkg "\t/" dir "/" f } }' ;;
+  esac
+fi
 """
 
 
@@ -440,6 +486,111 @@ def _pkg_digests(family: Optional[str], wanted: Dict[int, Tuple[bytes, str]], ro
     return out
 
 
+def _conffile_digests(real: List[bytes], root: str) -> List[str]:
+    """PK idx md5c <md5>: a dpkg configuration file's recorded checksum (the status file's
+    Conffiles lines -- md5sums doesn't list them)."""
+    r = root.rstrip("/")
+    want: Dict[str, List[int]] = {}
+    for i, p in enumerate(real):
+        k = os.fsdecode(p)
+        want.setdefault(k[len(r):] if r and k.startswith(r) else k, []).append(i)
+    out: List[str] = []
+    try:
+        with open(f"{r}/var/lib/dpkg/status", "rb") as fh:
+            text = fh.read(64 * 1024 * 1024).decode("utf-8", "surrogateescape")
+    except OSError:
+        return out
+    inside = False
+    for line in text.split("\n"):
+        if line.startswith("Conffiles:"):
+            inside = True
+            continue
+        if line[:1] != " ":
+            inside = False
+        if inside and line.startswith(" /"):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in want and re.fullmatch(r"[0-9a-f]{32}", parts[1]):
+                out += [f"PK\t{i}\tmd5c\t{parts[1]}" for i in want[parts[0]]]
+    return out
+
+
+def _package_copies(family: Optional[str], f_lines: List[str], owned: set, root: str,
+                    run: Optional[Runner]) -> List[str]:
+    """PC idx <package> <path>: a file no package owns whose content is identical to a file an
+    installed package ships (its recorded checksum) -- at most three per file, in the order the
+    script finds them."""
+    unowned: List[Tuple[int, str, str, str]] = []
+    for ln in f_lines:
+        c = ln.split("\t")
+        if len(c) >= 15 and c[2] == "ok" and int(c[1]) not in owned:
+            unowned.append((int(c[1]), c[9], c[10], c[11]))
+    if not unowned:
+        return []
+    r = root.rstrip("/")
+    out: List[str] = []
+    count: Dict[int, int] = {}
+
+    def hit(ixs: List[int], pkg: str, path: str) -> None:
+        for i in ixs:
+            if count.get(i, 0) < 3:
+                count[i] = count.get(i, 0) + 1
+                out.append(f"PC\t{i}\t{pkg}\t{path}")
+
+    if family == "debian":
+        w: Dict[str, List[int]] = {}
+        for i, _s256, _s1, m5 in unowned:
+            if m5 != "-":
+                w.setdefault(m5, []).append(i)
+        d = f"{r}/var/lib/dpkg/info"
+        try:
+            names = sorted(n for n in os.listdir(d) if n.endswith(".md5sums"))
+        except OSError:
+            names = []
+        for n in names:
+            try:
+                with open(os.path.join(d, n), "rb") as fh:
+                    lines = fh.read(16 * 1024 * 1024).decode("utf-8", "surrogateescape").split("\n")
+            except OSError:
+                continue
+            for line in lines:
+                if line[:32] in w:
+                    hit(w[line[:32]], n[:-len(".md5sums")], "/" + line[34:])
+    elif family == "rhel" and run is not None:
+        w = {}
+        for i, s256, _s1, m5 in unowned:
+            w.setdefault(s256, []).append(i)
+            if m5 != "-":
+                w.setdefault(m5, []).append(i)
+        try:
+            res = run(["rpm", "-qa", "--qf", "[%{FILEDIGESTS}\\t%{FILENAMES}\\t%{=NAME}\\n]"], 60, 64 * 1024 * 1024)
+        except Exception:  # noqa: BLE001 -- no rpm answer: no copies found, nothing else changes
+            res = {}
+        for line in (res.get("stdout") or "").split("\n"):
+            c = line.split("\t")
+            if len(c) >= 3 and c[0].lower() in w:
+                hit(w[c[0].lower()], c[2], c[1])
+    elif family == "alpine":
+        w = {}
+        for i, _s256, s1, _m5 in unowned:
+            w.setdefault("Q1" + base64.b64encode(bytes.fromhex(s1)).decode(), []).append(i)
+        try:
+            with open(f"{r}/lib/apk/db/installed", "rb") as fh:
+                text = fh.read(64 * 1024 * 1024).decode("utf-8", "surrogateescape")
+        except OSError:
+            return out
+        pkg = dirn = f = ""
+        for line in text.split("\n"):
+            if line.startswith("P:"):
+                pkg = line[2:]
+            elif line.startswith("F:"):
+                dirn = line[2:]
+            elif line.startswith("R:"):
+                f = line[2:]
+            elif line.startswith("Z:") and line[2:] in w:
+                hit(w[line[2:]], pkg, "/" + dirn + "/" + f)
+    return out
+
+
 def facts_output(paths: List[bytes], *, root: str = "", run: Optional[Runner] = None,
                  is_credential: Callable[[str], bool] = lambda p: False,
                  listed: Callable[[bytes], bool] = lambda p: True,
@@ -463,8 +614,10 @@ def facts_output(paths: List[bytes], *, root: str = "", run: Optional[Runner] = 
             owned[i] = pkg
             out.append(f"OWN\t{i}\t{pkg}")
     pks = _pkg_digests(family, {i: (real[i], pkg) for i, pkg in owned.items()}, root, run)
+    if family == "debian":
+        pks += _conffile_digests(real, root)
     out += pks
-    md5_idx = {int(x.split("\t")[1]) for x in pks if x.split("\t")[2] == "md5"}
+    md5_idx = {int(x.split("\t")[1]) for x in pks if x.split("\t")[2] in ("md5", "md5c")}
     used = 0
     dash12 = "\t".join(["-"] * 12)
     for i, (asked, p) in enumerate(zip(paths, real)):
@@ -509,7 +662,8 @@ def facts_output(paths: List[bytes], *, root: str = "", run: Optional[Runner] = 
                 say("too_large", st)
                 continue
             used += st.st_size
-            h256, h1, h5 = hashlib.sha256(), hashlib.sha1(), hashlib.md5() if i in md5_idx else None
+            h256, h1 = hashlib.sha256(), hashlib.sha1()
+            h5 = hashlib.md5() if (family == "debian" or i in md5_idx) else None
             head = b""
             while True:
                 b = os.read(fd, 1024 * 1024)
@@ -534,6 +688,7 @@ def facts_output(paths: List[bytes], *, root: str = "", run: Optional[Runner] = 
                        f"{h5.hexdigest() if h5 is not None else '-'}\t{ty}\t{pk}\t{en}")
         finally:
             os.close(fd)
+    out += _package_copies(family, [ln for ln in out if ln.startswith("F\t")], set(owned), root, run)
     out.append("END")
     text = "\n".join(out) + "\n"
     return {"returncode": 0, "stdout": text[:OUTPUT_CAP_BYTES], "stderr": "", "truncated": len(text) > OUTPUT_CAP_BYTES}
@@ -592,9 +747,16 @@ def parse_output(stdout: str, count: int) -> Dict[str, Any]:
                 r["package"] = c[2]
         elif tag == "PK" and len(c) >= 4:
             r = rec(_int(c[1]))
-            if r is not None and c[2] in ("md5", "sha1", "sha256", "sha384", "sha512", "apk-q1"):
+            if r is not None and c[2] in ("md5", "md5c", "sha1", "sha256", "sha384", "sha512", "apk-q1"):
                 r.setdefault("pkg_digests", []).append({"algo": c[2], "digest": c[3].strip()})
                 r["pkg_digests"].sort(key=lambda d: (d["algo"], d["digest"]))
+        elif tag == "PC" and len(c) >= 4:
+            r = rec(_int(c[1]))
+            if r is not None and _PKG_NAME.match(c[2]) and c[3].startswith("/"):
+                copies = r.setdefault("package_copy", [])
+                if len(copies) < 3 and {"package": c[2], "path": c[3]} not in copies:
+                    copies.append({"package": c[2], "path": c[3]})
+                    copies.sort(key=lambda d: (d["package"], d["path"]))
         elif tag == "OWNSRC" and len(c) >= 2:
             inv["ownership"]["source"] = c[1]
         elif tag == "OWNERR" and len(c) >= 2:

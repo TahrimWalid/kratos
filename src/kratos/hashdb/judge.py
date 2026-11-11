@@ -98,7 +98,7 @@ def judge(chosen: list[dict[str, Any]], facts: dict[int, dict[str, Any]], reps: 
             if rep.high_entropy:
                 why.append(f"high byte entropy ({fact.get('entropy'):.2f} bits per byte over its first MiB)")
             ev = _file_lines(c, fact, rep) + ["  why it stands out: " + "; ".join(why),
-                                              "  reputation: unknown " + (rep.note or "")]
+                                              ("  reputation: unknown " + (rep.note or "")).rstrip()]
             signals.append({"rule": "HASH-002", "severity": "medium",
                             "title": "An unknown program that is packed or encrypted, in a place Kratos watches",
                             "subject": c.get("image_of") or c["path"], "evidence": ev[:MAX_EVIDENCE],

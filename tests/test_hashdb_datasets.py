@@ -64,10 +64,12 @@ class Session:
 Usage = namedtuple("Usage", "total used free")
 
 
-def _bloom_bytes(tmp_path: Path, n: int = 3000) -> bytes:
+def _bloom_bytes(tmp_path: Path, n: int = 3000, samples: bool = True) -> bytes:
+    """A small DCSO filter; with `samples`, it holds the sample hashes CIRCL's page lists (as the real one does)."""
     p = tmp_path / "src.bloom"
-    bloom.build(p, [hashlib.sha1(str(i).encode()).hexdigest().upper().encode() for i in range(n)],
-                capacity=n, fp_rate=0.001)
+    values = [hashlib.sha1(str(i).encode()).hexdigest().upper().encode() for i in range(n)]
+    values += [s.encode() for s in circl.CIRCL_SAMPLES] if samples else []
+    bloom.build(p, values, capacity=n + 5, fp_rate=0.001)
     return p.read_bytes()
 
 
@@ -79,12 +81,12 @@ def _plenty(_p):
 def test_circl_update_resumes_and_never_uses_tmp(tmp_path):
     body = _bloom_bytes(tmp_path)
     s = Session(body, cut_after=len(body) // 3)
-    ok, msg = circl.update(tmp_path, session=s, usage=_plenty, ubuntu_host=False)
+    ok, msg = circl.update(tmp_path, session=s, usage=_plenty)
     assert not ok and "ended early" in msg and "resume" in msg
     tmp = tmp_path / "hashdb" / (circl.DATASET.file + ".tmp")
     assert tmp.exists() and not (tmp_path / "hashdb" / circl.DATASET.file).exists()
     assert circl.lookup(tmp_path, "0" * 40) is None            # a half download is never read
-    ok, msg = circl.update(tmp_path, session=s, usage=_plenty, ubuntu_host=False)
+    ok, msg = circl.update(tmp_path, session=s, usage=_plenty)
     assert ok, msg
     assert s.requests[-1][2].get("Range") == f"bytes={len(body) // 3}-"
     assert not tmp.exists()
@@ -97,9 +99,9 @@ def test_circl_update_resumes_and_never_uses_tmp(tmp_path):
 
 def test_circl_refuses_an_html_page_and_keeps_the_old_filter(tmp_path):
     body = _bloom_bytes(tmp_path)
-    assert circl.update(tmp_path, session=Session(body), usage=_plenty, ubuntu_host=False)[0]
+    assert circl.update(tmp_path, session=Session(body), usage=_plenty)[0]
     before = (tmp_path / "hashdb" / circl.DATASET.file).read_bytes()
-    ok, msg = circl.update(tmp_path, session=Session(b"<html>blocked</html>" * 10), usage=_plenty, ubuntu_host=False)
+    ok, msg = circl.update(tmp_path, session=Session(b"<html>blocked</html>" * 10), usage=_plenty)
     assert not ok and "not a hashlookup Bloom filter" in msg and "previous filter is kept" in msg
     assert (tmp_path / "hashdb" / circl.DATASET.file).read_bytes() == before
     assert not (tmp_path / "hashdb" / (circl.DATASET.file + ".tmp")).exists()     # a wrong file isn't resumed
@@ -109,8 +111,7 @@ def test_circl_refuses_an_html_page_and_keeps_the_old_filter(tmp_path):
 def test_circl_free_space_check(tmp_path):
     body = _bloom_bytes(tmp_path)
     s = Session(body)
-    ok, msg = circl.update(tmp_path, session=s, usage=lambda _p: Usage(10 ** 12, 0, 2 * 1024 ** 3 + 10),
-                           ubuntu_host=False)
+    ok, msg = circl.update(tmp_path, session=s, usage=lambda _p: Usage(10 ** 12, 0, 2 * 1024 ** 3 + 10))
     assert not ok and "not enough disk space" in msg and "2 GB to spare" in msg
     assert not [r for r in s.requests if r[0] == "GET"]          # refused before downloading anything
     assert not (tmp_path / "hashdb" / (circl.DATASET.file + ".tmp")).exists()
@@ -122,10 +123,18 @@ def test_free_space_margin_is_two_gigabytes(tmp_path):
     D.check_free_space(tmp_path, 10, usage=lambda _p: Usage(0, 0, 2 * 1024 ** 3 + 10))
 
 
-def test_circl_spot_check_on_ubuntu_refuses_a_filter_without_its_own_programs(tmp_path):
-    body = _bloom_bytes(tmp_path)
-    ok, msg = circl.update(tmp_path, session=Session(body), usage=_plenty, ubuntu_host=True)
-    assert not ok and "knows none of this Ubuntu computer's own" in msg
+def test_circl_refuses_a_valid_filter_that_is_not_circls_set(tmp_path):
+    ok, msg = circl.update(tmp_path, session=Session(_bloom_bytes(tmp_path, samples=False)), usage=_plenty)
+    assert not ok and "not CIRCL's set" in msg and "sample hashes CIRCL's own page lists" in msg
+    assert not (tmp_path / "hashdb" / circl.DATASET.file).exists()
+
+
+def test_circl_reports_this_computers_coverage_without_refusing(tmp_path):
+    ok, msg = circl.update(tmp_path, session=Session(_bloom_bytes(tmp_path)), usage=_plenty)
+    assert ok, msg
+    row = D.get(tmp_path, "circl")
+    assert row.detail["samples_found"] == 5 and row.detail["hash_case"] == "upper"
+    assert "of this computer's own programs" in row.detail["spot_check"]
 
 
 # --------------------------------------------------------------------------- MalwareBazaar
@@ -276,3 +285,18 @@ def test_backup_classes(tmp_path):
     assert "kratos hashdb-update" in why["hash_datasets"]
     q = BP.build(tmp_path, without_secrets=True, roots=BP.Roots(tmp_path, tmp_path / "state", tmp_path / "cfg"))
     assert "data/dataset-secrets/malwarebazaar.key" not in {i.archive for i in q.items}
+
+
+def test_mb_shows_the_servers_reason_without_the_key(tmp_path):
+    """Lab finding: abuse.ch answers exports with 403 'Email address not confirmed' until the
+    account's email is confirmed -- the person must see that, not a generic refusal."""
+    D.write_key(tmp_path, "malwarebazaar", KEY)
+
+    class S403(Session):
+        def get(self, url, **kw):
+            self.requests.append(("GET", url, kw.get("headers") or {}))
+            return Resp(403, ('{"status":403,"message":"Email address not confirmed ' + KEY + '"}').encode(),
+                        {"content-type": "application/json; charset=utf-8"})
+
+    ok, msg = M.update(tmp_path, session=S403(b""))
+    assert not ok and "Email address not confirmed" in msg and KEY not in msg

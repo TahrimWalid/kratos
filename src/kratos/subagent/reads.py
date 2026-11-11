@@ -458,14 +458,16 @@ def v_scan_path(v: Any) -> str:
     return v
 
 
-def v_fact_paths(v: Any) -> list[bytes]:
+def v_fact_paths(v: Any) -> list[str]:
     """file_facts: base64 raw paths -- absolute, no NUL/newline/'.'/'..', at most 4096
     bytes each, at most file_facts.MAX_PATHS. Shape only: the agent also requires each to
-    have been listed by one of its own reads in the last day (_listed)."""
+    have been listed by one of its own reads in the last day (_listed). Returns the same
+    base64 strings (core validates and then signs these exact values; the probe decodes)."""
     try:
-        return file_facts.decode_paths(v)
+        file_facts.decode_paths(v)
     except file_facts.RequestError as e:
         raise ReadParamError(str(e)) from None
+    return list(v)
 
 
 # probe -> {param: (validator, required, default)}
@@ -1784,7 +1786,7 @@ def _p_file_facts(p: dict[str, Any]) -> dict[str, Any]:
     """Facts about files this agent listed itself (file_facts.facts_output): hashes, type,
     packer marker, entropy and the package's own checksum -- never the bytes."""
     return file_facts.facts_output(
-        list(p["paths"]), is_credential=is_credential_path, listed=_listed,
+        file_facts.decode_paths(p["paths"]), is_credential=is_credential_path, listed=_listed,
         max_file_bytes=p["max_file_mb"] * 1024 * 1024, run_bytes=p["run_mb"] * 1024 * 1024,
         seconds=float(p["seconds"]),
         run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap))

@@ -319,3 +319,25 @@ def test_hash_findings_reach_the_report_with_lifecycle_and_attack(tmp_path, monk
     assert by["HASH-001"].get("state") in ("open", "new") or by["HASH-001"].get("change")
     md = sorted((tmp_path / "reports").glob("findings_*.md"))[-1].read_text()
     assert "**Reputation** of `/tmp/m`: known-bad (MalwareBazaar)" in md
+
+
+def test_a_copy_of_a_packaged_program_is_known_good_and_still_never_lowers():
+    copy = [{"package": "bash", "path": "/usr/bin/bash"}]
+    r = _decide(_fact(package_copy=copy))
+    assert r.verdict == "known_good" and r.sources[0]["source"] == "package_copy"
+    assert "copy of a packaged program" in R.short_tag(r.as_dict()) and "still a risk" in r.note
+    # known-bad still wins, and an owned file is judged by its own package, not as a copy
+    kb = KB({SHA_OK: {"signature": "", "first_seen": ""}})
+    assert _decide(_fact(package_copy=copy), kb=kb).verdict == "known_bad"
+    owned = _fact(package="p", package_copy=copy, pkg_digests=[{"algo": "md5", "digest": "0" * 32}])
+    assert _decide(owned).verdict == "package_modified"
+    # and HASH-002 is not raised for it even when packed
+    f = _fact(package_copy=copy, packers=["upx"])
+    assert not _judge([{"path": "/tmp/x"}], {0: f}, [_decide(f)])
+
+
+def test_a_dpkg_configuration_file_is_compared_with_its_recorded_checksum():
+    same = _decide(_fact(package="cron", pkg_digests=[{"algo": "md5c", "digest": "c" * 32}]))
+    assert same.verdict == "package"
+    edited = _decide(_fact(package="cron", pkg_digests=[{"algo": "md5c", "digest": "0" * 32}]))
+    assert edited.verdict == "package_modified" and "configuration file" in edited.note

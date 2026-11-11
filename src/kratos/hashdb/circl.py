@@ -8,10 +8,10 @@ when a person asks (`kratos hashdb-update --circl`), never automatically.
 
 The download is checked before it replaces anything: free space first (the file plus
 2 GB), then resumable into `circl-hashlookup.bloom.tmp`, then the DCSO header and a
-plausible fill ratio, then -- when this Kratos computer runs Ubuntu -- that SHA-1s of a
-few of its own packaged programs are in it (which also tells Kratos whether the filter
-holds upper- or lower-case hex). CIRCL publishes no checksum; the download's sha256 is
-recorded.
+plausible fill ratio, then that it holds the sample SHA-1s CIRCL's own page lists (which
+also tells Kratos the hex case it uses). How many of this computer's own programs it knows
+is reported, never a reason to refuse. CIRCL publishes no checksum; the download's sha256
+is recorded.
 """
 from __future__ import annotations
 
@@ -31,29 +31,32 @@ DATASET = D.Dataset(
     update_hint="kratos hashdb-update --circl")
 MAX_BYTES = 4 * 1024 ** 3
 ASSUMED_BYTES = 1200 * 1024 ** 2         # when the server doesn't say how big it is
-# Programs every Ubuntu has, owned by a package: their SHA-1s must be in a real filter.
+# The example SHA-1s CIRCL's own hashlookup page shows (https://www.circl.lu/services/hashlookup/,
+# read 2026-11-11): a real filter holds them. Checked against the real filter with DCSO's own
+# `bloom` CLI: all five present, upper-case hex. A wrong file -- or an HTML page -- holds none.
+CIRCL_SAMPLES = ("FFFFFDAC1B1B4C513896C805C2C698D9688BE69F", "FFFFFF4DB8282D002893A9BAF00E9E9D4BA45E65",
+                 "FFFFFE4C92E3F7282C7502F1734B243FA52326FB", "72F104BF11A12511154267328F069FE0541E841E",
+                 "D3A21675A8F19518D8B8F3CEF0F6A21DE1DA6CC7")
+SAMPLES_NEEDED = 4
+# Programs every Ubuntu has: reported (how much of THIS computer's software the set knows), never a
+# reason to refuse -- in the lab the November 2026 filter knew none of Ubuntu 22.04's or 24.04's own
+# coreutils/bash binaries (the E.4 Handoff).
 SPOT_FILES = ("/usr/bin/ls", "/usr/bin/cat", "/usr/bin/cp", "/usr/bin/grep", "/usr/bin/tar", "/usr/bin/gzip",
               "/usr/bin/sed", "/usr/bin/bash")
 
 ABOUT = """\
 CIRCL hashlookup known-good filter
   Source:   https://cra.circl.lu/hashlookup/hashlookup-full.bloom (about 1 GB, refreshed monthly)
-  What:     SHA-1 values of files from NSRL and the packages of Ubuntu, CentOS, Fedora EPEL, Kali,
-            openSUSE, OpenBSD, CDNJS and Snap -- NOT Debian's. A Bloom filter: a match means
-            "probably known-good" (about 1 false match in 10,000).
+  What:     SHA-1 values from NSRL, common Windows builds and the packages of Ubuntu, CentOS,
+            Fedora EPEL, Kali, openSUSE, OpenBSD, CDNJS and Snap -- NOT Debian's. A Bloom filter:
+            a match means "probably known-good" (about 1 false match in 10,000). Its Linux
+            coverage is uneven: in Kratos's lab it knew none of Ubuntu 22.04's or 24.04's own
+            coreutils/bash binaries -- package checksums do that job.
   Licence:  CC BY 4.0. Attribution: CIRCL hashlookup, https://www.circl.lu/services/hashlookup/
             (dataset: https://data.public.lu/en/datasets/circl-hashlookup-bloomfilter/).
   Use:      only ever read on this computer; no hash is sent to CIRCL by this filter.
             Downloaded only when you run `kratos hashdb-update --circl`.
 """
-
-
-def _host_is_ubuntu(os_release: Path = Path("/etc/os-release")) -> bool:
-    try:
-        text = os_release.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return any(line.strip() in ("ID=ubuntu", 'ID="ubuntu"') for line in text.splitlines())
 
 
 def _sha1(path: str) -> str | None:
@@ -67,22 +70,21 @@ def _sha1(path: str) -> str | None:
         return None
 
 
-def spot_check(bf: bloom.BloomFilter, files: tuple[str, ...] = SPOT_FILES) -> tuple[int, int, str]:
-    """(found, looked, case): how many of this computer's own packaged programs the filter
-    knows, and whether it holds upper- or lower-case hex."""
-    upper = lower = looked = 0
+def spot_check(bf: bloom.BloomFilter, files: tuple[str, ...] = SPOT_FILES) -> tuple[int, int]:
+    """(known, looked): how many of this computer's own programs the filter knows (as upper-case
+    hex, the filter's own form). A fact for the person, not a test of the file."""
+    known = looked = 0
     for f in files:
         h = _sha1(f)
         if h is None:
             continue
         looked += 1
-        upper += h.upper() in bf
-        lower += h.lower() in bf
-    return max(upper, lower), looked, "lower" if lower > upper else "upper"
+        known += h.upper() in bf
+    return known, looked
 
 
-def validate(path: Path, *, ubuntu_host: bool | None = None,
-             spot: Callable[[bloom.BloomFilter], tuple[int, int, str]] = spot_check) -> dict[str, Any]:
+def validate(path: Path, *, samples: tuple[str, ...] = CIRCL_SAMPLES, needed: int = SAMPLES_NEEDED,
+             spot: Callable[[bloom.BloomFilter], tuple[int, int]] = spot_check) -> dict[str, Any]:
     """Facts about a downloaded filter, or raises DatasetError naming why it is refused."""
     try:
         bf = bloom.BloomFilter(path)
@@ -92,22 +94,24 @@ def validate(path: Path, *, ubuntu_host: bool | None = None,
         why = bloom.check_plausible(bf)
         if why:
             raise D.DatasetError(f"not a usable hashlookup Bloom filter: {why}")
+        upper = sum(s.upper() in bf for s in samples)
+        lower = sum(s.lower() in bf for s in samples)
+        if max(upper, lower) < min(needed, len(samples)):
+            raise D.DatasetError(f"not CIRCL's set: it holds {max(upper, lower)} of the {len(samples)} sample hashes "
+                                 "CIRCL's own page lists")
         h = bf.header
+        known, looked = spot(bf)
         facts: dict[str, Any] = {"capacity": h.capacity, "elements": h.elements, "fp_rate": h.fp_rate,
                                  "hashes": h.hashes, "bits": h.bits, "fill": round(bf.fill_ratio(), 4),
-                                 "hash_case": "upper", "spot_check": "not done (this computer isn't Ubuntu)"}
-        if ubuntu_host if ubuntu_host is not None else _host_is_ubuntu():
-            found, looked, case = spot(bf)
-            if looked and not found:
-                raise D.DatasetError(f"the filter knows none of this Ubuntu computer's own {looked} packaged "
-                                     "programs -- it isn't CIRCL's set")
-            facts["hash_case"] = case
-            facts["spot_check"] = f"{found} of {looked} of this computer's packaged programs found"
+                                 "hash_case": "lower" if lower > upper else "upper",
+                                 "samples_found": max(upper, lower),
+                                 "spot_check": (f"it knows {known} of {looked} of this computer's own programs"
+                                                if looked else "")}
     return facts
 
 
 def update(data_dir: Path, *, session: Any = None, log: Callable[[str], None] | None = None,
-           now: float | None = None, usage: Any = None, ubuntu_host: bool | None = None) -> tuple[bool, str]:
+           now: float | None = None, usage: Any = None, samples: tuple[str, ...] | None = None) -> tuple[bool, str]:
     """Download, check, swap in. (ok, message). The old filter stays on any failure; a
     partial download stays as .tmp and resumes next time."""
     log = log or (lambda _m: None)
@@ -125,20 +129,20 @@ def update(data_dir: Path, *, session: Any = None, log: Callable[[str], None] | 
             started = time.monotonic()
             got = D.download(s, URL, tmp, max_bytes=MAX_BYTES, resume=True)
             log(f"  downloaded in {time.monotonic() - started:.0f} s; checking it")
-            facts = validate(tmp, ubuntu_host=ubuntu_host)
+            facts = validate(tmp, **({"samples": samples} if samples is not None else {}))
             digest = D.sha256_file(tmp)
             D.swap_in(tmp, final)
             facts["download_seconds"] = round(time.monotonic() - started, 1)
             D.record_installed(data_dir, DATASET, version=time.strftime("%Y-%m-%d", time.gmtime(when)),
                                sha256=digest, size=got, fetched_at=when, detail=facts)
     except D.DatasetError as e:
-        if tmp.exists() and str(e).startswith("not a "):
+        if tmp.exists() and str(e).startswith(("not a ", "not CIRCL's")):
             tmp.unlink()        # a wrong file is never resumed: start clean next time
         D.record_attempt(data_dir, DATASET, at=when, error=str(e))
         kept = "the previous filter is kept" if final.exists() else "no filter is installed"
         return False, f"CIRCL filter not updated ({kept}): {e}"
-    return True, (f"CIRCL known-good filter installed: {got / 1e9:.2f} GB, {facts['elements']:,} hashes; "
-                  f"{facts['spot_check']}.")
+    return True, (f"CIRCL known-good filter installed: {got / 1e9:.2f} GB, {facts['elements']:,} hashes"
+                  + (f"; {facts['spot_check']}" if facts.get("spot_check") else "") + ".")
 
 
 def lookup(data_dir: Path, sha1: str) -> bool | None:

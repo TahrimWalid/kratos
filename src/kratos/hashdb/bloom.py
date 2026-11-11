@@ -112,6 +112,9 @@ class BloomFilter:
             if size < HEADER_BYTES:
                 raise NotABloomFilter("too short to be a Bloom filter")
             self._mm = mmap.mmap(self._fd, size, prot=mmap.PROT_READ)
+            # lookups jump around the file: no readahead (each would map ~128 KB of neighbours)
+            if hasattr(self._mm, "madvise") and hasattr(mmap, "MADV_RANDOM"):
+                self._mm.madvise(mmap.MADV_RANDOM)
         except BaseException:
             os.close(self._fd)
             raise

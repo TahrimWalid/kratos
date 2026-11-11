@@ -68,6 +68,8 @@ def make_tree(base: Path, family: str = "debian") -> tuple[Path, list[bytes]]:
     _w(r, "/tmp/sc.sh", b"#!/bin/sh\necho\n", 0o755)
     _w(r, "/tmp/gz.bin", b"\x1f\x8b\x08" + bytes(range(256)) * 900, 0o755)
     _w(r, "/usr/lib/libx.so.1", b"\x7fELF\x02lib", 0o644)
+    _w(r, "/tmp/sucopy", su.read_bytes(), 0o4755)                     # a packaged program copied elsewhere
+    _w(r, "/etc/init.d/svc", b"#!/bin/sh\necho svc\n", 0o755)        # a dpkg configuration file
     (r / "tmp/sulink").symlink_to(su)
     os.link(r / "tmp/.x", r / "tmp/.xlink")
     os.mkfifo(r / "tmp/fifo")
@@ -77,13 +79,19 @@ def make_tree(base: Path, family: str = "debian") -> tuple[Path, list[bytes]]:
         (info / "login:amd64.list").write_text("/usr/bin/su\n/usr/bin/edited\n")
         md5 = hashlib.md5(su.read_bytes()).hexdigest()
         (info / "login:amd64.md5sums").write_text(f"{md5}  usr/bin/su\n{'0' * 32}  usr/bin/edited\n")
+        (info / "svc.list").write_text("/etc/init.d/svc\n")
+        conf = hashlib.md5((r / "etc/init.d/svc").read_bytes()).hexdigest()
+        (r / "var/lib/dpkg/status").write_text(
+            f"Package: svc\nStatus: install ok installed\nConffiles:\n /etc/init.d/svc {conf}\n /etc/other x\n"
+            "Description: d\n\nPackage: login\nStatus: install ok installed\n\n")
     elif family == "alpine":
         q1 = "Q1" + base64.b64encode(hashlib.sha1(su.read_bytes()).digest()).decode()
         db = r / "lib/apk/db/installed"
         db.parent.mkdir(parents=True)
         db.write_text(f"P:login\nV:1\nF:usr/bin\nR:su\nZ:{q1}\nR:edited\nZ:Q1{'A' * 26}A=\n\n")
     rels = ["/usr/bin/su", "/usr/bin/edited", "/tmp/.x", "/dev/shm/upx", "/tmp/notes.txt", "/tmp/sc.sh", "/tmp/gone",
-            "/tmp/sulink", "/tmp/.xlink", "/tmp/fifo", "/tmp/gz.bin", "/usr/lib/libx.so.1"]
+            "/tmp/sulink", "/tmp/.xlink", "/tmp/fifo", "/tmp/gz.bin", "/usr/lib/libx.so.1", "/tmp/sucopy",
+            "/etc/init.d/svc"]
     return r, [str(r).encode() + p.encode() for p in rels]
 
 
@@ -122,7 +130,7 @@ def test_statuses_types_packers_and_package_checksums(tmp_path):
     f = run_agent(root, paths)["files"]
     st = {i: f[i]["status"] for i in f}
     assert st == {0: "ok", 1: "ok", 2: "hardlink", 3: "ok", 4: "not_program", 5: "ok", 6: "missing", 7: "link",
-                  8: "hardlink", 9: "not_regular", 10: "ok", 11: "ok"}
+                  8: "hardlink", 9: "not_regular", 10: "ok", 11: "ok", 12: "ok", 13: "ok"}
     assert f[0]["package"] == "login:amd64" and f[0]["pkg_digests"][0]["algo"] == "md5"
     assert f[0]["md5"] == f[0]["pkg_digests"][0]["digest"]          # the md5sums line for su matches
     assert f[1]["md5"] != f[1]["pkg_digests"][0]["digest"]          # `edited` doesn't
@@ -131,7 +139,7 @@ def test_statuses_types_packers_and_package_checksums(tmp_path):
     assert f[5]["type"] == "script" and f[10]["type"] == "other"
     assert f[3]["sha256"] == hashlib.sha256((root / "dev/shm/upx").read_bytes()).hexdigest()
     assert f[3]["sha1"] == hashlib.sha1((root / "dev/shm/upx").read_bytes()).hexdigest()
-    assert f[3]["md5"] is None                                       # MD5 only when a package records MD5s
+    assert f[3]["md5"] == hashlib.md5((root / "dev/shm/upx").read_bytes()).hexdigest()   # Debian records MD5s
     assert f[11]["status"] == "ok"                                   # a library name without an execute bit
     assert f[10]["entropy"] > 7.5 and f[5]["entropy"] < 5
 
@@ -307,3 +315,37 @@ def test_usrmerge_paths_are_read_through_usr(tmp_path):
     raw2 = str(root).encode() + b"/opt/lnk/tool"
     assert run_agent(root, [raw2])["files"][0]["status"] == "link"
     assert run_ssh(tmp_path, root, [raw2])["files"][0]["status"] == "link"
+
+
+
+@pytest.mark.parametrize("family", ["debian", "alpine"])
+def test_a_copy_of_a_packaged_program_is_found_through_the_package_database(tmp_path, family):
+    root, paths = make_tree(tmp_path / family, family)
+    for f in (run_agent(root, paths)["files"], run_ssh(tmp_path / family, root, paths)["files"]):
+        assert f[12]["package_copy"] == [{"package": "login:amd64" if family == "debian" else "login",
+                                          "path": "/usr/bin/su"}]
+        assert "package_copy" not in f[0]          # the packaged file itself is owned, not a copy
+        assert "package_copy" not in f[2]
+
+
+def test_rpm_package_copy(tmp_path):
+    root, paths = make_tree(tmp_path, "rhel")
+    su = (root / "usr/bin/su").read_bytes()
+    fake = ("#!/bin/sh\ncase \"$*\" in\n"
+            f"  *FILEDIGESTS*NAME*) printf '{hashlib.sha256(su).hexdigest()}\\t/usr/bin/su\\tutil-linux\\n' ;;\n"
+            "  *-qa*) : ;;\nesac\n")
+    b = _bindir(tmp_path, "gawk", {"rpm": fake})
+
+    def run(argv, timeout, cap):
+        return {"stdout": subprocess.run([str(b / "rpm"), *argv[1:]], capture_output=True, text=True).stdout}
+
+    want = [{"package": "util-linux", "path": "/usr/bin/su"}]
+    assert run_agent(root, [paths[12]], run=run)["files"][0]["package_copy"] == want
+    assert run_ssh(tmp_path, root, [paths[12]], "gawk", {"rpm": fake})["files"][0]["package_copy"] == want
+
+
+def test_dpkg_configuration_file_checksum(tmp_path):
+    root, paths = make_tree(tmp_path)
+    for f in (run_agent(root, paths)["files"], run_ssh(tmp_path, root, paths)["files"]):
+        assert f[13]["package"] == "svc"
+        assert f[13]["pkg_digests"] == [{"algo": "md5c", "digest": f[13]["md5"]}]
