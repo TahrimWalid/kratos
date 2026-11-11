@@ -611,3 +611,34 @@ def test_privileged_history_gaps_dont_block_the_uid0_check(tmp_path):
     f.sources["hardening"] = Source("hardening", good_hardening(), time.time(), "ssh", True)
     r = {x.id: x for x in ST.run_checks(f, max_age_hours=24)}
     assert r["accounts.uid0_only_root"].status == "pass"
+
+
+def test_comp001_opens_is_mitigated_and_a_new_failing_check_reopens(tmp_path, monkeypatch):
+    """Through the real findings report: a failing check opens COMP-001; a fresh, complete
+    read with nothing failing mitigates it; after a person accepts it, a NEW failing check
+    (a new entity) brings it back."""
+    from kratos.adapters import findings_engine as FE
+    from kratos.lifecycle import decide as D
+    from kratos.lifecycle import query
+    from kratos.run_context import run_scope
+
+    monkeypatch.setattr("kratos.kratos_config.get_active_target", lambda: "10.0.0.5")
+
+    def cycle(h):
+        with run_scope("cli", target="10.0.0.5"):
+            record.run(tmp_path, "10.0.0.5", fetch=lambda: dict(h, via="ssh"), now=time.time())
+            FE.write_findings_report(tmp_path)
+        return {r["rule_id"]: r for r in query.list_findings(tmp_path, target="10.0.0.5", state="all")}
+
+    bad = good_hardening()
+    bad["stat"]["/etc/crontab"]["mode"] = 0o666
+    assert cycle(bad)["COMP-001"]["state"] == "open"
+    assert cycle(good_hardening())["COMP-001"]["state"] == "mitigated"
+    row = cycle(bad)["COMP-001"]
+    assert row["state"] == "open"
+    D.accept_risk(row["finding_key"], actor=OWNER, reason="lab box", owner=None,
+                  expires_at=D.expiry_from_days(30), data_dir=tmp_path)
+    assert cycle(bad)["COMP-001"]["state"] == "risk_accepted"
+    worse = copy.deepcopy(bad)
+    worse["sshd"]["permitrootlogin"] = "yes"
+    assert cycle(worse)["COMP-001"]["state"] == "open"          # a newly failing check reopens the decision

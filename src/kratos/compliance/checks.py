@@ -376,8 +376,14 @@ def _loglevel(s: dict[str, Any]) -> tuple[bool, str] | None:
 
 
 def _sshd_fix(line: str) -> str:
-    return (f"printf '%s\\n' '{line}' | sudo tee /etc/ssh/sshd_config.d/60-hardening.conf "
-            "&& sudo sshd -t && sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd")
+    """sshd keeps the FIRST value it reads for most settings, and drop-ins are read before the rest
+    of sshd_config: the line goes in a file that sorts first, after removing the same setting from
+    any other drop-in (cloud images ship e.g. 50-cloud-init.conf). Reloads only if `sshd -t` passes."""
+    key = line.split()[0]
+    return (f"sudo grep -ril '^[[:space:]]*{key}' /etc/ssh/sshd_config.d/ ; "
+            f"printf '%s\\n' '{line}' | sudo tee /etc/ssh/sshd_config.d/00-hardening.conf && sudo sshd -t && "
+            "{ sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd; } && "
+            f"sudo sshd -T | grep -i '^{key.lower()} '   # remove the setting from any file the grep listed first")
 
 
 # --------------------------------------------------------------------------- login.defs / PAM
