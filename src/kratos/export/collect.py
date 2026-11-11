@@ -354,10 +354,14 @@ def _collect_compliance(data_dir: Path, plan: Plan, out: Path, red: Redactor, c:
             except Exception as e:  # noqa: BLE001
                 c.warnings.append(f"compliance report {fw} for {shown}: not made ({type(e).__name__})")
                 continue
-            doc = json.loads(red.text(json.dumps(doc, default=str)))
+            doc = json.loads(red.text(json.dumps(doc, default=str, ensure_ascii=False)))
             doc["scope"] = shown
             for s in doc.get("machines") or []:
                 s["machine"] = shown
+                if red.active:      # control owners are people's names: left out, not masked
+                    for ctl in s.get("controls") or []:
+                        if ctl.get("owner"):
+                            ctl["owner"] = "(an owner is set -- names are left out of redacted bundles)"
             for suffix, text in ((".json", CRP.to_json(doc)), (".md", CRP.to_markdown(doc))):
                 rel = f"evidence/{_safe_dir(shown)}/compliance_{fw}{suffix}"
                 digest, size = _write_text(out / rel, text)

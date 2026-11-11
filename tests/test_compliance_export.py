@@ -44,3 +44,21 @@ def test_redacted_bundle_masks_the_machine_in_reports(tmp_path):
     r = _bundle(tmp_path, "redacted")
     text = "\n".join(p.read_text(errors="replace") for p in r.bundle.rglob("compliance_*"))
     assert text and not re.search(rf"(?<![\w.-]){re.escape(FX.M1)}(?![\w-])", text)
+
+
+def test_redacted_bundle_leaves_control_owner_names_out(tmp_path):
+    from kratos.compliance import owners as O
+
+    d = tmp_path / "data"
+    info = FX.build(d)
+    h = good_hardening()
+    h["stat"]["/etc/crontab"]["mode"] = 0o666
+    record.run(d, FX.M1, fetch=lambda: dict(h, via="ssh"), now=time.time())
+    O.set_owner(d, Actor("owner", "cli"), "cis", "2.4.1.2", "all", "Mälli Örnek")
+    full = C.create(d, ExportRequest(machines=[FX.M1], start=info["now"] - 86400, end=time.time() + 60,
+                                     variant="full"), ME)
+    assert "Mälli Örnek" in "\n".join(p.read_text() for p in full.bundle.rglob("compliance_cis.*"))
+    red = C.create(d, ExportRequest(machines=[FX.M1], start=info["now"] - 86400, end=time.time() + 60,
+                                    variant="redacted"), ME)
+    text = "\n".join(p.read_text(errors="replace") for p in red.bundle.rglob("compliance_*"))
+    assert "Mälli" not in text and "\\u00e4" not in text and "an owner is set" in text

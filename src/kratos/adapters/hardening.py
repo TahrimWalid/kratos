@@ -353,11 +353,12 @@ for _s in @PAM@; do
     printf 'PAMSTACK\t%s\tmissing\n' "$_s"
   fi
 done
-_files=""
-for _f in "$R/etc/security/pwquality.conf" "$R"/etc/security/pwquality.conf.d/*.conf; do [ -r "$_f" ] && _files="$_files $_f"; done
-if [ -n "$_files" ]; then
-  # shellcheck disable=SC2086
-  cat $_files 2>/dev/null | awk -v file=pwquality -v keys="@PWQKEYS@" '@AWK_KEYVAL@'
+_pwq=no
+for _f in "$R/etc/security/pwquality.conf" "$R"/etc/security/pwquality.conf.d/*.conf; do [ -r "$_f" ] && _pwq=yes; done
+if [ "$_pwq" = yes ]; then
+  for _f in "$R/etc/security/pwquality.conf" "$R"/etc/security/pwquality.conf.d/*.conf; do
+    [ -r "$_f" ] && cat -- "$_f" 2>/dev/null
+  done | awk -v file=pwquality -v keys="@PWQKEYS@" '@AWK_KEYVAL@'
   printf 'SECFILE\tpwquality\tpresent\n'
 else
   printf 'SECFILE\tpwquality\tmissing\n'
