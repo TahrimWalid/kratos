@@ -87,7 +87,18 @@ def _sysctl(key: str, ok: tuple[int, ...], want: str) -> Callable[[Facts], Resul
             return Result(UNKNOWN, "", f"{key} is {v['absent']} on this machine")
         if _unexpected(v):
             return Result(UNKNOWN, "", f"{key} has an unexpected value")
-        return Result(PASS if v in ok else FAIL, f"{key} = {v} (expected {want})")
+        if v not in ok:
+            return Result(FAIL, f"{key} = {v} (expected {want})")
+        # CIS wants it set in a sysctl file too, so a reboot or a new default can't undo it.
+        h = f.h()
+        if not h.get("sysctl_conf_read"):
+            return Result(UNKNOWN, "", f"{key} = {v} now; the sysctl files were not in the read (update the agent)")
+        conf = (h.get("sysctl_conf") or {}).get(key)
+        if conf is None:
+            return Result(FAIL, f"{key} = {v} now, but no sysctl file sets it (lost at reboot or with a new default)")
+        if _unexpected(conf) or conf not in ok:
+            return Result(FAIL, f"{key} = {v} now, but a sysctl file sets it to {conf} (applies at the next boot)")
+        return Result(PASS, f"{key} = {v} (expected {want}), and set in a sysctl file")
     return pred
 
 
@@ -98,7 +109,8 @@ def _sysctl_fix(key: str, value: int) -> str:
 
 # --------------------------------------------------------------------------- file modes
 def _perm(path: str, max_mode: int, users: tuple[str, ...], groups: tuple[str, ...],
-          optional: bool = False) -> Callable[[Facts], Result]:
+          optional: bool = False, part: str = "all") -> Callable[[Facts], Result]:
+    """`part`: "mode", "owner", "group" (one ComplianceAsCode rule each) or "all"."""
     def pred(f: Facts) -> Result:
         gap = _hard_gap(f)
         if gap:
@@ -114,12 +126,12 @@ def _perm(path: str, max_mode: int, users: tuple[str, ...], groups: tuple[str, .
             return Result(UNKNOWN, "", f"{path} couldn't be read")
         mode, user, group = int(st["mode"]), str(st["user"]), str(st["group"])
         bad = []
-        if mode & ~max_mode & 0o7777:
+        if part in ("all", "mode") and mode & ~max_mode & 0o7777:
             bad.append(f"mode {mode:o} allows more than {max_mode:o}")
-        if user not in users:
-            bad.append(f"owner {user}")
-        if group not in groups:
-            bad.append(f"group {group}")
+        if part in ("all", "owner") and user not in users:
+            bad.append(f"owner {user}, expected {'/'.join(users)}")
+        if part in ("all", "group") and group not in groups:
+            bad.append(f"group {group}, expected {'/'.join(groups)}")
         found = f"{path}: mode {mode:o}, owner {user}, group {group}"
         return Result(FAIL if bad else PASS, found + (f" ({'; '.join(bad)})" if bad else ""))
     return pred
@@ -907,13 +919,19 @@ def _build() -> tuple[Check, ...]:
             fix=_sysctl_fix(key, fixv), cac_rules=("sysctl_" + key.replace(".", "_"),),
             iso=_NET_ISO if net else _KERN_ISO, nis2=_NET_NIS if net else _KERN_NIS))
     for path, mode, users, groups, stem, optional in _PERMS:
-        out.append(Check(
-            id="perm." + path, family="file permissions",
-            text=f"{path} is owned by {users[0]}:{'/'.join(groups)} with mode {mode:o} or stricter",
-            facts=("hardening",), predicate=_perm(path, mode, users, groups, optional),
-            fix=_perm_fix(path, mode, users[0], groups[0]),
-            cac_rules=(f"file_permissions_{stem}", f"file_owner_{stem}", f"file_groupowner_{stem}"),
-            iso=_FILE_ISO, nis2=_FILE_NIS))
+        out += [
+            Check(id="perm." + path, family="file permissions", text=f"{path} has mode {mode:o} or stricter",
+                  facts=("hardening",), predicate=_perm(path, mode, users, groups, optional, "mode"),
+                  fix=f"sudo chmod {mode:o} {path}", cac_rules=(f"file_permissions_{stem}",),
+                  iso=_FILE_ISO, nis2=_FILE_NIS),
+            Check(id="owner." + path, family="file permissions", text=f"{path} is owned by {users[0]}",
+                  facts=("hardening",), predicate=_perm(path, mode, users, groups, optional, "owner"),
+                  fix=f"sudo chown {users[0]} {path}", cac_rules=(f"file_owner_{stem}",),
+                  iso=_FILE_ISO, nis2=_FILE_NIS),
+            Check(id="group." + path, family="file permissions", text=f"{path} belongs to group {'/'.join(groups)}",
+                  facts=("hardening",), predicate=_perm(path, mode, users, groups, optional, "group"),
+                  fix=f"sudo chgrp {groups[0]} {path}", cac_rules=(f"file_groupowner_{stem}",),
+                  iso=_FILE_ISO, nis2=_FILE_NIS)]
     out.append(Check(
         id="perm./etc/sudoers", family="file permissions", text="/etc/sudoers is owned by root:root, mode 440",
         facts=("hardening",), predicate=_perm("/etc/sudoers", 0o440, ("root",), ("root",)),

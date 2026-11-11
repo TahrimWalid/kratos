@@ -136,8 +136,9 @@ def test_same_records_under_every_awk(tmp_path, awk):
 
 
 def test_an_incus_or_lxc_container_is_recognised_without_root(tmp_path):
+    """By its user-namespace uid map (a VM has /dev/incus too, so that can't tell)."""
     root = make_tree(tmp_path)
-    (root / "dev/incus").mkdir(parents=True)
+    _w(root, "/proc/self/uid_map", "         0    1000000 1000000000\n")
     assert H.parse_output(run_script(tmp_path, root, AWKS[0]))["virt"] == "container"
 
 
@@ -207,3 +208,31 @@ def test_core_refuses_the_read_to_an_older_agent():
 
     assert core_server.PROBE_MIN_AGENT_VERSION["hardening_facts"] == (0, 13, 0)
     assert core_server.parse_agent_version(agent.AGENT_VERSION) >= (0, 13, 0)
+
+
+def test_a_vm_with_an_identity_uid_map_is_not_a_container(tmp_path):
+    root = make_tree(tmp_path)
+    (root / "dev/incus").mkdir(parents=True)
+    _w(root, "/proc/self/uid_map", "         0          0 4294967295\n")
+    assert H.parse_output(run_script(tmp_path, root, AWKS[0]))["virt"] == "none"
+
+
+@pytest.mark.parametrize("awk", AWKS)
+def test_sysctl_files_closed_keys_last_wins(tmp_path, awk):
+    root = make_tree(tmp_path)
+    _w(root, "/usr/lib/sysctl.d/10-default.conf", "kernel.randomize_va_space = 1\nkernel/yama/ptrace_scope=1\n")
+    _w(root, "/etc/sysctl.d/60-hard.conf", "# x\nkernel.randomize_va_space=2\n-fs.suid_dumpable = 0\nvm.swappiness=10\n"
+                                           "net.ipv4.ip_forward = $(id)\n")
+    d = H.parse_output(run_script(tmp_path, root, awk))
+    assert d["sysctl_conf_read"] and d["sysctl_conf"] == {"kernel.randomize_va_space": 2,
+                                                         "kernel.yama.ptrace_scope": 1, "fs.suid_dumpable": 0}
+
+
+def test_awk_programs_use_no_interval_expressions():
+    """mawk 1.3.4-20200120 (Ubuntu 22.04's awk) silently never matches /x{1,6}/ -- found on a
+    real VM, where every sysctl-file value was dropped. Patterns use + and length() instead."""
+    import re as _re
+
+    for name in dir(H):
+        if name.startswith("AWK_"):
+            assert not _re.search(r"\{\d*,?\d*\}", getattr(H, name)), name

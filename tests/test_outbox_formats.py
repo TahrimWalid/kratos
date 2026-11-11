@@ -198,5 +198,5 @@ def test_comp001_is_a_compliance_finding_with_its_failed_checks():
     assert obj["class_uid"] == 2003 and obj["compliance"]["control"] == "COMP-001"
     assert obj["compliance"]["requirements"] == ["perm./etc/crontab", "sshd.root_login"]
     assert obj["compliance"]["checks"][0] == {"uid": "perm./etc/crontab", "status": "Fail", "status_id": 3,
-                                              "name": "/etc/crontab is owned by root:root with mode 600 or stricter"}
+                                              "name": "/etc/crontab has mode 600 or stricter"}
     assert "ISO/IEC 27001:2022 Annex A" in obj["compliance"]["standards"]

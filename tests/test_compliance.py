@@ -32,6 +32,8 @@ def good_hardening() -> dict:
                                             "PRETTY_NAME": "Ubuntu 24.04.1 LTS"}, uid=0, virt="none", init="systemd")
     for key, ok, _w, _f, _n in C._SYSCTLS:
         d["sysctl"][key] = ok[0]
+        d["sysctl_conf"][key] = ok[0]
+    d["sysctl_conf_read"] = True
     for path, mode, users, groups, _stem, _o in C._PERMS:
         d["stat"][path] = {"mode": mode, "uid": 0, "gid": 0, "user": users[0], "group": groups[0], "type": "file"}
     d["stat"]["/etc/sudoers"] = {"mode": 0o440, "uid": 0, "gid": 0, "user": "root", "group": "root", "type": "file"}
@@ -642,3 +644,22 @@ def test_comp001_opens_is_mitigated_and_a_new_failing_check_reopens(tmp_path, mo
     worse = copy.deepcopy(bad)
     worse["sshd"]["permitrootlogin"] = "yes"
     assert cycle(worse)["COMP-001"]["state"] == "open"          # a newly failing check reopens the decision
+
+
+def test_sysctl_must_be_set_in_a_file_too():
+    h = good_hardening()
+    del h["sysctl_conf"]["kernel.randomize_va_space"]
+    r = run(facts_of(h))["sysctl.kernel.randomize_va_space"]
+    assert r.status == "fail" and "no sysctl file sets it" in r.found
+    h["sysctl_conf"]["kernel.randomize_va_space"] = 0
+    assert "sets it to 0" in run(facts_of(h))["sysctl.kernel.randomize_va_space"].found
+    h["sysctl_conf_read"] = False
+    assert run(facts_of(h))["sysctl.kernel.randomize_va_space"].status == "unknown"
+
+
+def test_mode_owner_and_group_are_separate_rules():
+    h = good_hardening()
+    h["stat"]["/etc/crontab"]["mode"] = 0o644
+    r = run(facts_of(h))
+    assert r["perm./etc/crontab"].status == "fail"
+    assert r["owner./etc/crontab"].status == "pass" and r["group./etc/crontab"].status == "pass"

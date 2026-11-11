@@ -145,7 +145,7 @@ $1 ~ /^@include$/ { if ($2 ~ /^[a-z0-9_-]+$/) print "PAMINC\t" stack "\t" $2; ne
     if (e == 0) { if (w in FL) a = a (a == "" ? "" : ",") w }
     else {
       k = substr(w, 1, e - 1); v = substr(w, e + 1)
-      if ((k in KY) && v ~ /^-?[0-9]{1,6}$/) a = a (a == "" ? "" : ",") k "=" v
+      if ((k in KY) && v ~ /^-?[0-9]+$/ && length(v) <= 7) a = a (a == "" ? "" : ",") k "=" v
     }
   }
   print "PAM\t" stack "\t" t "\t" c "\t" m "\t" a
@@ -161,7 +161,7 @@ BEGIN { n = split(keys, K, " "); for (i = 1; i <= n; i++) W[K[i]] = 1 }
   line = $0; sub(/^[ \t]+/, "", line)
   e = index(line, "="); if (e == 0) { k = line; v = "1" } else { k = substr(line, 1, e - 1); v = substr(line, e + 1) }
   gsub(/[ \t]/, "", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
-  if ((k in W) && v ~ /^-?[0-9A-Za-z_]{0,16}$/) val[k] = v
+  if ((k in W) && v ~ /^-?[0-9A-Za-z_]*$/ && length(v) <= 17) val[k] = v
 }
 END { for (i = 1; i <= n; i++) if (K[i] in val) print "SEC\t" file "\t" K[i] "\t" val[K[i]] }
 """
@@ -191,6 +191,21 @@ END {
     print "MODCONF\t" M[i] "\t" ((k in inst) ? inst[k] : "none") "\t" ((k in bl) ? "yes" : "no")
   }
 }
+"""
+
+# One awk program: sysctl configuration lines -> SYSCTLCONF<TAB>key<TAB>value for the
+# closed keys (key/sub/key or key.sub.key, a leading '-' ignored; the last setting wins),
+# then SYSCTLCONFREAD<TAB>1 so "no file sets it" is told from "not read".
+AWK_SYSCTL_CONF = r"""
+BEGIN { n = split(keys, K, " "); for (i = 1; i <= n; i++) W[K[i]] = 1 }
+/^[ \t]*[#;]/ { next }
+{
+  e = index($0, "="); if (e == 0) next
+  k = substr($0, 1, e - 1); v = substr($0, e + 1)
+  gsub(/[ \t]/, "", k); sub(/^-/, "", k); gsub(/\//, ".", k); gsub(/^[ \t]+|[ \t]+$/, "", v)
+  if ((k in W) && v ~ /^-?[0-9]+$/ && length(v) <= 13) val[k] = v
+}
+END { for (i = 1; i <= n; i++) if (K[i] in val) print "SYSCTLCONF\t" K[i] "\t" val[K[i]]; print "SYSCTLCONFREAD\t1" }
 """
 
 # One awk program: /proc/self/mounts -> MOUNT<TAB>point<TAB>fstype<TAB>options for the
@@ -272,8 +287,13 @@ for _f in "$R/etc/os-release" "$R/usr/lib/os-release"; do
 done
 printf 'UID\t%s\n' "$(id -u 2>/dev/null)"
 _virt=none
-if [ -e "$R/run/.containerenv" ] || [ -e "$R/.dockerenv" ] || [ -s "$R/run/systemd/container" ] \
-   || [ -e "$R/dev/incus" ] || [ -e "$R/dev/lxd" ]; then _virt=container; fi
+if [ -e "$R/run/.containerenv" ] || [ -e "$R/.dockerenv" ] || [ -s "$R/run/systemd/container" ]; then _virt=container; fi
+# An unprivileged container (LXC/Incus, rootless Podman) runs in a user namespace: its uid map
+# is not the identity map. Readable by any user; a VM shows "0 0 4294967295".
+if [ -r "$R/proc/self/uid_map" ]; then
+  read -r _u1 _u2 _u3 < "$R/proc/self/uid_map"
+  [ "$_u1 $_u2" != "0 0" ] && [ -n "$_u1" ] && _virt=container
+fi
 if [ -z "$R" ] && command -v systemd-detect-virt >/dev/null 2>&1; then
   _c=$(systemd-detect-virt --container 2>/dev/null)
   case "$_c" in ''|none) ;; *) _virt=container ;; esac
@@ -292,6 +312,10 @@ for _k in @SYSCTL@; do
     printf 'SYSCTLX\t%s\tmissing\n' "$_k"
   fi
 done
+
+# sysctl files: the value each closed key is SET to (systemd-sysctl's order, the last one wins)
+cat "$R"/usr/lib/sysctl.d/*.conf "$R"/lib/sysctl.d/*.conf "$R"/run/sysctl.d/*.conf "$R"/etc/sysctl.d/*.conf \
+    "$R/etc/sysctl.conf" 2>/dev/null | awk -v keys="@SYSCTL@" '@AWK_SYSCTL_CONF@'
 
 # file modes and owners -- never the content
 for _f in @STAT@; do
@@ -518,9 +542,9 @@ def build_script(sudo: str = "sudo -n", root: str = "") -> str:
         "@SSHDCOUNTS@": _words(SSHD_COUNT_KEYS),
         "@AWK_MOUNTS@": AWK_MOUNTS, "@AWK_LDEFS@": AWK_LOGIN_DEFS, "@AWK_PAM@": AWK_PAM,
         "@AWK_KEYVAL@": AWK_KEYVAL, "@AWK_MODPROBE@": AWK_MODPROBE, "@AWK_AUDIT@": AWK_AUDIT_RULES,
-        "@AWK_SSHD@": AWK_SSHD, "@AWK_NFT@": AWK_NFT,
+        "@AWK_SSHD@": AWK_SSHD, "@AWK_NFT@": AWK_NFT, "@AWK_SYSCTL_CONF@": AWK_SYSCTL_CONF,
     }
-    for awk in (AWK_MOUNTS, AWK_LOGIN_DEFS, AWK_PAM, AWK_KEYVAL, AWK_MODPROBE, AWK_AUDIT_RULES, AWK_SSHD, AWK_NFT):
+    for awk in (AWK_SYSCTL_CONF, AWK_MOUNTS, AWK_LOGIN_DEFS, AWK_PAM, AWK_KEYVAL, AWK_MODPROBE, AWK_AUDIT_RULES, AWK_SSHD, AWK_NFT):
         assert "'" not in awk, "awk programs travel inside single quotes"
     head = (f"SUDO={shlex.quote(sudo)}\n"
             'if [ -n "$SUDO" ]; then SSHD_T="$SUDO sshd -T"; else SSHD_T=""\n'
@@ -556,7 +580,8 @@ def parse_output(stdout: str) -> dict[str, Any]:
     of the wrong shape is kept as {"unexpected": True} so a check says "unexpected value"
     rather than guessing. `complete` is False when the END marker is missing (cut off)."""
     out: dict[str, Any] = {
-        "format": None, "os": {}, "uid": None, "virt": "none", "sysctl": {}, "stat": {}, "mounts": {},
+        "format": None, "os": {}, "uid": None, "virt": "none", "sysctl": {}, "sysctl_conf": {},
+        "sysctl_conf_read": False, "stat": {}, "mounts": {},
         "login_defs": {}, "pam": {}, "pam_includes": {}, "sec": {"pwquality": {}, "faillock": {}},
         "sec_files": {}, "time": {}, "modules": {}, "init": "unknown", "services": {}, "audit": {},
         "mac": {}, "banners": {}, "journald": {}, "sshd": {}, "sshd_state": None, "sshd_match_blocks": None, "firewall": {},
@@ -588,6 +613,11 @@ def parse_output(stdout: str) -> dict[str, Any]:
                 out["unexpected"] += n is None
             elif tag == "SYSCTLX" and len(f) > 2 and f[1] in sysctl_ok and f[2] in ("missing", "unreadable"):
                 out["sysctl"][f[1]] = {"absent": f[2]}
+            elif tag == "SYSCTLCONF" and len(f) > 2 and f[1] in sysctl_ok:
+                n = _int(f[2])
+                out["sysctl_conf"][f[1]] = n if n is not None else {"unexpected": True}
+            elif tag == "SYSCTLCONFREAD":
+                out["sysctl_conf_read"] = True
             elif tag == "STAT" and len(f) > 2 and f[1] in stat_ok:
                 parts = f[2].split("|")
                 if len(parts) == 6 and _MODE_RE.fullmatch(parts[0]) and _int(parts[1]) is not None \

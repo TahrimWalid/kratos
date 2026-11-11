@@ -62,7 +62,7 @@ async def _machine(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, InfoModal)
         body = _text(app.screen._body)
-        assert "mode 666" in body and "sudo chown root:root /etc/crontab && sudo chmod 600 /etc/crontab" in body
+        assert "mode 666" in body and "sudo chmod 600 /etc/crontab" in body
         assert "read " in body and "via ssh" in body
         await pilot.press("escape")
         await pilot.pause()
