@@ -592,6 +592,53 @@ def _check_vulndb(out: list[Check], data_dir: Path) -> None:
         out.append(_row("vulnerability data", "pass", detail))
 
 
+def _check_hashdb(out: list[Check], data_dir: Path) -> None:
+    """E.4: the file-reputation datasets (age, size, licence) and what the last checks couldn't look at."""
+    import json as _json
+
+    from kratos.hashdb import circl, malwarebazaar
+    from kratos.hashdb import datasets as D
+    from kratos.hashdb import record as HR
+    from kratos.hashdb import settings as S
+
+    for ds, warn in ((malwarebazaar.DATASET, S.MB_WARN_DAYS), (circl.DATASET, S.CIRCL_WARN_DAYS)):
+        row = D.get(data_dir, ds.name)
+        if D.installed_path(data_dir, ds) is None:
+            if ds.name == "malwarebazaar":
+                fix = ("store your free abuse.ch key (`kratos hashdb-key set malwarebazaar`), then run "
+                       "`kratos hashdb-update --malwarebazaar`" if not D.read_key(data_dir, ds.name)
+                       else "run `kratos hashdb-update --malwarebazaar`")
+                detail = "known-bad hash set: not set up (needs a free abuse.ch key)"
+            else:
+                fix, detail = ("optional: `kratos hashdb-update --circl` (about 1 GB)",
+                               "known-good filter: not downloaded (package checksums are used instead)")
+            if row and row.last_error:
+                detail += f"; last attempt failed: {row.last_error[:120]}"
+            out.append(_row(ds.label, "info", detail, fix=fix))
+            continue
+        age = row.age_days() if row else 0.0
+        detail = f"{row.size / 1e6:.0f} MB, fetched {age:.0f} day(s) ago; licence: {row.licence}"
+        if age > warn:
+            out.append(_row(ds.label, "warn", detail + f" -- older than {warn} days (still used)",
+                            fix=f"run `{ds.update_hint}`"))
+        else:
+            out.append(_row(ds.label, "pass", detail))
+    unchecked, machines = 0, 0
+    folder = Path(data_dir) / HR.FOLDER
+    for f in sorted(folder.glob(HR.PATTERN)) if folder.is_dir() else []:
+        try:
+            doc = _json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        machines += 1
+        c = doc.get("counts") or {}
+        unchecked += int(c.get("not_checked") or 0) + int(c.get("over_cap") or 0)
+    if machines:
+        out.append(_row("file reputation", "warn" if unchecked else "pass",
+                        f"last checks on {machines} machine(s): {unchecked} file(s) not checked"
+                        + (" (each machine's HASH-003 says why)" if unchecked else "")))
+
+
 def _check_detection(out: list[Check], data_dir: Path) -> None:
     """C.1: the rule pack, the rules on, and when each machine was last checked by them."""
     from kratos.detect import pack as P
@@ -766,6 +813,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("agent link", lambda o: _check_agent_link(o, Path(data_dir))))
         sections.append(("ssh certificates", lambda o: _check_ssh_certificates(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
+        sections.append(("file reputation", lambda o: _check_hashdb(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
         sections.append(("backups", lambda o: _check_backups(o, Path(data_dir))))

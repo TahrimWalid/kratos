@@ -263,6 +263,12 @@ def _finding_view(rec: dict[str, Any], latest: dict[str, Any], verdict: Any, his
         "ssvc": json.loads(red.text(json.dumps(latest["ssvc"]))) if latest.get("ssvc") else None,
         "ssvc_decision": _ssvc_cell(latest),
         "ssvc_line": red.text(_ssvc_line(latest)),
+        # E.4: what each file the finding names is known to be (an annotation, never a state)
+        "reputation": [{"path": red.text(str(r.get("path") or "")), "sha256": r.get("sha256"),
+                        "verdict": r.get("verdict"), "label": r.get("label"),
+                        "note": red.text(str(r.get("note") or "")), "sources": r.get("sources") or [],
+                        "checked_at": r.get("checked_at")}
+                       for r in latest.get("reputation") or [] if isinstance(r, dict)],
         "verdict": ({"verdict": verdict.verdict.verdict, "basis": verdict.verdict.basis,
                      "at": _iso(verdict.at), "verifier": verdict.verifier,
                      "sentence": red.text(verdict.verdict.sentence or "")} if verdict else None),

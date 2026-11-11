@@ -249,3 +249,30 @@ def test_datasets_rows_record_attempts_without_touching_the_installed_copy(tmp_p
     D.record_attempt(tmp_path, circl.DATASET, at=200.0, error="boom")
     row = D.get(tmp_path, "circl")
     assert (row.version, row.fetched_at, row.last_attempt_at, row.last_error) == ("v1", 100.0, 200.0, "boom")
+
+
+def test_backup_classes(tmp_path):
+    """The datasets are rebuildable (left out, the plan names the rebuild command), the
+    reputations travel, the key travels as a secret (left out by --without-secrets)."""
+    from kratos import datainv
+    from kratos.backup import plan as BP
+
+    assert datainv.category("hash_datasets").backup == datainv.BACKUP_REBUILDABLE
+    assert "kratos hashdb-update" in datainv.category("hash_datasets").backup_note
+    assert datainv.category("hash_reputation").backup == datainv.BACKUP_INCLUDE
+    assert datainv.category("dataset_secrets").backup == datainv.BACKUP_SECRET
+    h = tmp_path / "hashdb"
+    (h / "results").mkdir(parents=True)
+    (h / circl.DATASET.file).write_bytes(b"x" * 10)
+    (h / M.DATASET.file).write_bytes(b"y")
+    (h / "results" / "hash_0123abcd.json").write_text("{}")
+    D.write_key(tmp_path, "malwarebazaar", KEY)
+    p = BP.build(tmp_path, roots=BP.Roots(tmp_path, tmp_path / "state", tmp_path / "cfg"))
+    archived = {i.archive for i in p.items}
+    assert "data/hashdb/results/hash_0123abcd.json" in archived
+    assert "data/dataset-secrets/malwarebazaar.key" in archived
+    assert not any(a.endswith((circl.DATASET.file, M.DATASET.file)) for a in archived)
+    why = {d.key: d.reason for d in p.decisions}
+    assert "kratos hashdb-update" in why["hash_datasets"]
+    q = BP.build(tmp_path, without_secrets=True, roots=BP.Roots(tmp_path, tmp_path / "state", tmp_path / "cfg"))
+    assert "data/dataset-secrets/malwarebazaar.key" not in {i.archive for i in q.items}

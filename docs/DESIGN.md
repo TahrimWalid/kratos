@@ -1247,6 +1247,58 @@ followed after rotation). Positions in `sync_cursors` (kind `ctr:<id>`), spans i
 source (the model's tool list is unchanged), and no shipped Sigma rule's log source fits
 container output today.
 
+## File-hash reputation (E.4)
+
+**One reputation per executable, from local data** (`kratos/hashdb/`). Candidates come only from
+Kratos's own snapshots of the machine (`hashdb/candidates.py`): the persistence read (A.1) and the
+running-process read (A.5) save a bounded `hash_candidates` list — SUID/SGID files, programs a
+startup line names, loaded kernel modules, unowned running programs, deleted or memfd images (read
+through `/proc/<pid>/exe`), executables dropped in temp folders. Container image layers are never
+candidates (the persistence read prunes them; D.5 judges containers). At most `hashdb.max_files`,
+most suspicious first (already known-bad by the snapshot's hash → running → setuid → dropped →
+others); the rest is a stated gap.
+
+**The read** is a named probe `file_facts` (agent 0.12.0) and a fixed SSH script printing the same
+records, parsed by one parser (`adapters/file_facts.py`). Paths travel as base64 of their raw bytes
+— in the agent's parameters, or inside the script text on standard input, never on a command line —
+and records name files by their index in the request, so nothing needs escaping on the way back.
+Both ends refuse links (the merged-`/usr` top-level links excepted), hard links, non-regular files
+and anything that isn't a program or library; the agent uses the hardened opener and additionally
+refuses any path its own persistence / live / YARA reads didn't list in the last day (kept in memory
+only). Per file: size, mode, owner, mtime, inode, SHA-256, SHA-1 (for the CIRCL lookup only, never
+an identity), MD5 only when the package records MD5s, the type from the first bytes, and — for files
+no package owns — a UPX marker in the first 64 KiB and the byte entropy of the first MiB (the awk
+program sums in the same order as Python, so both print the same text; an awk without `log()` leaves
+the entropy unread). Byte, time and per-file caps bound it.
+
+**The decision order** (`hashdb/reputation.py`): known-bad (MalwareBazaar SHA-256) beats everything
+— a package can ship a trojaned file — then package-modified, package, known-good (CIRCL SHA-1),
+unknown; not-checked only when nothing matched. Package checksums come from the machine's own
+database: dpkg `md5sums` (including `pkg:arch` names), rpm `FILEDIGESTS` with `FILEDIGESTALGO`
+(MD5/SHA-1/SHA-256), apk's `Z:` (`Q1` + base64 SHA-1); A.1's package verification is reused where
+the file can't be read (a hard link).
+
+**Reputation never lowers a finding.** HASH-001 (known-bad, high; critical while running; T1105)
+and HASH-002 (unknown + packed or high entropy, medium; T1027.002) are the only new findings;
+HASH-003 is a run note. Every other finding gets a `reputation` annotation (`hashdb/annotate.py`)
+that is shown on every surface and forwarded (OCSF `evidences[].file.hashes` and an enrichment), and
+a test runs every rule id through it to prove nothing but the annotation changes. The only thing a
+reputation suppresses is E.4's own HASH-002 (never for a package-owned or known-good file).
+
+**Datasets** (`hashdb/datasets.py`, the README §4.2 helper): downloaded only by
+`kratos hashdb-update`; free space checked first (file + 2 GB); built into `.tmp` (CIRCL resumes
+with HTTP Range), validated, then `os.replace`d; the old copy kept on any failure; one `datasets`
+row each (version, source, sha256, size, licence, fetched). The CIRCL filter is DCSO's Bloom format,
+read through mmap only (`hashdb/bloom.py`, checked against DCSO's own `bloom` CLI 0.2.4); the
+MalwareBazaar export becomes a SQLite set. The abuse.ch key lives in `dataset-secrets/` (0600, a
+backup secret) and goes only to abuse.ch. Datasets are `rebuildable` in a backup; reputations are
+included.
+
+**Online lookups** (`hashdb/lookup.py`) are a person's action only: the `hashdb.lookup_online`
+permission is local-only (TUI/CLI owner), `hashdb.online` is off by default, the person answers `y`
+to a question naming the hash and the hosts, and no door (model tools, MCP, the chat server,
+schedules) imports it (a source scan checks).
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources

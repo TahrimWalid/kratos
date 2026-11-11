@@ -84,6 +84,10 @@ def cmd_findings_show(args) -> int:
     from kratos.ssvc import present as _sp
     for line in _sp.detail_lines(match.get("ssvc") or {}):
         print(line)
+    from kratos.hashdb.annotate import text_lines as _rep_lines
+    from kratos.untrusted import safe_print as _safe_print
+    for line in _rep_lines(match.get("reputation")):       # E.4: what each named file is known to be
+        _safe_print(line[0].upper() + line[1:])
     rule = match.get("detection_rule") or {}
     if rule:   # C.1: the Sigma rule's author goes with every finding it raises (DRL 1.1)
         print(f"Rule: {rule.get('title')} by {rule.get('author')} -- {rule.get('license') or 'DRL-1.1'} "

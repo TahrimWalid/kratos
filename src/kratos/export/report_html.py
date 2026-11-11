@@ -188,7 +188,9 @@ def render(manifest: dict[str, Any], collected: Any, *, narrative: dict[str, Any
     for shown, fs in collected.findings.items():
         for f in fs:
             v = f.get("verdict") or {}
-            drows.append([esc(shown), f"<b>{esc(f['rule_id'])}</b>", _sev(f["severity"]), esc(f["state"]),
+            reps = "".join(f"<br><span class='muted'>{esc(r.get('path'))}: {esc(r.get('label'))}</span>"
+                           for r in f.get("reputation") or [])
+            drows.append([esc(shown), f"<b>{esc(f['rule_id'])}</b>{reps}", _sev(f["severity"]), esc(f["state"]),
                           esc(v.get("verdict") or "not re-checked") + (f"<br><span class='muted'>{esc(v.get('sentence'))}</span>" if v.get("sentence") else ""),
                           esc(f.get("ssvc_decision") or "") + (f"<br><span class='muted'>{esc(f.get('ssvc_line'))}</span>"
                                                                if f.get("ssvc_line") else ""),

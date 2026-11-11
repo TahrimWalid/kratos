@@ -1294,6 +1294,75 @@ is off, Kratos says so and how to turn it on (`systemctl --user enable --now pod
 Agent **0.11.0** or newer is needed (press `g` in `/subagent`); an older agent gets a plain
 "update the agent" note.
 
+## Is this program known? (file reputation)
+
+For every program Kratos already looks at — setuid files, programs a cron job, a service, a boot
+script or a shell startup file runs, loaded kernel modules, running programs no package owns,
+programs running from a deleted or in-memory file, executables dropped in `/tmp` or `/dev/shm` —
+Kratos works out **one reputation**, on your computer, from local data:
+
+| Reputation | Means |
+|---|---|
+| *from an installed package, unchanged* | a package owns it and its content matches the checksum that package recorded |
+| *changed since its package installed it* | a package owns the path but the content is different |
+| *probably known-good (CIRCL)* | its SHA-1 is in CIRCL's set of distribution and NSRL files (a Bloom filter: about 1 wrong match in 10,000) |
+| *known-bad (MalwareBazaar)* | its SHA-256 is in MalwareBazaar's set of malware samples |
+| *unknown* | none of the above — that is not the same as clean |
+| *not checked* | Kratos couldn't read it (or a set is missing), and says why and how to fix it |
+
+Two findings come from it: **HASH-001** — a known-bad file is on the machine (*high*) or running
+(*critical*) — and **HASH-002** — an unknown program in a watched place that is packed (a UPX
+marker) or looks encrypted (high byte entropy), *medium*, "worth a look". **HASH-003** says what
+couldn't be checked. Everything else is a *reputation line* beside the findings you already have.
+
+**"Known-good" never makes a finding go away.** A copy of the real `bash` made setuid and left in
+`/tmp` is a classic backdoor: it stays PERSIST-003 *high*, with "probably known-good — a known
+program in an unusual place or with unusual permissions is still a risk" beside it. A reputation
+never lowers the severity of any finding; it only adds evidence.
+
+**The two sets are optional, downloaded only when you ask, and read on your computer:**
+
+- **MalwareBazaar known-bad set** (abuse.ch, tens of MB). It needs your own free Auth-Key: create
+  one at <https://auth.abuse.ch/>, then
+
+  ```bash
+  kratos hashdb-key set malwarebazaar
+  ```
+
+  (paste the key when asked; it's kept owner-only and sent only to abuse.ch), then
+
+  ```bash
+  kratos hashdb-update --malwarebazaar
+  ```
+
+  abuse.ch's terms: free under fair use for not-for-profit purposes; commercial or for-profit use
+  may need a paid subscription (Spamhaus); each user needs their own key. Kratos fetches it at most
+  once a day by default and never more than once an hour.
+- **CIRCL hashlookup known-good filter** (about 1 GB, refreshed monthly, CC BY 4.0). Covers Ubuntu,
+  CentOS, Fedora EPEL, Kali, openSUSE and NSRL — not Debian; on Debian the package checksums do this
+  job. Kratos checks free space first (the file plus 2 GB) and resumes an interrupted download:
+
+  ```bash
+  kratos hashdb-update --circl
+  ```
+
+`kratos hashdb-update --status` shows what's installed and how old it is (`/doctor` too);
+`--about` shows each set's source and licence; `--timer daily` writes a systemd user timer that
+keeps the known-bad set fresh. Without either set, reputations come from package checksums only
+and say so.
+
+**Looking up one hash.** `kratos hash lookup <sha256>` says what Kratos knows — which machines it
+was seen on and what the local sets say. Adding `--online` sends **that one hash** to circl.lu (and
+abuse.ch, if you set a key), only if *File reputation: online hash lookups* is on in Settings →
+General, and only after you answer `y`. In `/findings`, `l` on a finding does the same. Nothing
+else ever sends a hash: not an investigation, not a schedule, not the chat server, not the model.
+
+The reputation check reads files, so it is one of the slow checks: it runs in the full audit
+(`/run`), scheduled audits and on demand (`/collect all`, `kratos collect --all`), after the
+persistence and running-process checks — not before every question. Over
+SSH it reads as your login, so root-only files are *not checked: only root can read this (the
+sub-agent can)*.
+
 ## Detection rules
 
 Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**
@@ -1764,6 +1833,11 @@ map*). A conversation's map is removed when you prune that conversation; `kratos
 **Threat-intel lookups use real addresses.** If you turn on the live reputation check, the
 real IP address is sent to that service — a lookup needs it. That is separate from the model
 and asks you first every time.
+
+**A file hash leaves only when you ask.** File reputations are decided on your computer from
+the sets you downloaded. `kratos hash lookup <sha256> --online` (or `l` in `/findings`) sends one
+hash to circl.lu / abuse.ch — only with Settings → General → *File reputation: online hash lookups*
+on, and only after you say yes. Never the file, never which machine it came from.
 
 **Channels send what you point them at.** Each channel you add (see [Sending findings
 elsewhere](#sending-findings-elsewhere-webhooks-syslog-email-a-siem)) sends to its receiver:

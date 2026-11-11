@@ -74,6 +74,17 @@ def attach(findings: list[Any], doc: dict[str, Any] | None) -> None:
             f.reputation = rep
 
 
+def text_lines(reps: list[dict[str, Any]] | None) -> list[str]:
+    """Plain lines for the CLI ("reputation of /tmp/.b: known-bad (MalwareBazaar) -- note")."""
+    out = []
+    for r in reps or []:
+        src = ", ".join(str(s.get("source")) + (f" {s.get('date')}" if s.get("date") else "")
+                        for s in r.get("sources") or [])
+        out.append(f"reputation of {r.get('path')}: {r.get('label')}" + (f" ({src})" if src else "")
+                   + (f" -- {r.get('note')}" if r.get("note") else ""))
+    return out
+
+
 def worst_tag(finding: dict[str, Any]) -> str:
     """The one short tag the digest and lists show ('' when none)."""
     reps = finding.get("reputation") or []

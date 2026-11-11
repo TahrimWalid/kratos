@@ -42,6 +42,9 @@ def _row(conn, rec, now: float) -> dict[str, Any]:
     ssvc = latest.get("ssvc") if isinstance(latest, dict) else None
     if isinstance(ssvc, dict) and ssvc:
         d["ssvc"] = ssvc                  # D.3: the SSVC decision as of the finding's latest run
+    rep = latest.get("reputation") if isinstance(latest, dict) else None
+    if isinstance(rep, list) and rep:
+        d["reputation"] = rep             # E.4: what each named file is known to be (an annotation)
     rule = latest.get("detection_rule") if isinstance(latest, dict) else None
     if isinstance(rule, dict) and rule:
         d["detection_rule"] = rule        # C.1: the Sigma rule and its author (DRL 1.1), on every surface

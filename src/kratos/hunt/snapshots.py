@@ -29,7 +29,9 @@ MAX_ADDRS = 2000
 MAX_TEMP = 500
 
 KINDS = {"persistence": ("persistence", "persistence_*.json", "persistence read"),
-         "live_response": ("live", "live_response_*.json", "running-process read")}
+         "live_response": ("live", "live_response_*.json", "running-process read"),
+         # E.4: each machine's latest file-reputation check (one file per machine, replaced in place)
+         "hash_reputation": ("hashdb/results", "hash_*.json", "file-reputation check")}
 
 
 # --------------------------------------------------------------------------- what reads save
@@ -165,6 +167,17 @@ def _match_doc(kind: str, doc: dict[str, Any], ind: Indicator) -> list[tuple[str
             if exe and ((ind.kind == "path" and _path_hit(ind, exe)) or
                         (ind.kind == "program" and posixpath.basename(exe) == v)):
                 out.append((f"{exe} was listening on port {lst.get('port')}/{lst.get('proto')}", exe, False))
+    if kind == "hash_reputation":
+        from kratos.hashdb.reputation import short_tag
+
+        for f in doc.get("files") or []:
+            if not isinstance(f, dict):
+                continue
+            path, sha = str(f.get("path") or ""), str(f.get("sha256") or "")
+            if (ind.kind == "sha256" and sha == v) or (ind.kind == "path" and path.startswith("/")
+                                                        and _path_hit(ind, path)):
+                out.append((f"{path} -- reputation: {short_tag(f)}" + (f" ({sha[:12]}…)" if ind.kind == "path" and sha
+                                                                       else ""), path, False))
     # the findings in the snapshot -- for snapshots older than hunt_index too
     for rule, ent, ev in _entities(doc):
         path, _, frag = ent.partition("#")

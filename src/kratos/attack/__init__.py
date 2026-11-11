@@ -59,6 +59,9 @@ def compact_for_model(obj: Any) -> Any:
         for k, v in obj.items():
             if k == "attack" and isinstance(v, list) and v and all(isinstance(a, dict) for a in v):
                 out[k] = [f"{a.get('technique_id')} {a.get('technique')}" for a in v if a.get("technique_id")]
+            elif k == "reputation" and isinstance(v, list):
+                # E.4: each named file's reputation as Kratos's short tag (no path: the evidence has it)
+                out[k] = [str(r.get("label") or "") for r in v if isinstance(r, dict)][:5]
             elif k == "ssvc" and isinstance(v, dict) and v.get("label"):
                 # D.3: the decision and its four inputs in one Kratos-written line
                 from kratos.ssvc.attach import short_line

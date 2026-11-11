@@ -167,12 +167,30 @@ def finding(c: FindingChange) -> dict[str, Any]:
     if cls == COMPLIANCE_FINDING:
         out["compliance"] = {"control": c.rule_id, "status_id": 3 if c.state in ("open", "verified") else 1,
                              "status": "Fail" if c.state in ("open", "verified") else "Pass"}
+    reps = [r for r in f.get("reputation") or [] if isinstance(r, dict) and r.get("path")]
+    if reps:                                    # E.4: the files a finding names and what they are known to be
+        if cls != VULNERABILITY_FINDING:
+            out["evidences"] = [{"file": _file(r)} for r in reps[:20]]
+        out["enrichments"] = [{"name": "file.reputation", "value": str(r.get("verdict") or ""),
+                               "type": "reputation", "provider": "kratos",
+                               "data": {"path": str(r["path"]), "sha256": r.get("sha256"), "label": r.get("label"),
+                                        "note": r.get("note") or None, "sources": r.get("sources") or []}}
+                              for r in reps[:20]]
     out["unmapped"] = {"kratos": {k: v for k, v in {
         "change": c.change, "state": c.state, "from_state": c.from_state, "to_state": c.to_state,
         "reason": c.reason, "decided_by": c.actor if c.change == "decided" else None,
         "subject": f.get("subject") or None, "entities": f.get("entities") or None,
         "evidence": [str(e) for e in (f.get("evidence") or [])][:20] or None,
         "ssvc": _ssvc(f), "lifecycle_event": c.event_id}.items() if v not in (None, "", [])}}
+    return out
+
+
+def _file(rep: dict[str, Any]) -> dict[str, Any]:
+    path = str(rep.get("path") or "")
+    out: dict[str, Any] = {"name": path.rsplit("/", 1)[-1] or path, "path": path, "type_id": 1,
+                           "type": "Regular File"}
+    if rep.get("sha256"):
+        out["hashes"] = [{"algorithm_id": 3, "algorithm": "SHA-256", "value": str(rep["sha256"])}]
     return out
 
 

@@ -170,3 +170,20 @@ def test_es_bulk_uses_a_stable_document_id_so_a_retry_overwrites():
     p2 = R.finding(ch, _change(), None)
     action = json.loads(p1["body"].splitlines()[0])
     assert p1 == p2 and action["index"]["_index"] == "kratos-findings" and len(action["index"]["_id"]) == 32
+
+
+@pytest.mark.parametrize("rid", ["HASH-001", "HASH-002", "PERSIST-003", "PKG-001", "LIVE-004"])
+def test_a_reputation_is_forwarded_as_file_hashes_and_an_enrichment(rid):
+    """E.4: the file a finding names, with its SHA-256 (file.hashes) and its reputation (an
+    enrichment) -- valid against the pinned OCSF 1.9.0 schema; severity untouched."""
+    sha = "ab" * 32
+    rep = [{"path": "/tmp/.x", "sha256": sha, "verdict": "known_bad", "label": "known-bad (MalwareBazaar)",
+            "note": "", "sources": [{"source": "malwarebazaar", "detail": "", "date": "2026-11-11"}],
+            "checked_at": "2026-11-11T10:00:00+00:00"}]
+    obj = F.finding(_change(rid, finding={"reputation": rep, "subject": "/tmp/.x",
+                                          "entities": [f"/tmp/.x#{sha[:12]}"]}))
+    _valid(obj)
+    assert obj["severity"] == "High"
+    assert obj["enrichments"][0]["value"] == "known_bad" and obj["enrichments"][0]["data"]["sha256"] == sha
+    if obj["class_uid"] != 2002:
+        assert obj["evidences"][0]["file"]["hashes"] == [{"algorithm_id": 3, "algorithm": "SHA-256", "value": sha}]
