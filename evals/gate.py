@@ -88,8 +88,10 @@ def decide(results: list[ScenarioResult], baseline: dict[str, Any], *, reran: bo
         if drop >= RERUN_THRESHOLD and not reran:
             rep.needs_rerun.append(r.id)
             note += "  (re-run at N=10)"
-        elif drop >= RERUN_THRESHOLD and reran:
-            base_rate = 100.0 * bpass / bn if bn else 0.0
+        elif reran and bn and (drop >= RERUN_THRESHOLD or r.n != bn):
+            # A scenario re-run at N=10 is judged by its RATE: its pass count (e.g. 6 of 10) is
+            # not comparable with the baseline's (5 of 5) -- comparing counts let 60% vs 100% pass.
+            base_rate = 100.0 * bpass / bn
             if base_rate - r.rate >= RATE_DROP_FAIL:
                 rep.passed = False
                 rep.scored_regressions.append(

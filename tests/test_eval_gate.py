@@ -53,3 +53,11 @@ def test_an_errored_run_is_not_counted_as_a_fail():
                    {"person_sees": "incomplete", "model_alone": "incomplete", "retries": 0}]}
     (res,) = gate.results_from_runs(runs, {"A1": "scored"})
     assert res.person_pass == 1 and res.person_fail == 0 and res.errored == 1 and res.n == 1
+
+
+def test_a_rerun_is_judged_by_its_rate_not_its_pass_count():
+    """6 of 10 after a re-run is 60% against a 100% baseline: a fail, although 6 > 5 passes
+    (found when E.2's gate run passed a 40-point G1_suid drop)."""
+    reran = gate.decide([_r("A1", "scored", 6, 4)], BASE, reran=True)
+    assert not reran.passed and reran.scored_regressions[0]["rate"] == 60.0
+    assert gate.decide([_r("A1", "scored", 9, 1)], BASE, reran=True).passed
