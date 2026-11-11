@@ -214,6 +214,40 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_REBUILDABLE, backup_note='public data: `kratos vulndb-update` downloads it again',
     ),
     Category(
+        "hash_datasets", "File-reputation datasets",
+        "The CIRCL hashlookup known-good filter (about 1 GB, SHA-1 values of distribution and NSRL files) and the "
+        "MalwareBazaar known-bad SHA-256 set, each as downloaded by `kratos hashdb-update`, with one row per set "
+        "(version, source, sha256, size, licence, when fetched).",
+        NOT_PERSONAL, "fixed size, replaced on each update (CIRCL about 1 GB monthly; MalwareBazaar tens of MB)",
+        files=("hashdb/circl-hashlookup.bloom", "hashdb/malwarebazaar-sha256.sqlite", "hashdb/*.tmp",
+               "hashdb/.*.lock", "hashdb/systemd"),
+        tables=(TableRef(DB, ("datasets",), ("datasets", "fetched_at")),
+                TableRef("hashdb/malwarebazaar-sha256.sqlite", ("samples", "info"))),
+        note="public data, downloaded only when you run `kratos hashdb-update`",
+        backup=BACKUP_REBUILDABLE,
+        backup_note='public data: `kratos hashdb-update --circl --malwarebazaar` downloads it again (the '
+                    'MalwareBazaar key is backed up as a secret)',
+    ),
+    Category(
+        "hash_reputation", "File reputations",
+        "For each program Kratos looked up on a machine: its SHA-256 (and SHA-1), the reputation decided from local "
+        "data (from a package and unchanged, known-bad, probably known-good, unknown, not checked), where it came "
+        "from and when, and the path it was seen at; plus each machine's latest reputation-check result file. A "
+        "hash you looked up online is cached here too.",
+        PERSONAL, "one row per distinct program per machine; one result file per machine, replaced in place",
+        files=("hashdb/results",),
+        tables=(TableRef(DB, ("hash_reputation",), ("hash_reputation", "checked_at")),),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
+        "dataset_secrets", "Dataset keys",
+        "The credential a downloaded dataset needs: your abuse.ch Auth-Key for the MalwareBazaar export. Never "
+        "stored in the database, never shown, sent only to abuse.ch.",
+        SECRET, "fixed: one small file per dataset that needs a key",
+        files=("dataset-secrets",),
+        backup=BACKUP_SECRET,
+    ),
+    Category(
         "threat_intel", "Threat-intel cache",
         "The offline AlienVault OTX reputation list.",
         NOT_PERSONAL, "replaced on each refresh",

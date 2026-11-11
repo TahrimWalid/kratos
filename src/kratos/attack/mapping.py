@@ -74,6 +74,11 @@ FILE_DELETION = label("T1070.004")
 UNIX_SHELL = label("T1059.004")
 WEB_SHELL = label("T1505.003")
 
+# File-hash reputation (E.4): Ingress Tool Transfer is Command and Control in v19;
+# Software Packing is Stealth.
+INGRESS_TOOL_TRANSFER = label("T1105")
+SOFTWARE_PACKING = label("T1027.002")
+
 
 @dataclass(frozen=True)
 class Behaviour:
@@ -228,6 +233,10 @@ RULE_ATTACK: dict[str, Entry] = {
     "CONT-006": Posture("added capabilities are a setting that enables T1611 Escape to Host, not an action"),
     "CONT-007": Posture("confinement turned off is a setting that enables T1611 Escape to Host, not an action"),
     "CONT-008": Posture("run note: what the container check could not read"),
+    "HASH-001": Behaviour((INGRESS_TOOL_TRANSFER,), why="a file MalwareBazaar lists as malware was brought onto "
+                          "the machine"),
+    "HASH-002": Behaviour((SOFTWARE_PACKING,), why="an unknown program that is packed or encrypted"),
+    "HASH-003": Posture("run note: what the file-reputation check could not do"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),
 }

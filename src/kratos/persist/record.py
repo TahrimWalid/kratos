@@ -100,7 +100,8 @@ def run(data_dir: Path, target: str, *, verify: bool = False, reader: Reader | N
         "answer_gaps": list(getattr(judged, "answer_gaps", [])),
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
-        "hunt_index": _hunt_index(inv),      # C.3: paths/hashes/key owners a later hunt can find
+        "hunt_index": _hunt_index(inv),
+        "hash_candidates": _hash_candidates(inv),   # E.4: the executables whose reputation Kratos looks up      # C.3: paths/hashes/key owners a later hunt can find
     }
     out_dir = data_dir / PERSISTENCE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +112,12 @@ def run(data_dir: Path, target: str, *, verify: bool = False, reader: Reader | N
     _evidence.record(path, data_dir=data_dir, category="persistence", machine=target,
                      read="persistence_inventory", transport=doc.get("via"))
     return {**doc, "status": "ok", "file": str(path)}
+
+
+def _hash_candidates(inv: dict[str, Any]) -> list[dict[str, Any]]:
+    from kratos.hashdb.candidates import from_persistence
+
+    return from_persistence(inv)
 
 
 def _hunt_index(inv: dict[str, Any]) -> dict[str, Any]:

@@ -376,5 +376,30 @@ register_no_verifier(NoVerifier(
     reason="an inventory of who holds privileged access, not a risk in itself; re-read it on demand with /verify "
            "(the PRIV-001/002/003 findings it summarises are each verified)"))
 
+# E.4: a known-bad or unknown packed file -- re-read its hash through the same read.
+def _verify_hash(ctx: VerifyContext) -> Verdict:
+    names = _covering_checks(ctx.rule_id)
+    report = _fresh_report(ctx, names)
+    checks = _checks_run(report, names)
+    fresh = ctx.fresh_finding(report)
+    old = set(ctx.finding.get("entities") or [])
+    if fresh is not None:
+        new = set(fresh.get("entities") or [])
+        if old and new and not (old & new):
+            return Verdict("not_reproduced", "The file at this path was replaced: its content (hash) is different "
+                           "now, and the new content is judged on its own.", checks=checks, evidence=_facts(fresh))
+        return Verdict("reproduced", "A fresh read of the file gives the same hash -- it is still there.",
+                       checks=checks, evidence=_facts(fresh))
+    blocked = _blocked_reason(report, names)
+    if blocked is None:
+        return Verdict("not_reproduced", "A fresh reputation check no longer flags this file -- it was removed or "
+                       "replaced.", checks=checks)
+    return Verdict("couldnt_check", "Kratos could not complete a fresh read of this file.", detail=blocked,
+                   checks=checks)
+
+
+register_verifier(Verifier(rules=("HASH-001", "HASH-002"), cost="quick", verify=_verify_hash,
+                           label="a fresh read of the file's hash"))
+
 # D.5: the container findings register their own verifiers (kratos.containers.verify).
 from kratos.containers import verify as _container_verify  # noqa: E402,F401

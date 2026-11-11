@@ -81,6 +81,12 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("timewin/snapshots.py", "reindex", "DELETE FROM"): "drops index rows for snapshot files that are already gone",
     # public data rebuilds
     ("pkgvuln/update.py", "_Writer.remove", "DELETE FROM"): PUBLIC,
+    # E.4: dataset updates -- the partial download, the half-built set, a wrong file
+    ("hashdb/circl.py", "update", "unlink"): TEMP,
+    ("hashdb/datasets.py", "download", "unlink"): TEMP,
+    ("hashdb/malwarebazaar.py", "build", "unlink"): TEMP,
+    ("hashdb/malwarebazaar.py", "update", "unlink"): TEMP,
+    ("hashdb/datasets.py", "remove_key", "unlink"): "the person's own `kratos hashdb-key remove`",
     ("pkgvuln/update.py", "_Writer.clear_top", "DELETE FROM"): PUBLIC,
     ("pkgvuln/update.py", "_update_osv_full", "unlink"): TEMP,
     ("pkgvuln/update.py", "_modified_index", "unlink"): TEMP,
