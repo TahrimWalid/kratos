@@ -691,3 +691,13 @@ def test_unchanged_results_are_stored_once(tmp_path):
     latest = store.runs(tmp_path, "m1")[0]
     assert latest["results_run"] == latest["run_id"]
     assert any(r["control_id"] == "2.4.1.2" and r["status"] == "fail" for r in store.results_of(tmp_path, latest["run_id"]))
+
+
+def test_no_owner_yet_hint_follows_the_setting(two_machines):
+    from kratos import settings_store
+    from kratos.compliance import settings as CS
+
+    md = RP.render(RP.build(two_machines, "cis", ["10.0.0.6"]), "md")
+    assert "| 2.4.1.2 | fail |" in md and "no owner yet" in md
+    settings_store.set(CS.ASK_OWNERS, False, data_dir=two_machines, actor=OWNER)
+    assert "no owner yet" not in RP.render(RP.build(two_machines, "cis", ["10.0.0.6"]), "md")

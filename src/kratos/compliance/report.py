@@ -128,12 +128,22 @@ def build(data_dir: Path | str, framework: str, machines: list[str], *, outside_
                     "licence": "BSD-3-Clause (ids only; no CIS text is shipped)"} if fw == "cis" else
                    {"kratos_mapping": "Kratos's own advisory mapping of its checks to these ids"},
         "machines": sections, "outside_scope": int(outside_scope),
+        "owner_hint": _owner_hint(data_dir),
     }
     if fw == "nis2":
         doc["nis2_note"] = F.NIS2_SCOPE_NOTE
     if len(sections) > 1:
         doc["rollup"] = rollup(sections)
     return doc
+
+
+def _owner_hint(data_dir: Path) -> bool:
+    try:
+        from kratos.compliance import settings as CS
+
+        return bool(CS.get(CS.ASK_OWNERS, data_dir))
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def rollup(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -254,8 +264,10 @@ def to_markdown(doc: dict[str, Any], *, include_not_checked: bool = False) -> st
                         "their ComplianceAsCode rule ids).", ""]
         out += ["| Control | Status | What Kratos looks at | Owner |", "|---|---|---|---|"]
         for c in rows:
+            owner = c.get("owner") or ("no owner yet" if c["status"] == "fail" and doc.get("owner_hint", True)
+                                        else "")
             out.append(f"| {md(c['control'])} | {ST.STATUS_WORDS[c['status']]} | {md(c.get('text'))} | "
-                       f"{md(c.get('owner') or '')} |")
+                       f"{md(owner)} |")
         out.append("")
         details = [c for c in rows if c["status"] in ("fail", "partial", "not_applicable") or
                    (c["status"] == "not_checked" and c.get("checks"))]
