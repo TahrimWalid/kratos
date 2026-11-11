@@ -46,7 +46,7 @@ def test_container_reads_to_a_0_10_agent_are_refused_with_an_update_message(tmp_
 def test_the_new_agent_offers_the_container_reads():
     from kratos.subagent import agent
 
-    assert agent.AGENT_VERSION == "0.12.0"
+    assert agent.AGENT_VERSION == "0.13.0"
     assert {"container_inventory", "container_packages", "container_logs"} <= set(reads.READ_PROBES)
     from kratos.subagent.installer import EXTRA_BUNDLE_FILES
 
