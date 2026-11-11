@@ -86,7 +86,32 @@ MODES: tuple[str, ...] = ("cron", "shell", "unit", "conf", "preload", "pam", "ud
 LOCAL_FS_TYPES: tuple[str, ...] = ("ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "jfs", "reiserfs",
                                    "tmpfs", "overlay", "bcachefs", "nilfs2", "vfat")
 SKIP_MOUNT_PREFIXES: tuple[str, ...] = ("/proc", "/sys", "/dev/pts", "/run/user", "/var/lib/docker",
-                                        "/var/lib/containers", "/snap")
+                                        "/var/lib/containers", "/snap", "/run/containerd", "/run/docker")
+# Container image layers live in plain folders on the host's own filesystem (Docker's
+# overlay2 `diff`/`merged`, containerd's snapshot `fs`, Podman's storage, rootless
+# engines under a home). A setuid program inside an image is the container's own (`su`,
+# `passwd` of a Debian or Alpine image), not host persistence -- the container checks
+# judge containers -- so the SUID search prunes exactly these layer folders, nothing
+# else under /var/lib/docker or /var/lib/containerd. find's `*` matches `/` too; the
+# first (shallowest) match is the layer folder itself.
+CONTAINER_LAYER_PATTERNS: tuple[str, ...] = (
+    "*/var/lib/docker/overlay2/*/diff", "*/var/lib/docker/overlay2/*/merged",
+    "*/var/lib/containerd/io.containerd.snapshotter.v1.*/snapshots/*/fs",
+    "*/var/lib/containers/storage/overlay/*/diff", "*/var/lib/containers/storage/overlay/*/merged",
+    "*/.local/share/containers/storage/overlay/*/diff", "*/.local/share/containers/storage/overlay/*/merged",
+    "*/.local/share/docker/overlay2/*/diff", "*/.local/share/docker/overlay2/*/merged",
+)
+
+
+def suid_find_args(start: str) -> list[str]:
+    """The SUID/SGID find, as argv: one walk of `start` that stays on its filesystem and
+    leaves container image layers out."""
+    prune: list[str] = ["("]
+    for i, pat in enumerate(CONTAINER_LAYER_PATTERNS):
+        prune += (["-o"] if i else []) + ["-path", pat]
+    prune += [")", "-prune"]
+    return ["find", start, "-xdev", *prune, "-o", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f",
+            "-print"]
 
 
 @dataclass(frozen=True)
@@ -532,9 +557,10 @@ def build_script(root: str = "", verify: bool = False) -> str:
     script = "\n".join(out).replace("@OWNERSHIP@", OWNERSHIP_SH)
     mods = " ".join(m for m in MODES if m not in ("keys", "none"))
     skip = "|".join(f"{p}|{p}/*" for p in SKIP_MOUNT_PREFIXES)
+    layer_prune = "\\( " + " -o ".join(f"-path '{p}'" for p in CONTAINER_LAYER_PATTERNS) + " \\) -prune"
     q = _sh_q(r) if r else ""
     for key, val in (("SUIDT", str(SUID_FIND_SECONDS)), ("LOCALFS", " ".join(LOCAL_FS_TYPES)),
-                     ("SKIPMOUNTS", skip), ("MAXSUID", str(MAX_SUID_FILES)), ("MAXTEXT", str(MAX_TEXT_BYTES)),
+                     ("SKIPMOUNTS", skip), ("LAYERPRUNE", layer_prune), ("MAXSUID", str(MAX_SUID_FILES)), ("MAXTEXT", str(MAX_TEXT_BYTES)),
                      ("MODELIST", mods), ("MAXL", str(MAX_LINES_PER_FILE)), ("MAXC", str(MAX_LINE_CHARS)),
                      ("MAXK", str(MAX_KEYS_PER_FILE)), ("AWKPROG", awk_prog), ("KEYSPROG", keys_prog),
                      ("ROOTV", q or "''"), ("ROOT", q)):
@@ -592,7 +618,7 @@ MOUNTS=$(awk 'BEGIN { n = split("@LOCALFS@", ok, " "); for (i = 1; i <= n; i++) 
 SUIDRAW=$(printf '%s\n' "$MOUNTS" | while IFS= read -r _mp; do
   [ -n "$_mp" ] || continue
   case "$_mp" in @SKIPMOUNTS@) continue ;; esac
-  $TO find @ROOT@"$_mp" -xdev \( -perm -4000 -o -perm -2000 \) -type f 2>/dev/null
+  $TO find @ROOT@"$_mp" -xdev @LAYERPRUNE@ -o \( -perm -4000 -o -perm -2000 \) -type f -print 2>/dev/null
   [ $? -eq 124 ] && printf 'SUIDTO\t%s\n' "$_mp"
 done | sort -u)
 printf '%s\n' "$SUIDRAW" | grep '^SUIDTO	'
@@ -1200,8 +1226,7 @@ def inventory_output(*, root: str = "", verify: bool = False, run: Runner | None
                 out.append(f"SUIDTO\t{mp}")
                 continue
             try:
-                res = run(["find", r + mp, "-xdev", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-type", "f"],
-                          min(float(SUID_FIND_SECONDS), left), 4 * 1024 * 1024)
+                res = run(suid_find_args(r + mp), min(float(SUID_FIND_SECONDS), left), 4 * 1024 * 1024)
             except Exception:  # noqa: BLE001 -- a timeout or missing find: say so
                 out.append(f"SUIDTO\t{mp}")
                 continue

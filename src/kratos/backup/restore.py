@@ -320,12 +320,12 @@ def _authorize(actor: Any, data_dir: Path) -> None:
 def _check_origin(backup: Path, data_dir: Path, *, accept_signer: str | None, accept_unsigned: bool) -> None:
     from kratos.backup import origin as O
     from kratos.backup.create import read_sidecar
-    from kratos.backup.verify import _sha
+    from kratos.backup.fsutil import sha_file
 
     if not backup.is_file():
         raise RestoreError(f"{backup} is not a file")
     meta = read_sidecar(backup.with_name(backup.name + ".sha256"))
-    sha, size = _sha(backup) if meta else (None, None)
+    sha, size = sha_file(backup) if meta else (None, None)
     o = O.origin_of(meta, sha, size, data_dir)
     try:
         O.require_trusted(o, accept_signer=accept_signer, accept_unsigned=accept_unsigned, action="restore it",
@@ -608,6 +608,57 @@ def ssh_certificate_step(roots: Roots, *, local: set[str] | None = None) -> list
     return notes
 
 
+def outbox_step(roots: Roots, manifest: dict[str, Any]) -> list[str]:
+    """The outbox came back as it was when the backup was made. Messages still waiting then
+    may have been sent by the old computer afterwards -- and ntfy, syslog and email can't
+    drop a repeat -- so they are HELD (marked dead with the reason) for the person to send
+    with `kratos outbox retry`, never re-sent on their own. The old computer's delivery
+    lease is ended. A channel aimed at this computer's own loopback is named: it pointed
+    at a receiver on the OLD computer."""
+    db = roots.data / "kratos.db"
+    if not db.exists():
+        return []
+    notes: list[str] = []
+    made = str(manifest.get("created") or "the backup's time")
+    conn = sqlite3.connect(db, timeout=30)
+    try:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        if "outbox" not in names:
+            return []
+        now = time.time()
+        with conn:
+            n = conn.execute(
+                "UPDATE outbox SET status = 'dead', dead_at = ?, claimed_until = NULL, claimed_by = NULL, "
+                "last_error = ? WHERE status IN ('pending', 'failed')",
+                (now, f"held after a restore: this message was still waiting when the backup was made ({made}); "
+                      "the old computer may have sent it since -- send it with `kratos outbox retry <id>`")).rowcount
+            if "outbox_lease" in names:
+                conn.execute("UPDATE outbox_lease SET expires_at = 0")   # the old computer's lease ends here
+        if n:
+            notes.append(f"{n} message(s) to your channels were still waiting when the backup was made; they are "
+                         "held, not re-sent (the old computer may have sent them already): `kratos outbox list "
+                         "--status dead` shows them, `kratos outbox retry --dead` sends them")
+        if "channels" in names:
+            from urllib.parse import urlparse
+
+            local = []
+            for name, kind, cfg in conn.execute("SELECT name, kind, config FROM channels WHERE enabled = 1"):
+                try:
+                    c = json.loads(cfg or "{}")
+                except ValueError:
+                    continue
+                host = urlparse(str(c.get("url") or "")).hostname if kind == "webhook" else c.get("host")
+                if str(host or "").lower() in ("127.0.0.1", "::1", "localhost") or str(host or "").startswith("127."):
+                    local.append(f"{name} ({host})")
+            if local:
+                notes.append("these channels send to the computer Kratos runs on (" + ", ".join(local[:6]) + "): on "
+                             "the old computer that was a receiver running there -- start it here too, or point the "
+                             "channel elsewhere (`kratos channels edit`)")
+    finally:
+        conn.close()
+    return notes
+
+
 def restore(backup: Path, identities: list[object], *, roots: Roots, actor: Any, replace: bool = False,
             ca_mode: str | None = None, hub_address: str | None = None, dry_run: bool = False,
             pre_backup_passphrase: str | None = None, progress: Progress = _noop,
@@ -683,6 +734,7 @@ def restore(backup: Path, identities: list[object], *, roots: Roots, actor: Any,
         _restore_ca(st, roots, ca_mode, result.notes)
         if kind == "restore":
             result.notes += ssh_certificate_step(roots)
+            result.notes += outbox_step(roots, st.manifest)
         result.notes += _summary_notes(st.manifest, tops, roots, fresh, found, done=True)
         result.agents, result.installers = agent_step(roots, st.manifest, hub_address=hub_address)
         BR.record(roots.data, kind, actor, "ok", file=str(backup), size=backup.stat().st_size,

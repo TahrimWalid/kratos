@@ -852,7 +852,12 @@ ownership is looked up **on the machine** from the package database files (`dpkg
 `rpm -qf` in one batch, apk's installed db), so the main noise filter doesn't need a package
 database on Kratos. Reads are bounded (per-location file caps, a SUID `find` limited to local
 filesystems with a timeout, a 2 MiB total cap, an overall time budget); over the budget the read
-is partial and says so, never hangs.
+is partial and says so, never hangs. The SUID `find` prunes container image layers
+(`CONTAINER_LAYER_PATTERNS`: overlay2 `diff`/`merged`, containerd snapshot `fs`, Podman and rootless
+storage) and skips the `/run/containerd` and `/run/docker` mounts -- found by the Phase D audit: a
+Docker 29 host keeps its layers in plain folders on `/`, so every image's `su` and `passwd` read
+as PERSIST-003 high. Only the layer folders are pruned, so a setuid file planted elsewhere under
+`/var/lib/docker` is still found (agent 0.11.1).
 
 **Judging** (`persist/judge.py`) runs entirely on Kratos from (current inventory, baseline,
 ownership). The filters, in order: *owned by a package* (following a symlink to its target, which is
@@ -2027,7 +2032,12 @@ chat server, MCP and schedules):
    `MachineEvidence`; an answer naming another machine (unless that address is in its own
    evidence, e.g. as a login source) or calling a machine Kratos read "unreachable" is sent
    back. Corrections go back in one rejection per round, bounded. Machines that weren't read get
-   Kratos's own text. The summary line is code; the model's sentence is shown only when every
+   Kratos's own text. A machine whose extra read the model asked for but Kratos didn't run (over
+   the allowance, or not an allowed read) gets a NOTE saying its answer is from the collected read
+   alone and doesn't show the question was checked there, and doesn't pass (audit D: a 5-machine
+   question with 3 reads allowed answered the 4th machine "Nothing found"). A run from chat, MCP
+   or a schedule installs a deny-everything approval provider, so no read can ever wait on a
+   terminal. The summary line is code; the model's sentence is shown only when every
    machine it names passed and, if it speaks for the group, every machine was fully read.
    Invalid JSON gets one correction, then Kratos writes each machine's findings itself.
 6. `record` -- `fleet_runs` (question, group, window, actor, estimate, cost, summary) and

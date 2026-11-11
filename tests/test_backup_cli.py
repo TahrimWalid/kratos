@@ -158,18 +158,27 @@ def test_prune_is_cli_only_preview_first_and_recorded(tmp_path):
         os.utime(made[-1], None)
     other = dest / "my-notes.txt"
     other.write_text("not a backup")
-    plan = PR.plan(dest, 1)
+    # another Kratos home sharing the folder (audit D): its backups are never this home's to prune
+    r2 = H.home(tmp_path, "second")
+    H.seed(r2, with_keys=False, events=0)
+    H.set_recipient(r2, H.identity())
+    theirs = CR.create(r2.data, actor=H.CLI, dest=dest, roots=r2, copy_to=[]).file
+    stray = dest / "kratos-backup-20200101T000000Z.age"
+    stray.write_bytes(b"no sidecar")
+    plan = PR.plan(dest, 1, data_dir=r.data)
     assert plan.remove == sorted(made)[:2] and all(p.exists() for p in made)   # a preview removes nothing
+    assert sorted(plan.others) == sorted([theirs, stray])
     with pytest.raises(PR.PruneError, match="command line"):
         PR.apply(r.data, plan, actor=H.TUI)
     done = PR.apply(r.data, plan, actor=H.CLI)
     assert len(done["removed"]) == 2 and sorted(dest.iterdir()) == sorted(
-        [sorted(made)[2], sorted(made)[2].with_name(sorted(made)[2].name + ".sha256"), other])
+        [sorted(made)[2], sorted(made)[2].with_name(sorted(made)[2].name + ".sha256"), other, theirs,
+         theirs.with_name(theirs.name + ".sha256"), stray])
     with sqlite3.connect(r.data / "kratos.db") as c:
         assert c.execute("SELECT category, items FROM data_prunes").fetchall() == [("backups", 2)]
     assert BR.last(r.data, "prune")
     with pytest.raises(PR.PruneError):
-        PR.plan(dest, 0)
+        PR.plan(dest, 0, data_dir=r.data)
 
 
 def test_there_is_no_automatic_keep_setting():
@@ -423,3 +432,35 @@ def test_a_hostile_backup_gets_a_plain_message_not_a_traceback(tmp_path):
     assert out.returncode == 2 and b"Traceback" not in out.stderr and b"can't be trusted" in out.stderr
     wrong = _cli(home, "backup", "restore", str(f), "--yes", "--unsigned-ok", stdin=H.identity().secret.encode())
     assert wrong.returncode == 2 and b"doesn't open this backup" in wrong.stderr
+
+
+def test_subagent_install_says_the_port_to_listen_on_when_it_isnt_the_default(tmp_path):
+    """Audit D: the "make sure this core is listening" hint left out --port, so following it
+    started a listener the new agent never dials."""
+    home = tmp_path / "h"
+    home.mkdir()
+    out = _cli(home, "subagent-install", "--core-host", "core.example.test", "--core-port", "8774", "--name",
+               "web-02", "--out", str(tmp_path / "i.sh"))
+    assert out.returncode == 0, out.stderr
+    assert "kratos subagent-serve --host core.example.test --port 8774" in out.stdout.decode()
+
+
+def test_a_machine_can_be_linked_to_its_sub_agent_from_the_command_line(tmp_path):
+    """Audit D: only the app's /target link could tie an address to a paired agent, so a
+    headless install had no way to read a box through its sub-agent."""
+    from kratos.storage.subagent_store import SubAgentStore
+    from kratos.subagent import routing
+
+    home = tmp_path / "h"
+    (home / "data").mkdir(parents=True)
+    store = SubAgentStore(home / "data" / "kratos.db")
+    store.redeem_pairing_code(store.create_pairing_code(name="web-01")["code"], "a1", "web-01", "0.11.1")
+    assert _cli(home, "subagent-link", "192.0.2.40").stdout.decode().count("reached over SSH") == 1
+    bad = _cli(home, "subagent-link", "192.0.2.40", "nope")
+    assert bad.returncode == 2 and b"paired: web-01" in bad.stderr
+    ok = _cli(home, "subagent-link", "192.0.2.40", "web-01")
+    assert ok.returncode == 0 and b"through its sub-agent only (web-01)" in ok.stdout
+    link = store.get_link("192.0.2.40")
+    assert link is not None and link["mode"] == routing.MODE_SUBAGENT
+    assert _cli(home, "subagent-link", "192.0.2.40", "--remove").returncode == 0
+    assert store.get_link("192.0.2.40") is None

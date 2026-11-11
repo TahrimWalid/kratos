@@ -450,6 +450,7 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
     or None (no usable reply: Kratos's own facts only)."""
     entries, evaluations, parsed, unknown, not_read_answered = accepted or ({}, {}, {}, [], [])
     names_failed: set[str] = set()
+    refused = _refused_reads(answer, by_mid)
     for mid, res in by_mid.items():
         ma = MachineAnswer(mid=mid, machine=res.machine, label=res.label, outcome=res.outcome, reason=res.reason)
         if not res.collected:
@@ -468,6 +469,8 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
                         + (f"; not read: {'; '.join(g.rstrip(' .') for g in gaps[:5])}" if gaps else "") + ".]\n\n")
             if not ma.block:
                 ma.notes += f"Kratos's own reading: {fleet_digest.counts_line(res)}, {res.outcome_words}.\n"
+            if mid in refused:
+                ma.notes = refused[mid] + ma.notes
             ma.passed = False
             names_failed.add(mid)
             answer.machines.append(ma)
@@ -484,12 +487,14 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
         if others:
             notes_text = (f"[NOTE: this answer names another machine ({', '.join(others)}); a machine's answer is "
                           "checked only against its own evidence -- treat that part as unverified.]\n\n") + notes_text
+        if mid in refused:
+            notes_text = refused[mid] + notes_text
         ma.analysis = text
         ma.notes = notes_text
         ma.block = finding_facts.answer_block(ev.findings, noted.text)
         ma.claims = list(evaluation.verified_claims or [])
         ma.noted = noted.noted(evaluation)
-        ma.passed = not any(ma.noted.values()) and not others and not miscalled
+        ma.passed = not any(ma.noted.values()) and not others and not miscalled and mid not in refused
         if not ma.passed:
             names_failed.add(mid)
         answer.machines.append(ma)
@@ -505,6 +510,21 @@ def _finish(answer: FleetAnswer, by_mid: dict[str, MachineResult], accepted: Any
     if unknown:
         answer.model_summary_dropped = (answer.model_summary_dropped + "; " if answer.model_summary_dropped else "") + \
             f"the reply had answers for machines not in this question ({', '.join(unknown[:5])}); left out"
+
+
+def _refused_reads(answer: FleetAnswer, by_mid: dict[str, MachineResult]) -> dict[str, str]:
+    """A NOTE for each machine whose extra read the model asked for but Kratos didn't run:
+    its answer is from the collected block alone, so it can't say the question was checked."""
+    out: dict[str, list[str]] = {}
+    for row in answer.extra_reads:
+        mid = str(row.get("machine") or "")
+        if row.get("ran") or mid not in by_mid or not by_mid[mid].collected:
+            continue
+        out.setdefault(mid, []).append(f"{row.get('tool') or 'a read'} ({row.get('why') or 'not run'})")
+    return {mid: (f"[NOTE: the model asked Kratos for one more read on this machine -- {'; '.join(reads[:3])} -- "
+                  "and it was not run, so this answer is from the read above alone: it does not show the question "
+                  "was checked here. Ask about this machine on its own for the full read.]\n\n")
+            for mid, reads in out.items()}
 
 
 def _summary_problem(sentence: str, by_mid: dict[str, MachineResult], failed: set[str]) -> str:

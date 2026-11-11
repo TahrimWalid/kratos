@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -30,6 +29,7 @@ from typing import Any, Callable
 from kratos.backup import agefmt as A
 from kratos.backup import archive as AR
 from kratos.backup import store as BR
+from kratos.backup.fsutil import sha_file
 
 Progress = Callable[[str], None]
 
@@ -52,14 +52,6 @@ class Check:
         self.problems.append(text)
 
 
-def _sha(path: Path) -> tuple[str, int]:
-    h = hashlib.sha256()
-    n = 0
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-            n += len(block)
-    return h.hexdigest(), n
 
 
 def quick(path: Path | str, *, data_dir: Path | None = None) -> Check:
@@ -93,7 +85,7 @@ def quick(path: Path | str, *, data_dir: Path | None = None) -> Check:
     if meta is None:
         c.notes.append(f"no sidecar ({side.name}); only the header and size were checked")
     else:
-        sha, n = _sha(path)
+        sha, n = sha_file(path)
         if meta.get("size") != n:
             c.fail(f"the file is {n} bytes, its sidecar says {meta.get('size')}: it was truncated or changed")
         if meta["sha256"] != sha:
@@ -298,7 +290,7 @@ def drill(path: Path | str, identities: list[object], *, data_dir: Path, actor: 
         from kratos.backup import origin as O
 
         meta = _sidecar_of(path) if path.is_file() else None
-        o = O.origin_of(meta, *(_sha(path) if meta else (None, None)), data_dir)
+        o = O.origin_of(meta, *(sha_file(path) if meta else (None, None)), data_dir)
         O.require_trusted(o, accept_signer=accept_signer, accept_unsigned=accept_unsigned, action="drill it",
                           has_local_key=O.signer_fingerprint(data_dir) is not None)
         progress("checking every file")

@@ -816,7 +816,9 @@ It reports a place only when there is a reason to:
   software, so this is a prompt to read the line, not an accusation. If a *new*,
   unowned place also has one of these shapes, it is raised to high.
 - **a program that runs with its owner's powers** (setuid/setgid) that **no package
-  installed** (`PERSIST-003`) — a classic way to keep root.
+  installed** (`PERSIST-003`) — a classic way to keep root. Container image layers
+  (Docker's and Podman's storage folders) are left out: the `su` and `passwd` inside an
+  image belong to that container, and the container checks cover containers.
 - **the dynamic-linker preload is in use** (`PERSIST-004`) — a library listed in
   `/etc/ld.so.preload` runs inside every program, which is how a rootkit hides.
 - **a kernel module from outside the system's packages** (`PERSIST-005`).
@@ -1946,6 +1948,9 @@ machine to its agent once it checks in. If you later type an address that looks
 like a machine you've paired, Kratos *asks* before linking. `/target link` switches
 a target between **sub-agent only** and **SSH first, sub-agent if SSH can't
 connect**; `/target verify` and `/doctor` show which way it's reached right now.
+Without the app: `kratos subagent-link <address> <agent name>` links it
+(`--mode ssh_first` for the fallback, `--remove` to go back to SSH, no agent name
+to see how it is reached).
 
 **Keeping it running.** The agents connect to a *listener* in Kratos. Opening
 `/subagent` starts one inside the running Kratos; press `l` there to install it as
@@ -2729,7 +2734,8 @@ successful drill in 30 days is sent to your notification channels.
 
 **Old backups stay until you remove them.** Kratos never deletes a backup on its own.
 `kratos backup prune --keep 10` shows which would go; add `--apply` to remove them (only
-files Kratos named itself in the backup folder — copies elsewhere are never touched). The
+files Kratos named itself in the backup folder, and only backups this Kratos signed — a
+second Kratos sharing the folder keeps its own; copies elsewhere are never touched). The
 removal is recorded. `/doctor` shows the backup folder's size and growth, and warns when its
 disk is 80% full.
 
@@ -2761,7 +2767,12 @@ the data folder): run it on that machine and the agent reconnects to the new add
 the same pairing — no new pairing code. Next time, pair agents with a name that moves with
 you. SSH certificates are tied to the address each machine sees Kratos from, so the restore
 re-ties them to the new computer's address and tells you to confirm with
-`kratos ssh-ca verify <machine>`. Timers (schedules, backups, vulnerability-data updates)
+`kratos ssh-ca verify <machine>`. Messages to your channels that were still waiting
+when the backup was made are **held**, not sent again (the old computer may have sent
+them already, and a phone or an inbox can't tell a repeat): `kratos outbox list --status
+dead` shows them and `kratos outbox retry --dead` sends them. A channel that sent to a
+receiver on the old computer itself (`127.0.0.1`) is named, to start that receiver here
+too or point the channel elsewhere. Timers (schedules, backups, vulnerability-data updates)
 are files Kratos wrote: install them again on the new computer.
 
 **Opening a backup without Kratos.** The format is [age](https://age-encryption.org), so the

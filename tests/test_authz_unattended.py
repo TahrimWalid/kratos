@@ -37,6 +37,10 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(llm_interface, "get_active_llm_base_url", lambda: "https://api.example.com/v1")
     monkeypatch.setattr(llm_interface, "get_active_llm_api_key", lambda: "k")
     monkeypatch.setattr(llm_interface, "get_active_llm_model", lambda: "priced-model")
+    # the budget precheck reads the model from llm_config itself: without these the test
+    # passed only on a checkout whose .env names a priced cloud model (audit D)
+    monkeypatch.setattr("kratos.llm_config.get_active_llm_model", lambda: "priced-model")
+    monkeypatch.setattr("kratos.llm_config._active_backend_is_local", lambda *a, **k: False)
     monkeypatch.setattr("kratos.llm_interface.time.sleep", lambda s: None)
     monkeypatch.setattr("kratos.utils.timeutil.resolve_display_tz", lambda data_dir=None: timezone.utc)
     monkeypatch.setattr(llm_interface.requests, "post", lambda *a, **k: _Resp())

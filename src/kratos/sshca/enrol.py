@@ -448,7 +448,11 @@ def run_full_verification(data_dir: Path, host: str, *, include_old_key_refused:
     enr = _store.get_enrolment(data_dir, host)
     if enr and enr.host_cert_fingerprint:
         result.steps.append(verify_host_cert(data_dir, host))
-    result.steps.append(verify_old_key_works(data_dir, host))
+    # "the old key still works" is the safety net while a machine moves to certificates;
+    # once it is certificate-only, or --finish is about to prove the old key is refused,
+    # a refused old key is the goal -- showing it as a failed check only confuses.
+    if not include_old_key_refused and not (enr and enr.state == "cert_only"):
+        result.steps.append(verify_old_key_works(data_dir, host))
     if include_old_key_refused:
         result.steps.append(verify_old_key_refused(data_dir, host))
     enr = _store.get_enrolment(data_dir, host)

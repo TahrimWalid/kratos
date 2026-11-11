@@ -296,3 +296,14 @@ def test_a_refusal_by_the_doors_own_lookup_is_recorded_too(env):
     rows = AU.query(env["dir"], result="refused")
     who = [(r["user_name"], r["action"]) for r in rows]
     assert ("vic", "read") in who and ("ivy", "read") in who and ("ivy", "hunt") in who
+
+
+@pytest.mark.parametrize("claim", [{"exp": float("nan")}, {"iat": float("nan")}, {"exp": float("inf")},
+                                   {"exp": True}])
+def test_a_forwarded_identity_with_a_non_number_time_is_refused(claim):
+    """Audit D: NaN compares false with everything, so an `exp` of NaN passed every time check
+    (only a holder of the shared secret could sign one -- defence in depth)."""
+    now = int(time.time())
+    claims = {"sub": "vic", "iss": "open-webui", "iat": now, "exp": now + 300, **claim}
+    with pytest.raises(OW.JWTError, match="no valid time"):
+        OW.verify(OW.mint_for_tests(claims, "s" * 43), "s" * 43)

@@ -98,6 +98,12 @@ def doctor_rows(data_dir: Path) -> list[dict[str, str]]:
     else:
         row("backup lock", "warn", "no backup key set up: backups can only be made by hand with a passphrase",
             fix="`kratos backup key new` (the secret half goes off this computer; scheduled backups need it)")
+    from kratos.backup import origin
+
+    signer = origin.signer_fingerprint(Path(data_dir))
+    if s["recipients"] and signer:
+        row("backup signer", "info", f"backups are signed by {signer} -- keep it with your backup key: a restore "
+                                     "on a new computer checks it")
     restored = s.get("restored")
     if restored:
         d = restored.get("detail") or {}
