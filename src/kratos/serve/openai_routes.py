@@ -52,6 +52,9 @@ Commands that work here (no model call):
   /hunt <indicator>  has this address, hash, account, domain, program or path been seen on
                      the machines you may see? Searches what Kratos holds and says
                      what that covered (--since 30d, --machine <name>, --type account)
+  /compliance [cis|iso27001|nis2]
+                     how this machine (or group) stands against CIS / ISO 27001 / NIS2
+                     -- evidence from Kratos's checks, not a certification
   /decide <key> verify|false-positive|out-of-scope|reopen <reason>
   /decide <key> accept <days> <reason>
                      record a decision about a finding (investigators; recorded with your name)
@@ -67,7 +70,7 @@ Text Kratos quotes from a machine is shown inert: no image loads, no link is cli
 Your OWN messages are drawn by the chat app itself -- an image link you type there is
 loaded by the app, not by Kratos."""
 
-_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide")
+_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide", "/compliance")
 
 
 def _actor_label(client: Any) -> str:
@@ -275,6 +278,8 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
             _render.kratos_text_markdown(_findings_text(target, data_dir))
     if word == "/decide":
         return _render.kratos_text_markdown(_decide_text(text, target, data_dir))
+    if word == "/compliance":
+        return _render.kratos_text_markdown(_compliance_text(text, target, data_dir))
     if word in ("/retest", "/hunt"):
         return None          # a turn of its own (slots, hourly limit) -- _serve_turn
     return None
@@ -313,6 +318,24 @@ def _hunt_text(arg: str, client: Any, data_dir: Path, progress: Any) -> str:
             authz.record_refusal(authz.current_actor(), authz.P.HUNT, str(e), obj="chat /hunt", data_dir=data_dir)
         return f"{e}\n{front.USAGE}"
     return report.render(result)
+
+
+def _compliance_text(text: str, target: str, data_dir: Path) -> str:
+    """/compliance [framework]: the compliance report for the chat model's machine (or group),
+    read-only and narrowed to the person's machines (E.2)."""
+    from kratos import authz
+    from kratos.compliance import report as RP
+
+    words = text.split()[1:]
+    fw = next(({"iso": "iso27001", "nis": "nis2"}.get(w.lower(), w.lower()) for w in words
+               if w.lower() in ("cis", "iso27001", "nis2", "iso", "nis")), "cis")
+    group = target if str(target).startswith("@") else None
+    try:
+        machines, outside, label = RP.resolve_machines(data_dir, authz.current_actor(),
+                                                       machine=None if group else target, group=group)
+        return RP.compact_text(RP.build(data_dir, fw, machines, outside_scope=outside, label=label))
+    except (RP.ReportError, authz.Denied) as e:
+        return f"Refused: {e}"
 
 
 def _usage_text(br: Any, data_dir: Path) -> str:

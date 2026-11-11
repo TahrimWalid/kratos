@@ -187,3 +187,16 @@ def test_a_reputation_is_forwarded_as_file_hashes_and_an_enrichment(rid):
     assert obj["enrichments"][0]["value"] == "known_bad" and obj["enrichments"][0]["data"]["sha256"] == sha
     if obj["class_uid"] != 2002:
         assert obj["evidences"][0]["file"]["hashes"] == [{"algorithm_id": 3, "algorithm": "SHA-256", "value": sha}]
+
+
+def test_comp001_is_a_compliance_finding_with_its_failed_checks():
+    """E.2: COMP-001 forwards as OCSF Compliance Finding 2003, the failed check ids as checks
+    and requirements -- valid against the pinned schema."""
+    obj = F.finding(_change("COMP-001", finding={"subject": "198.51.100.7",
+                                                 "entities": ["perm./etc/crontab", "sshd.root_login", "made.up"]}))
+    _valid(obj)
+    assert obj["class_uid"] == 2003 and obj["compliance"]["control"] == "COMP-001"
+    assert obj["compliance"]["requirements"] == ["perm./etc/crontab", "sshd.root_login"]
+    assert obj["compliance"]["checks"][0] == {"uid": "perm./etc/crontab", "status": "Fail", "status_id": 3,
+                                              "name": "/etc/crontab is owned by root:root with mode 600 or stricter"}
+    assert "ISO/IEC 27001:2022 Annex A" in obj["compliance"]["standards"]

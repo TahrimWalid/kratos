@@ -2786,6 +2786,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _hashdb_cmd.register(sub)  # E.4: `kratos hashdb-update`, `kratos hashdb-key`, `kratos hash lookup`
 
+    from kratos.cli import compliance_cmd as _compliance_cmd
+
+    _compliance_cmd.register(sub)  # E.2: `kratos compliance report|owner|na|level|history`
+
     seal_p = sub.add_parser(
         "seal",
         help="Journal sealing (forward secure sealing): keep a machine's verification key here and check its "

@@ -285,3 +285,53 @@ def render(doc: dict[str, Any], fmt: str, *, include_not_checked: bool = False) 
     if fmt == "md":
         return to_markdown(doc, include_not_checked=include_not_checked)
     raise ReportError(f"format is one of: {', '.join(FORMATS)}")
+
+
+def compact(doc: dict[str, Any], *, max_controls: int = 40) -> dict[str, Any]:
+    """A short form for MCP and chat: per machine, the summary line and only the controls that
+    fail, are partial or a person marked not applicable (with each check's evidence); the
+    rest are counted. Never a status the report doesn't hold."""
+    out = {k: doc[k] for k in ("framework", "framework_name", "generated_at", "scope", "disclaimer",
+                               "outside_scope") if k in doc}
+    if doc.get("nis2_note"):
+        out["nis2_note"] = doc["nis2_note"]
+    machines = []
+    for s in doc.get("machines") or []:
+        if s.get("status") != "read":
+            machines.append({"machine": s["machine"], "status": "not_checked", "reason": s.get("reason")})
+            continue
+        shown = [c for c in s["controls"] if c["status"] in ("fail", "partial", "not_applicable")][:max_controls]
+        machines.append({
+            "machine": s["machine"], "os": s.get("os"), "product": s.get("product"),
+            "product_note": s.get("product_note"), "read_at": s.get("read_at"), "via": s.get("via"),
+            "summary": s.get("summary"), "counts": s.get("counts"),
+            "controls": [{"control": c["control"], "status": c["status"], "text": c.get("text"),
+                          "reason": c.get("reason"), "owner": c.get("owner") or None,
+                          "checks": [{"id": r["id"], "status": r["status"], "found": r["found"] or r["reason"],
+                                      "read_at": r.get("read_at"), "fix": r.get("fix") or None,
+                                      "already_finding": r.get("linked_finding") or None}
+                                     for r in c["check_results"] if r["status"] in ("fail", "unknown")]}
+                         for c in shown]})
+    out["machines"] = machines
+    if doc.get("rollup"):
+        out["rollup_counts"] = {st: sum(1 for r in doc["rollup"] if r["status"] == st) for st in ST.STATUSES}
+    return out
+
+
+def compact_text(doc: dict[str, Any], *, max_lines: int = 25) -> str:
+    """Plain text for a chat reply."""
+    c = compact(doc)
+    lines = [f"{c['framework_name']} -- {c['scope']}", c["disclaimer"]]
+    if c.get("outside_scope"):
+        lines.append(f"{c['outside_scope']} machine(s) in this group are outside your access (not shown).")
+    for m in c["machines"]:
+        if m.get("status") == "not_checked":
+            lines.append(f"{m['machine']}: not checked -- {m.get('reason')}")
+            continue
+        lines.append(f"{m['machine']}: {m['summary']} (read {m.get('read_at')} via {m.get('via')})")
+        for ctl in m["controls"][:max_lines]:
+            first = (ctl["checks"] or [{}])[0]
+            lines.append(f"  {ctl['control']:<10} {ctl['status']:<14} {ctl.get('text') or ''}"
+                         + (f" -- {first.get('found')}" if first.get("found") else ""))
+    lines.append("The full report with evidence and fixes: `kratos compliance report` or /compliance in the app.")
+    return "\n".join(lines)

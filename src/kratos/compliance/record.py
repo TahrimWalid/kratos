@@ -210,11 +210,15 @@ def summary_line(doc: dict[str, Any]) -> str:
     if not any(c.get("status") in ("pass", "fail") for c in checks):
         return "no hardening facts read yet" + (f" ({doc['coverage_gaps'][0]})" if doc.get("coverage_gaps") else "")
     n = {s: sum(1 for c in checks if c.get("status") == s) for s in ("pass", "fail", "unknown", "na")}
-    head = f"{n['pass']} hardening checks pass, {n['fail']} fail, {n['unknown']} not checked"
     sig = doc.get("signals") or []
     if sig:
-        head += f"; COMP-001 ({sig[0]['severity']})"
-    return head
+        ents = list(sig[0].get("entities") or [])
+        more = f" (+{len(ents) - 4} more)" if len(ents) > 4 else ""
+        return (f"COMP-001 ({sig[0]['severity']}): {len(ents)} hardening check(s) fail: {', '.join(ents[:4])}{more}; "
+                f"{n['pass']} pass, {n['unknown']} not checked")
+    return f"{n['pass']} hardening checks pass, {n['fail']} fail (already findings of their own), " \
+           f"{n['unknown']} not checked" if n["fail"] else \
+        f"{n['pass']} hardening checks pass, {n['unknown']} not checked"
 
 
 def entity_label(check_id: str) -> str:
