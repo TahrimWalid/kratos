@@ -401,5 +401,33 @@ def _verify_hash(ctx: VerifyContext) -> Verdict:
 register_verifier(Verifier(rules=("HASH-001", "HASH-002"), cost="quick", verify=_verify_hash,
                            label="a fresh read of the file's hash"))
 
+# E.2: failing hardening checks -- read the hardening facts again and evaluate the checks.
+def _verify_compliance(ctx: VerifyContext) -> Verdict:
+    names = _covering_checks(ctx.rule_id)
+    report = _fresh_report(ctx, names)
+    checks = _checks_run(report, names)
+    fresh = ctx.fresh_finding(report)
+    old = set(ctx.finding.get("entities") or [])
+    if fresh is not None:
+        new = set(fresh.get("entities") or [])
+        still = sorted(old & new)
+        if old and not still:
+            return Verdict("not_reproduced", "A fresh hardening read no longer fails these checks (other checks fail "
+                           "now, and are judged on their own).", checks=checks, evidence=_facts(fresh))
+        if old and len(still) < len(old):
+            return Verdict("partly", f"A fresh hardening read still fails {len(still)} of these {len(old)} checks.",
+                           checks=checks, evidence=_facts(fresh))
+        return Verdict("reproduced", "A fresh hardening read fails the same checks.", checks=checks,
+                       evidence=_facts(fresh))
+    blocked = _blocked_reason(report, names)
+    if blocked is None:
+        return Verdict("not_reproduced", "A fresh, complete hardening read passes every check that failed.",
+                       checks=checks)
+    return Verdict("couldnt_check", "Kratos could not complete a fresh hardening read.", detail=blocked, checks=checks)
+
+
+register_verifier(Verifier(rules=("COMP-001",), cost="quick", verify=_verify_compliance,
+                           label="a fresh read of the hardening facts"))
+
 # D.5: the container findings register their own verifiers (kratos.containers.verify).
 from kratos.containers import verify as _container_verify  # noqa: E402,F401

@@ -20,6 +20,7 @@ TOP = {f.split("/")[0] for f in EVIDENCE_FOLDERS} | {"results"}
 # module:function -> why it writes a file but no evidence (or records it elsewhere)
 NOT_EVIDENCE = {
     "pkgvuln/record.py:_write": "a helper; its one caller (_judge) records the file right after",
+    "compliance/record.py:_write": "a helper; its caller (run) records each file right after",
     "adapters/vuln_scan.py:_download": "downloads NVD feeds into the vulscan folder, not evidence",
     "adapters/vuln_scan.py:build_cve_csv_from_nvd": "writes the CVE list (vulscan's data), not evidence",
     "adapters/vuln_scan.py:_install_script_files": "installs vulscan's script files, not evidence",

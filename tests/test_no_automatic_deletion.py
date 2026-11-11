@@ -57,6 +57,10 @@ ALLOWED: dict[tuple[str, str, str], str] = {
                                                                     "`kratos data prune --category host_events` removes)",
     ("export/create.py", "create", "rmtree"): TEMP + " (this export's own unfinished .<id>.building folder, removed "
                                                "when the export fails or before it is rebuilt -- never a finished bundle)",
+    ("compliance/owners.py", "clear_owner", "DELETE FROM"): PERSON + " (`kratos compliance owner clear`; recorded "
+                                                                      "in control_owner_events)",
+    ("compliance/owners.py", "clear_na", "DELETE FROM"): PERSON + " (`kratos compliance na clear`; recorded in "
+                                                                   "control_owner_events)",
     ("authz/audit.py", "prune", "DELETE FROM"): PERSON + " (`kratos audit prune --apply`; recorded; trigger-guarded)",
     ("authz/users.py", "set_scopes", "DELETE FROM"): PERSON + " (the owner replaces a user's scope; recorded)",
     ("authz/users.py", "unmap_gateway", "DELETE FROM"): PERSON + " (the owner removes an Open WebUI mapping; recorded)",

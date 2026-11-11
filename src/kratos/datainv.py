@@ -240,6 +240,21 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "compliance", "Compliance results and decisions",
+        "Each machine's hardening facts (closed lists of settings, file modes and services -- never file contents), "
+        "the latest compliance result per machine, one row per framework control per evaluation, and people's "
+        "decisions: control owners, 'not applicable' decisions with their reason and expiry, the CIS level per "
+        "machine, and the append-only trail of those decisions.",
+        PERSONAL, "one facts file per machine and transport and one result file per machine (replaced in place); "
+        "about 380 result rows per machine per evaluation (twice a day by default); decisions as people make them",
+        files=("compliance/facts", "compliance/results"),
+        tables=(TableRef(DB, ("compliance_runs",), ("compliance_runs", "at")),
+                TableRef(DB, ("compliance_results", "control_owners", "control_na", "compliance_profiles",
+                              "control_owner_events"))),
+        note="the ComplianceAsCode mapping itself is package data (ids only), not stored here",
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
         "dataset_secrets", "Dataset keys",
         "The credential a downloaded dataset needs: your abuse.ch Auth-Key for the MalwareBazaar export. Never "
         "stored in the database, never shown, sent only to abuse.ch.",

@@ -237,6 +237,7 @@ RULE_ATTACK: dict[str, Entry] = {
                           "the machine"),
     "HASH-002": Behaviour((SOFTWARE_PACKING,), why="an unknown program that is packed or encrypted"),
     "HASH-003": Posture("run note: what the file-reputation check could not do"),
+    "COMP-001": Posture("hardening settings that fail CIS / ISO 27001 / NIS2 checks are posture, not an action"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),
 }

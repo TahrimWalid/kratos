@@ -304,3 +304,5 @@ from kratos.sshguess import check as _sshguess_check  # noqa: E402,F401
 from kratos.containers import check as _containers_check  # noqa: E402,F401
 # E.4: the reputation of the executables the persistence and running-process reads found
 from kratos.hashdb import check as _hash_check  # noqa: E402,F401
+# E.2: the hardening facts and the compliance checks over them
+from kratos.compliance import check as _comp_check  # noqa: E402,F401

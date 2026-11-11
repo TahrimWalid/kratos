@@ -128,6 +128,9 @@ RULES: dict[str, RuleInfo] = dict([
     # (a fresh, complete reputation check that no longer sees it closes it) or a person decides.
     _r("HASH-001", "condition"),
     _r("HASH-002", "condition"),
+    # E.2: hardening checks that fail are a state; a fresh, complete hardening read that
+    # no longer sees them closes it, or a person decides.
+    _r("COMP-001", "condition"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),
