@@ -65,7 +65,26 @@ def test_run_probe_never_raises_and_says_why():
 
 def test_no_probe_accepts_command_or_script_text():
     for probe, spec in R.PARAM_SPECS.items():
-        assert not ({"command", "cmd", "script", "argv", "rules", "args", "paths"} & set(spec)), probe
+        banned = {"command", "cmd", "script", "argv", "rules", "args", "paths"}
+        if probe == "file_facts":
+            # E.4: the one read that names files. Each path must have been listed by this
+            # agent's own reads in the last day, be a program or library, and never a
+            # credential location (tests/test_file_facts.py proves each); never command text.
+            banned.discard("paths")
+        assert not (banned & set(spec)), probe
+
+
+def test_file_facts_paths_are_only_ever_files_the_agent_listed(tmp_path):
+    import base64
+    R._LISTED.clear()
+    target = tmp_path / "prog"
+    target.write_bytes(b"\x7fELF\x02x")
+    target.chmod(0o755)
+    req = {"paths": [base64.b64encode(str(target).encode()).decode()]}
+    assert "\tnot_listed\t" in R.run_probe("file_facts", req)["data"]["stdout"]
+    R._remember([str(target)])
+    assert "\tok\t" in R.run_probe("file_facts", req)["data"]["stdout"]
+    R._LISTED.clear()
 
 
 # ---------------------------------------------------------------------------
