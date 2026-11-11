@@ -1272,11 +1272,16 @@ program sums in the same order as Python, so both print the same text; an awk wi
 the entropy unread). Byte, time and per-file caps bound it.
 
 **The decision order** (`hashdb/reputation.py`): known-bad (MalwareBazaar SHA-256) beats everything
-— a package can ship a trojaned file — then package-modified, package, known-good (CIRCL SHA-1),
-unknown; not-checked only when nothing matched. Package checksums come from the machine's own
-database: dpkg `md5sums` (including `pkg:arch` names), rpm `FILEDIGESTS` with `FILEDIGESTALGO`
-(MD5/SHA-1/SHA-256), apk's `Z:` (`Q1` + base64 SHA-1); A.1's package verification is reused where
-the file can't be read (a hard link).
+— a package can ship a trojaned file — then package-modified, package, known-good, unknown;
+not-checked only when nothing matched. Package checksums come from the machine's own database: dpkg
+`md5sums` (including `pkg:arch` names) and the status file's `Conffiles` checksums for configuration
+files, rpm `FILEDIGESTS` with `FILEDIGESTALGO` (MD5/SHA-1/SHA-256), apk's `Z:` (`Q1` + base64 SHA-1);
+A.1's package verification is reused where the file can't be read (a hard link). Known-good has two
+sources: a file no package owns whose content equals a file an installed package ships (the read
+searches the same databases by digest: `PC` records), and CIRCL's SHA-1 filter. The lab showed why
+the first matters: the November 2026 CIRCL filter knew none of Ubuntu 22.04's or 24.04's own
+coreutils/bash binaries (checked with DCSO's CLI too), so on an ordinary Ubuntu machine the
+package database is what recognises a setuid copy of `bash` in `/tmp`.
 
 **Reputation never lowers a finding.** HASH-001 (known-bad, high; critical while running; T1105)
 and HASH-002 (unknown + packed or high entropy, medium; T1027.002) are the only new findings;
@@ -1289,8 +1294,9 @@ reputation suppresses is E.4's own HASH-002 (never for a package-owned or known-
 `kratos hashdb-update`; free space checked first (file + 2 GB); built into `.tmp` (CIRCL resumes
 with HTTP Range), validated, then `os.replace`d; the old copy kept on any failure; one `datasets`
 row each (version, source, sha256, size, licence, fetched). The CIRCL filter is DCSO's Bloom format,
-read through mmap only (`hashdb/bloom.py`, checked against DCSO's own `bloom` CLI 0.2.4); the
-MalwareBazaar export becomes a SQLite set. The abuse.ch key lives in `dataset-secrets/` (0600, a
+read through mmap only with `MADV_RANDOM` (`hashdb/bloom.py`, checked against DCSO's own `bloom` CLI
+0.2.4) and accepted only if it holds the sample SHA-1s CIRCL's page lists; the MalwareBazaar export
+(`full.csv.zip`, the key as a path segment) becomes a SQLite set. The abuse.ch key lives in `dataset-secrets/` (0600, a
 backup secret) and goes only to abuse.ch. Datasets are `rebuildable` in a backup; reputations are
 included.
 

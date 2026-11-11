@@ -1305,6 +1305,7 @@ Kratos works out **one reputation**, on your computer, from local data:
 |---|---|
 | *from an installed package, unchanged* | a package owns it and its content matches the checksum that package recorded |
 | *changed since its package installed it* | a package owns the path but the content is different |
+| *known-good: a copy of a packaged program* | no package owns this file, but its content is identical to a file an installed package ships (the machine's own package database says so) |
 | *probably known-good (CIRCL)* | its SHA-1 is in CIRCL's set of distribution and NSRL files (a Bloom filter: about 1 wrong match in 10,000) |
 | *known-bad (MalwareBazaar)* | its SHA-256 is in MalwareBazaar's set of malware samples |
 | *unknown* | none of the above — that is not the same as clean |
@@ -1316,8 +1317,9 @@ marker) or looks encrypted (high byte entropy), *medium*, "worth a look". **HASH
 couldn't be checked. Everything else is a *reputation line* beside the findings you already have.
 
 **"Known-good" never makes a finding go away.** A copy of the real `bash` made setuid and left in
-`/tmp` is a classic backdoor: it stays PERSIST-003 *high*, with "probably known-good — a known
-program in an unusual place or with unusual permissions is still a risk" beside it. A reputation
+`/tmp` is a classic backdoor: it stays PERSIST-003 *high*, with "the same content as /usr/bin/bash
+from the installed package bash — a copy of a packaged program; where it is and its permissions are
+still a risk" beside it. A reputation
 never lowers the severity of any finding; it only adds evidence.
 
 **The two sets are optional, downloaded only when you ask, and read on your computer:**
@@ -1338,9 +1340,11 @@ never lowers the severity of any finding; it only adds evidence.
   abuse.ch's terms: free under fair use for not-for-profit purposes; commercial or for-profit use
   may need a paid subscription (Spamhaus); each user needs their own key. Kratos fetches it at most
   once a day by default and never more than once an hour.
-- **CIRCL hashlookup known-good filter** (about 1 GB, refreshed monthly, CC BY 4.0). Covers Ubuntu,
-  CentOS, Fedora EPEL, Kali, openSUSE and NSRL — not Debian; on Debian the package checksums do this
-  job. Kratos checks free space first (the file plus 2 GB) and resumes an interrupted download:
+- **CIRCL hashlookup known-good filter** (about 1 GB, refreshed monthly, CC BY 4.0). Its sources
+  include NSRL, Windows builds and several distributions' packages, but its Linux coverage is uneven:
+  in Kratos's lab it knew none of Ubuntu 22.04's or 24.04's own `ls`, `cat` or `bash`. Your machines'
+  package databases do most of the known-good work; CIRCL adds files that came from elsewhere. Kratos
+  checks free space first (the file plus 2 GB) and resumes an interrupted download:
 
   ```bash
   kratos hashdb-update --circl
