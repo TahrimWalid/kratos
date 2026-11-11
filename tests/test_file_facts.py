@@ -15,8 +15,9 @@ import pytest
 from kratos.adapters import file_facts as F
 from kratos.hashdb import facts as FX
 
-AWKS = [a for a in ("gawk", "mawk", "busybox") if (a == "busybox" and (os.environ.get("KRATOS_TEST_BUSYBOX") or
-        shutil.which("busybox") or Path("~/.local/bin/busybox").expanduser().exists())) or shutil.which(a)]
+from tests._logsources_util import awks  # noqa: E402
+
+AWKS = awks()          # CI's awk job sets KRATOS_TEST_REQUIRE_AWKS: a missing awk is an error, never a skip
 TOOLS = ("sh", "sed", "tr", "cat", "readlink", "head", "stat", "grep", "sha256sum", "sha1sum", "md5sum", "cut",
          "sort", "wc", "printf", "id", "date", "od", "base64", "rpm")
 
