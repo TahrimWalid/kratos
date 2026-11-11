@@ -98,7 +98,11 @@ def online(data_dir: Path, h: str, *, confirm: Callable[[str], bool], session: A
         elif r.status_code == 200:
             j = r.json() if hasattr(r, "json") else {}
             srcs = j.get("source") or j.get("hashlookup:source") or []
-            out["circl"] = {"found": True, "trust": j.get("hashlookup:trust"),
+            try:
+                trust = int(j.get("hashlookup:trust")) if j.get("hashlookup:trust") is not None else None
+            except (TypeError, ValueError):
+                trust = None
+            out["circl"] = {"found": True, "trust": trust,
                             "sources": [str(x)[:60] for x in (srcs if isinstance(srcs, list) else [srcs])][:10],
                             "file_name": str(j.get("FileName") or "")[:200]}
         else:

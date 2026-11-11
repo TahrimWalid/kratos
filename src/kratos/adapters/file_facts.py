@@ -263,9 +263,10 @@ USED=0
 kr_dash() { printf 'F\t%s\t%s\t%s\n' "$1" "$2" "$3"; }
 kr_facts() {
   _i=$1; _p=$2
+  _proc=0
   case "$_p" in
-    /proc/[0-9]*/exe) _proc=1 ;;
-    *) _proc=0 ;;
+    /proc/*/exe) _pid=${_p#/proc/}; _pid=${_pid%/exe}
+      case "$_pid" in ''|*[!0-9]*) ;; *) _proc=1 ;; esac ;;
   esac
   if [ $_proc = 0 ]; then
     if [ -L "$_p" ]; then kr_dash "$_i" link "-	-	-	-	-	-	-	-	-	-	-	-"; return; fi

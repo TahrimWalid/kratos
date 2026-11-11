@@ -266,7 +266,10 @@ def _finding_view(rec: dict[str, Any], latest: dict[str, Any], verdict: Any, his
         # E.4: what each file the finding names is known to be (an annotation, never a state)
         "reputation": [{"path": red.text(str(r.get("path") or "")), "sha256": r.get("sha256"),
                         "verdict": r.get("verdict"), "label": r.get("label"),
-                        "note": red.text(str(r.get("note") or "")), "sources": r.get("sources") or [],
+                        "note": red.text(str(r.get("note") or "")),
+                        "sources": [{"source": str(x.get("source") or ""), "detail": red.text(str(x.get("detail") or "")),
+                                     "date": str(x.get("date") or "")}
+                                    for x in r.get("sources") or [] if isinstance(x, dict)],
                         "checked_at": r.get("checked_at")}
                        for r in latest.get("reputation") or [] if isinstance(r, dict)],
         "verdict": ({"verdict": verdict.verdict.verdict, "basis": verdict.verdict.basis,

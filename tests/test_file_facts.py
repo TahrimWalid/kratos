@@ -350,3 +350,14 @@ def test_dpkg_configuration_file_checksum(tmp_path):
     for f in (run_agent(root, paths)["files"], run_ssh(tmp_path, root, paths)["files"]):
         assert f[13]["package"] == "svc"
         assert f[13]["pkg_digests"] == [{"algo": "md5c", "digest": f[13]["md5"]}]
+
+
+def test_only_a_real_proc_pid_exe_skips_the_link_checks(tmp_path):
+    """/proc/<digits>/exe only: a path that merely looks like it is checked like any other."""
+    root = tmp_path / "r"
+    (root / "proc/1/x").mkdir(parents=True)
+    target = _w(root, "/usr/bin/real", b"\x7fELF\x02r", 0o755)
+    (root / "proc/1/x/exe").symlink_to(target)
+    raw = str(root).encode() + b"/proc/1/x/exe"
+    assert run_ssh(tmp_path, root, [raw])["files"][0]["status"] == "link"
+    assert run_agent(root, [raw])["files"][0]["status"] == "link"
