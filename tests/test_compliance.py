@@ -663,3 +663,31 @@ def test_mode_owner_and_group_are_separate_rules():
     r = run(facts_of(h))
     assert r["perm./etc/crontab"].status == "fail"
     assert r["owner./etc/crontab"].status == "pass" and r["group./etc/crontab"].status == "pass"
+
+
+def test_rollup_keeps_needs_person_for_an_unread_machine():
+    read = {"status": "read", "product": None, "controls": [
+        {"framework": "iso27001", "control": "5.1", "text": "x", "status": "needs_person", "checks": []},
+        {"framework": "iso27001", "control": "8.17", "text": "y", "status": "pass", "checks": ["time.synchronised"]}]}
+    roll = {r["control"]: r for r in RP.rollup([read, {"status": "not_checked", "controls": []}])}
+    assert roll["5.1"]["status"] == "needs_person" and roll["5.1"]["counts"] == {"needs_person": 2}
+    assert roll["8.17"]["status"] == "partial" and roll["8.17"]["counts"] == {"pass": 1, "not_checked": 1}
+
+
+def test_unchanged_results_are_stored_once(tmp_path):
+    from kratos.compliance import store
+
+    h = good_hardening()
+    for i in range(3):
+        record.run(tmp_path, "m1", fetch=lambda: dict(h, via="ssh"), now=time.time() + i)
+    runs = store.runs(tmp_path, "m1")
+    assert len(runs) == 3 and len({r["results_run"] for r in runs}) == 1
+    with store.opened(tmp_path) as c:
+        assert c.execute("SELECT COUNT(DISTINCT run_id) FROM compliance_results").fetchone()[0] == 1
+    assert len(store.results_of(tmp_path, runs[0]["run_id"])) > 300
+    bad = copy.deepcopy(h)
+    bad["stat"]["/etc/crontab"]["mode"] = 0o666
+    record.run(tmp_path, "m1", fetch=lambda: dict(bad, via="ssh"), now=time.time() + 9)
+    latest = store.runs(tmp_path, "m1")[0]
+    assert latest["results_run"] == latest["run_id"]
+    assert any(r["control_id"] == "2.4.1.2" and r["status"] == "fail" for r in store.results_of(tmp_path, latest["run_id"]))

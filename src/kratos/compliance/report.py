@@ -145,11 +145,16 @@ def rollup(sections: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for c in s.get("controls") or []:
             k = (str(s.get("product") or ""), c["control"]) if c["framework"] == "cis" else ("", c["control"])
             e = keys.setdefault(k, {"product": k[0] or None, "control": c["control"], "text": c.get("text", ""),
-                                    "statuses": []})
+                                    "statuses": [], "has_checks": False})
             e["statuses"].append(c["status"])
+            e["has_checks"] = e["has_checks"] or bool(c.get("checks"))
     out = []
     for e in keys.values():
-        sts = e.pop("statuses") + ["not_checked"] * len(unread)
+        # A control no Kratos check reads needs a person on an unread machine too; one Kratos
+        # checks is simply not checked there -- never a pass for the group.
+        filler = "needs_person" if not e.pop("has_checks") and all(s == "needs_person" for s in e["statuses"]) \
+            else "not_checked"
+        sts = e.pop("statuses") + [filler] * len(unread)
         e["counts"] = {st: sts.count(st) for st in ST.STATUSES if sts.count(st)}
         e["status"] = ST.group_status(sts)
         out.append(e)

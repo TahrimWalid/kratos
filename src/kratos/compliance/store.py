@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS compliance_runs (
           level TEXT NOT NULL,
           mapping_version TEXT NOT NULL,    -- the ComplianceAsCode commit the CIS rows came from
           counts TEXT NOT NULL,             -- JSON {framework: {status: n}}
-          complete INTEGER NOT NULL DEFAULT 0
+          complete INTEGER NOT NULL DEFAULT 0,
+          results_run TEXT NOT NULL         -- the run whose compliance_results rows hold these results
+                                            -- (itself, or an earlier run with exactly the same results)
         )
     """,
     """
@@ -158,13 +160,29 @@ def opened(data_dir: Path | str) -> Iterator[sqlite3.Connection]:
 def save_run(data_dir: Path | str, target_key: str, *, at: float, via: str, read_at: float | None,
              product: str | None, product_note: str, level: str, mapping_version: str,
              counts: dict[str, Any], complete: bool, rows: list[dict[str, Any]]) -> str:
+    """One run row; result rows only when they differ from the machine's last stored results
+    (nothing is ever deleted, so identical rows twice a day would only grow the database)."""
     run_id = uuid.uuid4().hex[:16]
     with opened(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            conn.execute("INSERT INTO compliance_runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            prev = conn.execute("SELECT results_run FROM compliance_runs WHERE target_key = ? ORDER BY at DESC "
+                                "LIMIT 1", (target_key,)).fetchone()
+            same = False
+            if prev is not None:
+                old = {(r["framework"], r["control_id"]): (r["status"], r["reason"], r["checks"]) for r in conn.execute(
+                    "SELECT framework, control_id, status, reason, checks FROM compliance_results WHERE run_id = ?",
+                    (prev["results_run"],))}
+                new = {(r["framework"], r["control"]): (r["status"], str(r.get("reason") or "")[:600],
+                                                        json.dumps(r.get("checks") or [])) for r in rows}
+                same = old == new
+            holder = prev["results_run"] if same else run_id
+            conn.execute("INSERT INTO compliance_runs VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                          (run_id, target_key, at, via, read_at, product, product_note, level, mapping_version,
-                          json.dumps(counts, sort_keys=True), int(bool(complete))))
+                          json.dumps(counts, sort_keys=True), int(bool(complete)), holder))
+            if same:
+                conn.execute("COMMIT")
+                return run_id
             conn.executemany(
                 "INSERT INTO compliance_results VALUES (?,?,?,?,?,?,?,?)",
                 [(run_id, target_key, r["framework"], r["control"], r["status"], str(r.get("reason") or "")[:600],
@@ -175,6 +193,15 @@ def save_run(data_dir: Path | str, target_key: str, *, at: float, via: str, read
             conn.execute("ROLLBACK")
             raise
     return run_id
+
+
+def results_of(data_dir: Path | str, run_id: str) -> list[dict[str, Any]]:
+    """A run's control results (stored with it, or with the earlier run it was identical to)."""
+    with opened(data_dir) as conn:
+        r = conn.execute("SELECT results_run FROM compliance_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if r is None:
+            return []
+        return [dict(x) for x in conn.execute("SELECT * FROM compliance_results WHERE run_id = ?", (r[0],))]
 
 
 def latest_run(data_dir: Path | str, target_key: str) -> dict[str, Any] | None:
