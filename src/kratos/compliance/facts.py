@@ -154,8 +154,9 @@ def load(data_dir: Path, target: str, hardening: list[dict[str, Any]] | None = N
                                             float(inv.last_seen_at), inv.via, bool(names))
     pr = _json(found.get("privileged_accounts"))
     if pr and str(pr.get("status") or "ok") == "ok":
-        facts.sources["privileged"] = Source("privileged", pr, _epoch(pr, "checked_at"), "",
-                                             not pr.get("evidence_gaps"))
+        # evidence_gaps are about account-change HISTORY (a short journal); the account list
+        # itself (UID 0, sudoers) is read in full whenever the read succeeds.
+        facts.sources["privileged"] = Source("privileged", pr, _epoch(pr, "checked_at"), "", True)
     li = _json(found.get("log_integrity"))
     if li:
         facts.sources["log_integrity"] = Source("log_integrity", li, _epoch(li, "checked_at_epoch", "checked_at"),

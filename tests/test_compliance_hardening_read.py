@@ -132,6 +132,13 @@ def test_same_records_under_every_awk(tmp_path, awk):
     assert d["sshd_match_blocks"] == 2
     assert d["journald"] == {"storage": "persistent", "var_log_journal": "yes"}
     assert d["firewall"]["ufw_enabled"] == "yes" and d["firewall"]["ufw_input_policy"] == "DROP"
+    assert d["virt"] == "none"
+
+
+def test_an_incus_or_lxc_container_is_recognised_without_root(tmp_path):
+    root = make_tree(tmp_path)
+    (root / "dev/incus").mkdir(parents=True)
+    assert H.parse_output(run_script(tmp_path, root, AWKS[0]))["virt"] == "container"
 
 
 def test_nothing_outside_the_closed_lists_is_printed(tmp_path):

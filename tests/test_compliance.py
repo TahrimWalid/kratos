@@ -567,3 +567,47 @@ def test_scope_in_rollup(two_machines, monkeypatch):
     assert "10.0.0.6" not in md and "1 machine(s) in this group are outside your access" in md
     with pytest.raises(RP.ReportError):
         RP.resolve_machines(two_machines, actor, machine="10.0.0.6")
+
+
+# --------------------------------------------------------------------------- found in the lab
+def test_sshd_options_not_built_in():
+    """Alpine's OpenSSH has no PAM or GSSAPI: sshd -T doesn't list them."""
+    h = good_hardening()
+    del h["sshd"]["usepam"], h["sshd"]["gssapiauthentication"]
+    r = run(facts_of(h))
+    assert r["sshd.use_pam"].status == "na" and "no usepam option" in r["sshd.use_pam"].reason
+    assert r["sshd.gssapi"].status == "pass"
+
+
+def test_reboot_check_trusts_kernel_facts_without_vulnerability_data():
+    f = facts_of(good_hardening(), extra={"packages": Source(
+        "packages", {"signals": [], "act_now_packages": [], "selector": "rocky:9"}, NOW - 60, "ssh", False)})
+    r = run(f)
+    assert r["packages.no_pending_reboot"].status == "pass"
+    assert r["packages.no_kev"].status == "unknown"            # no vulnerability matching: never a pass
+
+
+def test_alpine_without_gshadow_or_login_defs_checks():
+    h = good_hardening()
+    h["os"] = {"ID": "alpine", "VERSION_ID": "3.22.0"}
+    h["stat"]["/etc/gshadow"] = {"absent": "missing"}
+    r = run(facts_of(h))
+    assert r["perm./etc/gshadow"].status == "na"
+    assert "logindefs.pass_max_days" not in r                  # login.defs checks are Debian/RHEL only
+
+
+def test_privileged_history_gaps_dont_block_the_uid0_check(tmp_path):
+    from kratos.compliance.facts import load
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    ctx = tmp_path / "context"
+    ctx.mkdir()
+    (ctx / "privileged_accounts_20261111_120000_000000.json").write_text(json.dumps({
+        "status": "ok", "target": "ubuntu@10.0.0.5", "checked_at": epoch_to_utc_iso(time.time()),
+        "accounts": {"root": {"user": "root", "uid": 0}},
+        "evidence_gaps": ["the journal starts 3 days ago, shorter than the 30-day window"]}))
+    f = load(tmp_path, "10.0.0.5", hardening=[])
+    assert f.get("privileged") is not None and f.get("privileged").complete
+    f.sources["hardening"] = Source("hardening", good_hardening(), time.time(), "ssh", True)
+    r = {x.id: x for x in ST.run_checks(f, max_age_hours=24)}
+    assert r["accounts.uid0_only_root"].status == "pass"

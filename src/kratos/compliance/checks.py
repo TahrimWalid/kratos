@@ -52,6 +52,9 @@ class Check:
     in_finding: bool = True
     os_families: tuple[str, ...] = ("debian", "rhel", "alpine", "other")
     tags: tuple[str, ...] = field(default_factory=tuple)
+    # A pass is trusted from an incomplete read of its source (the part it needs was read in
+    # full): the reboot check reads the kernel facts, which don't need vulnerability data.
+    trust_incomplete: bool = False
 
 
 def _unexpected(v: Any) -> bool:
@@ -279,7 +282,10 @@ def _sshd(test: Callable[[dict[str, Any]], tuple[bool, str] | None]) -> Callable
         note = ""
         if (h.get("sshd_match_blocks") or 0) > 0:
             note = "Match blocks present: checked the defaults only"
-        got = test(h.get("sshd") or {})
+        try:
+            got = test(h.get("sshd") or {})
+        except _NotBuiltIn as e:
+            return Result(NA, f"{e} is not built into this SSH server", f"this SSH server has no {e} option", note)
         if got is None:
             return Result(UNKNOWN, "", "the setting wasn't in sshd -T's output", note)
         ok, found = got
@@ -287,9 +293,18 @@ def _sshd(test: Callable[[dict[str, Any]], tuple[bool, str] | None]) -> Callable
     return pred
 
 
-def _eq(key: str, want: str) -> Callable[[dict[str, Any]], tuple[bool, str] | None]:
+class _NotBuiltIn(Exception):
+    """sshd -T has no such option: this SSH server was built without the feature."""
+
+
+def _eq(key: str, want: str, absent: str = "") -> Callable[[dict[str, Any]], tuple[bool, str] | None]:
+    """`absent`: "pass" (an option not built in can't be on) or "na" (doesn't apply)."""
     def t(s: dict[str, Any]) -> tuple[bool, str] | None:
         v = s.get(key)
+        if v is None and absent == "pass":
+            return (True, f"{key}: not built into this SSH server, so it can't be on")
+        if v is None and absent == "na":
+            raise _NotBuiltIn(key)
         if v is None or _unexpected(v):
             return None
         return (str(v) == want, f"{key} {v} (expected {want})")
@@ -781,6 +796,8 @@ _SSH_ISO, _SSH_NIS = ("8.5", "8.21"), ("11.6", "6.7", "21(2)(i)")
 _CRYPTO_ISO, _CRYPTO_NIS = ("8.24",), ("9", "21(2)(h)")
 _LOG_ISO, _LOG_NIS = ("8.15", "8.16"), ("3.2", "21(2)(b)")
 _PATCH_ISO, _PATCH_NIS = ("8.8",), ("6.6", "6.10", "21(2)(e)")
+# login.defs and the PAM stacks Kratos reads are the shadow-utils / Linux-PAM setup of Debian and RHEL.
+_SHADOW_FAMILIES = ("debian", "rhel")
 
 _SYSCTLS: tuple[tuple[str, tuple[int, ...], str, int, bool], ...] = (
     # key, ok values, expected (words), fix value, network?
@@ -821,7 +838,7 @@ _PERMS: tuple[tuple[str, int, tuple[str, ...], tuple[str, ...], str, bool], ...]
     ("/etc/passwd", 0o644, ("root",), ("root",), "etc_passwd", False),
     ("/etc/group", 0o644, ("root",), ("root",), "etc_group", False),
     ("/etc/shadow", 0o640, ("root",), ("root", "shadow"), "etc_shadow", False),
-    ("/etc/gshadow", 0o640, ("root",), ("root", "shadow"), "etc_gshadow", False),
+    ("/etc/gshadow", 0o640, ("root",), ("root", "shadow"), "etc_gshadow", True),
     ("/etc/ssh/sshd_config", 0o600, ("root",), ("root",), "sshd_config", True),
     ("/etc/crontab", 0o600, ("root",), ("root",), "crontab", True),
     ("/etc/cron.hourly", 0o700, ("root",), ("root",), "cron_hourly", True),
@@ -951,7 +968,7 @@ def _build() -> tuple[Check, ...]:
               ("hardening",), _sshd(_eq("permituserenvironment", "no")), _sshd_fix("PermitUserEnvironment no"),
               ("sshd_do_not_permit_user_env",), _SSH_ISO, _SSH_NIS),
         Check("sshd.use_pam", "SSH server", "the SSH server uses PAM (so lockouts and account rules apply)",
-              ("hardening",), _sshd(_eq("usepam", "yes")), _sshd_fix("UsePAM yes"),
+              ("hardening",), _sshd(_eq("usepam", "yes", absent="na")), _sshd_fix("UsePAM yes"),
               ("sshd_enable_pam",), _AUTH_ISO, _AUTH_NIS),
         Check("sshd.banner", "SSH server", "the SSH server shows a login banner",
               ("hardening",), _sshd(_banner), _sshd_fix("Banner /etc/issue.net"),
@@ -972,7 +989,7 @@ def _build() -> tuple[Check, ...]:
               ("hardening",), _sshd(_eq("disableforwarding", "yes")), _sshd_fix("DisableForwarding yes"),
               ("sshd_disable_forwarding",), _SSH_ISO, _SSH_NIS),
         Check("sshd.gssapi", "SSH server", "the SSH server doesn't use GSSAPI logins",
-              ("hardening",), _sshd(_eq("gssapiauthentication", "no")), _sshd_fix("GSSAPIAuthentication no"),
+              ("hardening",), _sshd(_eq("gssapiauthentication", "no", absent="pass")), _sshd_fix("GSSAPIAuthentication no"),
               ("sshd_disable_gssapi_auth",), _SSH_ISO, _SSH_NIS),
         Check("sshd.limit_users", "SSH server", "SSH logins are limited to listed users or groups",
               ("hardening",), _sshd(_limit_users), _sshd_fix("AllowGroups <your-ssh-group>"),
@@ -994,24 +1011,25 @@ def _build() -> tuple[Check, ...]:
         Check("logindefs.pass_max_days", "passwords", "passwords expire within 365 days (PASS_MAX_DAYS)",
               ("hardening",), _ldef("PASS_MAX_DAYS", _num(lambda n: 0 < n <= 365), "1-365"),
               "sudo sed -i 's/^PASS_MAX_DAYS.*/PASS_MAX_DAYS 365/' /etc/login.defs",
-              ("accounts_maximum_age_login_defs",), _AUTH_ISO, _AUTH_NIS),
+              ("accounts_maximum_age_login_defs",), _AUTH_ISO, _AUTH_NIS, os_families=_SHADOW_FAMILIES),
         Check("logindefs.pass_min_days", "passwords", "passwords can't be changed again within a day (PASS_MIN_DAYS)",
               ("hardening",), _ldef("PASS_MIN_DAYS", _num(lambda n: n >= 1), "1 or more"),
               "sudo sed -i 's/^PASS_MIN_DAYS.*/PASS_MIN_DAYS 1/' /etc/login.defs",
-              ("accounts_minimum_age_login_defs",), _AUTH_ISO, _AUTH_NIS),
+              ("accounts_minimum_age_login_defs",), _AUTH_ISO, _AUTH_NIS, os_families=_SHADOW_FAMILIES),
         Check("logindefs.pass_warn_age", "passwords", "users are warned 7 days before a password expires",
               ("hardening",), _ldef("PASS_WARN_AGE", _num(lambda n: n >= 7), "7 or more"),
               "sudo sed -i 's/^PASS_WARN_AGE.*/PASS_WARN_AGE 7/' /etc/login.defs",
-              ("accounts_password_warn_age_login_defs",), _AUTH_ISO, _AUTH_NIS),
+              ("accounts_password_warn_age_login_defs",), _AUTH_ISO, _AUTH_NIS, os_families=_SHADOW_FAMILIES),
         Check("logindefs.encrypt_method", "passwords", "new passwords are hashed with SHA512 or yescrypt",
               ("hardening",), _ldef("ENCRYPT_METHOD", lambda v: v.upper() in ("SHA512", "YESCRYPT"),
                                     "SHA512 or YESCRYPT"),
               "sudo sed -i 's/^ENCRYPT_METHOD.*/ENCRYPT_METHOD YESCRYPT/' /etc/login.defs",
-              ("set_password_hashing_algorithm_logindefs",), _CRYPTO_ISO + ("8.5",), _CRYPTO_NIS + ("11.6",)),
+              ("set_password_hashing_algorithm_logindefs",), _CRYPTO_ISO + ("8.5",), _CRYPTO_NIS + ("11.6",),
+              os_families=_SHADOW_FAMILIES),
         Check("logindefs.umask", "passwords", "new files are not readable by others by default (UMASK 027)",
               ("hardening",), _ldef("UMASK", _umask_ok, "027 or stricter"),
               "sudo sed -i 's/^UMASK.*/UMASK 027/' /etc/login.defs",
-              ("accounts_umask_etc_login_defs",), ("8.3", "8.9"), ("6.3",)),
+              ("accounts_umask_etc_login_defs",), ("8.3", "8.9"), ("6.3",), os_families=_SHADOW_FAMILIES),
         Check("pam.no_nullok", "passwords", "PAM doesn't accept empty passwords (no nullok)",
               ("hardening",), _pam_no_nullok,
               "remove 'nullok' from the pam_unix lines (Debian/Ubuntu: sudo pam-auth-update; RHEL: authselect)",
@@ -1101,7 +1119,7 @@ def _build() -> tuple[Check, ...]:
                                       "a newer kernel is installed than the one running (see PKG-003)",
                                       need_complete=False),
               "reboot the machine at a convenient time (see PKG-003)", (), _PATCH_ISO, _PATCH_NIS,
-              linked_rules=("PKG-003",)),
+              linked_rules=("PKG-003",), trust_incomplete=True),
         Check("updates.automatic", "updates", "security updates are installed automatically", ("config_audit",),
               _config_row("unattended_upgrades", "automatic security updates are on",
                           "automatic security updates are off"),

@@ -50,6 +50,12 @@ def hardening_paths(data_dir: Path, target: str) -> list[Path]:
     return [p for p in (hardening_path(data_dir, target, v) for v in VIAS) if p.exists()]
 
 
+def _default_reader() -> Any:
+    from kratos.adapters.ssh_remote import fetch_hardening_facts
+
+    return fetch_hardening_facts()
+
+
 def _write(path: Path, doc: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -119,9 +125,7 @@ def run(data_dir: Path, target: str, *, fetch: Callable[[], Any] | None = None, 
     data_dir = Path(data_dir)
     when = time.time() if now is None else now
     key = target_key(target)
-    if fetch is None:
-        from kratos.adapters.ssh_remote import fetch_hardening_facts as fetch
-    got = fetch()
+    got = (fetch or _default_reader)()
     read_gap = ""
     via = "ssh"
     if isinstance(got, dict) and got.get("format"):

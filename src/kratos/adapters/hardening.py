@@ -272,7 +272,8 @@ for _f in "$R/etc/os-release" "$R/usr/lib/os-release"; do
 done
 printf 'UID\t%s\n' "$(id -u 2>/dev/null)"
 _virt=none
-if [ -e "$R/run/.containerenv" ] || [ -e "$R/.dockerenv" ]; then _virt=container; fi
+if [ -e "$R/run/.containerenv" ] || [ -e "$R/.dockerenv" ] || [ -s "$R/run/systemd/container" ] \
+   || [ -e "$R/dev/incus" ] || [ -e "$R/dev/lxd" ]; then _virt=container; fi
 if [ -z "$R" ] && command -v systemd-detect-virt >/dev/null 2>&1; then
   _c=$(systemd-detect-virt --container 2>/dev/null)
   case "$_c" in ''|none) ;; *) _virt=container ;; esac
@@ -535,7 +536,7 @@ def build_script(sudo: str = "sudo -n", root: str = "") -> str:
 _INT_RE = re.compile(r"^-?[0-9]{1,12}$")
 _MODE_RE = re.compile(r"^[0-7]{1,4}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
-_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:,@+/= -]{0,600}$")
+_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:,@+/=() -]{0,600}$")
 _TYPES = {"regular file": "file", "regular empty file": "file", "directory": "dir", "symbolic link": "link"}
 _SYSTEMD_UNIT_STATES = {"enabled", "enabled-runtime", "disabled", "static", "masked", "masked-runtime", "indirect",
                         "generated", "transient", "alias", "linked", "linked-runtime", "bad", ""}

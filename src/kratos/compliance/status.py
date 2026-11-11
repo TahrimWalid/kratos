@@ -80,7 +80,7 @@ def run_checks(facts: Facts, *, max_age_hours: float, now: float | None = None,
             run.status, run.stale = "unknown", True
             run.reason = (f"last read {age:.0f} h ago (older than {max_age_hours:g} h)" if age is not None
                           else "the read has no time")
-        elif res.status == "pass" and primary is not None and not primary.complete:
+        elif res.status == "pass" and primary is not None and not primary.complete and not chk.trust_incomplete:
             run.status = "unknown"
             run.reason = f"the {primary.label()} was incomplete, so a pass can't be confirmed"
         if run.status == "fail":
