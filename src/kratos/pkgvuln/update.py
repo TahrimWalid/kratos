@@ -91,6 +91,15 @@ this machine, offline -- no package list is ever sent anywhere):
   - AlmaLinux (AlmaLinux OSV database): MIT licence.
   - Red Hat (Red Hat security data, converted from CSAF): CC BY 4.0 -- (c) Red Hat, Inc.,
     https://access.redhat.com/security/data
+- OSV.dev's language-ecosystem exports (E.7a: PyPI, npm, Packagist, Go, RubyGems, crates.io --
+  downloaded only for the ecosystems confirmed code folders use, or that you name). Their
+  sources' terms, as OSV states them (https://google.github.io/osv.dev/data/, read 2026-11-12):
+  - GitHub Advisory Database (GHSA-*): CC BY 4.0.
+  - PyPI Advisory Database (PYSEC-*): CC BY 4.0.
+  - Go Vulnerability Database (GO-*): CC BY 4.0.
+  - Rust Advisory Database (RUSTSEC-*): CC0 1.0.
+  - OpenSSF Malicious Packages (MAL-*): Apache 2.0.
+  - Other records in the npm, Packagist and RubyGems exports: no licence stated by OSV.
 - CISA Known Exploited Vulnerabilities catalogue
   (https://www.cisa.gov/known-exploited-vulnerabilities-catalog): CC0 1.0.
 - CISA vulnrichment (per-CVE SSVC assessments: Exploitation, Automatable, Technical

@@ -272,6 +272,7 @@ def _check_root(data_dir: Path, target: str, root: dict[str, Any], cfg: W.Config
                 fetch_inv: R.Fetcher | None, fetch_read: R.Fetcher | None, scanner: Y.Scanner | None,
                 notes: list[str], when: float) -> tuple[dict[str, Any], int]:
     path = root["path"]
+    started = time.monotonic()
     res: dict[str, Any] = {"path": path, "root_id": root["id"], "status": "failed", "complete": False,
                            "accepted_at": epoch_to_utc_iso(root["accepted_at"]) if root.get("accepted_at") else None,
                            "serving": list(root.get("serving") or [])[:20],
@@ -357,6 +358,8 @@ def _check_root(data_dir: Path, target: str, root: dict[str, Any], cfg: W.Config
         counts["git"] = git["counts"]
     res["counts"] = counts
     res["status"] = "ok" if complete else "partial"
+    res["seconds"] = round(time.monotonic() - started, 2)
+    res["read_bytes"] = used
     return res, used
 
 

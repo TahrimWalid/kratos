@@ -111,6 +111,8 @@ File reputations (known-good / known-bad) are decided on your computer from sets
 
 Compliance reports are worked out on your computer from what Kratos reads; nothing about them is sent anywhere unless you export or forward it.
 
+Code checks read files from the code folders you confirm onto your Kratos computer — lockfiles, files scanned for secrets, the repository's own git files — use them in memory and keep only hashes and findings; nothing is run on the machine and no code is sent anywhere. (The opt-in AI code review is separate.)
+
 One optional feature, threat-intel enrichment, is **off by default** and, when you turn it on, sends an IP address to a reputation service to check it. It's clearly separate from the core analysis, and Kratos runs fully without it.
 
 ---
