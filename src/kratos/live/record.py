@@ -14,6 +14,7 @@ monitored machine, and nothing here calls a model.
 from __future__ import annotations
 
 import json
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -142,6 +143,16 @@ def running_packages(inv: dict[str, Any]) -> list[str]:
     return sorted({str(it["exe_package"]) for it in (inv.get("procs") or {}).values() if it.get("exe_package")})
 
 
+_UNIT_RE = re.compile(r"([A-Za-z0-9@._:-]{1,200}\.service)")
+
+
+def unit_of(cgroup: Any) -> str | None:
+    """The systemd service a process runs in, from its /proc/<pid>/cgroup line
+    ('0::/system.slice/gunicorn.service' -> 'gunicorn.service'), else None."""
+    found = _UNIT_RE.findall(str(cgroup or ""))
+    return found[-1] if found else None
+
+
 def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
     """Each listening socket with the program behind it, when this read could see it:
     {port, proto, address, seen, exe, package, lib_packages, maps}. `lib_packages`: the
@@ -170,11 +181,17 @@ def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
         exe = _L._exe_real_path(str(it.get("exe") or "")) if seen_exe else None
         pid = sock.get("pid")
         maps = ("unreadable" if pid in gaps else "read" if inv.get("maps_read") and it else "not_read")
+        parent = procs.get(it.get("ppid")) or {} if it else {}
         out.append({"port": port, "proto": proto.rstrip("6"), "address": proc_net_address(sock.get("local_addr")),
                     "seen": seen_exe,
                     "exe": exe or (str(it.get("exe")) if seen_exe else None),
                     "package": it.get("exe_package") if exe else None,
-                    "lib_packages": list(it.get("lib_packages") or []), "maps": maps})
+                    "lib_packages": list(it.get("lib_packages") or []), "maps": maps,
+                    # E.7a: where the serving process works (its code root), its systemd unit, and
+                    # its parent's folder (gunicorn / uwsgi / php-fpm masters own the workers)
+                    "pid": pid if isinstance(pid, int) else None, "comm": it.get("comm") or None,
+                    "cwd": it.get("cwd") or None, "unit": unit_of(it.get("cgroup")),
+                    "parent_cwd": parent.get("cwd") or None, "parent_comm": parent.get("comm") or None})
         if len(out) >= MAX_LISTENERS:
             break
     return out
