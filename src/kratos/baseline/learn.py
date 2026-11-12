@@ -275,14 +275,16 @@ class Model:
     counts: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # How much of a subject has been seen gates judging it (e.g. 20 sign-ins for an account).
+        # A forgotten key still counts here: forgetting makes that key new again, it doesn't
+        # make the account unknown.
         for (subj, key), e in self.entries.items():
             self.by_subject.setdefault(subj, {})[key] = e
-            if e.live:
-                self.counts[subj] = self.counts.get(subj, 0) + e.count
+            self.counts[subj] = self.counts.get(subj, 0) + e.count
 
     def _put(self, e: Entry) -> None:
         old = self.entries.get((e.subject, e.key))
-        if old is not None and old.live:
+        if old is not None:
             self.counts[e.subject] = self.counts.get(e.subject, 0) - old.count
         self.entries[(e.subject, e.key)] = e
         self.by_subject.setdefault(e.subject, {})[e.key] = e
@@ -350,10 +352,14 @@ class Model:
     def learn(self, o: D.Obs, hold: Hold | None) -> None:
         e = self.entries.get((o.subject, o.key))
         forget_s = self.settings.forget_days * DAY
-        if e is None or not e.live or (o.ts - e.last_seen > forget_s and e.count > 0 and e.accepted_at is None):
-            accepted = (e.accepted_at, e.accepted_by) if e is not None and e.live else (None, None)
-            e = Entry(o.subject, o.key, 0.0, o.ts, 0, o.ts, o.ts, accepted_at=accepted[0], accepted_by=accepted[1])
+        if e is None:
+            e = Entry(o.subject, o.key, 0.0, o.ts, 0, o.ts, o.ts)
             self._put(e)
+        elif not e.live or (o.ts - e.last_seen > forget_s and e.count > 0 and e.accepted_at is None):
+            # forgotten, or unseen for forget_days: learned again from this observation (the
+            # count stays, so the subject isn't treated as unknown)
+            e.forgotten_at = e.forgotten_by = None
+            e.weight, e.weight_at, e.first_seen = 0.0, o.ts, o.ts
         e.dirty = True
         if e.evicted_at is not None:
             e.evicted_at = None
@@ -377,8 +383,7 @@ class Model:
                 cnt, last = e.held.pop(fk)
                 add_weight(e, float(last), float(cnt), self.half_life_s)
                 e.count += int(cnt)
-                if e.live:
-                    self.counts[e.subject] = self.counts.get(e.subject, 0) + int(cnt)
+                self.counts[e.subject] = self.counts.get(e.subject, 0) + int(cnt)
                 e.last_seen = max(e.last_seen, float(last))
                 e.dirty = True
                 n += int(cnt)
@@ -413,18 +418,28 @@ def top(model: Model, subject: str, t: float, n: int = 3) -> list[tuple[str, flo
     return [(k, round(w, 1), c) for k, w, c in rows[:n]]
 
 
+def top_all(model: Model, t: float, n: int = 4) -> list[tuple[str, str, float]]:
+    rows = [(e.subject, e.key, decayed(e, t, model.half_life_s)) for e in model.entries.values()
+            if e.live and e.evicted_at is None]
+    rows.sort(key=lambda r: (-r[2], r[0], r[1]))
+    return [(s, k, round(w, 1)) for s, k, w in rows[:n]]
+
+
 def usual_hours(model: Model, subject: str, t: float) -> str:
     """Compact hour ranges an account usually signs in at ("weekdays 08:00-18:59")."""
     out = []
     for daytype in ("weekday", "weekend"):
-        ws = {}
+        ws, counts = {}, {}
         for e in model.subject_entries(subject):
             if e.key.endswith(" " + daytype):
                 ws[int(e.key[:2])] = decayed(e, t, model.half_life_s)
+                counts[int(e.key[:2])] = e.count
         total = sum(ws.values())
         if total <= 0:
             continue
-        hours = sorted(h for h, w in ws.items() if (w + 1.0) / (total + 24.0) >= model.settings.time_share)
+        # shown as usual: at least two sign-ins in that hour and a share above the threshold
+        hours = sorted(h for h, w in ws.items()
+                       if counts.get(h, 0) >= 2 and (w + 1.0) / (total + 24.0) >= model.settings.time_share)
         if not hours:
             continue
         ranges, start, prev = [], hours[0], hours[0]

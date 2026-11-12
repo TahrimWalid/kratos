@@ -354,6 +354,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "hashdb.online", "hashdb.max_files", "hashdb.max_file_mb", "hashdb.max_run_mb",
                           "hashdb.seconds", "hashdb.entropy_threshold", "hashdb.malwarebazaar_every_hours",
                           "compliance.max_age_hours", "compliance.na_max_days", "compliance.show_owner_hint",
+                          "baseline.learn_days", "baseline.max_per_day", "baseline.cooldown_hours",
+                          "baseline.half_life_days", "baseline.forget_days", "baseline.time_share",
+                          "baseline.rare_weight", "baseline.max_entries", "baseline.max_events_per_run",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -766,6 +769,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         for key, label, tail in self._hashdb_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._compliance_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._baseline_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
@@ -1226,6 +1231,31 @@ class SettingsScreen(ResilientWorkerHost, Screen):
              "on" if get(CS.ASK_OWNERS) else "off"),
         ]
 
+    # --- What's normal here (kratos.baseline, E.3) ---
+    def _baseline_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.baseline import settings as BS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith("baseline.")]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (BS.LEARN_DAYS, "What's normal: covered days before a deviation is raised",
+             f"{get(BS.LEARN_DAYS)} days (until then: 'still learning')"),
+            (BS.MAX_PER_DAY, "What's normal: most deviation findings per machine per day",
+             f"{get(BS.MAX_PER_DAY)} (the rest are counted in BASE-007)"),
+            (BS.COOLDOWN_HOURS, "What's normal: the same thing raised at most once in", f"{get(BS.COOLDOWN_HOURS)} hours"),
+            (BS.HALF_LIFE_DAYS, "What's normal: old activity counts half after", f"{get(BS.HALF_LIFE_DAYS)} days"),
+            (BS.FORGET_DAYS, "What's normal: unseen for this long counts as new again", f"{get(BS.FORGET_DAYS)} days"),
+            (BS.TIME_SHARE, "What's normal: a sign-in hour is unusual below this share",
+             f"{float(get(BS.TIME_SHARE)):.3f}"),
+            (BS.RARE_WEIGHT, "What's normal: seen at most twice and faded below this = like new",
+             f"{float(get(BS.RARE_WEIGHT)):.2f}"),
+            (BS.MAX_ENTRIES, "What's normal: most usual things kept per kind", f"{get(BS.MAX_ENTRIES)}"),
+            (BS.MAX_EVENTS_PER_RUN, "What's normal: most events learned per run", f"{get(BS.MAX_EVENTS_PER_RUN):,}"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1236,6 +1266,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.export import settings as _ES  # noqa: F401 -- and the export.* settings
         from kratos.hashdb import settings as _HDS  # noqa: F401 -- and the hashdb.* settings
         from kratos.compliance import settings as _CPS  # noqa: F401 -- and the compliance.* settings
+        from kratos.baseline import settings as _BLS  # noqa: F401 -- and the baseline.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1269,6 +1300,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         if key.startswith("compliance."):
             self._set_gen_status("Saved — applies to the next compliance report.", T.SAFE)
+            return
+        if key.startswith("baseline."):
+            self._set_gen_status("Saved — applies to the next baseline run.", T.SAFE)
             return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")

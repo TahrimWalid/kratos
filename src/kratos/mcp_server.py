@@ -355,6 +355,25 @@ def kratos_compliance(framework: str = "cis", target: str | None = None, group: 
     return doc if detail == "full" else RP.compact(doc)
 
 
+@mcp.tool()
+@_clean_for_client
+def kratos_baseline(target: str | None = None, kind: str | None = None) -> dict[str, Any]:
+    """Read-only: what Kratos has learned is normal on a machine (where accounts sign in from,
+    at which hours and how; sudo use; listeners; outbound peers; program starts) and today's
+    deviations, each with the usual pattern. "still learning" means no deviation can be
+    reported yet -- never that nothing unusual happened. Accepting something as normal,
+    forgetting, freezing and resetting are a person's decisions in the Kratos app -- there is
+    no MCP tool for them."""
+    from kratos import authz
+    from kratos.baseline import present as BP
+
+    try:
+        tk, scope = BP.resolve(_data_dir, authz.current_actor(), target or None)
+        return BP.compact(BP.view(_data_dir, tk, scope=scope, dim=kind or None))
+    except (BP.ViewError, authz.Denied) as e:
+        raise ValueError(f"refused: {e}") from None
+
+
 def _finding_states_for(data_dir: Path, target: str | None, state: str | None, limit: int) -> list[dict[str, Any]]:
     """The remembered findings (one machine, or every machine with None) with each one's
     latest verdict and open suggestions -- shared with `kratos serve`'s MCP door."""

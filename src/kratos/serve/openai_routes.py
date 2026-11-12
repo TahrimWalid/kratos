@@ -55,6 +55,8 @@ Commands that work here (no model call):
   /compliance [cis|iso27001|nis2]
                      how this machine (or group) stands against CIS / ISO 27001 / NIS2
                      -- evidence from Kratos's checks, not a certification
+  /baseline          what's normal on this machine and today's deviations ("still
+                     learning" is never "nothing unusual"); decisions are made in the app
   /decide <key> verify|false-positive|out-of-scope|reopen <reason>
   /decide <key> accept <days> <reason>
                      record a decision about a finding (investigators; recorded with your name)
@@ -70,7 +72,7 @@ Text Kratos quotes from a machine is shown inert: no image loads, no link is cli
 Your OWN messages are drawn by the chat app itself -- an image link you type there is
 loaded by the app, not by Kratos."""
 
-_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide", "/compliance")
+_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide", "/compliance", "/baseline")
 
 
 def _actor_label(client: Any) -> str:
@@ -280,6 +282,8 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
         return _render.kratos_text_markdown(_decide_text(text, target, data_dir))
     if word == "/compliance":
         return _render.kratos_text_markdown(_compliance_text(text, target, data_dir))
+    if word == "/baseline":
+        return _render.kratos_text_markdown(_baseline_text(target, data_dir))
     if word in ("/retest", "/hunt"):
         return None          # a turn of its own (slots, hourly limit) -- _serve_turn
     return None
@@ -335,6 +339,20 @@ def _compliance_text(text: str, target: str, data_dir: Path) -> str:
                                                        machine=None if group else target, group=group)
         return RP.compact_text(RP.build(data_dir, fw, machines, outside_scope=outside, label=label))
     except (RP.ReportError, authz.Denied) as e:
+        return f"Refused: {e}"
+
+
+def _baseline_text(target: str, data_dir: Path) -> str:
+    """/baseline: what's normal on the chat model's machine, read-only, scoped (E.3)."""
+    from kratos import authz
+    from kratos.baseline import present as BP
+
+    if str(target).startswith("@"):
+        return "A baseline is per machine: open a chat on one machine (kratos/<machine>)."
+    try:
+        tk, scope = BP.resolve(data_dir, authz.current_actor(), target)
+        return BP.to_text(BP.view(data_dir, tk, scope=scope))
+    except (BP.ViewError, authz.Denied) as e:
         return f"Refused: {e}"
 
 

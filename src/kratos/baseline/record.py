@@ -92,6 +92,22 @@ def privileged_accounts(data_dir: Path, target: str) -> set[str]:
     return out
 
 
+def local_accounts(data_dir: Path, target: str) -> set[str]:
+    """The machine's local accounts as its newest privileged-accounts read listed them
+    (empty when unknown)."""
+    from kratos.adapters.findings_engine import find_latest_inputs
+
+    path = find_latest_inputs(data_dir, target).get("privileged_accounts")
+    if path is None:
+        return set()
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return set()
+    names = (doc or {}).get("local_accounts") or []
+    return {str(n.get("user") if isinstance(n, dict) else n) for n in names if n}
+
+
 def _own_user(target: str, data_dir: Path) -> str | None:
     """The login Kratos reads this machine as: its own `sudo -n` reads are set aside."""
     try:
@@ -396,6 +412,9 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
                 else:
                     if o.dim == "sudo_use":
                         dev.detail["user_used_sudo_before"] = o.subject in sudo_users_before
+                    # what was usual BEFORE this observation is learned
+                    dev.detail["_usual"] = usual_pattern(models, dev, o.ts)
+                    dev.detail["_learned"] = learned_words(model, o.ts)
                     candidates.append(dev)
             if not model.frozen:
                 model.learn(o, hold)
@@ -433,8 +452,9 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
                     dev.detail["usual_elsewhere"] = ctx
             sev = J.severity(dev, privileged=privileged,
                              sudo_users=set() if not dev.detail.get("user_used_sudo_before") else {dev.subject})
-            fresh.append({**dev.as_dict(), "severity": sev, "usual": usual_pattern(models, dev, now),
-                          "learned": learned_words(models[dev.dim], now), "machine_time": machine_time(dev.ts, tz)})
+            usual, learned = dev.detail.pop("_usual", []), dev.detail.pop("_learned", "")
+            fresh.append({**dev.as_dict(), "severity": sev, "usual": usual, "learned": learned,
+                          "machine_time": machine_time(dev.ts, tz)})
         # The budget is per machine per day (the day the deviation happened, machine time): a
         # run that catches up on several days doesn't let one day crowd out another.
         raised, over = [], []
@@ -457,6 +477,7 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
         with S.immediate(conn):
             for name, m in models.items():
                 evicted = m.evict(now)
+                m.profile["evicted"] = int(m.profile["evicted"]) + evicted
                 for e in m.entries.values():
                     if e.dirty:
                         S.upsert_entry(conn, tk, name, m.generation, e.as_row())
@@ -467,7 +488,7 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
                     else float(m.profile["snapshot_high_water"])
                 S.update_profile(conn, tk, name, m.generation, status=status["status"], high_water=hw,
                                  snapshot_high_water=shw, snapshot_days=m.snapshot_days, samples=m.samples,
-                                 evicted=int(m.profile["evicted"]) + evicted, held_back=m.held_now(),
+                                 evicted=int(m.profile["evicted"]), held_back=m.held_now(),
                                  note=status.get("reason") or "", updated_at=now)
     kept = (prior + raised)[-MAX_KEPT:]
     doc = {
@@ -533,23 +554,35 @@ def learned_words(m: L.Model, now: float) -> str:
 
 
 def usual_pattern(models: dict[str, L.Model], dev: L.Deviation, now: float) -> list[str]:
-    """Kratos-written lines describing what's usual for this subject (top keys with weights)."""
+    """Kratos-written lines describing what was usual for this subject before the deviation
+    (its own key left out); for a subject never seen, what is usual on the machine."""
     m = models[dev.dim]
     out: list[str] = []
     if dev.dim in D.LOGIN_DIMS:
-        src = L.top(models["login_source"], dev.subject, now)
+        own = {"login_source": dev.key if dev.dim == "login_source" else None,
+               "login_method": dev.key if dev.dim == "login_method" else None}
+        src = [k for k, _, _ in L.top(models["login_source"], dev.subject, now, n=4) if k != own["login_source"]][:3]
         if src:
-            out.append("from " + ", ".join(k for k, _, _ in src))
+            out.append("from " + ", ".join(src))
         hours = L.usual_hours(models["login_time"], dev.subject, now)
         if hours:
             out.append(hours + " (machine time)")
-        meth = L.top(models["login_method"], dev.subject, now, n=2)
+        meth = [k for k, _, _ in L.top(models["login_method"], dev.subject, now, n=3) if k != own["login_method"]][:2]
         if meth:
-            out.append("by " + " or ".join(k for k, _, _ in meth))
+            out.append("by " + " or ".join(meth))
+        if not out:
+            out.append(f"this account had not signed in here before ({m.subject_count(dev.subject)} earlier sign-ins)")
+        return out
+    tops = [t for t in L.top(m, dev.subject, now, n=4) if t[0] != dev.key][:3]
+    if tops:
+        out.append(", ".join(f"{k} (x{c})" for k, _, c in tops))
     else:
-        tops = L.top(m, dev.subject, now)
-        if tops:
-            out.append(", ".join(f"{k} (x{c})" for k, _, c in tops))
+        machine = L.top_all(m, now, n=4)
+        word = {"listener": "listening on this machine", "outbound": "talking out from this machine",
+                "sudo_use": "sudo use on this machine", "program": "program starts on this machine"}.get(dev.dim, "")
+        if machine:
+            out.append(f"nothing recorded for {dev.subject} before; usual {word}: " +
+                       ", ".join(f"{s} {k}" for s, k, _ in machine))
     return out
 
 
@@ -589,6 +622,10 @@ def dim_status(m: L.Model, data_dir: Path, conn, tk: str, now: float, tz_name: s
         need = []
         if covered < m.settings.learn_days:
             need.append(f"{covered} of {m.settings.learn_days} covered days")
+            if dim.source == D.EVENT:
+                gaps = L.gap_notes(conn, tk, dim.sync_source or "auth", 2)
+                if gaps:
+                    need.append("not covered: " + "; ".join(gaps))
         if m.samples < dim.min_samples and not dim.per_subject:
             need.append(f"{m.samples} of {dim.min_samples} {'reads' if dim.source == D.SNAPSHOT else 'events'}")
         base["learning"] = ", ".join(need) or "learning"

@@ -2790,6 +2790,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _compliance_cmd.register(sub)  # E.2: `kratos compliance report|owner|na|level|history`
 
+    from kratos.cli import baseline_cmd as _baseline_cmd
+
+    _baseline_cmd.register(sub)  # E.3: `kratos baseline show|run|accept|forget|freeze|unfreeze|reset`
+
     seal_p = sub.add_parser(
         "seal",
         help="Journal sealing (forward secure sealing): keep a machine's verification key here and check its "

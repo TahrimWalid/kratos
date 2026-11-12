@@ -159,7 +159,9 @@ def _login_message(m: Machine, user: str, ip: str, method: str) -> str:
     return f"Accepted publickey for {user} from {ip} port {port} ssh2: ED25519 {m.user_fp.get(user, _fp(user))}"
 
 
-def write(home: Path, machines: list[Machine], end: datetime, days: int) -> dict:
+def write(home: Path, machines: list[Machine], end: datetime, days: int, *,
+          gaps: list[tuple[float, float]] | None = None, note: str = "generated gap: log sync was not running") -> dict:
+    """`gaps`: stretches log sync did not cover (recorded as gaps, not as covered spans)."""
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
     from kratos.adapters.auth_log_parse import classify_auth_message
     from kratos.collect.sync import cursors
@@ -172,11 +174,15 @@ def write(home: Path, machines: list[Machine], end: datetime, days: int) -> dict
     for m in machines:
         ctx = C.ReadContext(target=m.target, transport="ssh", read=C.READ_JOURNAL_AUTH)
         events = []
-        for ts, user, ip, method in sorted(m.logins):
+
+        def synced(ts: float) -> bool:
+            return not any(gs <= ts < ge for gs, ge in gaps or ())
+
+        for ts, user, ip, method in sorted(x for x in m.logins if synced(x[0])):
             msg = _login_message(m, user, ip, method)
             iso = datetime.fromtimestamp(ts, timezone.utc).isoformat()
             events.append(C.from_auth_event(classify_auth_message(iso, None, "sshd", msg, msg), ctx=ctx))
-        for ts, user, run_as, cmd in sorted(m.sudo):
+        for ts, user, run_as, cmd in sorted(x for x in m.sudo if synced(x[0])):
             msg = f"{user} : TTY=pts/0 ; PWD=/home/{user} ; USER={run_as} ; COMMAND={cmd}"
             iso = datetime.fromtimestamp(ts, timezone.utc).isoformat()
             events.append(C.from_auth_event(classify_auth_message(iso, None, "sudo", msg, msg), ctx=ctx))
@@ -186,8 +192,10 @@ def write(home: Path, machines: list[Machine], end: datetime, days: int) -> dict
         day = 86400
         t = start
         while t < end.timestamp():
-            cursors.add_span(data, m.target, "auth", t, min(t + day, end.timestamp()), complete=True,
-                             note="generated history")
+            hi = min(t + day, end.timestamp())
+            in_gap = any(gs < hi and t < ge for gs, ge in gaps or ())
+            cursors.add_span(data, m.target, "auth", t, hi, complete=not in_gap,
+                             note=note if in_gap else "generated history")
             t += day
         live = data / "live"
         live.mkdir(parents=True, exist_ok=True)
@@ -224,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end", help="ISO time the history ends (default: now, rounded down to the hour)")
     ap.add_argument("--own-fingerprint", help="the SSH key fingerprint Kratos's own logins use (default: a fixed one)")
     ap.add_argument("--own-user", default="ubuntu")
+    ap.add_argument("--gap-days", type=int, default=0, help="leave this many days (ending a week ago) uncovered")
     args = ap.parse_args(argv)
     home = args.home.expanduser().resolve()
     data = home / "data"
@@ -258,7 +267,11 @@ def main(argv: list[str] | None = None) -> int:
         for p in plants:
             m.plant(p, end)
         machines.append(m)
-    counts = write(home, machines, end, args.days)
+    gaps = None
+    if args.gap_days:
+        g_end = end - timedelta(days=7)
+        gaps = [((g_end - timedelta(days=args.gap_days)).timestamp(), g_end.timestamp())]
+    counts = write(home, machines, end, args.days, gaps=gaps)
     manifest = {"seed": args.seed, "days": args.days, "end": end.isoformat(), "own_fingerprint": own_fp,
                 "own_user": args.own_user, "machines": [
                     {"target": m.target, "zone": m.zone_name, **counts[m.target], "planted": m.planted}

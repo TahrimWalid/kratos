@@ -255,10 +255,12 @@ def decisions(conn: sqlite3.Connection, target_key: str, limit: int = 200) -> li
 def absorbed_exceptions(conn: sqlite3.Connection, target_key: str) -> set[int]:
     """Lifecycle decision ids already turned into "accepted as normal" marks."""
     out: set[int] = set()
-    for r in conn.execute("SELECT details FROM baseline_decisions WHERE target_key = ? AND kind = "
-                          "'accept_from_finding'", (target_key,)):
+    for r in conn.execute("SELECT details FROM baseline_decisions WHERE target_key = ? AND kind IN "
+                          "('accept', 'accept_from_finding')", (target_key,)):
         try:
-            out.add(int(json.loads(r[0] or "{}").get("exception_id")))
+            value = json.loads(r[0] or "{}").get("exception_id")
+            if value is not None:
+                out.add(int(value))
         except (TypeError, ValueError):
             continue
     return out
