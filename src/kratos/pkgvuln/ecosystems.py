@@ -19,6 +19,14 @@ from typing import Any
 FAMILY_DEB = "deb"
 FAMILY_RPM = "rpm"
 FAMILY_APK = "apk"
+# E.7a: OSV's language ecosystems (one folder each; every advisory in it is about that ecosystem).
+FAMILY_PYPI, FAMILY_NPM, FAMILY_COMPOSER = "pypi", "npm", "composer"
+FAMILY_GO, FAMILY_GEM, FAMILY_CARGO = "golang", "gem", "cargo"
+LANG: dict[str, tuple[str, str]] = {      # lower-case key -> (OSV ecosystem / folder, version family)
+    "pypi": ("PyPI", FAMILY_PYPI), "npm": ("npm", FAMILY_NPM), "packagist": ("Packagist", FAMILY_COMPOSER),
+    "go": ("Go", FAMILY_GO), "rubygems": ("RubyGems", FAMILY_GEM), "crates.io": ("crates.io", FAMILY_CARGO),
+}
+LANG_TOPS = frozenset(top for top, _f in LANG.values())
 
 OSV_BASE = "https://osv-vulnerabilities.storage.googleapis.com"
 
@@ -33,9 +41,15 @@ class Selector:
     top: str            # the OSV folder: "Ubuntu"
     family: str         # deb | rpm | apk (which version comparison, which package name)
 
+    @property
+    def language(self) -> bool:
+        return self.distro == "lang"
+
     def matches(self, ecosystem: str) -> bool:
         """Is `ecosystem` (an advisory's package.ecosystem) this release's main data?"""
         e = ecosystem
+        if self.distro == "lang":
+            return e == self.top
         if self.distro == "debian":
             return e == f"Debian:{self.release}"
         if self.distro == "ubuntu":
@@ -58,6 +72,8 @@ class Selector:
     def raw_marker(self) -> bytes:
         """Bytes every advisory relevant to this release contains -- a cheap filter
         before parsing a whole export (most of Ubuntu's 7 GB is other releases)."""
+        if self.distro == "lang":
+            return f'"{self.top}"'.encode()
         return {
             "debian": f'"Debian:{self.release}"',
             "ubuntu": f'"Ubuntu:{self.release}',
@@ -81,10 +97,14 @@ _DISTROS: dict[str, tuple[str, str]] = {
 def parse_selector(text: str) -> Selector:
     """'ubuntu:22.04' -> Selector. Raises ValueError with a plain message."""
     key = str(text or "").strip().lower()
+    if key in LANG:
+        top, family = LANG[key]
+        return Selector(top, "lang", top, top, family)
     m = _SELECTOR_RE.fullmatch(key)
     if not m:
         raise ValueError(f"{text!r} is not a release Kratos knows how to check "
-                         "(examples: debian:12, ubuntu:22.04, alpine:3.22, rocky:9, almalinux:9, rhel:9)")
+                         "(examples: debian:12, ubuntu:22.04, alpine:3.22, rocky:9, almalinux:9, rhel:9; language "
+                         "ecosystems: PyPI, npm, Packagist, Go, RubyGems, crates.io)")
     distro, release = m.groups()
     if distro in ("debian", "rocky", "almalinux", "rhel"):
         release = release.split(".")[0]

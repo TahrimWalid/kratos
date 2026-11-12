@@ -71,11 +71,15 @@ Issues = "https://github.com/TahrimWalid/kratos/issues"
 # second opinion on every shipped Sigma rule's samples (tests/test_detect_pack.py), never shipped.
 # case-utils: tests/test_export_case_uco.py validates the incident bundle's CASE/UCO graph with
 # case_validate (CASE 1.5.0, its default). Test-only: rdflib/pyshacl never become runtime dependencies.
-test = ["pytest", "pysigma>=2.0,<3; python_version >= '3.11'",
+test = ["pytest", "PyYAML>=6.0", "pysigma>=2.0,<3; python_version >= '3.11'",
         "pysigma-backend-sqlite==2.1.1; python_version >= '3.11'", "case-utils==0.18.0"]
 # sigma: compile your own Sigma rules into a Kratos rule pack (`kratos detect import`). The
 # shipped pack is already compiled; detection itself never needs pySigma. Python 3.11+.
 sigma = ["pysigma>=2.0,<3; python_version >= '3.11'"]
+# code: read pnpm-lock.yaml in deployed code folders (E.7a). PyYAML (MIT), used only through
+# kratos.code.deps.yaml_safe: anchors, aliases and deep nesting are refused from the parser's
+# events before anything is built. Without it pnpm lockfiles are a stated gap.
+code = ["PyYAML>=6.0"]
 # Contributor tooling: lint, build and check the package (scripts/ci).
 dev = ["ruff>=0.15,<1", "build>=1.2", "twine>=5"]
 # otel: send a copy of each run record (timings, token counts -- never tool results or

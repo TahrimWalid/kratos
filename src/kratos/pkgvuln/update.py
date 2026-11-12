@@ -50,7 +50,7 @@ from urllib.parse import quote
 
 from kratos.pkgvuln import index as _index
 from kratos.pkgvuln import ssvc_source as _ssvc
-from kratos.pkgvuln.ecosystems import OSV_BASE, Selector, parse_selector
+from kratos.pkgvuln.ecosystems import LANG_TOPS, OSV_BASE, Selector, parse_selector
 
 KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 EPSS_URL = "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz"
@@ -236,7 +236,17 @@ def _intervals(events: list[dict[str, Any]]) -> list[tuple[str, str | None, str 
     return out
 
 
+def _pypi_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def _record_severity(rec: dict[str, Any], top: str) -> str:
+    if top in LANG_TOPS:
+        if str(rec.get("id") or "").startswith("MAL-"):
+            return "malicious"                     # OSV's malicious-package reports
+        ds = rec.get("database_specific") if isinstance(rec.get("database_specific"), dict) else {}
+        sev = str(ds.get("severity") or "").lower()
+        return {"moderate": "medium"}.get(sev, sev) if sev in ("low", "moderate", "medium", "high", "critical") else ""
     for s in rec.get("severity") or []:
         if isinstance(s, dict) and s.get("type") == "Ubuntu" and s.get("score"):
             return str(s["score"]).lower()
@@ -297,7 +307,8 @@ class _Writer:
         if rec.get("withdrawn") or osv_id.startswith(_NON_SECURITY_PREFIXES):
             return False
         cves = record_cves(rec)
-        if not cves:
+        lang = top in LANG_TOPS
+        if not cves and not lang:          # language advisories (GHSA, PYSEC, MAL, GO, RUSTSEC) may have none
             return False
         if _PRECISE_RE.match(osv_id):
             self.conn.executemany("INSERT INTO precise_cves (top, osv_id, cve) VALUES (?, ?, ?)",
@@ -313,7 +324,10 @@ class _Writer:
             if eid is None or not name:
                 continue
             sev = _affected_severity(a) or None
-            eco_ranges = [r for r in a.get("ranges") or [] if isinstance(r, dict) and r.get("type") == "ECOSYSTEM"]
+            kinds = ("ECOSYSTEM", "SEMVER") if lang else ("ECOSYSTEM",)
+            eco_ranges = [r for r in a.get("ranges") or [] if isinstance(r, dict) and r.get("type") in kinds]
+            if top == "PyPI":
+                name = _pypi_name(name)
             for r in eco_ranges:
                 for intro, fixed, last in _intervals(r.get("events") or []):
                     ranges.append((eid, name, intro, fixed, last, sev))
@@ -681,6 +695,11 @@ def resolve_selectors(data_dir: Path, requested: Iterable[str] | None) -> list[S
 
     keys.update(inventory_store.known_selectors(data_dir))
     keys.update(_index.held_selectors(data_dir))
+    # E.7a: the language ecosystems confirmed code folders' dependencies name (a pure-PHP
+    # host never downloads npm's data)
+    from kratos.code import store as _code_store
+
+    keys.update(e.lower() for e in _code_store.ecosystems_seen(data_dir))
     out = []
     for k in sorted(keys):
         try:
