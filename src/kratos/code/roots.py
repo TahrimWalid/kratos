@@ -100,8 +100,11 @@ def candidates(live: dict[str, Any] | None, facts: dict[str, Any] | None, cfg: A
                 if home:
                     listening_homes.add(home)
     web_servers = [x for x in listeners if _is_web_server(x)]
-    web_serving = [{"pid": x.get("pid"), "exe": x.get("exe"), "address": x.get("address"), "port": x.get("port"),
-                    "proto": x.get("proto"), "via": "web server"} for x in web_servers]
+    if not web_servers:      # over SSH a root-run web server's program isn't visible: its usual ports stand in
+        web_servers = [x for x in listeners if not x.get("seen") and x.get("port") in (80, 443, 8080, 8443)]
+    web_serving = [{"pid": x.get("pid"), "exe": x.get("exe") or f"the program on port {x.get('port')} (not visible "
+                    "to this login)", "address": x.get("address"), "port": x.get("port"), "proto": x.get("proto"),
+                    "via": "web server"} for x in web_servers]
     if cfg is not None:
         for r in cfg.served_roots():
             add(r["path"], "web_root", f"{r['how']} of {r['site']}")
@@ -129,10 +132,14 @@ def candidates(live: dict[str, Any] | None, facts: dict[str, Any] | None, cfg: A
         if not wd:
             continue
         wd = wd.lstrip("-")
+        running = (live or {}).get("running_units")
         if unit in listening_units:
             add(wd, "systemd", f"systemd unit {unit} sets WorkingDirectory and its process listens")
+        elif isinstance(running, list) and unit not in running:
+            continue                                     # not running: nothing serves from it
         elif not listeners or any(not x.get("seen") for x in listeners):
-            add(wd, "systemd", f"systemd unit {unit} sets WorkingDirectory (this read couldn't tell whether it listens)")
+            add(wd, "systemd", f"systemd unit {unit} sets WorkingDirectory and is running (this read couldn't "
+                               "tell whether it listens)")
     for row in (containers or {}).get("rows") or []:
         if not isinstance(row, dict) or not row.get("running") or not row.get("ports"):
             continue

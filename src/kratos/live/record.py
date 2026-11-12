@@ -86,6 +86,11 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
         "blind": blind_spots(inv),
         "listeners": listeners(inv),
         "outbound": outbound(inv),          # E.3: established connections out, per program (baselines)
+        # E.7a: the systemd services that have a running process (cgroup lines are readable for
+        # every process, even over SSH), so a WorkingDirectory of a service that isn't running
+        # is never offered as a code folder
+        "running_units": sorted({u for u in (unit_of(it.get("cgroup")) for it in (inv.get("procs") or {}).values())
+                                 if u})[:500],
         # D.3: what SSVC exposure reads -- packages behind any running program, whether
         # this read looked at listening processes' libraries, the machine's own addresses
         "running_packages": running_packages(inv),

@@ -106,8 +106,8 @@ def to_text(v: dict[str, Any]) -> str:
         if r["git"]:
             g = r["git"]
             c = g["counts"]
-            lines.append(f"      git: {g.get('ref') or 'detached'} @ {str(g.get('commit') or '?')[:12]}; "
-                         + ", ".join(f"{n} {k}" for k, n in sorted(c.items()) if k != "ignored") or "no drift")
+            drift = ", ".join(f"{n} {k}" for k, n in sorted(c.items()) if k != "ignored") or "no drift"
+            lines.append(f"      git: {g.get('ref') or 'detached'} @ {str(g.get('commit') or '?')[:12]}; {drift}")
         elif r["no_git"]:
             lines.append(f"      no git: compared with the state accepted {r['accepted_at'] or 'at the first read'}")
         if r["read"]:

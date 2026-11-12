@@ -155,9 +155,10 @@ def judge_root(r: dict[str, Any], cfg: W.Config, *, known_bad: set[str] | None =
     for rel, why in changed:
         f = files.get(rel) or {}
         v = served(rel)
-        if v["executed"] and is_script(rel, f.get("mode")):
+        name_is_code = is_code(rel)               # by extension: a chmod +x on a stylesheet stays low
+        if v["executed"] and name_is_code:
             sev = "high"
-        elif is_code(rel) or is_script(rel, f.get("mode")):
+        elif name_is_code:
             sev = "medium"
         else:
             sev = "low"

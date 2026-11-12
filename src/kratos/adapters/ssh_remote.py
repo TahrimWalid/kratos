@@ -1441,9 +1441,9 @@ def fetch_code_inventory(root: bytes, *, max_files: int, max_depth: int, seconds
                 continue
             chunks.append(res.stdout)
             if "\nP\tlast" in "\n" + res.stdout:
-                return SSHResult(ok=True, returncode=0, stdout="".join(chunks), via="subagent")
+                return SSHResult(ok=True, returncode=0, stdout="".join(chunks), stderr="", via="subagent")
             page += 1
-        return SSHResult(ok=False, returncode=-1, stdout="", via="subagent", stderr="via the sub-agent: too many pages")
+        return SSHResult(ok=False, returncode=-1, stdout="", stderr="via the sub-agent: too many pages", via="subagent")
 
     result = _route("code_inventory", params, over_ssh, agent_call=via_agent)
     if not result.ok:

@@ -28,7 +28,7 @@ from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic a
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeText as Text
 
-STATUS_STYLE = {"confirmed": T.SAFE, "candidate": T.ATTENTION, "ignored": T.TEXT_DIM}
+STATUS_STYLE = {"confirmed": T.SAFE, "candidate": T.ATTENTION, "ignored": T.TEXT_DIM, "stale": T.TEXT_DIM}
 
 
 class CodeScreen(Screen):

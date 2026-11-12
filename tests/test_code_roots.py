@@ -208,3 +208,37 @@ def test_same_repo_two_machines(tmp_path):
     R.add(tmp_path, "192.0.2.21", "/srv/app", actor=owner())
     a, b = S.roots(tmp_path, M), S.roots(tmp_path, "192.0.2.21")
     assert len(a) == len(b) == 1 and a[0]["id"] != b[0]["id"]
+
+
+def test_a_systemd_unit_that_is_not_running_is_never_offered():
+    facts = {"units": {"/lib/systemd/system/oneshot.service": ["WorkingDirectory=/var/lib/oneshot"],
+                       "/etc/systemd/system/app.service": ["WorkingDirectory=/srv/app"]}}
+    unseen = {"port": 80, "proto": "tcp", "address": "0.0.0.0", "seen": False, "exe": None, "pid": None, "cwd": None}
+    lv = {**live(unseen), "running_units": ["app.service", "ssh.service"]}
+    cands, _n = R.candidates(lv, facts, W.Config(), None)
+    assert [c["path"] for c in cands] == ["/srv/app"]
+    assert "is running" in cands[0]["why"][0]["detail"]
+
+
+def test_an_unseen_listener_on_port_80_stands_in_for_the_web_server():
+    unseen = {"port": 80, "proto": "tcp", "address": "0.0.0.0", "seen": False, "exe": None, "pid": None, "cwd": None}
+    cands, _n = R.candidates(live(unseen), {}, cfg_of(NGINX), None)
+    serving = cands[0]["serving"]
+    assert serving and serving[0]["port"] == 80 and "not visible to this login" in serving[0]["exe"]
+
+
+def test_a_candidate_no_longer_offered_goes_stale_and_comes_back(tmp_path):
+    S.offer(tmp_path, M, [{"path": "/srv/a", "why": [], "serving": []}, {"path": "/srv/b", "why": [], "serving": []}])
+    R.confirm(tmp_path, M, "/srv/b", actor=owner())
+    S.offer(tmp_path, M, [])
+    st = {r["path"]: r["status"] for r in S.roots(tmp_path, M)}
+    assert st == {"/srv/a": "stale", "/srv/b": "confirmed"}            # a confirmed folder is never touched
+    S.offer(tmp_path, M, [{"path": "/srv/a", "why": [], "serving": []}])
+    assert {r["path"]: r["status"] for r in S.roots(tmp_path, M)}["/srv/a"] == "candidate"
+
+
+def test_empty_glob_includes_in_read_folders_are_not_partial_reads():
+    c = cfg_of({"/etc/nginx/nginx.conf": "include /etc/nginx/modules-enabled/*.conf; http { include "
+                "/etc/nginx/conf.d/*.conf; include /opt/app/nginx/*.conf; include /etc/nginx/extra.conf; }"})
+    assert c.notes == ["config partly read: include /opt/app/nginx/*.conf not read",
+                       "config partly read: include /etc/nginx/extra.conf not read"]

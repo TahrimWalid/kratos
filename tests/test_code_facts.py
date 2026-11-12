@@ -284,3 +284,30 @@ def test_records_never_carry_a_tab_or_newline_from_a_name():
         f, e = CF.enc(raw)
         assert "\t" not in e and "\n" not in e
         assert CF.dec(f, e) == raw
+
+
+def test_inventory_pages_through_the_sub_agent(tmp_path, monkeypatch):
+    """The agent route of fetch_code_inventory: pages joined, a lost page restarts once."""
+    from kratos.adapters import ssh_remote
+    from kratos.subagent import routing
+
+    r = tree(tmp_path)
+    full = CF.inventory_output(os.fsencode(str(r)), git=False)["stdout"]
+    pages = CF.paginate(full, page_bytes=600)
+    assert len(pages) > 2
+    calls = []
+
+    def agent_read(link, probe, params):
+        calls.append(params["page"])
+        if params["page"] == 2 and calls.count(2) == 1:
+            return {"status": "ok", "data": {"stdout": "M\tpage_lost\t1\nEND\n", "returncode": 0}}
+        return {"status": "ok", "data": {"stdout": pages[params["page"]], "returncode": 0}}
+
+    link = routing.Link(host="192.0.2.40", target_id="tgt_x", mode=routing.MODE_SUBAGENT, name="lab")
+    monkeypatch.setattr(routing, "active_link", lambda: link)
+    monkeypatch.setattr(routing, "agent_read", agent_read)
+    inv = ssh_remote.fetch_code_inventory(os.fsencode(str(r)), max_files=CF.MAX_FILES, max_depth=CF.MAX_DEPTH,
+                                          seconds=60, skip=CF.SKIP_DIRS, max_pack_mb=16)
+    assert isinstance(inv, dict) and inv["via"] == "subagent"
+    assert inv["files"] == CF.parse_inventory(full)["files"]
+    assert calls[:3] == [0, 1, 2] and calls[3] == 0              # restarted from page 0 after the lost page

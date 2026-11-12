@@ -34,6 +34,21 @@ CGI_EXTS = (".cgi", ".pl")
 _HARMLESS_INCLUDES = ("fastcgi_params", "fastcgi.conf", "mime.types", "proxy_params", "uwsgi_params",
                       "scgi_params", "koi-utf", "koi-win", "win-utf")
 NGINX_PREFIX = "/etc/nginx"
+# Folders the configuration read covers with a glob: an include glob there that matches
+# nothing is an empty folder, not something Kratos failed to read.
+_READ_GLOB_DIRS = ("/etc/nginx", "/etc/nginx/conf.d", "/etc/nginx/sites-enabled", "/etc/nginx/snippets",
+                   "/etc/nginx/default.d", "/etc/apache2/sites-enabled", "/etc/apache2/conf-enabled",
+                   "/etc/apache2/mods-enabled", "/etc/httpd/conf.d", "/etc/httpd/conf.modules.d")
+
+
+def _harmless_include(pattern: str, prefix: str) -> bool:
+    """An include that can't say where code lives (parameter files, module loading), or a
+    glob over a folder the read already covers (empty there means empty)."""
+    full = pattern if pattern.startswith("/") else posixpath.join(prefix, pattern)
+    base = full.rsplit("/", 1)[-1]
+    if base.startswith(_HARMLESS_INCLUDES) or "/modules-enabled/" in full or "/modules-available/" in full:
+        return True
+    return any(c in base for c in "*?[") and full.rsplit("/", 1)[0] in _READ_GLOB_DIRS
 
 
 @dataclass
@@ -197,7 +212,7 @@ class _Loader:
         for name, args, kids in tree:
             if name == "include" and args and kids is None:
                 hits = self.resolve(args[0])
-                if not hits and not args[0].rsplit("/", 1)[-1].startswith(_HARMLESS_INCLUDES):
+                if not hits and not _harmless_include(args[0], self.prefix):
                     self.notes.append(f"config partly read: include {args[0]} not read")
                 for h in hits:
                     out.extend(self.load(h, stack))

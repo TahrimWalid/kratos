@@ -29,8 +29,9 @@ from kratos.storage.sqlite_files import connect_store
 
 COMPONENT = "code"
 TABLES = ("code_roots", "code_root_events", "code_files", "code_deps")
-STATUSES = ("candidate", "confirmed", "ignored")
-EVENT_KINDS = ("offered", "confirmed", "ignored", "unignored", "added", "accepted_state", "gone", "back")
+STATUSES = ("candidate", "confirmed", "ignored", "stale")
+EVENT_KINDS = ("offered", "confirmed", "ignored", "unignored", "added", "accepted_state", "gone", "back",
+               "no_longer_offered")
 
 
 def _step_1(conn: sqlite3.Connection) -> None:
@@ -40,7 +41,7 @@ def _step_1(conn: sqlite3.Connection) -> None:
           id INTEGER PRIMARY KEY,
           target_key TEXT NOT NULL,
           path TEXT NOT NULL,
-          status TEXT NOT NULL,                 -- candidate | confirmed | ignored
+          status TEXT NOT NULL,                 -- candidate | confirmed | ignored | stale (no longer offered)
           why TEXT NOT NULL DEFAULT '[]',       -- JSON [{kind, detail}] -- Kratos's words
           serving TEXT NOT NULL DEFAULT '[]',   -- JSON [{pid, exe, address, port, via}]
           source TEXT NOT NULL,                 -- discovered | person
@@ -188,9 +189,17 @@ def offer(data_dir: Path | str, target_key: str, candidates: Iterable[dict[str, 
     """Record what discovery offered: new folders become candidates (an `offered` event);
     known ones keep their status (a person's ignore stays) and get their reasons refreshed."""
     now = time.time() if now is None else now
+    candidates = list(candidates)
+    offered = {c["path"] for c in candidates}
     conn = connect(data_dir)
     try:
         with conn:
+            # a candidate discovery no longer offers stops asking for a decision (never read either way)
+            for row in conn.execute("SELECT * FROM code_roots WHERE target_key = ? AND status = 'candidate'",
+                                    (target_key,)).fetchall():
+                if row["path"] not in offered:
+                    conn.execute("UPDATE code_roots SET status = 'stale' WHERE id = ?", (row["id"],))
+                    event(conn, dict(row), "no_longer_offered", at=now)
             for c in candidates:
                 row = conn.execute("SELECT * FROM code_roots WHERE target_key = ? AND path = ?",
                                    (target_key, c["path"])).fetchone()
@@ -204,8 +213,11 @@ def offer(data_dir: Path | str, target_key: str, candidates: Iterable[dict[str, 
                     event(conn, {"id": cur.lastrowid, "target_key": target_key, "path": c["path"]}, "offered",
                           at=now, detail="; ".join(str(w.get("detail")) for w in c.get("why") or [])[:400])
                 else:
-                    conn.execute("UPDATE code_roots SET why = ?, serving = ?, last_offered = ? WHERE id = ?",
-                                 (why, serving, now, row["id"]))
+                    status = "candidate" if row["status"] == "stale" else row["status"]
+                    conn.execute("UPDATE code_roots SET why = ?, serving = ?, last_offered = ?, status = ? WHERE id = ?",
+                                 (why, serving, now, status, row["id"]))
+                    if row["status"] == "stale":
+                        event(conn, dict(row), "offered", at=now, detail="offered again")
         return roots(data_dir, target_key)
     finally:
         conn.close()
