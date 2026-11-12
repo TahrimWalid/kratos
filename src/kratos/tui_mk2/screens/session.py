@@ -127,6 +127,8 @@ _PALETTE_COMMANDS = [
     ("/users", "people who may use Kratos through a chat client or MCP: roles, machines, tokens, Open WebUI "
                "mappings (owner only)"),
     ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
+    ("/code", "the code this machine serves — folders found (confirm or ignore each), drift against git, "
+              "vulnerable dependencies, secrets; nothing is run there (/code <machine>)"),
     ("/baseline", "what's normal on this machine — learning status, the usual places, hours, sudo use, listeners; "
                   "accept a deviation as normal, freeze after an incident (/baseline <machine>)"),
     ("/compliance", "how this machine (or @group) stands against CIS / ISO 27001 / NIS2 — pass only with fresh proof, "
@@ -1147,6 +1149,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self.app.push_screen(OutboxScreen(self._data_dir))
         elif cmd in ("/compliance", "/comp"):
             self._open_compliance(rest)
+        elif cmd == "/code":
+            from kratos.tui_mk2.screens.code import CodeScreen
+
+            machine = rest.strip().split()[0] if rest.strip() else (_kconfig.get_active_target() or None)
+            if machine and machine.startswith("@"):
+                self._emit(R.note_line("/code is per machine: /code <machine>"))
+            else:
+                self.app.push_screen(CodeScreen(self._data_dir, machine=machine))
         elif cmd in ("/baseline", "/normal"):
             from kratos.tui_mk2.screens.baseline import BaselineScreen
 

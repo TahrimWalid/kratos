@@ -374,6 +374,23 @@ def kratos_baseline(target: str | None = None, kind: str | None = None) -> dict[
         raise ValueError(f"refused: {e}") from None
 
 
+@mcp.tool()
+@_clean_for_client
+def kratos_code(target: str | None = None) -> dict[str, Any]:
+    """Read-only: the code folders a machine serves -- candidates with why, confirmed folders
+    with their git state, drift counts, dependencies and secrets (kinds and places, never a
+    value). Confirming, ignoring or adding a folder and accepting a deploy are a person's
+    decisions in the Kratos app -- there is no MCP tool for them."""
+    from kratos import authz
+    from kratos.code import present as CP
+
+    try:
+        tk, _scope = CP.resolve_code_reader(_data_dir, authz.current_actor(), target or None)
+        return CP.compact(CP.view(_data_dir, tk))
+    except (CP.ViewError, authz.Denied) as e:
+        raise ValueError(f"refused: {e}") from None
+
+
 def _finding_states_for(data_dir: Path, target: str | None, state: str | None, limit: int) -> list[dict[str, Any]]:
     """The remembered findings (one machine, or every machine with None) with each one's
     latest verdict and open suggestions -- shared with `kratos serve`'s MCP door."""

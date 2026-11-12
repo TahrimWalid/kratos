@@ -556,7 +556,7 @@ def test_mcp_tools_list_is_deterministic_and_has_no_writing_tool(env):
     names = [t["name"] for t in _mcp(env, "tools/list").json()["result"]["tools"]]
     assert names == ["kratos_start_investigation", "kratos_get_investigation", "kratos_get_findings",
                      "kratos_list_sessions", "kratos_finding_states", "kratos_compliance", "kratos_baseline",
-                     "kratos_hunt"]
+                     "kratos_code", "kratos_hunt"]
     assert names == [t["name"] for t in _mcp(env, "tools/list").json()["result"]["tools"]]
 
 

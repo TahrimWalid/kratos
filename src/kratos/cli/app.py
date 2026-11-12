@@ -460,6 +460,15 @@ def cmd_vulndb_update(args: argparse.Namespace) -> int:
                   + (f" ({info['detail']})" if info.get("detail") else ""))
         return 0
     wanted = [x.strip() for x in (args.ecosystems or "").split(",") if x.strip()] or None
+    if getattr(args, "for_roots", False):
+        if wanted:
+            print("[KRATOS] --for-roots and --ecosystems can't be used together", file=sys.stderr)
+            return 2
+        from kratos.code import store as _code_store
+
+        seen = _code_store.ecosystems_seen(data_dir)
+        print("[KRATOS] Language ecosystems in confirmed code folders: " + (", ".join(seen) or "none yet (confirm a "
+              "folder and run a code check first)") + "; the distributions Kratos knows are kept.")
     print("[KRATOS] Updating the package-vulnerability data (no package list is sent; only public files are "
           "downloaded) ...", flush=True)
     result = _vupdate.run_update(data_dir, selectors=wanted, full=args.full,
@@ -469,6 +478,7 @@ def cmd_vulndb_update(args: argparse.Namespace) -> int:
         from kratos.collect import state as _cstate
 
         _cstate.expire(data_dir, "packages")
+        _cstate.expire(data_dir, "code")          # E.7a: dependencies are matched again at the next code check
         print(f"[KRATOS] Took {result.seconds:.0f} s. Data sources and their terms: `kratos vulndb-update --about`.")
         _rematch_stored_packages(data_dir)
     return 0 if result.ok else 1
@@ -2536,6 +2546,9 @@ def build_parser() -> argparse.ArgumentParser:
     vulndb_p.add_argument("--ecosystems", default=None,
                           help="Releases to hold, comma-separated (e.g. ubuntu:22.04,debian:12,alpine:3.22,rocky:9). "
                                "Default: every release Kratos has seen in a machine's package check")
+    vulndb_p.add_argument("--for-roots", action="store_true",
+                          help="Also download the language ecosystems (PyPI, npm, Packagist, Go, RubyGems, crates.io) "
+                               "that confirmed code folders use -- only those (the default does this too)")
     vulndb_p.add_argument("--full", action="store_true", help="Download everything again instead of only what changed")
     vulndb_p.add_argument("--status", action="store_true", help="Show what the current data holds and how old it is")
     vulndb_p.add_argument("--about", action="store_true", help="Show the data sources and their licences/notices")
@@ -2793,6 +2806,10 @@ def build_parser() -> argparse.ArgumentParser:
     from kratos.cli import baseline_cmd as _baseline_cmd
 
     _baseline_cmd.register(sub)  # E.3: `kratos baseline show|run|accept|forget|freeze|unfreeze|reset`
+
+    from kratos.cli import code_cmd as _code_cmd
+
+    _code_cmd.register(sub)  # E.7a: `kratos code roots|status|files|confirm|ignore|add|accept-state`
 
     seal_p = sub.add_parser(
         "seal",

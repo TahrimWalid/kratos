@@ -489,6 +489,33 @@ def build(state: Any) -> tuple[Any, Any]:
         return untrusted.for_model(doc, field_cap=None)
 
     @mcp.tool()
+    def kratos_code(ctx: Context, target: str | None = None) -> dict[str, Any]:
+        """Read-only: the code folders a machine this token may reach serves -- candidates with
+        why, confirmed folders with their git state, drift counts, dependencies and secrets
+        (kinds and places only, never a value). Confirming, ignoring or adding a folder and
+        accepting a deploy are a person's decisions in the Kratos app."""
+        from kratos import authz
+        from kratos.code import present as CP
+
+        client, actor = _client(ctx), _actor(ctx)
+        with authz.acting_as(actor):
+            if target:
+                resolved = _resolve_target(client, target, state.data_dir)
+            else:
+                mine = list(_scope_targets(client, state.data_dir))
+                if len(mine) != 1:
+                    raise ValueError("refused: code folders are per machine -- name one of your machines")
+                resolved = mine[0]
+            if resolved.startswith("@"):
+                raise ValueError("refused: code folders are per machine -- name one machine")
+            try:
+                tk, _scope = CP.resolve_code_reader(state.data_dir, actor, resolved)
+                doc = CP.compact(CP.view(state.data_dir, tk))
+            except (CP.ViewError, authz.Denied) as e:
+                raise ValueError(f"refused: {e}") from None
+        return untrusted.for_model(doc, field_cap=None)
+
+    @mcp.tool()
     async def kratos_hunt(indicators: str, ctx: Context, kind: str = "", since: str = "", until: str = "",
                           machine: str = "") -> dict[str, Any]:
         """Read-only: has this address (or CIDR network), SHA-256 file hash, account, domain,

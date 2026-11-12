@@ -511,9 +511,9 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_serve_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_detect_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_agent_link_setting_flow", lambda key: fired.append(key))
-            assert gen.row_count == 71           # name / theme / timezone / two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+            assert gen.row_count == 80           # + nine code / name / theme / timezone / two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
             for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, ""),
-                                  (13, ""), (18, ""), (21, ""), (33, ""), (36, ""), (43, ""), (47, ""), (69, ""), (70, "")]:
+                                  (13, ""), (18, ""), (21, ""), (33, ""), (36, ""), (43, ""), (47, ""), (56, ""), (78, ""), (79, "")]:
                 gen.move_cursor(row=row)
                 screen.action_primary()          # Enter
                 await pilot.pause()
@@ -523,7 +523,7 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
                                    "findings.default_view", "logs.seal_verify_interval_minutes",
                                    "logs.seal_copy_budget_mb", "detect.lookback_hours", "detect.alert_batch_seconds",
                                    "hunt.max_hits", "export.max_events", "hashdb.online", "compliance.max_age_hours",
-                                   "baseline.max_per_day", "serve.link_hosts",
+                                   "baseline.max_per_day", "code.max_files", "serve.link_hosts",
                                    "subagent.tls.require"]
 
 
@@ -576,7 +576,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 71     # name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+    assert gen == 80     # + nine code / name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):
