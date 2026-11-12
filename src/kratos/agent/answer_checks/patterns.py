@@ -72,12 +72,28 @@ _NO_RECORD_ACK_RE = re.compile(
 )
 
 # Guard 8: the answer states Kratos lacks a capability. Deliberately narrow --
-# the subject must be Kratos/the agent (or a check that "was not performed
-# because" of a missing capability), and it must name a tool/capability, so an
-# ordinary "no evidence of X" never matches.
+# the subject must be Kratos/the agent, its tools (or a check that "was not
+# performed because" of a missing capability), and it must name a tool/capability
+# or say the tools don't provide it, so an ordinary "no evidence of X" or a
+# coverage note ("couldn't read X as this user") never matches. Judged on false
+# alarms too: tests/test_agent_loop_guards.py (GUARD8_NEGATIVES) and a scan of
+# every replay recording's answers.
+_TOOLS_SUBJECT = (r"(?:none of (?:the |my )?(?:[\w-]+ ){0,3}tools|(?:the |my )?(?:available|existing|current) "
+                  r"(?:[\w-]+ ){0,3}(?:tools?|toolset|toolkit)|(?:the |my )?tools available(?: to (?:me|kratos))?"
+                  r"|(?:the |my )?(?:toolset|toolkit))")
+_TOOLS_LACK = (r"(?:lacks?|do(?:es)?(?:n't| not) (?:currently )?(?:provide|include|offer|give|support|allow|expose|have)"
+               r"|provides? no|offers? no|ha(?:s|ve) no)")
 _CAPABILITY_GAP_RE = re.compile(
-    r"\b(?:kratos|i|we)\b[^.\n]{0,40}?\b(?:lacks?|do(?:es)?(?:n't| not) (?:currently )?(?:have|possess|include|provide|offer)|"
-    r"has no|have no|is missing)\b[^.\n]{0,60}?\b(?:tool|capabilit(?:y|ies)|integration|feature)"
+    r"\b(?:kratos|i|we)\b[^.\n]{0,80}?\b(?:lacks?|do(?:es)?(?:n't| not) (?:currently )?(?:have|possess|include|provide|offer)|"
+    r"has no|have no|is missing)\b[^.\n]{0,60}?\b(?:tool|capabilit(?:y|ies)|integration|feature|function|mechanism|means"
+    r"|way to|direct way)"
+    # the tools as the subject: "the available tools do not provide ...", "the current toolset lacks ..."
+    rf"|\b{_TOOLS_SUBJECT}\b[^.\n]{{0,80}}?\b{_TOOLS_LACK}\b"
+    r"|\b(?:none of (?:the |my )?(?:[\w-]+ ){0,3}tools|tools?\b[^.\n]{0,160}?\bnone of them)\b[^.\n]{0,40}?"
+    r"\b(?:provides?|includes?|offers?|gives?|allows?|supports?|can|ha(?:s|ve))\b"
+    # "I have proposed a new tool" -- Guard 8 only runs when no tool_proposal was made, so the
+    # retry asks for the real one
+    r"|\b(?:kratos|i|we)\b[^.\n]{0,20}?\b(?:proposed|suggested|requested)\b[^.\n]{0,30}?\btool\b"
     r"|\bno (?:[\w-]+ ){0,3}tools? (?:is |are |was |were )?(?:currently )?(?:available|exists|in (?:my|the|kratos'?s?) (?:registry|suite|toolset))"
     r"|\bno (?:[\w-]+ ){0,3}tools?\b[^.\n]{0,60}?\b(?:is|are) (?:currently )?available"
     r"|\b(?:not (?:possible|supported|available)|unsupported) (?:with|by|in|using) (?:the )?(?:current|available|existing) (?:kratos )?tool"
