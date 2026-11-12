@@ -1412,11 +1412,14 @@ through the lifecycle), forget, freeze, unfreeze, reset — each recorded in the
 `baseline_decisions`. A false-positive decision made in `/findings` is absorbed the same way. Rows
 are never deleted: an entry set aside to stay within `max_entries` is marked `evicted_at`, so a key
 that returns isn't "first time". Tables `baseline_profiles`, `baseline_entries`,
-`baseline_decisions` (backup class `include`). The machine's zone comes from the newest sign-in
-measurement (`auth_stats` now records `target_timezone` when the measurement read it -- only its
-classic-log part does, so journald machines usually don't); without one, hours are learned in UTC,
-labelled "assumed", and a different zone recorded later starts a new `login_time` generation (no
-agent change was made for E.3). The collection digest still aims at 1,500 characters; it may grow to
+`baseline_decisions` (backup class `include`). The machine's zone (`baseline/zone.py`), in order: the
+sign-in measurement's own reading (`auth_stats.target_timezone`; only its classic-log part reads
+it); the SSH config audit's zone, from one fixed line Kratos appends to that script in
+`ssh_remote` (the shared, bundled script is unchanged) and stores as the snapshot's `zone`; the
+setup probe's reading (both transports; saved as `context/machine_zone_<machine>.json` when it
+runs); else UTC, labelled "assumed". One parser reads both row wordings and accepts only a real
+IANA zone or offset. A different zone starts a new `login_time` generation dated from the read
+that named it; a real UTC confirming the assumed UTC doesn't (no agent change was made for E.3). The collection digest still aims at 1,500 characters; it may grow to
 1,600 only when that is what keeps every check's conclusion whole (`collect/digest.py`), so a
 digest that fit before is unchanged. Kratos's own root reads are recognised by their exact command
 shapes (`record._OWN_SUDO`), not by program name, so `sudo awk /etc/shadow` by the same login is

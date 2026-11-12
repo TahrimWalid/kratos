@@ -748,11 +748,18 @@ _CONFIG_AUDIT_SCRIPT = _reads.config_audit_script("sudo -n")
 
 
 def run_config_audit_checks() -> SSHResult | list[dict[str, str]]:
-    result = _route("config_audit", {}, lambda: run_remote_script(_CONFIG_AUDIT_SCRIPT))
+    """The config audit's verdict rows. Over SSH one fixed line is appended (E.3): the machine's
+    time zone, which no routine read reports on a journald machine. It is taken out of the
+    rows (it is no setting to judge) and kept for the saved snapshot (last_config_audit_zone)."""
+    from kratos.baseline import zone as _zone
+
+    result = _route("config_audit", {}, lambda: run_remote_script(_CONFIG_AUDIT_SCRIPT + _zone.SSH_ROW_SH))
     if not result.ok:
         return result
     _last_config_audit_via.set(getattr(result, "via", None) or "ssh")
-    return _reads.parse_check_lines(result.stdout)
+    rows = _reads.parse_check_lines(result.stdout)
+    _last_config_audit_zone.set(_zone.zone_of_rows(rows))
+    return [r for r in rows if r.get("check") != _zone.ROW_CHECK]
 
 
 # How the latest config audit in this context was read ("ssh" or "subagent"): an older
@@ -762,6 +769,15 @@ _last_config_audit_via: contextvars.ContextVar[str] = contextvars.ContextVar("kr
 
 def last_config_audit_via() -> str:
     return _last_config_audit_via.get()
+
+
+# The zone the latest config audit in this context read (None: not read, e.g. through an agent).
+_last_config_audit_zone: contextvars.ContextVar[str | None] = contextvars.ContextVar("kratos_config_audit_zone",
+                                                                                    default=None)
+
+
+def last_config_audit_zone() -> str | None:
+    return _last_config_audit_zone.get()
 
 
 # ---------------------------------------------------------------------------

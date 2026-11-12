@@ -67,53 +67,14 @@ def _iso(ts: float | None) -> str | None:
 # ---------------------------------------------------------------------------
 # What the machine looks like from Kratos's side
 # ---------------------------------------------------------------------------
-def machine_zone(data_dir: Path, target: str) -> tuple[tzinfo | None, str | None]:
-    """The machine's time zone as the newest sign-in measurement saw it (timewin)."""
-    from kratos.adapters.findings_engine import find_latest_inputs
-    from kratos.utils.timeutil import zone_from_name
-
-    path = find_latest_inputs(data_dir, target).get("auth_stats")
-    if path is None:
-        return None, None
-    try:
-        tz = (json.loads(Path(path).read_text(encoding="utf-8", errors="replace")) or {}).get("target_timezone")
-    except (OSError, ValueError):
-        return None, None
-    if not isinstance(tz, dict):
-        return None, None
-    name = str(tz.get("name") or "").strip()
-    zone = zone_from_name(name) if name else None
-    if zone is not None:
-        return zone, name
-    off = str(tz.get("offset") or "").strip()
-    m = re.fullmatch(r"([+-])(\d\d)(\d\d)", off)
-    if m:
-        from datetime import timedelta
-
-        sign = -1 if m.group(1) == "-" else 1
-        return timezone(sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3)))), off
-    return None, None
+from kratos.baseline.zone import ASSUMED_UTC, same_zone  # noqa: E402 -- re-exported for callers and tests
 
 
-ASSUMED_UTC = "UTC (assumed)"
-_UTC_NAMES = {"utc", "etc/utc", "etc/universal", "universal", "zulu", "etc/zulu", "gmt", "etc/gmt", "+0000",
-              ASSUMED_UTC.lower()}
+def zone_for_hours(data_dir: Path, target: str):
+    """The zone sign-in hours are learned in (kratos.baseline.zone.for_hours)."""
+    from kratos.baseline import zone as Z
 
-
-def same_zone(a: str | None, b: str | None) -> bool:
-    """Two zone names that give the same hours: equal, or both UTC (the assumed UTC included)."""
-    a, b = str(a or "").strip().lower(), str(b or "").strip().lower()
-    return a == b or (a in _UTC_NAMES and b in _UTC_NAMES)
-
-
-def zone_for_hours(data_dir: Path, target: str) -> tuple[tzinfo, str]:
-    """The zone sign-in hours are learned in: the machine's own when a read recorded it, else
-    UTC, labelled as assumed (most servers keep UTC; the pattern stays consistent either way, and
-    a different zone recorded later starts the hours afresh)."""
-    tz, name = machine_zone(data_dir, target)
-    if tz is not None and name:
-        return tz, name
-    return timezone.utc, ASSUMED_UTC
+    return Z.for_hours(data_dir, target)
 
 
 def privileged_accounts(data_dir: Path, target: str) -> set[str]:
@@ -163,7 +124,7 @@ def _own_user(target: str, data_dir: Path) -> str | None:
 # The run
 # ---------------------------------------------------------------------------
 def _ensure_profiles(conn, tk: str, data_dir: Path, now: float, tz_name: str | None,
-                     max_row: int) -> tuple[dict[str, Any], list[str]]:
+                     max_row: int, tz_since: float | None = None) -> tuple[dict[str, Any], list[str]]:
     """Current profile per dimension, created on first sight; a time-zone change starts a new
     login_time generation (the old one kept, labelled)."""
     notes: list[str] = []
@@ -177,12 +138,15 @@ def _ensure_profiles(conn, tk: str, data_dir: Path, now: float, tz_name: str | N
                           note="", now=now)
         elif dim.name == "login_time" and tz_name and p["tz"] and not same_zone(p["tz"], tz_name):
             S.end_profile(conn, tk, dim.name, p["generation"], now)
-            S.new_profile(conn, tk, dim.name, generation=int(p["generation"]) + 1, started_at=now,
+            # dated from the read that named the new zone (a config audit can be up to 6 h old)
+            since = min(now, tz_since) if tz_since else now
+            change = (f"the machine's time zone is now known ({tz_name}); hours learned in UTC until now are kept "
+                      "as history and hours are learned afresh in machine time" if p["tz"] == ASSUMED_UTC else
+                      f"the machine's time zone changed from {p['tz']} to {tz_name}: sign-in hours are learned afresh")
+            S.new_profile(conn, tk, dim.name, generation=int(p["generation"]) + 1, started_at=since,
                           high_water=max_row, snapshot_high_water=0.0, tz=tz_name, frozen=bool(p["frozen"]),
-                          note=f"the machine's time zone changed from {p['tz']} to {tz_name}: sign-in hours are "
-                               "learned afresh", now=now)
-            notes.append(f"sign-in hours: the machine's time zone changed from {p['tz']} to {tz_name}, so hours "
-                         "are learned afresh (the old pattern is kept as history)")
+                          note=change, now=now)
+            notes.append(f"sign-in hours: {change} (the old pattern is kept as history)")
         elif dim.name == "login_time" and tz_name and p["tz"] != tz_name:
             # first known, or the assumed UTC confirmed: the hours learned so far still hold
             S.update_profile(conn, tk, dim.name, p["generation"], tz=tz_name, updated_at=now)
@@ -379,7 +343,8 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
     st = L.Settings.load(data_dir)
     gaps: list[str] = []
     notes: list[str] = []
-    tz, tz_name = zone_for_hours(data_dir, target)
+    zinfo = zone_for_hours(data_dir, target)
+    tz, tz_name = zinfo.tz, zinfo.name
     ident = fingerprint if fingerprint is not None else own_mod.kratos_identity(data_dir)
     own_user = _own_user(target, data_dir)
     privileged = privileged_accounts(data_dir, target)
@@ -399,7 +364,7 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
         except Exception:  # noqa: BLE001 -- without it Kratos's own commands may be learned; never a failure
             own_sessions = {}
         with S.immediate(conn):
-            profiles, zone_notes = _ensure_profiles(conn, tk, data_dir, now, tz_name, max_row)
+            profiles, zone_notes = _ensure_profiles(conn, tk, data_dir, now, tz_name, max_row, zinfo.captured_at)
         notes.extend(zone_notes)
         models = _models(conn, tk, profiles, st, data_dir)
         hold_list = L.holds(conn, tk)
@@ -560,7 +525,7 @@ def run(data_dir: Path | str, target: str, *, now: float | None = None, fingerpr
     kept = (prior + raised)[-MAX_KEPT:]
     doc = {
         "target": tk, "checked_at": _iso(now), "checked_at_epoch": now,
-        "complete": not gaps, "coverage_gaps": gaps, "notes": notes, "zone": tz_name,
+        "complete": not gaps, "coverage_gaps": gaps, "notes": notes, "zone": tz_name, "zone_source": zinfo.source,
         "learn_days": st.learn_days, "max_per_day": st.max_per_day,
         "dims": statuses,
         "deviations": kept,

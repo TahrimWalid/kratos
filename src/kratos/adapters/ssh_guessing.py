@@ -56,7 +56,7 @@ class Assessment:
 
 
 def save_snapshot(data_dir: Path | None, target: str, checks: list[dict[str, Any]], *,
-                  via: str | None = None, now: float | None = None) -> Path | None:
+                  via: str | None = None, now: float | None = None, zone: str | None = None) -> Path | None:
     """Keep a config audit's result for the findings engine (one file per audit)."""
     if data_dir is None or not target or not isinstance(checks, list):
         return None
@@ -66,6 +66,7 @@ def save_snapshot(data_dir: Path | None, target: str, checks: list[dict[str, Any
     path = out / f"config_audit_{datetime.fromtimestamp(now).strftime('%Y%m%d_%H%M%S_%f')}.json"
     doc = {"target": target, "collected_at": datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"),
            "collected_at_epoch": now, "via": via,
+           "zone": zone,       # E.3: the machine's time zone, when this read named one (kratos.baseline.zone)
            "checks": [{k: str(c.get(k) or "") for k in ("check", "status", "detail")}
                       for c in checks if isinstance(c, dict)]}
     tmp = path.with_suffix(".json.tmp")
