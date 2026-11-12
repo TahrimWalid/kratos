@@ -104,5 +104,11 @@ def finish_rows(rows: list[dict[str, Any]], data_dir: Path | None, target: str) 
     """Replace the raw machine_id row with the sealing row."""
     mid = next((r["detail"].strip() for r in rows if r.get("check") == "machine_id"), None)
     out = [r for r in rows if r.get("check") != "machine_id"]
+    try:                                   # E.3: keep the zone it read (sign-in hours in machine time)
+        from kratos.baseline import zone as _zone
+
+        _zone.save_probe_zone(data_dir, target, rows)
+    except OSError:
+        pass
     out.append(sealing_row(data_dir, target, mid or None))
     return out

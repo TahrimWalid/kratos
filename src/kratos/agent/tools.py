@@ -1715,7 +1715,8 @@ def tool_run_config_audit() -> dict[str, Any]:
 
     try:
         _ssh_guessing.save_snapshot(_kconfig.get_active_data_dir(), get_active_target(), result,
-                                    via="agent" if _ssh_route.last_config_audit_via() == "subagent" else "ssh")
+                                    via="agent" if _ssh_route.last_config_audit_via() == "subagent" else "ssh",
+                                    zone=_ssh_route.last_config_audit_zone())
     except OSError:
         pass
     return {"status": "ok", "target": _ssh_target_label(), "checks": result}
