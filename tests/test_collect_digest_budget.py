@@ -3,7 +3,7 @@ findings): the check lines are shortened to fit the room left over, each keeps i
 conclusion (its first clause), and the findings block and the closing line are never cut.
 
 Before this, an over-size digest shortened every line to 160 characters and then cut the
-whole text at 1,500 -- dropping the findings block, the closing line and the persistence
+whole text at the cap -- dropping the findings block, the closing line and the persistence
 line's setuid conclusion (the G1 "any non-standard SUID files?" answers said Kratos couldn't
 check)."""
 from __future__ import annotations
@@ -79,7 +79,19 @@ def _busy_summaries() -> dict[str, str]:
             "counts": {"package": 902, "known_good": 40, "unknown": 17}, "signals": []}),
         "hardening": comp.summary_line({"checks": comp_checks, "signals": [{
             "severity": "low", "entities": [f"logindefs.check_{i:02d}" for i in range(49)]}]}),
+        "baseline": _baseline_line(),
     }
+
+
+def _baseline_line() -> str:
+    """E.3: the longest the baseline line gets -- deviations, kinds learned, learning and not learnable."""
+    from kratos.baseline import record as base
+
+    dims = {n: {"status": st} for n, st in (("login_source", "active"), ("login_time", "active"),
+                                            ("login_method", "active"), ("sudo_use", "active"),
+                                            ("listener", "learning"), ("outbound", "learning"),
+                                            ("program", "not_learnable"))}
+    return base.summary_line({"dims": dims, "deviations": [{}] * 5, "learn_days": 14})
 
 
 def _worst_case_summaries() -> dict[str, str]:
@@ -142,6 +154,7 @@ def _worst_case_summaries() -> dict[str, str]:
             "signals": [{"rule": "HASH-001"}, {"rule": "HASH-002"}]}),
         "hardening": comp.summary_line({"checks": comp_checks, "signals": [{
             "severity": "medium", "entities": [f"logindefs.check_{i:02d}" for i in range(49)]}]}),
+        "baseline": _baseline_line(),
     }
 
 

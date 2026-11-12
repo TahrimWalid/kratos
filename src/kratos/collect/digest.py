@@ -13,7 +13,10 @@ from kratos.collect.registry import get as get_check
 from kratos.untrusted import for_display
 from kratos.collect.runner import CheckOutcome, CollectionReport
 
-DIGEST_CAP = 1500
+# 1,500 until E.3 added the 22nd check line: with every check's conclusion kept whole (the
+# tight form below), 22 lines plus the findings block no longer fit; 1,600 does, with room for
+# the conclusions Phase E adds (tests/test_collect_digest_budget.py proves the worst case).
+DIGEST_CAP = 1600
 # Titles that interpolate names from the machine (accounts, file paths).
 _TITLE_UNSAFE_PREFIXES = ("PRIV-", "PERSIST-", "LIVE-", "PKG-", "CONT-")
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}

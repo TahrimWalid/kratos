@@ -657,23 +657,20 @@ def load(path: Path | None) -> dict[str, Any] | None:
 
 
 def summary_line(doc: dict[str, Any]) -> str:
-    """One Kratos-written line for the digest: counts and status words, never names."""
+    """One short Kratos-written line for the digest, conclusion first: counts and status words,
+    never names. "No deviation" is only said for kinds that are learned."""
     dims = doc.get("dims") or {}
-    active = [n for n, s in dims.items() if s.get("status") == "active"]
+    active = sum(1 for s in dims.values() if s.get("status") == "active")
     learning = [s for s in dims.values() if s.get("status") == "learning"]
-    devs = doc.get("deviations") or []
+    unlearnable = sum(1 for s in dims.values() if s.get("status") == "not_learnable")
+    devs = len(doc.get("deviations") or [])
     if not active and learning:
-        worst = max(learning, key=lambda s: s.get("covered_days") or 0)
-        return (f"still learning what's normal ({worst.get('covered_days', 0)} of {doc.get('learn_days')} covered "
-                "days) -- no deviation can be reported yet")
+        days = max(int(s.get("covered_days") or 0) for s in learning)
+        return f"still learning ({days} of {doc.get('learn_days')} days); no deviation can be reported yet"
     if not active:
-        return "what's normal can't be learned here yet (see BASE-007)"
-    head = f"{len(devs)} deviation(s) from what's normal today" if devs else "no deviation from what's normal today"
-    rest = []
-    if learning:
-        rest.append(f"{len(learning)} kind(s) still learning")
-    nl = [n for n, s in dims.items() if s.get("status") == "not_learnable"]
-    if nl:
-        rest.append(f"{len(nl)} not learnable here")
-    return head + (f" ({len(active)} kind(s) learned; " + "; ".join(rest) + ")" if rest else
-                   f" ({len(active)} kind(s) learned)")
+        return "can't learn what's normal here yet (see BASE-007)"
+    head = f"{devs} deviation(s) from normal" if devs else f"no deviation in {active} learned kind(s)"
+    rest = [f"{len(learning)} still learning" if learning else "", f"{unlearnable} not learnable" if unlearnable
+            else ""]
+    rest = [r for r in rest if r]
+    return head + ("; " + ", ".join(rest) if rest else "")

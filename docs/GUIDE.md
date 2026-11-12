@@ -1459,6 +1459,90 @@ Compliance reports also go into incident bundles (`/export`), and COMP-001 is fo
 as an OCSF Compliance Finding with the failed checks listed. Nothing in a compliance report leaves
 your computer unless you export or forward it.
 
+## What's normal here (baselines)
+
+Kratos learns, for each machine, what is **usual** — from the history it already keeps, without
+reading anything new from the machine and without any outside data — and tells you when something
+happens for the first time. Open it with `/baseline` (or `/normal`) in the app, or:
+
+```bash
+kratos baseline show 10.0.0.5
+```
+
+It learns seven kinds of normal:
+
+| Kind | Learns | Finding when something is new |
+|---|---|---|
+| where accounts sign in from | each account's sign-in places, by network (a public address by its /24, a private one with its class, a tailnet `100.64.0.0/10` as "tailnet" — never a country) | BASE-001 |
+| when accounts sign in | each account's hours on the machine's own clock, weekdays and weekends apart | BASE-002 |
+| how accounts sign in | key, certificate, password or keyboard-interactive, per account | BASE-003 (medium for a password where it was always a key) |
+| sudo use | who runs which program as whom | BASE-004 (medium for a first-ever sudo to root) |
+| listeners | which program listens on which port | BASE-005 |
+| outbound peers | which program talks to which outside network and port | BASE-006 |
+| program starts | which program starts under which parent (only where auditd records program starts) | BASE-008 |
+
+Kratos's own logins and reads are never learned and never raised. Persistence items (cron jobs,
+units, keys) aren't here: the persistence check keeps its own first-look baseline of them.
+
+### "Still learning" is not "all fine"
+
+A machine needs **14 days of covered history** (`baseline.learn_days`) before any deviation is
+raised. A day counts only when log sync covered at least 20 hours of it (for listeners and
+outbound peers: when at least two running-process reads were saved that day), so a machine whose
+sync stopped for a week learns more slowly — and says so, naming the gap. Until then each kind
+shows *still learning (6 of 14 covered days)*, and BASE-007 says no deviation can be reported yet.
+A kind Kratos can't learn on this machine says why: *not learnable here: no auditd*, or *the auth
+log can't be read by the SSH user*.
+
+### What a deviation looks like
+
+Every BASE finding shows the new thing next to what was usual:
+
+> BASE-001 (low) — 'deploy' signed in from 203.0.113.0/24 (public internet) for the first time —
+> address 203.0.113.7. Usual: from 10.0.0.0/24; weekdays 08:00-18:59 (machine time); by key.
+> Learned over 21 days (19 covered).
+
+A deviation alone is **never above medium**. Other rules carry the serious verdicts (a login after
+password guessing, a planted key, a dropped executable), and **a baseline never lowers, hides or
+closes any other finding** — a "normal" login is still a CORR-SSH-002 if it followed guessing.
+
+To keep the noise down there are at most **5** BASE findings per machine per day (most severe and
+rarest first; the rest are counted in BASE-007 — "12 more deviations today"), and the same thing is
+raised at most once a day. Deviations are raised on the next collection after they happen
+(minutes), not live.
+
+In a group, a place that is new here but usual for the same account on another machine of the
+group is still raised (low): "first time HERE, usual on db-02". A stolen key moving between
+machines looks exactly like that. `/baseline` names the other machine only if you may see it.
+
+### Saying "this is normal"
+
+Select the deviation in `/baseline` and press `a` (or `kratos baseline accept <machine> <kind>
+<who> <what>`): it is never raised again, and its finding is marked *not a real problem* with the
+reason "expected behaviour". Marking a BASE finding a false positive in `/findings` does the same.
+`f` forgets something learned (it counts as new again). Unseen for 90 days, anything counts as new
+again (`baseline.forget_days`).
+
+### After an incident
+
+Kratos doesn't learn from events within an hour of an open high or critical finding on the
+machine, or of a finding you confirmed real — so an attacker can't teach it that their logins are
+normal. Those events are *held back* and learned only if that finding is later marked a false
+positive or mitigated. You can also **freeze** a machine's baseline (`z` in `/baseline`, or
+`kratos baseline freeze <machine>`): deviations are still raised, nothing is learned until you
+unfreeze it. **Reset** (`R`, or `kratos baseline reset <machine> --yes`) starts learning again from
+now; the old profile is kept and shown as history. All of these are yours alone, at this computer,
+recorded with your name; a chat client and MCP can only *read* a baseline (`/baseline` in chat,
+the `kratos_baseline` MCP tool) for the machines that person may see.
+
+If a machine's time zone changes, the hours are learned afresh (the old pattern is kept and
+labelled). Daylight-saving changes don't move anything: 08:00 stays 08:00 on the machine's clock.
+
+The thresholds are in Settings → General → "What's normal" (`baseline.*`): learning days, the daily
+limit, how fast old activity fades (half after 30 days), when an hour counts as unusual, and how
+many usual things are kept per kind (500; the least used are set aside, not deleted, so they don't
+come back as "first time").
+
 ## Detection rules
 
 Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**

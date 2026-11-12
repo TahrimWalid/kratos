@@ -1358,6 +1358,64 @@ and recorded in the append-only `control_owner_events`. MCP (`kratos_compliance`
 (`/compliance`) are read-only and scoped to the person's machines; a group's members outside the
 person's access are counted, never named.
 
+## Behavioural baselines (E.3)
+
+**Counting, not machine learning** (`kratos/baseline/`). A closed list of dimensions
+(`dims.py`): sign-in source, hour and method per account (from stored `ssh_success_login`
+events), sudo use per user as (run-as, program basename) from stored `sudo_command` events,
+listeners and outbound connections per executable (from saved live-response reads, which now
+also keep established outbound TCP connections, `live/record.outbound`), and program starts per
+parent (audit `process_started`, only where auditd feeds them). Per (dimension, subject, key) a
+weight halving every `baseline.half_life_days` (30), a count, first and last seen. A key is
+*new* (never seen, forgotten, or unseen for `forget_days`), *rare* (seen at most twice and faded
+below `rare_weight`), or for hours *unusual* (the hour's Laplace-smoothed share of the account's
+weekday-or-weekend sign-ins below `time_share`, with at least 30 sign-ins). Deterministic and
+explainable; no model call decides anything.
+
+**Buckets without GeoIP** (`buckets.py`): public IPv4 → /24, RFC 1918 / CGNAT-tailnet /
+link-local → /24 with their class, public IPv6 → /48, ULA → /64, loopback its own. Documentation
+ranges (RFC 5737, RFC 3849) count as public so tests read like the internet. Known limit: sshd's
+"Accepted" lines with an IPv6 source are not parsed as sign-ins by the existing auth classifier,
+so IPv6 sign-in sources aren't learned yet.
+
+**Coverage-aware learning** (`learn.py`). Each observation is judged against what was learned
+before it, then learned. A profile judges only once it has `learn_days` (14) covered UTC days
+since it started — a day counts when log sync's complete spans (`sync_coverage`) cover 20 hours
+of it, or, for snapshot dimensions, when two reads were saved — plus its minimum samples (20
+sign-ins per account for sources, 30 for hours, 10 for methods, 10 sudo events, 10 reads over 7
+days, 200 program starts). Events are processed incrementally by `host_events.id` high-water mark,
+at most `max_events_per_run` per run; snapshots by capture time. Deviations older than a week found
+while catching up are learned, not raised.
+
+**Poisoning and Kratos's own activity.** Observations within ±1 h of an open high/critical finding
+(a condition's first sighting; an occurrence's first and latest sighting and any event time its
+entities name) or of a person-verified finding are *held back* per finding key, still judged, and
+learned only when that finding becomes a false positive or mitigated. Kratos's own SSH logins
+(its key or CA, `detect/own.py`), its own `sudo -n` reads, and audit events in its own sessions are
+never learned or raised. A person can freeze (raise, learn nothing) or reset (a new generation from
+now; the old rows stay as history). A time-zone change starts a new `login_time` generation.
+
+**Findings.** BASE-001..006 and BASE-008 are occurrences (one per rule and subject; entities are the
+new keys, so "normal" is decided per key), BASE-007 the run note. Severity by rule, then the cap
+(`judge.SEVERITY_CAP = "medium"`, the owner's decision). At most `max_per_day` per machine per day
+of the event, most severe and rarest first; one key at most once per `cooldown_hours`. The snapshot
+(`baseline_runs/baseline_<machine>.json`, evidence-recorded) keeps the last 24 hours of raised
+deviations; a complete run lets yesterday's go inactive. A baseline is never a covering input of
+another rule, and nothing in `kratos.baseline` touches another rule's finding
+(`test_baseline_never_lowers_other_rules`). Group context: a key normal for the same subject on
+another machine of a group is still raised (low), the finding naming only the group; `/baseline`
+names the machine when the reader may see it.
+
+**Decisions** (`decide.py`) are people-only (`baseline.accept`, admin, local): accept (the entry is
+marked, gains weight, and the matching finding is marked a false positive "expected behaviour"
+through the lifecycle), forget, freeze, unfreeze, reset — each recorded in the append-only
+`baseline_decisions`. A false-positive decision made in `/findings` is absorbed the same way. Rows
+are never deleted: an entry set aside to stay within `max_entries` is marked `evicted_at`, so a key
+that returns isn't "first time". Tables `baseline_profiles`, `baseline_entries`,
+`baseline_decisions` (backup class `include`). The machine's zone comes from the newest sign-in
+measurement (`auth_stats` now records `target_timezone`). Test history comes from
+`scripts/dev/generate_baseline_history.py` (deterministic by seed, into a scratch home only).
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources
