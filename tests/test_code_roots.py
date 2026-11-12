@@ -242,3 +242,48 @@ def test_empty_glob_includes_in_read_folders_are_not_partial_reads():
                 "/etc/nginx/conf.d/*.conf; include /opt/app/nginx/*.conf; include /etc/nginx/extra.conf; }"})
     assert c.notes == ["config partly read: include /opt/app/nginx/*.conf not read",
                        "config partly read: include /etc/nginx/extra.conf not read"]
+
+
+def test_a_big_file_list_is_one_write_transaction(tmp_path):
+    """50,000 rows used to be 50,000 commits in autocommit mode; now one transaction."""
+    R.add(tmp_path, M, "/srv/a", actor=owner())
+    root = S.roots(tmp_path, M)[0]
+    commits = []
+    real = S.connect
+
+    def traced(dd):
+        c = real(dd)
+        c.set_trace_callback(lambda q: commits.append(q) if q.strip().upper() in ("COMMIT", "BEGIN IMMEDIATE") else None)
+        return c
+    import kratos.code.store as store_mod
+    store_mod.connect = traced
+    try:
+        S.replace_files(tmp_path, root["id"], "current", [{"relpath": f"f{i}", "sha256": "a" * 64} for i in range(5000)])
+    finally:
+        store_mod.connect = real
+    assert commits.count("COMMIT") == 1 and len(S.files(tmp_path, root["id"])) == 5000
+
+
+def test_a_locked_database_surfaces_its_own_error_in_the_agent_store(tmp_path):
+    """A BEGIN that times out used to be masked by 'cannot rollback - no transaction is active'."""
+    import sqlite3
+
+    from kratos.storage.subagent_store import SubAgentStore
+
+    st = SubAgentStore(tmp_path / "kratos.db")
+    blocker = sqlite3.connect(tmp_path / "kratos.db", isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    import kratos.storage.subagent_store as mod
+    real = mod._connect
+
+    def fast(path):
+        c = real(path)
+        c.execute("PRAGMA busy_timeout=50")
+        return c
+    mod._connect = fast
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            st.record_connected("tgt_x", hostname="h", agent_version="0.14.0")
+    finally:
+        mod._connect = real
+        blocker.execute("ROLLBACK")

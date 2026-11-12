@@ -35,7 +35,7 @@ from typing import Any, Callable, Iterator
 
 from kratos import paths
 from kratos.storage.migrations import migrate_once
-from kratos.storage.sqlite_files import connect_store
+from kratos.storage.sqlite_files import connect_store, write_transaction
 
 DIR_NAME = "hashdb"
 SECRETS_DIR = "dataset-secrets"
@@ -157,7 +157,7 @@ def record_attempt(data_dir: Path | str, ds: Dataset, *, at: float, error: str) 
     """Note a failed (or skipped) attempt without touching the installed copy's row."""
     conn = connect(data_dir)
     try:
-        with conn:
+        with write_transaction(conn):
             cur = conn.execute("UPDATE datasets SET last_attempt_at = ?, last_error = ? WHERE name = ?",
                                (at, error[:500], ds.name))
             if cur.rowcount == 0:

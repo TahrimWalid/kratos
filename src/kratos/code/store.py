@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from kratos.storage.migrations import migrate_once
-from kratos.storage.sqlite_files import connect_store
+from kratos.storage.sqlite_files import connect_store, write_transaction
 
 COMPONENT = "code"
 TABLES = ("code_roots", "code_root_events", "code_files", "code_deps")
@@ -123,6 +123,9 @@ def connect(data_dir: Path | str) -> sqlite3.Connection:
     return conn
 
 
+_tx = write_transaction        # one transaction per multi-row write (see its docstring)
+
+
 def _root(row: sqlite3.Row) -> dict[str, Any]:
     d = dict(row)
     for k in ("why", "serving"):
@@ -193,7 +196,7 @@ def offer(data_dir: Path | str, target_key: str, candidates: Iterable[dict[str, 
     offered = {c["path"] for c in candidates}
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             # a candidate discovery no longer offers stops asking for a decision (never read either way)
             for row in conn.execute("SELECT * FROM code_roots WHERE target_key = ? AND status = 'candidate'",
                                     (target_key,)).fetchall():
@@ -231,7 +234,7 @@ def decide(data_dir: Path | str, target_key: str, path: str, status: str, *, act
     now = time.time() if now is None else now
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             row = conn.execute("SELECT * FROM code_roots WHERE target_key = ? AND path = ?",
                                (target_key, path)).fetchone()
             who = getattr(actor, "user", None)
@@ -257,7 +260,7 @@ def mark_gone(data_dir: Path | str, root: dict[str, Any], gone: bool, *, now: fl
     now = time.time() if now is None else now
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             if gone and root.get("gone_since") is None:
                 conn.execute("UPDATE code_roots SET gone_since = ? WHERE id = ?", (now, root["id"]))
                 event(conn, root, "gone", at=now)
@@ -287,7 +290,7 @@ def replace_files(data_dir: Path | str, root_id: int, kind: str, rows: list[dict
     at = time.time() if at is None else at
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             # snapshot replaced by the newer read of the same root (spec: "replaced per read")
             conn.execute("DELETE FROM code_files WHERE root_id = ? AND kind = ?", (int(root_id), kind))
             conn.executemany(
@@ -325,7 +328,7 @@ def set_accepted(data_dir: Path | str, root: dict[str, Any], *, actor: Any, now:
     now = time.time() if now is None else now
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             conn.execute("UPDATE code_roots SET accepted_at = ? WHERE id = ?", (now, root["id"]))
             event(conn, root, "accepted_state", actor=actor, at=now, detail=detail)
     finally:
@@ -336,7 +339,7 @@ def replace_deps(data_dir: Path | str, root_id: int, rows: list[dict[str, Any]],
     at = time.time() if at is None else at
     conn = connect(data_dir)
     try:
-        with conn:
+        with _tx(conn):
             # snapshot replaced by the newer read of the same root (spec: "replaced per read")
             conn.execute("DELETE FROM code_deps WHERE root_id = ?", (int(root_id),))
             conn.executemany(
