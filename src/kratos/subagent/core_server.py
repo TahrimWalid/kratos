@@ -145,6 +145,7 @@ PROBE_MIN_AGENT_VERSION: dict[str, tuple[int, int, int]] = {
     **{p: (0, 11, 0) for p in ("container_inventory", "container_packages", "container_logs")},  # phase D.5
     "file_facts": (0, 12, 0),                                      # phase E.4: file-hash reputation
     "hardening_facts": (0, 13, 0),                                 # phase E.2: compliance hardening facts
+    **{p: (0, 14, 0) for p in ("code_roots_facts", "code_inventory", "code_read")},  # phase E.7a: deployed code
 }
 # A parameter value an older agent's read refuses: (probe, param, value) -> first version that takes it.
 PARAM_MIN_AGENT_VERSION: dict[tuple[str, str, str], tuple[int, int, int]] = {

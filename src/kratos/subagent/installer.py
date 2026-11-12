@@ -76,6 +76,10 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "file_facts.py": _PACKAGE_ROOT / "adapters" / "file_facts.py",
     # E.2: the hardening facts (closed lists of sysctls, file modes, mounts, services, ...)
     "hardening.py": _PACKAGE_ROOT / "adapters" / "hardening.py",
+    # E.7a: the deployed-code reads (config files, a root's walk, closed-purpose content
+    # reads) and the git reader they compare checkouts with (never runs git)
+    "code_facts.py": _PACKAGE_ROOT / "adapters" / "code_facts.py",
+    "gitread.py": _PACKAGE_ROOT / "code" / "gitread.py",
     # D.5: the container read (engine API GETs, /proc, firewall listings, per-image packages)
     "containers.py": _PACKAGE_ROOT / "adapters" / "containers.py",
     # C.2: what turns a log line into the event the rules look at -- the parsers, the

@@ -1382,6 +1382,105 @@ def fetch_hardening_facts() -> Any:
     return out
 
 
+CODE_ROOTS_TIMEOUT_SECONDS = 60
+CODE_MARGIN_SECONDS = 60
+
+
+def fetch_code_roots_facts() -> Any:
+    """The web-server, PHP-FPM and systemd configurations from closed path lists (phase
+    E.7a) as a dict (adapters.code_facts.parse_roots_facts), or the failed SSHResult. Over
+    SSH it runs AS THE SSH USER; through the sub-agent it is its `code_roots_facts` read.
+    A private key or htpasswd file is never read."""
+    from kratos.adapters import code_facts
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(code_facts.build_roots_script(), shell="sh", errors="replace",
+                                 timeout=CODE_ROOTS_TIMEOUT_SECONDS)
+
+    result = _route("code_roots_facts", {}, over_ssh)
+    if not result.ok:
+        return result
+    out = code_facts.parse_roots_facts(result.stdout)
+    out["via"] = result.via
+    out["truncated_output"] = bool(result.truncated) or not out["complete"]
+    return out
+
+
+def fetch_code_inventory(root: bytes, *, max_files: int, max_depth: int, seconds: int, skip: tuple[str, ...],
+                         max_pack_mb: int) -> Any:
+    """A bounded walk of ONE confirmed code root (phase E.7a) as a dict
+    (adapters.code_facts.parse_inventory), or the failed SSHResult. The root travels base64
+    inside the script on stdin (SSH) or as the agent read's parameter (the agent re-checks
+    it against the same never-list). Through the agent the inventory carries the git drift
+    the agent computed from the repository's own files; over SSH Kratos computes it."""
+    from kratos.adapters import code_facts
+
+    def over_ssh() -> SSHResult:
+        script = code_facts.build_inventory_script(root, max_files=max_files, max_depth=max_depth, seconds=seconds,
+                                                   skip=skip)
+        return run_remote_script(script, shell="sh", errors="replace", timeout=seconds + CODE_MARGIN_SECONDS)
+
+    params = {"root": code_facts.b64(root), "max_files": int(max_files), "max_depth": int(max_depth),
+              "seconds": int(seconds), "skip": list(skip), "max_pack_mb": int(max_pack_mb)}
+
+    def via_agent(link: Any) -> SSHResult:
+        # One agent reply must fit in a protocol frame: the agent walks once (page 0) and
+        # serves the rest of the walk's lines page by page from memory.
+        chunks: list[str] = []
+        restarted = False
+        page = 0
+        while page < 1000:
+            res = agent_result(_routing.agent_read(link, "code_inventory", {**params, "page": page}))
+            if not res.ok:
+                return res
+            if "M\tpage_lost\t1" in res.stdout:
+                if restarted or page == 0:
+                    return SSHResult(ok=False, returncode=-1, stdout="", via="subagent",
+                                     stderr="via the sub-agent: the inventory pages were lost (agent restarted?)")
+                restarted, page, chunks = True, 0, []
+                continue
+            chunks.append(res.stdout)
+            if "\nP\tlast" in "\n" + res.stdout:
+                return SSHResult(ok=True, returncode=0, stdout="".join(chunks), via="subagent")
+            page += 1
+        return SSHResult(ok=False, returncode=-1, stdout="", via="subagent", stderr="via the sub-agent: too many pages")
+
+    result = _route("code_inventory", params, over_ssh, agent_call=via_agent)
+    if not result.ok:
+        return result
+    out = code_facts.parse_inventory(result.stdout)
+    out["via"] = result.via
+    if result.truncated:
+        out["complete"] = False
+        out["truncated_output"] = True
+    return out
+
+
+def fetch_code_read(root: bytes, purpose: str, paths: list[bytes], *, budget_bytes: int) -> Any:
+    """The contents of named files of a root's latest inventory, for one closed purpose
+    (phase E.7a: deps, secrets, git, review), as a dict (adapters.code_facts.parse_read), or
+    the failed SSHResult. The caller (kratos.code.reads) has already limited `paths` to files
+    the root's latest inventory listed; the agent checks its own inventory again. Contents
+    are used in memory by the caller and never stored."""
+    from kratos.adapters import code_facts
+
+    def over_ssh() -> SSHResult:
+        script = code_facts.build_read_script(root, purpose, paths, budget_bytes=budget_bytes)
+        return run_remote_script(script, shell="sh", errors="replace",
+                                 timeout=CODE_MARGIN_SECONDS + max(60, budget_bytes // (1024 * 1024)))
+
+    params = {"root": code_facts.b64(root), "purpose": purpose, "paths": [code_facts.b64(p) for p in paths],
+              "budget_mb": min(code_facts.AGENT_READ_MB, max(1, -(-int(budget_bytes) // (1024 * 1024))))}
+    result = _route("code_read", params, over_ssh)
+    if not result.ok:
+        return result
+    out = code_facts.parse_read(result.stdout, len(paths))
+    out["via"] = result.via
+    if result.truncated:
+        out["complete"] = False
+    return out
+
+
 CONTAINER_INVENTORY_TIMEOUT_SECONDS = 90
 SSH_ONLY_CONTAINER_NOTE = "not readable over SSH by a login without root-equivalent access"
 
