@@ -26,7 +26,7 @@ from kratos.ssvc.mission import mission as _mission
 
 logger = logging.getLogger(__name__)
 
-RULES = ("PKG-001", "PKG-002", "PKG-003", "VULN-001")
+RULES = ("PKG-001", "PKG-002", "PKG-003", "VULN-001", "CODE-003")
 _SEVERITY = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 # A decision's place among severities when one list mixes both: Act sits with critical.
 _BAND = {T.ACT: 4, T.ATTEND: 3, T.TRACK_STAR: 2, T.TRACK: 1}
@@ -121,21 +121,23 @@ def _pkg002(sig: dict[str, Any], mission: Any, live: dict[str, Any] | None, over
 
 def attach(findings: Iterable[Any], *, data_dir: Path, target: str, packages_doc: dict[str, Any] | None,
            live_doc: dict[str, Any] | None, config_audit: dict[str, Any] | None = None,
-           vuln_scan: dict[str, Any] | None = None, container_packages_doc: dict[str, Any] | None = None) -> None:
+           vuln_scan: dict[str, Any] | None = None, container_packages_doc: dict[str, Any] | None = None,
+           code_doc: dict[str, Any] | None = None) -> None:
     """Set `ssvc` on every finding SSVC applies to (Finding objects or dicts). Never
     raises: a failure leaves findings without a decision and is logged. D.5: a package
     finding about a container image (its signal is in `container_packages_doc`) is exposed
     through the ports its containers publish."""
     try:
         _attach(list(findings), Path(data_dir), target, packages_doc, live_doc, config_audit, vuln_scan,
-                container_packages_doc)
+                container_packages_doc, code_doc)
     except Exception:  # noqa: BLE001 -- a decision must never cost the report
         logger.exception("SSVC decisions could not be attached; the findings are kept without them")
 
 
 def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict[str, Any] | None,
             live_doc: dict[str, Any] | None, config_audit: dict[str, Any] | None,
-            vuln_scan: dict[str, Any] | None, container_packages_doc: dict[str, Any] | None = None) -> None:
+            vuln_scan: dict[str, Any] | None, container_packages_doc: dict[str, Any] | None = None,
+            code_doc: dict[str, Any] | None = None) -> None:
     wanted = [f for f in findings if _get(f, "id") in RULES]
     if not wanted:
         return
@@ -188,6 +190,18 @@ def _attach(findings: list[Any], data_dir: Path, target: str, packages_doc: dict
             if decision is not None:
                 decision["exposure"] = X.machine_highest(live_doc, override=override, firewall=firewall).to_dict()
                 decision["fix"] = "reboot into the newer kernel that is already installed"
+        elif fid == "CODE-003":
+            sig = next((s for s in (code_doc or {}).get("signals") or [] if isinstance(s, dict)
+                        and s.get("rule") == "CODE-003" and s.get("subject") == key[1]), None)
+            if sig:
+                root_path = key[1].split("|", 1)[0]
+                serving = next((r.get("serving") or [] for r in (code_doc or {}).get("roots") or []
+                                if r.get("path") == root_path), [])
+                cve_inputs = _inputs(sig)
+                decision = for_finding(cve_inputs, mission, fix_available=True)
+                if decision is not None:
+                    decision["exposure"] = X.for_code_root(serving, live_doc, override=override, firewall=firewall,
+                                                           root=root_path).to_dict()
         elif fid == "VULN-001":
             cves = [str(e).upper() for e in _get(f, "entities") or [] if str(e).upper().startswith("CVE-")]
             if cves:

@@ -268,6 +268,27 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "code", "Deployed-code checks",
+        "For each machine: the folders Kratos found serving code (why each was offered, and who confirmed, ignored "
+        "or added it, in an append-only trail); for each confirmed folder its latest file list and accepted baseline "
+        "(path, size, mode, SHA-256, git blob id, git state -- never file contents), the dependencies its lockfiles "
+        "name; and each machine's latest code-check and code-folder result files (the parsed web-server rules, "
+        "drift, dependency matches, secret kinds, places and fingerprints -- never a secret's value).",
+        PERSONAL, "one row per file per confirmed folder (capped at code.max_files, replaced on each complete read) "
+                  "plus one baseline copy; one row per dependency; two result files per machine, replaced in place",
+        files=("code/results",),
+        tables=(TableRef(DB, ("code_roots", "code_root_events", "code_files", "code_deps")),),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
+        "code_keys", "Code-secret fingerprint key",
+        "The random key Kratos uses to fingerprint secrets it finds in deployed code, so the same secret in two "
+        "places shows the same fingerprint without the value ever being kept. Never leaves this computer.",
+        SECRET, "fixed: one 32-byte file",
+        files=("code-keys",),
+        backup=BACKUP_SECRET,
+    ),
+    Category(
         "dataset_secrets", "Dataset keys",
         "The credential a downloaded dataset needs: your abuse.ch Auth-Key for the MalwareBazaar export. Never "
         "stored in the database, never shown, sent only to abuse.ch.",

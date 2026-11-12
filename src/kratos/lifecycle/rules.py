@@ -128,6 +128,13 @@ RULES: dict[str, RuleInfo] = dict([
     # (a fresh, complete reputation check that no longer sees it closes it) or a person decides.
     _r("HASH-001", "condition"),
     _r("HASH-002", "condition"),
+    # E.7a: deployed-code findings are states, re-read on every code check; a complete read of
+    # every confirmed folder that no longer sees one closes it.
+    _r("CODE-001", "condition"),
+    _r("CODE-002", "condition"),
+    _r("CODE-003", "condition"),
+    _r("CODE-004", "condition"),
+    _r("CODE-005", "condition"),
     # E.2: hardening checks that fail are a state; a fresh, complete hardening read that
     # no longer sees them closes it, or a person decides.
     _r("COMP-001", "condition"),
@@ -173,7 +180,8 @@ RULES: dict[str, RuleInfo] = dict([
     _r("PKG-004", "run_note"),         # what the package check could not cover (no data, stale data, ...)
     _r("DETECT-001", "run_note"),
     _r("CONT-008", "run_note"),
-    _r("HASH-003", "run_note"),        # E.4: what the file-reputation check could not do        # D.5: what the container checks could not read      # C.1: log sources the detection rules need that the machine doesn't give
+    _r("HASH-003", "run_note"),
+    _r("CODE-006", "run_note"),        # E.7a: what the code checks could not cover        # E.4: what the file-reputation check could not do        # D.5: what the container checks could not read      # C.1: log sources the detection rules need that the machine doesn't give
 ])
 
 # C.1: the detection rules' findings, SIGMA-<8 hex digits>. Their ids come from the rule

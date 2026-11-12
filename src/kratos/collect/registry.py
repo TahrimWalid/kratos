@@ -68,6 +68,10 @@ class Check:
     # Checks this one must run after, when the same collection runs them too (the
     # detection pass reads what log sync just stored). It waits within its own deadline.
     after: tuple[str, ...] = ()
+    # False: the check's line is left out of the model's digest (E.7a: the code-folder
+    # candidates are for a person to confirm; the `code` line carries their count). Its
+    # result still shows in `kratos collect`, /collect and the run record.
+    digest: bool = True
 
     def __post_init__(self) -> None:
         if not _NAME_RE.fullmatch(self.name):

@@ -80,7 +80,20 @@ def _busy_summaries() -> dict[str, str]:
         "hardening": comp.summary_line({"checks": comp_checks, "signals": [{
             "severity": "low", "entities": [f"logindefs.check_{i:02d}" for i in range(49)]}]}),
         "baseline": _baseline_line(),
+        **_code_lines(worst=False),
     }
+
+
+def _code_lines(worst: bool) -> dict[str, str]:
+    """E.7a: the code-folder and code lines (no machine text in either)."""
+    from kratos.code import record as code
+
+    sigs = [{"rule": r} for r in (("CODE-001", "CODE-002", "CODE-003", "CODE-004", "CODE-005") if worst
+                                  else ("CODE-003",))]
+    roots = [{"counts": {"files": 50_000 if worst else 412}}] * (20 if worst else 2)
+    return {"code_roots": code.summary_roots({"roots": [{"status": "confirmed"}] * (20 if worst else 2)
+                                              + [{"status": "candidate"}] * (9 if worst else 1)}),
+            "code": code.summary_code({"roots": roots, "signals": sigs})}
 
 
 def _baseline_line() -> str:
@@ -155,6 +168,7 @@ def _worst_case_summaries() -> dict[str, str]:
         "hardening": comp.summary_line({"checks": comp_checks, "signals": [{
             "severity": "medium", "entities": [f"logindefs.check_{i:02d}" for i in range(49)]}]}),
         "baseline": _baseline_line(),
+        **_code_lines(worst=True),
     }
 
 
@@ -205,8 +219,17 @@ def test_every_check_line_keeps_its_conclusion():
     report = _full_report()
     d = build_digest(report)
     for o in report.checks:
+        if not registry.get(o.name).digest:
+            continue
         conclusion = _conclusion(o.summary)
         assert conclusion in d, f"{o.name}: conclusion lost: {conclusion!r}"
+
+
+def test_a_check_marked_out_of_the_digest_has_no_line_and_code_carries_the_waiting_count():
+    d = build_digest(_full_report())
+    assert not registry.get("code_roots").digest
+    assert not any(line.startswith("code folders") for line in d.splitlines())
+    assert any(line.startswith("code:") for line in d.splitlines())
 
 
 def test_the_findings_block_and_the_closing_line_are_whole():
@@ -239,6 +262,8 @@ def test_even_the_worst_case_keeps_the_size_the_findings_block_and_the_closing_l
         assert fid in d
     from kratos.collect.registry import get
     for o in report.checks:                                                      # a line for every check
+        if not get(o.name).digest:
+            continue
         assert any(x.startswith(get(o.name).short + (" (" if o.age_seconds >= 3600 else ":")) for x in lines), o.name
 
 
