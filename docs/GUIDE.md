@@ -1535,8 +1535,15 @@ now; the old profile is kept and shown as history. All of these are yours alone,
 recorded with your name; a chat client and MCP can only *read* a baseline (`/baseline` in chat,
 the `kratos_baseline` MCP tool) for the machines that person may see.
 
-If a machine's time zone changes, the hours are learned afresh (the old pattern is kept and
+Hours are on the machine's own clock when a read has told Kratos its time zone. Until one has,
+they are learned in UTC and `/baseline` says so ("hours in UTC: the machine's own time zone isn't
+known") — the pattern is just as consistent, only shifted. If a machine's time zone changes (or a
+read reveals a zone other than UTC), the hours are learned afresh (the old pattern is kept and
 labelled). Daylight-saving changes don't move anything: 08:00 stays 08:00 on the machine's clock.
+
+Over SSH as an ordinary login, Kratos can't see which program owns another user's (or root's)
+listening port. Such ports are still learned by port, as "(program not visible to this login)",
+so a new port is noticed; read the machine through its sub-agent to see the programs.
 
 The thresholds are in Settings → General → "What's normal" (`baseline.*`): learning days, the daily
 limit, how fast old activity fades (half after 30 days), when an hour counts as unusual, and how

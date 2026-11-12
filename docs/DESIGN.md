@@ -1413,7 +1413,13 @@ through the lifecycle), forget, freeze, unfreeze, reset — each recorded in the
 are never deleted: an entry set aside to stay within `max_entries` is marked `evicted_at`, so a key
 that returns isn't "first time". Tables `baseline_profiles`, `baseline_entries`,
 `baseline_decisions` (backup class `include`). The machine's zone comes from the newest sign-in
-measurement (`auth_stats` now records `target_timezone`). Test history comes from
+measurement (`auth_stats` now records `target_timezone` when the measurement read it -- only its
+classic-log part does, so journald machines usually don't); without one, hours are learned in UTC,
+labelled "assumed", and a different zone recorded later starts a new `login_time` generation (no
+agent change was made for E.3). Kratos's own root reads are recognised by their exact command
+shapes (`record._OWN_SUDO`), not by program name, so `sudo awk /etc/shadow` by the same login is
+still learned. Ports whose program the login can't see are learned under "(program not visible to
+this login)". Test history comes from
 `scripts/dev/generate_baseline_history.py` (deterministic by seed, into a scratch home only).
 
 ## Log sources and tamper detection
