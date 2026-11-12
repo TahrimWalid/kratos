@@ -2079,11 +2079,15 @@ def _run_agent_loop(
                 # suggest-only path a model-emitted tool_proposal takes.
                 # Search again: notes may have been prepended since gap_claim was
                 # matched, which would shift its offsets.
-                gap_now = _CAPABILITY_GAP_RE.search(final_answer_text) or gap_claim
+                # The model's own analysis only: Kratos's block and NOTEs above it
+                # carry coverage lines ("a normal SSH login can't read ...") that
+                # are not the gap the model stated.
+                gap_text = _analysis_text if _CAPABILITY_GAP_RE.search(_analysis_text or "") else final_answer_text
+                gap_now = _CAPABILITY_GAP_RE.search(gap_text) or gap_claim
                 _record({
                     "iteration": i,
                     "reasoning": "capability gap stated in the final answer",
-                    "tool_proposal": {"name": "", "description": _gap_sentence(final_answer_text, gap_now),
+                    "tool_proposal": {"name": "", "description": _gap_sentence(gap_text, gap_now),
                                       "derived_from_answer": True},
                 })
             if finding_notes:

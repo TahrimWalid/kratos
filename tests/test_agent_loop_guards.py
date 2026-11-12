@@ -727,6 +727,21 @@ def test_guard8_asks_only_once_and_never_tags_the_answer(
     assert derived["description"].startswith("A scan for SUID binaries was not performed")
 
 
+def test_guard8_derives_the_suggestion_from_the_models_words_not_kratoss_block(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Kratos's block above the answer can carry coverage lines; the derived suggestion quotes the
+    model's own gap sentence."""
+    gap = CORRECTED_ANSWER + " None of the available tools provide access to the partition table."
+    chat = ScriptedChat([_tool_json("correlate_findings")] + [_final_json(gap)] * 3)
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    monkeypatch.setattr(agent_loop._finding_facts, "answer_block",
+                        lambda findings, text: "The current toolset lacks a way to read root-only folders here.\n\n")
+    result = agent_loop.run_agent("are the disks encrypted?", data_dir, max_iters=10)
+    [derived] = [s["tool_proposal"] for s in result["transcript"] if s.get("tool_proposal")]
+    assert derived["description"] == "None of the available tools provide access to the partition table."
+
+
 def test_guard8_silent_when_a_proposal_was_already_made_or_no_gap_is_claimed(
     data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -770,6 +785,66 @@ def test_guard8_silent_when_a_proposal_was_already_made_or_no_gap_is_claimed(
 ])
 def test_guard8_gap_phrase_matching(text: str, expected: bool) -> None:
     assert bool(agent_loop._CAPABILITY_GAP_RE.search(text)) is expected
+
+
+# Misses from the G1_gap_encryption replay runs (2026-11-12): each answer said Kratos can't check
+# disk encryption, never proposed a tool, and Guard 8 matched none of them. Lab values removed.
+G1_GAP_MISSES = [
+    "The available security investigation tools focus on authentication, running processes, file integrity, "
+    "and network configuration, but none of them provide access to block device encryption status.",
+    "I have investigated the system's security configuration, but currently lack the specific tool required "
+    "to confirm disk and swap encryption at rest.",
+    "None of the available tools provide the capability to inspect /etc/crypttab or other system-level "
+    "configuration files necessary to verify LUKS status.",
+    "I lack a direct way to inspect system configuration files such as /etc/crypttab on the target.",
+    "The available diagnostic tools do not provide visibility into disk partitioning or LUKS configurations.",
+    "I am unable to verify disk encryption because the current toolset lacks a mechanism to query block "
+    "device mappings on the target system.",
+    "The available tools for investigating the monitored target device do not include a function to inspect "
+    "block device configuration.",
+    "The tools available to me do not include a way to read the partition table.",
+    # it says a tool was proposed when none was: the retry asks for the real tool_proposal
+    "I have proposed a new tool, 'inspect_storage_configuration', to bridge this gap.",
+    "I have proposed a new tool, 'list_block_devices', to enable this investigation.",
+]
+
+# Must stay silent: honest coverage notes, ordinary "no evidence" lines, and answers that report what
+# Kratos did check (G1_suid / G1_covered style).
+GUARD8_NEGATIVES = [
+    "Kratos couldn't read /root/.ssh as this user; the machine's sub-agent (it reads as root) covers it.",
+    "Two places only root can read were not read over this SSH login; use the sub-agent for them.",
+    "A normal SSH login can't read what belongs to other users or root.",
+    "nmap is not available through a sub-agent, so open ports were not scanned.",
+    "Network exposure was not checked: there is no network path through the sub-agent.",
+    "Log files in /var/log/audit could not be read as this user.",
+    "There is no evidence of a brute-force attack in the last 24 hours.",
+    "No evidence of tampering was found in the journal.",
+    "I found no evidence that any account was added.",
+    "The persistence read found 18 setuid/setgid programs, all from the system's packages (where it could read).",
+    "No unexpected SUID files were found; none comes from outside the installed packages.",
+    "Kratos checked the cron jobs, systemd units and SSH keys and found nothing new since the first look.",
+    "The existing tools already cover this: the persistence check lists every setuid file.",
+    "I could not confirm the attacker's location because private addresses have no GeoIP data.",
+    "The tools available returned no findings for this period.",
+    "My attempt to read the logs failed because the target was unreachable.",
+    # real G1_suid / G1_covered answers from the replay runs (addresses replaced)
+    "Based on the initial automated scan of the target system, there are 18 SUID/SGID programs currently "
+    "present, and all of these have been identified as legitimate components of the installed system packages.",
+    "There is no evidence of non-standard or unauthorized SUID/SGID binaries that could be leveraged for "
+    "privilege escalation.",
+    "Threat intelligence for 192.0.2.52 is currently unavailable as live lookups are disabled.",
+    "The system experienced two periods of downtime where authentication logs were not available.",
+]
+
+
+@pytest.mark.parametrize("text", G1_GAP_MISSES)
+def test_guard8_catches_the_g1_gap_phrasings(text: str) -> None:
+    assert agent_loop._CAPABILITY_GAP_RE.search(text), text
+
+
+@pytest.mark.parametrize("text", GUARD8_NEGATIVES)
+def test_guard8_stays_silent_on_coverage_notes_and_honest_answers(text: str) -> None:
+    assert not agent_loop._CAPABILITY_GAP_RE.search(text), text
 
 
 def test_derived_suggestion_panel_text() -> None:
