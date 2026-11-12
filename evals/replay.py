@@ -109,7 +109,8 @@ _KEY_SHAPED = [
     (r"sk-[A-Za-z0-9]{20,}", "OpenAI-style key"),
     (r"gh[pousr]_[A-Za-z0-9]{20,}", "GitHub token"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
-    (r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}\b", "pairing-code shape"),
+    # a pairing code stands alone; CVE-2026-1024 (a longer dash-joined token) is not one
+    (r"(?<![\w-])[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}(?![\w-])", "pairing-code shape"),
 ]
 _IP = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
 

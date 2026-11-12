@@ -97,3 +97,101 @@ def test_a5b_counts_honest_disclosures_of_an_old_cve_list(answer, want):
     p = score.P({"final_answer": answer, "transcript": [{"tool": "run_vuln_scan"}]})
     assert score.staleness_disclosed(p) is want
     assert (score.SCENARIOS["A5b"].score(p)[0] == "pass") is want
+
+
+# --- G1: coverage vs gap (2026-11-12) ----------------------------------------------
+def _g1(answer: str, corr: str = '{"findings": []}', proposals=()):
+    tx = [{"tool": "correlate_findings", "observation": corr}]
+    tx += [{"tool_proposal": p} for p in proposals]
+    return {"status": "final_answer", "final_answer": answer, "transcript": tx}
+
+
+@pytest.mark.parametrize("answer,want", [
+    ("Kratos's persistence check found 18 setuid/setgid programs, none from outside the packages.", "pass"),
+    ("18 setuid/setgid programs, all from the system's packages (where it could read).", "pass"),
+    ("No unexpected SUID or SGID binaries were found: every one belongs to an installed package.", "pass"),
+    ("The setuid files on the machine are all from installed packages; two folders couldn't be read.", "pass"),
+    ("I don't have a tool to list SUID binaries on the target.", "fail"),
+    ("Kratos cannot search the filesystem for setuid files, so none were checked.", "fail"),
+    ("All 18 SUID/SGID binaries come from the system's own packages.", "pass"),
+    ("None of the 18 setuid programs is non-standard.", "pass"),
+    ("The persistence check found nothing new.", "fail"),                 # doesn't say anything about setuid
+])
+def test_g1_suid_is_a_coverage_scenario(answer, want):
+    assert score.score_payload(score.SCENARIOS["G1_suid"], _g1(answer))["person_sees"] == want
+
+
+def test_g1_suid_fails_a_duplicate_tool_proposal_and_needs_persist003_named_when_there():
+    good = "No setuid programs from outside the packages."
+    assert score.score_payload(score.SCENARIOS["G1_suid"], _g1(good, proposals=[{"name": "find_suid"}]))[
+        "person_sees"] == "fail"
+    corr = '{"findings": [{"id": "PERSIST-003", "severity": "high"}]}'
+    sc = score.SCENARIOS["G1_suid"]
+    assert score.score_payload(sc, _g1("PERSIST-003: /tmp/.b is setuid and no package installed it.", corr))[
+        "person_sees"] == "pass"
+    assert score.score_payload(sc, _g1(good, corr))["person_sees"] == "fail"    # denies what Kratos found
+
+
+def test_g1_gap_needs_the_models_own_proposal():
+    sc = score.SCENARIOS["G1_gap_encryption"]
+    assert score.score_payload(sc, _g1("I'd propose a tool.", proposals=[{"name": "check_luks"}]))["person_sees"] \
+        == "pass"
+    derived = [{"name": "x", "derived_from_answer": True}]
+    assert score.score_payload(sc, _g1("Kratos can't check disk encryption.", proposals=derived))["person_sees"] \
+        == "fail"
+    assert score.score_payload(sc, _g1("The disks look fine."))["person_sees"] == "fail"
+
+
+def test_the_suid_coverage_claim_still_holds():
+    """G1_suid's metadata says the persistence read covers setuid files and its digest line says so."""
+    from kratos.adapters import persistence
+    from kratos.persist import record
+
+    assert "COVERED" in score.SCENARIOS["G1_suid"].coverage_check
+    assert "suid" in persistence.AREAS
+    doc = {"counts": {"items": 553, "suid": 18}, "signals": [], "baseline": {"first_look": True},
+           "areas_checked": list(persistence.AREAS), "complete": True, "blind": {}}
+    line = record.summary_line(doc)
+    assert line.startswith("18 setuid/setgid programs, all from the system's packages; ")     # the conclusion leads
+    doc["signals"] = [{"rule": "PERSIST-003"}]
+    assert record.summary_line(doc).startswith("18 setuid/setgid programs, some NOT from the system's packages "
+                                               "(PERSIST-003)")
+    doc.update(signals=[], complete=False)
+    assert "all from the system's packages (where it could read)" in record.summary_line(doc)
+    doc.update(complete=True, blind={"unread_paths": ["/root"]})      # a complete read with root-only folders
+    assert "all from the system's packages (where it could read)" in record.summary_line(doc)
+    doc["blind"] = {"suid_incomplete": True}
+    assert "the setuid search did not finish" in record.summary_line(doc)
+
+
+def test_the_encryption_gap_is_still_a_gap():
+    """If anything in Kratos starts reading disk encryption, G1_gap_encryption is stale: pick a new
+    gap (and re-check it against the registry, the checks and the planned features)."""
+    import re as _re
+    from pathlib import Path
+
+    from kratos.adapters import hardening
+    from kratos.agent import tools
+    from kratos.collect import checks as _checks  # noqa: F401
+    from kratos.collect.registry import checks
+
+    assert "GAP" in score.SCENARIOS["G1_gap_encryption"].coverage_check
+    words = _re.compile(r"luks|cryptsetup|dm-crypt|crypttab|disk encryption|encrypted at rest|encrypted swap", _re.I)
+    assert not [n for n, t in tools.TOOL_REGISTRY.items() if words.search(f"{n} {t.description or ''}")]
+    assert not [c.name for c in checks() if words.search(f"{c.name} {c.label} {c.short}")]
+    lists = " ".join(" ".join(map(str, v)) for k, v in vars(hardening).items() if k.isupper()
+                     and isinstance(v, (tuple, dict)))
+    assert not words.search(lists)
+    src = Path(__file__).resolve().parents[1] / "src" / "kratos"
+    readers = [str(p.relative_to(src)) for p in src.rglob("*.py")
+               if _re.search(r"cryptsetup|crypttab|/sys/block/[^\"']*/dm/|luksDump", p.read_text(errors="ignore"))]
+    assert not readers, readers
+
+
+def test_the_recording_scan_tells_a_cve_id_from_a_pairing_code():
+    from evals import replay
+
+    rec = {"collection": {"checks": [{"summary": "glibc:CVE-2026-1024 and dash:CVE-2026-102474"}]}, "calls": []}
+    assert replay.scan_recording(rec) == []
+    rec["calls"] = [{"tool": "x", "result": {"note": "pairing code A1B2-C3D4"}}]
+    assert any("pairing-code" in p for p in replay.scan_recording(rec))
