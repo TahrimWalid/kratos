@@ -131,6 +131,16 @@ RULES: dict[str, RuleInfo] = dict([
     # E.2: hardening checks that fail are a state; a fresh, complete hardening read that
     # no longer sees them closes it, or a person decides.
     _r("COMP-001", "condition"),
+    # E.3: a deviation from what's normal is about an event that happened (occurrence);
+    # BASE-007 says how much has been learned (run note).
+    _r("BASE-001", "occurrence"),
+    _r("BASE-002", "occurrence"),
+    _r("BASE-003", "occurrence"),
+    _r("BASE-004", "occurrence"),
+    _r("BASE-005", "occurrence"),
+    _r("BASE-006", "occurrence"),
+    _r("BASE-008", "occurrence"),
+    _r("BASE-007", "run_note"),
     # occurrences
     _r("AUTH-001", "occurrence"),
     _r("AUTH-003", "occurrence"),

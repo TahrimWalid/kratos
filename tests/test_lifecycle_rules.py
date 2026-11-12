@@ -69,10 +69,12 @@ def test_classification_matches_the_spec():
     kinds = {rid: info.kind for rid, info in RULES.items()}
     assert {r for r, k in kinds.items() if k == "run_note"} == {
         "COV-001", "VULN-003", "SEAL-003", "PERSIST-009", "LIVE-007", "PKG-004", "DETECT-001", "CONT-008",
-        "HASH-003"}
+        "HASH-003", "BASE-007"}
     assert {r for r, k in kinds.items() if k == "occurrence"} == {
         "AUTH-001", "AUTH-003", "AUTH-004", "AUTH-TREND-001", "CORR-001", "CORR-002", "CORR-SSH-001", "LOG-003",
-        "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-005", "LIVE-006", "HUNT-001", "WEB-001", "CORR-SSH-002"}
+        "LIVE-001", "LIVE-002", "LIVE-003", "LIVE-005", "LIVE-006", "HUNT-001", "WEB-001", "CORR-SSH-002",
+        # E.3: a deviation from what's normal is about an event that happened
+        "BASE-001", "BASE-002", "BASE-003", "BASE-004", "BASE-005", "BASE-006", "BASE-008"}
     # 0.3: evidence of tampering never closes itself (spec 0.3 §6; rules.RuleInfo.sticky)
     assert {r for r, i in RULES.items() if i.sticky} == {"LOG-001", "LOG-002", "LOG-004", "LOG-005", "SEAL-001"}
     assert all(k in KINDS for k in kinds.values())

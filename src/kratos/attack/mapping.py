@@ -237,6 +237,16 @@ RULE_ATTACK: dict[str, Entry] = {
                           "the machine"),
     "HASH-002": Behaviour((SOFTWARE_PACKING,), why="an unknown program that is packed or encrypted"),
     "HASH-003": Posture("run note: what the file-reputation check could not do"),
+    "BASE-001": Behaviour((VALID_ACCOUNTS,), why="a sign-in from a place this account never used: how a valid "
+                          "account in someone else's hands looks"),
+    "BASE-002": Behaviour((VALID_ACCOUNTS,), why="a sign-in at an hour this account doesn't use"),
+    "BASE-003": Behaviour((VALID_ACCOUNTS,), why="an account signing in by a method it never used (a password "
+                          "where it always used a key)"),
+    "BASE-004": Behaviour((SUDO,), why="sudo used by a user, as an account or for a program never seen before"),
+    "BASE-005": Posture("a new listening port is exposure; whether it is malicious depends on the program"),
+    "BASE-006": Posture("a new outside peer is not by itself command and control; what the program is decides"),
+    "BASE-007": Posture("run note: how much Kratos has learned about what's normal, and what it can't learn"),
+    "BASE-008": Posture("a program run under a parent it never ran under; what it did decides the technique"),
     "COMP-001": Posture("hardening settings that fail CIS / ISO 27001 / NIS2 checks are posture, not an action"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),

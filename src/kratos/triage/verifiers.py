@@ -431,3 +431,48 @@ register_verifier(Verifier(rules=("COMP-001",), cost="quick", verify=_verify_com
 
 # D.5: the container findings register their own verifiers (kratos.containers.verify).
 from kratos.containers import verify as _container_verify  # noqa: E402,F401
+
+
+# E.3: a deviation from what's normal is an event that happened -- except a new listener,
+# which is a state a fresh running-process read can see again.
+def _verify_baseline_listener(ctx: VerifyContext) -> Verdict:
+    import json as _json
+
+    from kratos.adapters.findings_engine import find_latest_inputs
+    from kratos.baseline import dims as _BD
+
+    names = ["live_response"]
+    report = _fresh_report(ctx, names)
+    checks = _checks_run(report, names)
+    blocked = _blocked_reason(report, names)
+    if blocked is not None:
+        return Verdict("couldnt_check", "Kratos could not complete a fresh running-process read.", detail=blocked,
+                       checks=checks)
+    path = find_latest_inputs(ctx.data_dir, ctx.target).get("live_response")
+    try:
+        doc = _json.loads(path.read_text(encoding="utf-8", errors="replace")) if path else None
+    except (OSError, ValueError):
+        doc = None
+    if not isinstance(doc, dict):
+        return Verdict("couldnt_check", "No fresh running-process read was saved.", checks=checks)
+    subject = str(ctx.finding.get("subject") or "")
+    keys = {str(k) for k in ctx.finding.get("entities") or []}
+    now_open = {(str(li.get("exe") or ""), _BD.listener_key(str(li.get("proto") or ""), li.get("port")))
+                for li in doc.get("listeners") or [] if isinstance(li, dict)}
+    still = sorted(k for k in keys if (subject, k) in now_open)
+    if still and len(still) == len(keys):
+        return Verdict("reproduced", "A fresh read still shows the program listening there.", checks=checks)
+    if still:
+        return Verdict("partly", f"A fresh read still shows {len(still)} of these {len(keys)} ports open.",
+                       checks=checks)
+    if not doc.get("complete"):
+        return Verdict("couldnt_check", "The fresh running-process read was incomplete.", checks=checks)
+    return Verdict("not_reproduced", "A fresh read no longer shows the program listening there.", checks=checks)
+
+
+register_verifier(Verifier(rules=("BASE-005",), cost="quick", verify=_verify_baseline_listener,
+                           label="a fresh running-process read"))
+register_no_verifier(NoVerifier(
+    rules=("BASE-001", "BASE-002", "BASE-003", "BASE-004", "BASE-006", "BASE-008"),
+    # short, shown as the answer's "[couldn't check: ...]" tag
+    reason="a deviation is an event that happened; re-reading can't reproduce it (/baseline shows the usual pattern)"))

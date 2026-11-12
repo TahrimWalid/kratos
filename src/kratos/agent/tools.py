@@ -913,6 +913,8 @@ def _measure_window(data_dir: Path, tw: Any, persist: bool = True) -> tuple[Any,
         "window_id": w.id,
         "coverage": {"measurement": {"truncated": block["truncated"], "returned": m.lines,
                                      "oldest_returned": block["covered_from"]}},
+        # E.3: the machine's own zone, so baselines learn sign-in hours in machine time
+        "target_timezone": {"name": m.tz_name or None, "offset": m.tz_offset or None},
     })
     stats_out = patterns_out = None
     if persist:

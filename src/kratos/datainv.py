@@ -240,6 +240,19 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "baseline", "What's normal per machine (baselines)",
+        "For each machine, what Kratos learned is usual -- which places each account signs in from, at which "
+        "hours and how; who uses sudo for what; which programs listen and talk to which peers; which programs "
+        "start which -- as faded counts with first and last seen; the learning status of each kind; people's "
+        "decisions ('this is normal', forget, freeze, reset) in an append-only trail; and each machine's latest "
+        "baseline result file. Account names and addresses from the machine are in here.",
+        PERSONAL, "bounded per machine: at most baseline.max_entries (500) usual things per kind in use; entries set "
+                  "aside are kept, marked; one result file per machine, replaced in place",
+        files=("baseline_runs",),
+        tables=(TableRef(DB, ("baseline_profiles", "baseline_entries", "baseline_decisions")),),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
         "compliance", "Compliance results and decisions",
         "Each machine's hardening facts (closed lists of settings, file modes and services -- never file contents), "
         "the latest compliance result per machine, one row per framework control per evaluation, and people's "

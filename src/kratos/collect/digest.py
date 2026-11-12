@@ -13,7 +13,12 @@ from kratos.collect.registry import get as get_check
 from kratos.untrusted import for_display
 from kratos.collect.runner import CheckOutcome, CollectionReport
 
-DIGEST_CAP = 1500
+# The digest aims at DIGEST_TARGET characters; only when every check's conclusion can't fit in
+# that (E.3 added the 22nd check line) may it grow, up to DIGEST_CAP, and then only by
+# conclusions -- extra clauses are added within the target. A digest that fit before E.3 is
+# unchanged (tests/test_collect_digest_budget.py proves the worst case).
+DIGEST_TARGET = 1500
+DIGEST_CAP = 1600
 # Titles that interpolate names from the machine (accounts, file paths).
 _TITLE_UNSAFE_PREFIXES = ("PRIV-", "PERSIST-", "LIVE-", "PKG-", "CONT-")
 _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -117,7 +122,7 @@ def _build_digest(report: CollectionReport) -> str:
     else:
         full += closing
     text = "\n".join(full)
-    if len(text) <= DIGEST_CAP:
+    if len(text) <= DIGEST_TARGET:
         return text
     return _fit(head, checks, not_checked, findings, closing)
 
@@ -228,14 +233,18 @@ def _fit(head: str, checks: list[tuple[CheckOutcome, str]], not_checked: list[tu
     mins = [prefix(o) + (_clauses(sm) or [""])[0] for o, sm in checks]
     variants = _findings_variants(findings)
     block = None
-    for variant in variants:                       # the fullest block that leaves every conclusion whole
-        candidate = with_block(variant)
-        if total([head] + mins + ([nc_min] if nc_min else []) + candidate) <= DIGEST_CAP:
-            block = candidate
+    for cap in (DIGEST_TARGET, DIGEST_CAP):        # within the target if possible, else up to the cap
+        for variant in variants:                   # the fullest block that leaves every conclusion whole
+            candidate = with_block(variant)
+            if total([head] + mins + ([nc_min] if nc_min else []) + candidate) <= cap:
+                block = candidate
+                break
+        if block is not None:
             break
     if block is None:                              # not even then: every id kept, the longest lines trimmed
         block = with_block(variants[-1])
     budget = DIGEST_CAP - total([head] + block) - 1          # the newline before the block
+    target = DIGEST_TARGET - total([head] + block) - 1       # what extra clauses may fill
     taken = [1] * len(checks)
     lines = list(mins)
     nc_line = nc_min
@@ -247,7 +256,7 @@ def _fit(head: str, checks: list[tuple[CheckOutcome, str]], not_checked: list[tu
         while True:                                # next clauses, shortest addition first
             options = sorted((len(_clauses(sm)[taken[i]]) + 2, i) for i, (_o, sm) in enumerate(checks)
                              if taken[i] < len(_clauses(sm)))
-            pick = next(((add, i) for add, i in options if used + add <= budget), None)
+            pick = next(((add, i) for add, i in options if used + add <= target), None)
             if pick is None:
                 break
             add, i = pick
@@ -256,7 +265,7 @@ def _fit(head: str, checks: list[tuple[CheckOutcome, str]], not_checked: list[tu
             used += add
         if not_checked:                            # the reasons, if they fit
             full_nc = "NOT checked: " + "; ".join(f"{label} ({why})" for label, why in not_checked)
-            if used - len(nc_line) + len(full_nc) <= budget:
+            if used - len(nc_line) + len(full_nc) <= target:
                 nc_line = full_nc
     text = "\n".join([head] + lines + ([nc_line] if nc_line else []) + block)
     # Backstop only (tests/test_collect_digest_budget.py proves a full collection never reaches it).

@@ -461,6 +461,34 @@ def build(state: Any) -> tuple[Any, Any]:
         return untrusted.for_model(doc if detail == "full" else RP.compact(doc), field_cap=None)
 
     @mcp.tool()
+    def kratos_baseline(ctx: Context, target: str | None = None, kind: str | None = None) -> dict[str, Any]:
+        """Read-only: what Kratos has learned is normal on a machine this token may reach, and
+        today's deviations with the usual pattern. "still learning" is never "nothing unusual".
+        Accepting as normal, forgetting, freezing and resetting are made in the Kratos app."""
+        from kratos import authz
+        from kratos.baseline import present as BP
+
+        client, actor = _client(ctx), _actor(ctx)
+        with authz.acting_as(actor):
+            if target:
+                resolved = _resolve_target(client, target, state.data_dir)
+            else:
+                # never the server's own default machine: it may be outside this person's machines
+                # (and naming it in a refusal would tell them it exists)
+                mine = list(_scope_targets(client, state.data_dir))
+                if len(mine) != 1:
+                    raise ValueError("refused: a baseline is per machine -- name one of your machines")
+                resolved = mine[0]
+            if resolved.startswith("@"):
+                raise ValueError("refused: a baseline is per machine -- name one machine")
+            try:
+                tk, scope = BP.resolve_reader(state.data_dir, actor, resolved)
+                doc = BP.compact(BP.view(state.data_dir, tk, scope=scope, dim=kind or None))
+            except (BP.ViewError, authz.Denied) as e:
+                raise ValueError(f"refused: {e}") from None
+        return untrusted.for_model(doc, field_cap=None)
+
+    @mcp.tool()
     async def kratos_hunt(indicators: str, ctx: Context, kind: str = "", since: str = "", until: str = "",
                           machine: str = "") -> dict[str, Any]:
         """Read-only: has this address (or CIDR network), SHA-256 file hash, account, domain,

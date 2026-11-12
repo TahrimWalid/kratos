@@ -349,3 +349,19 @@ def test_compliance_decisions_have_no_network_door(env):
     with pytest.raises(O.ComplianceError):
         O.set_owner(env["dir"], Actor("ivy", "serve", user_id="ivy", credential="token:x"), "iso27001", "8.9",
                     "all", "ivy")
+
+
+# --- E.3: the baseline's MCP door never reveals the server's own default machine -------
+def test_baseline_without_a_target_never_names_a_machine_outside_scope(env):
+    U.add_user(env["dir"], "zed", "viewer", OWNER, scopes=[M2])          # the server's default (M1) is not theirs
+    zed, _ = auth.create_token(env["dir"], name="zed-t", user="zed", mcp=True)
+    out = _mcp(env, _h(zed), "kratos_baseline", {})
+    assert M1 not in json.dumps(out)                                     # resolved to their one machine, not M1
+    assert "error" not in out and out["machine"] == M2
+    two = _mcp(env, _h(env["tok"]["ivy"]), "kratos_baseline", {})       # two machines: asked which
+    assert "error" in two and "name one of your machines" in two["error"] and M3 not in two["error"]
+    from kratos.baseline import present as BP
+    from kratos.lifecycle.decide import Actor
+
+    with pytest.raises(BP.ViewError, match="name one of your machines"):
+        BP.resolve_reader(env["dir"], Actor("zed", "serve", user_id="u", credential="token:x"), None)

@@ -312,3 +312,5 @@ from kratos.containers import check as _containers_check  # noqa: E402,F401
 from kratos.hashdb import check as _hash_check  # noqa: E402,F401
 # E.2: the hardening facts and the compliance checks over them
 from kratos.compliance import check as _comp_check  # noqa: E402,F401
+# E.3: what's normal per machine, learned from stored history; deviations as BASE-* findings
+from kratos.baseline import check as _baseline_check  # noqa: E402,F401

@@ -171,6 +171,7 @@ def collect(data_dir: Path, plan: Plan, out: Path, red: Redactor, *, progress: P
     _collect_findings(data_dir, plan, out, red, c)
     _collect_coverage(data_dir, plan, out, red, c)
     _collect_compliance(data_dir, plan, out, red, c)
+    _collect_baseline(data_dir, plan, out, red, c)
     return c
 
 
@@ -366,6 +367,38 @@ def _collect_compliance(data_dir: Path, plan: Plan, out: Path, red: Redactor, c:
                 rel = f"evidence/{_safe_dir(shown)}/compliance_{fw}{suffix}"
                 digest, size = _write_text(out / rel, text)
                 c.files.append(BundleFile(rel, digest, size, "generated", shown, "compliance", hashed_at="generated"))
+
+
+def _collect_baseline(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: Collected) -> None:
+    """E.3: what Kratos had learned is normal on each machine when exporting -- the learning
+    status of each kind, the most usual things, the deviations raised and people's decisions
+    (their names left out of redacted bundles). The baseline run file itself travels as
+    evidence."""
+    from kratos.baseline import present as BP
+    from kratos.baseline import record as BR
+
+    for m in plan.request.machines:
+        if BR.load(BR.path_for(data_dir, m)) is None:
+            continue
+        shown = c.machine_names[m]
+        try:
+            v = BP.view(data_dir, m, scope=None, now=plan.taken_at)
+        except Exception as e:  # noqa: BLE001
+            c.warnings.append(f"baseline for {shown}: not made ({type(e).__name__})")
+            continue
+        if red.active:
+            for d in v.get("decisions") or []:
+                d["by"] = "(a person -- names are left out of redacted bundles)"
+            for dv in v.get("deviations") or []:
+                if dv.get("usual_on"):
+                    dv["usual_on"] = {"machines": [], "outside_your_access": len(dv["usual_on"].get("machines") or [])
+                                      + int(dv["usual_on"].get("outside_your_access") or 0)}
+        v = json.loads(red.text(json.dumps(v, default=str, ensure_ascii=False)))
+        v["machine"] = shown
+        for suffix, text in ((".json", json.dumps(v, indent=2, ensure_ascii=False)), (".txt", BP.to_text(v))):
+            rel = f"evidence/{_safe_dir(shown)}/baseline{suffix}"
+            digest, size = _write_text(out / rel, text)
+            c.files.append(BundleFile(rel, digest, size, "generated", shown, "baseline", hashed_at="generated"))
 
 
 def _gaps(cov: dict[str, Any]) -> list[str]:
