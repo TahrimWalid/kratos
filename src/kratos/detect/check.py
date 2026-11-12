@@ -29,15 +29,13 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
         return CheckResult("failed", "could not be checked", ["detection rules: could not be checked"],
                            detail=reason)
     rules_hit = sorted({m["rule_id"] for m in report.matches})
-    parts = [SCHEDULE_NOTE]
+    parts: list[str] = []          # the conclusion first (the digest keeps a line's first clauses)
     try:
         from kratos.detect import live as L
 
         watch = L.watch_line(ctx.data_dir, ctx.target)    # C.2: Kratos-written, counts only
     except Exception:  # noqa: BLE001
         watch = None
-    if watch:
-        parts.append(watch)
     if report.matches:
         shown = ", ".join(rules_hit[:6]) + (f" (+{len(rules_hit) - 6} more)" if len(rules_hit) > 6 else "")
         parts.append(f"{len(report.matches)} new match(es) of {len(rules_hit)} rule(s): {shown}")
@@ -45,6 +43,7 @@ def _run_detect(ctx: CheckContext) -> CheckResult:
         parts.append(f"no new matches in {report.events:,} new log event(s)")
     if report.own_events:
         parts.append(f"{report.own_events:,} of them Kratos's own commands, set aside")
+    parts.append(watch or SCHEDULE_NOTE)
     gaps: list[str] = []
     unchecked = [f"{c.label} ({c.rules})" for c in report.coverage if c.state == "not_checked"]
     partial = [f"{c.label} ({c.rules}): {c.note.split(' -- ')[0].split('; the rest')[0]}" for c in report.coverage

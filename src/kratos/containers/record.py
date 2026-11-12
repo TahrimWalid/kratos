@@ -201,22 +201,22 @@ def summary_line(doc: dict[str, Any]) -> str:
         return "no container engine found"
     c = doc.get("counts") or {}
     n = int(c.get("running") or 0)
-    parts = [f"{n} running container(s)"]
+    parts: list[str] = []                # what is risky leads; the count follows
     sigs = doc.get("signals") or []
     bypass = [s for s in sigs if s.get("rule") == "CONT-004"]
     if bypass:
         ports = sorted({f"{p['host_port']}/{p['proto']}" for s in bypass for p in s.get("ports") or []})
         conf = sum(1 for s in bypass if s.get("severity") == "high")
-        parts.append(f"{len(ports)} port(s) reachable despite the firewall ({', '.join(ports[:4])}"
-                     + (f", {conf} confirmed from Kratos" if conf else ", not confirmed from Kratos") + ")")
+        parts.append(f"{len(ports)} port(s) open past the firewall"
+                     + (f" ({conf} confirmed from Kratos)" if conf else " (not confirmed from Kratos)"))
+        parts.append("port(s) " + ", ".join(ports[:4]) + (f" (+{len(ports) - 4} more)" if len(ports) > 4 else ""))
     words = {"CONT-001": "privileged", "CONT-002": "engine socket mounted", "CONT-003": "host namespace",
              "CONT-005": "writable host folders", "CONT-006": "powerful capabilities", "CONT-007": "confinement off"}
     risky = [f"{sum(1 for s in sigs if s.get('rule') == r)} {w}" for r, w in words.items()
              if any(s.get("rule") == r for s in sigs)]
     if risky:
         parts.append(", ".join(risky))
-    elif not bypass:
-        parts.append("no risky settings found")
+    parts.append(f"{n} running container(s)" if parts else f"no risky settings found in {n} running container(s)")
     if doc.get("via") == "ssh":
         parts.append("engine settings not readable over SSH")
     return "; ".join(parts)

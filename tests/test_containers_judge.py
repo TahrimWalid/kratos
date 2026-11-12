@@ -213,7 +213,8 @@ def test_the_digest_line_names_counts_and_ports_but_no_machine_text(tmp_path):
     doc = R.run(tmp_path, "192.0.2.10", reader=lambda: inv(ctr("evil‮name", ports=PUBLISHED, privileged=True)),
                 connect=lambda a, p: True)
     line = R.summary_line(doc)
-    assert line.startswith("1 running container(s)") and "8080/tcp" in line and "1 confirmed" in line
+    assert line.startswith("1 port(s) open past the firewall (1 confirmed from Kratos)")     # the conclusion leads
+    assert "8080/tcp" in line and "1 running container(s)" in line
     assert "evil" not in line and "nginx" not in line and "1 privileged" in line
 
 

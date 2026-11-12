@@ -80,6 +80,6 @@ def run(data_dir: Path, target: str, *, now: float | None = None, fingerprint: A
 def summary_line(doc: dict[str, Any]) -> str:
     hits = doc.get("hits") or []
     if not hits:
-        return "no login from an address that was guessing passwords"
+        return "no login from a password-guessing address"
     worst = "critical" if any(h.get("severity") == "critical" for h in hits) else "high"
-    return f"{len(hits)} login(s) from an address that was guessing passwords ({worst})"
+    return f"{len(hits)} login(s) from a password-guessing address ({worst})"
