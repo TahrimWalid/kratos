@@ -1416,7 +1416,9 @@ that returns isn't "first time". Tables `baseline_profiles`, `baseline_entries`,
 measurement (`auth_stats` now records `target_timezone` when the measurement read it -- only its
 classic-log part does, so journald machines usually don't); without one, hours are learned in UTC,
 labelled "assumed", and a different zone recorded later starts a new `login_time` generation (no
-agent change was made for E.3). Kratos's own root reads are recognised by their exact command
+agent change was made for E.3). The collection digest still aims at 1,500 characters; it may grow to
+1,600 only when that is what keeps every check's conclusion whole (`collect/digest.py`), so a
+digest that fit before is unchanged. Kratos's own root reads are recognised by their exact command
 shapes (`record._OWN_SUDO`), not by program name, so `sudo awk /etc/shadow` by the same login is
 still learned. Ports whose program the login can't see are learned under "(program not visible to
 this login)". Test history comes from
