@@ -145,7 +145,8 @@ def summary_line(doc: dict[str, Any]) -> str:
                     ("known_good", "known-good"), ("unknown", "unknown"), ("not_checked", "not checked")):
         if c.get(v):
             bits.append(f"{c[v]} {word}")
-    head = f"{looked} program(s) looked up: " + ", ".join(bits)
+    counted = f"{looked} program(s) looked up: " + ", ".join(bits)
     worst = sorted({str(s.get("rule")) for s in doc.get("signals") or [] if s.get("rule") != "HASH-003"})
-    return head + (f"; something to look at ({', '.join(worst)})" if worst else "")
+    lead = f"something to look at ({', '.join(worst)})" if worst else "nothing known to be bad"
+    return f"{lead}; {counted}"
 

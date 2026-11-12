@@ -246,8 +246,7 @@ def summary_line(doc: dict[str, Any]) -> str:
     counts = doc.get("counts") or {}
     procs = int(counts.get("processes") or 0)
     signals = [s for s in doc.get("signals") or [] if str(s.get("rule")) != "LIVE-007"]
-    head = f"{procs} running process(es) checked"
     if signals:
         worst = ", ".join(sorted({str(s.get("rule")) for s in signals}))
-        return f"{head}; something to look at ({worst})"
-    return f"{head}; nothing unusual"
+        return f"something to look at ({worst}); {procs} running process(es) checked"
+    return f"nothing unusual; {procs} running process(es) checked"

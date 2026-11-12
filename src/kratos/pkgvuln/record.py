@@ -452,13 +452,13 @@ def summary_line(doc: dict[str, Any]) -> str:
     if names:
         shown = ", ".join(names[:ACT_NOW_SHOWN]) + (f" +{len(names) - ACT_NOW_SHOWN} more"
                                                      if len(names) > ACT_NOW_SHOWN else "")
-        parts.append(f"ACT NOW: {shown} (vulnerability exploited in the wild, CISA KEV)")
-    parts.append(f"{n} installed package(s)")
+        parts.append(f"ACT NOW: {shown} (exploited in the wild, CISA KEV)")
     vul = int(c.get("vulnerable_packages") or 0)
     if doc.get("complete"):
-        parts.append(f"{vul} with fixable vulnerabilities" if vul else "none with a fixable known vulnerability")
+        parts.append(f"{vul} of {n} installed package(s) with fixable vulnerabilities" if vul
+                     else f"none of {n} installed package(s) with a fixable known vulnerability")
     else:
-        parts.append("not matched against vulnerability data")
+        parts.append(f"{n} installed package(s), not matched against vulnerability data")
     outside = [str(o.get("name")) for o in doc.get("outside_distribution") or []]
     if outside:
         shown = ", ".join(outside[:3]) + (f" +{len(outside) - 3} more" if len(outside) > 3 else "")

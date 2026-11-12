@@ -224,11 +224,14 @@ def summary_line(doc: dict[str, Any]) -> str:
     vul = int(c.get("vulnerable_packages") or 0)
     ns = int(c.get("not_checked") or 0)
     unmatched = sum(1 for r in doc.get("images") or [] if r.get("status") == "ok" and not r.get("matched"))
-    parts = [f"{imgs} running image(s) read"]
+    parts: list[str] = []
+    if vul or not unmatched:
+        parts.append(f"{vul} vulnerable package(s) in {imgs} running image(s)" if vul
+                     else f"no fixable known vulnerability in {imgs} running image(s)")
+    else:
+        parts.append(f"{imgs} running image(s) read")
     if unmatched:
         parts.append(f"{unmatched} not matched against vulnerability data")
-    if vul or not unmatched:
-        parts.append(f"{vul} vulnerable package(s)" if vul else "no fixable known vulnerability")
     if ns:
         parts.append(f"{ns} image(s) not checked (no package database, or not readable)")
     return "; ".join(parts)

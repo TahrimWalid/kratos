@@ -217,9 +217,9 @@ def summary_line(doc: dict[str, Any]) -> str:
     sig = doc.get("signals") or []
     if sig:
         ents = list(sig[0].get("entities") or [])
-        more = f" (+{len(ents) - 4} more)" if len(ents) > 4 else ""
-        return (f"COMP-001 ({sig[0]['severity']}): {len(ents)} hardening check(s) fail: {', '.join(ents[:4])}{more}; "
-                f"{n['pass']} pass, {n['unknown']} not checked")
+        return (f"COMP-001 ({sig[0]['severity']}): {len(ents)} hardening check(s) fail; {n['pass']} pass, "
+                f"{n['unknown']} not checked; e.g. {', '.join(ents[:3])}" + (f" (+{len(ents) - 3} more)"
+                                                                           if len(ents) > 3 else ""))
     return f"{n['pass']} hardening checks pass, {n['fail']} fail (already findings of their own), " \
            f"{n['unknown']} not checked" if n["fail"] else \
         f"{n['pass']} hardening checks pass, {n['unknown']} not checked"

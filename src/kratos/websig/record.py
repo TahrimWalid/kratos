@@ -125,8 +125,8 @@ def summary_line(doc: dict[str, Any]) -> str:
         parts.append("worker crash bursts: " + ", ".join(J.FAMILY_WORDS.get(str(s["subject"]), str(s["subject"]))
                                                         for s in bursts))
     else:
-        parts.append(f"no web-server worker crash bursts in the last 24 h ({doc.get('crashes_seen', 0)} crash "
-                     "line(s) stored)")
+        parts.append("no web-server crash bursts in 24 h")
+        parts.append(f"{doc.get('crashes_seen', 0)} crash line(s) stored")
     if doc.get("exposure_line"):
         parts.append(str(doc["exposure_line"]))
     return "; ".join(parts)

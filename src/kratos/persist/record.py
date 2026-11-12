@@ -187,16 +187,52 @@ def entity_blind(doc: dict[str, Any]) -> Callable[[str, str], str | None] | None
     return why
 
 
+def _programs(n: int) -> str:
+    return "program" if n == 1 else "programs"
+
+
+def _suid_conclusion(doc: dict[str, Any], signals: list[dict[str, Any]]) -> str:
+    """What the read found about setuid/setgid programs -- the answer to "any non-standard SUID
+    files?" -- or "" when the read didn't look at them."""
+    areas = doc.get("areas_checked")
+    if isinstance(areas, list) and "suid" not in areas:
+        return ""
+    n = int((doc.get("counts") or {}).get("suid") or 0)
+    blind = doc.get("blind") or {}
+    if blind.get("suid_incomplete"):
+        return f"{n} setuid/setgid {_programs(n)} found, but the setuid search did not finish"
+    if any(str(s.get("rule")) == "PERSIST-003" for s in signals):
+        return f"{n} setuid/setgid {_programs(n)}, some NOT from the system's packages (PERSIST-003)"
+    where = "" if doc.get("complete") and not blind.get("unread_paths") else " (where it could read)"
+    return f"{n} setuid/setgid {_programs(n)}, all from the system's packages{where}"
+
+
+def _verify_conclusion(doc: dict[str, Any], signals: list[dict[str, Any]]) -> str:
+    """The full audit's package-manager check leads its own line (its digest line is otherwise
+    the persistence line again); "" when it wasn't asked for."""
+    v = doc.get("verify") or {}
+    if not v.get("requested"):
+        return ""
+    if not v.get("done"):
+        return "the package manager could not verify its own files"
+    changed = sum(1 for s in signals if str(s.get("rule")) == "PERSIST-007")
+    return (f"{changed} packaged file(s) changed since installed (PERSIST-007)" if changed
+            else "no packaged file changed since installed")
+
+
 def summary_line(doc: dict[str, Any]) -> str:
-    """The one plain line the collection digest shows (Kratos's own words)."""
+    """The one plain line the collection digest shows (Kratos's own words). It leads with the
+    setuid conclusion and stays short: the digest keeps each line's first clauses when it is
+    over its size."""
     counts = doc.get("counts") or {}
     signals = [s for s in doc.get("signals") or [] if str(s.get("rule")) != "PERSIST-009"]
     places = int(counts.get("items") or 0)
-    if doc.get("baseline", {}).get("first_look"):
-        head = f"first look: {places} place(s) that can start programs recorded as the baseline"
-    else:
-        head = f"{places} place(s) that can start programs checked against the first look"
+    first = bool(doc.get("baseline", {}).get("first_look"))
+    parts = [p for p in (_verify_conclusion(doc, signals), _suid_conclusion(doc, signals),
+                         f"{places} place(s) that can start programs checked"
+                         + (" (first look, now the baseline)" if first else " against the first look")) if p]
     if signals:
-        worst = ", ".join(sorted({str(s.get("rule")) for s in signals}))
-        return f"{head}; something to look at ({worst})"
-    return f"{head}; nothing new"
+        parts.append("something to look at (" + ", ".join(sorted({str(s.get("rule")) for s in signals})) + ")")
+    else:
+        parts.append("nothing new")
+    return "; ".join(parts)

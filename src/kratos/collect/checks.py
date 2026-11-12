@@ -79,11 +79,11 @@ def _run_auth_activity(ctx: CheckContext) -> CheckResult:
         bits = f"{failed} failed SSH login(s)"
         if ips:
             bits += f" from {ips} address(es)"
+        if bursts:                       # the conclusion leads the line: the digest may shorten the rest
+            bits += f" in {len(bursts)} burst(s)"
         parts.append(bits)
     else:
         parts.append("no failed SSH logins")
-    if bursts:
-        parts.append(f"{len(bursts)} burst(s)")
     if ok_logins:
         parts.append(f"{ok_logins} accepted login(s)")
     window = inner.get("window") if isinstance(inner.get("window"), dict) else {}
@@ -127,12 +127,15 @@ def _run_privileged_accounts(ctx: CheckContext) -> CheckResult:
     grants = len(inner.get("recent_privilege_grants") or [])
     changed = inner.get("changed_since_last_check") if isinstance(inner.get("changed_since_last_check"), dict) else {}
     added, removed = len(changed.get("added") or []), len(changed.get("removed") or [])
-    parts = [f"{n} account(s) hold privileged access"]
+    lead = f"{n} account(s) hold privileged access"
+    if changed.get("previous_snapshot_at") and (added or removed):
+        lead += f", {added} new and {removed} gone since the last check"
+    parts = [lead]
     if grants:
         parts.append(f"{grants} recent grant(s)")
     if changed.get("previous_snapshot_at"):
-        parts.append(f"{added} new and {removed} gone since the last check" if added or removed
-                     else "no change since the last check")
+        if not (added or removed):
+            parts.append("no change since the last check")
     else:
         parts.append("first look, nothing to compare with")
     gaps = [g for g in (inner.get("evidence_gaps") or []) if isinstance(g, str)]
@@ -165,10 +168,13 @@ def _run_config_audit(ctx: CheckContext) -> CheckResult:
     if not rows:
         return CheckResult("failed", "could not be checked", ["configuration: could not be checked"],
                            tools=["run_config_audit"])
-    parts = [f"{len(by_status.get('PASS', []))} of {len(rows)} settings are fine"]
+    fine = f"{len(by_status.get('PASS', []))} of {len(rows)} settings are fine"
+    parts = [] if by_status.get("FAIL") else [fine]      # what fails leads the line
     for key, word in (("FAIL", "failing"), ("WARN", "warning"), ("UNKNOWN", "could not be read")):
         if by_status.get(key):
             parts.append(f"{word}: {', '.join(sorted(set(by_status[key])))}")
+        if key == "FAIL" and by_status.get("FAIL"):
+            parts.append(fine)
     return CheckResult("ok", "; ".join(parts), tools=["run_config_audit"])
 
 
@@ -179,7 +185,7 @@ def _run_vuln_scan(ctx: CheckContext) -> CheckResult:
     if inner is None:
         return _failed("known vulnerabilities", err or "", gap, "run_vuln_scan")
     n = int(inner.get("finding_count") or 0)
-    bits = [f"{n} possible issue(s) on the network services" if n else "nothing found on the network services"]
+    bits = [f"{n} possible issue(s) on network services" if n else "nothing found on network services"]
     if inner.get("database_stale"):
         bits.append("the CVE list is out of date")
     gaps = [gap] if gap else []
