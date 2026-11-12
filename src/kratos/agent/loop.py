@@ -409,6 +409,18 @@ def _split_inline_claims(text: str) -> tuple[str, list[dict[str, Any]] | None]:
 # A proposed tool that would run arbitrary commands on the target, or change its
 # state there. Deliberately narrow: read-only tools that use a FIXED command
 # ("lists SUID binaries on the target using find") don't match.
+def _existing_tool_name(name: str) -> str:
+    """The registered tool (built-in or kept) a tool_proposal names, or ''. Compared without
+    case, spaces or dashes ('Run Linux Command' is run_linux_command)."""
+    key = re.sub(r"[\s-]+", "_", (name or "").strip().lower())
+    if not key:
+        return ""
+    for registered in TOOL_REGISTRY:
+        if registered.lower() == key:
+            return registered
+    return ""
+
+
 _TARGET_EXECUTION_PROPOSAL_RE = re.compile(
     r"\b(?:execut\w*|run|runs|running|issue\w*|send\w*)\b[^.]{0,40}?"
     r"\b(?:arbitrary|any|specified|given|user[- ](?:supplied|provided|specified)|custom|requested)\b"
@@ -2167,6 +2179,20 @@ def _run_agent_loop(
                 )
                 _record({"iteration": i, "status": "tool_proposal_malformed", "raw_response": raw})
                 ctx.add(f"\nAssistant: {raw}\nObservation: {correction}\n")
+                continue
+
+            existing = _existing_tool_name(proposal_name)
+            if existing:
+                # A proposal for a tool Kratos already has would offer the person
+                # "build run_linux_command". Not surfaced, not counted; the model is
+                # told once per such proposal to call it or name what's missing.
+                _record({"iteration": i, "status": "tool_proposal_existing_tool",
+                         "attempted_tool_proposal": {"name": proposal_name, "description": proposal_description}})
+                ctx.add(
+                    f"\nAssistant: {raw}\nObservation: Not proposed: {existing!r} is already a Kratos tool. "
+                    "If it fits, call it (if it isn't in your tool list, it doesn't apply to this machine). "
+                    "Otherwise name the capability that's actually missing, as a tool_proposal with a new "
+                    "name, or continue the investigation.\n")
                 continue
 
             if _proposes_target_execution(proposal_name, proposal_description):

@@ -2,7 +2,7 @@
  "format": 1,
  "scenario": "G1_suid",
  "goal": "find SUID/SGID binaries on the target that are not part of the standard system and could be used for privilege escalation",
- "source_run_id": "9467a6e2a8ef48e7935b2204d06dd3a3",
+ "source_run_id": "ba1b07cc2f1044558c97b42c5b5786f4",
  "target": "10.136.28.168",
  "collection": {
   "target": "10.136.28.168",
@@ -15,13 +15,13 @@
     "cost": "quick",
     "status": "partial",
     "source": "ran",
-    "summary": "no failed SSH logins; only 83.3% of the 24 h is covered by the logs; the rest is unknown, not clean",
+    "summary": "no failed SSH logins; only 90.3% of the 24 h is covered by the logs; the rest is unknown, not clean",
     "gaps": [],
     "finding_ids": [
      "AUTH-003",
      "COV-001"
     ],
-    "finished_at": 1794454614.9297144,
+    "finished_at": 1794488902.33042,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [
@@ -52,26 +52,25 @@
          "label": "last 24 hours",
          "tz": "Etc/UTC",
          "notes": [],
-         "chip": "w1 last 24 hours: 2026-11-11 03:36 \u2192 2026-11-12 03:36 (Etc/UTC)",
-         "since_utc": "2026-11-11T03:36:50+00:00",
-         "until_utc": "2026-11-12T03:36:50+00:00",
-         "coverage_percent": 83.3,
-         "covered_from": "2026-11-11T03:36:50+00:00",
-         "covered_to": "2026-11-12T03:36:50+00:00",
+         "chip": "w1 last 24 hours: 2026-11-11 13:08 \u2192 2026-11-12 13:08 (Etc/UTC)",
+         "since_utc": "2026-11-11T13:08:18+00:00",
+         "until_utc": "2026-11-12T13:08:18+00:00",
+         "coverage_percent": 90.3,
+         "covered_from": "2026-11-11T13:08:18+00:00",
+         "covered_to": "2026-11-12T13:08:18+00:00",
          "problems": [
-          "no logging while the target was down/rebooting: 2026-11-11T11:17:01+00:00 -> 2026-11-11T12:57:13+00:00",
           "no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00"
          ],
          "truncated": true,
-         "oldest_returned": "2026-11-11T03:36:50+00:00",
-         "coverage": "PARTIAL (83.3%): no logging while the target was down/rebooting: 2026-11-11T11:17:01+00:00 -> 2026-11-11T12:57:13+00:00; no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
+         "oldest_returned": "2026-11-11T13:08:18+00:00",
+         "coverage": "PARTIAL (90.3%): no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
          "target_clock_offset_s": 0.0
         },
         "counts": {
-         "ssh_other": 35,
-         "sudo_other": 2926,
-         "sudo_session_close": 1462,
-         "sudo_session_open": 1463
+         "ssh_other": 41,
+         "sudo_other": 3524,
+         "sudo_session_close": 1761,
+         "sudo_session_open": 1762
         },
         "failed_login_sources": [],
         "distinct_failed_login_ips": 0,
@@ -95,52 +94,52 @@
          "note": "SAMPLE lines only -- counts above are authoritative",
          "newest": [
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_unix(sudo:session): session closed for user root"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b -1"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_unix(sudo:session): session closed for user root"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b -1 -r -n 1"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo: pam_unix(sudo:session): session closed for user root"
           },
           {
-           "time": "2026-11-12T03:36:53+00:00",
+           "time": "2026-11-12T13:08:21+00:00",
            "ip": null,
            "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b 0"
           }
@@ -150,12 +149,12 @@
         "kratos_own_activity_excluded": {
          "kratos_ip": "10.136.28.1",
          "events": {
-          "ssh_success_login": 4
+          "ssh_success_login": 5
          }
         },
         "persisted": {
-         "stats_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/logs/auth_stats_w1_20261112_03365435807900.json",
-         "patterns_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/logs/auth_patterns_w1_20261112_03365435807900.json"
+         "stats_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/logs/auth_stats_w1_20261112_13082185580000.json",
+         "patterns_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/logs/auth_patterns_w1_20261112_13082185580000.json"
         }
        }
       }
@@ -173,7 +172,7 @@
     "finding_ids": [
      "LOG-003"
     ],
-    "finished_at": 1794454614.975991,
+    "finished_at": 1794488902.3916934,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [
@@ -191,7 +190,7 @@
        "result": {
         "status": "ok",
         "target": "10.136.28.168",
-        "checked_at": "2026-11-12T03:36:51+00:00",
+        "checked_at": "2026-11-12T13:08:18+00:00",
         "file_state": {
          "status": "ok",
          "evidence": [],
@@ -234,7 +233,7 @@
          "boots"
         ],
         "next_step": "run correlate_findings to turn these results into findings (LOG-*/SEAL-*)",
-        "result_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/integrity/log_integrity_20261112_033652_764662.json"
+        "result_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/integrity/log_integrity_20261112_130821_549682.json"
        }
       }
      }
@@ -251,7 +250,7 @@
     "finding_ids": [
      "NET-002"
     ],
-    "finished_at": 1794454616.6620343,
+    "finished_at": 1794488907.4063883,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [
@@ -267,8 +266,8 @@
       "observation": {
        "status": "ok",
        "result": {
-        "xml_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/scans/nmap_10.136.28.168_20261112_03365164333400.xml",
-        "parsed_json_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/scans/parsed_20261112_03365639015400.json",
+        "xml_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/scans/nmap_10.136.28.168_20261112_13081896597100.xml",
+        "parsed_json_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/scans/parsed_20261112_13082738509500.json",
         "target": "10.136.28.168",
         "host_count": 1,
         "open_ports_total": 1
@@ -288,7 +287,7 @@
     "finding_ids": [
      "PRIV-004"
     ],
-    "finished_at": 1794454616.751272,
+    "finished_at": 1794488907.4240212,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [
@@ -308,7 +307,7 @@
        "result": {
         "status": "ok",
         "target": "ubuntu@10.136.28.168",
-        "checked_at": "2026-11-12T03:36:52+00:00",
+        "checked_at": "2026-11-12T13:08:19+00:00",
         "lookback_days": 30,
         "privileged_accounts": [
          {
@@ -1586,7 +1585,7 @@
           "line": "ubuntu ALL=(ALL) NOPASSWD:ALL"
          }
         ],
-        "snapshot_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/context/privileged_accounts_20261112_033652_100063.json"
+        "snapshot_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/context/privileged_accounts_20261112_130819_419872.json"
        }
       }
      }
@@ -1606,7 +1605,7 @@
     "finding_ids": [
      "LIVE-007"
     ],
-    "finished_at": 1794454616.7620416,
+    "finished_at": 1794488907.4424582,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1624,7 +1623,7 @@
     "summary": "no container engine found",
     "gaps": [],
     "finding_ids": [],
-    "finished_at": 1794454616.7926035,
+    "finished_at": 1794488907.4751854,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1639,14 +1638,14 @@
     "cost": "quick",
     "status": "partial",
     "source": "ran",
-    "summary": "18 setuid/setgid programs, all from the system's packages (where it could read); 553 place(s) that can start programs checked (first look, now the baseline); nothing new",
+    "summary": "18 setuid/setgid programs, all matched to the system's packages (where it could read), no listing tool needed; 553 place(s) that can start programs checked (first look, now the baseline); nothing new",
     "gaps": [
      "persistence: 2 place(s) only root can read were not read over this SSH login"
     ],
     "finding_ids": [
      "PERSIST-009"
     ],
-    "finished_at": 1794454616.90098,
+    "finished_at": 1794488907.4923942,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1661,15 +1660,15 @@
     "cost": "quick",
     "status": "partial",
     "source": "ran",
-    "summary": "none of 279 installed package(s) with a fixable known vulnerability; vulnerability data 10 days old",
+    "summary": "none of 279 installed package(s) with a fixable known vulnerability; vulnerability data 11 days old",
     "gaps": [
-     "packages: the vulnerability data is 10 days old -- run `kratos vulndb-update` on the Kratos machine"
+     "packages: the vulnerability data is 11 days old -- run `kratos vulndb-update` on the Kratos machine"
     ],
     "finding_ids": [
      "PKG-002",
      "PKG-004"
     ],
-    "finished_at": 1794454617.0466208,
+    "finished_at": 1794488907.5081906,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1687,7 +1686,7 @@
     "summary": "8 of 8 settings are fine",
     "gaps": [],
     "finding_ids": [],
-    "finished_at": 1794454617.1451244,
+    "finished_at": 1794488907.5231748,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [
@@ -1765,7 +1764,7 @@
     "finding_ids": [
      "COMP-001"
     ],
-    "finished_at": 1794454617.2500944,
+    "finished_at": 1794488907.5380733,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1780,10 +1779,10 @@
     "cost": "quick",
     "status": "ok",
     "source": "ran",
-    "summary": "6103 new log event(s); 7 log(s) up to date",
+    "summary": "7204 new log event(s); 7 log(s) up to date",
     "gaps": [],
     "finding_ids": [],
-    "finished_at": 1794454617.2839496,
+    "finished_at": 1794488907.553783,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1798,7 +1797,7 @@
     "cost": "quick",
     "status": "ok",
     "source": "ran",
-    "summary": "no new matches in 6,103 new log event(s); 4 of them Kratos's own commands, set aside; rules run on the logs Kratos collected (on schedule, not continuously)",
+    "summary": "no new matches in 7,204 new log event(s); 5 of them Kratos's own commands, set aside; rules run on the logs Kratos collected (on schedule, not continuously)",
     "gaps": [
      "detection rules with no log to read on this machine in the last 7 days: file creation (5), audit log (23)",
      "detection rules that could look at only part of their log: program starts (53): only commands run through sudo are checked"
@@ -1806,7 +1805,7 @@
     "finding_ids": [
      "DETECT-001"
     ],
-    "finished_at": 1794454618.8561065,
+    "finished_at": 1794488907.571056,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1824,7 +1823,7 @@
     "summary": "no login from a password-guessing address",
     "gaps": [],
     "finding_ids": [],
-    "finished_at": 1794454618.872204,
+    "finished_at": 1794488907.593912,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1842,7 +1841,7 @@
     "summary": "no web-server crash bursts in 24 h; 0 crash line(s) stored",
     "gaps": [],
     "finding_ids": [],
-    "finished_at": 1794454618.8844028,
+    "finished_at": 1794488907.6136723,
     "age_seconds": 0.0,
     "reason": "",
     "tools": [],
@@ -1853,23 +1852,23 @@
    }
   ],
   "correlation": {
-   "findings_json_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.json",
-   "findings_md_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.md",
+   "findings_json_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.json",
+   "findings_md_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.md",
    "inputs_used": {
-    "nmap_parsed": "parsed_20261112_03365639015400.json",
-    "auth_stats": "auth_stats_w1_20261112_03365435807900.json",
-    "auth_patterns": "auth_patterns_w1_20261112_03365435807900.json",
+    "nmap_parsed": "parsed_20261112_13082738509500.json",
+    "auth_stats": "auth_stats_w1_20261112_13082185580000.json",
+    "auth_patterns": "auth_patterns_w1_20261112_13082185580000.json",
     "system_context": null,
     "auth_trends": null,
     "file_integrity": null,
-    "privileged_accounts": "privileged_accounts_20261112_033652_100063.json",
-    "config_audit": "config_audit_20261112_033652_441613.json",
+    "privileged_accounts": "privileged_accounts_20261112_130819_419872.json",
+    "config_audit": "config_audit_20261112_130820_609556.json",
     "vuln_scan": null,
-    "log_integrity": "log_integrity_20261112_033652_764662.json",
-    "persistence": "persistence_20261112_033654_012591.json",
-    "live_response": "live_response_20261112_033652_492037.json",
-    "packages": "packages_f9293c43959d7f95.json",
-    "detections": "detections_20261112T033658840411Z_c31e081a.json",
+    "log_integrity": "log_integrity_20261112_130821_549682.json",
+    "persistence": "persistence_20261112_130820_996274.json",
+    "live_response": "live_response_20261112_130819_818486.json",
+    "packages": "packages_be8269592e3d9c05.json",
+    "detections": "detections_20261112T130826665868Z_c31e081a.json",
     "hunt": null,
     "web_signals": "web_signals_c31e081a.json",
     "containers": "containers_c31e081a.json",
@@ -1891,7 +1890,7 @@
      "title": "45 installed packages have 186 known vulnerabilities with no fix released yet",
      "severity": "low",
      "evidence": [
-      "From the package check of 10.136.28.168 at 2026-11-12T03:36:51+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
+      "From the package check of 10.136.28.168 at 2026-11-12T13:08:19+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
       "The distribution has not released fixed versions yet -- there is nothing to install today.",
       "bind9-libs (47 CVEs): CVE-2023-50387 -- EPSS 1.00 -- CVSS 7.5 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-50387; and 46 more",
       "perl (10 CVEs): CVE-2023-31486 -- EPSS 0.02 -- CVSS 8.1 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-31486; and 9 more",
@@ -1911,7 +1910,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:53+00:00",
+     "collected_at": "2026-11-12T13:08:22+00:00",
      "subject": "",
      "entities": [
       "acl:CVE-2026-54369",
@@ -2218,7 +2217,7 @@
       "exposure": {
        "value": "unknown",
        "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-       "measured_at": "2026-11-12T03:36:51+00:00",
+       "measured_at": "2026-11-12T13:08:19+00:00",
        "via": "ssh",
        "fix": "read this machine through its sub-agent (it can see every process)",
        "override": ""
@@ -2233,7 +2232,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2247,7 +2246,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether vim is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2261,7 +2260,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether yara is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2275,7 +2274,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether zlib is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2289,7 +2288,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether acl is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2303,7 +2302,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether bind9-libs is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2317,7 +2316,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "a running program comes from coreutils; 6 listening program(s) belong to another user and this login can't see them, so whether coreutils is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2331,7 +2330,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether cyrus-sasl2 is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2345,7 +2344,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "a running program comes from dash; 6 listening program(s) belong to another user and this login can't see them, so whether dash is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2359,7 +2358,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether dbus is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2373,7 +2372,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether elfutils is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2387,7 +2386,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether expat is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2401,7 +2400,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether fail2ban is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2415,7 +2414,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gcc-12 is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2429,7 +2428,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glib2.0 is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2443,7 +2442,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glibc is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2457,7 +2456,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnupg2 is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2471,7 +2470,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnutls28 is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2485,7 +2484,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether icu is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2499,7 +2498,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether isc-dhcp is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -2523,7 +2522,7 @@
         "publicly_exposed": {
          "value": "no",
          "source": "measured",
-         "date": "2026-11-12T03:36:51+00:00",
+         "date": "2026-11-12T13:08:19+00:00",
          "note": "the running kernel serves 4 network listener(s), e.g. 0.0.0.0:22; the machine has no public address there (private, CGNAT or tailnet only) (a firewall is active; Kratos didn't read its per-port rules, so it may limit who can reach this)"
         },
         "automatable": {
@@ -2548,8 +2547,8 @@
      },
      "finding_key": "7c77479c3ce8482367a2e030fcaf19e20ad0356205192c79f36451ea36a0a4e4",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     },
     {
@@ -2570,7 +2569,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:56+00:00",
+     "collected_at": "2026-11-12T13:08:27+00:00",
      "subject": "",
      "entities": [
       "22/tcp"
@@ -2578,8 +2577,8 @@
      "attack": [],
      "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     },
     {
@@ -2614,7 +2613,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:55+00:00",
+     "collected_at": "2026-11-12T13:08:23+00:00",
      "subject": "10.136.28.168",
      "entities": [
       "logindefs.pass_max_days",
@@ -2670,8 +2669,8 @@
      "attack": [],
      "finding_key": "6746aa801f44d03bc7981baa33ef90211ac3b7f9d525914ba013b0e5262e4578",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     },
     {
@@ -2679,7 +2678,7 @@
      "title": "Machine went down without a clean shutdown",
      "severity": "low",
      "evidence": [
-      "Checked 2026-11-12 03:36:51 UTC",
+      "Checked 2026-11-12 13:08:18 UTC",
       "boot 280ac6d141ee ended 2026-11-01T16:41:00+00:00 without a clean shutdown",
       "boot c393847405af ended 2026-11-01T16:41:41+00:00 without a clean shutdown",
       "boot 147a28bfa21f ended 2026-11-02T12:17:01+00:00 without a clean shutdown",
@@ -2694,7 +2693,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:52+00:00",
+     "collected_at": "2026-11-12T13:08:21+00:00",
      "subject": "",
      "entities": [
       "147a28bfa21f4c4fb8129d81b6483b1d",
@@ -2711,8 +2710,8 @@
      "attack": [],
      "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     },
     {
@@ -2720,11 +2719,11 @@
      "title": "Sudo session activity observed",
      "severity": "info",
      "evidence": [
-      "sudo sessions opened: 1463",
-      "sudo sessions closed: 1462",
+      "sudo sessions opened: 1762",
+      "sudo sessions closed: 1761",
       "From the latest read of the login logs",
-      "Time window: last 24 hours (2026-11-11 03:36:50 UTC to 2026-11-12 03:36:50 UTC)",
-      "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+      "Time window: last 24 hours (2026-11-11 13:08:18 UTC to 2026-11-12 13:08:18 UTC)",
+      "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
      ],
      "recommendation": [
       "If this corresponds to expected admin tasks (updates/installs), no action needed.",
@@ -2733,14 +2732,14 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:54+00:00",
+     "collected_at": "2026-11-12T13:08:21+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
      "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     },
     {
@@ -2748,8 +2747,8 @@
      "title": "Authentication data covers only part of the requested time window",
      "severity": "info",
      "evidence": [
-      "Requested window start: 2026-11-11 03:36:50 UTC",
-      "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+      "Requested window start: 2026-11-11 13:08:18 UTC",
+      "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
      ],
      "recommendation": [
       "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
@@ -2758,7 +2757,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:54+00:00",
+     "collected_at": "2026-11-12T13:08:21+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
@@ -2781,7 +2780,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:58+00:00",
+     "collected_at": "2026-11-12T13:08:26+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
@@ -2793,7 +2792,7 @@
      "title": "What the live-response check noted",
      "severity": "info",
      "evidence": [
-      "From the live-response check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+      "From the live-response check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
       "  Some processes could not be fully read as this user (17 could not read environ, 17 could not read exe, 17 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
       "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-G8cJ7i, /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-resolved.service-DudyLL, /var/tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-pFwTWq). Read this machine through its sub-agent (it reads as root), or run the check as root."
      ],
@@ -2804,7 +2803,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:52+00:00",
+     "collected_at": "2026-11-12T13:08:19+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
@@ -2816,7 +2815,7 @@
      "title": "What the persistence check could not see",
      "severity": "info",
      "evidence": [
-      "From the persistence check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+      "From the persistence check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
       "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
       "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
       "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
@@ -2827,7 +2826,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:54+00:00",
+     "collected_at": "2026-11-12T13:08:20+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
@@ -2839,7 +2838,7 @@
      "title": "Part of the package vulnerability check could not be done",
      "severity": "info",
      "evidence": [
-      "the vulnerability data is 10 days old -- run `kratos vulndb-update` on the Kratos machine",
+      "the vulnerability data is 11 days old -- run `kratos vulndb-update` on the Kratos machine",
       "Vulnerabilities in what wasn't checked are unknown, not absent."
      ],
      "recommendation": [
@@ -2848,7 +2847,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:53+00:00",
+     "collected_at": "2026-11-12T13:08:22+00:00",
      "subject": "",
      "entities": [],
      "attack": [],
@@ -2860,7 +2859,7 @@
      "title": "2 account(s) hold privileged access on the target",
      "severity": "info",
      "evidence": [
-      "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 03:36:52 UTC",
+      "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 13:08:19 UTC",
       "root: UID 0 (root)",
       "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)"
      ],
@@ -2870,7 +2869,7 @@
      "playbooks": [],
      "source_ips": [],
      "also_matched": [],
-     "collected_at": "2026-11-12T03:36:52+00:00",
+     "collected_at": "2026-11-12T13:08:19+00:00",
      "subject": "",
      "entities": [
       "root",
@@ -2879,8 +2878,8 @@
      "attack": [],
      "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
      "state": "open",
-     "first_seen": "2026-11-12T03:36:58+00:00",
-     "last_seen": "2026-11-12T03:36:58+00:00",
+     "first_seen": "2026-11-12T13:08:27+00:00",
+     "last_seen": "2026-11-12T13:08:27+00:00",
      "change": "new"
     }
    ],
@@ -2894,23 +2893,23 @@
    "observation": {
     "status": "ok",
     "result": {
-     "findings_json_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.json",
-     "findings_md_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.md",
+     "findings_json_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.json",
+     "findings_md_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.md",
      "inputs_used": {
-      "nmap_parsed": "parsed_20261112_03365639015400.json",
-      "auth_stats": "auth_stats_w1_20261112_03365435807900.json",
-      "auth_patterns": "auth_patterns_w1_20261112_03365435807900.json",
+      "nmap_parsed": "parsed_20261112_13082738509500.json",
+      "auth_stats": "auth_stats_w1_20261112_13082185580000.json",
+      "auth_patterns": "auth_patterns_w1_20261112_13082185580000.json",
       "system_context": null,
       "auth_trends": null,
       "file_integrity": null,
-      "privileged_accounts": "privileged_accounts_20261112_033652_100063.json",
-      "config_audit": "config_audit_20261112_033652_441613.json",
+      "privileged_accounts": "privileged_accounts_20261112_130819_419872.json",
+      "config_audit": "config_audit_20261112_130820_609556.json",
       "vuln_scan": null,
-      "log_integrity": "log_integrity_20261112_033652_764662.json",
-      "persistence": "persistence_20261112_033654_012591.json",
-      "live_response": "live_response_20261112_033652_492037.json",
-      "packages": "packages_f9293c43959d7f95.json",
-      "detections": "detections_20261112T033658840411Z_c31e081a.json",
+      "log_integrity": "log_integrity_20261112_130821_549682.json",
+      "persistence": "persistence_20261112_130820_996274.json",
+      "live_response": "live_response_20261112_130819_818486.json",
+      "packages": "packages_be8269592e3d9c05.json",
+      "detections": "detections_20261112T130826665868Z_c31e081a.json",
       "hunt": null,
       "web_signals": "web_signals_c31e081a.json",
       "containers": "containers_c31e081a.json",
@@ -2932,7 +2931,7 @@
        "title": "45 installed packages have 186 known vulnerabilities with no fix released yet",
        "severity": "low",
        "evidence": [
-        "From the package check of 10.136.28.168 at 2026-11-12T03:36:51+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
+        "From the package check of 10.136.28.168 at 2026-11-12T13:08:19+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
         "The distribution has not released fixed versions yet -- there is nothing to install today.",
         "bind9-libs (47 CVEs): CVE-2023-50387 -- EPSS 1.00 -- CVSS 7.5 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-50387; and 46 more",
         "perl (10 CVEs): CVE-2023-31486 -- EPSS 0.02 -- CVSS 8.1 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-31486; and 9 more",
@@ -2952,7 +2951,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:53+00:00",
+       "collected_at": "2026-11-12T13:08:22+00:00",
        "subject": "",
        "entities": [
         "acl:CVE-2026-54369",
@@ -3259,7 +3258,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -3274,7 +3273,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3288,7 +3287,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether vim is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3302,7 +3301,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether yara is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3316,7 +3315,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether zlib is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3330,7 +3329,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether acl is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3344,7 +3343,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether bind9-libs is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3358,7 +3357,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "a running program comes from coreutils; 6 listening program(s) belong to another user and this login can't see them, so whether coreutils is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3372,7 +3371,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether cyrus-sasl2 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3386,7 +3385,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "a running program comes from dash; 6 listening program(s) belong to another user and this login can't see them, so whether dash is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3400,7 +3399,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether dbus is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3414,7 +3413,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether elfutils is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3428,7 +3427,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether expat is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3442,7 +3441,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether fail2ban is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3456,7 +3455,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gcc-12 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3470,7 +3469,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glib2.0 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3484,7 +3483,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glibc is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3498,7 +3497,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnupg2 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3512,7 +3511,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnutls28 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3526,7 +3525,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether icu is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3540,7 +3539,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether isc-dhcp is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -3564,7 +3563,7 @@
           "publicly_exposed": {
            "value": "no",
            "source": "measured",
-           "date": "2026-11-12T03:36:51+00:00",
+           "date": "2026-11-12T13:08:19+00:00",
            "note": "the running kernel serves 4 network listener(s), e.g. 0.0.0.0:22; the machine has no public address there (private, CGNAT or tailnet only) (a firewall is active; Kratos didn't read its per-port rules, so it may limit who can reach this)"
           },
           "automatable": {
@@ -3589,8 +3588,8 @@
        },
        "finding_key": "7c77479c3ce8482367a2e030fcaf19e20ad0356205192c79f36451ea36a0a4e4",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -3611,7 +3610,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:56+00:00",
+       "collected_at": "2026-11-12T13:08:27+00:00",
        "subject": "",
        "entities": [
         "22/tcp"
@@ -3619,8 +3618,8 @@
        "attack": [],
        "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -3655,7 +3654,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:55+00:00",
+       "collected_at": "2026-11-12T13:08:23+00:00",
        "subject": "10.136.28.168",
        "entities": [
         "logindefs.pass_max_days",
@@ -3711,8 +3710,8 @@
        "attack": [],
        "finding_key": "6746aa801f44d03bc7981baa33ef90211ac3b7f9d525914ba013b0e5262e4578",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -3720,7 +3719,7 @@
        "title": "Machine went down without a clean shutdown",
        "severity": "low",
        "evidence": [
-        "Checked 2026-11-12 03:36:51 UTC",
+        "Checked 2026-11-12 13:08:18 UTC",
         "boot 280ac6d141ee ended 2026-11-01T16:41:00+00:00 without a clean shutdown",
         "boot c393847405af ended 2026-11-01T16:41:41+00:00 without a clean shutdown",
         "boot 147a28bfa21f ended 2026-11-02T12:17:01+00:00 without a clean shutdown",
@@ -3735,7 +3734,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [
         "147a28bfa21f4c4fb8129d81b6483b1d",
@@ -3752,8 +3751,8 @@
        "attack": [],
        "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -3761,11 +3760,11 @@
        "title": "Sudo session activity observed",
        "severity": "info",
        "evidence": [
-        "sudo sessions opened: 1463",
-        "sudo sessions closed: 1462",
+        "sudo sessions opened: 1762",
+        "sudo sessions closed: 1761",
         "From the latest read of the login logs",
-        "Time window: last 24 hours (2026-11-11 03:36:50 UTC to 2026-11-12 03:36:50 UTC)",
-        "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+        "Time window: last 24 hours (2026-11-11 13:08:18 UTC to 2026-11-12 13:08:18 UTC)",
+        "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
        ],
        "recommendation": [
         "If this corresponds to expected admin tasks (updates/installs), no action needed.",
@@ -3774,14 +3773,14 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
        "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -3789,8 +3788,8 @@
        "title": "Authentication data covers only part of the requested time window",
        "severity": "info",
        "evidence": [
-        "Requested window start: 2026-11-11 03:36:50 UTC",
-        "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+        "Requested window start: 2026-11-11 13:08:18 UTC",
+        "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
        ],
        "recommendation": [
         "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
@@ -3799,7 +3798,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -3822,7 +3821,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:58+00:00",
+       "collected_at": "2026-11-12T13:08:26+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -3834,7 +3833,7 @@
        "title": "What the live-response check noted",
        "severity": "info",
        "evidence": [
-        "From the live-response check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+        "From the live-response check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
         "  Some processes could not be fully read as this user (17 could not read environ, 17 could not read exe, 17 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
         "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-G8cJ7i, /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-resolved.service-DudyLL, /var/tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-pFwTWq). Read this machine through its sub-agent (it reads as root), or run the check as root."
        ],
@@ -3845,7 +3844,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:19+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -3857,7 +3856,7 @@
        "title": "What the persistence check could not see",
        "severity": "info",
        "evidence": [
-        "From the persistence check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+        "From the persistence check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
         "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
         "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
         "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
@@ -3868,7 +3867,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:20+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -3880,7 +3879,7 @@
        "title": "Part of the package vulnerability check could not be done",
        "severity": "info",
        "evidence": [
-        "the vulnerability data is 10 days old -- run `kratos vulndb-update` on the Kratos machine",
+        "the vulnerability data is 11 days old -- run `kratos vulndb-update` on the Kratos machine",
         "Vulnerabilities in what wasn't checked are unknown, not absent."
        ],
        "recommendation": [
@@ -3889,7 +3888,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:53+00:00",
+       "collected_at": "2026-11-12T13:08:22+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -3901,7 +3900,7 @@
        "title": "2 account(s) hold privileged access on the target",
        "severity": "info",
        "evidence": [
-        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 03:36:52 UTC",
+        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 13:08:19 UTC",
         "root: UID 0 (root)",
         "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)"
        ],
@@ -3911,7 +3910,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:19+00:00",
        "subject": "",
        "entities": [
         "root",
@@ -3920,8 +3919,8 @@
        "attack": [],
        "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       }
      ],
@@ -3930,8 +3929,8 @@
     }
    }
   },
-  "started": 1794454611.0200927,
-  "finished": 1794454619.2786312,
+  "started": 1794488898.394607,
+  "finished": 1794488907.9843638,
   "budget_seconds": 15.0,
   "disabled_reason": null,
   "still_running": []
@@ -3945,7 +3944,7 @@
      "amount": 24,
      "unit": "hour"
     },
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "data_dir": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897"
    },
    "result": {
     "status": "ok",
@@ -3958,26 +3957,25 @@
       "label": "last 24 hours",
       "tz": "Etc/UTC",
       "notes": [],
-      "chip": "w1 last 24 hours: 2026-11-11 03:36 \u2192 2026-11-12 03:36 (Etc/UTC)",
-      "since_utc": "2026-11-11T03:36:50+00:00",
-      "until_utc": "2026-11-12T03:36:50+00:00",
-      "coverage_percent": 83.3,
-      "covered_from": "2026-11-11T03:36:50+00:00",
-      "covered_to": "2026-11-12T03:36:50+00:00",
+      "chip": "w1 last 24 hours: 2026-11-11 13:08 \u2192 2026-11-12 13:08 (Etc/UTC)",
+      "since_utc": "2026-11-11T13:08:18+00:00",
+      "until_utc": "2026-11-12T13:08:18+00:00",
+      "coverage_percent": 90.3,
+      "covered_from": "2026-11-11T13:08:18+00:00",
+      "covered_to": "2026-11-12T13:08:18+00:00",
       "problems": [
-       "no logging while the target was down/rebooting: 2026-11-11T11:17:01+00:00 -> 2026-11-11T12:57:13+00:00",
        "no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00"
       ],
       "truncated": true,
-      "oldest_returned": "2026-11-11T03:36:50+00:00",
-      "coverage": "PARTIAL (83.3%): no logging while the target was down/rebooting: 2026-11-11T11:17:01+00:00 -> 2026-11-11T12:57:13+00:00; no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
+      "oldest_returned": "2026-11-11T13:08:18+00:00",
+      "coverage": "PARTIAL (90.3%): no logging while the target was down/rebooting: 2026-11-11T18:17:01+00:00 -> 2026-11-11T20:36:51+00:00 -- do NOT describe the uncovered part as clean; say it is unknown.",
       "target_clock_offset_s": 0.0
      },
      "counts": {
-      "ssh_other": 35,
-      "sudo_other": 2926,
-      "sudo_session_close": 1462,
-      "sudo_session_open": 1463
+      "ssh_other": 41,
+      "sudo_other": 3524,
+      "sudo_session_close": 1761,
+      "sudo_session_open": 1762
      },
      "failed_login_sources": [],
      "distinct_failed_login_ips": 0,
@@ -4001,52 +3999,52 @@
       "note": "SAMPLE lines only -- counts above are authoritative",
       "newest": [
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_unix(sudo:session): session closed for user root"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b -1"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_unix(sudo:session): session closed for user root"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b -1 -r -n 1"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_limits(sudo:session): Could not set limit for 'core' to soft=0, hard=-1: Operation not permitted; uid=1000,euid=0"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_unix(sudo:session): session opened for user root(uid=0) by (uid=1000)"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo: pam_unix(sudo:session): session closed for user root"
        },
        {
-        "time": "2026-11-12T03:36:53+00:00",
+        "time": "2026-11-12T13:08:21+00:00",
         "ip": null,
         "line": "sudo:   ubuntu : PWD=/home/ubuntu ; USER=root ; COMMAND=/usr/bin/journalctl --no-pager -q -o short-unix -b 0"
        }
@@ -4056,12 +4054,12 @@
      "kratos_own_activity_excluded": {
       "kratos_ip": "10.136.28.1",
       "events": {
-       "ssh_success_login": 4
+       "ssh_success_login": 5
       }
      },
      "persisted": {
-      "stats_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/logs/auth_stats_w1_20261112_03365435807900.json",
-      "patterns_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/logs/auth_patterns_w1_20261112_03365435807900.json"
+      "stats_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/logs/auth_stats_w1_20261112_13082185580000.json",
+      "patterns_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/logs/auth_patterns_w1_20261112_13082185580000.json"
      }
     }
    }
@@ -4069,14 +4067,14 @@
   {
    "tool": "check_log_integrity",
    "args": {
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "data_dir": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897"
    },
    "result": {
     "status": "ok",
     "result": {
      "status": "ok",
      "target": "10.136.28.168",
-     "checked_at": "2026-11-12T03:36:51+00:00",
+     "checked_at": "2026-11-12T13:08:18+00:00",
      "file_state": {
       "status": "ok",
       "evidence": [],
@@ -4119,20 +4117,20 @@
       "boots"
      ],
      "next_step": "run correlate_findings to turn these results into findings (LOG-*/SEAL-*)",
-     "result_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/integrity/log_integrity_20261112_033652_764662.json"
+     "result_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/integrity/log_integrity_20261112_130821_549682.json"
     }
    }
   },
   {
    "tool": "run_nmap_scan",
    "args": {
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "data_dir": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897"
    },
    "result": {
     "status": "ok",
     "result": {
-     "xml_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/scans/nmap_10.136.28.168_20261112_03365164333400.xml",
-     "parsed_json_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/scans/parsed_20261112_03365639015400.json",
+     "xml_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/scans/nmap_10.136.28.168_20261112_13081896597100.xml",
+     "parsed_json_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/scans/parsed_20261112_13082738509500.json",
      "target": "10.136.28.168",
      "host_count": 1,
      "open_ports_total": 1
@@ -4143,14 +4141,14 @@
    "tool": "list_privileged_accounts",
    "args": {
     "lookback_days": 30,
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "data_dir": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897"
    },
    "result": {
     "status": "ok",
     "result": {
      "status": "ok",
      "target": "ubuntu@10.136.28.168",
-     "checked_at": "2026-11-12T03:36:52+00:00",
+     "checked_at": "2026-11-12T13:08:19+00:00",
      "lookback_days": 30,
      "privileged_accounts": [
       {
@@ -5428,7 +5426,7 @@
        "line": "ubuntu ALL=(ALL) NOPASSWD:ALL"
       }
      ],
-     "snapshot_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/context/privileged_accounts_20261112_033652_100063.json"
+     "snapshot_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/context/privileged_accounts_20261112_130819_419872.json"
     }
    }
   },
@@ -5488,28 +5486,28 @@
   {
    "tool": "correlate_findings",
    "args": {
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "data_dir": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897"
    },
    "result": {
     "status": "ok",
     "result": {
-     "findings_json_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.json",
-     "findings_md_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/reports/findings_20261112_03365898930600.md",
+     "findings_json_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.json",
+     "findings_md_file": "/tmp/kratos-eval-rec-rw7jr4li/G1_suid_1794488897/reports/findings_20261112_13082773198600.md",
      "inputs_used": {
-      "nmap_parsed": "parsed_20261112_03365639015400.json",
-      "auth_stats": "auth_stats_w1_20261112_03365435807900.json",
-      "auth_patterns": "auth_patterns_w1_20261112_03365435807900.json",
+      "nmap_parsed": "parsed_20261112_13082738509500.json",
+      "auth_stats": "auth_stats_w1_20261112_13082185580000.json",
+      "auth_patterns": "auth_patterns_w1_20261112_13082185580000.json",
       "system_context": null,
       "auth_trends": null,
       "file_integrity": null,
-      "privileged_accounts": "privileged_accounts_20261112_033652_100063.json",
-      "config_audit": "config_audit_20261112_033652_441613.json",
+      "privileged_accounts": "privileged_accounts_20261112_130819_419872.json",
+      "config_audit": "config_audit_20261112_130820_609556.json",
       "vuln_scan": null,
-      "log_integrity": "log_integrity_20261112_033652_764662.json",
-      "persistence": "persistence_20261112_033654_012591.json",
-      "live_response": "live_response_20261112_033652_492037.json",
-      "packages": "packages_f9293c43959d7f95.json",
-      "detections": "detections_20261112T033658840411Z_c31e081a.json",
+      "log_integrity": "log_integrity_20261112_130821_549682.json",
+      "persistence": "persistence_20261112_130820_996274.json",
+      "live_response": "live_response_20261112_130819_818486.json",
+      "packages": "packages_be8269592e3d9c05.json",
+      "detections": "detections_20261112T130826665868Z_c31e081a.json",
       "hunt": null,
       "web_signals": "web_signals_c31e081a.json",
       "containers": "containers_c31e081a.json",
@@ -5531,7 +5529,7 @@
        "title": "45 installed packages have 186 known vulnerabilities with no fix released yet",
        "severity": "low",
        "evidence": [
-        "From the package check of 10.136.28.168 at 2026-11-12T03:36:51+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
+        "From the package check of 10.136.28.168 at 2026-11-12T13:08:19+00:00: 279 installed packages on Ubuntu 22.04.5 LTS, matched on the Kratos machine against ubuntu:22.04 advisory data (downloaded 2026-11-01T12:24:13+00:00)",
         "The distribution has not released fixed versions yet -- there is nothing to install today.",
         "bind9-libs (47 CVEs): CVE-2023-50387 -- EPSS 1.00 -- CVSS 7.5 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-50387; and 46 more",
         "perl (10 CVEs): CVE-2023-31486 -- EPSS 0.02 -- CVSS 8.1 -- distribution rates it medium -- no fix yet -- UBUNTU-CVE-2023-31486; and 9 more",
@@ -5551,7 +5549,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:53+00:00",
+       "collected_at": "2026-11-12T13:08:22+00:00",
        "subject": "",
        "entities": [
         "acl:CVE-2026-54369",
@@ -5858,7 +5856,7 @@
         "exposure": {
          "value": "unknown",
          "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-         "measured_at": "2026-11-12T03:36:51+00:00",
+         "measured_at": "2026-11-12T13:08:19+00:00",
          "via": "ssh",
          "fix": "read this machine through its sub-agent (it can see every process)",
          "override": ""
@@ -5873,7 +5871,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether util-linux is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5887,7 +5885,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether vim is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5901,7 +5899,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether yara is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5915,7 +5913,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether zlib is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5929,7 +5927,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether acl is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5943,7 +5941,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether bind9-libs is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5957,7 +5955,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "a running program comes from coreutils; 6 listening program(s) belong to another user and this login can't see them, so whether coreutils is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5971,7 +5969,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether cyrus-sasl2 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5985,7 +5983,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "a running program comes from dash; 6 listening program(s) belong to another user and this login can't see them, so whether dash is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -5999,7 +5997,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether dbus is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6013,7 +6011,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether elfutils is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6027,7 +6025,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether expat is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6041,7 +6039,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether fail2ban is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6055,7 +6053,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gcc-12 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6069,7 +6067,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glib2.0 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6083,7 +6081,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether glibc is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6097,7 +6095,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnupg2 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6111,7 +6109,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether gnutls28 is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6125,7 +6123,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether icu is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6139,7 +6137,7 @@
           "exposure": {
            "value": "unknown",
            "reason": "6 listening program(s) belong to another user and this login can't see them, so whether isc-dhcp is exposed is unknown",
-           "measured_at": "2026-11-12T03:36:51+00:00",
+           "measured_at": "2026-11-12T13:08:19+00:00",
            "via": "ssh",
            "fix": "read this machine through its sub-agent (it can see every process)",
            "override": ""
@@ -6163,7 +6161,7 @@
           "publicly_exposed": {
            "value": "no",
            "source": "measured",
-           "date": "2026-11-12T03:36:51+00:00",
+           "date": "2026-11-12T13:08:19+00:00",
            "note": "the running kernel serves 4 network listener(s), e.g. 0.0.0.0:22; the machine has no public address there (private, CGNAT or tailnet only) (a firewall is active; Kratos didn't read its per-port rules, so it may limit who can reach this)"
           },
           "automatable": {
@@ -6188,8 +6186,8 @@
        },
        "finding_key": "7c77479c3ce8482367a2e030fcaf19e20ad0356205192c79f36451ea36a0a4e4",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -6210,7 +6208,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:56+00:00",
+       "collected_at": "2026-11-12T13:08:27+00:00",
        "subject": "",
        "entities": [
         "22/tcp"
@@ -6218,8 +6216,8 @@
        "attack": [],
        "finding_key": "3a29e8f4e179c71c538c96e7edaf2d74382832950c4cc8b01be0869cf9108a49",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -6254,7 +6252,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:55+00:00",
+       "collected_at": "2026-11-12T13:08:23+00:00",
        "subject": "10.136.28.168",
        "entities": [
         "logindefs.pass_max_days",
@@ -6310,8 +6308,8 @@
        "attack": [],
        "finding_key": "6746aa801f44d03bc7981baa33ef90211ac3b7f9d525914ba013b0e5262e4578",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -6319,7 +6317,7 @@
        "title": "Machine went down without a clean shutdown",
        "severity": "low",
        "evidence": [
-        "Checked 2026-11-12 03:36:51 UTC",
+        "Checked 2026-11-12 13:08:18 UTC",
         "boot 280ac6d141ee ended 2026-11-01T16:41:00+00:00 without a clean shutdown",
         "boot c393847405af ended 2026-11-01T16:41:41+00:00 without a clean shutdown",
         "boot 147a28bfa21f ended 2026-11-02T12:17:01+00:00 without a clean shutdown",
@@ -6334,7 +6332,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [
         "147a28bfa21f4c4fb8129d81b6483b1d",
@@ -6351,8 +6349,8 @@
        "attack": [],
        "finding_key": "35a03f75aacd2058e0d631ac73bc8c532129a7ee5fd222a9df5a13da92bf6c9a",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -6360,11 +6358,11 @@
        "title": "Sudo session activity observed",
        "severity": "info",
        "evidence": [
-        "sudo sessions opened: 1463",
-        "sudo sessions closed: 1462",
+        "sudo sessions opened: 1762",
+        "sudo sessions closed: 1761",
         "From the latest read of the login logs",
-        "Time window: last 24 hours (2026-11-11 03:36:50 UTC to 2026-11-12 03:36:50 UTC)",
-        "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+        "Time window: last 24 hours (2026-11-11 13:08:18 UTC to 2026-11-12 13:08:18 UTC)",
+        "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
        ],
        "recommendation": [
         "If this corresponds to expected admin tasks (updates/installs), no action needed.",
@@ -6373,14 +6371,14 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
        "finding_key": "d011f68ba7534d461dea1fd94c29a9d4bbf16c805a87855994a9233a26a8f404",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       },
       {
@@ -6388,8 +6386,8 @@
        "title": "Authentication data covers only part of the requested time window",
        "severity": "info",
        "evidence": [
-        "Requested window start: 2026-11-11 03:36:50 UTC",
-        "Coverage: partial -- the target's logs only go back to 2026-11-11 03:36:50 UTC, so nothing earlier could be counted"
+        "Requested window start: 2026-11-11 13:08:18 UTC",
+        "Coverage: partial -- the target's logs only go back to 2026-11-11 13:08:18 UTC, so nothing earlier could be counted"
        ],
        "recommendation": [
         "Treat the absence of auth findings before the coverage start as UNKNOWN, not clean.",
@@ -6398,7 +6396,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:21+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -6421,7 +6419,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:58+00:00",
+       "collected_at": "2026-11-12T13:08:26+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -6433,7 +6431,7 @@
        "title": "What the live-response check noted",
        "severity": "info",
        "evidence": [
-        "From the live-response check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+        "From the live-response check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
         "  Some processes could not be fully read as this user (17 could not read environ, 17 could not read exe, 17 could not read fd); the read ran as uid 1000. Other users' programs are not visible this way. Read this machine through its sub-agent (it reads as root), or run the check as root.",
         "  4 folder(s) under the temp directories could not be opened by this login, so executables inside them were not checked (e.g. /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-G8cJ7i, /tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-resolved.service-DudyLL, /var/tmp/systemd-private-4189d95d909f4ace9e94f257b1d3d640-systemd-logind.service-pFwTWq). Read this machine through its sub-agent (it reads as root), or run the check as root."
        ],
@@ -6444,7 +6442,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:19+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -6456,7 +6454,7 @@
        "title": "What the persistence check could not see",
        "severity": "info",
        "evidence": [
-        "From the persistence check of 10.136.28.168 at 2026-11-12 03:36:51 UTC (read over SSH as uid 1000)",
+        "From the persistence check of 10.136.28.168 at 2026-11-12 13:08:19 UTC (read over SSH as uid 1000)",
         "  2 location(s) could not be read as this user (/root, /var/spool/cron/crontabs); the read ran as uid 1000. Read this machine through its sub-agent (it reads as root), or run the check as root.",
         "  this machine shares its kernel with its host (it is a container), so loaded kernel modules and the kernel taint flag belong to the host and were not checked here",
         "  this is Kratos's first look at this machine: everything here is the baseline, so nothing can be called new yet"
@@ -6467,7 +6465,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:54+00:00",
+       "collected_at": "2026-11-12T13:08:20+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -6479,7 +6477,7 @@
        "title": "Part of the package vulnerability check could not be done",
        "severity": "info",
        "evidence": [
-        "the vulnerability data is 10 days old -- run `kratos vulndb-update` on the Kratos machine",
+        "the vulnerability data is 11 days old -- run `kratos vulndb-update` on the Kratos machine",
         "Vulnerabilities in what wasn't checked are unknown, not absent."
        ],
        "recommendation": [
@@ -6488,7 +6486,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:53+00:00",
+       "collected_at": "2026-11-12T13:08:22+00:00",
        "subject": "",
        "entities": [],
        "attack": [],
@@ -6500,7 +6498,7 @@
        "title": "2 account(s) hold privileged access on the target",
        "severity": "info",
        "evidence": [
-        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 03:36:52 UTC",
+        "From the privileged-accounts check of ubuntu@10.136.28.168 at 2026-11-12 13:08:19 UTC",
         "root: UID 0 (root)",
         "ubuntu: member of 'sudo' (sudo group), sudoers grant (/etc/sudoers.d/90-incus)"
        ],
@@ -6510,7 +6508,7 @@
        "playbooks": [],
        "source_ips": [],
        "also_matched": [],
-       "collected_at": "2026-11-12T03:36:52+00:00",
+       "collected_at": "2026-11-12T13:08:19+00:00",
        "subject": "",
        "entities": [
         "root",
@@ -6519,8 +6517,8 @@
        "attack": [],
        "finding_key": "7dcda968d09fb83e8cabe6632cc576cd19eedea2a81b90e55483ea24474b67ad",
        "state": "open",
-       "first_seen": "2026-11-12T03:36:58+00:00",
-       "last_seen": "2026-11-12T03:36:58+00:00",
+       "first_seen": "2026-11-12T13:08:27+00:00",
+       "last_seen": "2026-11-12T13:08:27+00:00",
        "change": "new"
       }
      ],
@@ -6530,185 +6528,22 @@
    }
   },
   {
-   "tool": "check_file_integrity",
+   "tool": "run_yara_scan",
    "args": {
-    "baseline_name": "suid_sgid_check",
-    "data_dir": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610"
+    "scan_path": "/usr/local/bin"
    },
-   "result": {
-    "status": "ok",
-    "result": {
-     "status": "baseline_established",
-     "baseline_name": "suid_sgid_check",
-     "baseline_file": "/tmp/kratos-eval-rec-3hy1avn0/G1_suid_1794454610/baseline/file_integrity_10_136_28_168__suid_sgid_check.json",
-     "target": "ubuntu@10.136.28.168",
-     "hashes": {
-      "/etc/passwd": "26b85302f8663494c63d7516e94b4874500b35b1fef34c29154df6a0f418b209",
-      "/etc/ssh/sshd_config": "9bd447869e6208ee37e6c0a6f6b2ee31122a6c457973f92f82b80de03208542c",
-      "/etc/sudoers": "<unreadable: permission denied to SSH user>",
-      "/etc/crontab": "3494e2d3ce0fb77633d00b247cad543cca29c7673da802a23bd5fe0364eb2c13"
-     }
-    }
-   }
-  },
-  {
-   "tool": "list_processes",
-   "args": {},
    "result": {
     "status": "ok",
     "result": {
      "status": "ok",
      "target": "ubuntu@10.136.28.168",
-     "count": 21,
-     "entries": [
-      {
-       "user": "root",
-       "pid": "1",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/sbin/init"
-      },
-      {
-       "user": "root",
-       "pid": "134",
-       "cpu": "0.0",
-       "mem": "0.3",
-       "command": "/lib/systemd/systemd-journald"
-      },
-      {
-       "user": "root",
-       "pid": "161",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd-udevd"
-      },
-      {
-       "user": "root",
-       "pid": "223",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/usr/sbin/cron -f -P"
-      },
-      {
-       "user": "message+",
-       "pid": "228",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "@dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only"
-      },
-      {
-       "user": "root",
-       "pid": "232",
-       "cpu": "0.0",
-       "mem": "0.1",
-       "command": "/usr/bin/python3 /usr/bin/networkd-dispatcher --run-startup-triggers"
-      },
-      {
-       "user": "syslog",
-       "pid": "233",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/usr/sbin/rsyslogd -n -iNONE"
-      },
-      {
-       "user": "root",
-       "pid": "234",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd-logind"
-      },
-      {
-       "user": "systemd+",
-       "pid": "235",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd-networkd"
-      },
-      {
-       "user": "systemd+",
-       "pid": "239",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd-resolved"
-      },
-      {
-       "user": "root",
-       "pid": "243",
-       "cpu": "0.0",
-       "mem": "0.2",
-       "command": "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"
-      },
-      {
-       "user": "root",
-       "pid": "246",
-       "cpu": "0.0",
-       "mem": "0.1",
-       "command": "/usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal"
-      },
-      {
-       "user": "root",
-       "pid": "247",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/sbin/agetty -o -p -- \\u --noclear --keep-baud console 115200,38400,9600 linux"
-      },
-      {
-       "user": "root",
-       "pid": "249",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups"
-      },
-      {
-       "user": "root",
-       "pid": "25277",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "sshd: ubuntu [priv]"
-      },
-      {
-       "user": "ubuntu",
-       "pid": "25280",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd --user"
-      },
-      {
-       "user": "ubuntu",
-       "pid": "25281",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "(sd-pam)"
-      },
-      {
-       "user": "ubuntu",
-       "pid": "25296",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "sshd: ubuntu@notty"
-      },
-      {
-       "user": "root",
-       "pid": "27807",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "/lib/systemd/systemd-timedated"
-      },
-      {
-       "user": "ubuntu",
-       "pid": "28040",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "timeout -k 5 30 /bin/bash -c ps aux"
-      },
-      {
-       "user": "ubuntu",
-       "pid": "28041",
-       "cpu": "0.0",
-       "mem": "0.0",
-       "command": "ps aux"
-      }
-     ]
+     "scan_path": "/usr/local/bin",
+     "rules_used": [
+      "MALW_Eicar.yar",
+      "WShell_ChinaChopper.yar"
+     ],
+     "match_count": 0,
+     "matches": []
     }
    }
   }

@@ -202,9 +202,11 @@ def _suid_conclusion(doc: dict[str, Any], signals: list[dict[str, Any]]) -> str:
     if blind.get("suid_incomplete"):
         return f"{n} setuid/setgid {_programs(n)} found, but the setuid search did not finish"
     if any(str(s.get("rule")) == "PERSIST-003" for s in signals):
-        return f"{n} setuid/setgid {_programs(n)}, some NOT from the system's packages (PERSIST-003)"
+        return f"{n} setuid/setgid {_programs(n)}, some NOT matched to the system's packages (PERSIST-003 names them)"
     where = "" if doc.get("complete") and not blind.get("unread_paths") else " (where it could read)"
-    return f"{n} setuid/setgid {_programs(n)}, all from the system's packages{where}"
+    # Says the check is complete: the model otherwise proposes a tool to list the files (eval G1_suid).
+    # Fits the digest's 160-character line with a four-digit count.
+    return f"{n} setuid/setgid {_programs(n)}, all matched to the system's packages{where}, no listing tool needed"
 
 
 def _verify_conclusion(doc: dict[str, Any], signals: list[dict[str, Any]]) -> str:
