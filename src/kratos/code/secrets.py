@@ -136,9 +136,23 @@ def key_files(inventory_files: dict[str, dict]) -> list[Hit]:
             if CF.is_key_file(os.fsencode(rel))]
 
 
-def candidates(inventory_files: dict[str, dict]) -> tuple[list[str], int]:
-    """(files to scan, how many text-shaped files were skipped as too big). Minified bundles
-    over 1 MiB and anything over the secrets cap are not scanned (counted)."""
+MAX_FILES = 3000                 # per folder: tiny files can fit any byte budget, but each read costs
+_CONFIG_EXTS = (".env", ".ini", ".cfg", ".conf", ".config", ".json", ".yml", ".yaml", ".toml", ".xml", ".properties")
+
+
+def _priority(rel: str) -> tuple[int, str]:
+    name = rel.rsplit("/", 1)[-1]
+    if name in CF.SECRET_NAMES or name.startswith(".env"):
+        return 0, rel
+    if name.lower().endswith(_CONFIG_EXTS):
+        return 1, rel
+    return 2, rel
+
+
+def candidates(inventory_files: dict[str, dict], max_files: int = MAX_FILES) -> tuple[list[str], int]:
+    """(files to scan, how many text-shaped files were skipped). Minified bundles over 1 MiB,
+    anything over the secrets size cap, and past `max_files` per folder (credential and config
+    files first) are not scanned -- counted."""
     want: list[str] = []
     skipped = 0
     for rel, f in sorted(inventory_files.items()):
@@ -152,4 +166,8 @@ def candidates(inventory_files: dict[str, dict]) -> tuple[list[str], int]:
             skipped += 1
             continue
         want.append(rel)
+    want.sort(key=_priority)
+    if len(want) > max_files:
+        skipped += len(want) - max_files
+        want = want[:max_files]
     return want, skipped

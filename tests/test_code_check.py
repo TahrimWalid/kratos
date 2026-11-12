@@ -291,3 +291,26 @@ def test_vulnerable_dependency_and_missing_ecosystem(tmp_path):
     assert len(c3) == 1 and c3[0]["entities"] == ["PYSEC-2021-1"] and c3[0]["subject"].endswith("|PyPI:flask")
     assert any("npm advisories not downloaded: `kratos vulndb-update --for-roots`" in g for g in doc["coverage_gaps"])
     assert S.ecosystems_seen(dd) == ["PyPI", "npm"]
+
+
+def test_secret_scan_caps():
+    from kratos.code import secrets as SEC
+
+    files = {f"src/f{i}.php": {"status": "ok", "size": 20} for i in range(SEC.MAX_FILES + 50)}
+    files["app/.env"] = {"status": "ok", "size": 30}
+    files["app/config.yml"] = {"status": "ok", "size": 30}
+    files["web/app.min.js"] = {"status": "ok", "size": 5 * 1024 * 1024}
+    want, skipped = SEC.candidates(files)
+    assert want[:2] == ["app/.env", "app/config.yml"] and len(want) == SEC.MAX_FILES
+    assert skipped == 50 + 2 + 1                                   # past the cap, plus the minified bundle
+
+
+def test_many_loose_objects_are_compared_by_index_over_ssh():
+    from kratos.code import reads as RD
+
+    inv = {"gitfiles": {"HEAD": 20, "index": 100, **{f"objects/{i:02x}/{'a' * 38}": 50 for i in range(256)}}}
+    want, reason = RD.git_wanted(inv, 64 * 1024 * 1024)
+    assert reason == "" and len(want) == 258
+    many = {"gitfiles": {"HEAD": 20, **{f"objects/{i % 256:02x}/{i:038x}": 50 for i in range(RD.MAX_LOOSE_OBJECTS + 1)}}}
+    want, reason = RD.git_wanted(many, 64 * 1024 * 1024)
+    assert "loose objects" in reason and want == [".git/HEAD"]

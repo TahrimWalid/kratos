@@ -238,7 +238,8 @@ def _secrets(data_dir: Path, path: str, inv: dict[str, Any], budget: int, fetch:
     hits = [h.__dict__ for h in SEC.key_files(files)]
     want, skipped = SEC.candidates(files)
     if skipped:
-        notes.append(f"{path}: {skipped} large or minified file(s) not scanned for secrets")
+        notes.append(f"{path}: {skipped} file(s) not scanned for secrets (large, minified, or past the "
+                     f"{SEC.MAX_FILES} files scanned per folder -- credential and config files come first)")
     used = 0
     if want and budget > 0:
         key = SEC._key(data_dir)

@@ -127,6 +127,7 @@ def read_contents(root: str, purpose: str, inv: dict[str, Any], rels: list[str],
 
 # --------------------------------------------------------------------------- git over SSH
 _GIT_TOP = ("HEAD", "config", "index", "packed-refs", "info/exclude")
+MAX_LOOSE_OBJECTS = 5000      # over SSH each fetched file costs; a repository with more is compared by index
 
 
 def git_wanted(inv: dict[str, Any], budget: int) -> tuple[list[str], str]:
@@ -143,7 +144,11 @@ def git_wanted(inv: dict[str, Any], budget: int) -> tuple[list[str], str]:
         reason = "HEAD comparison skipped: the objects are stored outside this folder (alternates); index comparison done"
         return want, reason
     obj_bytes = sum(int(gf.get(k) or 0) for k in objects)
-    if used + obj_bytes > budget:
+    loose = sum(1 for k in objects if not k.startswith("objects/pack/"))
+    if loose > MAX_LOOSE_OBJECTS:
+        reason = (f"HEAD comparison skipped: {loose} loose objects (more than {MAX_LOOSE_OBJECTS} fetched over SSH; "
+                  "the sub-agent compares them on the machine); index comparison done")
+    elif used + obj_bytes > budget:
         reason = "HEAD comparison skipped: pack too large; index comparison done"
     else:
         want += [f".git/{k}" for k in sorted(objects)]
