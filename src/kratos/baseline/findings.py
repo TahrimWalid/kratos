@@ -59,7 +59,8 @@ def _line(d: dict[str, Any]) -> str:
                      f"in group '{ctx.get('group')}' (/baseline shows which)")
         return text
     if rule == "BASE-002":
-        return f"'{who}' signed in at {D.hour_words(str(key))} (machine time), {when} -- from {det.get('address')}"
+        zone = "UTC" if str(when or "").endswith("UTC") else "machine time"
+        return f"'{who}' signed in at {D.hour_words(str(key))} ({zone}), {when} -- from {det.get('address')}"
     if rule == "BASE-003":
         return f"'{who}' signed in by {key} {_seen(d)} -- from {det.get('address')}, {when}"
     if rule == "BASE-004":
@@ -171,6 +172,8 @@ def run_note(doc: dict[str, Any]) -> list[str]:
             text = f"{label}: not learnable here: {s.get('reason')}"
         if s.get("evicted"):
             text += f"; {s['evicted']} rarely used thing(s) set aside to stay within the limit"
+        if s.get("zone_note"):
+            text += f"; {s['zone_note']}"
         lines.append(text)
     today = doc.get("today") or {}
     if today.get("over_budget"):
@@ -184,6 +187,10 @@ def run_note(doc: dict[str, Any]) -> list[str]:
                      "raised")
     if doc.get("own_set_aside"):
         lines.append(f"{doc['own_set_aside']} of Kratos's own logins and reads set aside (never learned)")
+    for name in ("listener", "outbound"):
+        for n in (doc.get("dims") or {}).get(name, {}).get("read_notes") or []:
+            if n not in lines:
+                lines.append(n)
     for g in doc.get("coverage_gaps") or []:
         lines.append(g)
     for n in doc.get("notes") or []:

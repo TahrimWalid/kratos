@@ -291,3 +291,19 @@ def test_a_viewer_reads_only_machines_in_scope(tmp_path):
         present.resolve(data, viewer, "10.9.9.9")
     with pytest.raises(BD.BaselineError):
         BD.accept(data, m.target, "login_source", "deploy", "10.20.0.0/24", actor=viewer)
+
+
+def test_forget_reopens_an_accepted_finding_and_raises_again_despite_the_cooldown(tmp_path):
+    m, data = _ready(tmp_path, ("new_source",))
+    run(data, m.target, now=END.timestamp())
+    _findings(data, m.target)
+    res = BD.accept(data, m.target, "login_source", "deploy", "192.0.2.0/24", actor=OWNER)
+    assert res["finding"] == "false_positive"
+    out = BD.forget(data, m.target, "login_source", "deploy", "192.0.2.0/24", actor=OWNER, reason="test")
+    assert out["finding"] == "reopened"
+    add_logins(data, m.target, [(END.timestamp() + 300, "deploy", "192.0.2.78", "publickey")])
+    doc = run(data, m.target, now=END.timestamp() + 600)          # well inside the 24 h cooldown
+    again = [d for d in doc["deviations"] if d["rule"] == "BASE-001" and d["raised_at"] == END.timestamp() + 600]
+    assert again and again[0]["key"] == "192.0.2.0/24"
+    rows = _findings(data, m.target)
+    assert [f["state"] for f in rows if f["id"] == "BASE-001"] == ["open"]

@@ -16,6 +16,7 @@ Every decision is recorded in ``baseline_decisions`` with the actor.
 """
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -99,13 +100,14 @@ def accept(data_dir: Path | str, machine: str, dim: str, subject: str, key: str,
             exception_id, finding_state = res.get("exception_id"), "false_positive"
     except Exception as e:  # noqa: BLE001 -- the baseline mark still applies; say why the finding wasn't decided
         finding_state = f"not changed ({type(e).__name__}: {e})"[:200]
+    half_life_s = L.Settings.load(data_dir).half_life_days * L.DAY      # read before the write lock
     with S.opened(data_dir) as conn, S.immediate(conn):
         gen = _current_generation(conn, tk, d.name)
         rows = {r["key"]: r for r in S.entries(conn, tk, d.name, gen) if r["subject"] == subject}
         e = L.Entry.from_row(rows[key]) if key in rows else L.Entry(subject, key, 0.0, now, 0, now, now)
         e.forgotten_at = e.forgotten_by = None
         e.accepted_at, e.accepted_by = now, actor.user
-        L.add_weight(e, now, 1.0, L.Settings.load(data_dir).half_life_days * L.DAY)
+        L.add_weight(e, now, 1.0, half_life_s)
         S.upsert_entry(conn, tk, d.name, gen, e.as_row())
         S.add_decision(conn, target_key=tk, dim=d.name, kind="accept", subject=subject, key=key, actor=actor.user,
                        interface=actor.interface, user_id=actor.user_id, reason=why, at=now, finding_key=fkey,
@@ -129,10 +131,28 @@ def forget(data_dir: Path | str, machine: str, dim: str, subject: str, key: str,
         e = L.Entry.from_row(rows[0])
         e.forgotten_at, e.forgotten_by = now, actor.user
         e.accepted_at = e.accepted_by = None
+        e.last_raised = None                 # forgotten: the next sighting is raised, cooldown or not
         S.upsert_entry(conn, tk, d.name, gen, e.as_row())
         S.add_decision(conn, target_key=tk, dim=d.name, kind="forget", subject=subject, key=key, actor=actor.user,
                        interface=actor.interface, user_id=actor.user_id, reason=why, at=now)
-    return {"machine": tk, "dim": d.name, "subject": subject, "key": key, "forgotten": True}
+    # An earlier "this is normal" also marked its finding a false positive; forgetting means the
+    # next sighting must be seen again, so that decision is undone (the same person, recorded).
+    finding = "no finding to reopen"
+    try:
+        from kratos.lifecycle import decide as LD
+        from kratos.lifecycle import keys as LK
+        from kratos.lifecycle import store as LS
+
+        fkey = LK.finding_key(d.rule, tk, subject)
+        with LS.opened(data_dir) as lconn:
+            rec = LS.get_record(lconn, fkey)
+            covered = rec is not None and rec["state"] == "false_positive" and key in json.loads(rec["entities"] or "[]")
+        if covered:
+            LD.reopen(fkey, actor=actor, reason=f"forgotten in the baseline: {why}", data_dir=Path(data_dir), now=now)
+            finding = "reopened"
+    except Exception as e:  # noqa: BLE001 -- the baseline mark still applies; say why the finding wasn't changed
+        finding = f"not changed ({type(e).__name__}: {e})"[:200]
+    return {"machine": tk, "dim": d.name, "subject": subject, "key": key, "forgotten": True, "finding": finding}
 
 
 def _set_frozen(data_dir: Path | str, machine: str, frozen: bool, *, actor: Actor, reason: str,

@@ -185,7 +185,7 @@ def end_profile(conn: sqlite3.Connection, target_key: str, dim: str, generation:
 
 def update_profile(conn: sqlite3.Connection, target_key: str, dim: str, generation: int, **values: Any) -> None:
     allowed = {"status", "tz", "high_water", "snapshot_high_water", "snapshot_days", "samples", "evicted",
-               "held_back", "frozen", "note", "updated_at"}
+               "held_back", "frozen", "note", "updated_at", "started_at"}
     cols = [k for k in values if k in allowed]
     if not cols:
         return

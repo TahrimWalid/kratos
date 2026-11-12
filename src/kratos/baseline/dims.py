@@ -151,8 +151,13 @@ def from_program(*, ts: float, exe: str, parent: str | None, row_id: int = 0) ->
 # ---------------------------------------------------------------------------
 # Saved running-process reads -> observations
 # ---------------------------------------------------------------------------
+UNSEEN = "(program not visible to this login)"
+
+
 def from_snapshot(doc: dict[str, Any]) -> tuple[list[Obs], list[str]]:
-    """(observations, notes) from one saved live-response read (kratos.live.record)."""
+    """(observations, notes) from one saved live-response read (kratos.live.record). A port
+    whose program this login couldn't see (another user's process, over SSH) is still learned,
+    under UNSEEN, so a new port is noticed even when its program isn't."""
     ts = float(doc.get("checked_at_epoch") or 0)
     out: list[Obs] = []
     notes: list[str] = []
@@ -163,19 +168,18 @@ def from_snapshot(doc: dict[str, Any]) -> tuple[list[Obs], list[str]]:
         exe = _short(li.get("exe"), 200)
         if not li.get("seen") or not exe:
             unknown += 1
-            continue
+            exe = UNSEEN
         out.append(Obs("listener", exe, listener_key(str(li.get("proto") or ""), li["port"]), ts,
                        {"address": _short(li.get("address"), 64), "package": _short(li.get("package"), 80)}))
     if unknown:
-        notes.append(f"{unknown} listening port(s) whose program this read couldn't see")
+        notes.append(f"{unknown} listening port(s) whose program this login couldn't see -- learned by port only; "
+                     "read the machine through its sub-agent to see the programs")
     outbound = doc.get("outbound")
     if isinstance(outbound, list):
         for o in outbound:
             if not isinstance(o, dict) or not isinstance(o.get("remote_port"), int):
                 continue
-            exe = _short(o.get("exe"), 200)
-            if not exe:
-                continue
+            exe = _short(o.get("exe"), 200) or UNSEEN
             bucket = B.bucket(o.get("remote"))
             if bucket.cls == "loopback":
                 continue

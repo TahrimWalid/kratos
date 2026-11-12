@@ -59,8 +59,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             safe_print(f"[KRATOS] {res['subject']}: {res['key']} is normal on {res['machine']} from now on "
                        f"(finding: {res['finding']}).")
         elif sub == "forget":
-            BD.forget(data_dir, args.machine, args.kind, args.subject, args.key, actor=actor, reason=args.reason)
-            safe_print(f"[KRATOS] Forgot {args.subject}: {args.key} -- it counts as new again.")
+            res = BD.forget(data_dir, args.machine, args.kind, args.subject, args.key, actor=actor, reason=args.reason)
+            safe_print(f"[KRATOS] Forgot {args.subject}: {args.key} -- it counts as new again (finding: "
+                       f"{res['finding']}).")
         elif sub == "freeze":
             BD.freeze(data_dir, args.machine, actor=actor, reason=args.reason)
             safe_print(f"[KRATOS] {args.machine}: baseline frozen -- deviations are still raised, nothing is learned "

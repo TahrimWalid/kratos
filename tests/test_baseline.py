@@ -452,3 +452,57 @@ def test_run_is_fast_on_three_weeks(tmp_path):
     t0 = time.monotonic()
     run(data, m.target)
     assert time.monotonic() - t0 < 10
+
+
+def test_own_sudo_reads_are_matched_by_their_shape():
+    from kratos.baseline.record import is_own_sudo
+
+    own = ("/usr/sbin/ip6tables-save", "/usr/sbin/iptables-save", "/usr/sbin/nft -j list ruleset", "/usr/sbin/sshd -T",
+           "/usr/bin/journalctl -o json --since @1", "/usr/sbin/auditctl -l", "/usr/bin/true",
+           "/usr/bin/awk -F: { print } /etc/sudoers /etc/sudoers.d/90-x",
+           "/usr/bin/grep -rhoE ^[[:space:]]*%[A-Za-z0-9_.-]+ /etc/sudoers /etc/sudoers.d",
+           "/usr/bin/fail2ban-client get sshd maxretry")
+    for cmd in own:
+        assert is_own_sudo("ubuntu", cmd, "ubuntu"), cmd
+    for cmd in ("/usr/bin/awk -F: { print } /etc/shadow", "/usr/sbin/iptables -F", "/usr/sbin/iptables-save -f x",
+                "/bin/bash", "/usr/bin/nft flush ruleset", "/usr/bin/grep root /etc/shadow"):
+        assert not is_own_sudo("ubuntu", cmd, "ubuntu"), cmd
+    assert not is_own_sudo("alice", "/usr/sbin/sshd -T", "ubuntu")          # only the login Kratos uses
+
+
+def test_older_history_arriving_later_counts(tmp_path):
+    m = machine(0)
+    normal_days(m, days=2)
+    data = write(tmp_path / "home", [m], days=2)
+    assert run(data, m.target)["dims"]["login_source"]["status"] == "learning"
+    older = machine(0, seed=2)
+    normal_days(older, days=21, end=END - timedelta(days=2))
+    import _baseline_history as H
+
+    H.G.write(tmp_path / "home", [older], END - timedelta(days=2), 21)
+    doc = run(data, m.target, now=END.timestamp() + 60)
+    assert doc["dims"]["login_source"]["status"] == "active"          # the first profile follows the history
+
+
+def test_one_event_is_judged_before_any_of_its_kinds_is_learned(tmp_path):
+    def extra(m):
+        m.logins.append((at("2026-11-11T03:10"), "deploy", "192.0.2.31", "publickey"))     # new place AND odd hour
+    m, data = _ready(tmp_path, extra=extra)
+    doc = run(data, m.target)
+    hour = [d for d in doc["deviations"] if d["rule"] == "BASE-002" and d["subject"] == "deploy"][0]
+    assert "192.0.2.0/24" not in " ".join(hour["usual"])        # the new place isn't shown as usual
+
+
+def test_unknown_zone_learns_hours_in_utc_and_says_so(tmp_path):
+    m, data = _ready(tmp_path)
+    for f in (data / "logs").glob("auth_stats_*.json"):
+        f.unlink()
+    doc = run(data, m.target)
+    s = doc["dims"]["login_time"]
+    assert s["status"] == "active" and "UTC" in s["zone_note"] and doc["zone"] == "UTC (assumed)"
+    set_zone(data, m.target, "Etc/UTC", stamp=9)
+    doc = run(data, m.target, now=END.timestamp() + 60)
+    assert doc["dims"]["login_time"]["generation"] == 1             # the assumed UTC was right: nothing relearned
+    from kratos.baseline.record import same_zone
+
+    assert same_zone("UTC (assumed)", "Etc/UTC") and not same_zone("UTC (assumed)", "Europe/Helsinki")

@@ -50,6 +50,11 @@ def machine_address(i: int) -> str:
 
 
 class Machine:
+    deploy_hours = (8, 18)          # deploy's working hours (machine time)
+    deploy_net = "10.20.0"          # deploy's office /24
+    listeners_template: list[dict] | None = None    # a real machine's listeners (lab use)
+    outbound_template: list[dict] | None = None
+
     def __init__(self, i: int, rng: random.Random, zone: str, own_fp: str, own_user: str):
         self.i, self.rng, self.zone = i, rng, ZoneInfo(zone)
         self.zone_name = zone
@@ -68,13 +73,15 @@ class Machine:
         # deploy: weekdays, 08:00-18:59 local, 3-6 sign-ins, office 10.20.0.0/24, by key
         if weekday:
             for _ in range(rng.randint(3, 6)):
-                t = day_start_local + timedelta(hours=rng.randint(8, 18), minutes=rng.randint(0, 59))
-                self.logins.append((t.timestamp(), "deploy", f"10.20.0.{rng.randint(5, 60)}", "publickey"))
+                t = day_start_local + timedelta(hours=rng.randint(*self.deploy_hours), minutes=rng.randint(0, 59))
+                self.logins.append((t.timestamp(), "deploy", f"{self.deploy_net}.{rng.randint(5, 60)}", "publickey"))
                 if rng.random() < 0.3:
                     self.sudo.append((t.timestamp() + 60, "deploy", "root", "/usr/bin/systemctl restart app"))
             if rng.random() < 0.05:          # benign noise: an early start or a late finish
-                t = day_start_local + timedelta(hours=rng.choice([6, 7, 19, 20]), minutes=rng.randint(0, 59))
-                self.logins.append((t.timestamp(), "deploy", f"10.20.0.{rng.randint(5, 60)}", "publickey"))
+                lo, hi = self.deploy_hours
+                t = day_start_local + timedelta(hours=rng.choice([(lo - 2) % 24, (lo - 1) % 24, (hi + 1) % 24,
+                                                                  (hi + 2) % 24]), minutes=rng.randint(0, 59))
+                self.logins.append((t.timestamp(), "deploy", f"{self.deploy_net}.{rng.randint(5, 60)}", "publickey"))
         # alice: admin, weekdays 09-17 from the tailnet, some evenings/weekends from home (public)
         if weekday or rng.random() < 0.4:
             for _ in range(rng.randint(1, 3)):
@@ -107,7 +114,10 @@ class Machine:
                          {"port": 5432, "proto": "tcp", "address": "127.0.0.1", "seen": True,
                           "exe": "/usr/lib/postgresql/16/bin/postgres"}]
             outbound = [{"exe": "/usr/bin/python3.12", "remote": "10.20.2.20", "remote_port": 5432, "proto": "tcp"}]
-            if rng.random() < 0.3:
+            if self.listeners_template is not None:
+                listeners = [dict(x) for x in self.listeners_template]
+                outbound = [dict(x) for x in self.outbound_template or []]
+            elif rng.random() < 0.3:
                 outbound.append({"exe": "/usr/lib/apt/methods/http", "remote": f"203.0.113.{rng.randint(80, 90)}",
                                  "remote_port": 80, "proto": "tcp"})
             self.snapshots.append((t.timestamp(), listeners, outbound))
@@ -233,6 +243,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--own-fingerprint", help="the SSH key fingerprint Kratos's own logins use (default: a fixed one)")
     ap.add_argument("--own-user", default="ubuntu")
     ap.add_argument("--gap-days", type=int, default=0, help="leave this many days (ending a week ago) uncovered")
+    ap.add_argument("--target", help="lab use: the first machine's address (a real lab machine)")
+    ap.add_argument("--zone", help="lab use: the first machine's time zone")
+    ap.add_argument("--deploy-hours", default="8-18", help="deploy's usual hours, machine time (e.g. 1-4)")
+    ap.add_argument("--deploy-net", default="10.20.0", help="deploy's usual /24, as its first three octets")
+    ap.add_argument("--snapshot-template", type=Path,
+                    help="lab use: a real live_response_*.json whose listeners and outbound peers are the usual ones")
     args = ap.parse_args(argv)
     home = args.home.expanduser().resolve()
     data = home / "data"
@@ -254,10 +270,19 @@ def main(argv: list[str] | None = None) -> int:
     end = (datetime.fromisoformat(args.end) if args.end else datetime.now(timezone.utc)).astimezone(timezone.utc)
     end = end.replace(minute=0, second=0, microsecond=0)
     own_fp = args.own_fingerprint or _fp("kratos-own-key")
+    lo, _, hi = args.deploy_hours.partition("-")
+    Machine.deploy_hours = (int(lo), int(hi))
+    Machine.deploy_net = args.deploy_net
+    if args.snapshot_template:
+        tpl = json.loads(args.snapshot_template.read_text(encoding="utf-8"))
+        Machine.listeners_template = tpl.get("listeners") or []
+        Machine.outbound_template = [o for o in tpl.get("outbound") or [] if o.get("exe")]
     machines = []
     for i in range(args.machines):
         rng = random.Random(f"{args.seed}:{i}")
-        m = Machine(i, rng, ZONES[i % len(ZONES)], own_fp, args.own_user)
+        m = Machine(i, rng, (args.zone if i == 0 and args.zone else ZONES[i % len(ZONES)]), own_fp, args.own_user)
+        if i == 0 and args.target:
+            m.target = args.target
         local_end = end.astimezone(m.zone)
         first = (local_end - timedelta(days=args.days)).replace(hour=0, minute=0, second=0, microsecond=0)
         d = first
