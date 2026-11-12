@@ -19,7 +19,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 from kratos.baseline import dims as D
