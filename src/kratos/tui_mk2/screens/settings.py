@@ -1366,7 +1366,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.", "compliance.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.", "compliance.", "baseline.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

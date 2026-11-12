@@ -285,10 +285,10 @@ def test_a_viewer_reads_only_machines_in_scope(tmp_path):
     vic = users.add_user(data, "vic", "viewer", OWNER, scopes=[m.target])
     _token, row = auth.create_token(data, name="vic-t", user="vic", targets=[m.target], mcp=True)
     viewer = Actor("vic", "serve", user_id=vic.user_id, credential=f"token:{row['token_id']}")
-    tk, scope = present.resolve(data, viewer, m.target)
+    tk, scope = present.resolve_reader(data, viewer, m.target)
     assert tk == m.target and scope.allows(m.target) and not scope.allows("10.9.9.9")
     with pytest.raises(present.ViewError):
-        present.resolve(data, viewer, "10.9.9.9")
+        present.resolve_reader(data, viewer, "10.9.9.9")
     with pytest.raises(BD.BaselineError):
         BD.accept(data, m.target, "login_source", "deploy", "10.20.0.0/24", actor=viewer)
 

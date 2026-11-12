@@ -37,7 +37,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     sub = args.baseline_cmd
     try:
         if sub == "show":
-            tk, scope = BP.resolve(data_dir, _actor(), args.machine)
+            tk, scope = BP.resolve_reader(data_dir, _actor(), args.machine)
             v = BP.view(data_dir, tk, scope=scope, dim=args.kind)
             if args.json:
                 sys.stdout.write(json.dumps(v, indent=2, default=str) + "\n")
@@ -48,7 +48,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
             from kratos import kratos_config
             from kratos.baseline import record
 
-            tk, _scope = BP.resolve(data_dir, _actor(), args.machine)
+            tk, _scope = BP.resolve_reader(data_dir, _actor(), args.machine)
             with kratos_config.pinned_target(tk):
                 doc = record.run(data_dir, tk)
             safe_print(f"[KRATOS] {tk}: {record.summary_line(doc)}")

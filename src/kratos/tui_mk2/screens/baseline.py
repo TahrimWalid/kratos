@@ -87,7 +87,7 @@ class BaselineScreen(Screen):
     def reload(self) -> None:
         self._error = ""
         try:
-            tk, scope = BP.resolve(self._data_dir, Actor.current("tui"), self._machine)
+            tk, scope = BP.resolve_reader(self._data_dir, Actor.current("tui"), self._machine)
             self._machine = tk
             self._view = BP.view(self._data_dir, tk, scope=scope)
         except Exception as e:  # noqa: BLE001 -- shown, never a crash

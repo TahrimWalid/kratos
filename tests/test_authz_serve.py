@@ -364,4 +364,4 @@ def test_baseline_without_a_target_never_names_a_machine_outside_scope(env):
     from kratos.lifecycle.decide import Actor
 
     with pytest.raises(BP.ViewError, match="name one of your machines"):
-        BP.resolve(env["dir"], Actor("zed", "serve", user_id="u", credential="token:x"), None)
+        BP.resolve_reader(env["dir"], Actor("zed", "serve", user_id="u", credential="token:x"), None)

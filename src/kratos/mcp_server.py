@@ -368,7 +368,7 @@ def kratos_baseline(target: str | None = None, kind: str | None = None) -> dict[
     from kratos.baseline import present as BP
 
     try:
-        tk, scope = BP.resolve(_data_dir, authz.current_actor(), target or None)
+        tk, scope = BP.resolve_reader(_data_dir, authz.current_actor(), target or None)
         return BP.compact(BP.view(_data_dir, tk, scope=scope, dim=kind or None))
     except (BP.ViewError, authz.Denied) as e:
         raise ValueError(f"refused: {e}") from None

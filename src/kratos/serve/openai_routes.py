@@ -350,7 +350,7 @@ def _baseline_text(target: str, data_dir: Path) -> str:
     if str(target).startswith("@"):
         return "A baseline is per machine: open a chat on one machine (kratos/<machine>)."
     try:
-        tk, scope = BP.resolve(data_dir, authz.current_actor(), target)
+        tk, scope = BP.resolve_reader(data_dir, authz.current_actor(), target)
         return BP.to_text(BP.view(data_dir, tk, scope=scope))
     except (BP.ViewError, authz.Denied) as e:
         return f"Refused: {e}"

@@ -36,7 +36,7 @@ def _iso(ts: Any) -> str | None:
         return None
 
 
-def resolve(data_dir: Path | str, actor: Any, machine: str | None) -> tuple[str, Any]:
+def resolve_reader(data_dir: Path | str, actor: Any, machine: str | None) -> tuple[str, Any]:
     """(target_key, scope) after `baseline.read` for this machine; refused outside scope."""
     from kratos import authz
 

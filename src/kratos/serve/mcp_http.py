@@ -482,7 +482,7 @@ def build(state: Any) -> tuple[Any, Any]:
             if resolved.startswith("@"):
                 raise ValueError("refused: a baseline is per machine -- name one machine")
             try:
-                tk, scope = BP.resolve(state.data_dir, actor, resolved)
+                tk, scope = BP.resolve_reader(state.data_dir, actor, resolved)
                 doc = BP.compact(BP.view(state.data_dir, tk, scope=scope, dim=kind or None))
             except (BP.ViewError, authz.Denied) as e:
                 raise ValueError(f"refused: {e}") from None
