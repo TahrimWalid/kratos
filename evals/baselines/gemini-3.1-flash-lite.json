@@ -39,9 +39,9 @@
       "model_alone_pass": 5
     },
     "G1_suid": {
-      "person_pass": 9,
-      "n": 10,
-      "model_alone_pass": 9
+      "person_pass": 19,
+      "n": 20,
+      "model_alone_pass": 19
     },
     "G1_covered": {
       "person_pass": 5,
@@ -49,9 +49,9 @@
       "model_alone_pass": 5
     },
     "G1_gap_encryption": {
-      "person_pass": 8,
-      "n": 10,
-      "model_alone_pass": 8
+      "person_pass": 15,
+      "n": 20,
+      "model_alone_pass": 15
     }
   },
   "row_updates": [
@@ -63,6 +63,15 @@
       "commit": "a803178",
       "at": "2026-11-12T12:40:29",
       "why": "G1_suid rewritten as a coverage scenario, G1_gap_encryption added; replay N=10 after the digest and Guard 8 fixes"
+    },
+    {
+      "scenarios": [
+        "G1_suid",
+        "G1_gap_encryption"
+      ],
+      "commit": "54e5950",
+      "at": "2026-11-12T13:35:33",
+      "why": "replay N=20 after refusing existing-tool proposals and the 'no listing tool needed' persistence line (replaces the N=10 rows)"
     }
   ]
 }
