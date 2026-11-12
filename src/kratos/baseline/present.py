@@ -41,6 +41,11 @@ def resolve(data_dir: Path | str, actor: Any, machine: str | None) -> tuple[str,
     from kratos import authz
 
     if not machine:
+        # The active machine is the Kratos host's own default: only a person at the Kratos host
+        # gets it implicitly. A network door must name one of the caller's machines (naming the
+        # default in a refusal would tell an out-of-scope reader it exists).
+        if getattr(actor, "interface", None) not in ("tui", "cli"):
+            raise ViewError("which machine? (name one of your machines)")
         from kratos.kratos_config import get_active_target
 
         machine = get_active_target()

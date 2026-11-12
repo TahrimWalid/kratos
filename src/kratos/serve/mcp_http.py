@@ -470,8 +470,16 @@ def build(state: Any) -> tuple[Any, Any]:
 
         client, actor = _client(ctx), _actor(ctx)
         with authz.acting_as(actor):
-            resolved = _resolve_target(client, target, state.data_dir) if target else None
-            if resolved and resolved.startswith("@"):
+            if target:
+                resolved = _resolve_target(client, target, state.data_dir)
+            else:
+                # never the server's own default machine: it may be outside this person's machines
+                # (and naming it in a refusal would tell them it exists)
+                mine = list(_scope_targets(client, state.data_dir))
+                if len(mine) != 1:
+                    raise ValueError("refused: a baseline is per machine -- name one of your machines")
+                resolved = mine[0]
+            if resolved.startswith("@"):
                 raise ValueError("refused: a baseline is per machine -- name one machine")
             try:
                 tk, scope = BP.resolve(state.data_dir, actor, resolved)
