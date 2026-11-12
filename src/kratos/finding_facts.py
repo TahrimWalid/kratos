@@ -46,6 +46,7 @@ RULE_TEXT: dict[str, str] = {
     "HASH-001": "a file whose SHA-256 is in MalwareBazaar's known-malware set is on the machine (or running)",
     "HASH-002": "an unknown program in a watched place that is packed or has high byte entropy",
     "HASH-003": "what the file-reputation check could not do",
+    "COMP-001": "hardening checks (CIS / ISO 27001 / NIS2) that fail on this machine",
     "LIVE-005": "a network listener run by a suspicious process",
     "LIVE-006": "a shell or interpreter started by a network service",
     "LIVE-007": "what the live-response check could not read",

@@ -333,6 +333,28 @@ def kratos_finding_states(target: str | None = None, state: str | None = None, l
             "hidden_by_user_decisions": hidden}
 
 
+@mcp.tool()
+@_clean_for_client
+def kratos_compliance(framework: str = "cis", target: str | None = None, group: str | None = None,
+                      detail: str = "summary") -> dict[str, Any]:
+    """Read-only: how a machine (or a group, "@name") stands against CIS, ISO/IEC 27001:2022
+    Annex A or NIS2, from Kratos's own checks. Every control is pass / fail / partial /
+    not_checked / needs_person / not_applicable; a pass needs facts Kratos read in the last
+    day. `detail`: "summary" (failing and partial controls with their evidence) or "full".
+    Evidence from Kratos's checks, never a certification. Owners and "not applicable"
+    decisions are a person's, in the Kratos app -- there is no MCP tool for them."""
+    from kratos import authz
+    from kratos.compliance import report as RP
+
+    try:
+        machines, outside, label = RP.resolve_machines(_data_dir, authz.current_actor(), machine=target or None,
+                                                       group=group or None)
+        doc = RP.build(_data_dir, framework, machines, outside_scope=outside, label=label)
+    except (RP.ReportError, authz.Denied) as e:
+        raise ValueError(f"refused: {e}") from None
+    return doc if detail == "full" else RP.compact(doc)
+
+
 def _finding_states_for(data_dir: Path, target: str | None, state: str | None, limit: int) -> list[dict[str, Any]]:
     """The remembered findings (one machine, or every machine with None) with each one's
     latest verdict and open suggestions -- shared with `kratos serve`'s MCP door."""

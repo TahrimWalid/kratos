@@ -127,6 +127,8 @@ _PALETTE_COMMANDS = [
     ("/users", "people who may use Kratos through a chat client or MCP: roles, machines, tokens, Open WebUI "
                "mappings (owner only)"),
     ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
+    ("/compliance", "how this machine (or @group) stands against CIS / ISO 27001 / NIS2 — pass only with fresh proof, "
+                    "owners, 'not applicable' with an expiry (/compliance iso27001 @web)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
     ("/groups", "groups of machines (@web, @db; @all is built in) — /groups create web 10.0.0.5 10.0.0.6, "
@@ -1141,6 +1143,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.channels import OutboxScreen
 
             self.app.push_screen(OutboxScreen(self._data_dir))
+        elif cmd in ("/compliance", "/comp"):
+            self._open_compliance(rest)
         elif cmd in ("/assets", "/machines"):
             from kratos.tui_mk2.screens.assets import AssetsScreen
 
@@ -1405,6 +1409,30 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if report.correlation is not None:
             ids = ", ".join(f"{f.get('id')} ({f.get('severity')})" for f in report.findings) or "no findings"
             self._emit_from_worker(R.note_line(f"{ids}   [{report.elapsed:.1f}s]"))
+
+    # --- /compliance (E.2) --------------------------------------
+    def _open_compliance(self, rest: str) -> None:
+        """/compliance [cis|iso27001|nis2] [machine | @group]: the compliance screen. Defaults:
+        CIS, this session's machine (its group when the session is a group)."""
+        from kratos.compliance import frameworks as _F
+        from kratos.tui_mk2.screens.compliance import ComplianceScreen
+
+        fw, machine, group = "cis", None, None
+        for word in rest.split():
+            w = word.strip()
+            if w.lower() in _F.FRAMEWORKS or w.lower() in ("iso", "nis"):
+                fw = {"iso": "iso27001", "nis": "nis2"}.get(w.lower(), w.lower())
+            elif w.startswith("@"):
+                group = w
+            elif w:
+                machine = w
+        if not machine and not group:
+            active = _kconfig.get_active_target() or ""
+            if active.startswith("@"):
+                group = active
+            else:
+                machine = active or None
+        self.app.push_screen(ComplianceScreen(self._data_dir, machine=machine, group=group, framework=fw))
 
     # --- /hunt (C.3: search what Kratos holds) ----------------
     @work

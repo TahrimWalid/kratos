@@ -639,6 +639,42 @@ def _check_hashdb(out: list[Check], data_dir: Path) -> None:
                         + (" (each machine's HASH-003 says why)" if unchecked else "")))
 
 
+def _check_compliance(out: list[Check], data_dir: Path) -> None:
+    """E.2: the vendored ComplianceAsCode mapping, and when each machine's hardening facts were last read."""
+    import json as _json
+    import time as _time
+
+    from kratos.compliance import cac
+    from kratos.compliance import record as CR
+    from kratos.compliance import settings as CS
+
+    out.append(_row("compliance mapping", "pass",
+                    f"{cac.mapping_version()}, BSD-3-Clause (ids only); CIS products: {', '.join(cac.products())}"))
+    max_age = float(CS.get(CS.MAX_AGE_HOURS, data_dir))
+    folder = Path(data_dir) / CR.FOLDER
+    rows = []
+    for f in sorted(folder.glob(CR.PATTERN)) if folder.is_dir() else []:
+        try:
+            doc = _json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        read = doc.get("read_at_epoch")
+        age = (_time.time() - float(read)) / 3600 if read else None
+        rows.append((str(doc.get("target") or "?"), age, doc.get("via") or ""))
+    if not rows:
+        out.append(_row("hardening reads", "info", "no machine's hardening facts read yet",
+                        fix="they are read with every check of a machine (`kratos collect <machine>`)"))
+        return
+    stale = [m for m, age, _v in rows if age is None or age > max_age]
+    detail = "; ".join(f"{m}: {('%.0f h ago' % age) if age is not None else 'never'} ({v})" for m, age, v in rows[:8])
+    if len(rows) > 8:
+        detail += f"; +{len(rows) - 8} more"
+    out.append(_row("hardening reads", "warn" if stale else "pass",
+                    detail + (f" -- {len(stale)} older than {max_age:g} h: their controls show 'not checked'"
+                              if stale else ""),
+                    fix="run a check of those machines (`kratos collect <machine>`)" if stale else ""))
+
+
 def _check_detection(out: list[Check], data_dir: Path) -> None:
     """C.1: the rule pack, the rules on, and when each machine was last checked by them."""
     from kratos.detect import pack as P
@@ -814,6 +850,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("ssh certificates", lambda o: _check_ssh_certificates(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("file reputation", lambda o: _check_hashdb(o, Path(data_dir))))
+        sections.append(("compliance", lambda o: _check_compliance(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
         sections.append(("backups", lambda o: _check_backups(o, Path(data_dir))))

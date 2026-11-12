@@ -74,6 +74,8 @@ EXTRA_BUNDLE_FILES: dict[str, Path] = {
     "packages.py": _PACKAGE_ROOT / "adapters" / "packages.py",
     # E.4: facts about the files the agent's own reads listed (hashes, type, entropy)
     "file_facts.py": _PACKAGE_ROOT / "adapters" / "file_facts.py",
+    # E.2: the hardening facts (closed lists of sysctls, file modes, mounts, services, ...)
+    "hardening.py": _PACKAGE_ROOT / "adapters" / "hardening.py",
     # D.5: the container read (engine API GETs, /proc, firewall listings, per-image packages)
     "containers.py": _PACKAGE_ROOT / "adapters" / "containers.py",
     # C.2: what turns a log line into the event the rules look at -- the parsers, the

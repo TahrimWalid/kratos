@@ -47,7 +47,8 @@ CHUNK = 1 << 20
 # of these is recorded here (tests/test_evidence_hooks.py scans the source for writers).
 EVIDENCE_FOLDERS: tuple[str, ...] = (
     "scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages",
-    "web_signals", "sshguess", "containers", "reports", "detect/results", "hunt/results", "hashdb/results", "traces",
+    "web_signals", "sshguess", "containers", "reports", "detect/results", "hunt/results", "hashdb/results",
+    "compliance/facts", "compliance/results", "traces",
     "exports",
 )
 

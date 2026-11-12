@@ -38,16 +38,17 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, containers, file_facts, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, containers, file_facts, hardening, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import containers, file_facts, live_response, packages, persistence, privileged_accounts
+        from kratos.adapters import containers, file_facts, hardening, live_response, packages, persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
         import catalog  # type: ignore[no-redef]
         import containers  # type: ignore[no-redef]
         import file_facts  # type: ignore[no-redef]
+        import hardening  # type: ignore[no-redef]
         import hostfiles  # type: ignore[no-redef]
         import live_response  # type: ignore[no-redef]
         import logread  # type: ignore[no-redef]
@@ -567,6 +568,9 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
         "run_mb": (v_int_range(16, 65536), False, 2048),
         "seconds": (v_int_range(10, 1800), False, 120),
     },
+    # phase E.2: the hardening facts (agent 0.13.0). No params: every key, file, mount
+    # point, stack, module and service is in the closed lists in hardening.py.
+    "hardening_facts": {},
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -585,6 +589,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "container_packages": containers.PACKAGES_BUDGET_SECONDS + 10,
     "container_logs": 30,
     "file_facts": 1800 + 30,
+    "hardening_facts": hardening.DEFAULT_BUDGET_SECONDS,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -600,6 +605,7 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "container_packages": containers.PACKAGES_OUTPUT_CAP + 65536,
     "container_logs": containers.LOG_OUTPUT_CAP + 65536,
     "file_facts": file_facts.OUTPUT_CAP_BYTES + 65536,
+    "hardening_facts": hardening.OUTPUT_CAP_BYTES + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1792,6 +1798,14 @@ def _p_file_facts(p: dict[str, Any]) -> dict[str, Any]:
         run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap))
 
 
+def _p_hardening_facts(p: dict[str, Any]) -> dict[str, Any]:
+    """The hardening facts (E.2) -- the same fixed script the SSH path runs
+    (kratos.adapters.hardening), as root here, so both transports print the same records."""
+    sh = resolve_binary("sh") or "/bin/sh"
+    return run_capped([sh, "-s"], timeout=PROBE_TIMEOUT_SECONDS["hardening_facts"],
+                      cap=OUTPUT_CAP_BYTES["hardening_facts"], stdin_text=hardening.build_script(sudo=""))
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1808,6 +1822,7 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "container_packages": _p_container_packages,
     "container_logs": _p_container_logs,
     "file_facts": _p_file_facts,
+    "hardening_facts": _p_hardening_facts,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

@@ -1367,6 +1367,98 @@ persistence and running-process checks — not before every question. Over
 SSH it reads as your login, so root-only files are *not checked: only root can read this (the
 sub-agent can)*.
 
+## Compliance reports (CIS, ISO 27001, NIS2)
+
+Kratos maps its own checks to three frameworks and shows, for one machine or a group, how each
+control stands. Ask with `/compliance` in the app (or `/compliance iso27001 @web`), or:
+
+```bash
+kratos compliance report --framework cis --machine 10.0.0.5
+```
+
+`--framework` is `cis`, `iso27001` or `nis2`; `--group web` reports on a group; `--format md`,
+`csv` or `json`; `--out report.md` writes a file (readable only by you); `--refresh` reads the
+machine again first; `--all` also lists the CIS sections Kratos has no check for.
+
+**This is evidence from Kratos's checks — not a certification, an audit or legal advice.** Every
+report says so.
+
+### The six statuses
+
+| Status | Means |
+|---|---|
+| *pass* | every Kratos check for the control passed, on facts read within the last day (`compliance.max_age_hours`) by a complete read |
+| *fail* | at least one check failed: the report says which, what was found, when it was read, and the fix |
+| *partial* | some checks passed, others couldn't be read, don't apply here, or (CIS) Kratos doesn't check every rule of the section |
+| *not checked* | Kratos has no usable result — the read is older than a day, the machine was unreachable, it needs the sub-agent or a newer agent, or Kratos has no check for it |
+| *needs a person* | policy, people, contracts, premises: Kratos can't see it, and the report says what a person would show instead |
+| *not applicable* | only when **you** mark it so, with a reason and an expiry (at most a year); then Kratos asks again |
+
+A control is **never** *pass* on old facts, on a read that was cut off, or on a check Kratos
+couldn't run. Organisational controls (all of ISO 27001's themes 5, 6 and 7, and NIS2's policy
+points) are *needs a person* — at best "Kratos's checks for the technical part pass; a person
+supplies the rest". A group never passes while one of its machines wasn't read.
+
+### What Kratos looks at
+
+Kratos reads a closed list of *hardening facts* from each machine — kernel settings (and the
+sysctl files that set them), the modes and owners of account, SSH and cron files, mount options,
+login.defs and PAM settings, kernel modules that shouldn't load, services that shouldn't run,
+auditd, AppArmor or SELinux, time synchronisation, the SSH server's effective settings
+(`sshd -T`) and the firewall's default policy — and reuses what it already reads: the setuid
+programs no package installed, `/etc/ld.so.preload`, packages with known-exploited
+vulnerabilities, a pending reboot, accounts with UID 0, automatic updates. It never reads a
+file's content, never runs a framework's own scripts and changes nothing on the machine.
+
+Over SSH a few facts need root: `sshd -T`, auditd's status and rules, and the firewall rules. The
+setup checklist's pinned sudoers lines allow exactly those listings; without them those checks are
+*not checked* with the line to add. Through the sub-agent (version 0.13.0 or newer) everything is
+read. An older agent says "update the agent (`g` in /subagent)".
+
+**Which systems get CIS sections:** Ubuntu 22.04 and 24.04, Debian 12 and 13, and RHEL 8, 9 and 10
+— Rocky Linux, AlmaLinux and CentOS Stream use the RHEL mapping, and the report says so. Others
+(Alpine, an older Ubuntu) get "no CIS mapping for this system" and still get ISO 27001 and NIS2
+rows from Kratos's checks. Level 1 Server is the default; set Level 2 for a machine with
+`kratos compliance level set <machine> 2` (or `l` in `/compliance`).
+
+Kratos judges what is **in effect**: the SSH server's effective settings, the mount options in
+use, a kernel module that this kernel doesn't ship at all. OpenSCAP with the same
+ComplianceAsCode content judges the **written configuration**, so for some rules the two can
+differ, for example an SSH default nobody wrote down, or `/dev/shm` options systemd sets without
+an `/etc/fstab` line.
+
+### COMP-001
+
+Failed checks become **one finding per machine**, COMP-001 "N hardening checks fail on this
+machine" — *low*, or *medium* when a failed check is about reaching the machine from outside (SSH
+root or password logins, no default-deny firewall) and the machine is exposed to the internet. It
+follows the finding lifecycle: a newly failing check reopens a decision you made about it; a fresh,
+complete read with nothing failing closes it. A failure that is already a finding of its own
+(PERSIST-003, PKG-001, an open CORR-SSH-001, ...) is linked, not counted twice.
+
+### Owners and "not applicable"
+
+In `/compliance`, `o` sets who owns a control (a Kratos user or any name, with a due date), for
+this machine, a group or every machine; `n` marks it not applicable with a reason and how long.
+From the command line:
+
+```bash
+kratos compliance owner set iso27001 8.9 alice --machine 10.0.0.5 --due 2027-03-31
+```
+
+```bash
+kratos compliance na set cis 3.3.1 --machine 10.0.0.5 --reason "this machine routes VPN traffic" --days 180
+```
+
+`kratos compliance history` lists every such decision and who made it. They are made only by you
+at this computer — never from a chat client, MCP or by the model. A chat client and MCP can *read*
+a report for the machines that person may see (`/compliance` in chat, the `kratos_compliance` MCP
+tool).
+
+Compliance reports also go into incident bundles (`/export`), and COMP-001 is forwarded to a SIEM
+as an OCSF Compliance Finding with the failed checks listed. Nothing in a compliance report leaves
+your computer unless you export or forward it.
+
 ## Detection rules
 
 Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**

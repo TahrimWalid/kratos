@@ -81,11 +81,12 @@ def _no_real_collection_reads(monkeypatch: pytest.MonkeyPatch):
     from kratos.live import record as live_record
     from kratos.persist import record as persist_record
     from kratos.pkgvuln import record as pkg_record
+    from kratos.compliance import record as compliance_record   # E.2: the hardening read
 
     def refuse(*a, **k):
         return SSHResult(ok=False, returncode=-1, stdout="", stderr="no machine in tests")
 
-    for mod in (live_record, persist_record, pkg_record):
+    for mod in (live_record, persist_record, pkg_record, compliance_record):
         monkeypatch.setattr(mod, "_default_reader", refuse)
     # D.5: the container checks build their reader for the machine (record._default_reader(target))
     from kratos.containers import packages as container_packages

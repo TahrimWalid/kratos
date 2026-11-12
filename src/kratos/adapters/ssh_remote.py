@@ -1340,6 +1340,32 @@ def fetch_package_inventory() -> Any:
     return out
 
 
+HARDENING_FACTS_TIMEOUT_SECONDS = 90
+
+
+def fetch_hardening_facts() -> Any:
+    """The hardening facts (phase E.2) as a dict (adapters.hardening.parse_output), or the
+    failed SSHResult. Over SSH it runs AS THE SSH USER, with `sudo -n` only for the listings
+    the setup checklist pins (sshd -T, auditctl -s/-l, nft list ruleset, iptables -L -n);
+    through the sub-agent it is the agent's own `hardening_facts` read (the same script, as
+    root). Closed lists only: nothing outside them is printed or sent."""
+    from kratos.adapters import hardening
+
+    def over_ssh() -> SSHResult:
+        return run_remote_script(hardening.build_script("sudo -n"), shell="sh", errors="replace",
+                                 timeout=HARDENING_FACTS_TIMEOUT_SECONDS)
+
+    result = _route("hardening_facts", {}, over_ssh)
+    if not result.ok:
+        return result
+    out = hardening.parse_output(result.stdout)
+    out["via"] = result.via
+    if result.truncated:
+        out["truncated"] = True
+        out["complete"] = False
+    return out
+
+
 CONTAINER_INVENTORY_TIMEOUT_SECONDS = 90
 SSH_ONLY_CONTAINER_NOTE = "not readable over SSH by a login without root-equivalent access"
 

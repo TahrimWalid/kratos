@@ -167,6 +167,15 @@ def finding(c: FindingChange) -> dict[str, Any]:
     if cls == COMPLIANCE_FINDING:
         out["compliance"] = {"control": c.rule_id, "status_id": 3 if c.state in ("open", "verified") else 1,
                              "status": "Fail" if c.state in ("open", "verified") else "Pass"}
+        if c.rule_id == "COMP-001":             # E.2: the failed hardening checks and the frameworks they map to
+            from kratos.compliance import checks as _CC
+
+            failed = [str(e) for e in f.get("entities") or [] if str(e) in _CC.BY_ID][:100]
+            out["compliance"]["standards"] = ["CIS Benchmark (ComplianceAsCode ids)", "ISO/IEC 27001:2022 Annex A",
+                                              "NIS2"]
+            out["compliance"]["requirements"] = failed
+            out["compliance"]["checks"] = [{"uid": cid, "name": _CC.BY_ID[cid].text[:200], "status": "Fail",
+                                            "status_id": 3} for cid in failed]
     reps = [r for r in f.get("reputation") or [] if isinstance(r, dict) and r.get("path")]
     if reps:                                    # E.4: the files a finding names and what they are known to be
         if cls != VULNERABILITY_FINDING:

@@ -170,6 +170,7 @@ def collect(data_dir: Path, plan: Plan, out: Path, red: Redactor, *, progress: P
     # 3. findings and coverage, generated from the database now
     _collect_findings(data_dir, plan, out, red, c)
     _collect_coverage(data_dir, plan, out, red, c)
+    _collect_compliance(data_dir, plan, out, red, c)
     return c
 
 
@@ -335,6 +336,36 @@ def _collect_coverage(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: C
         rel = f"evidence/{_safe_dir(shown)}/coverage.json"
         digest, size = _write_text(out / rel, _json(cov))
         c.files.append(BundleFile(rel, digest, size, "generated", shown, "coverage", hashed_at="generated"))
+
+
+def _collect_compliance(data_dir: Path, plan: Plan, out: Path, red: Redactor, c: Collected) -> None:
+    """E.2: each machine's compliance reports (CIS, ISO 27001, NIS2), generated from its saved
+    hardening facts when exporting -- the facts files themselves travel as evidence."""
+    from kratos.compliance import record as CR
+    from kratos.compliance import report as CRP
+
+    for m in plan.request.machines:
+        if CR.load_result(data_dir, m) is None:
+            continue
+        shown = c.machine_names[m]
+        for fw in ("cis", "iso27001", "nis2"):
+            try:
+                doc = CRP.build(data_dir, fw, [m], label=m, now=plan.taken_at)
+            except Exception as e:  # noqa: BLE001
+                c.warnings.append(f"compliance report {fw} for {shown}: not made ({type(e).__name__})")
+                continue
+            doc = json.loads(red.text(json.dumps(doc, default=str, ensure_ascii=False)))
+            doc["scope"] = shown
+            for s in doc.get("machines") or []:
+                s["machine"] = shown
+                if red.active:      # control owners are people's names: left out, not masked
+                    for ctl in s.get("controls") or []:
+                        if ctl.get("owner"):
+                            ctl["owner"] = "(an owner is set -- names are left out of redacted bundles)"
+            for suffix, text in ((".json", CRP.to_json(doc)), (".md", CRP.to_markdown(doc))):
+                rel = f"evidence/{_safe_dir(shown)}/compliance_{fw}{suffix}"
+                digest, size = _write_text(out / rel, text)
+                c.files.append(BundleFile(rel, digest, size, "generated", shown, "compliance", hashed_at="generated"))
 
 
 def _gaps(cov: dict[str, Any]) -> list[str]:

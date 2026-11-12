@@ -2150,6 +2150,11 @@ _sshguess_findings.register()
 from kratos.hashdb import findings as _hash_findings  # noqa: E402
 
 _hash_findings.register()
+
+# E.2: COMP-001 -- the hardening checks that fail on this machine (kratos.compliance).
+from kratos.compliance import findings as _comp_findings  # noqa: E402
+
+_comp_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 

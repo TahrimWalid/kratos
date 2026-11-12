@@ -307,3 +307,45 @@ def test_a_forwarded_identity_with_a_non_number_time_is_refused(claim):
     claims = {"sub": "vic", "iss": "open-webui", "iat": now, "exp": now + 300, **claim}
     with pytest.raises(OW.JWTError, match="no valid time"):
         OW.verify(OW.mint_for_tests(claims, "s" * 43), "s" * 43)
+
+
+# --- E.2: compliance reports through the chat and MCP doors (read-only, scoped) -------
+def _seed_compliance(d):
+    import copy
+
+    from kratos.compliance import record
+    from tests.test_compliance import good_hardening
+
+    h = good_hardening()
+    bad = copy.deepcopy(h)
+    bad["stat"]["/etc/crontab"]["mode"] = 0o666
+    record.run(d, M1, fetch=lambda: dict(bad, via="ssh"), now=time.time())
+    record.run(d, M2, fetch=lambda: dict(bad, via="ssh"), now=time.time())
+
+
+def test_a_viewer_reads_compliance_for_their_machine_only(env):
+    _seed_compliance(env["dir"])
+    code, text = _chat(env, _h(env["tok"]["vic"]), "/compliance iso27001")
+    assert code == 200 and M1 in text and M2 not in text and "not a certification" in text
+    assert "8.3" in text and "fail" in text
+    out = _mcp(env, _h(env["tok"]["vic"]), "kratos_compliance", {"framework": "cis", "target": M1})
+    assert out["machines"][0]["machine"] == M1
+    assert any(c["control"] == "2.4.1.2" and c["status"] == "fail" for c in out["machines"][0]["controls"])
+    refused = _mcp(env, _h(env["tok"]["vic"]), "kratos_compliance", {"target": M2})
+    assert "error" in refused
+    every = _mcp(env, _h(env["tok"]["vic"]), "kratos_compliance", {"framework": "nis2"})
+    assert [m["machine"] for m in every["machines"]] == [M1]
+
+
+def test_compliance_decisions_have_no_network_door(env):
+    names = [t["name"] for t in env["client"].post(
+        "/mcp", headers={**_h(env["tok"]["owner"]), "Accept": "application/json, text/event-stream",
+                         "Content-Type": "application/json", "MCP-Protocol-Version": "2025-11-25"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()["result"]["tools"]]
+    assert "kratos_compliance" in names and not [n for n in names if "owner" in n or "na_" in n]
+    from kratos.compliance import owners as O
+    from kratos.lifecycle.decide import Actor
+
+    with pytest.raises(O.ComplianceError):
+        O.set_owner(env["dir"], Actor("ivy", "serve", user_id="ivy", credential="token:x"), "iso27001", "8.9",
+                    "all", "ivy")

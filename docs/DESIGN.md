@@ -1305,6 +1305,59 @@ permission is local-only (TUI/CLI owner), `hashdb.online` is off by default, the
 to a question naming the hash and the hosts, and no door (model tools, MCP, the chat server,
 schedules) imports it (a source scan checks).
 
+## Compliance mapping (E.2)
+
+**Kratos's own checks, mapped to framework ids** (`kratos/compliance/`). Kratos never runs a
+framework's scripts (OVAL, Bash, Ansible) on a machine: each check is code over facts Kratos read,
+in one closed table (`compliance/checks.py`, ~175 checks), returning pass, fail, unknown (with the
+reason) or n/a (stated, never a silent pass). Each check names the ComplianceAsCode rule ids it
+answers, Kratos's own advisory ISO/IEC 27001:2022 Annex A ids and NIS2 refs (Art. 21(2) letters,
+Implementing Regulation 2024/2690 Annex sections), a copy-safe fix a person runs, whether it is
+about remote access, and the findings a failure already is (linked, not counted twice).
+
+**What ships (licences).** CIS Benchmark texts are licensed for non-commercial use and are not
+shipped. `compliance/vendor/cac_cis.json` holds, per product, only the CIS section numbers, levels,
+ComplianceAsCode rule ids, variables and automation status, extracted from ComplianceAsCode's
+BSD-3-Clause control files at a pinned commit (`SOURCE.txt`, `LICENSE.ComplianceAsCode`) by
+`scripts/dev/build_compliance_vendor.py` (deterministic; `--check` rebuilds and compares; every
+string is checked against id shapes, so a title can't slip in). ISO text is copyrighted: only the
+93 ids ship, with Kratos's own one-line wording; NIS2 likewise. Products: ubuntu2204/2404,
+debian12/13, rhel8/9/10 (Rocky/Alma/CentOS Stream use RHEL, stated); others get no CIS section.
+
+**The read** is a named probe `hardening_facts` (agent 0.13.0) and the same fixed POSIX sh script
+over SSH (`adapters/hardening.py`), one parser. It prints only closed lists: sysctl values and the
+values the sysctl files set for the same keys, `stat` of a closed file list (never content), mount
+options, login.defs and pwquality/faillock keys, PAM module names with allow-listed numeric
+arguments, `timedatectl` properties, module install/blacklist lines with loaded/shipped state,
+service states (systemd or OpenRC), auditd status, watched paths and keys from closed lists,
+AppArmor/SELinux mode, banner sizes, `sshd -T` for a closed key list (account lists as counts only)
+and the firewall's default input policy. Over SSH only the setup checklist's pinned `sudo -n`
+listings are used. Containers are recognised by a non-identity user-namespace map (a VM has
+`/dev/incus` too). The awk programs avoid interval expressions (old mawk silently ignores them).
+
+**Status is code** (`compliance/status.py`): a check result older than `compliance.max_age_hours`
+(24 h) or from an incomplete read is never a pass; a control fails if any check fails; passes only
+if every check passes and (CIS) every rule of the section is covered; a control with an
+organisational part is at best `needs_person`; `not_applicable` only from a person's decision with
+a reason and an expiry (`control_na`, at most `compliance.na_max_days`). Reports re-evaluate from
+the saved facts when they are made, so staleness and decisions are judged at that moment. When
+facts came from both SSH and the agent, the fresher read is used and the other read's differing
+result is shown.
+
+**COMP-001** (condition, posture) is one finding per machine; entities are the failed check ids
+(a new one reopens a decision); low, medium for a failed remote-access check on an internet-exposed
+machine (D.3 exposure); closed only by a fresh, complete read (`closes_findings`). Verifier: a fresh
+hardening read. OCSF: Compliance Finding 2003 with the failed checks as `compliance.checks`.
+
+**Storage.** Facts per machine and transport (`data_dir/compliance/facts/`) and one result per
+machine (`data_dir/compliance/results/`), both evidence-recorded; `compliance_runs` per evaluation
+and `compliance_results` rows only when they differ from the machine's last stored results (nothing
+is deleted, so identical rows twice a day would only grow); owners, N/A decisions and CIS level per
+machine are people-only (refused in a tool call, from MCP, chat and schedules; `compliance.owner_set`)
+and recorded in the append-only `control_owner_events`. MCP (`kratos_compliance`) and chat
+(`/compliance`) are read-only and scoped to the person's machines; a group's members outside the
+person's access are counted, never named.
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources

@@ -434,6 +434,33 @@ def build(state: Any) -> tuple[Any, Any]:
                                    field_cap=None)
 
     @mcp.tool()
+    def kratos_compliance(ctx: Context, framework: str = "cis", target: str | None = None,
+                          detail: str = "summary") -> dict[str, Any]:
+        """Read-only: how a machine this token may reach (or a group, "@name") stands against CIS,
+        ISO/IEC 27001:2022 Annex A or NIS2, from Kratos's own checks: pass / fail / partial /
+        not_checked / needs_person / not_applicable per control, a pass only on facts read in
+        the last day. `detail`: "summary" or "full". Evidence, never a certification; owners and
+        "not applicable" decisions are made in the Kratos app, not here."""
+        from kratos import authz
+        from kratos.compliance import report as RP
+
+        client, actor = _client(ctx), _actor(ctx)
+        with authz.acting_as(actor):
+            resolved = _resolve_target(client, target, state.data_dir) if target else None
+            try:
+                if resolved and resolved.startswith("@"):
+                    machines, outside, label = RP.resolve_machines(state.data_dir, actor, group=resolved)
+                elif resolved:
+                    machines, outside, label = RP.resolve_machines(state.data_dir, actor, machine=resolved)
+                else:
+                    _require(state, actor, authz.P.COMPLIANCE_READ, obj="mcp compliance")
+                    machines, outside, label = list(_scope_targets(client, state.data_dir)), 0, "your machines"
+                doc = RP.build(state.data_dir, framework, machines, outside_scope=outside, label=label)
+            except (RP.ReportError, authz.Denied) as e:
+                raise ValueError(f"refused: {e}") from None
+        return untrusted.for_model(doc if detail == "full" else RP.compact(doc), field_cap=None)
+
+    @mcp.tool()
     async def kratos_hunt(indicators: str, ctx: Context, kind: str = "", since: str = "", until: str = "",
                           machine: str = "") -> dict[str, Any]:
         """Read-only: has this address (or CIDR network), SHA-256 file hash, account, domain,

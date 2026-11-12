@@ -17,6 +17,7 @@ FINDINGS_READ = "findings.read"     # open findings, finding states, reports
 CHAT = "chat"                       # a question answered from what Kratos already knows (no investigation)
 HUNT = "hunt"                       # search what Kratos holds for an indicator
 USAGE_READ = "usage.read"           # today's model use and the limits
+COMPLIANCE_READ = "compliance.read" # E.2: compliance reports for the person's machines
 SESSIONS_OWN = "sessions.own"       # list and resume one's own sessions
 
 # --- investigating (investigator, admin) ----------------------------------------------
@@ -49,15 +50,16 @@ BACKUP_MANAGE = "backup.manage"           # D.8: create, verify, drill and sched
 BACKUP_RESTORE = "backup.restore"         # D.8: restore and prune backups (CLI only, too)
 HASHDB_UPDATE = "hashdb.update"           # E.4: download the hash datasets; store or remove their key
 HASHDB_LOOKUP = "hashdb.lookup_online"    # E.4: send ONE hash to circl.lu / abuse.ch, when the person asks
+COMPLIANCE_OWNER_SET = "compliance.owner_set"   # E.2: control owners, "not applicable" decisions, CIS level
 LOCAL_RUN = "local.run"                   # anything else done at the Kratos host's TUI/CLI (owner only)
 
-VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN})
+VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN, COMPLIANCE_READ})
 INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECIDE, EXPORT_REDACTED})
 ADMIN = INVESTIGATOR | frozenset({
     USERS_MANAGE, TOKENS_MANAGE, CHANNELS_MANAGE, SETTINGS_CHANGE, BUDGET_CHANGE, ENROL, FIXCHANNEL_CONSENT,
     EXPORT_FULL, GROUPS_MANAGE, ASSETS_MANAGE, SCHEDULES_MANAGE, DETECT_MANAGE, DATA_PRUNE, AUDIT_READ,
     AUDIT_PRUNE, KEYS_MANAGE, TOOLS_MANAGE, SESSIONS_ALL, LOCAL_RUN, BACKUP_MANAGE, BACKUP_RESTORE,
-    HASHDB_UPDATE, HASHDB_LOOKUP,
+    HASHDB_UPDATE, HASHDB_LOOKUP, COMPLIANCE_OWNER_SET,
 })
 
 TABLE: dict[str, frozenset[str]] = {"viewer": VIEWER, "investigator": INVESTIGATOR, "admin": ADMIN}
@@ -81,6 +83,7 @@ _WORDS = {
     RETEST: "re-check findings",
     FINDING_DECIDE: "decide about findings",
     EXPORT_REDACTED: "export incident bundles",
+    COMPLIANCE_READ: "read compliance reports",
 }
 
 
