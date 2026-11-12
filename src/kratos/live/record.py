@@ -84,6 +84,7 @@ def run(data_dir: Path, target: str, *, reader: Reader | None = None,
         "signals": [s.as_dict() for s in judged.signals],
         "blind": blind_spots(inv),
         "listeners": listeners(inv),
+        "outbound": outbound(inv),          # E.3: established connections out, per program (baselines)
         # D.3: what SSVC exposure reads -- packages behind any running program, whether
         # this read looked at listening processes' libraries, the machine's own addresses
         "running_packages": running_packages(inv),
@@ -175,6 +176,48 @@ def listeners(inv: dict[str, Any]) -> list[dict[str, Any]]:
                     "package": it.get("exe_package") if exe else None,
                     "lib_packages": list(it.get("lib_packages") or []), "maps": maps})
         if len(out) >= MAX_LISTENERS:
+            break
+    return out
+
+
+MAX_OUTBOUND = 500
+_KRATOS_AGENT = ("subagent.agent", "kratos-subagent")
+
+
+def outbound(inv: dict[str, Any]) -> list[dict[str, Any]]:
+    """Each established TCP connection this machine opened to another host, with the program
+    behind it when this read could see it: {exe, remote, remote_port, proto}. A connection to
+    one of the machine's own listening ports is inbound and left out, as is loopback and the
+    Kratos sub-agent's own link to Kratos (activity Kratos itself causes is never learned).
+    Unattributed connections (another user's process, over SSH) carry exe None."""
+    from kratos.adapters import live_response as _L
+
+    procs = inv.get("procs") or {}
+    socks = inv.get("sockets") or []
+    listening = {(str(s.get("proto") or "").rstrip("6"), s.get("local_port")) for s in socks
+                 if str(s.get("state") or "").upper() == "0A"}
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for sock in socks:
+        proto = str(sock.get("proto") or "").rstrip("6")
+        if proto != "tcp" or str(sock.get("state") or "").upper() != "01":
+            continue
+        if (proto, sock.get("local_port")) in listening:
+            continue
+        remote = proc_net_address(sock.get("remote_addr"))
+        port = sock.get("remote_port")
+        if remote is None or not isinstance(port, int) or remote.startswith("127.") or remote == "::1":
+            continue
+        it = procs.get(sock.get("pid")) or {}
+        if any(mark in str(it.get("cmdline") or "") for mark in _KRATOS_AGENT):
+            continue
+        exe = _L._exe_real_path(str(it.get("exe") or "")) if it.get("exe") else None
+        key = (exe, remote, port)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"exe": exe, "remote": remote, "remote_port": port, "proto": proto})
+        if len(out) >= MAX_OUTBOUND:
             break
     return out
 

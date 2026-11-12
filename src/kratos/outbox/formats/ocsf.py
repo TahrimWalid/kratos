@@ -76,6 +76,8 @@ def class_of(rule_id: str) -> int:
 
     if is_detection_rule(rid):
         return DETECTION_FINDING
+    if rid.startswith("BASE-") and rid != "BASE-007":
+        return DETECTION_FINDING           # E.3: a deviation from what's normal is a detection, even posture ones
     e = entry(rid)
     if isinstance(e, Behaviour):
         return DETECTION_FINDING

@@ -2155,6 +2155,11 @@ _hash_findings.register()
 from kratos.compliance import findings as _comp_findings  # noqa: E402
 
 _comp_findings.register()
+
+# E.3: BASE-* -- deviations from what is normal on this machine (kratos.baseline).
+from kratos.baseline import findings as _base_findings  # noqa: E402
+
+_base_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
