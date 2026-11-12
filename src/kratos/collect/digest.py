@@ -213,13 +213,16 @@ def _fit(head: str, checks: list[tuple[CheckOutcome, str]], not_checked: list[tu
     def total(lines: list[str]) -> int:
         return sum(len(x) for x in lines) + max(0, len(lines) - 1)
 
-    def prefix(o: CheckOutcome) -> str:            # `ports (30m ago): ` -- short name, age only if not fresh
-        check = get_check(o.name)
-        when = ago(o.age_seconds).replace(" min ago", "m ago").replace(" h ago", "h ago")
-        return (check.short if check and check.short else o.label) + ("" if when == "just now" else f" ({when})") + ": "
+    def prefix(o: CheckOutcome) -> str:            # `ports (3h ago): ` -- short name, age only if over an hour
+        check = get_check(o.name)            # (a younger read was reused within its freshness limit)
+        old = o.age_seconds is not None and o.age_seconds >= 3600
+        when = ago(o.age_seconds).replace(" h ago", "h ago")
+        return (check.short if check and check.short else o.label) + (f" ({when})" if old else "") + ": "
+
+    header = "Findings on record (correlate_findings already ran):"     # the tight form of the header
 
     def with_block(v: list[str]) -> list[str]:
-        return ([closing[0]] + v + closing[1:]) if findings else list(closing)
+        return ([header] + v + closing[1:]) if findings else list(closing)
 
     nc_min = ("NOT checked: " + "; ".join(label for label, _w in not_checked)) if not_checked else ""
     mins = [prefix(o) + (_clauses(sm) or [""])[0] for o, sm in checks]

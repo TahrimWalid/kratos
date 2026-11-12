@@ -174,7 +174,7 @@ def _full_report(summaries: dict[str, str] | None = None) -> CollectionReport:
     names = list(registry._CHECKS)
     assert set(summaries) == set(names), "the test must cover every registered check"
     outcomes = [CheckOutcome(name=n, label=registry.get(n).label, cost=registry.get(n).cost, status="ok",
-                             source="fresh", summary=summaries[n], age_seconds=5.0 if i % 4 else 1800.0,
+                             source="fresh", summary=summaries[n], age_seconds=5.0 if i % 4 else 7200.0,
                              finding_ids=["PKG-001", "PKG-002", "COMP-001"])
                 for i, n in enumerate(names)]
     findings = _findings()
@@ -199,7 +199,7 @@ def test_every_check_line_keeps_its_conclusion():
 def test_the_findings_block_and_the_closing_line_are_whole():
     d = build_digest(_full_report())
     lines = d.splitlines()
-    assert "Findings now on record (correlate_findings already ran over these results):" in lines
+    assert "Findings on record (correlate_findings already ran):" in lines
     assert lines[-1] == ("Use your tools to look deeper where the question needs it; you don't need to repeat "
                          "these checks.")
     for fid in ("CORR-SSH-001", "CORR-SSH-002", "HASH-001", "LIVE-001", "CONT-004", "PKG-001"):
@@ -209,8 +209,9 @@ def test_the_findings_block_and_the_closing_line_are_whole():
 def test_the_persistence_line_leads_with_the_setuid_conclusion_in_160_characters():
     report = _full_report()
     line = next(x for x in build_digest(report).splitlines() if x.startswith("persistence"))
-    assert line.split(": ", 1)[1].startswith("18 setuid/setgid programs, all from the system's packages "
-                                             "(where it could read)")
+    assert line.split(": ", 1)[1].startswith(
+        "18 setuid/setgid programs, all matched to the system's packages (where it could read), no listing tool "
+        "needed")
     assert len(line) <= 160
 
 
@@ -219,13 +220,13 @@ def test_even_the_worst_case_keeps_the_size_the_findings_block_and_the_closing_l
     d = build_digest(report)
     lines = d.splitlines()
     assert len(d) <= DIGEST_CAP
-    assert "Findings now on record (correlate_findings already ran over these results):" in lines
+    assert "Findings on record (correlate_findings already ran):" in lines
     assert lines[-1].startswith("Use your tools to look deeper")
     for fid in ("CORR-SSH-001", "CORR-SSH-002", "HASH-001", "LIVE-001", "CONT-004", "PKG-001"):
         assert fid in d
     from kratos.collect.registry import get
     for o in report.checks:                                                      # a line for every check
-        assert any(x.startswith(get(o.name).short + (" (" if o.age_seconds > 45 else ":")) for x in lines), o.name
+        assert any(x.startswith(get(o.name).short + (" (" if o.age_seconds >= 3600 else ":")) for x in lines), o.name
 
 
 def test_a_semicolon_inside_brackets_does_not_split_a_clause():

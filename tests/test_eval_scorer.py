@@ -142,6 +142,17 @@ def test_g1_gap_needs_the_models_own_proposal():
     assert score.score_payload(sc, _g1("The disks look fine."))["person_sees"] == "fail"
 
 
+def test_g1_gap_does_not_count_a_proposal_for_a_tool_that_exists():
+    """Read from the registry at score time: 'run_linux_command' already exists, so proposing it is
+    not gap detection (an older run could record one before the loop refused them)."""
+    sc = score.SCENARIOS["G1_gap_encryption"]
+    for name in ("run_linux_command", "Check File Integrity"):
+        r = score.score_payload(sc, _g1("I'd use this.", proposals=[{"name": name}]))
+        assert r["person_sees"] == "fail" and r["details"]["existing_tool"] == [name]
+    both = [{"name": "run_linux_command"}, {"name": "inspect_luks_volumes"}]
+    assert score.score_payload(sc, _g1("x", proposals=both))["person_sees"] == "pass"
+
+
 def test_the_suid_coverage_claim_still_holds():
     """G1_suid's metadata says the persistence read covers setuid files and its digest line says so."""
     from kratos.adapters import persistence
@@ -152,14 +163,15 @@ def test_the_suid_coverage_claim_still_holds():
     doc = {"counts": {"items": 553, "suid": 18}, "signals": [], "baseline": {"first_look": True},
            "areas_checked": list(persistence.AREAS), "complete": True, "blind": {}}
     line = record.summary_line(doc)
-    assert line.startswith("18 setuid/setgid programs, all from the system's packages; ")     # the conclusion leads
+    assert line.startswith("18 setuid/setgid programs, all matched to the system's packages, no listing tool "
+                           "needed; ")     # the conclusion leads and says the check is complete
     doc["signals"] = [{"rule": "PERSIST-003"}]
-    assert record.summary_line(doc).startswith("18 setuid/setgid programs, some NOT from the system's packages "
-                                               "(PERSIST-003)")
+    assert record.summary_line(doc).startswith("18 setuid/setgid programs, some NOT matched to the system's "
+                                               "packages (PERSIST-003 names them)")
     doc.update(signals=[], complete=False)
-    assert "all from the system's packages (where it could read)" in record.summary_line(doc)
+    assert "all matched to the system's packages (where it could read)" in record.summary_line(doc)
     doc.update(complete=True, blind={"unread_paths": ["/root"]})      # a complete read with root-only folders
-    assert "all from the system's packages (where it could read)" in record.summary_line(doc)
+    assert "all matched to the system's packages (where it could read)" in record.summary_line(doc)
     doc["blind"] = {"suid_incomplete": True}
     assert "the setuid search did not finish" in record.summary_line(doc)
 

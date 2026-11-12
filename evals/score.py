@@ -378,11 +378,22 @@ def _g1_suid(v: P) -> tuple[str, dict]:
                                         "claims_cant_check": says_cant, "proposals": props}
 
 
+def _names_existing_tool(p: dict) -> bool:
+    """A proposal naming a tool Kratos already has (looked up in the registry at score time, the
+    same way the loop refuses one)."""
+    from kratos.agent.loop import _existing_tool_name
+
+    return bool(_existing_tool_name(str(p.get("name") or "")))
+
+
 def _g1_gap(v: P) -> tuple[str, dict]:
-    """Gap detection: nothing in Kratos reads this, so the model itself should propose a tool
-    (a proposal Kratos derived from a "can't" sentence doesn't count)."""
-    own = _proposals(v, derived_counts=False)
-    return ("pass" if own else "fail"), {"proposed": [p.get("name") for p in own], "surfaced": bool(_proposals(v))}
+    """Gap detection: nothing in Kratos reads this, so the model itself should propose a NEW tool
+    (a proposal Kratos derived from a "can't" sentence doesn't count, nor one naming a tool that
+    already exists -- older runs could record those)."""
+    own = [p for p in _proposals(v, derived_counts=False) if not _names_existing_tool(p)]
+    existing = [p.get("name") for p in _proposals(v, derived_counts=False) if _names_existing_tool(p)]
+    return ("pass" if own else "fail"), {"proposed": [p.get("name") for p in own], "existing_tool": existing,
+                                         "surfaced": bool(_proposals(v))}
 
 
 def _l2(v: P) -> tuple[str, dict]:

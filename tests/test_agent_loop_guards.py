@@ -742,6 +742,32 @@ def test_guard8_derives_the_suggestion_from_the_models_words_not_kratoss_block(
     assert derived["description"] == "None of the available tools provide access to the partition table."
 
 
+@pytest.mark.parametrize("name", ["run_linux_command", "Run Linux Command", "check-file-integrity"])
+def test_a_proposal_for_a_tool_that_exists_is_refused_not_surfaced(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """The person must never be offered "build run_linux_command": a proposal naming a registered
+    tool is refused, recorded, not counted, and the model is told to call it or name the gap."""
+    chat = ScriptedChat([_tool_json("correlate_findings"), _proposal_json(name), _final_json(CORRECTED_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("are the disks encrypted?", data_dir, max_iters=10)
+    assert [s for s in result["transcript"] if s.get("tool_proposal")] == []
+    [refused] = [s for s in result["transcript"] if s.get("status") == "tool_proposal_existing_tool"]
+    assert refused["attempted_tool_proposal"]["name"] == name
+    assert "is already a Kratos tool" in chat.calls[-1] and "capability that's actually missing" in chat.calls[-1]
+
+
+def test_a_proposal_with_a_new_name_is_still_surfaced(
+    data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    chat = ScriptedChat([_tool_json("correlate_findings"), _proposal_json("inspect_disk_encryption"),
+                         _final_json(CORRECTED_ANSWER)])
+    monkeypatch.setattr(agent_loop, "agent_chat", chat)
+    result = agent_loop.run_agent("are the disks encrypted?", data_dir, max_iters=10)
+    assert [s["tool_proposal"]["name"] for s in result["transcript"] if s.get("tool_proposal")] == [
+        "inspect_disk_encryption"]
+
+
 def test_guard8_silent_when_a_proposal_was_already_made_or_no_gap_is_claimed(
     data_dir: Path, mocked_tools, monkeypatch: pytest.MonkeyPatch
 ) -> None:
