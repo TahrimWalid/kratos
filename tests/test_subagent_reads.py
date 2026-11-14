@@ -66,12 +66,32 @@ def test_run_probe_never_raises_and_says_why():
 def test_no_probe_accepts_command_or_script_text():
     for probe, spec in R.PARAM_SPECS.items():
         banned = {"command", "cmd", "script", "argv", "rules", "args", "paths"}
-        if probe == "file_facts":
-            # E.4: the one read that names files. Each path must have been listed by this
-            # agent's own reads in the last day, be a program or library, and never a
-            # credential location (tests/test_file_facts.py proves each); never command text.
+        if probe in ("file_facts", "code_read"):
+            # E.4 / E.7a: the reads that name files. Each path must have been listed by this
+            # agent's own reads in the last day (file_facts: a program or library; code_read:
+            # its own walk of that folder, a closed purpose, never a private key) -- proven in
+            # tests/test_file_facts.py and tests/test_code_facts.py; never command text.
             banned.discard("paths")
         assert not (banned & set(spec)), probe
+
+
+def test_code_read_paths_are_only_files_the_agents_own_walk_listed(tmp_path, monkeypatch):
+    import base64
+
+    from kratos.adapters import code_facts as CF
+    monkeypatch.setattr(CF, "NEVER_UNDER", tuple(x for x in CF.NEVER_UNDER if x != "/tmp"))
+    root = tmp_path / "srv" / "app"
+    root.mkdir(parents=True)
+    (root / "settings.py").write_text("x = 1\n")
+    b = lambda v: base64.b64encode(v.encode()).decode()  # noqa: E731
+    req = {"root": b(str(root)), "purpose": "secrets", "paths": [b("settings.py")]}
+    R._CODE_LISTED.clear()
+    assert "\tnot_listed\t" in R.run_probe("code_read", req)["data"]["stdout"]       # never walked
+    assert R.run_probe("code_inventory", {"root": b(str(root))})["status"] == "ok"
+    assert "\tok\t" in R.run_probe("code_read", req)["data"]["stdout"]
+    other = {**req, "paths": [b("../outside.py")]}
+    assert R.run_probe("code_read", other)["status"] == "refused"
+    R._CODE_LISTED.clear()
 
 
 def test_file_facts_paths_are_only_ever_files_the_agent_listed(tmp_path):
