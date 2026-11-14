@@ -83,6 +83,7 @@ CLI: dict[str, Entry] = {
     "cmd_hashdb_update": A(P.HASHDB_UPDATE),
     "cmd_compliance": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "cmd_baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
+    "cmd_code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
     "cmd_init": A(P.SETTINGS_CHANGE),
     "cmd_investigate": A(P.INVESTIGATE),
     "cmd_llm_serve": A(P.LOCAL_RUN),
@@ -117,7 +118,7 @@ CLI: dict[str, Entry] = {
     "cmd_tokens": CORE("kratos.serve.auth:_people_only"),
     "cmd_trace": READ("shows run records"),
     "cmd_users": CORE("kratos.authz.users:_require"),
-    "cmd_vulndb_update": A(P.LOCAL_RUN),
+    "cmd_vulndb_update": A(P.CODE_DATASET_UPDATE),   # E.7a: also the language ecosystems
     "cmd_vulscan_install": A(P.LOCAL_RUN),
     "cmd_weekly_report": READ("a report of stored findings"),
 }
@@ -169,6 +170,7 @@ TUI: dict[str, Entry] = {
     "/compliance": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "/comp": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "/baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
+    "/code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
     "/normal": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "/assets": CORE("kratos.assets.store:_check_actor"), "/machines": CORE("kratos.assets.store:_check_actor"),
     "/findings": CORE(*_DECIDE), "/f": CORE(*_DECIDE),

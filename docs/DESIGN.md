@@ -1358,6 +1358,70 @@ and recorded in the append-only `control_owner_events`. MCP (`kratos_compliance`
 (`/compliance`) are read-only and scoped to the person's machines; a group's members outside the
 person's access are counted, never named.
 
+## Deployed-code checks (E.7a)
+
+`kratos/code/` checks the code a machine serves, by code, without running anything on it.
+
+**Root discovery.** Candidates come from three saved reads: the live snapshot's listeners
+(each now carries pid, working folder, systemd unit and the parent's folder; `running_units`
+lists services with a live process), the `code_roots_facts` read (nginx, Apache/httpd and
+PHP-FPM configurations from closed path lists, raw text base64, private keys and htpasswd never
+read; `WorkingDirectory=`/`ExecStart=` lines of systemd units that set a working folder) and
+D.5's container snapshot (bind mounts of containers that publish a port). `code/webconf.py`
+parses a closed subset of nginx (root, alias, location selection with `=`, `^~`, prefix and
+regex, nested locations, include with depth 5 and cycle detection, `*_pass`, deny/return/internal)
+and Apache (DocumentRoot, Alias, ScriptAlias, `<Directory>`, `<Files*>`, PHP and CGI handlers,
+mod_php) into served/executed decisions; anything it can't evaluate counts as served. The parsed
+structure, not the config text, is saved (`code/results/roots_<machine>.json`). A shared never-list
+(`adapters/code_facts.never_reason`, enforced by Kratos and the agent) excludes system folders.
+Confirmation is people-only (`code.root_confirm`, refused in tool calls, MCP, chat, schedules).
+
+**Reads.** `adapters/code_facts.py` (in the agent bundle, agent 0.14.0) has three reads, each a
+fixed POSIX sh script over SSH and stdlib Python on the agent printing the same records, one
+parser: `code_roots_facts`; `code_inventory` (a bounded walk of ONE root: no symlink followed, one
+filesystem, depth/file/time caps, dependency folders counted except their install metadata, per
+file SHA-256 and git blob id, names with unsafe bytes base64); `code_read` (contents for one closed
+purpose — `deps`, `secrets`, `git`, `review` — only of files the root's latest inventory listed,
+checked by Kratos before sending and by the agent against its own walk held in memory for a day;
+private-key files never read; byte budgets). Credential stores (`code_facts.CRED_DIRS` as any path
+part, `CRED_FILES` as a name) are never walked, listed or read on either transport, only named.
+Because the core names the root and the agent reads as root, the agent walks only a root its own
+reads tie to served or running code (a path in the web-server / PHP-FPM / systemd files it reads
+itself, a listening process's or its parent's working folder from `/proc`, a running container's
+bind-mount source from its own container read; the folder or inside it), or one the machine's
+admin lists in `/etc/kratos-subagent/code-roots` (root-owned, not group/world-writable, else
+ignored whole) -- a compromised core or link can't point it at a home or database folder. Roots
+and paths travel base64 on stdin, never on a command line. One agent reply must fit a protocol frame (8 MiB): the agent pages a big inventory
+from memory, Kratos batches content reads in 5 MB requests.
+
+**The git reader** (`code/gitread.py`, stdlib, shipped in the bundle) reads HEAD, refs and
+packed-refs, `extensions.objectformat` and `core.worktree` from config, the index (versions 2-4,
+v4 path compression, the split-index `link` extension with EWAH bitmaps and `sharedindex.*`,
+sparse directory entries, skip-worktree, intent-to-add, conflicts), loose and packed objects
+(`.idx` v1/v2, OFS/REF deltas, chain depth 50, inflate bounded) and gitignore/gitattributes rules,
+and computes drift (modified, mode change, deleted — only where the walk looked —, untracked,
+ignored, staged-not-committed, filtered). It never starts git: a planted config could run code as
+the reader, and the agent reads as root. The agent compares on the machine (512 MB pack budget);
+over SSH Kratos fetches the `.git` files within the content budget and runs the same code.
+`scripts/dev/build_gitread_fixtures.py` builds 34 repositories with real git, and the tests
+compare the reader with `git status`, `ls-files`, `ls-tree` and `check-ignore` on each.
+
+**Dependencies** (`code/deps/`): one parser per lockfile format; YAML only through
+`deps/yaml_safe.py`, which refuses anchors, aliases and nesting over 64 from the parser's events
+before constructing anything (the `code` extra, PyYAML). OSV's language ecosystems join A.2's
+offline index as selectors (`PyPI`, `npm`, `Packagist`, `Go`, `RubyGems`, `crates.io`; SEMVER and
+ECOSYSTEM ranges; advisories without a CVE kept; MAL-* reports rated "malicious"); univers compares
+versions. CODE-003 uses A.2's priority rules and gets SSVC with `ssvc.exposure.for_code_root` —
+the exposure of the listeners that serve the folder, including a web server that passes requests
+to a loopback app.
+
+**Secrets** (`code/secrets.py`): closed patterns; each hit is file, line, kind and an HMAC-SHA-256
+fingerprint under a per-install key (`code-keys/fingerprint.key`, secret); the value is discarded at
+once. **Findings** CODE-001..006 (`code/judge.py`) are conditions closed only by a complete read of
+every confirmed folder (CODE-006 is a run note); results `code/results/code_<machine>.json`, one per
+machine, evidence-recorded; tables `code_roots`, `code_root_events` (append-only), `code_files`
+(current inventory + accepted baseline, replaced per read), `code_deps`.
+
 ## Behavioural baselines (E.3)
 
 **Counting, not machine learning** (`kratos/baseline/`). A closed list of dimensions

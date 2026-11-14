@@ -14,13 +14,15 @@ file, so once the database is private they are too.
 """
 from __future__ import annotations
 
+import contextlib
+
 import logging
 import os
 import sqlite3
 import stat
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from kratos.paths import ensure_private_dir
 
@@ -105,3 +107,19 @@ def connect_store(db_path: Path | str) -> sqlite3.Connection:
     _enable_wal(conn)
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+@contextlib.contextmanager
+def write_transaction(conn: sqlite3.Connection) -> Iterator[None]:
+    """One write transaction on a `connect_store` connection. Those connections are in
+    autocommit mode, where ``with conn:`` opens no transaction: every row of an
+    executemany is then its own commit (an fsync each), which holds the write lock for
+    minutes on a big write and starves every other writer (E.7a found 50,000 rows doing
+    exactly that to the sub-agent listener)."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")

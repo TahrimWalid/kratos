@@ -592,6 +592,41 @@ def _check_vulndb(out: list[Check], data_dir: Path) -> None:
         out.append(_row("vulnerability data", "pass", detail))
 
 
+def _check_code(out: list[Check], data_dir: Path) -> None:
+    """E.7a: code folders per machine (confirmed / waiting for a person), the language-ecosystem
+    advisories they need, and YAML support for pnpm lockfiles."""
+    from kratos.code import store as CS
+    from kratos.code.deps import yaml_safe
+    from kratos.pkgvuln import index as vindex
+
+    roots = CS.all_roots(data_dir)
+    if not roots:
+        out.append(_row("code folders", "info", "none found yet (a code check finds the folders a machine serves; "
+                        "`/code` or `kratos code roots`)"))
+        return
+    by: dict[str, list[int]] = {}
+    for r in roots:
+        c = by.setdefault(r["target_key"], [0, 0, 0])
+        c[0 if r["status"] == "confirmed" else 1 if r["status"] == "candidate" else 2] += 1
+    detail = "; ".join(f"{m}: {c[0]} confirmed, {c[1]} to confirm" for m, c in sorted(by.items())[:6])
+    waiting = sum(c[1] for c in by.values())
+    out.append(_row("code folders", "warn" if waiting else "pass", detail,
+                    fix="confirm or ignore them in /code (or `kratos code confirm|ignore`)" if waiting else ""))
+    seen = CS.ecosystems_seen(data_dir)
+    if seen:
+        st = vindex.status(data_dir)
+        held = {s.lower() for s in st.selectors} if st.present else set()
+        missing = [e for e in seen if e.lower() not in held]
+        if missing:
+            out.append(_row("code advisories", "warn", f"not downloaded for {', '.join(missing)} -- those dependencies "
+                            "aren't checked", fix="run `kratos vulndb-update --for-roots`."))
+        else:
+            out.append(_row("code advisories", "pass", f"{', '.join(seen)}; updated {st.age_days() or 0:.0f} day(s) ago"))
+    if not yaml_safe.available():
+        out.append(_row("pnpm lockfiles", "info", "not read: YAML support isn't installed",
+                        fix="pip install 'kratos-security-assistant[code]'"))
+
+
 def _check_hashdb(out: list[Check], data_dir: Path) -> None:
     """E.4: the file-reputation datasets (age, size, licence) and what the last checks couldn't look at."""
     import json as _json
@@ -850,6 +885,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("ssh certificates", lambda o: _check_ssh_certificates(o, Path(data_dir))))
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("file reputation", lambda o: _check_hashdb(o, Path(data_dir))))
+        sections.append(("code folders", lambda o: _check_code(o, Path(data_dir))))
         sections.append(("compliance", lambda o: _check_compliance(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))

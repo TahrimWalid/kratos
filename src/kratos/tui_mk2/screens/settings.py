@@ -357,6 +357,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "baseline.learn_days", "baseline.max_per_day", "baseline.cooldown_hours",
                           "baseline.half_life_days", "baseline.forget_days", "baseline.time_share",
                           "baseline.rare_weight", "baseline.max_entries", "baseline.max_events_per_run",
+                          "code.max_roots", "code.max_files", "code.max_depth", "code.max_read_mb", "code.max_pack_mb",
+                          "code.inventory_seconds", "code.skip_folders", "code.group_after", "review.max_read_mb",
                           "vulndb.max_age_days", "vulndb.epss_high", "ssvc.ask_criticality",
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
@@ -771,6 +773,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         for key, label, tail in self._compliance_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._baseline_rows():
+            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for key, label, tail in self._code_rows():
             gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
         gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
@@ -1256,6 +1260,29 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             (BS.MAX_EVENTS_PER_RUN, "What's normal: most events learned per run", f"{get(BS.MAX_EVENTS_PER_RUN):,}"),
         ]
 
+    # --- The code your servers run (kratos.code, E.7a) ---
+    def _code_rows(self) -> list[tuple[str, str, str]]:
+        from kratos import settings_store
+        from kratos.code import settings as CS
+
+        dd = self._data_dir()
+        if dd is None:
+            return [(k, k, "unavailable here") for k in self._gen_rows if k.startswith(("code.", "review."))]
+        get = lambda k: settings_store.get(k, data_dir=dd)  # noqa: E731
+        return [
+            (CS.MAX_ROOTS, "Code: most code folders checked per machine", f"{get(CS.MAX_ROOTS)}"),
+            (CS.MAX_FILES, "Code: most files listed in one folder", f"{get(CS.MAX_FILES):,}"),
+            (CS.MAX_DEPTH, "Code: folder levels looked into", f"{get(CS.MAX_DEPTH)}"),
+            (CS.MAX_READ_MB, "Code: most file contents read per check (used in memory, never stored)",
+             f"{get(CS.MAX_READ_MB)} MB"),
+            (CS.MAX_PACK_MB, "Code: most git pack data the sub-agent reads per folder", f"{get(CS.MAX_PACK_MB)} MB"),
+            (CS.SECONDS, "Code: longest listing of one folder", f"{get(CS.SECONDS)} s"),
+            (CS.SKIP_FOLDERS, "Code: dependency folders counted, not walked", f"{get(CS.SKIP_FOLDERS)}"),
+            (CS.GROUP_AFTER, "Code: with no git, more changed files than this are one finding (a deploy)",
+             f"{get(CS.GROUP_AFTER)}"),
+            (CS.REVIEW_MAX_READ_MB, "Code review: most source one AI review may read", f"{get(CS.REVIEW_MAX_READ_MB)} MB"),
+        ]
+
     @work
     async def _set_detect_setting_flow(self, key: str) -> None:
         from kratos import settings_store
@@ -1267,6 +1294,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.hashdb import settings as _HDS  # noqa: F401 -- and the hashdb.* settings
         from kratos.compliance import settings as _CPS  # noqa: F401 -- and the compliance.* settings
         from kratos.baseline import settings as _BLS  # noqa: F401 -- and the baseline.* settings
+        from kratos.code import settings as _CDS  # noqa: F401 -- and the code.* / review.* settings
         from kratos.tui_mk2.modals import PromptModal
 
         dd = self._data_dir()
@@ -1303,6 +1331,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             return
         if key.startswith("baseline."):
             self._set_gen_status("Saved — applies to the next baseline run.", T.SAFE)
+            return
+        if key.startswith(("code.", "review.")):
+            self._set_gen_status("Saved — applies to the next code check.", T.SAFE)
             return
         self._set_gen_status("Saved — applies on the next detection pass"
                              + (" and is sent to watching agents within seconds." if key.startswith("detect.watch.")
@@ -1366,7 +1397,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_logs_setting_flow(key)
         elif key and key.startswith("collect."):
             self._set_collect_setting_flow(key)
-        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.", "compliance.", "baseline.")):
+        elif key and key.startswith(("detect.", "hunt.", "fleet.", "outbox.", "export.", "hashdb.", "compliance.", "baseline.", "code.",
+                                         "review.")):
             self._set_detect_setting_flow(key)
         elif key and key.startswith("vulndb."):
             self._set_vulndb_setting_flow(key)

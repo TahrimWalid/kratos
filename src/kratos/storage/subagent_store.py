@@ -212,7 +212,8 @@ class SubAgentStore:
                 conn.execute("ALTER TABLE subagent_targets ADD COLUMN pin_version INTEGER")
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -245,7 +246,8 @@ class SubAgentStore:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -281,7 +283,8 @@ class SubAgentStore:
             conn.execute("DELETE FROM subagent_pairing_codes WHERE code = ? AND used_at IS NULL", (code,))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -300,7 +303,8 @@ class SubAgentStore:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -318,7 +322,8 @@ class SubAgentStore:
                 (code,),
             ).fetchone()
             if row is None or row["used_at"] is not None or _is_expired(row["expires_at"]):
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                    conn.execute("ROLLBACK")
                 return None
             target_id = _new_target_id()
             token = _new_token()
@@ -349,7 +354,8 @@ class SubAgentStore:
                              (target_id, now, row["replaces_target_id"]))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -407,7 +413,8 @@ class SubAgentStore:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -430,7 +437,8 @@ class SubAgentStore:
             conn.execute("UPDATE subagent_connections SET last_frame_at = ? WHERE target_id = ?", (now, target_id))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -447,7 +455,8 @@ class SubAgentStore:
             conn.execute("UPDATE subagent_targets SET revoked_at = ? WHERE target_id = ?", (utc_now_iso(), target_id))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -460,7 +469,8 @@ class SubAgentStore:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT revoked_at FROM subagent_targets WHERE target_id = ?", (target_id,)).fetchone()
             if row is None or row["revoked_at"] is None:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                    conn.execute("ROLLBACK")
                 return False
             for table in ("subagent_telemetry", "subagent_connections", "subagent_connection_events", "subagent_links"):
                 conn.execute(f"DELETE FROM {table} WHERE target_id = ?", (target_id,))
@@ -469,7 +479,8 @@ class SubAgentStore:
             conn.execute("DELETE FROM subagent_targets WHERE target_id = ?", (target_id,))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -491,7 +502,8 @@ class SubAgentStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             if conn.execute("SELECT 1 FROM subagent_targets WHERE target_id = ?", (target_id,)).fetchone() is None:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                    conn.execute("ROLLBACK")
                 raise ValueError(f"no paired sub-agent {target_id!r}")
             conn.execute(
                 "INSERT INTO subagent_links (host, target_id, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?) "
@@ -503,7 +515,8 @@ class SubAgentStore:
         except ValueError:
             raise
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -616,7 +629,8 @@ class SubAgentStore:
             self._close_connections_of(conn, "listener_id = ?", (listener_id,), now, "the Kratos listener stopped")
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -648,7 +662,8 @@ class SubAgentStore:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -690,7 +705,8 @@ class SubAgentStore:
             self._add_event(conn, target_id, "connected", peer, now)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -706,11 +722,13 @@ class SubAgentStore:
             n = self._close_connections_of(conn, "target_id = ? AND listener_id = ?", (target_id, listener_id),
                                            now, reason[:200])
             if not n:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                    conn.execute("ROLLBACK")
                 return
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -722,7 +740,8 @@ class SubAgentStore:
             self._add_event(conn, target_id, event, detail, utc_now_iso())
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -786,7 +805,8 @@ class SubAgentStore:
             conn.execute(sql, args)
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()
@@ -821,7 +841,8 @@ class SubAgentStore:
             )
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            if conn.in_transaction:      # a failed BEGIN left none: keep its error
+                conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()

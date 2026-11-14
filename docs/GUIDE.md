@@ -1003,8 +1003,9 @@ run fetches only what changed and then re-matches the stored lists as above.
 **Supported:** Debian, Ubuntu, Alpine, Rocky Linux, AlmaLinux and Red Hat Enterprise
 Linux, by release. Other distributions (and Linux Mint, CentOS, testing/rolling releases)
 get a clear "no data for this distribution" note. Ubuntu Pro / ESM packages are matched
-against the plain release's data. Not covered: language packages (pip, npm …) and
-container images.
+against the plain release's data. Language packages (pip, npm, Composer, Go, Ruby, Rust) are
+checked in the code folders you confirm — see [The code your server runs](#the-code-your-server-runs);
+container images in [Containers](#containers-docker-and-podman).
 
 **The data and its terms.** OSV.dev's exports of the distributions' advisories (Ubuntu:
 CC BY-SA 4.0; Red Hat: CC BY 4.0 © Red Hat, Inc.; Rocky Linux: BSD; AlmaLinux: MIT;
@@ -1458,6 +1459,131 @@ tool).
 Compliance reports also go into incident bundles (`/export`), and COMP-001 is forwarded to a SIEM
 as an OCSF Compliance Finding with the failed checks listed. Nothing in a compliance report leaves
 your computer unless you export or forward it.
+
+## The code your server runs
+
+Kratos finds the code a machine actually **serves** and checks it on every collection — by
+reading files, never by running anything there: no `git`, no package manager, no build, no
+request to the app.
+
+### Finding and confirming the folders
+
+A code check lists the folders that look like served code, each with **why**:
+
+- the working folder of a program that listens on the network (and of its parent — a gunicorn,
+  uwsgi or php-fpm master), from the running-process read;
+- nginx `root` / `alias` and Apache `DocumentRoot` / `Alias` / `ScriptAlias`, PHP-FPM pools' `chdir`;
+- `WorkingDirectory=` of a running systemd service;
+- the host folder a container mounts, when that container publishes a port.
+
+System folders (`/`, `/etc`, `/root`, `/usr`, `/var/lib/docker`, temp folders …) are never
+offered, and a home folder only when a listening program works inside it. **Nothing in a folder
+is read until you confirm it** — once per folder:
+
+```bash
+kratos code roots 10.0.0.5
+kratos code confirm 10.0.0.5 /var/www/shop
+kratos code add 10.0.0.5 /srv/app        # one Kratos didn't find
+kratos code ignore 10.0.0.5 /var/lib/x   # not code; stays ignored until you confirm it
+```
+
+or `/code` in the app (`c` confirm, `i` ignore, `a` add, Enter for the files). Decisions are
+yours (the owner, at the Kratos computer) and are recorded with your name. A folder discovery no
+longer offers is marked *stale* and never read.
+
+### Drift: what changed on the server
+
+If the folder is a **git checkout**, Kratos reads its `.git` files itself — HEAD, the index, the
+commit's tree, `.gitignore` — and compares them with what is on disk. It never runs `git`: a
+planted `.git/config` (an fsmonitor hook, a pager, a filter) would run code as whoever runs git
+there. You see:
+
+- **CODE-001** — a script or program **not in the checkout** (untracked): *high* when it is a PHP
+  or CGI file in a folder the web server executes, or a file MalwareBazaar knows; *medium*
+  otherwise. A script in a `.gitignore`d `uploads/` is still reported: a web shell in an ignored
+  folder is still a web shell.
+- **CODE-002** — a **tracked file changed** on the server, a file **staged but never committed**,
+  or an executable bit added: *high* for a served script that runs when requested, *medium* for
+  other code, *low* for docs and config.
+
+With **no git**, the first read is the folder's baseline and later reads report new and changed
+files. After a deploy, accept the new state so later changes stand out:
+
+```bash
+kratos code accept-state 10.0.0.5 /var/www/shop
+```
+
+More than 20 changed files at once (`code.group_after`) become **one** finding for the folder — a
+deploy, until you accept it.
+
+### Vulnerable dependencies
+
+Kratos reads the lockfiles and what is installed: `requirements*.txt` (exact `==` pins only),
+`poetry.lock`, `Pipfile.lock`, `uv.lock` and a folder's `.venv`; `package-lock.json`, `yarn.lock`,
+`pnpm-lock.yaml` and `node_modules/.package-lock.json`; `composer.lock` and
+`vendor/composer/installed.json`; `go.mod`; `Gemfile.lock`; `Cargo.lock`. What is installed wins
+over a lockfile that disagrees (and the difference is shown). They are matched **on your computer**
+against OSV's advisories for those languages:
+
+```bash
+kratos vulndb-update --for-roots     # downloads only the ecosystems your confirmed folders use
+```
+
+**CODE-003** — one per folder and package, with the advisory ids — is ranked like a system
+package (exploited in the wild → critical; likely exploited and serious → high …), a package OSV
+lists as **malicious** is critical, and each gets CISA's SSVC decision with Kratos's measured
+exposure **of the program that serves the folder** — an app on `127.0.0.1:8000` behind nginx on
+port 80 is as exposed as nginx. `pnpm-lock.yaml` needs YAML support:
+`pip install 'kratos-security-assistant[code]'` (without it the lockfile is listed as not read).
+
+### Secrets
+
+**CODE-004** — a password, API key, token, private-key block or similar in a code file, a `.env`,
+`wp-config.php` or `settings.py`: the file, the line, the kind and a **fingerprint** — never the
+value. The fingerprint is keyed to your Kratos install, so the same secret in two places shows the
+same fingerprint while the value is stored, logged, exported or sent nowhere. *High* when the file
+is served as a static file (anyone may download it). A private-key file (`*.pem`, `id_rsa`) is
+reported by its name and never opened. Fix: rotate the secret and move it out of the folder.
+
+### Web shells
+
+**CODE-005** — Kratos's YARA rules (web shells, the EICAR test file) run over each confirmed folder:
+through the sub-agent with the rules on its box, or over SSH where `yara` is installed on the machine.
+
+### What it reads, and what it keeps
+
+Kratos reads a confirmed folder's file list and hashes, and the **contents** of a closed set of
+files — lockfiles and installed-package lists, text files to scan for secrets (at most 256 KB
+each, no minified bundles), the repository's own `.git` files — up to `code.max_read_mb` (64 MB)
+per check. Contents are used in memory and dropped; Kratos keeps paths, sizes, hashes, git states,
+dependency names and versions, and findings. `node_modules`, `vendor`, `.venv` are counted, not
+walked. **Credential stores are never walked, listed or read** — a `.ssh`, `.aws`, `.docker`,
+`.kube`, `.gnupg`, `secrets` … folder or a `.netrc`, `.pgpass`, `.git-credentials`, `.my.cnf` …
+file inside a confirmed folder is named in CODE-006 and nothing more. Over SSH everything runs as
+your SSH login; a folder it can't read is said so ("the sub-agent can, or grant read").
+
+The **sub-agent** reads as root, so it also checks the folder itself: it walks only a folder its
+**own** reads of the machine tie to served or running code — a web-server, PHP-FPM or systemd
+setting, a listening program's working folder, a running container's mount — or a folder inside
+one. A folder you added by hand that none of those name is refused ("the sub-agent won't walk
+it"); if it does hold code, list it on the machine itself, one absolute path per line:
+
+```bash
+sudo mkdir -p /etc/kratos-subagent
+echo /srv/app | sudo tee -a /etc/kratos-subagent/code-roots
+sudo chmod 644 /etc/kratos-subagent/code-roots      # owned by root, not writable by group or others
+```
+
+A file owned by anyone else or writable by group or others is ignored entirely. This keeps Kratos
+(or anyone who stole its link) from pointing the root-run walk at a home folder or a database
+directory.
+
+**CODE-006** says what a check couldn't cover: unconfirmed folders, caps, git it couldn't read,
+advisories not downloaded, credential stores left out, a folder the sub-agent won't walk, an agent
+too old (update it with `g` in /subagent).
+
+Every fix is shown, never run — restore from git (with options that stop a planted git config from
+running anything), remove the file, rotate the secret, upgrade the package.
 
 ## What's normal here (baselines)
 

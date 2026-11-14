@@ -10,7 +10,6 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
 
 from _baseline_history import END, G, machine, normal_days, raised, run, write
 from kratos.lifecycle.decide import Actor

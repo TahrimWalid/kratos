@@ -237,6 +237,14 @@ RULE_ATTACK: dict[str, Entry] = {
                           "the machine"),
     "HASH-002": Behaviour((SOFTWARE_PACKING,), why="an unknown program that is packed or encrypted"),
     "HASH-003": Posture("run note: what the file-reputation check could not do"),
+    "CODE-001": Behaviour((WEB_SHELL,), why="a script added to a served code folder outside its deploy is the "
+                          "classic web-shell placement"),
+    "CODE-002": Posture("a deployed file that differs from what was committed is a state; when the change is a "
+                        "web shell, CODE-001 / CODE-005 carry T1505.003"),
+    "CODE-003": Posture("a vulnerable dependency is a weakness, not an action"),
+    "CODE-004": Posture("a secret stored in deployed code is a weakness, not an action"),
+    "CODE-005": Behaviour((WEB_SHELL,), why="a file in a served code folder matches a web-shell rule"),
+    "CODE-006": Posture("run note: what the code checks could not cover"),
     "BASE-001": Behaviour((VALID_ACCOUNTS,), why="a sign-in from a place this account never used: how a valid "
                           "account in someone else's hands looks"),
     "BASE-002": Behaviour((VALID_ACCOUNTS,), why="a sign-in at an hour this account doesn't use"),

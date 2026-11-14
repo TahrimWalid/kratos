@@ -8,7 +8,9 @@ input() there can't drive a Textual modal, and Textual widgets can only be
 touched from the app's own event loop. So the provider:
 
   1. schedules the modal push on the event loop via app.call_from_thread, and
-  2. blocks the worker thread on a threading.Event until the modal is dismissed.
+  2. blocks the worker thread on a threading.Event until the modal is dismissed
+     -- or until the app stops (wait_for_answer), so a question still open when
+     Kratos quits can't keep the process alive; the answer is then the safe one.
 
 The fail-safe (any failure -> denial) and the central _approval_log recording
 still live in request_approval itself (see agent/tools.py) -- this provider
@@ -22,6 +24,20 @@ import threading
 from typing import Any, Callable
 
 from textual.app import App
+
+ANSWER_POLL_SECONDS = 0.25
+
+
+def wait_for_answer(app: App, done: threading.Event, poll: float = ANSWER_POLL_SECONDS) -> bool:
+    """Block a worker thread until a modal answers (`done` is set), or until the app
+    has stopped. True when answered. A thread worker can't be cancelled, so an
+    unbounded wait on a question that will never be answered (the app quit with it
+    open, or before it appeared) would keep the process alive at exit; the caller's
+    box keeps its safe default (deny / no / no answer) when this returns False."""
+    while not done.wait(poll):
+        if not getattr(app, "is_running", False):
+            return done.is_set()
+    return True
 
 from kratos.tui_mk2.modals import ApprovalModal, ClarifyModal, ConfirmModal
 
@@ -54,7 +70,7 @@ def make_textual_approval_provider(app: App) -> Callable[[str, dict[str, Any]], 
         except Exception:  # noqa: BLE001 -- scheduling failed: fail safe (deny)
             return False
 
-        done.wait()
+        wait_for_answer(app, done)
         return box["approved"]
 
     return _provider
@@ -92,7 +108,7 @@ def make_textual_clarify_provider(app: App) -> Callable[[str, list[dict[str, Any
         except Exception:  # noqa: BLE001 -- scheduling failed: no answer (proceed)
             return None
 
-        done.wait()
+        wait_for_answer(app, done)
         return box["answer"]
 
     return _provider
@@ -128,7 +144,7 @@ def make_textual_budget_provider(app: App) -> Callable[[Any], bool]:
         except Exception:  # noqa: BLE001 -- scheduling failed (e.g. called on the event loop): no
             return False
 
-        done.wait()
+        wait_for_answer(app, done)
         return box["yes"]
 
     return _provider

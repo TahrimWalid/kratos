@@ -38,14 +38,15 @@ import time
 from typing import Any, Callable
 
 try:  # in the agent bundle: sibling modules
-    from . import catalog, containers, file_facts, hardening, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
+    from . import catalog, code_facts, containers, file_facts, hardening, hostfiles, live_response, logread, measure, packages, persistence, privileged_accounts  # type: ignore[attr-defined]
 except ImportError:  # pragma: no cover -- exercised by whichever layout is running
     try:  # core side (the same files)
-        from kratos.adapters import containers, file_facts, hardening, live_response, packages, persistence, privileged_accounts
+        from kratos.adapters import code_facts, containers, file_facts, hardening, live_response, packages, persistence, privileged_accounts
         from kratos.logsources import catalog, hostfiles, logread
         from kratos.timewin import measure
     except ImportError:  # `python3 subagent/agent.py` run directly
         import catalog  # type: ignore[no-redef]
+        import code_facts  # type: ignore[no-redef]
         import containers  # type: ignore[no-redef]
         import file_facts  # type: ignore[no-redef]
         import hardening  # type: ignore[no-redef]
@@ -471,6 +472,33 @@ def v_fact_paths(v: Any) -> list[str]:
     return list(v)
 
 
+def v_code_root(v: Any) -> str:
+    """code_inventory / code_read: base64 of an absolute folder that passes the never-list
+    (adapters.code_facts.check_root). Returns the same base64 string."""
+    try:
+        code_facts.check_root(code_facts.decode_b64(v, "the root"))
+    except code_facts.RequestError as e:
+        raise ReadParamError(str(e)) from None
+    return str(v)
+
+
+def v_code_skip(v: Any) -> list[str]:
+    if not isinstance(v, list) or len(v) > len(code_facts.SKIP_DIRS) or any(x not in code_facts.SKIP_DIRS for x in v):
+        raise ReadParamError("must be a list of: " + ", ".join(code_facts.SKIP_DIRS))
+    return list(dict.fromkeys(v))
+
+
+def v_code_paths(v: Any) -> list[str]:
+    if not isinstance(v, list) or not v or len(v) > code_facts.MAX_READ_PATHS:
+        raise ReadParamError(f"must be a list of 1-{code_facts.MAX_READ_PATHS} paths")
+    try:
+        for item in v:
+            code_facts.check_rel(code_facts.decode_b64(item, "each path"))
+    except code_facts.RequestError as e:
+        raise ReadParamError(str(e)) from None
+    return list(v)
+
+
 # probe -> {param: (validator, required, default)}
 _P = tuple
 PARAM_SPECS: dict[str, dict[str, _P]] = {
@@ -571,6 +599,26 @@ PARAM_SPECS: dict[str, dict[str, _P]] = {
     # phase E.2: the hardening facts (agent 0.13.0). No params: every key, file, mount
     # point, stack, module and service is in the closed lists in hardening.py.
     "hardening_facts": {},
+    # phase E.7a: deployed code (agent 0.14.0). code_roots_facts reads closed config path
+    # lists; code_inventory walks ONE folder that passes the never-list; code_read returns the
+    # contents of files this agent's own code_inventory of that folder listed, for one closed
+    # purpose -- never a private key, never a file the inventory didn't list.
+    "code_roots_facts": {},
+    "code_inventory": {
+        "root": (v_code_root, True, None),
+        "max_files": (v_int_range(100, 200000), False, code_facts.MAX_FILES),
+        "max_depth": (v_int_range(2, 64), False, code_facts.MAX_DEPTH),
+        "seconds": (v_int_range(30, 1800), False, code_facts.DEFAULT_SECONDS),
+        "skip": (v_code_skip, False, list(code_facts.SKIP_DIRS)),
+        "max_pack_mb": (v_int_range(16, 4096), False, 512),
+        "page": (v_int_range(0, 1000), False, 0),
+    },
+    "code_read": {
+        "root": (v_code_root, True, None),
+        "purpose": (v_enum(*code_facts.PURPOSES), True, None),
+        "paths": (v_code_paths, True, None),
+        "budget_mb": (v_int_range(1, code_facts.AGENT_READ_MB), False, code_facts.AGENT_READ_MB),
+    },
 }
 
 READ_PROBES: tuple[str, ...] = tuple(PARAM_SPECS)
@@ -590,6 +638,7 @@ PROBE_TIMEOUT_SECONDS: dict[str, float] = {
     "container_logs": 30,
     "file_facts": 1800 + 30,
     "hardening_facts": hardening.DEFAULT_BUDGET_SECONDS,
+    "code_roots_facts": 60, "code_inventory": 1800 + 60, "code_read": 300,
 }
 OUTPUT_CAP_BYTES: dict[str, int] = {
     "journal_fetch": 4 * 1024 * 1024, "journal_auth": 3 * 1024 * 1024,
@@ -606,6 +655,9 @@ OUTPUT_CAP_BYTES: dict[str, int] = {
     "container_logs": containers.LOG_OUTPUT_CAP + 65536,
     "file_facts": file_facts.OUTPUT_CAP_BYTES + 65536,
     "hardening_facts": hardening.OUTPUT_CAP_BYTES + 65536,
+    "code_roots_facts": code_facts.ROOTS_OUTPUT_CAP + 65536,
+    "code_inventory": code_facts.PAGE_BYTES + 65536,
+    "code_read": code_facts.AGENT_READ_MB * 1024 * 1024 * 4 // 3 + 65536,
 }
 MAX_YARA_MATCHES = 2000
 MAX_YARA_FILES = 20000
@@ -1709,9 +1761,11 @@ def _p_container_inventory(p: dict[str, Any]) -> dict[str, Any]:
     """The container read (containers.inventory_output): the engines' API over their
     local sockets (GET, closed path list), /proc and cgroups, default routes, and the
     three read-only firewall listings -- all as root, nothing written."""
-    return containers.inventory_output(
+    got = containers.inventory_output(
         run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap),
         deadline=time.monotonic() + containers.DEFAULT_BUDGET_SECONDS)
+    _code_remember_mounts(str(got.get("stdout") or ""))    # running containers' bind mounts: code-root evidence
+    return got
 
 
 def _p_container_packages(p: dict[str, Any]) -> dict[str, Any]:
@@ -1806,6 +1860,273 @@ def _p_hardening_facts(p: dict[str, Any]) -> dict[str, Any]:
                       cap=OUTPUT_CAP_BYTES["hardening_facts"], stdin_text=hardening.build_script(sudo=""))
 
 
+# --------------------------------------------------------------------------- E.7a memory
+# The folders this agent walked (code_inventory) and the files each walk listed, kept in
+# memory for a day: a code_read may only name a file this agent's own walk of that folder
+# listed, so a core -- or anyone holding the link -- can't turn it into "send me any file".
+# The walk's lines are also kept for a few minutes to serve the next pages of a big inventory
+# (one agent reply must fit in a protocol frame). Nothing is written on this machine.
+CODE_LISTED_TTL_SECONDS = 24 * 3600
+CODE_PAGES_TTL_SECONDS = 600
+CODE_MAX_ROOTS = 100
+_CODE_LISTED: dict[bytes, tuple[float, dict[bytes, int]]] = {}
+_CODE_PAGES: dict[bytes, tuple[float, list[str]]] = {}
+_CODE_LOCK = threading.Lock()
+
+
+def _code_remember(root: bytes, stdout: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    inv = code_facts.parse_inventory(stdout)
+    listed: dict[bytes, int] = {}
+    for rel, f in (inv.get("files") or {}).items():
+        listed[os.fsencode(rel)] = int(f.get("size") or 0)
+    for rel, size in (inv.get("gitfiles") or {}).items():
+        listed[b".git/" + os.fsencode(rel)] = int(size or 0)
+    with _CODE_LOCK:
+        _CODE_LISTED[root] = (now, listed)
+        if len(_CODE_LISTED) > CODE_MAX_ROOTS:
+            for k, _v in sorted(_CODE_LISTED.items(), key=lambda kv: kv[1][0])[:len(_CODE_LISTED) - CODE_MAX_ROOTS]:
+                del _CODE_LISTED[k]
+
+
+def _code_listed(root: bytes, rel: bytes, now: float | None = None) -> int | None:
+    now = time.time() if now is None else now
+    with _CODE_LOCK:
+        got = _CODE_LISTED.get(root)
+    if got is None or now - got[0] > CODE_LISTED_TTL_SECONDS:
+        return None
+    return got[1].get(rel)
+
+
+# Which folders this agent walks at all. The core names the root, so a compromised core (or
+# anyone holding the link) could otherwise point this root-run walk at any folder off the
+# never-list -- a home folder, a database directory -- and read its files through the
+# secrets purpose. The agent walks a folder only when its OWN reads tie it to code that is
+# served or running: a path written in a web-server / PHP-FPM / systemd configuration it
+# reads itself (the same closed lists code_roots_facts reads), the working folder of a
+# process listening on the network or of that process's parent, or the bind-mount source of
+# a running container its own container read saw -- the folder or one inside it. Anything
+# else needs the machine's admin to list it, one absolute path per line, in CODE_ROOTS_FILE
+# (root-owned, not writable by group or others -- else the whole file is ignored).
+CODE_ROOTS_FILE = "/etc/kratos-subagent/code-roots"
+CODE_EVIDENCE_TTL_SECONDS = 60
+CODE_MOUNTS_TTL_SECONDS = 24 * 3600
+CODE_MAX_EVIDENCE = 5000
+_CODE_PATH_RE = re.compile(r"(?:^|(?<=[\s\"'=(:,]))(/[A-Za-z0-9._@+,=:~/-]+)")
+_CODE_EVIDENCE: list[Any] = [0.0, frozenset()]
+_CODE_MOUNTS: dict[str, float] = {}
+
+
+def _code_clean(path: str) -> str | None:
+    p = os.path.normpath(path.rstrip(":,"))
+    if code_facts.shape_reason(p) or code_facts.never_reason(p):
+        return None
+    return p
+
+
+def _code_config_paths() -> set[str]:
+    facts = code_facts.parse_roots_facts(str(code_facts.roots_facts_output().get("stdout") or ""))
+    found: set[str] = set()
+    for item in (facts.get("configs") or {}).values():
+        for line in (item.get("text") or "").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            found.update(_CODE_PATH_RE.findall(line))
+    for lines in (facts.get("units") or {}).values():
+        for ln in lines:
+            key, _eq, val = ln.strip().partition("=")
+            if key == "WorkingDirectory" and val:
+                found.add(val.strip().lstrip("-"))
+    return found
+
+
+def _code_listener_cwds(proc: str = "/proc", budget: float = 3.0) -> set[str]:
+    inodes: set[str] = set()
+    for name, state in (("tcp", "0A"), ("tcp6", "0A"), ("udp", "07"), ("udp6", "07")):
+        try:
+            with open(f"{proc}/net/{name}", encoding="ascii", errors="replace") as f:
+                for line in f.read(8 * 1024 * 1024).splitlines()[1:]:
+                    cols = line.split()
+                    if len(cols) > 9 and cols[3] == state and cols[9] != "0":
+                        inodes.add(f"socket:[{cols[9]}]")
+        except OSError:
+            continue
+    found: set[str] = set()
+    if not inodes:
+        return found
+    deadline = time.monotonic() + budget
+    try:
+        pids = [d for d in os.listdir(proc) if d.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        if time.monotonic() > deadline:
+            break
+        try:
+            fds = os.listdir(f"{proc}/{pid}/fd")
+        except OSError:
+            continue
+        hit = False
+        for fd in fds[:4096]:
+            try:
+                if os.readlink(f"{proc}/{pid}/fd/{fd}") in inodes:
+                    hit = True
+                    break
+            except OSError:
+                continue
+        if not hit:
+            continue
+        for who in (pid, _code_ppid(proc, pid)):
+            if who:
+                try:
+                    found.add(os.readlink(f"{proc}/{who}/cwd"))
+                except OSError:
+                    pass
+    return found
+
+
+def _code_ppid(proc: str, pid: str) -> str | None:
+    try:
+        with open(f"{proc}/{pid}/stat", encoding="ascii", errors="replace") as f:
+            fields = f.read(4096).rpartition(")")[2].split()
+        return fields[1] if len(fields) > 1 and fields[1].isdigit() and fields[1] != "0" else None
+    except OSError:
+        return None
+
+
+def _code_remember_mounts(stdout: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    try:
+        doc = containers.parse_output(stdout)
+    except Exception:     # a parse problem only means no container evidence
+        return
+    for c in (doc.get("containers") or {}).values():
+        if not isinstance(c, dict) or not c.get("running"):
+            continue
+        for m in c.get("mounts") or []:
+            if isinstance(m, dict) and m.get("type") == "bind" and isinstance(m.get("source"), str):
+                with _CODE_LOCK:
+                    _CODE_MOUNTS[m["source"]] = now
+    with _CODE_LOCK:
+        for k in [k for k, t in _CODE_MOUNTS.items() if now - t > CODE_MOUNTS_TTL_SECONDS][:]:
+            del _CODE_MOUNTS[k]
+
+
+def load_code_roots_file(path: str = CODE_ROOTS_FILE, allowed_owners: tuple[int, ...] | None = None
+                         ) -> tuple[list[str], list[str]]:
+    """The admin's own list of folders this agent may walk: (paths, problems). Missing = none.
+    A file (or its folder) not owned by root / this agent's user, or writable by group or
+    others, is ignored entirely and reported -- never partly trusted."""
+    if allowed_owners is None:
+        allowed_owners = tuple({0, os.geteuid()})
+    try:
+        dst = os.stat(os.path.dirname(path) or "/")
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return [], []
+    except OSError as e:
+        return [], [f"{path}: unreadable ({e.strerror})"]
+    if not stat.S_ISREG(st.st_mode):
+        return [], [f"{path}: must be a regular file, not a symlink -- ignored"]
+    for what, x in (("file", st), ("folder", dst)):
+        if x.st_uid not in allowed_owners:
+            return [], [f"{path}: {what} owned by uid {x.st_uid}, must be root's -- ignored"]
+        if x.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return [], [f"{path}: {what} writable by group or others -- chmod go-w it; ignored"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read(256 * 1024)
+    except (OSError, UnicodeDecodeError) as e:
+        return [], [f"{path}: unreadable ({e})"]
+    out, problems = [], []
+    for n, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        why = code_facts.shape_reason(line) or code_facts.never_reason(line)
+        if why:
+            problems.append(f"{path}:{n}: {why} -- line ignored")
+            continue
+        out.append(line)
+    return out, problems
+
+
+def _code_evidence(now: float | None = None) -> frozenset[str]:
+    now = time.time() if now is None else now
+    with _CODE_LOCK:
+        if now - _CODE_EVIDENCE[0] < CODE_EVIDENCE_TTL_SECONDS:
+            return _CODE_EVIDENCE[1]
+        mounts = list(_CODE_MOUNTS)
+    raw: set[str] = set(mounts)
+    for get in (_code_config_paths, _code_listener_cwds):
+        try:
+            raw |= get()
+        except Exception:     # one source failing only narrows what is accepted
+            continue
+    clean = frozenset(sorted(p for p in (_code_clean(x) for x in raw) if p)[:CODE_MAX_EVIDENCE])
+    with _CODE_LOCK:
+        _CODE_EVIDENCE[0], _CODE_EVIDENCE[1] = now, clean
+    return clean
+
+
+def code_root_refusal(root: str) -> str | None:
+    """None when this agent may walk `root`, else why not (shown to the person)."""
+    def under(base: str) -> bool:
+        return root == base or root.startswith(base.rstrip("/") + "/")
+
+    listed, problems = load_code_roots_file(CODE_ROOTS_FILE)
+    if any(under(b) for b in listed):
+        return None
+    if any(under(b) for b in _code_evidence()):
+        return None
+    msg = (f"not tied to served or running code by this agent's own reads; to check it anyway, list it in "
+           f"{CODE_ROOTS_FILE} (root-owned, not group/world-writable)")
+    if problems:
+        msg += "; " + "; ".join(problems[:3])
+    return msg
+
+
+def _p_code_roots_facts(p: dict[str, Any]) -> dict[str, Any]:
+    """The web-server, PHP-FPM and systemd configurations (closed path lists) -- the same
+    records the SSH script prints."""
+    return code_facts.roots_facts_output()
+
+
+def _p_code_inventory(p: dict[str, Any]) -> dict[str, Any]:
+    """Walk one code folder (page 0), remember what it listed, and serve the walk's lines
+    one frame-sized page at a time."""
+    root = code_facts.decode_b64(p["root"], "the root")
+    now = time.time()
+    if p["page"] == 0:
+        why = code_root_refusal(os.fsdecode(root))
+        if why:
+            raise ReadParamError(f"code_inventory: {why}")
+        got = code_facts.inventory_output(root, max_files=p["max_files"], max_depth=p["max_depth"],
+                                          seconds=float(p["seconds"]), skip=tuple(p["skip"]),
+                                          max_pack_bytes=p["max_pack_mb"] * 1024 * 1024)
+        stdout = str(got.get("stdout") or "")
+        _code_remember(root, stdout, now)
+        pages = code_facts.paginate(stdout)
+        with _CODE_LOCK:
+            _CODE_PAGES[root] = (now, pages)
+            for k in [k for k, (t, _v) in _CODE_PAGES.items() if now - t > CODE_PAGES_TTL_SECONDS]:
+                del _CODE_PAGES[k]
+    with _CODE_LOCK:
+        cached = _CODE_PAGES.get(root)
+    if cached is None or now - cached[0] > CODE_PAGES_TTL_SECONDS or p["page"] >= len(cached[1]):
+        return {"stdout": "M\tpage_lost\t1\nEND\n", "returncode": 0}
+    return {"stdout": cached[1][p["page"]], "returncode": 0}
+
+
+def _p_code_read(p: dict[str, Any]) -> dict[str, Any]:
+    """Contents of files this agent's own walk of the folder listed, for one closed purpose
+    (code_facts.read_output re-checks the purpose's names, sizes and the private-key rule)."""
+    root = code_facts.decode_b64(p["root"], "the root")
+    paths = [code_facts.decode_b64(x, "each path") for x in p["paths"]]
+    return code_facts.read_output(root, p["purpose"], paths, budget_bytes=p["budget_mb"] * 1024 * 1024,
+                                  listed=lambda r, rel: _code_listed(r, rel))
+
+
 _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "clock": _p_clock, "journal_fetch": _p_journal_fetch, "journal_auth": _p_journal_auth,
     "open_files": _p_open_files, "processes": _p_processes, "file_hashes": _p_file_hashes,
@@ -1823,6 +2144,9 @@ _PROBES: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "container_logs": _p_container_logs,
     "file_facts": _p_file_facts,
     "hardening_facts": _p_hardening_facts,
+    "code_roots_facts": _p_code_roots_facts,
+    "code_inventory": _p_code_inventory,
+    "code_read": _p_code_read,
 }
 assert set(_PROBES) == set(READ_PROBES)
 

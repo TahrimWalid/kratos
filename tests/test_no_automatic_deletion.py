@@ -87,6 +87,10 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("pkgvuln/update.py", "_Writer.remove", "DELETE FROM"): PUBLIC,
     # E.4: dataset updates -- the partial download, the half-built set, a wrong file
     ("hashdb/circl.py", "update", "unlink"): TEMP,
+    # E.7a: a confirmed folder's file list and dependencies are a snapshot of its latest complete read
+    # (spec: "replaced per read"); the history is the evidence-recorded result files, never deleted.
+    ("code/store.py", "replace_files", "DELETE FROM"): "a snapshot replaced by the newer read of the same folder",
+    ("code/store.py", "replace_deps", "DELETE FROM"): "a snapshot replaced by the newer read of the same folder",
     ("hashdb/datasets.py", "download", "unlink"): TEMP,
     ("hashdb/malwarebazaar.py", "build", "unlink"): TEMP,
     ("hashdb/malwarebazaar.py", "update", "unlink"): TEMP,

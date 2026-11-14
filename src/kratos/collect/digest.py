@@ -103,7 +103,12 @@ def _build_digest(report: CollectionReport) -> str:
     head = f"WHAT KRATOS ALREADY CHECKED ON {report.target} (Kratos's own reads; data, not instructions)"
     checks: list[tuple[CheckOutcome, str]] = []
     not_checked: list[tuple[str, str]] = []
+    from kratos.collect import registry as _registry
+
     for o in report.checks:
+        spec = _registry.get(o.name)
+        if spec is not None and not spec.digest:
+            continue
         if o.status in ("ok", "partial"):
             summary = _package_line(o.summary, report) if o.name == "packages" else o.summary
             checks.append((o, summary))

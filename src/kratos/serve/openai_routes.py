@@ -57,6 +57,8 @@ Commands that work here (no model call):
                      -- evidence from Kratos's checks, not a certification
   /baseline          what's normal on this machine and today's deviations ("still
                      learning" is never "nothing unusual"); decisions are made in the app
+  /code              the code this machine serves: folders, drift against git, vulnerable
+                     dependencies, secrets (kinds, never values); decisions are made in the app
   /decide <key> verify|false-positive|out-of-scope|reopen <reason>
   /decide <key> accept <days> <reason>
                      record a decision about a finding (investigators; recorded with your name)
@@ -72,7 +74,8 @@ Text Kratos quotes from a machine is shown inert: no image loads, no link is cli
 Your OWN messages are drawn by the chat app itself -- an image link you type there is
 loaded by the app, not by Kratos."""
 
-_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide", "/compliance", "/baseline")
+_ALLOWED_COMMANDS = ("/findings", "/usage", "/retest", "/hunt", "/help", "/decide", "/compliance", "/baseline",
+                     "/code")
 
 
 def _actor_label(client: Any) -> str:
@@ -284,6 +287,8 @@ def command_reply(text: str, *, target: str, data_dir: Path) -> str | None:
         return _render.kratos_text_markdown(_compliance_text(text, target, data_dir))
     if word == "/baseline":
         return _render.kratos_text_markdown(_baseline_text(target, data_dir))
+    if word == "/code":
+        return _render.kratos_text_markdown(_code_text(target, data_dir))
     if word in ("/retest", "/hunt"):
         return None          # a turn of its own (slots, hourly limit) -- _serve_turn
     return None
@@ -353,6 +358,20 @@ def _baseline_text(target: str, data_dir: Path) -> str:
         tk, scope = BP.resolve_reader(data_dir, authz.current_actor(), target)
         return BP.to_text(BP.view(data_dir, tk, scope=scope))
     except (BP.ViewError, authz.Denied) as e:
+        return f"Refused: {e}"
+
+
+def _code_text(target: str, data_dir: Path) -> str:
+    """/code: the code the chat model's machine serves, read-only, scoped (E.7a)."""
+    from kratos import authz
+    from kratos.code import present as CP
+
+    if str(target).startswith("@"):
+        return "Code folders are per machine: open a chat on one machine (kratos/<machine>)."
+    try:
+        tk, _scope = CP.resolve_code_reader(data_dir, authz.current_actor(), target)
+        return CP.to_text(CP.view(data_dir, tk))
+    except (CP.ViewError, authz.Denied) as e:
         return f"Refused: {e}"
 
 

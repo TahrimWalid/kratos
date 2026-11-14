@@ -431,6 +431,8 @@ register_verifier(Verifier(rules=("COMP-001",), cost="quick", verify=_verify_com
 
 # D.5: the container findings register their own verifiers (kratos.containers.verify).
 from kratos.containers import verify as _container_verify  # noqa: E402,F401
+# E.7a: the deployed-code findings register their own verifier (kratos.code.verify).
+from kratos.code import verify as _code_verify  # noqa: E402,F401
 
 
 # E.3: a deviation from what's normal is an event that happened -- except a new listener,

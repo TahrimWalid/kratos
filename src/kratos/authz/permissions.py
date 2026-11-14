@@ -19,6 +19,7 @@ HUNT = "hunt"                       # search what Kratos holds for an indicator
 USAGE_READ = "usage.read"           # today's model use and the limits
 COMPLIANCE_READ = "compliance.read" # E.2: compliance reports for the person's machines
 BASELINE_READ = "baseline.read"     # E.3: what is normal on the person's machines, and its deviations
+CODE_READ = "code.read"             # E.7a: the code roots, drift, dependencies and secrets of the person's machines
 SESSIONS_OWN = "sessions.own"       # list and resume one's own sessions
 
 # --- investigating (investigator, admin) ----------------------------------------------
@@ -53,15 +54,20 @@ HASHDB_UPDATE = "hashdb.update"           # E.4: download the hash datasets; sto
 HASHDB_LOOKUP = "hashdb.lookup_online"    # E.4: send ONE hash to circl.lu / abuse.ch, when the person asks
 COMPLIANCE_OWNER_SET = "compliance.owner_set"   # E.2: control owners, "not applicable" decisions, CIS level
 BASELINE_ACCEPT = "baseline.accept"             # E.3: "this is normal", forget, freeze, unfreeze, reset
+CODE_ROOT_CONFIRM = "code.root_confirm"         # E.7a: confirm / ignore / add a code root; accept a deploy
+CODE_DATASET_UPDATE = "code.dataset_update"     # E.7a: download language advisories (vulndb-update ecosystems)
+CODE_REVIEW_START = "code.review_start"         # E.7b: read source for an AI review (sends code to a model)
 LOCAL_RUN = "local.run"                   # anything else done at the Kratos host's TUI/CLI (owner only)
 
-VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN, COMPLIANCE_READ, BASELINE_READ})
+VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN, COMPLIANCE_READ, BASELINE_READ,
+                    CODE_READ})
 INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECIDE, EXPORT_REDACTED})
 ADMIN = INVESTIGATOR | frozenset({
     USERS_MANAGE, TOKENS_MANAGE, CHANNELS_MANAGE, SETTINGS_CHANGE, BUDGET_CHANGE, ENROL, FIXCHANNEL_CONSENT,
     EXPORT_FULL, GROUPS_MANAGE, ASSETS_MANAGE, SCHEDULES_MANAGE, DETECT_MANAGE, DATA_PRUNE, AUDIT_READ,
     AUDIT_PRUNE, KEYS_MANAGE, TOOLS_MANAGE, SESSIONS_ALL, LOCAL_RUN, BACKUP_MANAGE, BACKUP_RESTORE,
-    HASHDB_UPDATE, HASHDB_LOOKUP, COMPLIANCE_OWNER_SET, BASELINE_ACCEPT,
+    HASHDB_UPDATE, HASHDB_LOOKUP, COMPLIANCE_OWNER_SET, BASELINE_ACCEPT, CODE_ROOT_CONFIRM, CODE_DATASET_UPDATE,
+    CODE_REVIEW_START,
 })
 
 TABLE: dict[str, frozenset[str]] = {"viewer": VIEWER, "investigator": INVESTIGATOR, "admin": ADMIN}
@@ -87,6 +93,7 @@ _WORDS = {
     EXPORT_REDACTED: "export incident bundles",
     COMPLIANCE_READ: "read compliance reports",
     BASELINE_READ: "read what's normal on a machine",
+    CODE_READ: "read the code checks of a machine",
 }
 
 

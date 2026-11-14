@@ -224,6 +224,27 @@ def for_scanned_ports(ports: Iterable[Any], target: str, *, override: str | None
                     scanned_at, "scan", override=used)
 
 
+def for_code_root(serving: Iterable[Any], live: dict[str, Any] | None, *, override: str | None = None,
+                  firewall: dict[str, Any] | None = None, root: str = "") -> Exposure:
+    """E.7a CODE-003: exposure of a code folder's dependencies -- through the processes that
+    serve the folder (its app's listener, or the web server that serves it or passes requests
+    to it), from the running-process read discovery used."""
+    items = [x for x in serving or [] if isinstance(x, dict) and isinstance(x.get("port"), int)]
+    when = str((live or {}).get("checked_at") or "") if isinstance(live, dict) else ""
+    via = str((live or {}).get("via") or "") if isinstance(live, dict) else ""
+    if not items:
+        return Exposure(UNKNOWN, f"Kratos couldn't tie a listening program to {root or 'this folder'} (it may run "
+                                 "only when called, or its process belongs to another user)", when, via, fix=AGENT_FIX)
+    open_items = [x for x in items if not (_ip(x.get("address")) and _ip(x.get("address")).is_loopback)]
+    if open_items:
+        addrs = (live or {}).get("local_addresses") or [] if isinstance(live, dict) else []
+        value, why, first = _scope(open_items, addrs)
+        value, why, used = _apply_override(value, why, override)
+        return Exposure(value, f"{_program(first)} serves {root or 'it'} on {_where(first)}; {why}"
+                               f"{_firewall_note(firewall)}", when, via, override=used)
+    return Exposure(LOCAL, f"{_program(items[0])} serves it only on {_where(items[0])}", when, via)
+
+
 def rank(value: Any) -> int:
     return RANK.get(str(value or ""), RANK[UNKNOWN])
 

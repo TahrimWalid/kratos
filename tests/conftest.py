@@ -95,6 +95,14 @@ def _no_real_collection_reads(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mod, "_default_reader", lambda target, _r=refuse: _r)
     from kratos.adapters import ssh_remote
     monkeypatch.setattr(ssh_remote, "warm_connection", lambda: False)   # collection's real SSH warm-up
+    # E.7a: the code reads (configs, a root's walk, content reads) and the YARA scan of a root
+    import types
+
+    from kratos.code import reads as code_reads
+    from kratos.code import yara as code_yara
+    monkeypatch.setattr(code_reads, "_ssh", lambda: types.SimpleNamespace(
+        fetch_code_roots_facts=refuse, fetch_code_inventory=refuse, fetch_code_read=refuse))
+    monkeypatch.setattr(code_yara, "_default", lambda root: "no machine in tests")
 
 
 @pytest.fixture(autouse=True)

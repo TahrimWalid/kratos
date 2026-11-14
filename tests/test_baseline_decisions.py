@@ -25,12 +25,19 @@ def _ready(tmp_path, plants=()):
 
 
 def _findings(data: Path, target: str) -> list[dict]:
-    """The findings report for this machine: correlation over its snapshots, lifecycle applied."""
+    """The findings report for this machine: correlation over its snapshots, lifecycle applied.
+    The baseline snapshot is judged fresh against the history's own clock (END), not today's:
+    otherwise every BASE finding is "too old" a day after END and these tests pass vacuously or fail."""
+    from types import SimpleNamespace
+    from unittest import mock
+
     import kratos.collect.checks  # noqa: F401
     from kratos import kratos_config
     from kratos.adapters import findings_engine as FE
+    from kratos.baseline import findings as BF
 
-    with kratos_config.pinned_target(target):
+    clock = SimpleNamespace(time=lambda: END.timestamp() + 3600)
+    with kratos_config.pinned_target(target), mock.patch.object(BF, "time", clock):
         path, _md = FE.write_findings_report(data)
     return json.loads(Path(path).read_text()).get("findings") or []
 

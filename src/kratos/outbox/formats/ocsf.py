@@ -69,7 +69,7 @@ def _iso_ms(text: Any) -> int | None:
 def class_of(rule_id: str) -> int:
     """The OCSF Findings class for a rule (see the module doc)."""
     rid = str(rule_id or "").upper()
-    if rid.startswith(_VULN_PREFIXES):
+    if rid.startswith(_VULN_PREFIXES) or rid == "CODE-003":     # E.7a: a vulnerable dependency of deployed code
         return VULNERABILITY_FINDING
     from kratos.attack.mapping import Behaviour, Posture, entry
     from kratos.detect.ids import is_detection_rule
@@ -220,6 +220,12 @@ def _vulnerabilities(c: FindingChange) -> list[dict[str, Any]]:
         pkg, _, cve = e.rpartition(":") if ":" in e else ("", "", e)
         if cve.upper().startswith("CVE-"):
             cves.append((cve.upper(), pkg or None))
+    if str(c.rule_id).upper() == "CODE-003":      # entities are OSV advisory ids; subject "<folder>|<eco>:<pkg>"
+        dep = str(f.get("subject") or "").split("|", 1)[-1]
+        return [{"advisory": {"uid": e, "title": c.title[:500]}, "title": c.title[:500],
+                 "severity": c.severity.capitalize(), "desc": f"dependency {dep}"[:500]} for e in ents[:100]] or [
+            {"advisory": {"uid": c.rule_id, "title": c.title[:500]}, "title": c.title[:500],
+             "severity": c.severity.capitalize()}]
     package = f.get("subject") if str(c.rule_id).upper() == "PKG-001" else None
     fixed = str(c.rule_id).upper() == "PKG-001"
     out = []

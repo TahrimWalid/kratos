@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from kratos.storage.migrations import migrate_once
-from kratos.storage.sqlite_files import connect_store
+from kratos.storage.sqlite_files import connect_store, write_transaction
 
 COMPONENT = "hash_reputation"
 ONLINE = ""                       # the target_key of a person's online lookups
@@ -62,7 +62,7 @@ def put_many(data_dir: Path | str, target_key: str, rows: list[dict[str, Any]], 
         return 0
     conn = connect(data_dir)
     try:
-        with conn:
+        with write_transaction(conn):
             conn.executemany(
                 "INSERT INTO hash_reputation (target_key, sha256, sha1, verdict, sources, checked_at, path_seen, note) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(target_key, sha256) DO UPDATE SET sha1=excluded.sha1, "

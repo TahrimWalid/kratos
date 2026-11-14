@@ -24,6 +24,7 @@ from textual.app import App
 
 from kratos.agent.guided_evolve import GuidedPrompter
 from kratos.tui_mk2 import render as R
+from kratos.tui_mk2.approvals import wait_for_answer
 from kratos.tui_mk2.modals import ConfirmModal, ListPickerModal, PromptModal
 
 
@@ -67,7 +68,7 @@ class TextualGuidedPrompter(GuidedPrompter):
             self._app.call_from_thread(_push)
         except Exception:  # noqa: BLE001 -- scheduling failed: fail safe (treat as cancelled)
             return None
-        done.wait()
+        wait_for_answer(self._app, done)
         return box["result"]
 
     def ask_text(self, title: str, hint: str = "", default: str = "") -> str | None:

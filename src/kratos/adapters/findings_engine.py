@@ -2151,6 +2151,12 @@ from kratos.hashdb import findings as _hash_findings  # noqa: E402
 
 _hash_findings.register()
 
+# E.7a: CODE-001..006 -- the code a machine serves: drift against git or an accepted state,
+# vulnerable dependencies, secrets, web-shell YARA, and what couldn't be covered (kratos.code).
+from kratos.code import findings as _code_findings  # noqa: E402
+
+_code_findings.register()
+
 # E.2: COMP-001 -- the hardening checks that fail on this machine (kratos.compliance).
 from kratos.compliance import findings as _comp_findings  # noqa: E402
 
@@ -2393,7 +2399,8 @@ def write_findings_report(
 
     _ssvc_attach.attach(findings, data_dir=data_dir, target=report_target or "unknown", packages_doc=packages_doc,
                         live_doc=live_doc, config_audit=config_audit, vuln_scan=vuln_scan,
-                        container_packages_doc=snapshots.get("container_packages"))
+                        container_packages_doc=snapshots.get("container_packages"),
+                        code_doc=snapshots.get("code"))
     findings.sort(key=_ssvc_attach.sort_key)
     # E.4: reputation lines on findings that name a looked-up file (an annotation only)
     from kratos.hashdb import annotate as _hash_annotate
