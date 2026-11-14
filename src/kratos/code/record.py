@@ -71,6 +71,14 @@ def _failure(res: Any) -> str:
 
 
 AGENT_ROOTS_FILE = "/etc/kratos-subagent/code-roots"    # kratos.subagent.reads.CODE_ROOTS_FILE
+AGENT_REFUSAL = "not tied to served or running code"    # kratos.subagent.reads.code_root_refusal
+
+
+def _roots_file_problem(res: Any) -> str:
+    """The agent's reason for ignoring its code-roots file, when it gave one."""
+    text = " ".join(str(getattr(res, "stderr", "") or "").split())
+    _head, sep, tail = text.partition("not group/world-writable);")
+    return f" -- the file there is ignored now: {tail.strip()[:200]}" if sep and tail.strip() else ""
 
 
 def _old_agent(text: str) -> bool:
@@ -285,12 +293,13 @@ def _check_root(data_dir: Path, target: str, root: dict[str, Any], cfg: W.Config
     inv = R.inventory(data_dir, path, fetch=fetch_inv)
     if not isinstance(inv, dict):
         err = _failure(inv)
-        if AGENT_ROOTS_FILE in err:
+        if AGENT_REFUSAL in err:
             res["status"] = "not_allowed"
             notes.append(f"{path}: the sub-agent won't walk it -- its own reads of this machine don't tie it to served "
                          "or running code (a web-server, PHP-FPM or systemd configuration, a listening program, a "
                          f"running container's mount). If it holds code, add the line {path} to {AGENT_ROOTS_FILE} "
-                         "on the machine (owned by root, not writable by group or others)")
+                         "on the machine (owned by root, not writable by group or others)"
+                         + _roots_file_problem(inv))
             return res, 0
         res["status"] = "old_agent" if _old_agent(err) else "failed"
         notes.append(f"{path}: " + ("this machine's sub-agent is too old for code checks -- update the agent (`g` in "

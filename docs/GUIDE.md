@@ -1569,6 +1569,7 @@ one. A folder you added by hand that none of those name is refused ("the sub-age
 it"); if it does hold code, list it on the machine itself, one absolute path per line:
 
 ```bash
+sudo mkdir -p /etc/kratos-subagent
 echo /srv/app | sudo tee -a /etc/kratos-subagent/code-roots
 sudo chmod 644 /etc/kratos-subagent/code-roots      # owned by root, not writable by group or others
 ```

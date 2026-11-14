@@ -224,6 +224,7 @@ def test_a_root_the_agent_wont_walk_says_how_to_allow_it(tmp_path, monkeypatch):
     monkeypatch.setattr(AR, "_CODE_MOUNTS", {})
     monkeypatch.setattr(AR, "CODE_ROOTS_FILE", AR.load_code_roots_file.__defaults__[0])
     assert AR.CODE_ROOTS_FILE == REC.AGENT_ROOTS_FILE
+    assert REC.AGENT_REFUSAL in AR.code_root_refusal("/srv/none-such")
     dd = tmp_path / "data"
     root = tmp_path / "srv" / "manual"
     root.mkdir(parents=True)
@@ -235,6 +236,13 @@ def test_a_root_the_agent_wont_walk_says_how_to_allow_it(tmp_path, monkeypatch):
     assert doc["roots"][0]["status"] == "not_allowed"
     gap = next(g for g in doc["coverage_gaps"] if "won't walk it" in g)
     assert f"add the line {root} to /etc/kratos-subagent/code-roots" in gap
+    bad = tmp_path / "code-roots"
+    bad.write_text(f"{root}\n")
+    bad.chmod(0o666)
+    monkeypatch.setattr(AR, "CODE_ROOTS_FILE", str(bad))
+    doc = REC.run_code(dd, M, fetch_inv=inv, fetch_read=None, scanner=lambda r: [])
+    gap = next(g for g in doc["coverage_gaps"] if "won't walk it" in g)
+    assert "the file there is ignored now" in gap and "writable by group or others" in gap
 
 
 def test_unconfirmed_candidates_are_listed_never_read(tmp_path):
