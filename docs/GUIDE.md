@@ -1557,11 +1557,29 @@ files — lockfiles and installed-package lists, text files to scan for secrets 
 each, no minified bundles), the repository's own `.git` files — up to `code.max_read_mb` (64 MB)
 per check. Contents are used in memory and dropped; Kratos keeps paths, sizes, hashes, git states,
 dependency names and versions, and findings. `node_modules`, `vendor`, `.venv` are counted, not
-walked. Over SSH everything runs as your SSH login; a folder it can't read is said so ("the
-sub-agent can, or grant read").
+walked. **Credential stores are never walked, listed or read** — a `.ssh`, `.aws`, `.docker`,
+`.kube`, `.gnupg`, `secrets` … folder or a `.netrc`, `.pgpass`, `.git-credentials`, `.my.cnf` …
+file inside a confirmed folder is named in CODE-006 and nothing more. Over SSH everything runs as
+your SSH login; a folder it can't read is said so ("the sub-agent can, or grant read").
+
+The **sub-agent** reads as root, so it also checks the folder itself: it walks only a folder its
+**own** reads of the machine tie to served or running code — a web-server, PHP-FPM or systemd
+setting, a listening program's working folder, a running container's mount — or a folder inside
+one. A folder you added by hand that none of those name is refused ("the sub-agent won't walk
+it"); if it does hold code, list it on the machine itself, one absolute path per line:
+
+```bash
+echo /srv/app | sudo tee -a /etc/kratos-subagent/code-roots
+sudo chmod 644 /etc/kratos-subagent/code-roots      # owned by root, not writable by group or others
+```
+
+A file owned by anyone else or writable by group or others is ignored entirely. This keeps Kratos
+(or anyone who stole its link) from pointing the root-run walk at a home folder or a database
+directory.
 
 **CODE-006** says what a check couldn't cover: unconfirmed folders, caps, git it couldn't read,
-advisories not downloaded, an agent too old (update it with `g` in /subagent).
+advisories not downloaded, credential stores left out, a folder the sub-agent won't walk, an agent
+too old (update it with `g` in /subagent).
 
 Every fix is shown, never run — restore from git (with options that stop a planted git config from
 running anything), remove the file, rotate the secret, upgrade the package.

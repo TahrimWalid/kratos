@@ -85,9 +85,14 @@ def test_code_read_paths_are_only_files_the_agents_own_walk_listed(tmp_path, mon
     (root / "settings.py").write_text("x = 1\n")
     b = lambda v: base64.b64encode(v.encode()).decode()  # noqa: E731
     req = {"root": b(str(root)), "purpose": "secrets", "paths": [b("settings.py")]}
+    allow = tmp_path / "code-roots"
+    allow.write_text(str(root) + "\n")
+    allow.chmod(0o644)
+    monkeypatch.setattr(R, "CODE_ROOTS_FILE", str(allow))      # the admin lists it on the machine
     R._CODE_LISTED.clear()
     assert "\tnot_listed\t" in R.run_probe("code_read", req)["data"]["stdout"]       # never walked
-    assert R.run_probe("code_inventory", {"root": b(str(root))})["status"] == "ok"
+    got = R.run_probe("code_inventory", {"root": b(str(root))})
+    assert got["status"] == "ok", got
     assert "\tok\t" in R.run_probe("code_read", req)["data"]["stdout"]
     other = {**req, "paths": [b("../outside.py")]}
     assert R.run_probe("code_read", other)["status"] == "refused"

@@ -70,6 +70,9 @@ def _failure(res: Any) -> str:
     return " ".join(text.split())[:300] or "the read failed"
 
 
+AGENT_ROOTS_FILE = "/etc/kratos-subagent/code-roots"    # kratos.subagent.reads.CODE_ROOTS_FILE
+
+
 def _old_agent(text: str) -> bool:
     return "update the agent" in text or "can't do the 'code_" in text or "no 'code_" in text
 
@@ -282,6 +285,13 @@ def _check_root(data_dir: Path, target: str, root: dict[str, Any], cfg: W.Config
     inv = R.inventory(data_dir, path, fetch=fetch_inv)
     if not isinstance(inv, dict):
         err = _failure(inv)
+        if AGENT_ROOTS_FILE in err:
+            res["status"] = "not_allowed"
+            notes.append(f"{path}: the sub-agent won't walk it -- its own reads of this machine don't tie it to served "
+                         "or running code (a web-server, PHP-FPM or systemd configuration, a listening program, a "
+                         f"running container's mount). If it holds code, add the line {path} to {AGENT_ROOTS_FILE} "
+                         "on the machine (owned by root, not writable by group or others)")
+            return res, 0
         res["status"] = "old_agent" if _old_agent(err) else "failed"
         notes.append(f"{path}: " + ("this machine's sub-agent is too old for code checks -- update the agent (`g` in "
                                     "/subagent)" if _old_agent(err) else f"the read failed: {err}"))
@@ -315,9 +325,15 @@ def _check_root(data_dir: Path, target: str, root: dict[str, Any], cfg: W.Config
     if unread:
         notes.append(f"{path}: {len(unread)} file(s) could not be hashed (changed while read, hard-linked, too large "
                      "or unreadable)")
+    creds = []
     for s in inv.get("skipped") or []:
         if s["reason"] == "other_device":
             notes.append(f"{path}: {s['path']} is another filesystem -- not walked")
+        elif s["reason"] == "credential":
+            creds.append(s["path"])
+    if creds:
+        notes.append(f"{path}: {len(creds)} credential store(s) inside it never read ({', '.join(creds[:3])}"
+                     f"{', ...' if len(creds) > 3 else ''})")
     used = 0
     git, u = _git_state(data_dir, path, inv, budget, fetch_read, notes)
     used += u

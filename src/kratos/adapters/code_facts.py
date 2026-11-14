@@ -121,7 +121,18 @@ NEVER_UNDER = ("/etc", "/root", "/proc", "/sys", "/dev", "/run", "/boot", "/bin"
                "/var/lib/rpm", "/var/lib/apt", "/snap", "/lost+found")
 USR_ALLOWED = ("/usr/share/nginx/html",)
 _USR_LOCAL_SYSTEM = ("bin", "sbin", "lib", "lib64", "include", "share", "etc", "man", "src", "games")
-_CRED_DIRS = (".ssh", ".gnupg", ".aws", ".azure", ".kube", ".password-store", ".docker", ".gcloud")
+# Credential stores: never a root, never walked, listed, hashed or read inside one, for any
+# purpose -- a folder's name anywhere in a path, a file's name as the last part. App settings
+# files (.env, wp-config.php, ...) are not on this list: the secrets scan of a confirmed root
+# reads them in memory and keeps only fingerprints.
+CRED_DIRS: Tuple[str, ...] = (".ssh", ".gnupg", ".aws", ".azure", ".kube", ".password-store", ".docker", ".gcloud",
+                              "gcloud", "keyrings", ".oci", ".terraform.d", "secrets")
+CRED_FILES: Tuple[str, ...] = (".netrc", "_netrc", ".pgpass", ".git-credentials", ".my.cnf", ".vault-token",
+                               ".vault_pass", ".vault-password", "authorized_keys", "authorized_keys2", "known_hosts",
+                               ".boto", ".s3cfg", ".dockercfg", "kubeconfig", "key3.db", "key4.db", "logins.json",
+                               "login.keyring", "shadow", "gshadow")
+_CRED_DIRS = CRED_DIRS
+MAX_CRED_LISTED = 200
 
 
 def _under(path: str, base: str) -> bool:
@@ -186,6 +197,12 @@ def is_key_file(name: bytes) -> bool:
     return low.endswith(KEY_SUFFIXES) or low in KEY_NAMES or low.startswith(tuple(k + "." for k in KEY_NAMES))
 
 
+def is_credential_rel(rel: bytes) -> bool:
+    """A path (relative to a root) that is, or is inside, a credential store."""
+    parts = os.fsdecode(rel).split("/")
+    return any(p in CRED_DIRS for p in parts[:-1]) or parts[-1] in CRED_FILES or parts[-1] in CRED_DIRS
+
+
 def check_root(raw: bytes) -> bytes:
     if not isinstance(raw, bytes) or not raw.startswith(b"/") or raw == b"/":
         raise RequestError("the root must be an absolute folder other than /")
@@ -228,6 +245,8 @@ def purpose_allows(purpose: str, rel: bytes, size: Optional[int]) -> Optional[st
     text = os.fsdecode(rel)
     if is_key_file(rel):
         return "a private-key file is never read"
+    if is_credential_rel(rel):
+        return "a credential store is never read"
     if purpose == "deps":
         ok = (name in LOCKFILES or bool(_REQUIREMENTS.match(name))) and (
             name != "METADATA" or ".dist-info/" in text) and (
@@ -523,9 +542,9 @@ for _x in "$@"; do
 done
 '
 @PRUNE@
-find . -xdev -mindepth 1 -maxdepth @MAXDEPTH@ \( -path ./.git -o \( -type d \( @SKIPNAMES@ \) \) \) -prune -o \( -type f -o -type l \) -exec sh -c "$INNER" kr {} + 2>/dev/null | \
+find . -xdev -mindepth 1 -maxdepth @MAXDEPTH@ \( -path ./.git -o \( -type d \( @SKIPNAMES@ -o @CREDDIRS@ \) \) \) -prune -o \( -type f -o -type l \) ! \( @CREDNAMES@ \) -exec sh -c "$INNER" kr {} + 2>/dev/null | \
   awk -v max=@MAXFILES@ '$1 == "F" || $1 == "L" { n++; if (n > max) { print "T\tcapped\t1"; exit } } $1 == "T" && $2 == "timed_out" { print; exit } { print }'
-if [ -n "$(find . -xdev -mindepth @DEEPER@ -maxdepth @DEEPER@ \( -path ./.git -o \( -type d \( @SKIPNAMES@ \) \) \) -prune -o -print 2>/dev/null | head -n 1)" ]; then
+if [ -n "$(find . -xdev -mindepth @DEEPER@ -maxdepth @DEEPER@ \( -path ./.git -o \( -type d \( @SKIPNAMES@ -o @CREDDIRS@ \) \) \) -prune -o -print 2>/dev/null | head -n 1)" ]; then
   printf 'T\tdepth_capped\t1\n'
 fi
 find . -xdev -mindepth 1 -maxdepth @MAXDEPTH@ -path ./.git -prune -o -type d \( @SKIPNAMES@ \) -prune -print 2>/dev/null | \
@@ -541,6 +560,10 @@ find . -xdev -mindepth 1 -maxdepth @MAXDEPTH@ -path ./.git -prune -o -type d \( 
   esac
   [ -n "$_metas" ] && printf '%s\n' "$_metas" | while IFS= read -r _m; do [ -e "$_m" ] && printf '%s\0' "$_m"; done | \
     xargs -0 sh -c "$INNER" kr 2>/dev/null
+done
+find . -xdev -mindepth 1 -maxdepth @MAXDEPTH@ \( -path ./.git -o \( -type d \( @SKIPNAMES@ \) \) \) -prune -o \( -type d \( @CREDDIRS@ \) -prune -print \) -o \( \( -type f -o -type l \) \( @CREDNAMES@ \) -print \) 2>/dev/null | \
+  grep -E '^\./[A-Za-z0-9._/+@,=:~-]+$' | sort | head -n @CREDMAX@ | while IFS= read -r _c; do
+  printf 'S\tn\t%s\tcredential\t-\n' "${_c#./}"
 done
 awk -v r="$ROOT" '$5 != r && index($5, r "/") == 1 { print $5 }' /proc/self/mountinfo 2>/dev/null | head -n 200 | \
   while IFS= read -r _m; do
@@ -575,7 +598,10 @@ def build_inventory_script(root: bytes, *, max_files: int = MAX_FILES, max_depth
             .replace("@MAXDEPTH@", str(int(max_depth))).replace("@DEEPER@", str(int(max_depth) + 1))
             .replace("@SECONDS@", str(int(seconds))).replace("@HASHMAX@", str(MAX_HASH_BYTES))
             .replace("@SKIPCOUNT@", str(SKIP_COUNT_MAX)).replace("@GITMAX@", str(MAX_GIT_LISTED))
-            .replace("@SKIPNAMES@", _skip_names_expr(skip)).replace("@PRUNE@", ""))
+            .replace("@SKIPNAMES@", _skip_names_expr(skip)).replace("@PRUNE@", "")
+            .replace("@CREDDIRS@", _skip_names_expr(CRED_DIRS))
+            .replace("@CREDNAMES@", _skip_names_expr(CRED_FILES + CRED_DIRS))
+            .replace("@CREDMAX@", str(MAX_CRED_LISTED)))
     return "{\n" + body + "printf 'END\\n'\n} | head -c " + str(INVENTORY_OUTPUT_CAP) + "\nexit 0\n"
 
 
@@ -848,6 +874,7 @@ def inventory_output(root: bytes, *, max_files: int = MAX_FILES, max_depth: int 
         out.append(f"M\tformat\t{fmt}")
         listed = 0
         skipped: List[Tuple[int, bytes, str]] = []
+        credential: List[bytes] = []
         stack: List[Tuple[int, bytes, int]] = [(os.dup(rfd), b"", 0)]
         while stack:
             dfd, rel_dir, depth = stack.pop()
@@ -868,6 +895,9 @@ def inventory_output(root: bytes, *, max_files: int = MAX_FILES, max_depth: int 
                     if stat.S_ISDIR(st.st_mode):
                         if st.st_dev != rst.st_dev:
                             continue                 # reported from mountinfo, as over SSH
+                        if name in CRED_DIRS:
+                            credential.append(rel)   # a credential store: never walked
+                            continue
                         if name in skip:
                             try:
                                 c = os.open(bname, _DIR_FLAGS, dir_fd=dfd)
@@ -892,6 +922,9 @@ def inventory_output(root: bytes, *, max_files: int = MAX_FILES, max_depth: int 
                         stack.append((c, rel, depth + 1))
                         continue
                     if not (stat.S_ISREG(st.st_mode) or stat.S_ISLNK(st.st_mode)):
+                        continue
+                    if name in CRED_FILES or name in CRED_DIRS:
+                        credential.append(rel)       # never listed, hashed or read
                         continue
                     listed += 1
                     if listed > max_files:
@@ -932,6 +965,9 @@ def inventory_output(root: bytes, *, max_files: int = MAX_FILES, max_depth: int 
                             os.close(mfd)
             finally:
                 os.close(c)
+        for rel in sorted(r for r in credential if _SAFE.match(r))[:MAX_CRED_LISTED]:
+            out.append(f"S\tn\t{rel.decode()}\tcredential\t-")
+            walk.skipped.append(rel)
         for m in _mounts_under(root):
             if _SAFE.match(m):
                 out.append(f"S\tn\t{m.decode()}\tother_device\t-")
@@ -1065,16 +1101,17 @@ def compute_git(source: gitread.Source, work: Dict[str, Tuple[int, str]], ignore
         base = rel.rsplit("/", 1)[0] + "/" if "/" in rel else ""
         rules += [(base, r) for r in gitread.filter_rules(text, base)]
     skip = tuple(s.rstrip("/") + "/" for s in skipped)
+    skip_exact = set(skipped)
 
     def covered(p: str) -> bool:
-        return complete_walk and not p.startswith(skip)
+        return complete_walk and not p.startswith(skip) and p not in skip_exact
 
     def filtered(p: str) -> bool:
         return any(p.startswith(b) and r.rx.match(p[len(b):]) for b, r in rules)
 
     d = gitread.drift(work, idx["entries"], info.get("tree"), ig, covered=covered, filtered=filtered,
                       sparse_dirs=idx.get("sparse_dirs") or (), conflicts=idx.get("conflicts") or ())
-    tracked_skipped = sum(1 for p in idx["entries"] if p.startswith(skip))
+    tracked_skipped = sum(1 for p in idx["entries"] if p.startswith(skip) or p in skip_exact)
     recs = git_records(info, d)
     if tracked_skipped:
         recs.append(f"GX\ttracked_in_skipped\t{tracked_skipped}")

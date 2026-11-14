@@ -74,6 +74,15 @@ def tree(base: Path) -> Path:
         "Name: flask\nVersion: 3.0.0\n")
     (r / "id_rsa").write_text("not read\n")
     (r / ".env").write_text("SECRET_KEY=x\n")
+    # credential stores inside a code folder: never listed, hashed or read (review finding)
+    (r / ".aws").mkdir()
+    (r / ".aws" / "credentials").write_text("[default]\n")
+    (r / "web" / ".docker").mkdir()
+    (r / "web" / ".docker" / "config.json").write_text("{}\n")
+    (r / "secrets").mkdir()
+    (r / "secrets" / "db.txt").write_text("x\n")
+    (r / ".netrc").write_text("machine x\n")
+    (r / "web" / ".pgpass").write_text("x\n")
     os.link(r / "run.sh", r / "hard.sh")
     d = r
     for i in range(25):
@@ -110,6 +119,9 @@ def test_inventory_parity_ssh_and_agent(tmp_path, awk):
     assert ssh["files"]["hard.sh"]["status"] == "hardlink" and ssh["files"]["hard.sh"]["sha256"] is None
     assert ssh["totals"].get("depth_capped") == "1" and not ssh["complete"]
     assert {s["path"]: s["count"] for s in ssh["skipped"]}["node_modules"] == 2
+    creds = {".aws", "web/.docker", "secrets", ".netrc", "web/.pgpass"}
+    assert {s["path"] for s in ssh["skipped"] if s["reason"] == "credential"} == creds
+    assert not any(CF.is_credential_rel(os.fsencode(n)) for n in names)
 
 
 def test_inventory_parity_full_busybox_userland(tmp_path):

@@ -210,6 +210,33 @@ def test_old_agent_degrades(tmp_path):
     assert doc["roots"][0]["status"] == "old_agent"
 
 
+def test_a_root_the_agent_wont_walk_says_how_to_allow_it(tmp_path, monkeypatch):
+    """The security-review fix: a root-run sub-agent walks only folders its own reads tie to
+    served or running code; its refusal reaches the person with the one-line fix."""
+    from kratos.adapters import code_facts as CFA
+    from kratos.adapters.ssh_remote import agent_result
+    from kratos.subagent import reads as AR
+
+    monkeypatch.setattr(CFA, "NEVER_UNDER", tuple(x for x in CFA.NEVER_UNDER if x != "/tmp"))
+    monkeypatch.setattr(AR, "_code_config_paths", lambda: set())
+    monkeypatch.setattr(AR, "_code_listener_cwds", lambda: set())
+    monkeypatch.setattr(AR, "_CODE_EVIDENCE", [0.0, frozenset()])
+    monkeypatch.setattr(AR, "_CODE_MOUNTS", {})
+    monkeypatch.setattr(AR, "CODE_ROOTS_FILE", AR.load_code_roots_file.__defaults__[0])
+    assert AR.CODE_ROOTS_FILE == REC.AGENT_ROOTS_FILE
+    dd = tmp_path / "data"
+    root = tmp_path / "srv" / "manual"
+    root.mkdir(parents=True)
+    setup_root(dd, root)
+
+    def inv(raw, **kw):
+        return agent_result(AR.run_probe("code_inventory", {"root": CFA.b64(raw)}))
+    doc = REC.run_code(dd, M, fetch_inv=inv, fetch_read=None, scanner=lambda r: [])
+    assert doc["roots"][0]["status"] == "not_allowed"
+    gap = next(g for g in doc["coverage_gaps"] if "won't walk it" in g)
+    assert f"add the line {root} to /etc/kratos-subagent/code-roots" in gap
+
+
 def test_unconfirmed_candidates_are_listed_never_read(tmp_path):
     dd = tmp_path / "data"
     root = tmp_path / "srv" / "cand"

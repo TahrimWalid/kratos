@@ -1383,8 +1383,15 @@ filesystem, depth/file/time caps, dependency folders counted except their instal
 file SHA-256 and git blob id, names with unsafe bytes base64); `code_read` (contents for one closed
 purpose — `deps`, `secrets`, `git`, `review` — only of files the root's latest inventory listed,
 checked by Kratos before sending and by the agent against its own walk held in memory for a day;
-private-key files never read; byte budgets). Roots and paths travel base64 on stdin, never on a
-command line. One agent reply must fit a protocol frame (8 MiB): the agent pages a big inventory
+private-key files never read; byte budgets). Credential stores (`code_facts.CRED_DIRS` as any path
+part, `CRED_FILES` as a name) are never walked, listed or read on either transport, only named.
+Because the core names the root and the agent reads as root, the agent walks only a root its own
+reads tie to served or running code (a path in the web-server / PHP-FPM / systemd files it reads
+itself, a listening process's or its parent's working folder from `/proc`, a running container's
+bind-mount source from its own container read; the folder or inside it), or one the machine's
+admin lists in `/etc/kratos-subagent/code-roots` (root-owned, not group/world-writable, else
+ignored whole) -- a compromised core or link can't point it at a home or database folder. Roots
+and paths travel base64 on stdin, never on a command line. One agent reply must fit a protocol frame (8 MiB): the agent pages a big inventory
 from memory, Kratos batches content reads in 5 MB requests.
 
 **The git reader** (`code/gitread.py`, stdlib, shipped in the bundle) reads HEAD, refs and

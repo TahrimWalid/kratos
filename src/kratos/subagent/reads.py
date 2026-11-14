@@ -1761,9 +1761,11 @@ def _p_container_inventory(p: dict[str, Any]) -> dict[str, Any]:
     """The container read (containers.inventory_output): the engines' API over their
     local sockets (GET, closed path list), /proc and cgroups, default routes, and the
     three read-only firewall listings -- all as root, nothing written."""
-    return containers.inventory_output(
+    got = containers.inventory_output(
         run=lambda argv, timeout, cap: run_capped(list(argv), timeout=timeout, cap=cap),
         deadline=time.monotonic() + containers.DEFAULT_BUDGET_SECONDS)
+    _code_remember_mounts(str(got.get("stdout") or ""))    # running containers' bind mounts: code-root evidence
+    return got
 
 
 def _p_container_packages(p: dict[str, Any]) -> dict[str, Any]:
@@ -1896,6 +1898,194 @@ def _code_listed(root: bytes, rel: bytes, now: float | None = None) -> int | Non
     return got[1].get(rel)
 
 
+# Which folders this agent walks at all. The core names the root, so a compromised core (or
+# anyone holding the link) could otherwise point this root-run walk at any folder off the
+# never-list -- a home folder, a database directory -- and read its files through the
+# secrets purpose. The agent walks a folder only when its OWN reads tie it to code that is
+# served or running: a path written in a web-server / PHP-FPM / systemd configuration it
+# reads itself (the same closed lists code_roots_facts reads), the working folder of a
+# process listening on the network or of that process's parent, or the bind-mount source of
+# a running container its own container read saw -- the folder or one inside it. Anything
+# else needs the machine's admin to list it, one absolute path per line, in CODE_ROOTS_FILE
+# (root-owned, not writable by group or others -- else the whole file is ignored).
+CODE_ROOTS_FILE = "/etc/kratos-subagent/code-roots"
+CODE_EVIDENCE_TTL_SECONDS = 60
+CODE_MOUNTS_TTL_SECONDS = 24 * 3600
+CODE_MAX_EVIDENCE = 5000
+_CODE_PATH_RE = re.compile(r"(?:^|(?<=[\s\"'=(:,]))(/[A-Za-z0-9._@+,=:~/-]+)")
+_CODE_EVIDENCE: list[Any] = [0.0, frozenset()]
+_CODE_MOUNTS: dict[str, float] = {}
+
+
+def _code_clean(path: str) -> str | None:
+    p = os.path.normpath(path.rstrip(":,"))
+    if code_facts.shape_reason(p) or code_facts.never_reason(p):
+        return None
+    return p
+
+
+def _code_config_paths() -> set[str]:
+    facts = code_facts.parse_roots_facts(str(code_facts.roots_facts_output().get("stdout") or ""))
+    found: set[str] = set()
+    for item in (facts.get("configs") or {}).values():
+        for line in (item.get("text") or "").splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            found.update(_CODE_PATH_RE.findall(line))
+    for lines in (facts.get("units") or {}).values():
+        for ln in lines:
+            key, _eq, val = ln.strip().partition("=")
+            if key == "WorkingDirectory" and val:
+                found.add(val.strip().lstrip("-"))
+    return found
+
+
+def _code_listener_cwds(proc: str = "/proc", budget: float = 3.0) -> set[str]:
+    inodes: set[str] = set()
+    for name, state in (("tcp", "0A"), ("tcp6", "0A"), ("udp", "07"), ("udp6", "07")):
+        try:
+            with open(f"{proc}/net/{name}", encoding="ascii", errors="replace") as f:
+                for line in f.read(8 * 1024 * 1024).splitlines()[1:]:
+                    cols = line.split()
+                    if len(cols) > 9 and cols[3] == state and cols[9] != "0":
+                        inodes.add(f"socket:[{cols[9]}]")
+        except OSError:
+            continue
+    found: set[str] = set()
+    if not inodes:
+        return found
+    deadline = time.monotonic() + budget
+    try:
+        pids = [d for d in os.listdir(proc) if d.isdigit()]
+    except OSError:
+        return found
+    for pid in pids:
+        if time.monotonic() > deadline:
+            break
+        try:
+            fds = os.listdir(f"{proc}/{pid}/fd")
+        except OSError:
+            continue
+        hit = False
+        for fd in fds[:4096]:
+            try:
+                if os.readlink(f"{proc}/{pid}/fd/{fd}") in inodes:
+                    hit = True
+                    break
+            except OSError:
+                continue
+        if not hit:
+            continue
+        for who in (pid, _code_ppid(proc, pid)):
+            if who:
+                try:
+                    found.add(os.readlink(f"{proc}/{who}/cwd"))
+                except OSError:
+                    pass
+    return found
+
+
+def _code_ppid(proc: str, pid: str) -> str | None:
+    try:
+        with open(f"{proc}/{pid}/stat", encoding="ascii", errors="replace") as f:
+            fields = f.read(4096).rpartition(")")[2].split()
+        return fields[1] if len(fields) > 1 and fields[1].isdigit() and fields[1] != "0" else None
+    except OSError:
+        return None
+
+
+def _code_remember_mounts(stdout: str, now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    try:
+        doc = containers.parse_output(stdout)
+    except Exception:     # a parse problem only means no container evidence
+        return
+    for c in (doc.get("containers") or {}).values():
+        if not isinstance(c, dict) or not c.get("running"):
+            continue
+        for m in c.get("mounts") or []:
+            if isinstance(m, dict) and m.get("type") == "bind" and isinstance(m.get("source"), str):
+                with _CODE_LOCK:
+                    _CODE_MOUNTS[m["source"]] = now
+    with _CODE_LOCK:
+        for k in [k for k, t in _CODE_MOUNTS.items() if now - t > CODE_MOUNTS_TTL_SECONDS][:]:
+            del _CODE_MOUNTS[k]
+
+
+def load_code_roots_file(path: str = CODE_ROOTS_FILE, allowed_owners: tuple[int, ...] | None = None
+                         ) -> tuple[list[str], list[str]]:
+    """The admin's own list of folders this agent may walk: (paths, problems). Missing = none.
+    A file (or its folder) not owned by root / this agent's user, or writable by group or
+    others, is ignored entirely and reported -- never partly trusted."""
+    if allowed_owners is None:
+        allowed_owners = tuple({0, os.geteuid()})
+    try:
+        dst = os.stat(os.path.dirname(path) or "/")
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return [], []
+    except OSError as e:
+        return [], [f"{path}: unreadable ({e.strerror})"]
+    if not stat.S_ISREG(st.st_mode):
+        return [], [f"{path}: must be a regular file, not a symlink -- ignored"]
+    for what, x in (("file", st), ("folder", dst)):
+        if x.st_uid not in allowed_owners:
+            return [], [f"{path}: {what} owned by uid {x.st_uid}, must be root's -- ignored"]
+        if x.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            return [], [f"{path}: {what} writable by group or others -- chmod go-w it; ignored"]
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read(256 * 1024)
+    except (OSError, UnicodeDecodeError) as e:
+        return [], [f"{path}: unreadable ({e})"]
+    out, problems = [], []
+    for n, raw in enumerate(text.splitlines(), start=1):
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        why = code_facts.shape_reason(line) or code_facts.never_reason(line)
+        if why:
+            problems.append(f"{path}:{n}: {why} -- line ignored")
+            continue
+        out.append(line)
+    return out, problems
+
+
+def _code_evidence(now: float | None = None) -> frozenset[str]:
+    now = time.time() if now is None else now
+    with _CODE_LOCK:
+        if now - _CODE_EVIDENCE[0] < CODE_EVIDENCE_TTL_SECONDS:
+            return _CODE_EVIDENCE[1]
+        mounts = list(_CODE_MOUNTS)
+    raw: set[str] = set(mounts)
+    for get in (_code_config_paths, _code_listener_cwds):
+        try:
+            raw |= get()
+        except Exception:     # one source failing only narrows what is accepted
+            continue
+    clean = frozenset(sorted(p for p in (_code_clean(x) for x in raw) if p)[:CODE_MAX_EVIDENCE])
+    with _CODE_LOCK:
+        _CODE_EVIDENCE[0], _CODE_EVIDENCE[1] = now, clean
+    return clean
+
+
+def code_root_refusal(root: str) -> str | None:
+    """None when this agent may walk `root`, else why not (shown to the person)."""
+    def under(base: str) -> bool:
+        return root == base or root.startswith(base.rstrip("/") + "/")
+
+    listed, problems = load_code_roots_file(CODE_ROOTS_FILE)
+    if any(under(b) for b in listed):
+        return None
+    if any(under(b) for b in _code_evidence()):
+        return None
+    msg = (f"not tied to served or running code by this agent's own reads; to check it anyway, list it in "
+           f"{CODE_ROOTS_FILE} (root-owned, not group/world-writable)")
+    if problems:
+        msg += "; " + "; ".join(problems[:3])
+    return msg
+
+
 def _p_code_roots_facts(p: dict[str, Any]) -> dict[str, Any]:
     """The web-server, PHP-FPM and systemd configurations (closed path lists) -- the same
     records the SSH script prints."""
@@ -1908,6 +2098,9 @@ def _p_code_inventory(p: dict[str, Any]) -> dict[str, Any]:
     root = code_facts.decode_b64(p["root"], "the root")
     now = time.time()
     if p["page"] == 0:
+        why = code_root_refusal(os.fsdecode(root))
+        if why:
+            raise ReadParamError(f"code_inventory: {why}")
         got = code_facts.inventory_output(root, max_files=p["max_files"], max_depth=p["max_depth"],
                                           seconds=float(p["seconds"]), skip=tuple(p["skip"]),
                                           max_pack_bytes=p["max_pack_mb"] * 1024 * 1024)
