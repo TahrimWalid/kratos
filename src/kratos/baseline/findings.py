@@ -4,6 +4,7 @@ person's "this is normal" covers exactly what they saw. Titles are Kratos's own 
 never carry a name from the machine (they reach the model's digest as they are)."""
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from kratos.baseline import buckets as B
@@ -27,8 +28,6 @@ _SEV = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
 
 
 def load_recent(path: Any) -> dict[str, Any] | None:
-    import time
-
     doc = record.load(path)
     if doc is None or not isinstance(doc.get("dims"), dict):
         return None
