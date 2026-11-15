@@ -545,9 +545,24 @@ def result_for_trace(value: Any) -> Any:
     return cap_value(value, tr.max_result_bytes if tr is not None else 256 * 1024)
 
 
+_SUPPRESS_PROMPTS: contextvars.ContextVar[bool] = contextvars.ContextVar("suppress_prompts", default=False)
+
+
+@contextlib.contextmanager
+def suppress_prompts() -> Iterator[None]:
+    """Within this scope `prompts_enabled()` is False, so a model call stores no prompt text
+    even when `trace.store_prompts` is on. E.7b's code-review calls use it so the run record
+    keeps the request's size, token counts and sha256, never the machine's code (§11)."""
+    token = _SUPPRESS_PROMPTS.set(True)
+    try:
+        yield
+    finally:
+        _SUPPRESS_PROMPTS.reset(token)
+
+
 def prompts_enabled() -> bool:
     tr = _TRACE.get()
-    return bool(tr is not None and tr.store_prompts)
+    return bool(tr is not None and tr.store_prompts and not _SUPPRESS_PROMPTS.get())
 
 
 def bind(fn):  # noqa: ANN001, ANN201

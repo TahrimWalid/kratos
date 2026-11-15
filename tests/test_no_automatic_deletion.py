@@ -34,6 +34,10 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("agent/schedules.py", "_atomic_write", "unlink"): TEMP,
     ("agent/self_write_loop.py", "_atomic_write_metadata", "unlink"): TEMP,
     ("agent/triggers.py", "_atomic_write", "unlink"): TEMP,
+    ("review/reproduce.py", "reproduce", "rmtree"): "this review run's own scratch copy under .review-work "
+    "(the sliced code reproduced in the sandbox), emptied in a finally after the run",
+    ("review/reproduce.py", "sweep", "rmtree"): "empties .review-work at the next review start, in case a crash "
+    "left a scratch copy of code under review (never backed up)",
     ("logsources/seal.py", "verify", "rmtree"): TEMP + " (the journal copy it verified)",
     ("logsources/seal.py", "_copy_and_verify", "unlink"): TEMP,
     ("paths.py", "write_private_text", "unlink"): TEMP,

@@ -592,6 +592,38 @@ def _check_vulndb(out: list[Check], data_dir: Path) -> None:
         out.append(_row("vulnerability data", "pass", detail))
 
 
+def _check_review(out: list[Check], data_dir: Path) -> None:
+    """E.7b: the AI code-review profile, the `review` extra, whether reproduction is available on
+    this computer, and the last review per root."""
+    from kratos.code.reads import review_extensions
+    from kratos.review import reproduce as REPRO
+    from kratos.review import settings as RS
+    from kratos.review import store as RST
+
+    profile = str(RS.get(RS.LLM_PROFILE, data_dir) or "")
+    if profile:
+        out.append(_row("code review · profile", "info", f"reviews use the saved profile {profile}"))
+    else:
+        out.append(_row("code review · profile", "info", "no default profile -- a person picks one per review "
+                        "(nothing is sent to the active model by default)"))
+    exts = review_extensions()
+    extra = ".php" in exts
+    out.append(_row("code review · languages", "pass" if extra else "info",
+                    ", ".join(exts) + ("" if extra else "  (Python only; install the `review` extra for PHP/JS/TS)")))
+    if REPRO.reproduction_enabled(data_dir):
+        out.append(_row("code review · reproduction", "pass", "on (Incus sandbox; the dangerous call is replaced "
+                        "by a recorder)"))
+    else:
+        why = "no Incus on this computer" if not REPRO.incus_available() else "review.sandbox_reproduction is off"
+        out.append(_row("code review · reproduction", "info", f"off ({why}) -- leads are confirmed by a direct rule "
+                        "or checked by a person, never reproduced"))
+    runs = RST.runs(data_dir, limit=5)
+    if runs:
+        last = runs[0]
+        out.append(_row("code review · last run", "info", f"{last['root']}: {last['state']}, "
+                        f"${last.get('actual_usd', 0):.4f}, profile {last.get('profile')}"))
+
+
 def _check_code(out: list[Check], data_dir: Path) -> None:
     """E.7a: code folders per machine (confirmed / waiting for a person), the language-ecosystem
     advisories they need, and YAML support for pnpm lockfiles."""
@@ -886,6 +918,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("vulnerability data", lambda o: _check_vulndb(o, Path(data_dir))))
         sections.append(("file reputation", lambda o: _check_hashdb(o, Path(data_dir))))
         sections.append(("code folders", lambda o: _check_code(o, Path(data_dir))))
+        sections.append(("code review", lambda o: _check_review(o, Path(data_dir))))
         sections.append(("compliance", lambda o: _check_compliance(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))

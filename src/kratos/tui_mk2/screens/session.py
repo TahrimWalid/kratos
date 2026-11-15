@@ -129,6 +129,8 @@ _PALETTE_COMMANDS = [
     ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
     ("/code", "the code this machine serves — folders found (confirm or ignore each), drift against git, "
               "vulnerable dependencies, secrets; nothing is run there (/code <machine>)"),
+    ("/review", "AI review of the code a machine serves (opt-in, per folder): read locally, agree to send, "
+                "verdicts decided by code; the real dangerous call is never run (/review <machine>)"),
     ("/baseline", "what's normal on this machine — learning status, the usual places, hours, sudo use, listeners; "
                   "accept a deviation as normal, freeze after an incident (/baseline <machine>)"),
     ("/compliance", "how this machine (or @group) stands against CIS / ISO 27001 / NIS2 — pass only with fresh proof, "
@@ -1157,6 +1159,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit(R.note_line("/code is per machine: /code <machine>"))
             else:
                 self.app.push_screen(CodeScreen(self._data_dir, machine=machine))
+        elif cmd == "/review":
+            from kratos.tui_mk2.screens.review import ReviewScreen
+
+            machine = rest.strip().split()[0] if rest.strip() else (_kconfig.get_active_target() or None)
+            if machine and machine.startswith("@"):
+                self._emit(R.note_line("/review is per machine: /review <machine>"))
+            else:
+                self.app.push_screen(ReviewScreen(self._data_dir, machine=machine))
         elif cmd in ("/baseline", "/normal"):
             from kratos.tui_mk2.screens.baseline import BaselineScreen
 

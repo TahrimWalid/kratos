@@ -281,6 +281,29 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "review", "AI code-review runs",
+        "For each opt-in AI review of a confirmed code folder: the run (machine, folder, the model profiles used, "
+        "where the code went, the masking mode, the estimated / agreed / actual cost and who raised the ceiling, "
+        "the state and stop reason), the slices it looked at (both hashes, file, line span, function, class, "
+        "exposure, drift -- never file contents), the leads it raised (file, line, the model's short reason with "
+        "secrets removed) and the verdict cache -- per Kratos, shared across the fleet: the cache key, the "
+        "code-made verdict and its evidence, the open question, and only the few lines a model-written fix adds. "
+        "The machine's code is never stored.",
+        PERSONAL, "one row per slice / lead / verdict per run; the verdict cache is reused across runs and machines",
+        tables=(TableRef(DB, ("review_runs", "review_slices", "review_candidates", "review_verdicts")),),
+        files=("review/results",),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
+        "review_work", "AI code-review scratch",
+        "A temporary copy of the slices being reproduced in Kratos's no-network sandbox, with the dangerous call "
+        "replaced by a recorder. Emptied after every run and swept at the next review; never exported, never kept, "
+        "never backed up.",
+        PERSONAL, "transient: one run's slices at a time, removed in a finally block",
+        files=(".review-work",),
+        backup=BACKUP_NEVER, backup_note="scratch copy of code under review, emptied after every run",
+    ),
+    Category(
         "code_keys", "Code-secret fingerprint key",
         "The random key Kratos uses to fingerprint secrets it finds in deployed code, so the same secret in two "
         "places shows the same fingerprint without the value ever being kept. Never leaves this computer.",

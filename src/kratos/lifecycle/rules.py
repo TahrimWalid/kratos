@@ -135,6 +135,12 @@ RULES: dict[str, RuleInfo] = dict([
     _r("CODE-003", "condition"),
     _r("CODE-004", "condition"),
     _r("CODE-005", "condition"),
+    # E.7b: an AI review of deployed code. REVIEW-001 (confirmed) / REVIEW-002 (needs_validation)
+    # are states tied to a slice's function; a later review of the root that no longer raises them
+    # (code changed, a fix landed, the file is gone) closes it. REVIEW-003 is the run note.
+    _r("REVIEW-001", "condition"),
+    _r("REVIEW-002", "condition"),
+    _r("REVIEW-003", "run_note"),
     # E.2: hardening checks that fail are a state; a fresh, complete hardening read that
     # no longer sees them closes it, or a person decides.
     _r("COMP-001", "condition"),

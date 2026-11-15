@@ -391,6 +391,37 @@ def kratos_code(target: str | None = None) -> dict[str, Any]:
         raise ValueError(f"refused: {e}") from None
 
 
+@mcp.tool()
+@_clean_for_client
+def kratos_review(target: str | None = None) -> dict[str, Any]:
+    """Read-only: the AI code reviews of a machine's confirmed folders -- recent runs (profile,
+    cost, state), how many verdicts are cached, and the REVIEW findings. Preparing or starting a
+    review sends code to a model and is a person's decision at the Kratos computer -- there is no
+    MCP tool for it (it is refused everywhere but the TUI/CLI)."""
+    from kratos import authz
+    from kratos.code import present as CP
+    from kratos.review import store as RST
+
+    try:
+        tk, _scope = CP.resolve_code_reader(_data_dir, authz.current_actor(), target or None)
+    except (CP.ViewError, authz.Denied) as e:
+        raise ValueError(f"refused: {e}") from None
+    runs = [{"id": r["id"], "root": r["root"], "state": r["state"], "profile": r["profile"],
+             "actual_usd": r.get("actual_usd", 0), "stop_reason": r.get("stop_reason", "")}
+            for r in RST.runs(_data_dir, tk, limit=20)]
+    verdicts: dict[str, int] = {}
+    if RST._exists(_data_dir):
+        conn = RST.connect(_data_dir)
+        try:
+            for row in conn.execute("SELECT verdict, COUNT(*) n FROM review_verdicts GROUP BY verdict"):
+                verdicts[row["verdict"]] = row["n"]
+        finally:
+            conn.close()
+    findings = [r for r in _finding_states_for(_data_dir, tk, "all", 200)
+                if str(r.get("rule") or r.get("id") or "").startswith("REVIEW-")]
+    return {"machine": tk, "runs": runs, "verdicts_cached": verdicts, "review_findings": findings}
+
+
 def _finding_states_for(data_dir: Path, target: str | None, state: str | None, limit: int) -> list[dict[str, Any]]:
     """The remembered findings (one machine, or every machine with None) with each one's
     latest verdict and open suggestions -- shared with `kratos serve`'s MCP door."""
