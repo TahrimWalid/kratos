@@ -429,7 +429,8 @@ def _row_verdict(row: dict[str, Any]) -> V.Verdict:
 
 
 def _verdict_to_finding(sl: Any, vd: V.Verdict, extra: dict[str, Any]) -> dict[str, Any]:
-    return {"slice_sha": sl.sha256, "rel": sl.rel, "function": sl.function, "cls": sl.cls,
+    line = sl.calls[0].line if sl.calls else sl.span[0]
+    return {"slice_sha": sl.sha256, "rel": sl.rel, "function": sl.function, "cls": sl.cls, "line": line,
             "root": sl.root, "exposure": sl.exposure, "served": sl.served, "drift": sl.drift,
             "route": sl.route, "verdict": vd.kind, "strength": vd.strength, "evidence": vd.evidence,
             "question": vd.question, "fix_words": extra.get("fix_words", ""),
