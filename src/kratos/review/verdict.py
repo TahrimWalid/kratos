@@ -40,6 +40,8 @@ class Verdict:
     strength: str = ""        # reproduced | direct   (only when confirmed)
     evidence: str = ""        # code-owned: the rule's statement path, or "the canary reached <call>"
     question: str = ""        # the open question (needs_validation), or the disproof (rejected)
+    from_verifier: bool = False   # the verdict depended on the verifier's reply (model-derived; cache keys on the model)
+    repro_off: bool = False       # needs_validation only because reproduction is off (not cached, so enabling it re-evaluates)
 
 
 @dataclass(frozen=True)
@@ -96,15 +98,16 @@ def decide(cls: str, rule: RuleMatch | None, repro: Repro | None, disproof: Disp
         if dis is None:
             return Verdict(CONFIRMED, DIRECT, evidence=(rule.evidence if rule else ""))
         # a rule never overrules a specific disproof.
-        return Verdict(NEEDS_VALIDATION, question=_Q_RULE_VS_CHECK.format(check=dis.reason.strip()))
+        return Verdict(NEEDS_VALIDATION, question=_Q_RULE_VS_CHECK.format(check=dis.reason.strip()),
+                       from_verifier=True)
 
     # 4. the verifier disproved and nothing confirmed.
     if dis is not None:
-        return Verdict(REJECTED, question=dis.reason.strip())
+        return Verdict(REJECTED, question=dis.reason.strip(), from_verifier=True)
 
     # 5. unsettled -> needs_validation with the reason it couldn't be confirmed.
     if repro is not None and repro.status == R_OFF:
-        return Verdict(NEEDS_VALIDATION, question=_Q_OFF)
+        return Verdict(NEEDS_VALIDATION, question=_Q_OFF, repro_off=True)
     if repro is not None and repro.status == R_NOT_REPRODUCED and repro.reason.strip():
         return Verdict(NEEDS_VALIDATION, question=repro.reason.strip())
     return Verdict(NEEDS_VALIDATION, question=_standard_question(cls))
