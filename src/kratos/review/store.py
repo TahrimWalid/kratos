@@ -127,7 +127,15 @@ def _step_1(conn: sqlite3.Connection) -> None:
         """)
 
 
-STEPS = (_step_1,)
+def _step_2(conn: sqlite3.Connection) -> None:
+    # E.7b B.1 verifier: the surface file's E.7a inventory hash at review time, so the verifier
+    # can tell "code unchanged since review" from "code changed, review it again" with no new read.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(review_slices)")}
+    if "file_sha" not in cols:
+        conn.execute("ALTER TABLE review_slices ADD COLUMN file_sha TEXT NOT NULL DEFAULT ''")
+
+
+STEPS = (_step_1, _step_2)
 
 
 def connect(data_dir: Path | str) -> sqlite3.Connection:
@@ -268,12 +276,13 @@ def add_slices(data_dir: Path | str, run_id: int, target_key: str, rows: Iterabl
         with _tx(conn):
             conn.executemany(
                 "INSERT INTO review_slices (run_id, target_key, slice_sha, context_sha, file, span_start, "
-                "span_end, function, class, exposure, drift, served, part, nbytes, language, ledger_state) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "span_end, function, class, exposure, drift, served, part, nbytes, language, ledger_state, file_sha) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [(int(run_id), target_key, r["slice_sha"], r["context_sha"], r["file"], int(r["span"][0]),
                   int(r["span"][1]), r["function"], r["class"], r.get("exposure", "unknown"),
                   1 if r.get("drift") else 0, r.get("served", "imported"), int(r.get("part", 0)),
-                  int(r.get("nbytes", 0)), r.get("language", "python"), r.get("ledger_state", "looked_at"))
+                  int(r.get("nbytes", 0)), r.get("language", "python"), r.get("ledger_state", "looked_at"),
+                  r.get("file_sha", ""))
                  for r in rows])
     finally:
         conn.close()
@@ -296,6 +305,21 @@ def slices(data_dir: Path | str, run_id: int) -> list[dict[str, Any]]:
     try:
         return [dict(r) for r in conn.execute("SELECT * FROM review_slices WHERE run_id = ? ORDER BY id",
                                               (int(run_id),))]
+    finally:
+        conn.close()
+
+
+def latest_slice_by_prefix(data_dir: Path | str, sha_prefix: str) -> dict[str, Any] | None:
+    """The most-recent review_slices row whose slice_sha starts with `sha_prefix` (the finding
+    entity carries a 16-char prefix), for the B.1 verifier. None when nothing matches."""
+    if not _exists(data_dir) or not sha_prefix:
+        return None
+    conn = connect(data_dir)
+    try:
+        row = conn.execute("SELECT s.*, r.root AS run_root FROM review_slices s JOIN review_runs r "
+                           "ON r.id = s.run_id WHERE s.slice_sha LIKE ? ORDER BY s.run_id DESC LIMIT 1",
+                           (sha_prefix + "%",)).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 

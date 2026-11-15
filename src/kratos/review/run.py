@@ -248,8 +248,10 @@ def _run(data_dir: Path, actor: Any, plan: Plan, *, agreed_usd: float, run_ctx: 
                               "leads_dropped": {"outside": 0, "over_cap_call": 0, "over_cap_run": 0},
                               "incomplete_languages": dict(plan.stats.other_language),
                               "reviewed": 0, "reproduced": 0}
-    slice_rows = [_slice_row(sl, ledger_state="looked_at") for sl in to_review]
-    slice_rows += [_slice_row(c["slice"], ledger_state="verdict_reached") for c in plan.cached]
+    slice_rows = [_slice_row(sl, ledger_state="looked_at", file_sha=plan.file_hashes.get(sl.rel, ""))
+                  for sl in to_review]
+    slice_rows += [_slice_row(c["slice"], ledger_state="verdict_reached",
+                              file_sha=plan.file_hashes.get(c["slice"].rel, "")) for c in plan.cached]
     ST.add_slices(data_dir, run_id_db, plan.target_key, slice_rows)
 
     findings_data: list[dict[str, Any]] = []
@@ -408,11 +410,11 @@ def _current_hashes(data_dir: Path, plan: Plan) -> dict[str, str]:
     return {rel: (f.get("sha256") or "") for rel, f in files.items()}
 
 
-def _slice_row(sl: Any, *, ledger_state: str) -> dict[str, Any]:
+def _slice_row(sl: Any, *, ledger_state: str, file_sha: str = "") -> dict[str, Any]:
     return {"slice_sha": sl.sha256, "context_sha": sl.context_sha256, "file": sl.rel, "span": sl.span,
             "function": sl.function, "class": sl.cls, "exposure": sl.exposure, "drift": sl.drift,
             "served": sl.served, "part": sl.part, "nbytes": sl.nbytes, "language": sl.language,
-            "ledger_state": ledger_state}
+            "ledger_state": ledger_state, "file_sha": file_sha}
 
 
 def _slice_for_lead(slices: list[Any], lead: Any) -> Any | None:
