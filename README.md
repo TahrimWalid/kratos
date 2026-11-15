@@ -113,6 +113,8 @@ Compliance reports are worked out on your computer from what Kratos reads; nothi
 
 Code checks read files from the code folders you confirm onto your Kratos computer — lockfiles, files scanned for secrets, the repository's own git files — use them in memory and keep only hashes and findings; nothing is run on the machine and no code is sent anywhere. (The opt-in AI code review is separate.)
 
+The **opt-in AI code review** is the one place Kratos sends your code to a model, and only after you agree. It is off until you ask for it, per confirmed folder: Kratos reads the folder locally, slices only the code the network can reach, and shows you — before anything leaves — the exact slices, the cost, and which model profile you chose, with whether that model is a hosted service or one on your own network (point it at a self-hosted profile and the code stays on your network). Secrets are always removed first, whatever the mode; the verdict is decided by Kratos's own checks, not the model's words; a reproduction replaces the real dangerous call with a stand-in, so it is never run; run records keep a size and a hash, never the code; and nothing is ever written back to the machine.
+
 One optional feature, threat-intel enrichment, is **off by default** and, when you turn it on, sends an IP address to a reputation service to check it. It's clearly separate from the core analysis, and Kratos runs fully without it.
 
 ---

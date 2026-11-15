@@ -1585,6 +1585,76 @@ too old (update it with `g` in /subagent).
 Every fix is shown, never run — restore from git (with options that stop a planted git config from
 running anything), remove the file, rotate the secret, upgrade the package.
 
+## Reviewing the code your server runs (opt-in)
+
+A code check tells you a file **changed**; an **AI code review** tells you whether a change is a
+way in. It is **opt-in, per confirmed folder**, and it reviews the bytes your server **serves right
+now** — changed-on-server code first — not whatever is in a repository. It is the one place Kratos
+sends your code to a model, so it asks twice and shows you everything first.
+
+**Two steps, both yours.** A review *prepares* on the Kratos computer — it reads the folder's
+source (through the same confirmed-folder read as a code check, nothing new on the machine), finds
+only the slices the network can actually reach (a route, the functions it calls, the dangerous
+call at the end), and shows you a plan **before anything is sent**:
+
+- **where the code goes** — a model profile *you* pick (there is no default), and whether that is
+  **a hosted service outside your network** or **a model on your own network** (a self-hosted
+  profile keeps the code on your network);
+- the **masking mode**, and that **secrets are always removed** before anything is sent, in every
+  mode, hosted or local;
+- the **exact slices and bytes** that will be sent, how many are **cached** (free), and the
+  **estimated cost**;
+- whether **reproduction** is on (it needs the sandbox — see below).
+
+```bash
+kratos review prepare 10.0.0.5 /var/www/shop --profile my-local-model
+kratos review start   10.0.0.5 /var/www/shop --yes --agreed 1.00
+```
+
+or `/review` in the app. Nothing is sent until you say yes, and a review is **refused above the
+cost ceiling** (`review.max_run_usd`, $2 by default) unless you raise it for that run; it **stops
+the moment spend reaches the amount you agreed to**, keeps every verdict it reached, and lists what
+it didn't get to.
+
+**The verdict is decided by code, never by the model.** A model only *points at* lines; code
+decides:
+
+- **confirmed** — Kratos's own evidence backs it, in one of two strengths. **reproduced**: a copy
+  of the slice ran in Kratos's no-network sandbox and a harmless marker Kratos put in a fake request
+  reached the dangerous call — **the real dangerous call is never run, even in the sandbox; a
+  recorder stands in for it**. **direct**: a closed rule shows the request value reaching the call
+  inside one function through plain string-building, with no check Kratos recognises, and a second
+  model couldn't name a reason it's unreachable.
+- **needs_validation** — plausible, not proven, with the **exact open question** for you ("needs the
+  app's own database driver, which the sandbox can't provide"; "a rule saw a flow but the reviewer
+  named a check: …"; "reproduction is off on this computer").
+- **rejected** — a second reviewer disproved it; it is kept so it isn't raised again while the code
+  is unchanged, and it is **not** a finding.
+
+Only a **confirmed** finding can be high, and a `direct` one only when the serving process is
+reachable from the internet; a folder whose process isn't running is capped low. Results are
+**REVIEW-001** (confirmed), **REVIEW-002** (needs_validation) and a **REVIEW-003** run note (the
+profile, the cost, what was cached, dropped, too large, changed since you agreed, and any coverage
+gap).
+
+**Fixes are shown and sandbox-checked, never applied.** For a confirmed or plausible finding Kratos
+asks the model for the smallest safe change and stores **only the lines it adds** (never your code);
+for a reproduced finding it applies that change to the scratch copy and re-runs the same sandbox
+check — "fix checked: the marker no longer reaches the call" or "fix not confirmed". Kratos never
+writes anything to the monitored machine.
+
+**It doesn't review everything.** It reviews deployed, served code, not whole repositories or CI;
+reproduction is Python-only; it builds nothing and runs nothing on your machine. **PHP, JavaScript
+and TypeScript** are sliced only with the optional review extra
+(`pip install 'kratos-security-assistant[review]'`); without it they're listed as not reviewed in
+REVIEW-003, and a non-Python finding is never marked reproduced.
+
+**Privacy.** Run records keep the request's size and a hash, **never the code** (`kratos trace show
+--sent` says so). A reviewer's one-line reason may quote a short fragment and is stored capped with
+secrets removed. Where your code goes is shown on every run, in `/doctor`, and here. Export and
+SARIF (`kratos review export --sarif findings.sarif`) carry the findings, paths and line numbers —
+**no code, ever** — for GitHub code scanning, DefectDojo and the like.
+
 ## What's normal here (baselines)
 
 Kratos learns, for each machine, what is **usual** — from the history it already keeps, without

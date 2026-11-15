@@ -1422,6 +1422,52 @@ every confirmed folder (CODE-006 is a run note); results `code/results/code_<mac
 machine, evidence-recorded; tables `code_roots`, `code_root_events` (append-only), `code_files`
 (current inventory + accepted baseline, replaced per read), `code_deps`.
 
+## AI review of deployed code (E.7b)
+
+An opt-in, per-folder review (`kratos/review/`) of the bytes a machine **serves now**, whose
+verdict is set by **code**, never the model. It adds no machine contact beyond E.7a's confirmed-
+folder read (purpose `review`, person-started): everything else — slicing, model calls, the sandbox,
+the verdict — runs on the Kratos computer, and nothing runs the app, `git` or a build on the target.
+
+**Slices, not repositories** (`slice.py`): a Python `ast` pass finds the network's ways in (Flask /
+FastAPI / Django / bare WSGI-ASGI route surfaces, a closed pattern set), follows calls into the
+folder's own functions (`review.slice_depth` deep), and makes one slice per surface × weakness class
+(`classes.py`: command/code execution, deserialisation, request-path file access, string-built SQL,
+template-from-request, no-auth state change, unsafe upload). Each slice carries a **slice sha** (its
+source only) and a **context sha** (every touched file's hash + the serving decision + lockfile
+hashes). `rank.py` reviews changed-on-server (drift) code first, then execution-like classes, then by
+the serving process's measured exposure (A.5/D.3), capped at `review.max_slices`; PHP/JS/TS slice
+through the optional `review` extra (tree-sitter), Python always.
+
+**Finder ≠ verifier over a coverage ledger** (`hunt.py`/`verify.py`/`ledger.py`): the hunter is one
+tool-less model call per batch (slices **framed as data** (A.4), **secrets removed in every mask
+mode** first, each batch within half the endpoint's context window) returning only `{file, line,
+class}` leads, each validated to a sent span; the verifier is a fresh tool-less call (optionally a
+different profile) that may only cite a line that disproves a lead. `verdict.py` then decides from
+**facts Kratos produced** — a sandbox reproduction, a closed direct rule (`rules.py`, intraprocedural
+taint through string-building only, broken by any unrecognised call), and a line-citing disproof — in
+a fixed order; a model's words ("confirmed", a severity) are never read. A rule never overrules a
+specific disproof.
+
+**Reproduction with the dangerous call replaced** (`reproduce.py`, `fakes/`): only for self-contained
+Python slices, a **code-authored** harness runs a copy in E.7's no-network Incus sandbox
+(`agent/self_test.py`, one run at a time via `sandbox_lock.py`), swaps the class's dangerous call for
+a **recorder**, drives the handler through code-owned framework fakes with one inert canary, and
+passes iff the canary reached the recorder — the real call is never executed, even there. The scratch
+copy lives under `data_dir/.review-work` (0700/0600), emptied in `finally`, swept at the next start,
+never stored/exported/backed up.
+
+**Cost, cache, privacy**: `cost.py` estimates from the real batches, refuses above `review.max_run_usd`
+(and what's left of the daily cap), and **stops at the agreed amount**; `cache.py` keys a verdict on
+slice+context+logic (+ the model ids only when the verifier decided it), so unchanged code is reviewed
+once — across a fleet too — and a changed guard, web-server config or lockfile re-reviews just that
+slice. Run records keep the request's size and sha256, **never the code** (`trace.suppress_prompts`).
+`judge.py` builds REVIEW-001/002/003 (only confirmed can be high; `direct` high only for an
+execution-like class on an internet-exposed process; not-running caps low) as a findings-engine
+snapshot source, so they flow through lifecycle (conditions), triage, export, OCSF and SARIF
+(`sarif.py`, no code). `run.py` is the one person-only, admin-local front door; `deps.py` adds CODE-003
+reachability-from-a-route as a note that never lowers a finding.
+
 ## Behavioural baselines (E.3)
 
 **Counting, not machine learning** (`kratos/baseline/`). A closed list of dimensions
