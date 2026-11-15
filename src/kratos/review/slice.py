@@ -387,8 +387,12 @@ def _from_request_files(node: ast.AST, mod: Module, fn: ast.AST) -> bool:
     return False
 
 
-def sinks_in(mod: Module, fn_name: str, fn: ast.AST) -> list[CallSite]:
-    out: list[CallSite] = []
+def sink_calls(mod: Module, fn: ast.AST) -> list[tuple[ast.Call, str, str]]:
+    """(call node, qualified callable, class id) for each dangerous call in `fn`. A method
+    sink (`*.method`) is taken only in its receiver shape (METHOD_SINKS), never through the
+    class sink tables, so it keeps its guard (sql needs an argument, upload needs a
+    `request.files` receiver)."""
+    out: list[tuple[ast.Call, str, str]] = []
     local = _locals(fn)
     for call in ast.walk(fn):
         if not isinstance(call, ast.Call):
@@ -397,9 +401,6 @@ def sinks_in(mod: Module, fn_name: str, fn: ast.AST) -> list[CallSite]:
         if q is None:
             continue
         if q.startswith("*."):
-            # A method on a receiver Kratos can't type is taken only in its receiver shape,
-            # so "*.save" doesn't mean every save() and "*.execute()" needs an argument. These
-            # must NOT fall through to class_for_sink (the class sink tables list them too).
             cls = C.METHOD_SINKS.get(q[2:])
             if cls == "upload" and not _from_request_files(call.func.value, mod, fn):
                 cls = None
@@ -408,8 +409,12 @@ def sinks_in(mod: Module, fn_name: str, fn: ast.AST) -> list[CallSite]:
         else:
             cls = C.class_for_sink(q)
         if cls:
-            out.append(CallSite(mod.rel, fn_name, call.lineno, q, cls))
+            out.append((call, q, cls))
     return out
+
+
+def sinks_in(mod: Module, fn_name: str, fn: ast.AST) -> list[CallSite]:
+    return [CallSite(mod.rel, fn_name, call.lineno, q, cls) for call, q, cls in sink_calls(mod, fn)]
 
 
 # --------------------------------------------------------------------------- slices
