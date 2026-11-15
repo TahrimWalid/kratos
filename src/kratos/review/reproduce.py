@@ -166,10 +166,11 @@ def _unpack():
     return d
 
 
-def _patch_module_recorder(target):
-    """Replace a module-level (or class-method) dangerous call with the recorder. NOT used for
-    `builtins:*` -- patching builtins.exec/eval would break the import machinery itself, so those
-    are injected into each root module's own namespace instead (see _patch_builtins_in_root)."""
+def _patch_module_recorder(target, restores):
+    """Replace a module-level (or class-method) dangerous call with the recorder, recording how to
+    put the original back (so pytest's own file I/O after the test isn't left talking to a
+    recorder). NOT used for `builtins:*` -- patching builtins.exec/eval would break the import
+    machinery itself, so those are injected into each root module's own namespace instead."""
     mod_name, _, attr = target.partition(":")
     if mod_name == "builtins":
         return
@@ -180,13 +181,15 @@ def _patch_module_recorder(target):
     if "." in attr:
         cls_name, meth = attr.split(".", 1)
         obj = getattr(mod, cls_name, None)
-        if obj is not None:
-            setattr(obj, meth, _recorder)
     else:
-        setattr(mod, attr, _recorder)
+        obj, meth = mod, attr
+    if obj is None or not hasattr(obj, meth):
+        return
+    restores.append((obj, meth, getattr(obj, meth)))
+    setattr(obj, meth, _recorder)
 
 
-def _patch_builtins_in_root(root, attrs):
+def _patch_builtins_in_root(root, attrs, restores):
     """A handler's bare `exec(...)`/`eval(...)` resolves via its MODULE globals before builtins,
     so the recorder is injected into every already-imported root module's namespace. builtins
     itself is never touched (the import system needs the real exec)."""
@@ -195,7 +198,24 @@ def _patch_builtins_in_root(root, attrs):
         f = getattr(mod, "__file__", None)
         if f and str(f).startswith(root):
             for attr in attrs:
+                restores.append((mod, attr, getattr(mod, attr, _MISSING)))
                 setattr(mod, attr, _recorder)
+
+
+_MISSING = object()
+
+
+def _restore(restores):
+    """Put every patched callable back, so pytest's teardown (cacheprovider, etc.) uses real I/O
+    -- a recorder left on `open`/`io.open` otherwise crashes pytest and the PASS reads as a fail."""
+    for obj, attr, original in restores:
+        try:
+            if original is _MISSING:
+                delattr(obj, attr)
+            else:
+                setattr(obj, attr, original)
+        except Exception:
+            pass
 
 
 def _canary_request():
@@ -228,11 +248,12 @@ def _get_handler(root):
     mod = importlib.import_module(modname)           # real exec runs the module body
     # Patch AFTER import: module-level dangerous calls on their own modules, and builtins
     # exec/eval into each root module's namespace (never into builtins -- that breaks import).
+    restores = []
     builtin_attrs = [t.split(":", 1)[1] for t in _P["recorders"] if t.split(":", 1)[0] == "builtins"]
     for t in _P["recorders"]:
-        _patch_module_recorder(t)
+        _patch_module_recorder(t, restores)
     if builtin_attrs:
-        _patch_builtins_in_root(root, builtin_attrs)
+        _patch_builtins_in_root(root, builtin_attrs, restores)
     if "." in name:
         cls_name, meth = name.split(".", 1)
         cls = getattr(mod, cls_name)
@@ -240,8 +261,8 @@ def _get_handler(root):
             inst = cls()
         except Exception:
             inst = cls.__new__(cls)
-        return getattr(inst, meth), req
-    return getattr(mod, name), req
+        return getattr(inst, meth), req, restores
+    return getattr(mod, name), req, restores
 
 
 def _invoke(handler, req):
@@ -265,7 +286,7 @@ def test_reproduce():
     reason = "the canary did not reach the dangerous call"
     try:
         root = _unpack()
-        handler, req = _get_handler(root)
+        handler, req, restores = _get_handler(root)
     except Exception as e:                       # import of a third-party dependency, etc.
         reason = "not reproduced: " + type(e).__name__ + ": " + str(e)[:160]
         print(MARKER_LINE({"reproduced": False, "reason": reason}))
@@ -275,6 +296,8 @@ def test_reproduce():
         _invoke(handler, req)
     except Exception as e:                        # the handler may raise after the dangerous call
         reason = "handler raised " + type(e).__name__
+    finally:
+        _restore(restores)                        # put real I/O back before pytest teardown
     if _canary_seen():
         print(MARKER_LINE({"reproduced": True, "call": _P["call_name"]}))
         return
