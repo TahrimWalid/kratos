@@ -446,7 +446,18 @@ def _render_retry_note(attempt: int, exc: Exception) -> None:
         pass
 
 
-def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -> Optional[str]:
+def send_review_request(base_url: str, api_key: str, model: str, *, system_prompt: str, prompt: str,
+                        max_tokens: int) -> Optional[str]:
+    """E.7b's model door: send one review request to an explicit SAVED profile's endpoint (not
+    the active model) through the same metered, masked path as every other request. Delegates to
+    `_query_openai_compatible` so there is still exactly one `_send` and one metered caller; the
+    reply is already restored, or None on failure (the review then stops cleanly)."""
+    return _query_openai_compatible(prompt, system_prompt, max_tokens,
+                                    base_url=base_url, api_key=api_key, model=model)
+
+
+def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int, *, base_url: Optional[str] = None,
+                             api_key: Optional[str] = None, model: Optional[str] = None) -> Optional[str]:
     """
     Query LLM_OPENAI_BASE_URL, the one real query mechanism (2026-07-15) --
     any OpenAI-chat-completions-compatible endpoint: local Ollama (the
@@ -463,9 +474,9 @@ def _query_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -
     """
     if requests is None:
         return None
-    base_url = get_active_llm_base_url()
-    api_key = get_active_llm_api_key()
-    model = get_active_llm_model()
+    base_url = base_url if base_url is not None else get_active_llm_base_url()
+    api_key = api_key if api_key is not None else get_active_llm_api_key()
+    model = model if model is not None else get_active_llm_model()
     if not (base_url and api_key and model):
         print(
             "[KRATOS-LLM] LLM_BASE_URL/LLM_API_KEY/LLM_MODEL are not all set (check .env) -- "
