@@ -245,6 +245,10 @@ RULE_ATTACK: dict[str, Entry] = {
     "CODE-004": Posture("a secret stored in deployed code is a weakness, not an action"),
     "CODE-005": Behaviour((WEB_SHELL,), why="a file in a served code folder matches a web-shell rule"),
     "CODE-006": Posture("run note: what the code checks could not cover"),
+    # E.7b: an AI review's verdict is a weakness in the code, not observed adversary behaviour.
+    "REVIEW-001": Posture("a confirmed weakness in served code is exposure, not an action taken"),
+    "REVIEW-002": Posture("a possible weakness awaiting validation is a lead, not an action"),
+    "REVIEW-003": Posture("run note: the AI review's profile, cost and coverage"),
     "BASE-001": Behaviour((VALID_ACCOUNTS,), why="a sign-in from a place this account never used: how a valid "
                           "account in someone else's hands looks"),
     "BASE-002": Behaviour((VALID_ACCOUNTS,), why="a sign-in at an hour this account doesn't use"),

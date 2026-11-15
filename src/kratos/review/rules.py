@@ -37,6 +37,11 @@ ALWAYS_SHELL = frozenset({"os.system", "os.popen", "subprocess.getoutput", "subp
                           "commands.getoutput", "commands.getstatusoutput"})
 
 
+# Modules whose module-level `request` IS the per-request object, so `flask.request.args`
+# (the common `import flask` style, not only `from flask import request`) is a request source.
+REQUEST_MODULES = frozenset({"flask", "quart", "bottle"})
+
+
 def request_roots(mod: Module, fn: ast.AST) -> frozenset[str]:
     roots = set(mod.request_names)
     args = fn.args
@@ -46,43 +51,55 @@ def request_roots(mod: Module, fn: ast.AST) -> frozenset[str]:
     return frozenset(roots)
 
 
-def _is_request_expr(node: ast.AST, roots: frozenset[str]) -> bool:
+def request_modules(mod: Module) -> frozenset[str]:
+    """Local names bound to a framework module whose `.request` is the request object
+    (`import flask` -> {"flask"}; `import flask as f` -> {"f"})."""
+    return frozenset(alias for alias, q in mod.imports.items() if q in REQUEST_MODULES)
+
+
+def _is_request_expr(node: ast.AST, roots: frozenset[str], req_modules: frozenset[str] = frozenset()) -> bool:
     """A read off a request object: `request`, `request.args`, `request.form['x']`,
-    `request.args.get('x')`, `environ['PATH_INFO']`."""
+    `request.args.get('x')`, `environ['PATH_INFO']`, and the module-dotted `flask.request...`."""
     if isinstance(node, ast.Name):
         return node.id in roots
-    if isinstance(node, (ast.Attribute, ast.Subscript)):
-        return _is_request_expr(node.value, roots)
+    if isinstance(node, ast.Attribute):
+        if node.attr == "request" and isinstance(node.value, ast.Name) and node.value.id in req_modules:
+            return True            # flask.request
+        return _is_request_expr(node.value, roots, req_modules)
+    if isinstance(node, ast.Subscript):
+        return _is_request_expr(node.value, roots, req_modules)
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        return _is_request_expr(node.func.value, roots)
+        return _is_request_expr(node.func.value, roots, req_modules)
     return False
 
 
-def _is_tainted(node: ast.AST, tainted: frozenset[str], roots: frozenset[str]) -> bool:
-    if _is_request_expr(node, roots):
+def _is_tainted(node: ast.AST, tainted: frozenset[str], roots: frozenset[str],
+                req_modules: frozenset[str] = frozenset()) -> bool:
+    if _is_request_expr(node, roots, req_modules):
         return True
     if isinstance(node, ast.Name):
         return node.id in tainted
     if isinstance(node, (ast.Attribute, ast.Subscript)):
-        return _is_tainted(node.value, tainted, roots)
+        return _is_tainted(node.value, tainted, roots, req_modules)
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
-        return _is_tainted(node.left, tainted, roots) or _is_tainted(node.right, tainted, roots)
+        return (_is_tainted(node.left, tainted, roots, req_modules)
+                or _is_tainted(node.right, tainted, roots, req_modules))
     if isinstance(node, ast.JoinedStr):
-        return any(_is_tainted(v.value, tainted, roots) for v in node.values
+        return any(_is_tainted(v.value, tainted, roots, req_modules) for v in node.values
                    if isinstance(v, ast.FormattedValue))
     if isinstance(node, ast.FormattedValue):
-        return _is_tainted(node.value, tainted, roots)
+        return _is_tainted(node.value, tainted, roots, req_modules)
     if isinstance(node, ast.Starred):
-        return _is_tainted(node.value, tainted, roots)
+        return _is_tainted(node.value, tainted, roots, req_modules)
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
-        return any(_is_tainted(e, tainted, roots) for e in node.elts)
+        return any(_is_tainted(e, tainted, roots, req_modules) for e in node.elts)
     if isinstance(node, ast.Call):
         func = node.func
         if isinstance(func, ast.Attribute) and func.attr in STRING_METHODS:
             # "{}".format(x), sep.join(parts), x.encode() -- string building keeps taint.
-            return (_is_tainted(func.value, tainted, roots)
-                    or any(_is_tainted(a, tainted, roots) for a in node.args))
-        if isinstance(func, ast.Attribute) and _is_request_expr(func.value, roots):
+            return (_is_tainted(func.value, tainted, roots, req_modules)
+                    or any(_is_tainted(a, tainted, roots, req_modules) for a in node.args))
+        if isinstance(func, ast.Attribute) and _is_request_expr(func.value, roots, req_modules):
             return True            # request.args.get('x')
         return False               # any other call is unrecognised -> breaks the chain
     return False
@@ -98,7 +115,8 @@ def _targets(node: ast.AST) -> list[str]:
     return []
 
 
-def taints(mod: Module, fn: ast.AST, roots: frozenset[str]) -> frozenset[str]:
+def taints(mod: Module, fn: ast.AST, roots: frozenset[str],
+           req_modules: frozenset[str] = frozenset()) -> frozenset[str]:
     """Local names holding a request-derived value, by a fixpoint over the function's
     assignments using the string-building taint rule above."""
     tainted: set[str] = set()
@@ -119,7 +137,7 @@ def taints(mod: Module, fn: ast.AST, roots: frozenset[str]) -> frozenset[str]:
     for _ in range(len(binds) + 1):
         changed = False
         for value, names in binds:
-            if names and _is_tainted(value, frozenset(tainted), roots) and not set(names) <= tainted:
+            if names and _is_tainted(value, frozenset(tainted), roots, req_modules) and not set(names) <= tainted:
                 tainted.update(names)
                 changed = True
         if not changed:
@@ -164,12 +182,13 @@ def direct(idx: SL.Index, sl: SL.Slice) -> RuleMatch:
                          evidence=f"a {verbs} route with no login check Kratos can see on its path")
 
     roots = request_roots(mod, fn)
-    tnt = taints(mod, fn, roots)
+    req_modules = request_modules(mod)
+    tnt = taints(mod, fn, roots, req_modules)
     for call, qualified, c in SL.sink_calls(mod, fn):
         if c != sl.cls:
             continue
         for arg in _dangerous_args(sl.cls, qualified, call):
-            if _is_tainted(arg, tnt, roots):
+            if _is_tainted(arg, tnt, roots, req_modules):
                 name = qualified[2:] if qualified.startswith("*.") else qualified
                 return RuleMatch(matched=True,
                                  evidence=f"a request value reaches {name}() at line {call.lineno} "

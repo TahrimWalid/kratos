@@ -2166,6 +2166,12 @@ _comp_findings.register()
 from kratos.baseline import findings as _base_findings  # noqa: E402
 
 _base_findings.register()
+
+# E.7b: REVIEW-001/002/003 -- the AI review of deployed code (kratos.review.judge); a snapshot
+# source so a person-started review's findings flow through lifecycle/triage/export like the rest.
+from kratos.review import judge as _review_findings  # noqa: E402
+
+_review_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
 
