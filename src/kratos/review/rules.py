@@ -116,7 +116,7 @@ def _targets(node: ast.AST) -> list[str]:
 
 
 def taints(mod: Module, fn: ast.AST, roots: frozenset[str],
-           req_modules: frozenset[str] = frozenset()) -> frozenset[str]:
+           req_modules: frozenset[str] = frozenset(), exclude: frozenset[str] = frozenset()) -> frozenset[str]:
     """Local names holding a request-derived value, by a fixpoint over the function's
     assignments using the string-building taint rule above."""
     tainted: set[str] = set()
@@ -137,12 +137,65 @@ def taints(mod: Module, fn: ast.AST, roots: frozenset[str],
     for _ in range(len(binds) + 1):
         changed = False
         for value, names in binds:
-            if names and _is_tainted(value, frozenset(tainted), roots, req_modules) and not set(names) <= tainted:
-                tainted.update(names)
+            keep = [n for n in names if n not in exclude]    # a checked / possibly-constant name is a barrier
+            if keep and _is_tainted(value, frozenset(tainted), roots, req_modules) and not set(keep) <= tainted:
+                tainted.update(keep)
                 changed = True
         if not changed:
             break
     return frozenset(tainted)
+
+
+def const_bound(fn: ast.AST) -> frozenset[str]:
+    """Local names that have at least one binding to a constant (a literal, or a branch that sets
+    a fixed value). Such a name is AMBIGUOUS -- a `direct` confirm must not rest on it, because the
+    tainted branch may be dead (a common safe pattern: `if <const>: x = 'ok' else: x = request...`).
+    Reproduction, which runs the code, still catches it when the tainted branch is live."""
+    out: set[str] = set()
+    for n in ast.walk(fn):
+        value = names = None
+        if isinstance(n, ast.Assign):
+            value, names = n.value, [t for tgt in n.targets for t in _targets(tgt)]
+        elif isinstance(n, ast.AnnAssign) and n.value is not None:
+            value, names = n.value, _targets(n.target)
+        if value is not None and names and _is_constant(value):
+            out.update(names)
+    return frozenset(out)
+
+
+def _is_constant(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return all(isinstance(v, ast.Constant) for v in node.values)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_constant(e) for e in node.elts)
+    if isinstance(node, ast.BinOp):
+        return _is_constant(node.left) and _is_constant(node.right)
+    return False
+
+
+def guarded(fn: ast.AST) -> frozenset[str]:
+    """Local names that appear in a conditional test (`if`/`while`/`assert`/a ternary/`and`/`or`).
+    A `direct` confirm must not rest on a value the code checks -- Kratos can't tell a sufficient
+    guard from an insufficient one, so a checked value is `needs_validation` (the verifier may name
+    the check), never `confirmed (direct)`."""
+    out: set[str] = set()
+
+    def add_test(test: ast.AST) -> None:
+        for sub in ast.walk(test):
+            if isinstance(sub, ast.Name):
+                out.add(sub.id)
+
+    for n in ast.walk(fn):
+        if isinstance(n, (ast.If, ast.While, ast.IfExp)):
+            add_test(n.test)
+        elif isinstance(n, ast.Assert):
+            add_test(n.test)
+        elif isinstance(n, ast.comprehension):
+            for cond in n.ifs:
+                add_test(cond)
+    return frozenset(out)
 
 
 def _shell_context(qualified: str, call: ast.Call) -> bool:
@@ -183,7 +236,11 @@ def direct(idx: SL.Index, sl: SL.Slice) -> RuleMatch:
 
     roots = request_roots(mod, fn)
     req_modules = request_modules(mod)
-    tnt = taints(mod, fn, roots, req_modules)
+    # Narrowed for precision (§8.1): a value the code CHECKS, or that is also bound to a constant
+    # (a possibly-dead tainted branch), is not a `direct` confirm -- it falls to needs_validation
+    # (the verifier may name the check; reproduction still confirms it if the flow is really live).
+    barriers = guarded(fn) | const_bound(fn)
+    tnt = taints(mod, fn, roots, req_modules, exclude=barriers)
     for call, qualified, c in SL.sink_calls(mod, fn):
         if c != sl.cls:
             continue
