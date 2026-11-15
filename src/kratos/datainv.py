@@ -291,6 +291,7 @@ CATEGORIES: tuple[Category, ...] = (
         "The machine's code is never stored.",
         PERSONAL, "one row per slice / lead / verdict per run; the verdict cache is reused across runs and machines",
         tables=(TableRef(DB, ("review_runs", "review_slices", "review_candidates", "review_verdicts")),),
+        files=("review/results",),
         backup=BACKUP_INCLUDE,
     ),
     Category(
