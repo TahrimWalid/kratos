@@ -84,6 +84,10 @@ CLI: dict[str, Entry] = {
     "cmd_compliance": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "cmd_baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "cmd_code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
+    # E.7b: prepare/start self-check (person-only, admin, local) in run/reads; the read-only
+    # sub-commands resolve through code.present's reader scope.
+    "cmd_review": CORE("kratos.review.run:_require_person", "kratos.code.reads:read_for_review",
+                       "kratos.code.present:resolve_code_reader"),
     "cmd_init": A(P.SETTINGS_CHANGE),
     "cmd_investigate": A(P.INVESTIGATE),
     "cmd_llm_serve": A(P.LOCAL_RUN),
@@ -171,6 +175,8 @@ TUI: dict[str, Entry] = {
     "/comp": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "/baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "/code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
+    "/review": CORE("kratos.review.run:_require_person", "kratos.code.reads:read_for_review",
+                    "kratos.code.present:resolve_code_reader"),
     "/normal": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "/assets": CORE("kratos.assets.store:_check_actor"), "/machines": CORE("kratos.assets.store:_check_actor"),
     "/findings": CORE(*_DECIDE), "/f": CORE(*_DECIDE),
