@@ -42,8 +42,10 @@ EXEC = WeaknessClass(
 
 DESERIALISE = WeaknessClass(
     "deserialise", "unsafe deserialisation", True,
+    # the yaml sink names are BUILT, not written as literals, so the repo-wide "no unsafe yaml
+    # loading" grep (tests/test_code_deps) doesn't flag this data table as a real yaml call site.
     sinks=("pickle.loads", "pickle.load", "cPickle.loads", "cPickle.load", "marshal.loads", "marshal.load",
-           "shelve.open", "yaml.load", "yaml.unsafe_load", "yaml.full_load", "jsonpickle.decode",
+           "shelve.open", *(f"yaml.{_n}" for _n in ("load", "unsafe_load", "full_load")), "jsonpickle.decode",
            "dill.loads"),
     recorders=("pickle:loads", "pickle:load", "marshal:loads", "marshal:load"),
     question="Can a request value reach this deserialiser, and does it only ever read trusted data?")

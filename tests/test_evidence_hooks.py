@@ -33,6 +33,9 @@ NOT_EVIDENCE = {
     "signing/__init__.py:*": "writes the signing key, not evidence",
     "export/bundle.py:*": "writes the export bundle itself; export/create.py records its manifest",
     "export/archive.py:*": "writes the bundle's .tar.gz; its hash is printed and in the export record",
+    "review/sarif.py:write_sarif": "writes a SARIF file to a path the person chose (an export for "
+                                   "their own SAST tooling), not an evidence-folder artifact; the review's "
+                                   "own snapshot is recorded by review/judge.py:write_snapshot",
 }
 
 WRITE_ATTRS = {"write_text", "write_bytes", "write_private_text", "dump"}
