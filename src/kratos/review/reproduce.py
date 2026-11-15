@@ -93,13 +93,23 @@ def _sources_for(sl: Slice, idx: Index) -> dict[str, str]:
     return {rel: mod.text for rel, mod in idx.modules.items()}
 
 
-def build_harness(sl: Slice, idx: Index, canary: str) -> str:
+def _canary(cls: str, token: str) -> str:
+    """The value driven in. For `path`, an attack-shaped canary (a directory traversal) so a
+    reproduction confirms EXPLOITABILITY (the traversal survives to `open`), not mere reachability
+    -- a basename/allow-list sanitiser strips the `../` and the reproduction correctly fails.
+    Other classes use the plain token (reaching an exec/deserialise sink with request data is the
+    weakness; the value isn't neutralised by being quoted)."""
+    return f"../../../{token}" if cls == "path" else token
+
+
+def build_harness(sl: Slice, idx: Index, canary: str, *, token: str = "") -> str:
     """The pytest harness source. Code-authored in full: the model never writes any of it."""
     wc = C.get(sl.cls)
     payload = {
         "sources": {rel: base64.b64encode(text.encode("utf-8", "surrogatepass")).decode("ascii")
                     for rel, text in _sources_for(sl, idx).items()},
         "surface_rel": sl.rel, "surface_func": sl.function, "canary": canary,
+        "token": token or canary, "cls": sl.cls,
         "recorders": list(wc.recorders), "call_name": _call_name(sl),
     }
     blob = base64.b64encode(json.dumps(payload).encode("ascii")).decode("ascii")
@@ -114,6 +124,8 @@ from pathlib import Path
 
 _P = json.loads(base64.b64decode("__PAYLOAD_B64__").decode("ascii"))
 CANARY = _P["canary"]
+TOKEN = _P.get("token") or CANARY
+CLS = _P.get("cls") or ""
 _RECORDED = []
 
 
@@ -154,7 +166,10 @@ def _canary_seen():
     parts = []
     for a, k in _RECORDED:
         _flatten(a, parts); _flatten(k, parts)
-    return any(CANARY in p for p in parts)
+    if CLS == "path":
+        # exploitable iff the traversal SURVIVED to the call (a basename/allow-list strips ../).
+        return any(TOKEN in p and "../" in p for p in parts)
+    return any(TOKEN in p for p in parts)
 
 
 def _unpack():
@@ -353,7 +368,8 @@ def reproduce(sl: Slice, idx: Index, *, data_dir: Path | str, run_id: str, enabl
         return Repro(status=R_NOT_REPRODUCED, reason=reason)
 
     import secrets as _secrets
-    canary = "KRATOSCANARY_" + _secrets.token_hex(8)
+    token = "KRATOSCANARY_" + _secrets.token_hex(8)
+    canary = _canary(sl.cls, token)
     work = _review_work(data_dir) / run_id / sl.id
     try:
         work.mkdir(parents=True, exist_ok=True)
@@ -361,7 +377,7 @@ def reproduce(sl: Slice, idx: Index, *, data_dir: Path | str, run_id: str, enabl
         candidate = work / "candidate.py"
         harness = work / "harness.py"
         candidate.write_text("# review reproduction placeholder (logic is in the harness)\n")
-        harness.write_text(build_harness(sl, idx, canary))
+        harness.write_text(build_harness(sl, idx, canary, token=token))
         for p in (candidate, harness):
             os.chmod(p, stat.S_IRUSR | stat.S_IWUSR)
         runner = runner or _default_runner()
