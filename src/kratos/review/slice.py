@@ -166,23 +166,42 @@ def dotted(node: ast.AST) -> str | None:
     return None
 
 
-def qualify(mod: Module, func: ast.AST, local_names: frozenset[str] = frozenset()) -> str | None:
-    """The fully qualified name a call's callee refers to through the module's imports;
-    `*.method` for a method on something Kratos can't type."""
+def qualify(mod: Module, func: ast.AST, local_names: frozenset[str] = frozenset(),
+            imports: dict[str, str] | None = None) -> str | None:
+    """The fully qualified name a call's callee refers to through the module's imports (or an
+    augmented `imports` map that also carries a function's LOCAL imports -- `import subprocess`
+    inside a handler is common in real code); `*.method` for a method on something Kratos can't
+    type."""
+    imports = mod.imports if imports is None else imports
     d = dotted(func)
     if d is None:
         if isinstance(func, ast.Attribute):
             return f"*.{func.attr}"
         return None
     head, _, rest = d.partition(".")
-    if head in mod.imports and head not in local_names:
-        q = mod.imports[head]
+    if head in imports and head not in local_names:
+        q = imports[head]
         return f"{q}.{rest}" if rest else q
     if not rest and head in BUILTIN_SINKS and head not in mod.functions and head not in local_names:
         return f"builtins.{head}"
     if rest:
         return f"*.{d.rsplit('.', 1)[1]}"
     return d
+
+
+def local_imports(fn: ast.AST) -> dict[str, str]:
+    """Imports made INSIDE a function body (`import subprocess`, `from os import system`), merged
+    on top of the module's imports when qualifying that function's calls."""
+    out: dict[str, str] = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                out[a.asname or a.name.split(".")[0]] = a.name if a.asname else a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = f"{node.module}.{a.name}"
+    return out
 
 
 def _locals(fn: ast.AST) -> frozenset[str]:
@@ -394,10 +413,11 @@ def sink_calls(mod: Module, fn: ast.AST) -> list[tuple[ast.Call, str, str]]:
     `request.files` receiver)."""
     out: list[tuple[ast.Call, str, str]] = []
     local = _locals(fn)
+    imports = {**mod.imports, **local_imports(fn)}      # function-local imports count too
     for call in ast.walk(fn):
         if not isinstance(call, ast.Call):
             continue
-        q = qualify(mod, call.func, local - set(mod.imports))
+        q = qualify(mod, call.func, local - set(imports), imports=imports)
         if q is None:
             continue
         if q.startswith("*."):
