@@ -434,6 +434,7 @@ class Slice:
     drift: bool = False
     exposure: str = "unknown"        # internet | network | local | not_running | unknown
     served: str = "imported"         # executed | served | imported
+    advisory: bool = False           # imports a package with an open CODE-003 advisory (E.7a)
     language: str = "python"
     nbytes: int = 0
 
@@ -643,5 +644,5 @@ def as_record(sl: Slice) -> dict[str, Any]:
     return {"rel": sl.rel, "function": sl.function, "cls": sl.cls, "span": list(sl.span),
             "segments": [list(x) for x in sl.segments], "sha256": sl.sha256, "context_sha256": sl.context_sha256,
             "part": sl.part, "drift": sl.drift, "exposure": sl.exposure, "served": sl.served,
-            "language": sl.language, "nbytes": sl.nbytes, "methods": list(sl.methods),
+            "advisory": sl.advisory, "language": sl.language, "nbytes": sl.nbytes, "methods": list(sl.methods),
             "calls": [{"rel": c.rel, "function": c.function, "line": c.line, "call": c.qualified} for c in sl.calls]}
