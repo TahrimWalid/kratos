@@ -270,7 +270,7 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
             if req.kind == "audit":
                 answer = _audit_answer(results)
             else:
-                paths_note = _attack_path_note(data_dir, label)
+                paths_note = _attack_path_note(data_dir, label, req.actor)
                 answer = answer_fleet(question, results, data_dir, time_block=time_block,
                                       extra_reads=fleet_settings.get(fleet_settings.EXTRA_READS, data_dir),
                                       digest_cap=fleet_settings.get(fleet_settings.DIGEST_CHARS, data_dir),
@@ -297,14 +297,22 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
                                 token_usage={"total_tokens": tokens, "cost_usd": cost})
 
 
-def _attack_path_note(data_dir: Path, group_label: str) -> str:
+def _attack_path_note(data_dir: Path, group_label: str, actor: Any) -> str:
     """E.1 decision 11: the newest attack-path build's one-line summary for the group, as
-    model context (code-built; the model explains, never re-ranks). "" when none is current."""
-    try:
-        from kratos.attackpaths import present
+    model context (code-built; the model explains, never re-ranks). "" when none is current.
 
-        return present.model_line(data_dir, group_label) or ""
-    except Exception:  # noqa: BLE001 -- a missing/old build must never sink a fleet answer
+    Scoped to the fleet caller (D.7, decision 9): the summary is built from the caller's
+    scoped view of the build, so a path to -- or a machine on -- a machine outside their
+    access is never named in the model context or the answer, even when the group spans
+    machines they cannot see."""
+    try:
+        from kratos.attackpaths import build as B, present
+
+        doc, _visible = B.read_scoped(data_dir, actor, group_label)
+        if doc is None:
+            return ""
+        return present.model_line_from_doc(doc, group_label) or ""
+    except Exception:  # noqa: BLE001 -- a missing/old build or a read refusal must never sink a fleet answer
         logger.debug("fleet: no attack-path note", exc_info=True)
         return ""
 

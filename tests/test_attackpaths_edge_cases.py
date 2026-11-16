@@ -358,6 +358,60 @@ def test_mcp_read_scoped(tmp_path):
                    for n in dir(mcp) if n.startswith("kratos_"))
 
 
+# --- fleet digest note is scoped to the caller (decision 9) -------------------------
+
+
+def test_fleet_attack_path_note_uses_the_scoped_read_not_read_latest(tmp_path, monkeypatch):
+    """The fleet digest's attack-path summary must be built from the caller's SCOPED view, so
+    a scoped caller is never summarised a path to a machine outside their access. Regression:
+    _attack_path_note used present.model_line -> read_latest (unscoped)."""
+    from kratos.fleet import run as fleet_run
+    from kratos.attackpaths import build as B
+
+    called = {}
+
+    def fake_read_scoped(dd, actor, group):
+        called["scoped"] = (actor, group)
+        # a scoped doc with only the in-scope crown jewel
+        return ({"paths": [{"crown_jewel": "web", "criticality": "medium", "length": 2,
+                            "fully_observed": True, "assumed_hops": 0}],
+                 "entries": [{"target_key": "web"}], "chokepoints": [],
+                 "coverage": {"machines_read": 1}}, {"web"})
+
+    def boom_read_latest(*a, **k):
+        raise AssertionError("the fleet note must not read the build unscoped")
+
+    monkeypatch.setattr(B, "read_scoped", fake_read_scoped)
+    monkeypatch.setattr(B, "read_latest", boom_read_latest)
+    note = fleet_run._attack_path_note(tmp_path, "lab", T._owner())
+    assert called["scoped"][1] == "lab"
+    assert "web" in note and "secretdb" not in note
+
+
+def test_scoped_summary_omits_an_out_of_scope_crown_jewel(tmp_path):
+    """model_line_from_doc on a scoped view names only in-scope crown jewels (the building
+    block of the scoped fleet note)."""
+    from kratos.assets import store as assets
+    from kratos.attackpaths import build as B, present as PP
+    from kratos.target_key import target_key
+    owner = T._owner()
+    T._write_live(tmp_path, "web", listeners=[{"port": 443, "proto": "tcp", "address": "0.0.0.0",
+                  "exe": "nginx", "seen": True, "package": "nginx"}], local_addresses=["203.0.113.5"])
+    T._seed_keys(tmp_path, "web", [("deploy", "SHA256:AAAA")])
+    T._seed_finding(tmp_path, "web", T._pkg_act())
+    assets.update(tmp_path, "web", owner, exposure_override="internet")
+    T._write_live(tmp_path, "secretdb", listeners=[{"port": 22, "proto": "tcp", "address": "0.0.0.0",
+                  "exe": "sshd", "seen": True}], local_addresses=["10.0.0.9"])
+    T._seed_keys(tmp_path, "secretdb", [("deploy", "SHA256:AAAA")])
+    assets.update(tmp_path, "secretdb", owner, criticality="critical")
+    _group(tmp_path, ["web", "secretdb"])
+    B.run_path_build(data_dir=tmp_path, group="lab", actor=owner, source="interactive")
+    doc = B.read_latest(tmp_path, "lab")
+    full = PP.model_line_from_doc(SC.scoped_view(doc, None), "lab")       # owner: names the crown jewel
+    scoped = PP.model_line_from_doc(SC.scoped_view(doc, {target_key("web")}), "lab")
+    assert "secretdb" in full and "secretdb" not in scoped
+
+
 # --- backup class + inventory + evidence folder -------------------------------------
 
 

@@ -18,37 +18,12 @@ def _clean(text: Any) -> str:
 
 
 # --- the one model-facing line (gate-measured) --------------------------------------
-
-
-def model_line(data_dir: Path, group_ref: str) -> str | None:
-    """A short, plain-English line for the digest / a risk question, from the newest build.
-    Code-built numbers and the chosen chokepoint, never a model opinion. None when there is
-    no current build to summarise."""
-    from kratos.attackpaths import build as B
-
-    doc = B.read_latest(data_dir, group_ref)
-    if doc is None:
-        return None
-    paths = doc.get("paths") or []
-    entries = doc.get("entries") or []
-    chokes = doc.get("chokepoints") or []
-    cov = doc.get("coverage") or {}
-    read = int(cov.get("machines_read") or 0)
-    if not paths:
-        gaps = []
-        if cov.get("machines_unread"):
-            gaps.append(f"{cov['machines_unread']} not read")
-        if cov.get("machines_stale"):
-            gaps.append(f"{cov['machines_stale']} too old")
-        tail = f" ({', '.join(gaps)})" if gaps else ""
-        return (f"Attack paths for {_clean(group_ref)}: no path drawn across {read} machine(s){tail} -- this is "
-                "coverage, not a clean bill of health.")
-    top = paths[0]
-    cj = _clean(top.get("crown_jewel"))
-    assumed = "" if top.get("fully_observed") else f", assuming {top.get('assumed_hops')} network hop(s)"
-    choke = f" The one fix that cuts the most paths: {_clean(chokes[0].get('fix_title'))} (cuts {chokes[0].get('count')})." if chokes else ""
-    return (f"Attack paths for {_clean(group_ref)}: {len(entries)} entry point(s), {len(paths)} path(s) to the "
-            f"machines that matter. The strongest reaches {cj} in {top.get('length')} hop(s){assumed}.{choke}")
+#
+# The summary a model may see is always built from an already-loaded doc with
+# ``model_line_from_doc`` (below), so a caller passes a doc already filtered to the
+# reader's scope (``scope.scoped_view``). There is deliberately no helper that loads the
+# newest build *unscoped* for the model path: a scoped fleet caller must never be summarised
+# a path to, or a machine on, a machine outside their access (D.7, decision 9).
 
 
 # --- CLI / TUI rendering (plain data; the TUI wraps these in safe widgets) ------------
