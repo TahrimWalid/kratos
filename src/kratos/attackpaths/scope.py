@@ -105,4 +105,22 @@ def scoped_view(doc: dict[str, Any], visible: set[str] | None) -> dict[str, Any]
     out["edges"] = edges
     out["out_of_scope_hops"] = out_of_scope_hops
     out["masked_chokepoints"] = masked_chokepoints
+    if visible is not None:
+        # The raw snapshot also carries the per-machine PATH finding payloads and the coverage
+        # name lists, both of which name every machine in the group. A scoped reader must never
+        # learn an out-of-scope machine through them: drop the finding payloads (surfaces show
+        # PATH findings through the lifecycle, which is scoped per machine) and keep coverage as
+        # numbers only, with the machine-name lists filtered to the reader's own machines.
+        out.pop("findings", None)
+        out["coverage"] = _scope_coverage(doc.get("coverage") or {})
+    return out
+
+
+def _scope_coverage(coverage: dict[str, Any]) -> dict[str, Any]:
+    """Coverage counts are safe to show a scoped reader; the ``*_names`` lists name machines
+    (and a label need not contain its target_key), so they are dropped entirely — the counts
+    still tell the reader a gap exists, without naming a machine outside their access."""
+    out = dict(coverage)
+    for key in ("stale_names", "unread_names", "ssh_only_names"):
+        out[key] = []
     return out

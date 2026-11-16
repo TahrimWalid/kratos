@@ -314,6 +314,38 @@ def test_scheduled_build_records_and_notifies(tmp_path):
     assert len({r["run_id"] for r in runs}) >= 2
 
 
+def test_scope_does_not_leak_through_findings_or_coverage_names(tmp_path):
+    """A real build's snapshot also carries the per-machine PATH finding payloads and the
+    coverage name lists, both of which name every machine in the group. `scoped_view` must drop
+    them for a scoped reader so an out-of-scope machine is never named through them (a minimal
+    hand-built doc missed this; the real `read_latest` doc has both)."""
+    owner = T._owner()
+    from kratos.assets import store as assets
+    from kratos.attackpaths import build as B
+    from kratos.target_key import target_key
+    T._write_live(tmp_path, "web", listeners=[{"port": 443, "proto": "tcp", "address": "0.0.0.0",
+                  "exe": "nginx", "seen": True, "package": "nginx"}], local_addresses=["203.0.113.5"])
+    T._seed_keys(tmp_path, "web", [("deploy", "SHA256:AAAA")])
+    T._seed_finding(tmp_path, "web", T._pkg_act())
+    assets.update(tmp_path, "web", owner, exposure_override="internet")
+    T._write_live(tmp_path, "secretdb", listeners=[{"port": 22, "proto": "tcp", "address": "0.0.0.0",
+                  "exe": "sshd", "seen": True}], local_addresses=["10.0.0.9"])
+    T._seed_keys(tmp_path, "secretdb", [("deploy", "SHA256:AAAA")])
+    assets.update(tmp_path, "secretdb", owner, criticality="critical")
+    assets.update(tmp_path, "ghostbox", owner, criticality="high")   # unread -> a coverage name
+    _group(tmp_path, ["web", "secretdb", "ghostbox"])
+    B.run_path_build(data_dir=tmp_path, group="lab", actor=owner, source="interactive")
+    doc = B.read_latest(tmp_path, "lab")
+    assert "findings" in doc and doc.get("coverage", {}).get("unread_names")   # the raw doc names them
+    scoped = SC.scoped_view(doc, {target_key("web")})
+    import json as _json
+    blob = _json.dumps(scoped)
+    assert "secretdb" not in blob and "ghostbox" not in blob
+    assert "findings" not in scoped                       # finding payloads dropped for a scoped reader
+    # owner (visible None) keeps everything
+    assert "findings" in SC.scoped_view(doc, None)
+
+
 # --- doors: MCP read allowed scoped; build has no MCP tool --------------------------
 
 
