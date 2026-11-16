@@ -1747,6 +1747,41 @@ limit, how fast old activity fades (half after 30 days), when an hour counts as 
 many usual things are kept per kind (500; the least used are set aside, not deleted, so they don't
 come back as "first time").
 
+## Where could an attacker get in? (attack paths)
+
+For a **group** of machines, Kratos can draw one picture of how an attacker could move through
+them — and, just as plainly, what it couldn't see. Type `/paths @web` in the app, or run
+`kratos paths build --group web` and then `kratos paths show`. It answers three questions:
+
+- **Where would an attacker get in?** The *entry points*, ranked: a service reachable from the
+  internet with a vulnerability under active exploitation ranks first, then one that needs
+  attention, then a container port published past the firewall, then a web shell or an untracked
+  script in your served code, then a plain reachable service with no weakness Kratos knows of
+  (still an entry, lower).
+- **Where do the paths lead?** For each machine you marked as mattering (in `/assets`), the ranked
+  chains that reach it — entry → hop → hop → the machine — with every hop's evidence: a reused SSH
+  key, a user in the `docker` group, a container that can escape to its host. A hop Kratos actually
+  saw is marked *observed*; one it reasoned about (two machines on the same network with nothing
+  blocking them) is marked *assumed*, and a path with any assumed hop ranks below a fully observed one.
+- **What one fix helps most?** The *chokepoint* — the single change that cuts the most paths
+  (rotate this reused key, unpublish this port, patch this package) — listed first with how many
+  paths it removes and the exact command to run. **Kratos never runs it for you.**
+
+Two things to understand. **Nothing here reads your machines.** The graph is built entirely from
+what Kratos already collected, so run a fleet audit first if you want fresh data; a machine whose
+last reading is more than three days old is shown as a gap, not quietly assumed safe. And **"no path
+drawn" is not "you're safe"** — it means Kratos found no path *in what it has read*. The last block,
+"What Kratos couldn't see", always says it in numbers: machines never read, machines read over SSH
+only (where root-owned services and keys are invisible — the sub-agent would see them), code folders
+nobody confirmed. A reused SSH key is called out on its own, because one stolen private key opens
+every machine it is on; Kratos learns the reuse from the public keys and tells you plainly that it
+can't tell which machine holds the private half.
+
+If you've shared Kratos with other people (D.7), each person only ever sees the machines they're
+allowed to; a path that leaves their access is counted but the machine is never named. An attack
+path is capped at "high", never "critical" — it's a *possibility* built from structure; the findings
+each hop rests on carry their own, stronger verdicts, and you can open any of them from the path.
+
 ## Detection rules
 
 Besides its own checks, Kratos runs **98 detection rules from SigmaHQ**

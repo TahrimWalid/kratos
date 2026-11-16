@@ -1537,6 +1537,69 @@ still learned. Ports whose program the login can't see are learned under "(progr
 this login)". Test history comes from
 `scripts/dev/generate_baseline_history.py` (deterministic by seed, into a scratch home only).
 
+## Attack paths (E.1)
+
+**A graph built from stored evidence, never a read** (`kratos/attackpaths/`). For a group of
+machines, Kratos draws one typed, directed, bounded graph from what D.2–E.7a already stored —
+live listeners and established outbound sockets, privileged accounts, persistence
+`authorized_keys` fingerprints and SUID items, SSVC decisions and measured exposure, containers,
+confirmed code roots — and answers three questions a defender asks, **all by code: no machine is
+read, no probe runs, no `AGENT_VERSION` bump, and no model call ranks or decides anything**. A
+build reads `kratos.db` and the per-machine snapshot files and writes `path_*` rows; a machine
+whose newest reading is older than `paths.max_input_age_hours` (72 h) is a counted coverage gap,
+never read to fill it (owner gate, 2026-11-16: keep the build fast and read-free).
+
+**Node and edge model** (`graph.py`, `construct.py`). Nodes: `machine` (criticality, exposure
+override, transport, data age, read completeness), `service` (proto/port/address/program/package,
+exposure, the SSVC decision of a CVE in its package), `account` (which privileged groups, whether
+it reaches root), `key` (a public-half `authorized_keys` fingerprint — never a private key),
+`container` (image, published ports, escape settings), `code_root` (path, serving service, its
+findings), plus two synthetic `outside` start nodes (an attacker on the internet, one already
+inside the network). Edges are directed and each carries its evidence and a `confidence` —
+`observed` (a fact Kratos saw) or `assumed` (a structural guess, always labelled): `exposes`
+(outside → an entry), `foothold` (an entry → its machine), `serves`, `authenticates`, `escalates`
+(an account/service → root), `escapes` (a container → its host, CONT-001/002/003/005/006),
+`reaches` (machine A → a service on B — `observed` from A's own outbound socket, else
+`assumed (same network)`), `key_reuse` (A ↔ B, undirected: the same public key authorises an
+account on both, so one stolen private half reaches both; direction is stated as unknown — the
+private half's machine is not visible from public keys alone). Stable node/edge keys and sorted
+iteration make two builds of the same data byte-identical. Caps (`paths.*`: 5,000 nodes, 20,000
+edges, 8 hops, 2,000 paths, 50 machines) bound every dimension; a cap hit is stated in PATH-005,
+never a silent partial.
+
+**Entries, paths, chokepoints** (`entries.py`/`rank.py`, `crown.py`, `paths.py`,
+`chokepoint.py`). Entries are ranked by a pinned table — internet + SSVC Act, then Attend, then a
+CONT-004 firewall-bypass port, then a web shell / untracked served script, then an exposed service
+with no known weakness — computed from exposure tier × SSVC decision × the strongest finding on the
+node, never from the model. Crown jewels are the machines a person marked high/critical (unset
+criticality is assumed medium and labelled), plus key-reuse and shared-secret hubs. Paths are a
+bounded, cycle-safe DFS from an outside node to a crown jewel, ranked by the crown jewel's
+criticality, then confidence (a fully observed path above one with any assumed hop), then entry
+strength, then length. A chokepoint is the node or edge most paths pass through; its fix is the one
+the underlying finding already recommends — **shown, never run** (the fix channel stays OFF).
+
+**Findings and boundaries.** PATH-001 (an entry), PATH-002 (a path to a crown jewel), PATH-003
+(the chokepoint), PATH-004 (a lateral bridge — a reused key or an account that reaches root on ≥2
+machines) are conditions re-derived every build; PATH-005 is the coverage run note (machines
+unread / stale / SSH-only / unconfirmed roots / caps hit, always as numbers). All are **posture**
+in the A.3 table with the enabling technique named (T1190, T1505.003, T1021.004, T1078, T1611,
+verified in the v19 table), and all use `NoVerifier` (a path is a structural possibility; the
+findings each hop rests on are verified on their own). **Severity is capped at high, never
+critical** (`paths.severity_cap`) and **the graph never lowers, closes or re-decides any other
+rule's finding** — `attack_paths` is no rule's covering input, so a build's coverage mitigates
+nothing else (a parametrised test over every rule id proves it). **Scope is applied to every node
+and edge** (`scope.py`, D.2 §3.8 scope-before-dedup): a viewer never learns an out-of-scope machine
+through a path edge — a crossing hop reads "a machine outside your access", counted, never named.
+A build runs under the fleet door (investigator+, scoped); reading (`/paths`, `kratos paths`, MCP
+`kratos_attack_paths`, chat) needs `paths.read` (viewer+, scoped). A scheduled `paths` build runs
+unattended, read-free, with one grouped notification. The one model-facing line is a Kratos-written,
+framed (A.4), masked (B.2) summary in the fleet digest / a group risk question; the dismissive-verdict
+check rejects calling the top path or chokepoint low priority.
+
+**Deviation from the spec name.** The package is `kratos/attackpaths/` (not `kratos/paths/`,
+which the spec wrote) because `kratos/paths.py` is the existing per-install path module; the graph
+construction lives in `construct.py` (the spec's `graph.py` holds only the node/edge/Graph types).
+
 ## Log sources and tamper detection
 
 **Sources.** `kratos/logsources/catalog.py` is a closed table of seven log sources
