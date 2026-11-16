@@ -62,3 +62,28 @@ def test_guard13_in_the_single_machine_loop(data_dir, collected, monkeypatch):
     result = run(data_dir, chat, monkeypatch)
     assert "REJECTED (decision not made by Kratos)" in chat.users[1]
     assert result["status"] == "final_answer" and result["final_answer"].endswith(fixed)
+
+
+# E.1: the dismissive-verdict check (guard3) extends to a code-computed attack path / chokepoint
+PATH2 = {"id": "PATH-002", "title": "Attack path to db", "severity": "high", "subject": "machine:db",
+         "entities": ["abc123"], "state": "open"}
+PATH3 = {"id": "PATH-003", "title": "Fix this first: rotate the reused key (cuts 3 paths)", "severity": "medium",
+         "subject": "key-reuse:ab", "entities": ["key-reuse:ab"], "state": "open"}
+
+
+@pytest.mark.parametrize("answer,findings,flagged", [
+    ("PATH-002 is low priority and not worth worrying about.", [PATH2], True),
+    ("PATH-003 is low priority; ignore it for now.", [PATH3], True),
+    ("PATH-003 is the top fix here -- rotate the reused key now.", [PATH3], False),   # names but acts
+    ("Your biggest exposure is the internet-facing web host.", [PATH2], False),        # doesn't name it
+])
+def test_guard3_flags_dismissing_a_computed_attack_path(answer, findings, flagged):
+    """The model may explain the attack-path summary but never re-rank it: calling a
+    code-computed PATH-002/PATH-003 low priority is caught by the dismissive-verdict check."""
+    res = AC.evaluate(answer, _ev(findings))["guard3"]
+    assert res.trigger is flagged
+
+
+def test_guard3_exempts_a_risk_accepted_path():
+    accepted = {**PATH2, "state": "risk_accepted"}
+    assert AC.evaluate("PATH-002 is low priority.", _ev([accepted]))["guard3"].trigger is False
