@@ -141,6 +141,14 @@ RULES: dict[str, RuleInfo] = dict([
     _r("REVIEW-001", "condition"),
     _r("REVIEW-002", "condition"),
     _r("REVIEW-003", "run_note"),
+    # E.1: attack paths are re-derived every build from stored evidence. An entry, a path, a
+    # chokepoint or a bridge is a state of the graph; a later build that no longer draws it
+    # closes it (covering input = the attack_paths snapshot). PATH-005 is the coverage note.
+    _r("PATH-001", "condition"),
+    _r("PATH-002", "condition"),
+    _r("PATH-003", "condition"),
+    _r("PATH-004", "condition"),
+    _r("PATH-005", "run_note"),
     # E.2: hardening checks that fail are a state; a fresh, complete hardening read that
     # no longer sees them closes it, or a person decides.
     _r("COMP-001", "condition"),

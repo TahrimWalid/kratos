@@ -480,3 +480,8 @@ register_no_verifier(NoVerifier(
     rules=("BASE-001", "BASE-002", "BASE-003", "BASE-004", "BASE-006", "BASE-008"),
     # short, shown as the answer's "[couldn't check: ...]" tag
     reason="a deviation is an event that happened; re-reading can't reproduce it (/baseline shows the usual pattern)"))
+# E.1: a path is a structural possibility built from the underlying findings; re-reading can't
+# reproduce it. The findings each hop rests on are verified on their own (open their links).
+register_no_verifier(NoVerifier(
+    rules=("PATH-001", "PATH-002", "PATH-003", "PATH-004"),
+    reason="an attack path is a structural possibility; retest the findings each hop rests on (/paths)"))

@@ -295,6 +295,19 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "attack_paths", "Attack-path builds",
+        "For each attack-path build of a group: the run (which group, who built it, when, how many machines, the "
+        "coverage numbers, cost always 0 -- a build never calls a model), the graph it drew (machines, services, "
+        "accounts, SSH-key fingerprints, containers and code folders as nodes; who-can-reach-what as edges, each "
+        "with the evidence that justifies it) and the ranked entries, paths and chokepoints. Built entirely from "
+        "what D.2-E.7a already stored; nothing new is read from a machine, and key material is public fingerprints "
+        "only. Per run, never edited.",
+        PERSONAL, "one set of rows per build (bounded nodes / edges / paths) and one snapshot file per build",
+        tables=(TableRef(DB, ("path_runs", "path_nodes", "path_edges", "path_results"), ("path_runs", "built_at")),),
+        files=("paths",),
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
         "review_work", "AI code-review scratch",
         "A temporary copy of the slices being reproduced in Kratos's no-network sandbox, with the dangerous call "
         "replaced by a recorder. Emptied after every run and swept at the next review; never exported, never kept, "
