@@ -270,11 +270,12 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
             if req.kind == "audit":
                 answer = _audit_answer(results)
             else:
+                paths_note = _attack_path_note(data_dir, label)
                 answer = answer_fleet(question, results, data_dir, time_block=time_block,
                                       extra_reads=fleet_settings.get(fleet_settings.EXTRA_READS, data_dir),
                                       digest_cap=fleet_settings.get(fleet_settings.DIGEST_CHARS, data_dir),
-                                      outside_scope=resolved.outside_scope, on_progress=req.on_progress,
-                                      should_stop=req.should_stop)
+                                      outside_scope=resolved.outside_scope, paths_note=paths_note,
+                                      on_progress=req.on_progress, should_stop=req.should_stop)
             if resolved.outside_scope:
                 answer.summary += f" · {resolved.outside_scope} machine(s) in this group are outside your access"
             if resolved.duplicates:
@@ -294,6 +295,18 @@ def run_fleet(req: FleetRequest) -> FleetOutcome:
             return FleetOutcome(answer.status, answer.render(), run_id=run_id, group_label=label, estimate=est,
                                 answer=answer, results=results, resolved=resolved, notified=notified,
                                 token_usage={"total_tokens": tokens, "cost_usd": cost})
+
+
+def _attack_path_note(data_dir: Path, group_label: str) -> str:
+    """E.1 decision 11: the newest attack-path build's one-line summary for the group, as
+    model context (code-built; the model explains, never re-ranks). "" when none is current."""
+    try:
+        from kratos.attackpaths import present
+
+        return present.model_line(data_dir, group_label) or ""
+    except Exception:  # noqa: BLE001 -- a missing/old build must never sink a fleet answer
+        logger.debug("fleet: no attack-path note", exc_info=True)
+        return ""
 
 
 def _time_context(question: str, data_dir: Path, req: FleetRequest) -> tuple[Any, str, float]:

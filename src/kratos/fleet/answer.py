@@ -245,6 +245,7 @@ def _not_read_text(res: MachineResult) -> str:
 
 def answer_fleet(question: str, results: list[MachineResult], data_dir: Path | str, *, time_block: str = "",
                  extra_reads: int = 3, digest_cap: int = 16000, outside_scope: int = 0,
+                 paths_note: str = "",
                  dispatch: Callable[..., dict[str, Any]] | None = None,
                  on_progress: Callable[[str], None] | None = None,
                  should_stop: Callable[[], bool] | None = None) -> FleetAnswer:
@@ -290,7 +291,14 @@ def answer_fleet(question: str, results: list[MachineResult], data_dir: Path | s
         if should_stop is not None and should_stop():
             raise InvestigationStopped()
         d = digest_now()
-        prompt = d.text + ("\n\n" + "\n\n".join(history) if history else "")
+        # E.1: Kratos's own attack-path summary for the group (code-built numbers and the
+        # chosen chokepoint), framed as data (A.4). The model may explain it, never re-rank it.
+        note = ""
+        if paths_note:
+            note = "\n\n" + untrusted.frame_text(
+                "KRATOS ATTACK-PATH SUMMARY (Kratos computed this; explain it, do not re-rank it):\n" + paths_note,
+                kind="machine", run_id=run_tag, call_id=untrusted.new_call_id(999))
+        prompt = d.text + note + ("\n\n" + "\n\n".join(history) if history else "")
         if final:
             prompt += "\n\nThis is the last turn: give your answer JSON now, no more reads."
         try:

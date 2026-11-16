@@ -593,6 +593,8 @@ def run_scheduled(
     A schedule whose target is a group (``@web``) runs on every machine of it
     (D.2): kind audit = the standard audit per machine, kind preset (a goal) = one
     fleet question; one grouped notification for the run."""
+    if getattr(schedule, "kind", None) == "paths":
+        return _run_paths_schedule(schedule, data_dir, deliver=deliver, notifier=notifier, source=source)
     if str(schedule.target or "").startswith("@"):
         return _run_fleet_schedule(schedule, data_dir, deliver=deliver, notifier=notifier, source=source)
     from kratos import authz
@@ -862,6 +864,54 @@ def _run_scheduled(
     }
     _append_record(data_dir, schedule.name, record)
     _target_lock.release_target(lock)  # (also released by the process exiting)
+    return record
+
+
+def _run_paths_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver: bool,
+                        notifier: Optional[Notifier], source: str) -> dict[str, Any]:
+    """E.1 decision 10: a scheduled attack-path build of a group. Pure code over stored
+    evidence (no model call, no machine read), under the schedule's user and scope, with ONE
+    grouped notification (the top entry / path / chokepoint). A trigger may fire on a new PATH
+    finding like any other (the build emits them through the lifecycle)."""
+    from kratos import authz, run_context
+    from kratos.attackpaths import build as PB
+    from kratos.lifecycle.decide import Actor
+
+    data_dir = Path(data_dir)
+    notifier = notifier or _schedule_notifier(schedule, data_dir)
+    started_at = utc_now_iso()
+    group = str(schedule.target or "all").lstrip("@") or "all"
+    record: dict[str, Any] = {"schedule": schedule.name, "started_at": started_at, "target": schedule.target,
+                              "kind": "paths", "findings_count": 0, "severity_tally": {}, "omitted_gated_tools": [],
+                              "report_json": None, "report_md": None, "delivered": None, "notified": False,
+                              "triggers_fired": [], "error": None}
+    actor = authz.unattended_actor("schedule", schedule.name, getattr(schedule, "run_as", "owner"))
+    refusal = authz.unattended_refusal(actor, authz.P.FLEET_ASK, schedule.target, data_dir=data_dir)
+    if refusal is not None:
+        return _refused_record(schedule, data_dir, refusal, deliver=deliver, notifier=notifier)
+    try:
+        with authz.acting_as(actor, action=authz.P.FLEET_ASK):
+            out = PB.run_path_build(data_dir=data_dir, group=group, actor=Actor(
+                user=f"schedule:{schedule.name}", interface="schedule",
+                user_id=getattr(schedule, "run_as", "owner") or "owner"), source=source, name=schedule.name)
+    except PB.PathBuildError as e:
+        record.update(status="error", finished_at=utc_now_iso(), error=str(e))
+        _append_record(data_dir, schedule.name, record)
+        if deliver and schedule.deliver:
+            record["delivered"] = notifier(f"Scheduled attack-path build '{schedule.name}' did not run: {e}", "warning")
+            settle_delivery(data_dir, record["delivered"])
+            record["notified"] = _sent(record["delivered"])
+        return record
+    record.update(status="completed", finished_at=utc_now_iso(), run_id=out.run_id, summary=out.summary,
+                  findings_count=len(out.findings))
+    if deliver and schedule.deliver:
+        sev = "warning" if out.paths else "info"
+        lines = [f"Attack paths for {out.group_label}: {out.summary}", "Next: open Kratos and type /paths",
+                 f"({schedule.name})"]
+        record["delivered"] = notifier("\n".join(lines), sev)
+        settle_delivery(data_dir, record["delivered"])
+        record["notified"] = _sent(record["delivered"])
+    _append_record(data_dir, schedule.name, record)
     return record
 
 

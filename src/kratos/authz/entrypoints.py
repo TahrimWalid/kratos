@@ -84,6 +84,9 @@ CLI: dict[str, Entry] = {
     "cmd_compliance": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "cmd_baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "cmd_code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
+    # E.1: `paths show|entries|chokepoints` are read-only (PATHS_READ, viewer+); `paths build`
+    # is a cross-machine synthesis gated by run_path_build's own FLEET_ASK check.
+    "cmd_paths": A(P.PATHS_READ, "kratos.attackpaths.build:run_path_build"),
     # E.7b: prepare/start self-check (person-only, admin, local) in run/reads; the read-only
     # sub-commands resolve through code.present's reader scope.
     "cmd_review": CORE("kratos.review.run:_require_person", "kratos.code.reads:read_for_review",
@@ -175,6 +178,10 @@ TUI: dict[str, Entry] = {
     "/comp": CORE("kratos.compliance.report:resolve_machines", "kratos.compliance.owners:_check_actor"),
     "/baseline": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
     "/code": CORE("kratos.code.present:resolve_code_reader", "kratos.code.roots:_check_actor"),
+    # E.1: reading is scoped (PATHS_READ), building is the fleet door -- both checked in read_scoped /
+    # run_path_build (which call require), so the screen reaches core functions that check themselves.
+    "/paths": CORE("kratos.attackpaths.build:read_scoped", "kratos.attackpaths.build:run_path_build"),
+    "/attack-paths": CORE("kratos.attackpaths.build:read_scoped", "kratos.attackpaths.build:run_path_build"),
     "/review": CORE("kratos.review.run:_require_person", "kratos.code.reads:read_for_review",
                     "kratos.code.present:resolve_code_reader"),
     "/normal": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),

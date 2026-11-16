@@ -43,7 +43,7 @@ from kratos.utils.timeutil import utc_now_iso
 #   preset -> a saved goal preset (agentic)
 #   group  -> A6.5 multi-run: an ORDERED list of audit/preset jobs run as ONE
 #             unit on one cadence, under one target lock, with an on_failure policy
-RUNNABLE_KINDS = {"audit", "preset", "group"}
+RUNNABLE_KINDS = {"audit", "preset", "group", "paths"}
 
 # What a group does when one of its jobs fails (design doc §8 ordering/dependency).
 #   continue -> run the remaining jobs anyway (default; more data is better)
@@ -121,7 +121,7 @@ class Schedule:
         if self.kind not in RUNNABLE_KINDS:
             return (f"'{self.name}' has an unsupported kind '{self.kind}'. "
                     "Supported: 'audit' (standard audit), 'preset' (a saved goal preset), "
-                    "or 'group' (an ordered set of jobs).")
+                    "'group' (an ordered set of jobs), or 'paths' (an attack-path build of a group).")
         if self.kind == "group":
             return f"'{self.name}' is a group but has no runnable jobs."
         return f"'{self.name}' is a preset schedule but names no preset to run."
