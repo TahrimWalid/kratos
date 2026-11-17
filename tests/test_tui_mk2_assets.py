@@ -101,3 +101,25 @@ def test_the_question_can_be_turned_off(tmp_path):
         app = _FakeApp(["high"])
         assert await SA.ask_criticality_once(app, tmp_path, T, why="w") is None and not app.asked
     asyncio.run(go())
+
+
+def test_assets_fits_80_columns_with_role_and_note_in_the_detail_pane(tmp_path):
+    """TUI review: role and owner note were cut at 80 columns; they are in the detail pane now."""
+    from kratos.tui_mk2.screens.assets import AssetsScreen
+
+    AS.update(tmp_path, "web-01.example.test", Actor("owner", "cli"), criticality="high", role="customer site",
+              owner_note="ops team")
+
+    class _A(App):
+        def on_mount(self):
+            self.push_screen(AssetsScreen(tmp_path))
+
+    async def go():
+        app = _A()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            scr = app.screen
+            detail = str(scr.query_one("#as-detail")._Static__content)
+            assert "role customer site" in detail and "note: ops team" in detail
+            assert "esc back" in str(scr.query_one("#as-hints")._Static__content)
+    asyncio.run(go())
