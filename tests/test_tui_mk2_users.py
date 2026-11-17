@@ -65,7 +65,7 @@ def test_users_screen_adds_scopes_disables_and_makes_a_token(tmp_path, monkeypat
             _answers(app, monkeypatch, [True])
             screen.action_toggle()
             await _settle(pilot, lambda: not U.find(tmp_path, "ivy").disabled)
-            _answers(app, monkeypatch, ["ivy-laptop", False])
+            _answers(app, monkeypatch, ["ivy-laptop", False, True])
             screen.action_token()
             await _settle(pilot, lambda: any(getattr(s, "_command", "").startswith("krt_") for s in shown))
             _answers(app, monkeypatch, ["owui-123", "ivy@example.com"])
@@ -78,6 +78,10 @@ def test_users_screen_adds_scopes_disables_and_makes_a_token(tmp_path, monkeypat
     actions = [r["action"] for r in AU.query(tmp_path, interface="tui")]
     assert actions.count("users.manage") >= 5
     assert "tokens.manage" in [r["action"] for r in AU.query(tmp_path)]
+    from kratos.serve import store as SS
+
+    laptop = next(t for t in SS.list_tokens(tmp_path) if t["name"] == "ivy-laptop")
+    assert laptop["doors"] == ["openai", "agents"]        # E.5: the agent doors were asked for
     assert all(r["user_id"] == "owner" for r in AU.query(tmp_path))
 
 

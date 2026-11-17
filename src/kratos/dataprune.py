@@ -6,7 +6,8 @@ that plan (`--apply` on the CLI, a confirmation in the TUI). Applying refuses in
 an agent tool call (like settings `set`), and every applied prune is recorded in
 `data_prunes` (who, when, what, how many).
 
-Categories handled here (docs/phaseB/B.5 §5.3): `traces`, `sessions`, `host_events`, and `hunts`
+Categories handled here (docs/phaseB/B.5 §5.3): `traces`, `sessions`, `host_events`, `agent_tasks`
+(E.5: finished A2A tasks and AG-UI runs), and `hunts`
 (C.3: hunt records; host-event prunes also remove the hunt index's entries for those lines).
 Snapshots keep their own tiered command. Data that other data depends on is named
 in the plan's `blockers` and refused unless `force_orphans`:
@@ -30,7 +31,7 @@ from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 
 COMPONENT = "data_prunes"
-PRUNABLE = ("traces", "sessions", "host_events", "pseudonyms", "hunts")
+PRUNABLE = ("traces", "sessions", "host_events", "pseudonyms", "hunts", "agent_tasks")
 
 
 class PruneError(ValueError):
@@ -264,8 +265,25 @@ def _plan_hunts(plan: Plan, data_dir: Path) -> None:
     plan.bytes = len(ids) * 600
 
 
+def _plan_agent_tasks(plan: Plan, data_dir: Path) -> None:
+    """Finished A2A tasks / AG-UI runs (kratos.serve.a2a.store) older than the cutoff -- the
+    answers they were given; an unfinished task is never removed."""
+    conn = _open_ro(data_dir)
+    ids: list[str] = []
+    try:
+        if conn is not None and _table_exists(conn, "a2a_tasks"):
+            ids = [str(r[0]) for r in conn.execute("SELECT task_id FROM a2a_tasks WHERE finished IS NOT NULL "
+                                                   "AND finished < ?", (plan.cutoff,))]
+    finally:
+        if conn is not None:
+            conn.close()
+    plan.rows["a2a_tasks"] = ids
+    plan.counts["agent tasks"] = len(ids)
+    plan.bytes = len(ids) * 4000
+
+
 _PLANNERS = {"traces": _plan_traces, "sessions": _plan_sessions, "host_events": _plan_host_events,
-             "pseudonyms": _plan_pseudonyms, "hunts": _plan_hunts}
+             "pseudonyms": _plan_pseudonyms, "hunts": _plan_hunts, "agent_tasks": _plan_agent_tasks}
 
 
 def plan_prune(data_dir: Path, category: str, older_than_days: int, *, now: float | None = None) -> Plan:
@@ -353,6 +371,13 @@ def apply_prune(data_dir: Path, plan: Plan, *, actor: str, force_orphans: bool =
                     part = ids[i:i + 500]
                     conn.execute(f"DELETE FROM hunt_runs WHERE id IN ({','.join('?' * len(part))})", part)
                 done["hunt records"] = len(ids)
+            elif plan.category == "agent_tasks":
+                ids = plan.rows.get("a2a_tasks") or []
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    conn.execute(f"DELETE FROM a2a_tasks WHERE finished IS NOT NULL AND task_id IN "
+                                 f"({','.join('?' * len(part))})", part)
+                done["agent tasks"] = len(ids)
             elif plan.category == "pseudonyms":
                 scopes = plan.rows.get("pseudonym_map") or []
                 for scope in scopes:

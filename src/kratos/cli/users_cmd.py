@@ -78,6 +78,8 @@ def add_parser(sub: Any) -> None:
     c.add_argument("--machines", default="", help="Narrow it to these machines (default: the user's whole scope; "
                                                   "the owner's: the default machine)")
     c.add_argument("--mcp", action="store_true", help="Also allow the MCP door")
+    c.add_argument("--agents", action="store_true",
+                   help="Also allow the agent doors (A2A, AG-UI), when they are turned on (a2a.enabled, agui.enabled)")
     c.add_argument("--days", default=None, help="Days until it expires (default users.token_days); 'never' for "
                                                 "the owner's own tokens only")
     c.add_argument("--gateway", action="store_true",
@@ -229,7 +231,8 @@ def cmd_tokens(args: argparse.Namespace) -> int:
     try:
         if act == "create":
             token, row = A.create_token(dd, name=args.name, targets=_list(args.machines), mcp=bool(args.mcp),
-                                        created_by="cli", user=args.user, expires=args.days, gateway=args.gateway)
+                                        created_by="cli", user=args.user, expires=args.days, gateway=args.gateway,
+                                        agents=bool(args.agents))
             print(token)
             _after_create(dd, row)
             return 0

@@ -92,6 +92,18 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "agent_tasks", "Agent tasks (A2A and AG-UI)",
+        "Each task another agent (A2A) or an agent front end (AG-UI) started through `kratos serve`: when, which "
+        "person and token, which skill, the machine or group, how it ended, the reason for a refusal, and the "
+        "result it was given (Kratos's checked answer and the findings as data). Never the token; the question "
+        "itself is in the session like every other question.",
+        PERSONAL, "one row per task (a few KB with its answer)",
+        tables=(TableRef(DB, ("a2a_tasks",), ("a2a_tasks", "created")),),
+        prunable=True,
+        note="only finished tasks are pruned; nothing here is pruned automatically",
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
         "traces", "Run records (traces)",
         "One file per investigation, audit, scheduled run and trigger: every model call, tool call and its "
         "result, guard and how the answer was put together. The most detailed file Kratos writes.",

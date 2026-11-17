@@ -41,6 +41,9 @@ def _edit(tree: Path, rel: str, old: str, new: str) -> None:
     ("serve/openai_routes.py",
      "await asyncio.to_thread(authz.require, actor, authz.P.READ, data_dir=state.data_dir, audit_allowed=False)",
      "pass", "list_models"),
+    # an A2A route handler (E.5)
+    ("serve/a2a/routes.py", "await asyncio.to_thread(authz.require, actor, authz.P.SESSIONS_OWN, data_dir=state.data_dir,\n"
+     "                                    obj=f\"a2a cancel {task_id[:60]}\")", "pass", "_handlers.cancel"),
     # a people-only function (asset edits)
     ("assets/store.py", "authz.require(actor, authz.P.ASSETS_MANAGE,", "(lambda *a, **k: None)(actor, None,",
      "assets.store:_check_actor"),

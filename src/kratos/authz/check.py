@@ -113,7 +113,7 @@ def current_actor() -> Any:
     from kratos import run_context
 
     ctx = run_context.current()
-    if ctx is not None and ctx.source == "web":
+    if ctx is not None and ctx.source in run_context.NETWORK_SOURCES:
         return None
     interface = {"mcp": "mcp", "schedule": "schedule", "trigger": "schedule", "watch": "schedule",
                  "interactive": "tui", "evolve": "tui"}.get(ctx.source if ctx is not None else "", _local_interface)

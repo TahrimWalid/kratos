@@ -43,6 +43,14 @@ NETWORK_HELPERS = ("kratos.serve.openai_routes:_serve_turn", "kratos.serve.opena
                    "kratos.serve.openai_routes:command_reply", "kratos.serve.openai_routes:_retest_text",
                    "kratos.serve.openai_routes:_hunt_text", "kratos.serve.openai_routes:_decide_text")
 
+# E.5: the agent doors' route handlers (A2A REST binding, AG-UI) -- each checks the person.
+AGENT_ROUTE_MODULES = ("kratos.serve.a2a.routes", "kratos.serve.agui")
+AGENT_ROUTES_WITHOUT_A_PERSON = {
+    "kratos.serve.a2a.routes:_handlers.public_card": "the public Agent Card: skills only, no machine or person",
+    "kratos.serve.a2a.routes:_handlers.keys": "the public signing keys (to verify the card)",
+    "kratos.serve.a2a.routes:_handlers.api": "a dispatcher: every path it serves is a scanned handler here",
+}
+
 PER_READ = ("kratos.agent.loop:_dispatch_tool_call", "kratos.fleet.collect:_collect_one",
             "kratos.agent.loop:_collect_first", "kratos.serve.runs:run_investigation")
 
@@ -155,6 +163,12 @@ def scan(src: Path = DEFAULT_SRC) -> Report:
     handlers = [f for f in funcs if f.module == "kratos.serve.openai_routes" and f.qualname.startswith("_handlers.")
                 and isinstance(f.node, ast.AsyncFunctionDef)]
     helpers = [f for ref in NETWORK_HELPERS for f in _find(funcs, ref)]
+    agent_routes = [f for f in funcs if f.module in AGENT_ROUTE_MODULES and isinstance(f.node, ast.AsyncFunctionDef)
+                    and f.qualname.startswith(("_handlers.", "_handler.")) and f.qualname.count(".") == 1
+                    and f.ref not in AGENT_ROUTES_WITHOUT_A_PERSON]
+    if len(agent_routes) < 7:
+        rep.network.append(f"the agent doors' route handlers were not found ({len(agent_routes)})")
+    handlers = handlers + agent_routes
     for ref in NETWORK_HELPERS:
         if not _find(funcs, ref):
             rep.network.append(f"{ref}: listed as a network entry point but not found")
