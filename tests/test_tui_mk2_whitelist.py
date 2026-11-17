@@ -615,10 +615,20 @@ def test_delete_a_user_entry_and_details_and_ceiling_view(tmp_path):
         screen.action_show_ceiling()
         screen.action_delete_entry()
 
-    out = _drive(screen, [True], details_ceiling_delete)
+    ceiling: list = []
+
+    def details_ceiling_delete_and_keep_the_card():
+        from rich.console import Console
+        con = Console(width=100, record=True)
+        details_ceiling_delete()
+        con.print(screen._ceiling_body())
+        ceiling.append(con.export_text())
+
+    out = _drive(screen, [True], details_ceiling_delete_and_keep_the_card)
     joined = "\n".join(out["texts"])
     assert "Stops cups." in joined and "one of: cups" in joined
-    assert "systemctl disable --now <one of:" in joined  # the ceiling view lists allowed forms
+    # the ceiling card lists the allowed forms, a long choice list on its own line
+    assert "systemctl disable --now <service>" in ceiling[0] and "service: fail2ban, ufw" in ceiling[0]
     assert wl.list_user_entries(tid) == []
 
 

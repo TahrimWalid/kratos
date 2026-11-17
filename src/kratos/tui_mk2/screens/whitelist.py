@@ -205,9 +205,13 @@ class WhitelistScreen(Screen):
         self.app.pop_screen()
 
     # ------------------------------------------------------------------
-    def _log(self, renderable: Any) -> None:
-        self.query_one("#wl-log", VerticalScroll).mount(Static(renderable))
+    def _log(self, renderable: Any) -> Static:
+        """Add a line to the activity log; returns it, so a line that tracks
+        progress ("waiting for a result…") can be updated in place."""
+        line = Static(renderable)
+        self.query_one("#wl-log", VerticalScroll).mount(line)
         self.query_one("#wl-log", VerticalScroll).scroll_end(animate=False)
+        return line
 
     def on_resize(self, event) -> None:
         self.call_after_refresh(self._refresh)
@@ -476,8 +480,10 @@ class WhitelistScreen(Screen):
         except ValueError as e:
             self._log(Text(f"✗ {e}", style=T.CRITICAL))
             return
-        self._log(Text(f"→ dispatch requested: {spec.id} (request {request_id[:8]}…) -- waiting for a result…",
-                        style=T.ACCENT))
+        # One line per run, updated in place as it goes (F11: the "waiting…" line used
+        # to stay in the log after the result arrived, so every run took 2-3 lines).
+        progress = self._log(Text(f"→ {spec.id}: requested (request {request_id[:8]}…) -- waiting for a result…",
+                                  style=T.TEXT_MUTED))
 
         # Waits for the listener to send it (it does so within the store's
         # DISPATCH_REQUEST_TTL_SECONDS, or never). If nobody has by our
@@ -492,19 +498,20 @@ class WhitelistScreen(Screen):
                 break
             if row and row["status"] == "claimed" and sent_at is None:
                 sent_at = elapsed
-                self._log(Text("  sent to the machine -- waiting for its answer…", style=T.TEXT_DIM))
+                progress.update(Text(f"→ {spec.id}: sent to the machine -- waiting for its answer…",
+                                     style=T.TEXT_MUTED))
             if sent_at is None and elapsed >= _POLL_TIMEOUT_SECONDS:
                 outcome = self._wl_store.cancel_dispatch_request(
                     request_id, f"no listener sent it within {_POLL_TIMEOUT_SECONDS:.0f}s")
                 if outcome == "cancelled":
-                    self._log(Text(
+                    progress.update(Text(
                         f"⚠ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
                         "so it was cancelled. Is `kratos subagent-serve` running and the machine connected?",
                         style=f"bold {T.ATTENTION}"))
                     return
                 continue  # sent (or answered) at the last moment: follow it
             if sent_at is not None and elapsed - sent_at >= _ANSWER_TIMEOUT_SECONDS:
-                self._log(Text(
+                progress.update(Text(
                     "⚠ the request was sent to the machine, but no answer came back -- the outcome is unknown. "
                     "Check the machine (t shows its latest telemetry) before trying again.",
                     style=f"bold {T.CRITICAL}"))
@@ -519,7 +526,7 @@ class WhitelistScreen(Screen):
         detail = result.get("reason") or (
             f"exit_code={result.get('exit_code')}" if status == "ok" else ""
         )
-        self._log(Text(f"{icon} {spec.id}: {status}  {detail}", style=f"bold {color}"))
+        progress.update(Text(f"{icon} {spec.id}: {status}  {detail}", style=f"bold {color}"))
         if status == "ok" and result.get("stdout_tail"):
             self._log(Text("output: " + result["stdout_tail"][-2000:].strip(), style=T.TEXT_DIM))
 
@@ -715,32 +722,56 @@ class WhitelistScreen(Screen):
                   f"{C.LOCAL_ALLOW_FILE} with the permissions the agent requires. Then press s here to re-sync.")))
 
     def action_show_ceiling(self) -> None:
+        """What the target's agent will run, as a card: each command form on one
+        line with a short placeholder, and a long '<one of: …>' list underneath as
+        its own wrapped line (F11: 20+ service names used to print as a paragraph
+        into the log)."""
         if self._target_id is None:
             return
+        from kratos.tui_mk2.modals import InfoModal
+
+        self.app.push_screen(InfoModal(f"What {self._target_label()}'s agent will run", self._ceiling_body()))
+
+    def _ceiling_body(self) -> Any:
+        import re as _re
+
         state = self._wl_store.get_agent_state(self._target_id) or {}
         ceiling = state.get("ceiling") or {}
-        self._log(Text("What this target's agent will run (its own rules -- Kratos can narrow them, never widen them):",
-                       style=f"bold {T.ACCENT}"))
+        body = Table.grid(padding=(0, 1))
+        body.add_column(width=2, no_wrap=True)
+        body.add_column(ratio=1)
+        body.add_row("", Text("Kratos can narrow these, never widen them.", style=T.TEXT_DIM))
+        body.add_row("", "")
         for form in EB.allowed_forms(C.DEFAULT_CEILING):
-            self._log(Text(f"  • {form}", style=T.TEXT))
+            choices = _re.search(r"<one of: ([^>]*)>", form)
+            shown = form
+            if choices:
+                verb = "service" if "systemctl" in form else "value"
+                shown = form.replace(choices.group(0), f"<{verb}>")
+            body.add_row(Text("•", style=T.TEXT_DIM), Text(shown, style=f"bold {T.TEXT_BRIGHT}"))
+            if choices:
+                items = [c.strip() for c in choices.group(1).split(",") if c.strip()]
+                body.add_row("", Text(f"{verb}: " + ", ".join(items), style=T.TEXT_MUTED))
         local = ceiling.get("local_commands") or []
+        body.add_row("", "")
         if local:
-            self._log(Text("Exact commands its admin allowed on the target:", style=f"bold {T.ACCENT}"))
+            body.add_row("", Text("Exact commands its admin allowed on the target:", style=f"bold {T.TEXT_BRIGHT}"))
             for line in local:
-                self._log(Text(f"  • {line}", style=T.TEXT))
+                body.add_row(Text("•", style=T.TEXT_DIM), Text(line, style=T.TEXT))
         elif state:
-            self._log(Text(f"No exact commands allowed on the target ({C.LOCAL_ALLOW_FILE} is empty or absent).",
-                           style=T.TEXT_DIM))
+            body.add_row("", Text(f"No exact commands allowed on the target ({C.LOCAL_ALLOW_FILE} is empty or absent).",
+                                  style=T.TEXT_DIM))
         else:
-            self._log(Text("This target hasn't reported yet -- it will once `kratos subagent-serve` sees it connect.",
-                           style=T.TEXT_DIM))
+            body.add_row("", Text("This target hasn't reported yet -- it will once `kratos subagent-serve` sees it "
+                                  "connect.", style=T.TEXT_DIM))
         for problem in ceiling.get("local_problems") or []:
-            self._log(Text(f"  ⚠ {problem}", style=T.ATTENTION))
+            body.add_row(Text("!", style=T.ATTENTION), Text(problem, style=T.ATTENTION))
         for r in state.get("rejected") or []:
-            self._log(Text(f"  ⚠ refused {r.get('id')}: {r.get('reason')}", style=T.ATTENTION))
+            body.add_row(Text("!", style=T.ATTENTION), Text(f"refused {r.get('id')}: {r.get('reason')}", style=T.ATTENTION))
         if state.get("agent_version"):
-            self._log(Text(f"agent version {state['agent_version']} · last report {state.get('updated_at')}",
-                           style=T.TEXT_FAINT))
+            body.add_row("", Text(f"agent version {state['agent_version']} · last report {state.get('updated_at')}",
+                                  style=T.TEXT_FAINT))
+        return body
 
     @work
     async def action_resync(self) -> None:
