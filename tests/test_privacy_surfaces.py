@@ -36,7 +36,6 @@ def test_doctor_says_what_the_model_is_sent(tmp_path, monkeypatch):
 
 def test_settings_general_lists_the_privacy_rows(tmp_path, monkeypatch):
     from textual.app import App
-    from textual.widgets import DataTable
 
     from kratos.tui_mk2.screens.settings import SettingsScreen
 

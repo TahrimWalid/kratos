@@ -1466,7 +1466,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _render_usage(self) -> None:
         """Today's spending against the limits, then this session's model usage
         per model with an estimated cost (saved, so it survives restarts)."""
-        from kratos.untrusted_rich import SafeTable as Table
         from kratos.budget import pricing, report
 
         today = report.today(self._data_dir)
@@ -1768,7 +1767,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
         """`/data`: the stored-data inventory. `/data prune <traces|sessions|host_events>
         <days>`: what would go, then a confirmation -- nothing is deleted without a yes."""
         from kratos import datainv, dataprune
-        from kratos.untrusted_rich import SafeTable as Table
 
         args = (rest or "").split()
         if args and args[0] == "prune":
@@ -4457,7 +4455,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _probe_target(self) -> None:
         from kratos.adapters.ssh_remote import run_target_probe_checks, SSHResult
-        from kratos.untrusted_rich import SafeTable as Table
         result = run_target_probe_checks()
         from kratos.subagent import routing as _routing
         from kratos.tui_mk2 import target_memory as TM
@@ -4567,7 +4564,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
     def _render_evolve_list(self) -> None:
         from kratos.agent.tools import TOOL_REGISTRY
         from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
-        from kratos.untrusted_rich import SafeTable as Table
         metadata = _read_metadata(KEPT_TOOLS_DIR)
         table = R.data_table(f"Tools reachable by the agent ({len(TOOL_REGISTRY)})", show_header=True)
         table.add_column("Name")
@@ -5806,6 +5802,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     kind = " (built in: every machine with an asset record)" if g.builtin else ""
                     lines.append(f"@{g.name}{kind}: {', '.join(g.members[:10]) or 'no machines'}"
                                  + (" …" if len(g.members) > 10 else ""))
+                outside = G.outside_all(self._data_dir, configured=_kconfig.get_active_target())
+                if outside:
+                    names = ", ".join(outside[:5]) + (" …" if len(outside) > 5 else "")
+                    lines.append(f"Not in @all yet: {names} -- no asset record. Give "
+                                 f"{'it' if len(outside) == 1 else 'them'} one in /assets.")
                 self._emit(R.result_panel("Groups", "\n".join(lines) + "\n\n/target @<group> asks about all of a "
                                           "group's machines at once.", T.ACCENT))
                 return

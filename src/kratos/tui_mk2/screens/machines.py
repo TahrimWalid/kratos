@@ -211,7 +211,6 @@ class MachinesScreen(Screen):
         return m
 
     def _cells(self, m: dict[str, Any]) -> list[Text]:
-        from kratos.subagent import status as ST
         from kratos.tui_mk2.screens.subagent import _STATE_STYLE
 
         name = Text(("▸ " if m["host"] == self._active else "  ") + m["host"],

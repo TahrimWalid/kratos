@@ -85,7 +85,9 @@ def detail_lines(s: dict[str, Any]) -> list[str]:
     """Everything that produced a decision, in plain words (most important first)."""
     if not s:
         return []
-    out = [f"SSVC decision: {s.get('label')} (CISA SSVC tree {s.get('tree')}; worst CVE {s.get('cve')})"]
+    why = [part for part in (f"CISA SSVC tree {s['tree']}" if s.get("tree") else "",
+                             f"worst CVE {s['cve']}" if s.get("cve") else "") if part]
+    out = [f"SSVC decision: {s.get('label')}" + (f" ({'; '.join(why)})" if why else "")]
     if s.get("definition"):
         out.append(f"What {s.get('label')} means (CISA): {s['definition']}")
     elif not s.get("outcome"):
