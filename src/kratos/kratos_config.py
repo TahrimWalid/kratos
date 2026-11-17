@@ -249,11 +249,36 @@ def load_local_config(data_dir: Path) -> dict:
         return {}
 
 
-def save_local_config(data_dir: Path, **updates: Any) -> None:
+def update_local_config(data_dir: Path, updates: dict[str, Any] | None = None, remove: tuple[str, ...] = ()) -> None:
+    """Change some keys of the local config, keeping every other key.
+
+    Several Kratos processes write this file (the app, `kratos serve`, the always-on
+    listener, CLI commands). The whole read-modify-write runs under an exclusive lock on
+    a sidecar lock file, and the new file replaces the old one atomically, so a writer
+    never reads a half-written file (which used to read as {} and wipe every setting) and
+    two writers can't drop each other's change (a lost update dropped a saved timezone)."""
+    import fcntl
+
+    from kratos import paths as _paths
+
+    data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
-    config = load_local_config(data_dir)
-    config.update(updates)
-    _local_config_path(data_dir).write_text(json.dumps(config, indent=2), encoding="utf-8")
+    lock_dir = data_dir / "locks"                 # kratos.datainv: runtime (locks)
+    _paths.ensure_private_dir(lock_dir)
+    fd = os.open(lock_dir / "local_config.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        config = load_local_config(data_dir)
+        config.update(updates or {})
+        for key in remove:
+            config.pop(key, None)
+        _paths.write_private_text(_local_config_path(data_dir), json.dumps(config, indent=2))
+    finally:
+        os.close(fd)        # closing the descriptor releases the lock
+
+
+def save_local_config(data_dir: Path, **updates: Any) -> None:
+    update_local_config(data_dir, updates)
 
 # ---------------------------------------------------------------------------
 # The login name Kratos uses on each machine. Machines differ (ubuntu, root,

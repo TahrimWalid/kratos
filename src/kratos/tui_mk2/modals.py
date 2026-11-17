@@ -839,23 +839,39 @@ class ToolPickerModal(ModalScreen[str | None]):
         q = query.strip().lower()
         return [(n, d) for n, d in self._entries if q in n.lower() or q in d.lower()]
 
+    @staticmethod
+    def _row(name: str, desc: str, *, selected: bool) -> Any:
+        # desc may lead with a short "where" tag, separated by a tab.
+        where, _, text = desc.partition("\t") if "\t" in desc else ("", "", desc)
+        # A grid, so a wrapped description stays in its own column. The highlighted row takes the
+        # highlight bar's own text colour (the accent name was invisible on the accent bar).
+        row = Table.grid(expand=True)
+        row.add_column(width=27, no_wrap=True, overflow="ellipsis")
+        row.add_column(width=12, no_wrap=True)
+        row.add_column(ratio=1)
+        row.add_row(Text(name, style="bold" if selected else T.ACCENT),
+                    Text(where, style="" if selected else T.TEXT_DIM),
+                    Text(text, style="" if selected else T.TEXT_MUTED))
+        return row
+
     def _refresh(self, query: str) -> None:
         lst = self.query_one("#tp-list", ListView)
         lst.clear()
-        for name, desc in self._matches(query):
-            # desc may lead with a short "where" tag, separated by a tab.
-            where, _, text = desc.partition("\t") if "\t" in desc else ("", "", desc)
-            # A grid, so a wrapped description stays in its own column.
-            row = Table.grid(expand=True)
-            row.add_column(width=27, no_wrap=True, overflow="ellipsis")
-            row.add_column(width=12, no_wrap=True)
-            row.add_column(ratio=1)
-            row.add_row(Text(name, style=T.ACCENT), Text(where, style=T.TEXT_DIM), Text(text, style=T.TEXT_MUTED))
-            cell = Static(row)
+        self._shown = self._matches(query)
+        for i, (name, desc) in enumerate(self._shown):
+            cell = Static(self._row(name, desc, selected=i == 0))
             cell.styles.width = "1fr"   # wrap a long description instead of clipping it
             lst.append(ListItem(cell))
         if len(lst):
             lst.index = 0
+
+    @on(ListView.Highlighted, "#tp-list")
+    def _restyle(self, event: ListView.Highlighted) -> None:
+        current = event.list_view.index
+        shown = getattr(self, "_shown", [])
+        for idx, item in enumerate(event.list_view.children):
+            if idx < len(shown):
+                item.query_one(Static).update(self._row(*shown[idx], selected=idx == current))
 
     @on(Input.Changed, "#tp-input")
     def _changed(self, event: Input.Changed) -> None:
@@ -918,16 +934,31 @@ class CommandPaletteModal(ModalScreen[str | None]):
         q = query.lstrip("/").lower()
         return [(c, d) for c, d in self._commands if q in c.lstrip("/").lower()]
 
+    @staticmethod
+    def _row(cmd: str, desc: str, *, selected: bool) -> Text:
+        """The highlighted row takes the highlight bar's own text colour: the accent-coloured
+        command name was invisible on the accent-coloured bar (red on red)."""
+        row = Text()
+        row.append(f"{cmd:<20}", style="bold" if selected else T.ACCENT)
+        row.append(desc, style="" if selected else T.TEXT_MUTED)
+        return row
+
     def _refresh(self, query: str) -> None:
         lst = self.query_one("#palette-list", ListView)
         lst.clear()
-        for cmd, desc in self._matches(query):
-            row = Text()
-            row.append(f"{cmd:<20}", style=T.ACCENT)
-            row.append(desc, style=T.TEXT_MUTED)
-            lst.append(ListItem(Label(row)))
+        self._shown = self._matches(query)
+        for i, (cmd, desc) in enumerate(self._shown):
+            lst.append(ListItem(Label(self._row(cmd, desc, selected=i == 0))))
         if len(lst):
             lst.index = 0
+
+    @on(ListView.Highlighted, "#palette-list")
+    def _restyle(self, event: ListView.Highlighted) -> None:
+        current = event.list_view.index
+        shown = getattr(self, "_shown", [])
+        for idx, item in enumerate(event.list_view.children):
+            if idx < len(shown):
+                item.query_one(Label).update(self._row(*shown[idx], selected=idx == current))
 
     @on(Input.Changed, "#palette-input")
     def _changed(self, event: Input.Changed) -> None:

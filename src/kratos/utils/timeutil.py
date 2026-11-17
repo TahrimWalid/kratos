@@ -31,7 +31,6 @@ legacy data can drift, which is unrecoverable regardless.
 """
 from __future__ import annotations
 
-import json
 import re
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
@@ -284,19 +283,69 @@ def resolve_display_tz(data_dir: Path | None = None) -> tzinfo:
 
 def set_display_timezone_override(data_dir: Path, name: str | None) -> None:
     """Persist (setting #5) or clear a fixed display-zone override. `name`
-    is a zone name to pin, or None/"" to revert to auto-detection."""
-    from kratos.kratos_config import _local_config_path, load_local_config, save_local_config
+    is a zone name to pin, or None/"" to revert to auto-detection. Goes
+    through the locked, atomic config update, so another Kratos process
+    writing the same file can't drop it."""
+    from kratos.kratos_config import update_local_config
 
     if name and name.strip():
-        save_local_config(data_dir, **{_OVERRIDE_CONFIG_KEY: name.strip()})
+        update_local_config(data_dir, {_OVERRIDE_CONFIG_KEY: name.strip()})
     else:
-        # Clear the key without disturbing the rest of the local config
-        # (save_local_config only ever merges, it can't remove a key). Reuses
-        # kratos_config's own path resolver so the filename isn't duplicated.
-        config = load_local_config(data_dir)
-        if _OVERRIDE_CONFIG_KEY in config:
-            del config[_OVERRIDE_CONFIG_KEY]
-            _local_config_path(data_dir).write_text(json.dumps(config, indent=2), encoding="utf-8")
+        update_local_config(data_dir, remove=(_OVERRIDE_CONFIG_KEY,))
+
+
+_ZONE_KEYS: tuple[str, ...] | None = None
+
+
+def _zone_keys() -> tuple[str, ...]:
+    global _ZONE_KEYS
+    if _ZONE_KEYS is None:
+        try:
+            from zoneinfo import available_timezones
+
+            _ZONE_KEYS = tuple(sorted(available_timezones()))
+        except Exception:  # noqa: BLE001 -- no tz database: only exact names and UTC work
+            _ZONE_KEYS = ()
+    return _ZONE_KEYS
+
+
+def find_zones(text: str | None, limit: int = 8) -> list[str]:
+    """Timezone names a person may have meant by `text`, best first.
+
+    People type a city ("Helsinki", "new york"), not the IANA key ("Europe/Helsinki").
+    Order: the exact name in any case; then zones whose city part equals the text
+    (spaces as underscores); then zones whose city part starts with it. Empty when
+    nothing fits. UTC and fixed offsets ("UTC+3") are taken as typed."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if raw.upper() == "UTC" or _FIXED_OFFSET_RE.fullmatch(raw):
+        return [raw.upper() if raw.upper() == "UTC" else raw]
+    keys = _zone_keys()
+    q = raw.replace(" ", "_").lower()
+    exact = [k for k in keys if k.lower() == q]
+    if exact:
+        return exact[:1]
+    city = [k for k in keys if k.rsplit("/", 1)[-1].lower() == q]
+    if city:
+        # a city listed under several regions (an old alias such as Asia/Istanbul next to
+        # Europe/Istanbul): prefer the region-style keys, skip Etc/ and old single-word links
+        city.sort(key=lambda k: (k.count("/") == 0, k.startswith(("Etc/", "SystemV/", "US/")), k))
+        return city[:limit]
+    starts = [k for k in keys if k.rsplit("/", 1)[-1].lower().startswith(q) and not k.startswith("Etc/")]
+    return starts[:limit]
+
+
+def resolve_zone_text(text: str | None) -> tuple[str | None, list[str]]:
+    """(the zone to use, other choices). A single clear match is used as is; several
+    matches come back as choices for the person to pick; none -> (None, [])."""
+    found = find_zones(text)
+    if len(found) == 1 and zone_from_name(found[0]) is not None:
+        return found[0], []
+    exact = [z for z in found if z.rsplit("/", 1)[-1].lower() == (text or "").strip().replace(" ", "_").lower()]
+    if len(exact) == 1 and zone_from_name(exact[0]) is not None:
+        return exact[0], [z for z in found if z != exact[0]]
+    return None, [z for z in found if zone_from_name(z) is not None]
 
 
 def format_for_display(
