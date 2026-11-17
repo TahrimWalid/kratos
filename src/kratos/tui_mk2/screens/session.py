@@ -135,6 +135,8 @@ _PALETTE_COMMANDS = [
                   "accept a deviation as normal, freeze after an incident (/baseline <machine>)"),
     ("/compliance", "how this machine (or @group) stands against CIS / ISO 27001 / NIS2 — pass only with fresh proof, "
                     "owners, 'not applicable' with an expiry (/compliance iso27001 @web)"),
+    ("/paths", "attack paths across a group — where an attacker gets in, the paths to what matters, the one fix "
+               "that cuts the most (read-free; nothing is run) (/paths @web)"),
     ("/assets", "your machines — how much each matters (ranks its vulnerabilities), reachable from the internet, "
                 "groups, owner"),
     ("/groups", "groups of machines (@web, @db; @all is built in) — /groups create web 10.0.0.5 10.0.0.6, "
@@ -1167,6 +1169,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit(R.note_line("/review is per machine: /review <machine>"))
             else:
                 self.app.push_screen(ReviewScreen(self._data_dir, machine=machine))
+        elif cmd in ("/paths", "/attack-paths"):
+            from kratos.tui_mk2.screens.paths import PathsScreen
+
+            group = rest.strip().split()[0].lstrip("@") if rest.strip() else "all"
+            self.app.push_screen(PathsScreen(self._data_dir, group=group or "all"))
         elif cmd in ("/baseline", "/normal"):
             from kratos.tui_mk2.screens.baseline import BaselineScreen
 

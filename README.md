@@ -44,6 +44,8 @@ When Kratos runs into something it has no tool for, it can write one, test it in
 
 **Remembers your decisions.** Kratos keeps each finding across checks, so you see what's new, what's still open and what got fixed — not the same list every time. Confirm a finding, accept a risk until a date, or mark it a false positive; a finding only comes back if it shows something you didn't see (a new attacker IP, a higher severity) or your acceptance runs out, and every view says how many findings your decisions hide.
 
+**Draws the attack paths across a group.** For a group of machines, `/paths @web` builds one graph from evidence Kratos already holds — exposed services and their measured exposure, accounts and the groups that reach root, reused SSH keys, SUID backdoors, container escapes, the code a machine serves — and ranks the **entry points**, the **paths** to the machines you marked as mattering (entry → hop → hop → crown jewel, every hop with its evidence and an *observed*-vs-*assumed* tag), and the **one fix that cuts the most paths**, shown with its command and never run. **It reads no machine** (pure synthesis over stored data — run a fleet audit first for fresh input) and **no model ranks anything**. "No path drawn" is reported as coverage, never "safe": the machines not read, read over SSH only, or serving unconfirmed code are counted as numbers. Each viewer only sees their own machines.
+
 **Reach any box.** Over SSH (nothing installed on the target), or through a **sub-agent**: a small agent that dials out to Kratos — no inbound port, works behind NAT, best over Tailscale — streams live status and answers investigations with its own fixed set of reads.
 
 **Grows with you.** `/evolve` writes a new tool when Kratos is missing one: you approve a test, it writes the tool, tests it in a locked-down sandbox, and shows you the code and its review flags. Nothing is kept until you say yes.
@@ -110,6 +112,8 @@ The sub-agent's link to Kratos carries no encryption of its own, which is why Ta
 File reputations (known-good / known-bad) are decided on your computer from sets you download yourself; a file hash is sent to circl.lu or abuse.ch only when you look one up online, after you say yes (off by default).
 
 Compliance reports are worked out on your computer from what Kratos reads; nothing about them is sent anywhere unless you export or forward it.
+
+Attack paths are built on your computer from evidence Kratos already collected — no machine is read to draw one, and nothing new leaves it. The one line a model ever sees (the short summary in a group's digest or when you ask a group a risk question) is written by Kratos from the numbers it computed, framed and masked like every other model-facing line; the ranks, paths and the chosen fix are decided by code, never the model.
 
 Code checks read files from the code folders you confirm onto your Kratos computer — lockfiles, files scanned for secrets, the repository's own git files — use them in memory and keep only hashes and findings; nothing is run on the machine and no code is sent anywhere. (The opt-in AI code review is separate.)
 

@@ -78,6 +78,9 @@ def class_of(rule_id: str) -> int:
         return DETECTION_FINDING
     if rid.startswith("BASE-") and rid != "BASE-007":
         return DETECTION_FINDING           # E.3: a deviation from what's normal is a detection, even posture ones
+    if rid in ("PATH-001", "PATH-002", "PATH-004"):
+        return DETECTION_FINDING           # E.1: an entry, a path to what matters, a lateral bridge -- a detection,
+        # even though posture; PATH-003 (a fix) is compliance and PATH-005 is a run note (not forwarded)
     e = entry(rid)
     if isinstance(e, Behaviour):
         return DETECTION_FINDING

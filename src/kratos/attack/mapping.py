@@ -262,6 +262,18 @@ RULE_ATTACK: dict[str, Entry] = {
     "COMP-001": Posture("hardening settings that fail CIS / ISO 27001 / NIS2 checks are posture, not an action"),
     "HUNT-001": Posture("an address a feed lists as malicious was seen; what it did decides the technique "
                         "(see its events)"),
+    # E.1: an attack path is a structural possibility built from evidence, not an observed
+    # action -- posture, with the enabling technique named in the reason (the CONT-* pattern).
+    "PATH-001": Posture("an exposed, weak entry point -- a web shell is T1505.003 and an internet-facing "
+                        "vulnerable service is T1190; a possible way in, not an observed action"),
+    "PATH-002": Posture("a structural path to a machine that matters, built from each hop's own finding; "
+                        "a possibility, not an observed compromise"),
+    "PATH-003": Posture("the one fix that cuts the most paths: advice, pointing at the findings that carry "
+                        "the real techniques; not an action taken"),
+    "PATH-004": Posture("a lateral-movement bridge -- a reused SSH key (T1021.004 Remote Services: SSH) or a "
+                        "shared account (T1078 Valid Accounts); a possible path, not an observed action"),
+    "PATH-005": Posture("run note: what the attack-path build could not see, and the assumptions the ranking "
+                        "rests on"),
 }
 
 

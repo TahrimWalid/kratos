@@ -49,7 +49,7 @@ EVIDENCE_FOLDERS: tuple[str, ...] = (
     "scans", "logs", "context", "baseline", "integrity", "persistence", "live", "packages",
     "web_signals", "sshguess", "containers", "reports", "detect/results", "hunt/results", "hashdb/results",
     "compliance/facts", "compliance/results", "baseline_runs", "code/results", "review/results", "traces",
-    "exports",
+    "exports", "paths",
 )
 
 

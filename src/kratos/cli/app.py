@@ -2813,6 +2813,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     _code_cmd.register(sub)  # E.7a: `kratos code roots|status|files|confirm|ignore|add|accept-state`
 
+    from kratos.cli import paths_cmd as _paths_cmd
+
+    _paths_cmd.register(sub)  # E.1: `kratos paths build|show|entries|chokepoints`
+
     seal_p = sub.add_parser(
         "seal",
         help="Journal sealing (forward secure sealing): keep a machine's verification key here and check its "

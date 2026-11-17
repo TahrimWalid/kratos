@@ -2174,6 +2174,15 @@ from kratos.review import judge as _review_findings  # noqa: E402
 _review_findings.register()
 _FINDING_INPUTS["KRATOS-"] = ("detections",)      # Kratos's own detection rules (kratos-linux pack)
 
+# E.1: PATH-001..005 from an attack-path build. The source is INERT (load_recent returns
+# None): a path build is a group synthesis written by kratos.attackpaths.build straight
+# through the lifecycle, never re-derived during a single-machine correlate. Registered so
+# the engine knows the PATH- prefix and its input category, and so the completeness tests
+# find the rule ids.
+from kratos.attackpaths import findings as _attackpaths_findings  # noqa: E402
+
+_attackpaths_findings.register()
+
 
 def _staleness_warning(inputs: dict[str, Path | None], auto_discovered_keys: set[str]) -> str | None:
     """

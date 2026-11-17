@@ -20,6 +20,7 @@ USAGE_READ = "usage.read"           # today's model use and the limits
 COMPLIANCE_READ = "compliance.read" # E.2: compliance reports for the person's machines
 BASELINE_READ = "baseline.read"     # E.3: what is normal on the person's machines, and its deviations
 CODE_READ = "code.read"             # E.7a: the code roots, drift, dependencies and secrets of the person's machines
+PATHS_READ = "paths.read"           # E.1: attack-path entries, paths, chokepoints and coverage for the person's machines
 SESSIONS_OWN = "sessions.own"       # list and resume one's own sessions
 
 # --- investigating (investigator, admin) ----------------------------------------------
@@ -60,7 +61,7 @@ CODE_REVIEW_START = "code.review_start"         # E.7b: read source for an AI re
 LOCAL_RUN = "local.run"                   # anything else done at the Kratos host's TUI/CLI (owner only)
 
 VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN, COMPLIANCE_READ, BASELINE_READ,
-                    CODE_READ})
+                    CODE_READ, PATHS_READ})
 INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECIDE, EXPORT_REDACTED})
 ADMIN = INVESTIGATOR | frozenset({
     USERS_MANAGE, TOKENS_MANAGE, CHANNELS_MANAGE, SETTINGS_CHANGE, BUDGET_CHANGE, ENROL, FIXCHANNEL_CONSENT,
@@ -94,6 +95,7 @@ _WORDS = {
     COMPLIANCE_READ: "read compliance reports",
     BASELINE_READ: "read what's normal on a machine",
     CODE_READ: "read the code checks of a machine",
+    PATHS_READ: "read a machine's attack paths",
 }
 
 

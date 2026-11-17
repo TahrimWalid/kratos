@@ -624,6 +624,47 @@ def _check_review(out: list[Check], data_dir: Path) -> None:
                         f"${last.get('actual_usd', 0):.4f}, profile {last.get('profile')}"))
 
 
+def _check_attack_paths(out: list[Check], data_dir: Path) -> None:
+    """E.1: the last attack-path build per group (when, how many machines read, coverage)."""
+    import json
+    import time as _time
+
+    from kratos.attackpaths import record
+    from kratos.attackpaths import settings as PS
+    from kratos.utils.timeutil import epoch_to_utc_iso
+
+    runs = record.recent(data_dir, 30)
+    if not runs:
+        out.append(_row("attack paths", "info", "no build yet (a build is read-free: `kratos paths build "
+                        "--group <g>` or /paths)"))
+        return
+    seen: set[str] = set()
+    cap = int(PS.get(PS.MAX_INPUT_AGE_HOURS, data_dir))
+    for r in runs:
+        g = str(r.get("group_ref") or "")
+        if g in seen:
+            continue
+        seen.add(g)
+        cov = {}
+        try:
+            cov = json.loads(r.get("coverage") or "{}")
+        except (TypeError, ValueError):
+            cov = {}
+        built = epoch_to_utc_iso(r.get("finished_at") or r.get("built_at") or 0)
+        age_h = (_time.time() - float(r.get("built_at") or 0)) / 3600.0
+        read = int(cov.get("machines_read") or 0)
+        total = int(cov.get("machines_total") or r.get("machines") or 0)
+        gaps = sum(int(cov.get(k) or 0) for k in ("machines_stale", "machines_unread"))
+        status = "warn" if (gaps or r.get("caps_hit") not in (None, "[]") or age_h > cap) else "info"
+        detail = f"{g}: built {built} -- {read}/{total} machines read, {int(r.get('paths') or 0)} path(s)"
+        if gaps:
+            detail += f", {gaps} machine(s) a coverage gap"
+        if age_h > cap:
+            detail += f" (older than {cap}h -- rebuild for current data)"
+        out.append(_row("attack paths", status, detail,
+                        fix="rebuild: `kratos paths build`" if status == "warn" else ""))
+
+
 def _check_code(out: list[Check], data_dir: Path) -> None:
     """E.7a: code folders per machine (confirmed / waiting for a person), the language-ecosystem
     advisories they need, and YAML support for pnpm lockfiles."""
@@ -920,6 +961,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("code folders", lambda o: _check_code(o, Path(data_dir))))
         sections.append(("code review", lambda o: _check_review(o, Path(data_dir))))
         sections.append(("compliance", lambda o: _check_compliance(o, Path(data_dir))))
+        sections.append(("attack paths", lambda o: _check_attack_paths(o, Path(data_dir))))
         sections.append(("history", lambda o: _check_history(o, Path(data_dir))))
         sections.append(("stored data", lambda o: _check_stored_data(o, Path(data_dir))))
         sections.append(("backups", lambda o: _check_backups(o, Path(data_dir))))

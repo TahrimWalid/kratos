@@ -393,6 +393,29 @@ def kratos_code(target: str | None = None) -> dict[str, Any]:
 
 @mcp.tool()
 @_clean_for_client
+def kratos_attack_paths(group: str = "all") -> dict[str, Any]:
+    """Read-only: the attack paths Kratos drew for a group of machines from evidence it already
+    stored (no machine is read, no model ranks anything) -- the ranked entry points, the paths
+    that reach the machines that matter, the one fix that cuts the most paths, and what Kratos
+    could not see as numbers. Only machines in your access appear; a path that leaves it is
+    counted, never named. Building a graph is a person's action in the Kratos app (it is a
+    cross-machine synthesis) -- there is no MCP tool for it, and no fix is ever run."""
+    from kratos import authz
+    from kratos.attackpaths import build as B, present as PP
+
+    try:
+        doc, _visible = B.read_scoped(_data_dir, authz.current_actor(), group or "all")
+    except B.PathBuildError as e:
+        raise ValueError(f"refused: {e}") from None
+    if doc is None:
+        return {"group": group, "built": False,
+                "note": f"No attack-path build for {group} yet. A person builds it in the Kratos app "
+                        "(`kratos paths build`). This is coverage, not a clean bill of health."}
+    return {"built": True, **PP.compact(doc, group_ref=group)}
+
+
+@mcp.tool()
+@_clean_for_client
 def kratos_review(target: str | None = None) -> dict[str, Any]:
     """Read-only: the AI code reviews of a machine's confirmed folders -- recent runs (profile,
     cost, state), how many verdicts are cached, and the REVIEW findings. Preparing or starting a

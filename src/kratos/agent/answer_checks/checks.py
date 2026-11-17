@@ -209,6 +209,19 @@ def evaluate(answer: str, ev: MachineEvidence, claims: Any = None) -> Evaluation
             {**f, "title": f"{f.get('title')} (CISA SSVC decision: Act -- remediate as soon as possible; "
                            "the answer calls it unimportant)"} for f in downplayed_act
             if f not in unacknowledged]
+    # E.1: the top attack path (PATH-002) or the chokepoint (PATH-003, medium -- so not in
+    # `high`) called low priority. The ranks are code-built; the model explains, never re-ranks.
+    downplayed_path = [
+        f for f in (findings or [])
+        if isinstance(f, dict) and str(f.get("rule_id") or f.get("id") or "") in ("PATH-002", "PATH-003")
+        and str(f.get("state") or "") not in _finding_facts.DECIDED_STATES
+        and _finding_facts.downplays(answer, f)
+    ]
+    if downplayed_path:
+        g3 = True
+        unacknowledged = unacknowledged + [
+            {**f, "title": f"{f.get('title')} (an attack path/chokepoint Kratos computed from evidence; the "
+                           "answer calls it low priority)"} for f in downplayed_path if f not in unacknowledged]
     r["guard3"] = CheckResult("guard3", g3, g3, {"unacknowledged": unacknowledged})
 
     # Guard 12: a serious finding the analysis leaves out (asked once; never a NOTE --
