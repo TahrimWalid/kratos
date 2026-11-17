@@ -48,12 +48,27 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.render import approval_panel, plan_preview_panel
 
 
-def _decision_hint(affirm: str, refuse: str) -> Text:
+# Titles where saying yes is the riskier answer: deleting, replacing, spending,
+# turning execution on. Their y key is amber; elsewhere it's plain bright. Never
+# green -- green means "safe / passed" everywhere else in the palette.
+_RISKY_WORDS = ("delete", "remove", "replace", "overwrite", "reset", "unpair", "forget", "clear",
+                "over the model budget", "cloud backend", "high-risk", "high sensitivity",
+                "direct execution", "this rule everywhere", "for every machine", "with warnings",
+                "ai-generated", "deploy")
+
+
+def is_risky(title: str) -> bool:
+    t = str(title or "").lower()
+    return any(w in t for w in _RISKY_WORDS)
+
+
+def _decision_hint(affirm: str, refuse: str, risky: bool = False) -> Text:
     """Shared y / n / esc key legend so every yes/no soft-warning modal reads
     the SAME way: y affirms; n or esc backs out (esc is always 'cancel'). No
-    'Enter' and no '(default)' word-salad — three clearly labelled keys."""
+    'Enter' and no '(default)' word-salad — three clearly labelled keys. y is
+    amber when yes is the riskier answer, plain bright otherwise (F11)."""
     hint = Text()
-    hint.append("\n  y ", style=f"bold {T.SAFE}")
+    hint.append("\n  y ", style=f"bold {T.ATTENTION if risky else T.TEXT_BRIGHT}")
     hint.append(f"{affirm}       ", style=T.TEXT)
     hint.append("n ", style=f"bold {T.TEXT_MUTED}")
     hint.append(f"{refuse}       ", style=T.TEXT_DIM)
@@ -243,7 +258,7 @@ class ConfirmModal(ModalScreen[bool]):
             yield Static(Text(self._title, style=f"bold {T.ATTENTION}"), classes="modal-title")
             with VerticalScroll(classes="modal-body"):
                 yield Static(self._body if isinstance(self._body, Text) else Text(self._body, style=T.TEXT))
-            yield Static(_decision_hint(self._yes_label, self._no_label))
+            yield Static(_decision_hint(self._yes_label, self._no_label, risky=is_risky(self._title)))
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -336,7 +351,7 @@ class ExecutionConsentModal(ModalScreen[bool]):
             yield Static(Text(
                 "The typed-EXECUTE approval gate stays required either way -- this only decides what "
                 "EXECUTE does once confirmed. Reversible any time from here.", style=T.TEXT_FAINT))
-            yield Static(_decision_hint("enable direct execution", "decline -- stay recommend-only"))
+            yield Static(_decision_hint("enable direct execution", "decline -- stay recommend-only", risky=True))
 
     def action_enable(self) -> None:
         self.dismiss(True)
