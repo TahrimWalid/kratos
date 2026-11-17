@@ -291,6 +291,28 @@ def lifecycle_footer(transcript: list[dict[str, Any]] | None) -> Text | None:
     return Text(f"{line}  (/findings)", style=T.TEXT_MUTED) if line else None
 
 
+def _llm_failure_advice() -> str:
+    """What to try, for the kind of model that failed: `kratos llm-serve` only
+    helps a model on this machine; a hosted API needs its key, its address or
+    its provider's status checked instead (F11)."""
+    try:
+        from urllib.parse import urlparse
+
+        from kratos.llm_config import get_active_llm_base_url
+
+        host = (urlparse(get_active_llm_base_url() or "").hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        host = ""
+    local = host in ("127.0.0.1", "localhost", "::1") or host.startswith(("192.168.", "10.")) or host.endswith(".local")
+    if local:
+        return ("Check the model server on this machine is running (`kratos llm-serve` starts the local one) "
+                "or switch with /model, then try the goal again.")
+    if host:
+        return (f"Check the API key and address for {host} in .env, and that the provider is up, "
+                "or switch with /model, then try the goal again.")
+    return "Check the model's settings with /model, then try the goal again."
+
+
 def llm_failure_banner(detail: str) -> Panel:
     """Design 14a -- a full-width banner for Kratos's OWN model/API failure,
     distinct from a tool or target problem (which render as inline gutter
@@ -304,14 +326,10 @@ def llm_failure_banner(detail: str) -> Panel:
         style=T.TEXT,
     )
     body.append(f"Detail: {detail}\n", style=T.TEXT_DIM)
-    body.append(
-        "Check the backend is running (e.g. `kratos llm-serve` for local Ollama) or switch it "
-        "with /model, then try the goal again.",
-        style=T.TEXT_FAINT,
-    )
+    body.append(_llm_failure_advice(), style=T.TEXT_FAINT)
     return Panel(
         body,
-        title="⚠ Kratos can't think — language model unavailable",
+        title="! Kratos can't think — language model unavailable",
         title_align="left",
         border_style=T.CRITICAL,
     )
