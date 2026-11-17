@@ -81,3 +81,32 @@ def test_findings_x_opens_the_fix_in_the_copy_box(tmp_path):
             await pilot.pause()
             assert not isinstance(screen.app.screen, CommandModal)
     asyncio.run(go())
+
+
+def test_containers_screen_fits_80_columns_with_full_ports_in_the_detail_pane(tmp_path):
+    """TUI review: at 80x24 the old table cut risks and ports and printed raw UTC; the
+    detail pane now carries every port and risk, and the read time is in the display zone."""
+    import io
+
+    from rich.console import Console
+
+    cs = [ctr("web", ports=PUBLISHED), ctr("p", privileged=True)]
+    R.run(tmp_path, T, reader=lambda: inv(*cs), connect=lambda a, p: True)
+
+    def text(content):
+        buf = io.StringIO()
+        Console(file=buf, width=200).print(content)
+        return buf.getvalue()
+
+    async def go():
+        screen = ContainersScreen(tmp_path, target=T)
+        async with _Host(screen).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen.query_one("#ct-table").move_cursor(row=[r["name"] for r in screen._rows].index("web"))
+            await pilot.pause()
+            detail = text(screen.query_one("#ct-detail")._Static__content)
+            assert "reachable despite firewall" in detail and "user " in detail
+            banner = text(screen.query_one("#ct-banner")._Static__content)
+            assert "+00:00" not in banner and "container(s)" not in banner and "2 running containers" in banner
+            assert "esc back" in text(screen.query_one("#ct-hints")._Static__content)
+    asyncio.run(go())
