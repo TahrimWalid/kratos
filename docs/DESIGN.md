@@ -2886,6 +2886,42 @@ is recorded; allowed actions are recorded except the per-read re-checks and mode
 polls (the run's start is the recorded action). `serve_audit` and `finding_events`
 keep their detail and link by run id.
 
+## One-step connect (E.5b)
+
+`kratos connect <app>` / `/connect` (`src/kratos/serve/connect.py`, store `connect_store.py`)
+connects Open WebUI, an AG-UI app or any OpenAI-compatible chat app in one step. The core is UI-free:
+`gather()` reads what the computer looks like, `plan()` decides with no side effect, `apply()` makes
+it; the CLI (`cli/connect_cmd.py`) and the TUI screen (`tui_mk2/screens/connect.py`) only ask and show.
+
+- **Kratos never runs Docker, Podman or Open WebUI.** It prints the command. Detection uses
+  `shutil.which`, the docker socket's permissions (`sudo` in the printed command when it isn't open to
+  the user -- Kratos never asks to join the docker group, which is root-equivalent), Docker Desktop's
+  socket path, and HTTP probes of `127.0.0.1` only (an Open WebUI answers `/api/config` with
+  `"name": "Open WebUI"`). A source scan fails on any subprocess call naming docker or podman.
+- **The token goes through a file, never a command line.** Open WebUI's settings are written to
+  `<data_dir>/connect/openwebui.env` (0600, folder 0700, atomic) and the command reads them with
+  `--env-file`; AG-UI and other apps get a header file their `curl` check reads with `-H @file`. So the
+  token is not in shell history, `ps` or anything printed; in the app it is shown once, in a copy box.
+- **Host networking.** `kratos serve` listens on 127.0.0.1 only; a container on Docker's bridge
+  reaches the host by another address (and its Host header would be refused). With `--network host`
+  the container's 127.0.0.1 is the host's. `HOST=127.0.0.1` keeps Open WebUI itself on this computer;
+  `WEBUI_SECRET_KEY_FILE` puts its session key in the data volume, so recreating the container doesn't
+  log people out.
+- **Open WebUI's "persistent config".** `OPENAI_API_BASE_URL`/`_KEY` (and `TOOL_SERVER_CONNECTIONS`
+  for `--tools`) are read on Open WebUI's first start only, then kept in its own database. So a new
+  install needs no clicks, but a renewed key is pasted once, and an Open WebUI that already runs gets
+  the two values to paste. Kratos's container and volume are named `kratos-open-webui`: a stock
+  `open-webui` volume from an older install would carry saved settings that win over Kratos's.
+- **Tokens.** One person token per app, the owner's, with only the doors the app uses (Open WebUI and
+  other: `openai`, `+mcp` with `--tools`; AG-UI: `agents`), 90 days (`users.token_days`). `connect_apps`
+  records the app, the token id, machines, doors, mode and address; at most one live row per app (a
+  partial unique index plus a file lock), so re-running replaces. A token whose file couldn't be
+  written is revoked again. Renew keeps the connection's own mode and address. Every change is
+  `tokens.manage`: the owner, at the Kratos computer, recorded with the token's id only.
+- **The chat server as a service.** The `kratos-serve` systemd user unit is built with the listener's
+  own helpers (`core_listener.service_unit` / `service_install_commands`), carries `KRATOS_HOME` when
+  set, and is only installed when the person agrees; lingering is explained, never turned on with sudo.
+
 ## Agent doors: A2A and AG-UI (E.5)
 
 Two more doors inside `kratos serve` (`src/kratos/serve/a2a/`, `src/kratos/serve/agui.py`), no

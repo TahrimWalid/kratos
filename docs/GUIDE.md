@@ -2266,6 +2266,10 @@ stored log events; an email inbox gets alerts and a digest of finding changes. S
 always removed first; masking (per channel) replaces names and addresses with placeholders that
 are never turned back. Nothing is sent to a channel you haven't added.
 
+**Chat apps you connect** (`kratos connect`) get their token in a file in Kratos's
+data folder (`connect/`, only you can read it) and receive what you ask them to: the
+answers about the machines you picked.
+
 **Other agents get the answers they ask for.** With the agent doors on (see [Letting other agents
 use Kratos](#letting-other-agents-use-kratos)), an agent or an agent front end holding one of your
 people's tokens receives what that person would see in a chat: Kratos's checked answer and the
@@ -3406,7 +3410,63 @@ On your own it just works: every token is yours. To let other people in — each
 with their own machines, role and budget, through their own tokens or a shared
 Open WebUI — see *Sharing Kratos with other people* below.
 
-### Setting it up
+### One step: `kratos connect`
+
+```bash
+kratos connect openwebui
+```
+
+(or **/connect** in the app). Kratos makes a token for the app, with only the
+access it needs and only the machines you pick (`--machines web-01,db-01`; the
+active machine by default), and tells you the one thing left to do:
+
+- **A new Open WebUI** — it prints one command to run (Kratos never runs Docker
+  for you):
+
+  ```bash
+  docker run -d --name kratos-open-webui --network host --env-file ~/.local/share/kratos/connect/openwebui.env \
+    -v kratos-open-webui:/app/backend/data --restart unless-stopped ghcr.io/open-webui/open-webui:v0.13.3
+  ```
+
+  Then open the address it shows (`http://127.0.0.1:3000`, or the next free port)
+  and create your account **right away** — the first account is Open WebUI's admin
+  and sign-up then closes. The Kratos models (`kratos/web-01`, …) are already in the
+  model list: no admin pages to click through.
+
+  The token is in that env file (only you can read it), never on the command line or
+  in your shell history. Open WebUI listens on this computer only. The image is pinned
+  to the version tested with Kratos; the container and its data volume are called
+  `kratos-open-webui`, so they never touch another Open WebUI you may run. Without
+  Docker, Kratos uses Podman if you have it, or shows how to run Open WebUI from pip.
+- **An Open WebUI you already run** — Kratos finds it on this computer and shows the
+  two values to paste in *Admin Settings → Connections → OpenAI → +* (each in a
+  copy box in the app). Its own saved settings win over anything Kratos could set.
+  If it runs in Docker without `--network host` it can't reach Kratos; run
+  `kratos connect openwebui --new` for a separate one.
+- `--tools` also makes Kratos one of that Open WebUI's tool servers (MCP).
+
+`kratos connect ag-ui` does the same for an AG-UI app (see *Letting other agents
+use Kratos*): it turns AG-UI on if you agree, and prints the endpoint and a `curl`
+that streams one run, reading the token from a file. `kratos connect other` is for
+any other OpenAI-compatible chat app (LibreChat, AnythingLLM, Jan, …): the base URL,
+the key and a `curl` that lists the Kratos models.
+
+If Kratos's chat server isn't running, connect offers to install it as a user
+service (`kratos-serve`: it keeps running after you close Kratos; no sudo). Where
+there's no systemd, run `kratos serve` in a terminal.
+
+**Afterwards.** `kratos connect status` (and `/doctor`, and the app's status bar)
+says when a token is about to expire — 14 days ahead; tokens last 90 days
+(`users.token_days`). `kratos connect openwebui --renew` makes the new token and
+shows the one place to paste it (Open WebUI keeps the key it was first given in its
+own settings, so a new key is always pasted once). `kratos connect openwebui --undo`
+revokes the token (the app stops getting answers at once), removes its file and
+shows how to remove the container if you want to.
+
+One person, one computer. For several people sharing one Open WebUI, see *Sharing
+Kratos with other people*; for an app on another computer, *Remote access*.
+
+### Doing it by hand
 
 1. **Make a token** for the chat app. It is printed once; Kratos keeps only a
    hash of it.
@@ -3444,7 +3504,7 @@ container):
 | Variable | Why |
 | --- | --- |
 | `ENABLE_FORWARD_USER_INFO_HEADERS=true` | Open WebUI then sends the chat's id, so each chat in Open WebUI is one Kratos session (follow-up questions keep their context). The plain user name it sends is written to Kratos's audit log only — never used for permissions. (A *shared* Open WebUI signs who each user is; see below.) |
-| `AIOHTTP_CLIENT_TIMEOUT=900` | Open WebUI gives up on a reply after 300 s by default; a slow investigation can take longer. |
+| `AIOHTTP_CLIENT_TIMEOUT=900` | Only for Open WebUI before 0.13, which gave up on a reply after 300 s; a slow investigation can take longer. Since 0.13 there is no timeout by default. |
 
 Open WebUI also asks the selected model for a chat title and tags after each
 message. Kratos answers those itself without calling its model ("Kratos chat"),

@@ -32,6 +32,8 @@ def _step_1(conn: sqlite3.Connection) -> None:
           secret_file TEXT NOT NULL,          -- relative to the data folder (connect/<app>.env|.headers)
           serve_port INTEGER NOT NULL,        -- the chat server's port the app was pointed at
           app_port INTEGER,                   -- Open WebUI's own port (new installs)
+          mode TEXT NOT NULL DEFAULT '',      -- openwebui: "new" (Kratos's own Open WebUI) | "existing"
+          app_url TEXT,                       -- openwebui: the address the person opens
           created_at REAL NOT NULL,
           created_by TEXT NOT NULL,
           replaced_at REAL,
@@ -77,7 +79,7 @@ def live(data_dir: Path, app: str | None = None) -> list[dict[str, Any]]:
 
 def record(data_dir: Path, *, app: str, token_id: str, machines: list[str], doors: list[str], secret_file: str,
            serve_port: int, app_port: int | None, created_by: str, replaces: int | None = None,
-           now: float | None = None) -> int:
+           mode: str = "", app_url: str | None = None, now: float | None = None) -> int:
     """Insert the new live row (and close the one it replaces) in one transaction. Raises
     sqlite3.IntegrityError when another run made a live row for the app meanwhile."""
     now = time.time() if now is None else now
@@ -90,9 +92,9 @@ def record(data_dir: Path, *, app: str, token_id: str, machines: list[str], door
                              "AND replaced_at IS NULL", (now, replaces))
             cur = conn.execute(
                 "INSERT INTO connect_apps (app, token_id, machines, doors, secret_file, serve_port, app_port, "
-                "created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "mode, app_url, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (app, token_id, json.dumps(machines), json.dumps(doors), secret_file, int(serve_port),
-                 app_port, now, created_by))
+                 app_port, mode, app_url, now, created_by))
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")

@@ -94,7 +94,8 @@ def test_env_file_and_command(dd):
     lines = [ln for ln in env.read_text().splitlines() if ln and not ln.startswith("#")]
     keys = [ln.split("=", 1)[0] for ln in lines]
     assert keys == ["HOST", "PORT", "OPENAI_API_BASE_URL", "OPENAI_API_KEY", "ENABLE_FORWARD_USER_INFO_HEADERS",
-                    "ENABLE_OLLAMA_API"]
+                    "ENABLE_OLLAMA_API", "WEBUI_SECRET_KEY_FILE"]
+    assert "AIOHTTP_CLIENT_TIMEOUT" not in env.read_text()              # v0.13: no timeout by default
     vals = dict(ln.split("=", 1) for ln in lines)
     assert vals["HOST"] == "127.0.0.1" and vals["PORT"] == "3000"
     assert vals["OPENAI_API_BASE_URL"] == "http://127.0.0.1:8770/v1" and vals["OPENAI_API_KEY"] == r.token
@@ -106,6 +107,16 @@ def test_env_file_and_command(dd):
     assert r.token not in " ".join(r.notes)
     keep = _connect(dd, keep_ollama=True)
     assert "ENABLE_OLLAMA_API" not in (dd / "connect" / "openwebui.env").read_text() and keep.command
+
+
+def test_tools_adds_kratos_as_an_mcp_tool_server(dd):
+    r = _connect(dd, tools=True)
+    env = (dd / "connect" / "openwebui.env").read_text()
+    line = next(ln for ln in env.splitlines() if ln.startswith("TOOL_SERVER_CONNECTIONS="))
+    entry = json.loads(line.split("=", 1)[1])[0]
+    assert entry["type"] == "mcp" and entry["auth_type"] == "bearer" and entry["key"] == r.token
+    assert entry["url"] == "http://127.0.0.1:8770/mcp" and entry["config"] == {"enable": True}
+    assert _token_row(dd, r.token_id)["doors"] == ["openai", "mcp"] and r.token not in r.command
 
 
 def test_token_rows(dd):
@@ -172,6 +183,7 @@ def test_linger_off_is_explained(dd, monkeypatch):
 
 def test_no_engine_shows_pip_route(dd):
     r = _connect(dd, facts=_facts(engine=None))
+    assert "WEBUI_SECRET_KEY_FILE" not in (dd / "connect" / "openwebui.env").read_text()   # pip: its own folder
     assert "pip install open-webui" in r.command and "--port 3000" in r.command and "docker" not in r.command
     assert r.token not in r.command
 
@@ -203,7 +215,8 @@ def test_existing_openwebui_detected(dd):
     assert r.plan.mode == "existing" and not r.command
     labels = dict(r.paste)
     assert labels["URL"] == "http://127.0.0.1:8770/v1" and labels["API key"] == r.token
-    assert (dd / "connect" / "openwebui.env").read_text().startswith("Authorization: Bearer ")
+    assert (dd / "connect" / "openwebui.key").read_text().startswith("Authorization: Bearer ")
+    assert CS.live(dd, "openwebui")[0]["mode"] == "existing"
     # --new: a separate Open WebUI for Kratos even though one answers
     r2 = _connect(dd, facts=_facts(existing_openwebui="http://127.0.0.1:3000"), new=True)
     assert r2.plan.mode == "new" and r2.command and "--env-file" in r2.command
@@ -232,6 +245,20 @@ def test_rerun_replaces_not_duplicates(dd):
     assert second.replaced_token == first.token_id
     live = [t for t in SS.list_tokens(dd) if not t["revoked_at"] and t["name"].startswith("connect-openwebui")]
     assert len(live) == 1 and len(CS.live(dd, "openwebui")) == 1
+
+
+def test_renew_keeps_the_connection_it_renews(dd):
+    """Lab bug: --renew probed again, found ANOTHER Open WebUI on :3000 and switched to
+    'existing', pointing the person at the wrong address. It keeps the connection's own
+    mode and address."""
+    _connect(dd, facts=_facts(free_port=3001, existing_openwebui="http://127.0.0.1:3000"), new=True)
+    row = CS.live(dd, "openwebui")[0]
+    assert row["mode"] == "new" and row["app_url"] == "http://127.0.0.1:3001"
+    r = CN.renew(dd, "openwebui", actor=OWNER, facts=_facts(free_port=3002, existing_openwebui="http://127.0.0.1:3000"))
+    assert r.address == "http://127.0.0.1:3001" and r.plan.mode == "new" and r.command is None
+    assert "PORT=3001" in (dd / "connect" / "openwebui.env").read_text()
+    assert dict(r.paste)["API key"] == r.token and any("paste" in n and "3001" in n for n in r.notes)
+    assert not any("recreat" in n and "command above" in n for n in r.notes)
 
 
 def test_renew_changes_machines(dd):

@@ -50,6 +50,7 @@ WEBUI_PORT_FIRST, WEBUI_PORT_LAST = 3000, 3099
 EXISTING_PROBE_PORTS = (3000, 8080)
 EXPIRY_WARN_DAYS = 14
 _SECRET_FILE = {"openwebui": "openwebui.env", "ag-ui": "ag-ui.headers", "other": "other.headers"}
+_EXISTING_OPENWEBUI_FILE = "openwebui.key"      # an Open WebUI that already runs: just the header line
 _DOORS = {"openwebui": ["openai"], "ag-ui": ["agents"], "other": ["openai"]}
 REMOTE_ACCESS = ("Kratos's chat server listens only on this computer. For an app on another computer, put a TLS "
                  "reverse proxy in front of it -- see the GUIDE, \"Remote access\". `kratos connect` never opens "
@@ -172,12 +173,24 @@ class Plan:
     mode: str = ""                               # openwebui: "new" | "existing"
     enable_agui: bool = False                    # AG-UI is off and must be turned on
     webui_port: int | None = None
+    renewing: bool = False                       # a --renew: the app keeps running with its old key
     notes: list[str] = field(default_factory=list)
     model_ids: list[str] = field(default_factory=list)
 
     @property
     def secret_file(self) -> str:
+        if self.app == "openwebui" and self.mode == "existing":
+            return f"{FOLDER}/{_EXISTING_OPENWEBUI_FILE}"
         return f"{FOLDER}/{_SECRET_FILE[self.app]}"
+
+    @property
+    def app_url(self) -> str | None:
+        """Where the person opens the app (Open WebUI only)."""
+        if self.app != "openwebui":
+            return None
+        if self.mode == "new" and self.webui_port:
+            return f"http://127.0.0.1:{self.webui_port}"
+        return self.url or self.facts.existing_openwebui
 
     def summary(self) -> list[str]:
         """What will be made, in plain words (for the confirm step)."""
@@ -306,6 +319,18 @@ def env_file_text(plan_: Plan, token: str) -> str:
     ]
     if not plan_.keep_ollama:
         lines.append("ENABLE_OLLAMA_API=false")
+    if plan_.tools:
+        # Kratos's MCP door as one of Open WebUI's tool servers (checked against v0.13.3's own
+        # code: type "mcp", bearer key; no access grants = its admins only). One JSON line.
+        lines.append("TOOL_SERVER_CONNECTIONS=" + json.dumps([{
+            "type": "mcp", "url": f"http://127.0.0.1:{plan_.facts.serve_port}/mcp", "path": "", "auth_type": "bearer",
+            "key": token, "config": {"enable": True},
+            "info": {"id": "kratos", "name": "Kratos", "description": "Kratos investigations (MCP)"}}],
+            separators=(",", ":")))
+    if plan_.facts.engine is not None:
+        # Open WebUI's session-signing key lives beside start.sh by default, outside the data
+        # volume: recreating the container (a new image, `--renew`) would log everyone out.
+        lines.append("WEBUI_SECRET_KEY_FILE=/app/backend/data/.webui_secret_key")
     return "\n".join(lines) + "\n"
 
 
@@ -427,7 +452,8 @@ def apply(data_dir: Path, plan_: Plan, *, actor: Any = None, replace: bool = Fal
             paths.write_private_text(secret, _secret_text(plan_, token))
             CS.record(data_dir, app=plan_.app, token_id=row["token_id"], machines=plan_.machines, doors=plan_.doors,
                       secret_file=plan_.secret_file, serve_port=plan_.facts.serve_port, app_port=plan_.webui_port,
-                      created_by=who, replaces=current["id"] if current else None)
+                      created_by=who, replaces=current["id"] if current else None, mode=plan_.mode,
+                      app_url=plan_.app_url)
         except (OSError, sqlite3.Error) as e:
             # Nothing half-made: the token goes again (the old connection, if any, is untouched).
             from kratos.serve import store as SS
@@ -451,7 +477,7 @@ def _result(data_dir: Path, p: Plan, token: str, token_id: str, secret: Path, re
     r = Result(plan=p, token=token, token_id=token_id, secret_path=secret, notes=list(p.notes), replaced_token=replaced)
     base = f"http://127.0.0.1:{port}"
     if p.app == "openwebui" and p.mode == "new":
-        r.address = f"http://127.0.0.1:{p.webui_port}"
+        r.address = p.app_url
         if p.facts.engine is None:
             r.command = pip_route(p, secret)
         else:
@@ -462,17 +488,18 @@ def _result(data_dir: Path, p: Plan, token: str, token_id: str, secret: Path, re
             if p.facts.engine == "podman":
                 r.notes.append("With Podman, --restart unless-stopped survives a reboot only when the podman-restart "
                                "service is enabled (systemctl --user enable podman-restart).")
-        r.notes.append(f"Open {r.address}: the first account you create is Open WebUI's admin; the Kratos models "
-                       f"({', '.join(p.model_ids)}) are already in its model list.")
+        r.notes.append(f"Open {r.address} right away and create your account: the first account is Open WebUI's "
+                       "admin and sign-up then closes (until then anyone else logged in to this computer could take "
+                       f"it). The Kratos models ({', '.join(p.model_ids)}) are already in its model list.")
         r.notes.append(f"The image is pinned to {OPENWEBUI_TESTED_TAG}, the version tested with Kratos "
                        f"({OPENWEBUI_IMAGE}:main is the rolling latest).")
         if p.replaces:
-            r.notes.append("Open WebUI keeps the key it was started with in its own settings: if this Open WebUI is "
-                           "already running, paste the new key in Admin Settings -> Connections -> the Kratos "
-                           "connection, or recreate it with the command above (its data volume is kept).")
+            r.notes.append("If Kratos's Open WebUI already runs, it keeps the key it was first started with in its "
+                           "own settings (recreating the container doesn't change that): paste the new key in Admin "
+                           "Settings -> Connections -> the Kratos connection.")
             r.paste = [("API key", token)]
     elif p.app == "openwebui":
-        r.address = p.facts.existing_openwebui
+        r.address = p.app_url
         r.paste = [("URL", f"{base}/v1"), ("API key", token)]
         r.notes.append(f"In Open WebUI: Admin Settings -> Connections -> OpenAI -> +, paste the URL and the key, "
                        "save. (Its saved settings win over the environment, so Kratos can't set them for you.)")
@@ -491,7 +518,11 @@ def _result(data_dir: Path, p: Plan, token: str, token_id: str, secret: Path, re
         r.check = f"curl -s -H @{secret} {base}/v1/models"
         r.notes.append(f"Models: {', '.join(p.model_ids)}. Set the app's request timeout to 15 minutes if it has one "
                        "-- an investigation can take a few minutes.")
-    if p.tools:
+    if p.tools and p.app == "openwebui" and p.mode == "new":
+        r.notes.append("Kratos is also one of this Open WebUI's tool servers (MCP), for its admins: turn the Kratos tools "
+                       "on for a model that calls tools (Workspace -> Models). With Gemini models set that model's "
+                       "Function Calling to Legacy (Advanced Params).")
+    elif p.tools:
         r.notes.append(f"Tools (MCP): in Open WebUI, Admin Settings -> External Tools -> +, type MCP (Streamable HTTP), "
                        f"URL {base}/mcp, auth Bearer with the same key. With Gemini models set the model's Function "
                        "Calling to Legacy (Advanced Params).")
@@ -501,25 +532,32 @@ def _result(data_dir: Path, p: Plan, token: str, token_id: str, secret: Path, re
 def renew(data_dir: Path, app: str, *, actor: Any = None, machines: list[str] | None = None,
           created_by: str = "cli", facts: Facts | None = None) -> Result:
     """A new token for the app's live connection (same machines and doors unless
-    `machines`), the old one revoked, the file rewritten."""
+    `machines`), the old one revoked, the file rewritten. The connection stays the one it
+    was -- the same Open WebUI, at the same address -- whatever else answers here now."""
     from kratos.serve import connect_store as CS
 
     live = CS.live(data_dir, app)
     if not live:
         raise ConnectError(f"{APP_WORDS.get(app, app)} isn't connected -- run `kratos connect {app}`")
     cur = live[0]
-    p = plan(data_dir, app, machines=machines or cur["machines"], tools="mcp" in cur["doors"], facts=facts)
-    if app == "openwebui" and p.mode == "existing":
-        pass                                   # an Open WebUI answers: the key is pasted
-    elif app == "openwebui" and cur.get("app_port"):
-        p.webui_port = int(cur["app_port"])     # keep the port the person already opens
-    p.enable_agui = False
+    mode = cur.get("mode") or ""
+    p = plan(data_dir, app, machines=machines or cur["machines"], tools="mcp" in cur["doors"], facts=facts,
+             new=(app == "openwebui" and mode == "new"))
+    if app == "openwebui" and mode == "new" and cur.get("app_port"):
+        p.webui_port = int(cur["app_port"])     # the port the person already opens
+    elif app == "openwebui" and mode == "existing":
+        p.mode, p.url = "existing", cur.get("app_url")
+    p.enable_agui, p.renewing = False, True
     r = apply(data_dir, p, actor=actor, replace=True, created_by=created_by)
-    if app == "openwebui" and not r.paste:
-        r.paste = [("API key", r.token)]
     if app == "openwebui":
-        r.notes.insert(0, "Open WebUI keeps the key it was first started with in its own settings, so the new key has to "
-                          "be pasted once: Admin Settings -> Connections -> the Kratos connection -> key.")
+        if not r.paste:
+            r.paste = [("API key", r.token)]
+        r.command = None                        # it already runs: only the key changes
+        r.notes = [n for n in r.notes if not n.startswith(("Open http", "The image is pinned", "Open WebUI keeps",
+                                                            "If Kratos's Open WebUI already runs"))]
+        r.notes.insert(0, f"Open WebUI ({r.address}) keeps the key it was first given in its own settings, so the "
+                          "new key has to be pasted once: Admin Settings -> Connections -> the Kratos connection -> "
+                          "key. Until then its answers fail.")
     return r
 
 
@@ -550,7 +588,7 @@ def undo(data_dir: Path, app: str, *, actor: Any = None) -> Undone:
         SS.revoke_token(data_dir, cur["token_id"])
         path = Path(data_dir) / cur["secret_file"]
         removed = False
-        if path.parent == Path(data_dir) / FOLDER and path.name in _SECRET_FILE.values():
+        if path.parent == Path(data_dir) / FOLDER and path.name in (*_SECRET_FILE.values(), _EXISTING_OPENWEBUI_FILE):
             try:
                 path.unlink()
                 removed = True
