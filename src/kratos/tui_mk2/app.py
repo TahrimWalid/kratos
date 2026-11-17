@@ -336,9 +336,12 @@ class KratosTUI(ResilientWorkerHost, App):
         if not T.set_active_pack(name):
             return False
         self.theme = name  # a distinct value -> Textual reactive fires -> live chrome
-        hook = getattr(self.screen, "refresh_theme", None)
-        if callable(hook):
-            hook()
+        # Every screen on the stack, not just the top one: a switch made in Settings
+        # must repaint the session underneath it too.
+        for screen in list(self.screen_stack):
+            hook = getattr(screen, "refresh_theme", None)
+            if callable(hook):
+                hook()
         return True
 
     def on_unmount(self) -> None:

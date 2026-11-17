@@ -726,10 +726,30 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def refresh_theme(self) -> None:
         """Called after a live theme-pack switch (KratosTUI.apply_theme_pack):
-        re-render the header/footer so they pick up the new palette. Scrolled
-        transcript lines keep their original colors until the next launch."""
+        re-render the header/footer, and repaint the transcript in the new pack --
+        the home banner and this session's turns, replayed from the store the
+        same way a resume does -- so the screen isn't half one pack and half the
+        other (F11). Command output that isn't a turn (/report, /tools …) isn't
+        stored, so it isn't redrawn; the note says so. Mid-turn, only new lines
+        change colour until the turn ends."""
         self._refresh_header()
         self._refresh_footer()
+        if self._busy:
+            self._emit(R.note_line("New lines use the new theme; the screen repaints after this turn."))
+            return
+        shown = dict(self._shown_findings)
+        self._shown_findings = {}
+        self._log.clear()
+        self._folds = []
+        self._cancel_fold()
+        self._last_day = None
+        self._render_idle()
+        try:
+            self._render_full_replay(repaint=True)
+        finally:
+            self._shown_findings.update(shown)
+        self._emit(R.hint_line(f"Repainted in {T.pack_label(T.active_pack_name())}. Past turns are redrawn; "
+                               "run a command again (/report, /tools …) to see its output."))
 
     # --- log helpers -----------------------------------------------------
     @property
@@ -923,7 +943,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._emit(Text(""))
 
     # --- full-tier resume: on-screen replay ([f]) ---------------
-    def _render_full_replay(self) -> None:
+    def _render_full_replay(self, *, repaint: bool = False) -> None:
         """Re-render the session's prior turns on screen when resumed at full
         tier, so a resumed session shows its history (not just feeds it to the
         model). Only the most recent FULL_RESUME_DETAILED_TURN_CAP turns replay
@@ -934,7 +954,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         history = self._store.get_goal_history(self.session_state["session_id"])
         if not history:
             return
-        self._emit(Text(f"— resumed context ({len(history)} prior turn(s)) —", style=T.TEXT_FAINTER))
+        if not repaint:     # a theme repaint of a live session isn't a resume: no resume headers
+            self._emit(Text(f"— resumed context ({len(history)} prior turn(s)) —", style=T.TEXT_FAINTER))
         detailed_from = max(0, len(history) - FULL_RESUME_DETAILED_TURN_CAP)
         for i, turn in enumerate(history):
             if i < detailed_from:
@@ -942,8 +963,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit(Text(f"- {turn['goal']!r} → {status}", style=T.TEXT_FAINTER))
             else:
                 self._render_replay_turn(turn)
-        self._emit(Text("— end resumed context · new activity below —", style=T.TEXT_FAINTER))
-        self._emit(Text(""))
+        if not repaint:
+            self._emit(Text("— end resumed context · new activity below —", style=T.TEXT_FAINTER))
+            self._emit(Text(""))
 
     def _render_replay_turn(self, turn: dict[str, Any]) -> None:
         goal = turn["goal"]
