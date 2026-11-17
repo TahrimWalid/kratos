@@ -99,15 +99,34 @@ def write_units(
     return service_path, timer_path
 
 
+def _shell_quote_path(path: str) -> str:
+    """Quote a path for the shell but keep a leading ~ expandable."""
+    import shlex
+
+    if path.startswith("~/"):
+        return "~/" + shlex.quote(path[2:]) if any(c in path[2:] for c in " '\"$`\\") else path
+    return shlex.quote(path)
+
+
 def install_commands(schedule: Schedule, service_path: Path, timer_path: Path) -> list[str]:
     """The exact commands a human runs to activate the timer (Kratos never runs
     systemctl itself). The enable-linger line is what lets a USER timer keep
     firing when you're logged out — without it a user timer only runs while you
     have an active login session, so a weekly audit would silently not run."""
+    # The unit files' folder once, home shortened to ~, then the two short file
+    # names: absolute paths twice on one line wrapped over six lines in an
+    # 80-column terminal (F11). Same effect, and it still copies exactly.
+    folder = str(service_path.parent)
+    home = str(Path.home())
+    if folder == home or folder.startswith(home + "/"):
+        folder = "~" + folder[len(home):]
+    copy = [f"cp {service_path} {timer_path} ~/.config/systemd/user/"] if service_path.parent != timer_path.parent \
+        else [f"cd {_shell_quote_path(folder)}",
+              f"cp {service_path.name} {timer_path.name} ~/.config/systemd/user/"]
     return [
         "loginctl enable-linger $USER   # so the timer runs even when you're logged out",
         "mkdir -p ~/.config/systemd/user",
-        f"cp {service_path} {timer_path} ~/.config/systemd/user/",
+        *copy,
         "systemctl --user daemon-reload",
         f"systemctl --user enable --now {schedule.unit_name}.timer",
         f"systemctl --user list-timers {schedule.unit_name}.timer   # verify it's scheduled",
