@@ -1311,7 +1311,7 @@ def test_usage_is_saved_with_the_session_and_survives_a_restart(tmp_path, monkey
     assert rows["gemini-3.1-flash-lite"]["calls"] == 2 and rows["gemini-3.1-flash-lite"]["prompt_tokens"] == 1500
 
     text = _usage_text(screen, monkeypatch)
-    assert "1,500" in text and "All models" in text and "no price on file" in text and "~$" in text
+    assert "1,500" in text and "All models" in text and "no price" in text and "~$" in text
     assert "Model budget — today" in text and "Today, everything" in text and "Each run" in text
     assert "before the usage ledger" not in text
 

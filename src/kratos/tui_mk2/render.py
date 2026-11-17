@@ -140,6 +140,23 @@ def timestamped(left: Text, time_str: str) -> Table:
     return grid
 
 
+def data_table(title: Any = None, **kw: Any) -> Table:
+    """The one transcript table style (B9): bold title at the left, a quiet header
+    with one rule under it, no cell borders, no outer edge -- the same rhythm as
+    the screens' DataTables. Callers right-align number columns themselves
+    (justify="right"). A key/value readout passes box=None and show_header=False."""
+    kw.setdefault("box", box.SIMPLE_HEAD)
+    kw.setdefault("show_edge", False)
+    kw.setdefault("pad_edge", False)
+    kw.setdefault("header_style", f"bold {T.TEXT_FAINTER}")
+    kw.setdefault("border_style", T.TEXT_GHOST)
+    kw.setdefault("title_style", f"bold {T.TEXT_BRIGHT}")
+    kw.setdefault("title_justify", "left")
+    if title is not None:
+        kw["title"] = title
+    return Table(**kw)
+
+
 def day_divider(date_str: str) -> Rule:
     """A subtle full-date separator, shown once when the display-zone day
     changes (like a messaging app's date chip). `date_str` is pre-formatted in
@@ -416,8 +433,7 @@ def _records_table(title: str, rows: list[dict[str, Any]]) -> Table:
                     key not in columns and isinstance(value, list) and all(not isinstance(v, (dict, list)) for v in value)):
                 columns.append(key)
     columns = columns[:_RESULT_COLS]
-    table = Table(title=f"{title} ({len(rows)})", title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
-                  show_header=True, header_style="bold", box=box.SIMPLE_HEAD, expand=False)
+    table = data_table(f"{title} ({len(rows)})", show_header=True, expand=False)
     for col in columns:
         table.add_column(_label(col), overflow="fold")
     for row in rows[:_RESULT_ROWS]:
@@ -879,7 +895,7 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
     missing_preset = missing_preset or set()
     if not schedules and not errors:
         return Group(Text("No schedules yet. Create one with /schedule new.", style=T.TEXT_MUTED))
-    table = Table(show_header=True, header_style="bold", expand=False)
+    table = data_table(show_header=True, expand=False)
     for col in ("name", "runs", "cadence", "target", "deliver", "last run"):
         table.add_column(col)
     from kratos.agent.notify import notify_config_status
@@ -1013,7 +1029,7 @@ def trigger_table(triggers: list[Any], errors: list[tuple[str, str]],
     last_fired = last_fired or {}
     if not triggers and not errors:
         return Group(Text("No triggers yet. Create one with /trigger new.", style=T.TEXT_MUTED))
-    table = Table(show_header=True, header_style="bold", expand=False)
+    table = data_table(show_header=True, expand=False)
     for col in ("name", "when", "action", "target", "cooldown", "last fired"):
         table.add_column(col)
     for tg in triggers:
@@ -1057,7 +1073,7 @@ def trigger_detail_panel(trigger: Any, records: list[dict]) -> Panel:
 def _subtest_table(value: str) -> Table:
     import re
 
-    table = Table(show_header=True, header_style="bold")
+    table = data_table(show_header=True)
     table.add_column("Test")
     table.add_column("Result")
     for line in value.splitlines():
@@ -1111,8 +1127,7 @@ def doctor_table(checks: list[dict[str, str]]) -> Group:
     tally = Text(f"   {p} ok · {w} warning{'s' if w != 1 else ''} · {f} problem{'s' if f != 1 else ''}",
                  style=T.TEXT_DIM)
 
-    table = Table(show_header=False, box=None, title="Kratos — self-diagnostic",
-                  title_justify="left", title_style=f"bold {T.ACCENT}")
+    table = data_table("Kratos — self-diagnostic", show_header=False, box=None)
     table.add_column(width=1, no_wrap=True)
     table.add_column(style=T.TEXT_BRIGHT, no_wrap=True)
     # fold, not the default ellipsis: a detail can be a value to copy (a URL, a
@@ -1142,9 +1157,7 @@ def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None
     rather than silently dropped."""
     last_run = last_run or {}
     unavailable = unavailable or set()
-    table = Table(show_header=True, box=None, title="Saved presets",
-                  title_justify="left", title_style=f"bold {T.ACCENT}",
-                  header_style=f"bold {T.TEXT_DIM}")
+    table = data_table("Saved presets", show_header=True)
     table.add_column("name", style=T.ACCENT, no_wrap=True)
     table.add_column("kind", no_wrap=True)
     table.add_column("target", style=T.TEXT_MUTED, no_wrap=True)
@@ -1206,8 +1219,7 @@ def error_detail(result: Any) -> str:
 def kv_table(title: str, rows: list[tuple]) -> Table:
     """A simple two-column key/value table (used by /usage and /context). Each
     row is (key, value) or (key, value, value_style)."""
-    table = Table(show_header=False, box=None, title=title, title_justify="left",
-                  title_style=f"bold {T.ACCENT}")
+    table = data_table(title, show_header=False, box=None)
     table.add_column(style=T.TEXT_MUTED, no_wrap=True)
     table.add_column()
     for r in rows:

@@ -1470,8 +1470,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.budget import pricing, report
 
         today = report.today(self._data_dir)
-        budget = Table(title=f"Model budget — today ({today.day})", title_justify="left",
-                       title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
+        budget = R.data_table(f"Model budget — today ({today.day})")
         for col, justify in (("Limit", "left"), ("Used", "right"), ("Left", "right")):
             budget.add_column(col, justify=justify)
         for sc in today.scopes:
@@ -1488,11 +1487,13 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if not rows:
             self._emit(R.note_line("No model calls recorded for this session yet. Limits: Settings → Budget."))
             return
-        table = Table(title="Model usage — this session", title_justify="left",
-                      title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
-        for col, justify in (("Model", "left"), ("Calls", "right"), ("Tokens sent", "right"),
-                             ("Tokens received", "right"), ("Estimated cost", "right")):
-            table.add_column(col, justify=justify)
+        self._emit(Text(""))
+        table = R.data_table("Model usage — this session")
+        # Short number headers, and the model name wraps instead of being cut: at 80
+        # columns the names were "gemini-3.1-f…" while the numbers kept full width (F11).
+        table.add_column("Model", overflow="fold", ratio=1, min_width=21)
+        for col in ("Calls", "Sent", "Received", "Cost (est.)"):
+            table.add_column(col, justify="right", no_wrap=True)
         total_cost, unknown = 0.0, []
         for r in rows:
             if r["local"]:
@@ -1501,7 +1502,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 total_cost += r["cost"]
                 cost = Text(f"~${r['cost']:.4f}" + (" + unpriced" if r["unpriced"] else ""), style=T.ATTENTION)
             else:
-                cost = Text("no price on file", style=T.TEXT_DIM)
+                cost = Text("no price", style=T.TEXT_DIM)
             if r["unpriced"] and not r["local"]:
                 unknown.append(r["model"])
             table.add_row(r["model"], f"{r['calls']:,}", f"{r['prompt_tokens']:,}", f"{r['completion_tokens']:,}", cost)
@@ -1806,8 +1807,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                                       + ". Recorded — `kratos data history` lists every prune."))
             return
         measured = await asyncio.to_thread(datainv.measure, self._data_dir)
-        table = Table(title=f"What Kratos keeps — {self._data_dir}", title_justify="left",
-                      title_style=f"bold {T.TEXT_BRIGHT}", header_style="bold")
+        table = R.data_table(f"What Kratos keeps — {self._data_dir}")
         for col, justify in (("Kind", "left"), ("Size", "right"), ("Items", "right"), ("Oldest", "left"),
                              ("Personal", "left")):
             table.add_column(col, justify=justify)
@@ -4472,7 +4472,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         from kratos.adapters.target_setup import check_label
 
-        table = Table(show_header=True, header_style="bold", title="Target setup check")
+        table = R.data_table("Target setup check", show_header=True)
         table.add_column("Check")
         table.add_column("Status")
         table.add_column("Detail")
@@ -4569,7 +4569,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.agent.self_write_loop import KEPT_TOOLS_DIR, _read_metadata
         from kratos.untrusted_rich import SafeTable as Table
         metadata = _read_metadata(KEPT_TOOLS_DIR)
-        table = Table(show_header=True, header_style="bold", title=f"Tools reachable by the agent ({len(TOOL_REGISTRY)})")
+        table = R.data_table(f"Tools reachable by the agent ({len(TOOL_REGISTRY)})", show_header=True)
         table.add_column("Name")
         table.add_column("Kind")
         table.add_column("Asks first")
@@ -4747,30 +4747,30 @@ class SessionScreen(ResilientWorkerHost, Screen):
                         "and lets you review your own tools' code.", style=T.TEXT_FAINT))
 
     def _tools_table(self, heading: str, subtitle: str, names: list[str], metadata: dict, kept: bool):
+        """One tools table: the name with where it looks underneath (and, for your
+        tools, whether it asks first and when it was kept) in the first column, what
+        it does in the second. Two columns, so "What it does" keeps most of the
+        width at 80 columns instead of wrapping to 4-5 lines; the subtitle is part
+        of the title rather than a caption printed under the table (F11, B9)."""
         from kratos.agent.tools import TOOL_REGISTRY
-        from kratos.untrusted_rich import SafeTable as Table
-        table = Table(
-            show_header=True, header_style="bold", title=f"{heading} — {len(names)}",
-            title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
-            caption=subtitle, caption_justify="left", caption_style=T.TEXT_GHOST)
         from kratos.agent.tool_summaries import where_it_runs
 
-        table.add_column("Name", no_wrap=True)
-        table.add_column("Looks at", no_wrap=True)
-        if kept:
-            table.add_column("Asks first")
-            table.add_column("Kept at")
-        table.add_column("What it does")
+        title = Text(f"{heading} — {len(names)}", style=f"bold {T.TEXT_BRIGHT}")
+        title.append(f"   {subtitle}", style=T.TEXT_DIM)
+        table = R.data_table(title, show_header=True)
+        table.add_column("Tool", no_wrap=True)
+        table.add_column("What it does", ratio=1)
         for name in names:
             tool = TOOL_REGISTRY[name]
             entry = metadata.get(name)
-            row: list[Any] = [Text(name, style=T.ACCENT), Text(where_it_runs(name, tool), style=T.TEXT_DIM)]
+            cell = Text(name, style=T.ACCENT)
+            cell.append("\n" + where_it_runs(name, tool), style=T.TEXT_DIM)
             if kept:
-                row.append(Text("yes" if tool.requires_approval else "no",
-                                style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM))
-                row.append(Text(str((entry or {}).get("kept_at", ""))[:10], style=T.TEXT_FAINTER))
-            row.append(Text(R.tool_description(tool, entry), style=T.TEXT_MUTED))
-            table.add_row(*row)
+                cell.append("\nasks first" if tool.requires_approval else "\nruns without asking",
+                            style=T.ATTENTION if tool.requires_approval else T.TEXT_DIM)
+                if (entry or {}).get("kept_at"):
+                    cell.append(f" · kept {str(entry['kept_at'])[:10]}", style=T.TEXT_FAINTER)
+            table.add_row(cell, Text(R.tool_description(tool, entry), style=T.TEXT_MUTED))
         return table
 
     # --- deterministic subcommand shortcuts (/scan, /run, ...) -----------
