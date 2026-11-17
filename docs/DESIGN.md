@@ -2886,6 +2886,82 @@ is recorded; allowed actions are recorded except the per-read re-checks and mode
 polls (the run's start is the recorded action). `serve_audit` and `finding_events`
 keep their detail and link by run id.
 
+## Agent doors: A2A and AG-UI (E.5)
+
+Two more doors inside `kratos serve` (`src/kratos/serve/a2a/`, `src/kratos/serve/agui.py`), no
+new listener or port, **off until a person turns them on** (`a2a.enabled`, `agui.enabled`;
+`KratosGate` answers 404 for every path of a door that is off, before looking at a token).
+
+**Who may use them.** Only a *person* token that carries the `agents` door (`kratos tokens create
+--agents`; `serve_tokens.doors`). A gateway token is refused at the gate: A2A and AG-UI have no
+header carrying Open WebUI's signed per-user identity, so a shared token there would be every
+mapped person at once. The actor is the token's user with `interface="serve"` — so every network
+rule of D.7 applies unchanged (no owner fallback, the per-read check, `_person_tool_refusal`) — and
+its credential names the door (`token:<id>+a2a` / `+agui`), which is how the audit trail shows it.
+Run sources `a2a` and `agui` are unattended (0.4's hard caps) and network (`current_actor()` is
+`None` without a person: fail closed).
+
+**A2A 1.0, HTTP+JSON/REST binding** (`routes.py`). Public: the Agent Card
+(`/.well-known/agent-card.json`) and the signing keys (`/a2a/v1/keys.json`). With a token:
+`extendedAgentCard`, `message:send`, `message:stream`, `tasks`, `tasks/{id}`, `tasks/{id}:cancel`,
+`tasks/{id}:subscribe`. `A2A-Version: 1.0` is required (absent means 0.3, refused with
+`VERSION_NOT_SUPPORTED`). Errors use A2A's `google.rpc.Status` + `ErrorInfo` shape so the
+reference SDK maps them. JSON-RPC and gRPC are not offered.
+
+**The card** (`card.py`) holds only fields A2A defines and no proto3 default values, so the JSON
+Kratos serves is exactly what the reference SDK's protobuf form gives back — a signature made here
+verifies there. Skills are a closed list (`investigate_machine`, `ask_group`, `hunt_indicator`,
+`finding_states`, `list_machines`); each skill's input is a small JSON Schema in the
+`urn:kratos:a2a:skill-input:v1` extension. The public card names no machine, group or person; the
+extended card adds the caller's machines and groups, D.7 scope applied first. **Signing** (A2A
+1.0 §8.4): the card without `signatures`, empty values removed, RFC 8785 JCS (`jcs.py`, a strict
+subset: floats, lone surrogates and non-string keys are refused rather than guessed), signed as a
+JWS with Kratos's Ed25519 signing key, protected header `{"alg": "EdDSA", "kid": <fingerprint>,
+"typ": "JOSE"}`. `keys.json` lists the active key and every retired one, so a card signed before a
+`kratos signing rotate` still verifies.
+
+**Tasks map to runs** (`tasks.py`, `store.py`). `skills.parse` reads a Message into one skill call:
+at most one data part (checked against the skill's schema: closed keys, strings only, lengths
+capped) and text parts (the question); `url`/`raw` parts are refused, never fetched. Before
+anything runs, `_plan_task` resolves the machine or group from the caller's scope (a machine they
+can't see is refused without saying whether it exists) and checks the skill's own action, then
+the door's (`a2a.use` / `agui.use`, investigators and up). Read-only skills answer at once. A
+skill that runs something then takes, in order, one of the person's `a2a.max_open_tasks`, one of
+the server's open turns (shared with chat; none left = REJECTED "busy", never an unbounded
+queue), one of the token's hourly requests, and a run slot — and runs on the server's turn pool
+through the same functions chat and MCP use (`serve.runs.run_investigation`, `fleet.run.run_fleet`,
+`hunt.front.start_hunt`), so every answer check, NOTE, mask, budget cap and run record applies.
+States: SUBMITTED → WORKING → COMPLETED | FAILED | CANCELED, or REJECTED before it starts; a
+finished task never changes again (a result arriving after a cancel is dropped). `a2a_tasks`
+keeps one row per task (person, token, door, skill, machine, state, run, session, the result as
+given); a task id another person asks for is "not found". At server start, a task an earlier
+process left unfinished is FAILED "Kratos restarted"; at shutdown, running tasks are told to stop.
+
+**Results** (`parts.py`). The artifact's text part is exactly what the chat door renders for the
+same run (`serve.render.answer_markdown` / `fleet_markdown`); its data part is built by code from
+the stored finding records (state, latest verdict, SSVC, ATT&CK ids) for the findings the run
+produced, only for machines the caller may see, every string through `untrusted.for_model`.
+
+**Why no `INPUT_REQUIRED`, `AUTH_REQUIRED` or push notifications.** Kratos's people-only decisions
+(approvals, keeps, the fix channel) must stay with a person at the Kratos host, never with a remote
+agent; a headless run offers no tool that could ask (`serve.runs.headless_tool_filter`), and if
+anything still asked, the answer is no. Push notifications would make Kratos send requests to any
+URL a remote agent names; `capabilities.pushNotifications` is false and every push-config method
+answers `PUSH_NOTIFICATION_NOT_SUPPORTED` before anything is stored. Delivery to people stays in
+D.4's outbox, configured by a person. A dropped A2A stream only stops listening — the task runs on
+and `GetTask` has its result.
+
+**AG-UI** (`agui.py`). `POST /ag-ui/run` takes a RunAgentInput and starts the same kind of task
+(door `agui`; the machine from `forwardedProps.kratos.machine`, `@group` for a group). The SSE
+stream: `RUN_STARTED`; `STEP_STARTED`/`STEP_FINISHED` for each collection check and tool read —
+the name is matched against Kratos's own registries (an unknown name is no step) and the status
+is a fixed word; then, only once the run and its answer checks have finished,
+`TEXT_MESSAGE_START`/`_CONTENT`/`_END` with the same Markdown as chat, `CUSTOM` `kratos.findings`
+with the same data as A2A's data part, and `RUN_FINISHED` (outcome `cancelled` when stopped) or
+`RUN_ERROR` (refused or failed). No tool-call events (the front end can't call Kratos's tools),
+front-end tools are ignored, `resume` is refused (Kratos never interrupts). A front end that
+disconnects cancels the run before its next read — AG-UI has no way to pick a result up again.
+
 ## MCP server surface
 
 `kratos mcp-serve` exposes five tools over stdio — `investigate`,

@@ -5,7 +5,10 @@ Two doors on one local HTTP server:
 * the OpenAI-compatible door (`/v1/models`, `/v1/chat/completions`): a chat client adds
   Kratos as a connection and picks a model named after a machine (`kratos/web-01`); the
   reply is Kratos's CHECKED answer, never the model's raw draft;
-* MCP over Streamable HTTP (`/mcp`): an agent host starts an investigation and polls it.
+* MCP over Streamable HTTP (`/mcp`): an agent host starts an investigation and polls it;
+* the agent doors (E.5, off until a person turns them on): A2A 1.0 (`/.well-known/agent-card.json`,
+  `/a2a/v1/...`) for another agent delegating a task, and AG-UI (`/ag-ui/run`) for an agent
+  front end -- person tokens with the `agents` door only, never a shared gateway token.
 
 Every request passes one gate (`KratosGate`, pure ASGI so streaming is untouched), in
 this order: the Host header must be one this server answers to (DNS-rebinding defence --
@@ -34,8 +37,45 @@ logger = logging.getLogger(__name__)
 _LOOPBACK_NAMES = ("127.0.0.1", "localhost", "[::1]")
 # Chat turns open at once (running + waiting for a slot): beyond this a new message is
 # answered "busy" (429) instead of piling up threads. Each turn holds one thread of the
-# server's own pool, never the shared pool request handling needs.
+# server's own pool, never the shared pool request handling needs. A2A tasks and AG-UI
+# runs take the same turns.
 MAX_OPEN_TURNS = 16
+# E.5: the agent doors and the token door they need; their requests are small.
+AGENT_DOORS = ("a2a", "agui")
+AGENT_MAX_BODY = 256 * 1024
+
+
+def door_of(path: str) -> str:
+    """Which door a request path belongs to."""
+    from kratos.serve.a2a.card import API_PREFIX, WELL_KNOWN_PATH
+    from kratos.serve.agui import PATH as AGUI_PATH
+
+    if path == "/mcp" or path.startswith("/mcp/"):
+        return "mcp"
+    if path == WELL_KNOWN_PATH or path == API_PREFIX or path.startswith(API_PREFIX + "/"):
+        return "a2a"
+    if path == AGUI_PATH or path.startswith("/ag-ui/"):
+        return "agui"
+    return "openai"
+
+
+def door_enabled(data_dir: Path, door: str) -> bool:
+    if door not in AGENT_DOORS:
+        return True
+    from kratos import settings_store
+    from kratos.serve.a2a import settings as AS
+
+    try:
+        return bool(settings_store.get(AS.A2A_ENABLED if door == "a2a" else AS.AGUI_ENABLED, data_dir=data_dir))
+    except Exception:  # noqa: BLE001 -- a setting that can't be read keeps the door shut
+        return False
+
+
+def _public(door: str, path: str, method: str) -> bool:
+    """The two A2A resources served without a token: the public card and the signing keys."""
+    from kratos.serve.a2a.card import KEYS_PATH, WELL_KNOWN_PATH
+
+    return door == "a2a" and method == "GET" and path in (WELL_KNOWN_PATH, KEYS_PATH)
 
 
 def _json_error(status: int, message: str, *, kind: str, code: str | None = None) -> tuple[int, bytes]:
@@ -67,6 +107,10 @@ class ServeState:
         self._turns_lock = threading.Lock()
         self._open_turns = 0
         self._handles: set[Any] = set()
+        from kratos.serve.a2a.tasks import Tasks
+
+        self.a2a_tasks = Tasks(self.data_dir)              # E.5: A2A tasks and AG-UI runs of this process
+        self.a2a_open_lock = threading.Lock()
 
     # -- chat turns
     def open_turn(self) -> bool:
@@ -139,7 +183,8 @@ class ServeState:
                 self._in_flight.pop(key, None)
 
     # -- who is calling (D.7)
-    def resolve_actor(self, client: _auth.Client, headers: dict[str, str]) -> tuple[Any, str | None]:
+    def resolve_actor(self, client: _auth.Client, headers: dict[str, str],
+                      door: str = "openai") -> tuple[Any, str | None]:
         """(the Actor for this request, None) or (None, the plain reason it is refused).
 
         A person token is its user. A gateway token (a shared Open WebUI) carries no person
@@ -170,8 +215,10 @@ class ServeState:
                 user = U.get(self.data_dir, client.user_id)
                 if user is None:
                     return None, "this token's Kratos user no longer exists"
+                # The door is part of the credential the audit trail shows (token:<id>+a2a).
+                suffix = f"+{door}" if door in AGENT_DOORS else ""
                 actor = Actor(user=user.name, interface="serve", user_id=user.user_id,
-                              credential=f"token:{client.token_id}")
+                              credential=f"token:{client.token_id}{suffix}")
             authz.principal_of(actor, data_dir=self.data_dir)
         except authz.Denied as e:
             return None, e.reason
@@ -255,7 +302,7 @@ class KratosGate:
             return
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers") or []}
         path = scope.get("path") or ""
-        door = "mcp" if path == "/mcp" or path.startswith("/mcp/") else "openai"
+        door = door_of(path)
         peer = (scope.get("client") or ("", 0))[0] or ""
         host = headers.get("host", "").strip().lower()
         if host not in self.state.allowed_hosts():
@@ -266,7 +313,14 @@ class KratosGate:
             await self._refuse(send, 403, "requests from a web page are not accepted", door, path, peer,
                                "origin header present")
             return
-        limit = self._max_body()
+        if door in AGENT_DOORS and not await asyncio.to_thread(door_enabled, self.state.data_dir, door):
+            # Off (the default): as if the door didn't exist -- no card, no route.
+            await self._respond(send, *_json_error(404, "not found", kind="invalid_request_error"))
+            return
+        if _public(door, path, scope.get("method", "GET")):
+            await self.app(scope, receive, send)
+            return
+        limit = self._max_body() if door not in AGENT_DOORS else min(self._max_body(), AGENT_MAX_BODY)
         try:
             if int(headers.get("content-length") or 0) > limit:
                 await self._refuse(send, 413, "the request is too large", door, path, peer, "body too large")
@@ -296,11 +350,23 @@ class KratosGate:
                                status_word="unauthorized", token_id=client.token_id, code="invalid_api_key",
                                authz_reason=client.expired_text, client=client)
             return
-        if not client.may_use(door):
-            await self._refuse(send, 403, f"this token may not use the {door} door", door, path, peer,
-                               "door not allowed for token", token_id=client.token_id)
+        if door in AGENT_DOORS and client.kind == "gateway":
+            # A2A and AG-UI carry no signed per-person identity: a shared Open WebUI's token
+            # would be every mapped person at once.
+            why = "these doors take a person token -- a shared Open WebUI's gateway token can't be used here"
+            await self._refuse(send, 403, why, door, path, peer, "gateway token on an agent door",
+                               token_id=client.token_id, authz_reason=why, client=client)
             return
-        actor, why = await asyncio.to_thread(self.state.resolve_actor, client, headers)
+        token_door = "agents" if door in AGENT_DOORS else door
+        if not client.may_use(token_door):
+            hint = (" -- the owner makes one with: kratos tokens create --user <you> --agents"
+                    if token_door == "agents" else "")
+            await self._refuse(send, 403, f"this token may not use the {token_door} door{hint}", door, path, peer,
+                               "door not allowed for token", token_id=client.token_id,
+                               authz_reason=f"this token may not use the {token_door} door" if token_door == "agents"
+                               else None, client=client)
+            return
+        actor, why = await asyncio.to_thread(self.state.resolve_actor, client, headers, door)
         if actor is None:
             if client.kind == "gateway" and door == "openai" and path == "/v1/models" and \
                     scope.get("method", "GET") == "GET":
@@ -320,11 +386,11 @@ class KratosGate:
         scope["kratos.actor"] = actor
         from kratos import authz
 
-        if door != "mcp":
+        if door == "openai":
             with authz.acting_as(actor):
                 await self.app(scope, self._limited(receive, limit), send)   # the OpenAI routes audit themselves
             return
-        # MCP: one audit row per request, written when the response has gone out.
+        # MCP and the agent doors: one audit row per request, written when the response has gone out.
         started, seen = time.monotonic(), {"status": 500, "bytes": 0}
 
         async def counting_send(message: dict) -> None:
@@ -340,7 +406,7 @@ class KratosGate:
         finally:
             word = "ok" if seen["status"] < 400 else ("refused" if seen["status"] < 500 else "error")
             try:
-                await asyncio.to_thread(_store.audit, self.state.data_dir, door="mcp", endpoint=path, status=word,
+                await asyncio.to_thread(_store.audit, self.state.data_dir, door=door, endpoint=path, status=word,
                                         token_id=client.token_id, client_addr=peer, user_id=actor.user_id,
                                         duration=time.monotonic() - started, bytes_out=seen["bytes"])
             except Exception:  # noqa: BLE001
@@ -386,6 +452,8 @@ class KratosGate:
             from kratos.authz import audit as _aa
 
             cred = (f"gateway:{token_id}" if getattr(client, "kind", "") == "gateway" else f"token:{token_id}")
+            if door in AGENT_DOORS:
+                cred += f"+{door}"
             try:
                 await asyncio.to_thread(_aa.record, self.state.data_dir, interface="serve", action="read",
                                         result="refused", user_id=getattr(client, "user_id", None)
@@ -421,7 +489,10 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
     from starlette.applications import Starlette
     from starlette.responses import JSONResponse
 
-    from kratos.serve import mcp_http, openai_routes
+    from kratos.serve import agui, mcp_http, openai_routes
+    from kratos.serve.a2a import routes as a2a_routes
+    from kratos.serve.a2a import store as a2a_store
+    from kratos.serve.a2a import tasks as a2a_tasks
 
     state = ServeState(data_dir, bind_host=bind_host, port=port)
     mcp_app, session_manager = mcp_http.build(state)
@@ -429,6 +500,10 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
     @contextlib.asynccontextmanager
     async def lifespan(_app: Any):
         state.note_runs(running=True)
+        try:   # E.5: a task an earlier server process left unfinished can't still be running
+            await asyncio.to_thread(a2a_store.fail_unfinished, data_dir, a2a_tasks.RESTARTED)
+        except Exception:  # noqa: BLE001 -- history only
+            logger.warning("serve: could not close the tasks of an earlier run", exc_info=True)
         from kratos.outbox import worker as _outbox_worker
 
         delivery = _outbox_worker.start_background(data_dir, label="kratos serve")
@@ -441,6 +516,7 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
             # Stopping: running MCP investigations are told to stop and waited for (off the
             # event loop), so nothing keeps reading a machine after the server is gone.
             await asyncio.to_thread(state.investigations.shutdown)
+            await asyncio.to_thread(state.a2a_tasks.shutdown)
             await asyncio.to_thread(state.shutdown_turns)
             state.note_runs(running=False)
 
@@ -452,7 +528,8 @@ def create_app(data_dir: Path, *, bind_host: str = "127.0.0.1", port: int = 8770
         status, body = _json_error(404, "not found", kind="invalid_request_error")
         return JSONResponse(json.loads(body), status_code=getattr(exc, "status_code", 404))
 
-    api = Starlette(routes=openai_routes.routes(state) + list(mcp_app.routes), lifespan=lifespan,
+    api = Starlette(routes=openai_routes.routes(state) + list(mcp_app.routes) + a2a_routes.routes(state)
+                    + agui.routes(state), lifespan=lifespan,
                     exception_handlers={_BodyTooLarge: too_large, 404: not_found, 405: not_found})
     api.state.kratos = state
     return KratosGate(api, state)

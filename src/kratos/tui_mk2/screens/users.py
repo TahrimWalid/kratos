@@ -283,8 +283,13 @@ class UsersScreen(Screen):
             return
         mcp = await self.app.push_screen_wait(ConfirmModal("Also allow the MCP door?", "y: MCP and chat · "
                                                            "anything else: chat only"))
+        agents = await self.app.push_screen_wait(ConfirmModal(
+            "Also allow the agent doors (A2A, AG-UI)?",
+            "y: other agents and agent front ends may use this token (when a2a.enabled / agui.enabled are on) · "
+            "anything else: no"))
         try:
-            token, row = A.create_token(self._data_dir, name=name, user=u.user_id, mcp=bool(mcp), created_by="tui")
+            token, row = A.create_token(self._data_dir, name=name, user=u.user_id, mcp=bool(mcp), created_by="tui",
+                                        agents=bool(agents))
         except A.TokenError as e:
             self._done(f"No token: {e}", ok=False)
             return

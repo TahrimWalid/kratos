@@ -7,7 +7,8 @@ constant time. The token itself is printed once at creation and stored nowhere.
 Tokens are made on the command line (`kratos serve token create`) or in the app -- never
 over the network: no endpoint creates, lists or revokes one. A token says which machines
 it may investigate (`targets`; none = the default machine only) and which doors it may use
-(`openai` always; `mcp` only when asked for).
+(`openai` always; `mcp` only when asked for; `agents` -- A2A and AG-UI, E.5 -- only when asked
+for, and never on a gateway token).
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from typing import Any
 from kratos.serve import store as _store
 
 PREFIX = "krt_"
-DOORS = ("openai", "mcp")
+DOORS = ("openai", "mcp", "agents")
 # scrypt cost: n=2**14, r=8, p=1 (16 MB, ~50 ms here) -- the secret is 256 random bits,
 # so the cost only has to make an offline check of a leaked database slow, not resist a
 # guessable password. Recorded per row, so it can be raised later without breaking tokens.
@@ -116,7 +117,7 @@ def _people_only(data_dir: Path, what: str) -> Any:
     """Tokens are made, revoked and rotated by the owner at the TUI/CLI only (D.7 §3.2)."""
     from kratos import authz, run_context
 
-    if run_context.current() is not None and getattr(run_context.current(), "source", "") in ("web", "mcp"):
+    if run_context.current() is not None and getattr(run_context.current(), "source", "") in ("web", "mcp", "a2a", "agui"):
         raise TokenError("a token can only be managed by a person, on the command line or in the app")
     actor = authz.current_actor()
     try:
@@ -129,7 +130,7 @@ def _people_only(data_dir: Path, what: str) -> Any:
 def create_token(data_dir: Path, *, name: str, targets: Any = (), mcp: bool = False,
                  created_by: str = "cli", now: float | None = None, user: str | None = None,
                  expires: Any = None, gateway: bool = False,
-                 rotated_from: str | None = None) -> tuple[str, dict[str, Any]]:
+                 rotated_from: str | None = None, agents: bool = False) -> tuple[str, dict[str, Any]]:
     """Make a token. Returns (the token -- show it once, it isn't kept -- , its row).
 
     `user`: the Kratos user it belongs to (id or name; default the owner). `expires`: days,
@@ -145,6 +146,10 @@ def create_token(data_dir: Path, *, name: str, targets: Any = (), mcp: bool = Fa
         raise TokenError(f"no Kratos user {user!r} (kratos users list)")
     if owner_row.disabled:
         raise TokenError(f"{owner_row.name} is disabled")
+    if gateway and agents:
+        # A2A and AG-UI have no signed per-person identity header: a shared token there
+        # would be every mapped person at once (E.5 §3.4).
+        raise TokenError("a gateway token can't use the agent doors (A2A, AG-UI) -- make a person token with --agents")
     if gateway and not owner_row.is_owner:
         raise TokenError("a gateway token belongs to the owner (it acts for the mapped Open WebUI users)")
     if gateway and not rotated_from and any(t.get("kind") == "gateway" and not t.get("revoked_at")
@@ -164,7 +169,7 @@ def create_token(data_dir: Path, *, name: str, targets: Any = (), mcp: bool = Fa
     salt = secrets.token_bytes(16)
     row = {"token_id": token_id, "name": name, "secret_hash": _hash(secret, salt, SCRYPT), "salt": salt.hex(),
            "kdf": dict(SCRYPT), "targets": cleaned,
-           "doors": ["openai"] + (["mcp"] if mcp else []),
+           "doors": ["openai"] + (["mcp"] if mcp else []) + (["agents"] if agents else []),
            "created_at": now, "created_by": created_by,
            "user_id": owner_row.user_id, "kind": "gateway" if gateway else "person", "expires_at": expires_at,
            "rotated_from": rotated_from}
@@ -186,6 +191,7 @@ def rotate(data_dir: Path, token_ref: str, *, expires: Any = None, created_by: s
     if expires is None and old.get("expires_at") is None and old.get("user_id") == "owner":
         expires = "never"
     token, row = create_token(data_dir, name=f"{base}-r{n}", targets=old["targets"], mcp="mcp" in old["doors"],
+                              agents="agents" in old["doors"],
                               created_by=created_by, user=old.get("user_id") or "owner", expires=expires,
                               gateway=old.get("kind") == "gateway", rotated_from=old["token_id"])
     if old.get("kind") == "gateway":

@@ -57,8 +57,9 @@ def test_unknown_source_rejected_and_sets_match_readme():
     with pytest.raises(ValueError):
         with run_scope("cron"):
             pass
-    assert SOURCES == ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli", "watch")
-    assert UNATTENDED == {"schedule", "trigger", "mcp", "web", "watch"}
+    assert SOURCES == ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli", "watch", "a2a",
+                       "agui")
+    assert UNATTENDED == {"schedule", "trigger", "mcp", "web", "watch", "a2a", "agui"}
 
 
 def test_scope_does_not_flow_into_a_plain_thread_but_bind_carries_it():

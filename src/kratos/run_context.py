@@ -24,10 +24,12 @@ from typing import Any, Callable, Iterator, TypeVar
 
 from kratos.target_key import target_key
 
-SOURCES = ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli", "watch")
+SOURCES = ("interactive", "schedule", "trigger", "pipeline", "mcp", "web", "evolve", "cli", "watch", "a2a", "agui")
 # Runs with no person watching: 0.4's hard spending caps apply to these. "watch": the
 # listener publishing an agent's live detections (C.2).
-UNATTENDED = frozenset({"schedule", "trigger", "mcp", "web", "watch"})
+UNATTENDED = frozenset({"schedule", "trigger", "mcp", "web", "watch", "a2a", "agui"})
+# Sources that are a person over the network (kratos serve): no person attached = no one (fail closed).
+NETWORK_SOURCES = frozenset({"web", "a2a", "agui"})
 
 
 @dataclass(frozen=True)

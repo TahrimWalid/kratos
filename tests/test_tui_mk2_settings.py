@@ -511,10 +511,10 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_serve_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_detect_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_agent_link_setting_flow", lambda key: fired.append(key))
-            assert len(screen._gen_all) == 80    # every General row, now spread over the categories (see HEAD's count)
+            assert len(screen._gen_all) == 84    # every General row, now spread over the categories (see HEAD's count)
             for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, ""),
                                   (13, ""), (18, ""), (21, ""), (33, ""), (36, ""), (43, ""), (47, ""), (56, ""),
-                                  (78, ""), (79, "")]:
+                                  (78, ""), (79, ""), (83, "")]:
                 screen._gen_select(row)          # its category, cursor on it
                 screen.query_one("#gen-table", DataTable).focus()
                 await pilot.pause()
@@ -527,7 +527,7 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
                                    "logs.seal_copy_budget_mb", "detect.lookback_hours", "detect.alert_batch_seconds",
                                    "hunt.max_hits", "export.max_events", "hashdb.online", "compliance.max_age_hours",
                                    "baseline.max_per_day", "code.max_files", "serve.link_hosts",
-                                   "subagent.tls.require"]
+                                   "a2a.enabled", "subagent.tls.require"]
 
 
 def test_general_tab_saves_the_longest_risk_acceptance(tmp_path, monkeypatch):
@@ -579,7 +579,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
 
     models, gen = asyncio.run(_run())
     assert models >= 1   # profiles listed (blurb rendered without a session)
-    assert gen == 80     # + nine code / name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+    assert gen == 84     # + four agent-door (A2A, AG-UI) + nine code / name / theme / timezone + two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
 
 
 def test_this_session_tab_absent_from_home(tmp_path, monkeypatch):

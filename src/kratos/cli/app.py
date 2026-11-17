@@ -229,8 +229,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return _cmd_serve_token(args, data_dir)
     if sub == "set":
         key = str(args.key or "").strip()
-        if not key.startswith("serve."):
-            print("kratos serve set: only serve.* settings (see Settings -> General for the rest)", file=sys.stderr)
+        from kratos.serve.a2a import settings as _as  # noqa: F401 -- registers a2a.*, agui.*
+
+        if not key.startswith(("serve.", "a2a.", "agui.")):
+            print("kratos serve set: only serve.*, a2a.* and agui.* settings (see Settings -> General for the rest)",
+                  file=sys.stderr)
             return 2
         try:
             settings_store.set(key, args.value, data_dir=data_dir, actor="cli")
@@ -296,7 +299,7 @@ def _cmd_serve_token(args: argparse.Namespace, data_dir: Path) -> int:
         if action == "create":
             targets = [t for t in (args.targets or "").replace(" ", ",").split(",") if t.strip()]
             token, row = _auth.create_token(data_dir, name=args.name, targets=targets, mcp=bool(args.mcp),
-                                            created_by="cli")
+                                            created_by="cli", agents=bool(getattr(args, "agents", False)))
             scope = ", ".join(row["targets"]) or "the default machine only"
             print(token)
             print(f"\nThat is the token for {row['name']!r} -- copy it now, Kratos keeps only a hash of it.\n"
@@ -2509,6 +2512,8 @@ def build_parser() -> argparse.ArgumentParser:
     tok_create.add_argument("--targets", default="", help="Comma-separated machines it may investigate "
                                                           "(default: the default machine only)")
     tok_create.add_argument("--mcp", action="store_true", help="Also allow the MCP door (/mcp)")
+    tok_create.add_argument("--agents", action="store_true",
+                            help="Also allow the agent doors: A2A (/a2a) and AG-UI (/ag-ui), when turned on")
     tok_sub.add_parser("list", help="List tokens (never shows a token)")
     tok_revoke = tok_sub.add_parser("revoke", help="Revoke a token by id or name")
     tok_revoke.add_argument("ref")

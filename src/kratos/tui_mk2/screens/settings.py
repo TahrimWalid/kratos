@@ -382,7 +382,9 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "trace.enabled", "trace.max_result_bytes", "trace.store_prompts", "trace.otel_export",
                           "privacy.mask_mode", "privacy.local_model_hosts",
                           "serve.port", "serve.allow_non_loopback", "serve.allowed_hosts", "serve.max_parallel",
-                          "serve.requests_per_hour", "serve.link_hosts", "subagent.tls.require"]
+                          "serve.requests_per_hour", "serve.link_hosts",
+                          "a2a.enabled", "agui.enabled", "a2a.max_open_tasks", "a2a.public_url",
+                          "subagent.tls.require"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -845,7 +847,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         ("Incident bundles", ("export.",)),
         ("Run records", ("trace.",)),
         ("Privacy", ("privacy.",)),
-        ("Chat server", ("serve.",)),
+        ("Chat server", ("serve.", "a2a.", "agui.")),
         ("Agents", ("subagent.",)),
     ]
     _GEN_LABEL_PREFIXES = ("Detection rules: ", "Hunting: ", "Agent link: ")
@@ -1090,14 +1092,19 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         "serve.max_parallel": "Chat server: investigations at once",
         "serve.requests_per_hour": "Chat server: messages per token per hour",
         "serve.link_hosts": "Chat answers: clickable link sites",
+        "a2a.enabled": "Other agents (A2A) may use Kratos",
+        "agui.enabled": "Agent front ends (AG-UI) may use Kratos",
+        "a2a.max_open_tasks": "Agent tasks open at once, per person",
+        "a2a.public_url": "Address other agents reach Kratos at",
     }
 
     def _serve_rows(self) -> list[tuple[str, str, str]]:
         from kratos import settings_store
         from kratos.serve import settings as SS  # noqa: F401 -- registers serve.*
+        from kratos.serve.a2a import settings as AS  # noqa: F401 -- registers a2a.*, agui.*
 
         dd = self._data_dir()
-        keys = [k for k in self._gen_rows if k.startswith("serve.")]
+        keys = [k for k in self._gen_rows if k.startswith(("serve.", "a2a.", "agui."))]
         if dd is None:
             return [(k, self._SERVE_LABELS[k], "unavailable here") for k in keys]
         out = []
@@ -1108,6 +1115,8 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                         else "no  (127.0.0.1 only)") if k == SS.ALLOW_NON_LOOPBACK else ("yes" if v else "no")
             elif isinstance(v, list):
                 tail = ", ".join(v) if v else ("none  (every link shown as text)" if k == SS.LINK_HOSTS else "none")
+            elif k == AS.PUBLIC_URL and not v:
+                tail = "not set  (the address the request came to)"
             else:
                 tail = str(v)
             out.append((k, self._SERVE_LABELS[k], tail))
@@ -1603,7 +1612,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_ssvc_ask_flow(key)
         elif key and key.startswith("privacy."):
             self._set_privacy_setting_flow(key)
-        elif key and key.startswith("serve."):
+        elif key and key.startswith(("serve.", "a2a.", "agui.")):
             self._set_serve_setting_flow(key)
         elif key == "subagent.tls.require":
             self._set_agent_link_setting_flow(key)

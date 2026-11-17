@@ -29,6 +29,8 @@ FLEET_ASK = "fleet.ask"
 RETEST = "retest"
 FINDING_DECIDE = "finding.decide"
 EXPORT_REDACTED = "export.redacted"
+A2A_USE = "a2a.use"                 # E.5: start a task over A2A (another agent delegating to Kratos)
+AGUI_USE = "agui.use"               # E.5: start a run over AG-UI (an agent front end)
 
 # --- administering (admin role, and only at the Kratos host) ---------------------------
 USERS_MANAGE = "users.manage"
@@ -62,7 +64,8 @@ LOCAL_RUN = "local.run"                   # anything else done at the Kratos hos
 
 VIEWER = frozenset({READ, FINDINGS_READ, CHAT, HUNT, USAGE_READ, SESSIONS_OWN, COMPLIANCE_READ, BASELINE_READ,
                     CODE_READ, PATHS_READ})
-INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECIDE, EXPORT_REDACTED})
+INVESTIGATOR = VIEWER | frozenset({INVESTIGATE, FLEET_ASK, RETEST, FINDING_DECIDE, EXPORT_REDACTED, A2A_USE,
+                                    AGUI_USE})
 ADMIN = INVESTIGATOR | frozenset({
     USERS_MANAGE, TOKENS_MANAGE, CHANNELS_MANAGE, SETTINGS_CHANGE, BUDGET_CHANGE, ENROL, FIXCHANNEL_CONSENT,
     EXPORT_FULL, GROUPS_MANAGE, ASSETS_MANAGE, SCHEDULES_MANAGE, DETECT_MANAGE, DATA_PRUNE, AUDIT_READ,
@@ -96,6 +99,8 @@ _WORDS = {
     BASELINE_READ: "read what's normal on a machine",
     CODE_READ: "read the code checks of a machine",
     PATHS_READ: "read a machine's attack paths",
+    A2A_USE: "start tasks from another agent",
+    AGUI_USE: "start runs from an agent front end",
 }
 
 

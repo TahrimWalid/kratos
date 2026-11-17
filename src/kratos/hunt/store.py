@@ -18,7 +18,7 @@ from kratos.storage.migrations import migrate_once
 from kratos.storage.sqlite_files import connect_store
 
 COMPONENT = "hunt_runs"
-SOURCES = ("tui", "cli", "chat", "mcp", "auto")
+SOURCES = ("tui", "cli", "chat", "mcp", "auto", "a2a")
 
 
 def _step_1(conn: sqlite3.Connection) -> None:
