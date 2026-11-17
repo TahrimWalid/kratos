@@ -14,7 +14,6 @@ import pytest
 from kratos import authz
 from kratos.code import roots as R
 from kratos.code import store as S
-from kratos.lifecycle.decide import Actor
 from kratos.review import judge as JUDGE
 from kratos.review import modelcall
 from kratos.review import reproduce as REPRO

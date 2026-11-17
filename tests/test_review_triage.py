@@ -3,7 +3,6 @@ unchanged -> reproduced ("code unchanged since review"); changed/gone -> couldnt
 again"); no new read, no model call."""
 from __future__ import annotations
 
-from pathlib import Path
 
 from kratos import authz
 from kratos.code import roots as R

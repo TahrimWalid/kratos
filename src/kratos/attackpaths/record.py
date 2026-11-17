@@ -113,7 +113,6 @@ def start(data_dir: Path | str, *, run_id: str, group_ref: str, actor: Any, sour
 
 def finish(data_dir: Path | str, run_id: str, *, graph: Any, entries: list[Any], paths: list[Any],
            chokepoints: list[Any], coverage: Any, snapshot_file: str, status: str = "done") -> None:
-    from kratos.attackpaths import graph as G
 
     with opened(data_dir) as conn:
         conn.execute("BEGIN IMMEDIATE")

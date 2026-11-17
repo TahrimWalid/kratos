@@ -562,7 +562,6 @@ def _add_reaches(graph: G.Graph, inputs: dict[str, MachineInputs], machines: lis
     """reaches: machine A -> a service on machine B. observed when A has an outbound socket to
     B's address:port; assumed (same network) when A and B are in the group and B's service is
     bound where A could reach it and no firewall rule is known to block it."""
-    import ipaddress
 
     # B's reachable addresses -> (B, proto, port) for observed matching
     addr_index: dict[tuple[str, int], tuple[str, str]] = {}

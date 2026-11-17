@@ -7,7 +7,7 @@ and leads are capped per call and per run; what was dropped is counted for REVIE
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Callable
 
 from kratos.review import modelcall
 from kratos.review import prompts as P

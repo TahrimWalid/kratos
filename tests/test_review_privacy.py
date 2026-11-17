@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import secrets as _secrets
 
-import pytest
 
 from kratos.review import fix as FIX
 from kratos.review import hunt as HUNT

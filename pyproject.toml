@@ -66,16 +66,18 @@ Repository = "https://github.com/TahrimWalid/kratos"
 Issues = "https://github.com/TahrimWalid/kratos/issues"
 
 [project.optional-dependencies]
-# pysigma: tests/test_sigma_fields.py loads real SigmaHQ rules (tested on 2.0). pysigma 2
+# pysigma: pinned to the version the shipped pack was built with (sigma-linux-1.json records
+# it): 2.0.3 and 2.1.0 compile some rules differently, so test_detect_pack's rebuild check would
+# fail. Move the pin and rebuild the pack together. pysigma 2
 # needs Python 3.11+; on 3.10 those tests skip. pysigma-backend-sqlite is the independent
 # second opinion on every shipped Sigma rule's samples (tests/test_detect_pack.py), never shipped.
 # case-utils: tests/test_export_case_uco.py validates the incident bundle's CASE/UCO graph with
 # case_validate (CASE 1.5.0, its default). Test-only: rdflib/pyshacl never become runtime dependencies.
-test = ["pytest", "PyYAML>=6.0", "pysigma>=2.0,<3; python_version >= '3.11'",
+test = ["pytest", "PyYAML>=6.0", "pysigma==2.0.1; python_version >= '3.11'",
         "pysigma-backend-sqlite==2.1.1; python_version >= '3.11'", "case-utils==0.18.0"]
 # sigma: compile your own Sigma rules into a Kratos rule pack (`kratos detect import`). The
 # shipped pack is already compiled; detection itself never needs pySigma. Python 3.11+.
-sigma = ["pysigma>=2.0,<3; python_version >= '3.11'"]
+sigma = ["pysigma>=2.0,<2.1; python_version >= '3.11'"]
 # code: read pnpm-lock.yaml in deployed code folders (E.7a). PyYAML (MIT), used only through
 # kratos.code.deps.yaml_safe: anchors, aliases and deep nesting are refused from the parser's
 # events before anything is built. Without it pnpm lockfiles are a stated gap.

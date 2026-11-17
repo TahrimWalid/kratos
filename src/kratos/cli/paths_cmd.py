@@ -30,7 +30,7 @@ def _group(args: argparse.Namespace) -> str:
 
 def cmd_paths(args: argparse.Namespace) -> int:
     from kratos.attackpaths import build as B
-    from kratos.attackpaths import present, record, scope as SC
+    from kratos.attackpaths import present, scope as SC
 
     data_dir = Path(args.data_dir)
     sub = args.paths_cmd

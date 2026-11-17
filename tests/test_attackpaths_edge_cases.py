@@ -10,13 +10,12 @@ rows in ``test_attackpaths_build.py``; the never-lowers row in
 """
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
 from kratos.assets.store import Asset
 from kratos.attackpaths import construct, crown as CR, entries as EN, graph as G
-from kratos.attackpaths import inputs as IN, judge as J, paths as PA, record, scope as SC, settings as S
+from kratos.attackpaths import judge as J, paths as PA, record, scope as SC
 from kratos.attackpaths.inputs import MachineInputs
 
 import tests.test_attackpaths_build as T

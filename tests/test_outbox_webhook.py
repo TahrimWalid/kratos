@@ -61,12 +61,21 @@ def _cert(tmp_path, cn="localhost"):
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test CA")])
     ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
           .serial_number(1).not_valid_before(now - dt.timedelta(minutes=5)).not_valid_after(now + dt.timedelta(days=1))
-          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True).sign(ca_key, hashes.SHA256()))
+          .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+          .add_extension(x509.KeyUsage(digital_signature=False, content_commitment=False, key_encipherment=False,
+                                       data_encipherment=False, key_agreement=False, key_cert_sign=True,
+                                       crl_sign=True, encipher_only=False, decipher_only=False), critical=True)
+          .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+          .sign(ca_key, hashes.SHA256()))
     key = ec.generate_private_key(ec.SECP256R1())
+    # Python 3.13 verifies with VERIFY_X509_STRICT: a leaf must name its issuer's key (AKI).
     cert = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, cn)]))
             .issuer_name(ca_name).public_key(key.public_key()).serial_number(2)
             .not_valid_before(now - dt.timedelta(minutes=5)).not_valid_after(now + dt.timedelta(days=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False).sign(ca_key, hashes.SHA256()))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName(cn)]), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .sign(ca_key, hashes.SHA256()))
     (tmp_path / "ca.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
     (tmp_path / "srv.pem").write_bytes(cert.public_bytes(serialization.Encoding.PEM))
     (tmp_path / "srv.key").write_bytes(key.private_bytes(serialization.Encoding.PEM,

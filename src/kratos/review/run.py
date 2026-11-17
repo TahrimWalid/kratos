@@ -226,8 +226,6 @@ def _run(data_dir: Path, actor: Any, plan: Plan, *, agreed_usd: float, run_ctx: 
          on_progress: Progress, should_stop: Stop, raised_by: str, raised_to: float | None) -> RunResult:
     from kratos.budget.ledger import BudgetLedger
     from kratos.review import hunt as HUNT
-    from kratos.review import verify as VERIFY
-    from kratos.review import fix as FIX
     from kratos.review.modelcall import ReviewModelError
 
     hunter = plan.profile

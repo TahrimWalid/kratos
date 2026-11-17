@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import ast
 
-from kratos.review import classes as C
 from kratos.review import slice as SL
 from kratos.review.slice import Module
 from kratos.review.verdict import RuleMatch

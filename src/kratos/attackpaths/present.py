@@ -7,7 +7,6 @@ renders what the code already computed.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from kratos.untrusted import for_display

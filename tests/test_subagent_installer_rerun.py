@@ -157,6 +157,36 @@ def test_uninstall_really_removes_a_user_install_without_sudo(box):
     assert not _alive(pid) and not (home / ".kratos-subagent").exists()
 
 
+def test_uninstall_waits_for_an_agent_still_writing_after_it_is_told_to_stop(box):
+    """Found by CI: the agent can write to its folder for a moment after the kill, so an
+    immediate `rm -rf` failed with 'Directory not empty' and left files behind. Here a stand-in
+    agent writes one more file 0.5 s after SIGTERM; uninstall must wait for it to exit."""
+    home, env, _ = box
+    folder = home / ".kratos-subagent"
+    folder.mkdir()
+    late = folder / "late-write"
+    proc = subprocess.Popen(
+        [shutil.which("python3"), "-c",
+         "import signal, sys, time\n"
+         "def stop(*_):\n"
+         f"    time.sleep(0.5); open({str(late)!r}, 'w').write('x'); sys.exit(0)\n"
+         "signal.signal(signal.SIGTERM, stop)\n"
+         "print('ready', flush=True)\n"
+         "while True: time.sleep(0.05)\n"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        (folder / "agent.pid").write_text(f"{proc.pid}\n")
+        u = subprocess.run(["/bin/sh", "-c", I.uninstall_command()], text=True, capture_output=True, env=env,
+                           timeout=30)
+        assert u.returncode == 0, u.stderr
+        assert proc.wait(timeout=5) == 0
+        assert not folder.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 def test_a_zombie_agent_is_not_taken_for_a_running_one():
     """An agent that died at once stays a zombie when the process it was handed to never
     reaps it -- CI's containers run `tail -f /dev/null` as PID 1 -- and `kill -0` says a

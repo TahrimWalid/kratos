@@ -873,7 +873,7 @@ def _run_paths_schedule(schedule: "_sched.Schedule", data_dir: Path, *, deliver:
     evidence (no model call, no machine read), under the schedule's user and scope, with ONE
     grouped notification (the top entry / path / chokepoint). A trigger may fire on a new PATH
     finding like any other (the build emits them through the lifecycle)."""
-    from kratos import authz, run_context
+    from kratos import authz
     from kratos.attackpaths import build as PB
     from kratos.lifecycle.decide import Actor
 

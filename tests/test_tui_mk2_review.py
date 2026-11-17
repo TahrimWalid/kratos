@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 from textual.app import App
 
 from kratos import authz
