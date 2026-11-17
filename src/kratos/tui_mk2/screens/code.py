@@ -23,17 +23,26 @@ from kratos.code import present as P
 from kratos.code import roots as RT
 from kratos.lifecycle.decide import Actor
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeText as Text
+from kratos.utils.timeutil import format_for_display, resolve_display_tz
 
 STATUS_STYLE = {"confirmed": T.SAFE, "candidate": T.ATTENTION, "ignored": T.TEXT_DIM, "stale": T.TEXT_DIM}
 
 
+CODE_ABOUT = ("Kratos reads a confirmed folder's files and git state; it never runs anything in a folder: no "
+              "git, no package manager, no build. Every decision is confirmed and recorded with who made it.")
+
+
 class CodeScreen(Screen):
+    _ALL_KEYS = ("↑↓ select · enter details and files · c confirm a candidate · i ignore one\n"
+                 "a add a folder by path · s accept a folder's current state\nr check now · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("enter", "details", "details / files", show=True, priority=True),
         Binding("c", "confirm", "confirm", show=True),
         Binding("i", "ignore", "ignore", show=True),
@@ -42,13 +51,8 @@ class CodeScreen(Screen):
         Binding("r", "run", "check now", show=True),
     ]
 
-    CSS = """
-    CodeScreen { padding: 1 2; }
-    CodeScreen #code-banner { height: auto; padding: 0 0 1 0; }
-    CodeScreen DataTable { height: 1fr; }
-    CodeScreen #code-log { height: auto; max-height: 8; border-top: solid $panel; }
-    CodeScreen #code-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the folders (hidden when there are none), a detail pane, a log, a key bar.
+    CSS = layout_css("CodeScreen", "code")
 
     def __init__(self, data_dir: Path, *, machine: str | None = None) -> None:
         super().__init__()
@@ -56,14 +60,16 @@ class CodeScreen(Screen):
         self._machine = machine
         self._view: dict[str, Any] | None = None
         self._error = ""
+        self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="code-banner")
             yield DataTable(id="code-table", cursor_type="row")
+            yield Static(id="code-detail")
             yield VerticalScroll(id="code-log")
-            yield Static(Text("enter details · c confirm · i ignore · a add folder · s accept state · r check now",
-                              style=T.TEXT_DIM), id="code-hints")
+            yield Static(key_bar([("a", "add a folder"), ("r", "check now"), ("?", "all keys"), ("esc", "back")]),
+                         id="code-hints")
 
     def on_mount(self) -> None:
         self.reload()
@@ -73,6 +79,48 @@ class CodeScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{CODE_ABOUT}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Code — all keys", body))
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        try:
+            detail = self.query_one("#code-detail", Static)
+            hints = self.query_one("#code-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        r = self.selected()
+        if r is None:
+            v = self._view
+            words = (self._error or "Nothing to show.") if v is None else \
+                "No code folders found yet. r runs a check; a adds a folder by path."
+            detail.update(Text(words, style=T.TEXT_MUTED))
+            hints.update(key_bar([("a", "add a folder"), ("r", "check now"), ("?", "all keys"), ("esc", "back")]))
+            return
+        out = Text()
+        out.append(f"{r['status']:<10}", style=f"bold {STATUS_STYLE.get(r['status'], T.TEXT)}")
+        out.append(r["path"], style=f"bold {T.TEXT_BRIGHT}")
+        if r["status"] == "confirmed":
+            g = r.get("git")
+            state = (f"git {str((g or {}).get('commit') or '?')[:10]}" if g else
+                     ("no git: compared with the accepted state" if r.get("no_git") else "not read yet"))
+            out.append(f"\n{state} · {plural(r.get('files') or 0, 'file')}", style=T.TEXT_MUTED)
+            found = ", ".join(f"{k} x{n}" for k, n in sorted(r["findings"].items()))
+            out.append(f"\n{found or 'nothing found'}", style=T.ATTENTION if found else T.SAFE)
+            if r["gone"]:
+                out.append("\nThe folder is no longer there.", style=T.ATTENTION)
+            keys = [("enter", "details"), ("s", "accept state"), ("r", "check now")]
+        else:
+            for why in (r["why"] or [])[:2]:
+                out.append(f"\n{why}", style=T.TEXT_MUTED)
+            keys = [("enter", "details"), ("c", "confirm"), ("i", "ignore")]
+        detail.update(out)
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def note(self, renderable: Any) -> None:
         area = self.query_one("#code-log", VerticalScroll)
@@ -93,37 +141,38 @@ class CodeScreen(Screen):
         table = self.query_one("#code-table", DataTable)
         cursor = table.cursor_row
         table.clear(columns=True)
-        banner = Text()
-        banner.append("The code this machine serves", style=f"bold {T.ACCENT}")
         v = self._view
         if v is None:
-            banner.append(f"\n{self._error or 'nothing to show'}", style=T.CRITICAL)
-            self.query_one("#code-banner", Static).update(banner)
+            self.query_one("#code-banner", Static).update(
+                title_row("Code", note=self._error or "nothing to show", note_style=T.CRITICAL))
+            table.display = False
+            self._show_detail()
             return
-        banner.append(f"   {v['machine']}", style=T.TEXT_DIM)
-        if v.get("checked_at"):
-            banner.append(f"\nlast code check {v['checked_at']}", style=T.TEXT_DIM)
-        if not v["roots"]:
-            banner.append("\nNo code folders found yet. Run a check (r), or add a folder by path (a).", style=T.TEXT_MUTED)
+        when = format_for_display(v["checked_at"], "%Y-%m-%d %H:%M", tz=self._tz) if v.get("checked_at") else ""
+        confirmed = sum(1 for r in v["roots"] if r["status"] == "confirmed")
+        candidates = sum(1 for r in v["roots"] if r["status"] == "candidate")
+        summary = " · ".join(b for b in (plural(confirmed, "confirmed folder"),
+                                         (plural(candidates, "candidate") if candidates else ""),
+                                         (f"checked {when}" if when else "")) if b)
+        self.query_one("#code-banner", Static).update(title_row("Code", v["machine"], summary))
         cells: list[list[Any]] = []
         for r in v["roots"]:
             if r["status"] == "confirmed":
-                g = r.get("git")
-                state = (f"git {str((g or {}).get('commit') or '?')[:10]}" if g else
-                         ("no git: vs accepted state" if r.get("no_git") else "not read yet"))
-                found = ", ".join(f"{k} x{n}" for k, n in sorted(r["findings"].items())) or "nothing found"
-                detail = f"{state} · {r.get('files') or 0} files · {found}" + (" · NO LONGER THERE" if r["gone"] else "")
+                found = sum(r["findings"].values())
+                detail = (f"{plural(found, 'finding')}" if found else "nothing found") + \
+                    (" · gone" if r["gone"] else "")
             else:
                 detail = (r["why"] or [""])[0]
             cells.append([Text(r["status"], style=STATUS_STYLE.get(r["status"], T.TEXT)), r["path"], detail])
-        self.query_one("#code-banner", Static).update(banner)
         columns = ("", "folder", "what Kratos knows")
         table.add_columns(*columns)
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for row in fit_columns(cells, available, shrink=[(1, 20), (2, 20)], headers=columns):
+        for row in fit_columns(cells, available, shrink=[(1, 20), (2, 16)], headers=columns):
             table.add_row(*row)
-        if cursor is not None and v["roots"]:
-            table.move_cursor(row=min(cursor, len(v["roots"]) - 1))
+        table.display = bool(v["roots"])         # no empty grid under "no code folders found yet"
+        if v["roots"]:
+            table.move_cursor(row=min(cursor or 0, len(v["roots"]) - 1))
+        self._show_detail()
 
     def selected(self) -> dict[str, Any] | None:
         table = self.query_one("#code-table", DataTable)

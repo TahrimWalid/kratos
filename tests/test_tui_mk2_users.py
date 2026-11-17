@@ -93,6 +93,15 @@ def test_audit_screen_lists_refusals(tmp_path):
             screen.action_refused()
             await pilot.pause()
             assert [r["user_name"] for r in screen._rows] == ["vic"]
+            # TUI review: a refusal is the system working -- the attention colour, not danger red;
+            # the reason (cut at 80 columns before) is in the detail pane
+            from kratos.tui_mk2 import theme as T
+
+            cell = screen.query_one("#au-table").get_row_at(0)[1]
+            assert str(cell) == "refused" and T.CRITICAL not in str(cell.style) and T.ATTENTION in str(cell.style)
+            detail = str(screen.query_one("#au-detail")._Static__content)
+            assert "viewers can't start investigations" in detail
+            assert "esc" in str(screen.query_one("#au-hints")._Static__content)
 
     asyncio.run(run())
 

@@ -10,6 +10,7 @@ change is confirmed and recorded. Navigation follows tui_mk2/modals.py.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,12 @@ from kratos import authz
 from kratos.authz import audit as AU
 from kratos.authz import users as U
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeText as Text
+from kratos.utils.timeutil import resolve_display_tz
 
 ROLE_CHOICES = [
     ("viewer", "viewer — reads findings, reports, hunts and answers for their machines"),
@@ -35,8 +38,11 @@ ROLE_CHOICES = [
 ]
 
 
-def _when(epoch: float | None) -> str:
-    return "never" if epoch is None else time.strftime("%Y-%m-%d", time.localtime(float(epoch)))
+def _when(epoch: float | None, fmt: str = "%Y-%m-%d", tz: Any = None) -> str:
+    """An epoch in the display zone (the same zone every other screen uses)."""
+    if epoch is None:
+        return "never"
+    return datetime.fromtimestamp(float(epoch), tz=tz or resolve_display_tz()).strftime(fmt)
 
 
 def _tokens(data_dir: Path) -> list[dict[str, Any]]:
@@ -45,9 +51,16 @@ def _tokens(data_dir: Path) -> list[dict[str, Any]]:
     return [t for t in S.list_tokens(data_dir) if not t.get("revoked_at")]
 
 
+USERS_ABOUT = ("Other people reach Kratos only through `kratos serve` (a chat client or MCP) and see only their "
+               "machines. Adding users, roles, machines and tokens happens only here, never over the network.")
+
+
 class UsersScreen(Screen):
+    _ALL_KEYS = ("↑↓ select · a add a user · r role · m machines · d disable / enable\n"
+                 "t new token · o rotate a token · x revoke a token\nw map an Open WebUI user · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("a", "add", "add user", show=True),
         Binding("r", "role", "role", show=True),
         Binding("m", "scope", "machines", show=True),
@@ -58,34 +71,80 @@ class UsersScreen(Screen):
         Binding("w", "map", "map Open WebUI user", show=True),
     ]
 
-    CSS = """
-    UsersScreen { padding: 1 2; }
-    UsersScreen #us-banner { height: auto; padding: 0 0 1 0; }
-    UsersScreen DataTable { height: auto; max-height: 60%; }
-    UsersScreen #us-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    UsersScreen #us-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the table, a detail pane with the selected user's tokens and
+    # Open WebUI ids in full, a short log and a key bar.
+    CSS = layout_css("UsersScreen", "us")
 
-    COLUMNS = ("user", "role", "state", "machines", "tokens", "Open WebUI")
+    COLUMNS = ("user", "role", "state", "machines", "tokens")
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
         self._data_dir = Path(data_dir)
         self._rows: list[U.User] = []
+        self._tokens: list[dict[str, Any]] = []
+        self._maps: list[Any] = []
+        self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="us-banner")
             yield DataTable(id="us-table", cursor_type="row")
+            yield Static(id="us-detail")
             yield VerticalScroll(id="us-log")
-            yield Static(Text("a add · r role · m machines · d on/off · t token · o rotate · x revoke\n"
-                              "w map an Open WebUI user · esc back", style=T.TEXT_DIM), id="us-hints")
+            yield Static(key_bar([("a", "add"), ("?", "all keys"), ("esc", "back")]), id="us-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
 
+    def on_resize(self, _event) -> None:
+        self.call_after_refresh(self.refresh_rows)
+
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{USERS_ABOUT}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Users — all keys", body))
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _mine(self, u: U.User) -> list[dict[str, Any]]:
+        return [t for t in self._tokens if (t.get("user_id") or "owner") == u.user_id]
+
+    def _show_detail(self) -> None:
+        """The selected user in full: role, machines, every token with its expiry, Open WebUI ids."""
+        try:
+            detail = self.query_one("#us-detail", Static)
+            hints = self.query_one("#us-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        u = self.selected()
+        out = Text()
+        if u is None:
+            out.append(USERS_ABOUT, style=T.TEXT_MUTED)
+            detail.update(out)
+            hints.update(key_bar([("a", "add a user"), ("?", "all keys"), ("esc", "back")]))
+            return
+        out.append(u.name + (" (owner)" if u.is_owner else ""), style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"   {u.role}", style=T.TEXT)
+        out.append("   disabled" if u.disabled else "   active", style=T.CRITICAL if u.disabled else T.SAFE)
+        out.append(f"\nmachines: {u.scope_text}", style=T.TEXT_MUTED)
+        mine = self._mine(u)
+        soon = time.time() + 14 * 86400
+        for tok in mine:
+            expiring = tok.get("expires_at") and float(tok["expires_at"]) < soon
+            out.append(f"\ntoken {tok['name']}: expires {_when(tok.get('expires_at'), tz=self._tz)}",
+                       style=T.ATTENTION if expiring else T.TEXT_DIM)
+        if not mine:
+            out.append("\nno tokens", style=T.TEXT_DIM)
+        ids = [m.email or m.external_id for m in self._maps if m.user_id == u.user_id]
+        if ids:
+            out.append("\nOpen WebUI: " + ", ".join(ids), style=T.TEXT_DIM)
+        detail.update(out)
+        keys = [("r", "role"), ("m", "machines"), ("t", "token")] if not u.is_owner else [("t", "token")]
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def note(self, renderable: Any) -> None:
         area = self.query_one("#us-log", VerticalScroll)
@@ -97,34 +156,30 @@ class UsersScreen(Screen):
         keep = self._rows[table.cursor_row].user_id if self._rows and table.cursor_row is not None \
             and table.cursor_row < len(self._rows) else None
         self._rows = U.list_users(self._data_dir)
-        tokens = _tokens(self._data_dir)
-        maps = U.list_mappings(self._data_dir)
+        self._tokens = _tokens(self._data_dir)
+        self._maps = U.list_mappings(self._data_dir)
         soon = time.time() + 14 * 86400
         table.clear(columns=True)
         table.add_columns(*self.COLUMNS)
         cells = []
         for u in self._rows:
-            mine = [t for t in tokens if (t.get("user_id") or "owner") == u.user_id]
-            tok_text = ", ".join(f"{t['name']} (expires {_when(t.get('expires_at'))})" for t in mine) or "-"
+            mine = self._mine(u)
             expiring = any(t.get("expires_at") and float(t["expires_at"]) < soon for t in mine)
             state = Text("disabled", style=T.CRITICAL) if u.disabled else Text("active", style=T.SAFE)
+            tok_text = (plural(len(mine), "token") + (" · one expires soon" if expiring else "")) if mine else "-"
             cells.append([u.name + (" (owner)" if u.is_owner else ""), u.role, state, u.scope_text,
-                          Text(tok_text, style=T.ATTENTION if expiring else T.TEXT),
-                          ", ".join(m.email or m.external_id for m in maps if m.user_id == u.user_id) or "-"])
+                          Text(tok_text, style=T.ATTENTION if expiring else T.TEXT)])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 12), (4, 16), (5, 12)],
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 12), (4, 10), (0, 12)],
                                             headers=self.COLUMNS)):
             table.add_row(*row, key=self._rows[i].user_id)
         at = next((i for i, u in enumerate(self._rows) if u.user_id == keep), None)
         if at is not None:
             table.move_cursor(row=at)        # stay on the user just changed
-        banner = Text()
-        banner.append("Users", style=f"bold {T.ACCENT}")
-        banner.append(f"   ({len(self._rows)})", style=T.TEXT_DIM)
-        banner.append("\nOther people reach Kratos only through `kratos serve` (a chat client or MCP) and see only "
-                      "their machines. Adding users, roles, machines and tokens happens only here, never over the "
-                      "network.", style=T.TEXT_MUTED)
-        self.query_one("#us-banner", Static).update(banner)
+        disabled = sum(1 for u in self._rows if u.disabled)
+        self.query_one("#us-banner", Static).update(title_row(
+            "Users", plural(len(self._rows), "user"), f"{disabled} disabled" if disabled else ""))
+        self._show_detail()
 
     def selected(self) -> U.User | None:
         table = self.query_one("#us-table", DataTable)
@@ -297,19 +352,23 @@ class UsersScreen(Screen):
         self._done(f"Open WebUI user {ext} is now {u.name}.")
 
 
+AUDIT_ABOUT = ("Every allowed and refused action: who, through which door and credential. It can't be edited; "
+               "`kratos audit prune` removes old rows (recorded).")
+
+
 class AuditScreen(Screen):
+    _ALL_KEYS = "↑↓ select · enter the whole row · f refused only · u one user · esc back"
     BINDINGS = [Binding("escape,q", "back", "back", show=True),
+                Binding("question_mark", "all_keys", "all keys", show=False),
                 Binding("f", "refused", "refused only", show=True),
                 Binding("u", "by_user", "by user", show=True),
                 Binding("enter", "detail", "detail", show=True, priority=True)]
 
-    CSS = """
-    AuditScreen { padding: 1 2; }
-    AuditScreen #au-banner { height: auto; padding: 0 0 1 0; }
-    AuditScreen DataTable { height: 1fr; }
-    """
+    # A2: title row, the table, a detail pane with the door, credential and the full
+    # "what / why" (cut at 80 columns before), and a key bar.
+    CSS = layout_css("AuditScreen", "au", table_max="60%")
 
-    COLUMNS = ("when", "result", "who", "door", "action", "machine", "what / why")
+    COLUMNS = ("when", "result", "who", "action", "machine")
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
@@ -317,23 +376,64 @@ class AuditScreen(Screen):
         self._refused = False
         self._user: str | None = None
         self._rows: list[dict[str, Any]] = []
+        self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="au-banner")
             yield DataTable(id="au-table", cursor_type="row")
+            yield Static(id="au-detail")
+            yield VerticalScroll(id="au-log")
+            yield Static(key_bar([("enter", "whole row"), ("f", "refused only"), ("u", "one user"),
+                                  ("?", "all keys"), ("esc", "back")]), id="au-hints")
 
     def on_mount(self) -> None:
         try:
             authz.require(authz.owner_actor("tui"), authz.P.AUDIT_READ, data_dir=self._data_dir, obj="/audit",
                           audit_allowed=False)
         except authz.Denied as e:
-            self.query_one("#au-banner", Static).update(Text(f"Refused: {e}", style=T.CRITICAL))
+            self.query_one("#au-banner", Static).update(title_row("Audit trail", note=f"refused: {e}"))
             return
         self.refresh_rows()
 
+    def on_resize(self, _event) -> None:
+        self.call_after_refresh(self.refresh_rows)
+
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{AUDIT_ABOUT}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Audit trail — all keys", body))
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        try:
+            detail = self.query_one("#au-detail", Static)
+            table = self.query_one("#au-table", DataTable)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        if not self._rows or table.cursor_row is None:
+            detail.update(Text(AUDIT_ABOUT, style=T.TEXT_MUTED))
+            return
+        r = self._rows[min(table.cursor_row, len(self._rows) - 1)]
+        out = Text()
+        refused = r["result"] == "refused"
+        # A refusal is the system working, not a failure: the attention colour, not danger red.
+        out.append(r["result"], style=f"bold {T.ATTENTION if refused else T.SAFE}")
+        out.append(f"   {r['action']}", style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"   {_when(r['at'], '%Y-%m-%d %H:%M:%S', tz=self._tz)}", style=T.TEXT_DIM)
+        out.append(f"\n{r['user_name'] or r['user_id'] or '(nobody)'} through {r['interface']}"
+                   + (f" ({r['credential']})" if r.get("credential") else ""), style=T.TEXT_MUTED)
+        if r.get("machine"):
+            out.append(f" · machine {r['machine']}", style=T.TEXT_MUTED)
+        what = r["reason"] if refused and r["reason"] else (r["object"] or "")
+        if what:
+            out.append(f"\n{'why' if refused else 'what'}: {what}", style=T.TEXT)
+        detail.update(out)
 
     def action_refused(self) -> None:
         self._refused = not self._refused
@@ -355,22 +455,16 @@ class AuditScreen(Screen):
         table.add_columns(*self.COLUMNS)
         cells = []
         for r in self._rows:
-            res = Text(r["result"], style=T.CRITICAL if r["result"] == "refused" else T.SAFE)
-            what = r["reason"] if r["result"] == "refused" and r["reason"] else (r["object"] or "")
-            cells.append([time.strftime("%m-%d %H:%M:%S", time.localtime(r["at"])), res,
-                          r["user_name"] or r["user_id"] or "(nobody)", r["interface"], r["action"],
-                          r["machine"] or "-", what or "-"])
+            res = Text(r["result"], style=T.ATTENTION if r["result"] == "refused" else T.SAFE)
+            cells.append([_when(r["at"], "%m-%d %H:%M:%S", tz=self._tz), res,
+                          r["user_name"] or r["user_id"] or "(nobody)", r["action"], r["machine"] or "-"])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for row in fit_columns(cells, available, shrink=[(6, 20), (2, 10), (5, 12)], headers=self.COLUMNS):
+        for row in fit_columns(cells, available, shrink=[(2, 10), (3, 14), (4, 10)], headers=self.COLUMNS):
             table.add_row(*row)
-        banner = Text()
-        banner.append("Audit trail", style=f"bold {T.ACCENT}")
-        filt = (" · refused only" if self._refused else "") + (f" · user {self._user}" if self._user else "")
-        banner.append(f"   (newest {len(self._rows)}{filt})", style=T.TEXT_DIM)
-        banner.append("\nEvery allowed and refused action: who, through which door and credential.\n"
-                      "It can't be edited; `kratos audit prune` removes old rows (recorded).\n"
-                      "f refused only · u by user · enter detail · esc back", style=T.TEXT_MUTED)
-        self.query_one("#au-banner", Static).update(banner)
+        filt = " · ".join(b for b in (("refused only" if self._refused else ""),
+                                      (f"user {self._user}" if self._user else "")) if b)
+        self.query_one("#au-banner", Static).update(title_row("Audit trail", f"newest {len(self._rows)}", filt))
+        self._show_detail()
 
     def action_detail(self) -> None:
         table = self.query_one("#au-table", DataTable)
@@ -382,7 +476,7 @@ class AuditScreen(Screen):
                   "reason", "run_id"):
             v = r.get(k)
             if k == "at":
-                v = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
+                v = _when(v, "%Y-%m-%d %H:%M:%S", tz=self._tz)
             body.append(f"{k}: ", style=T.TEXT_DIM)
             body.append(f"{v if v not in (None, '') else '-'}\n")
         self.app.push_screen(InfoModal("Audit row", body))

@@ -162,7 +162,7 @@ def test_subagent_screen_offers_the_update(tmp_path):
     async def run():
         async with Host().run_test(size=(200, 50)) as pilot:
             await pilot.pause()
-            out["line"] = str(screen.query_one("#sa-listener")._Static__content)
+            out["line"] = str(screen._notices())
 
     asyncio.run(run())
     assert f"agent update ({AGENT_VERSION}) is ready for db-01" in out["line"] and "press g" in out["line"]

@@ -351,7 +351,7 @@ def test_info_rows_are_not_failures_and_failing_checks_show_the_checklist(tmp_pa
     assert "you're ready" in _onboard(tmp_path, monkeypatch, ["ssh"], lambda: info)["texts"]
     failing = info + [{"check": "lsof_installed", "status": "FAIL", "detail": "missing"}]
     out = _onboard(tmp_path, monkeypatch, ["ssh"], lambda: failing)
-    assert "setup for 203.0.113.5" in out["texts"] and "1 check(s) aren't passing" in out["texts"]
+    assert "setup for 203.0.113.5" in out["texts"] and "1 check isn't passing" in out["texts"]
 
 
 # --- the choice list + live detail panel -------------------------------------

@@ -214,6 +214,7 @@ async def _detect_screen(tmp_path):
         assert "KRATOS-SSH-BRUTEFORCE" in ids
         banner = _render(screen.query_one("#dt-banner")._Static__content)
         assert "sigma-linux v1" in banner and "not continuously" in banner and "last pass" in banner
+        assert len(banner.strip().splitlines()) <= 3        # A2: title + status (+ warnings), not six lines
         screen.query_one("#dt-table").move_cursor(row=ids.index(CHATTR_AUDITD))
         await pilot.press("enter")
         await pilot.pause()

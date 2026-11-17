@@ -25,6 +25,7 @@ from kratos.outbox import config as C
 from kratos.outbox import health as H
 from kratos.outbox import store as S
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
@@ -51,7 +52,9 @@ FORMAT_CHOICES = {
 }
 SEVERITY_CHOICES = [("", "everything"), ("low", "low and above"), ("medium", "medium and above"),
                     ("high", "high and critical only"), ("critical", "critical only")]
-COLUMNS = ("channel", "kind", "receives", "format", "state", "waiting", "dead", "last success")
+COLUMNS = ("channel", "kind", "state", "waiting", "last success")   # receives, format: the detail pane
+CHANNELS_ABOUT = ("Where Kratos sends what it finds. Every message goes through the outbox: it is kept, retried "
+                  "while a receiver is down, and listed in /outbox. Secrets are removed before anything leaves.")
 
 
 def _when(epoch: float | None, tz: Any) -> str:
@@ -61,8 +64,11 @@ def _when(epoch: float | None, tz: Any) -> str:
 
 
 class ChannelsScreen(Screen):
+    _ALL_KEYS = ("↑↓ select · enter details · a add a channel · t send a test message\n"
+                 "space on / off · x remove · o the outbox (what was sent) · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("a", "add", "add", show=True),
         Binding("t", "test", "test", show=True),
         Binding("space", "toggle", "on/off", show=True),
@@ -71,27 +77,23 @@ class ChannelsScreen(Screen):
         Binding("o", "outbox", "outbox", show=True),
     ]
 
-    CSS = """
-    ChannelsScreen { padding: 1 2; }
-    ChannelsScreen #ch-banner { height: auto; padding: 0 0 1 0; }
-    ChannelsScreen DataTable { height: auto; max-height: 55%; }
-    ChannelsScreen #ch-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    ChannelsScreen #ch-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the table, a detail pane for the selected channel, a log, a key bar.
+    CSS = layout_css("ChannelsScreen", "ch")
 
     def __init__(self, data_dir: Path) -> None:
         super().__init__()
         self._data_dir = Path(data_dir)
         self._rows: list[C.Channel] = []
+        self._health: dict[str, Any] = {}
         self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="ch-banner")
             yield DataTable(id="ch-table", cursor_type="row")
+            yield Static(id="ch-detail")
             yield VerticalScroll(id="ch-log")
-            yield Static(Text("a add · t test · space on/off · enter details · x remove · o outbox · esc back",
-                              style=T.TEXT_DIM), id="ch-hints")
+            yield Static(key_bar([("a", "add"), ("?", "all keys"), ("esc", "back")]), id="ch-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -105,6 +107,52 @@ class ChannelsScreen(Screen):
     def action_outbox(self) -> None:
         self.app.push_screen(OutboxScreen(self._data_dir))
 
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{CHANNELS_ABOUT}\n\n{self._deliverer_words()}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Channels — all keys", body))
+
+    def _deliverer_words(self) -> str:
+        h = H.read(self._data_dir)
+        return (f"Delivering now: {h.deliverer}." if h.deliverer_live else
+                "Nothing long-running delivers right now: this window delivers while it's open; install the "
+                "always-on listener (L in /subagent) to deliver all the time.")
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected channel: what it receives, its format, the queue and the last success (A2)."""
+        try:
+            detail = self.query_one("#ch-detail", Static)
+            hints = self.query_one("#ch-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        ch = self.selected()
+        out = Text()
+        if ch is None:
+            out.append(CHANNELS_ABOUT, style=T.TEXT_MUTED)
+            detail.update(out)
+            hints.update(key_bar([("a", "add a channel"), ("o", "outbox"), ("?", "all keys"), ("esc", "back")]))
+            return
+        h = self._health.get(ch.name)
+        ok, why = C.usable(ch)
+        out.append(ch.name, style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"   {ch.kind}", style=T.TEXT)
+        if h is not None and h.failing:
+            out.append("   failing", style=f"bold {T.CRITICAL}")
+        elif not ok:
+            out.append(f"   {why or 'off'}", style=T.TEXT_MUTED)
+        out.append(f"\nreceives {', '.join(ch.scopes)} · format {ch.format}", style=T.TEXT_MUTED)
+        waiting = h.backlog if h else 0
+        dead = h.dead if h else 0
+        out.append(f"\n{waiting} waiting · ", style=T.TEXT_DIM)
+        out.append(f"{plural(dead, 'dead letter')}", style=T.ATTENTION if dead else T.TEXT_DIM)
+        out.append(f" · last success {H.ago(ch.last_success_at)}", style=T.TEXT_DIM)
+        detail.update(out)
+        hints.update(key_bar([("enter", "details"), ("t", "test"), ("space", "on/off"), ("o", "outbox"),
+                              ("?", "all keys"), ("esc", "back")]))
+
     def note(self, renderable: Any) -> None:
         area = self.query_one("#ch-log", VerticalScroll)
         area.mount(Static(renderable))
@@ -114,7 +162,8 @@ class ChannelsScreen(Screen):
         table = self.query_one("#ch-table", DataTable)
         cursor = table.cursor_row
         self._rows = C.list_channels(self._data_dir)
-        health = {c.name: c for c in H.read(self._data_dir).channels}
+        self._health = {c.name: c for c in H.read(self._data_dir).channels}
+        health = self._health
         table.clear(columns=True)
         table.add_columns(*COLUMNS)
         cells = []
@@ -127,26 +176,21 @@ class ChannelsScreen(Screen):
                 state = Text("on", style=T.SAFE)
             else:
                 state = Text("off" if not ch.enabled else "not set up", style=T.TEXT_MUTED)
-            cells.append([ch.name, ch.kind, ", ".join(ch.scopes), ch.format, state, str(h.backlog if h else 0),
-                          Text(str(h.dead if h else 0), style=T.ATTENTION if h and h.dead else T.TEXT),
-                          H.ago(ch.last_success_at)])
+            dead = h.dead if h else 0
+            waiting = Text(str(h.backlog if h else 0) + (f" · {dead} dead" if dead else ""),
+                           style=T.ATTENTION if dead else T.TEXT)
+            cells.append([ch.name, ch.kind, state, waiting, H.ago(ch.last_success_at)])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(2, 12), (0, 12)], headers=COLUMNS)):
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(0, 12)], headers=COLUMNS)):
             table.add_row(*row, key=self._rows[i].name)
-        if cursor is not None and self._rows:
-            table.move_cursor(row=min(cursor, len(self._rows) - 1))
-        banner = Text()
-        banner.append("Channels", style=f"bold {T.ACCENT}")
-        banner.append(f"   ({len(self._rows)})", style=T.TEXT_DIM)
-        banner.append("\nWhere Kratos sends what it finds. Every message goes through the outbox: it is kept, retried "
-                      "while a receiver is down, and listed in /outbox. Secrets are removed before anything leaves.",
-                      style=T.TEXT_MUTED)
+        if self._rows:
+            table.move_cursor(row=min(cursor or 0, len(self._rows) - 1))
         h = H.read(self._data_dir)
-        banner.append("\n" + (f"Delivering now: {h.deliverer}." if h.deliverer_live else
-                              "Nothing long-running delivers right now: this window delivers while it's open; "
-                              "install the always-on listener (`L` in /subagent) to deliver all the time."),
-                      style=T.TEXT_DIM)
-        self.query_one("#ch-banner", Static).update(banner)
+        self.query_one("#ch-banner", Static).update(title_row(
+            "Channels", plural(len(self._rows), "channel"),
+            f"delivering: {h.deliverer}" if h.deliverer_live else "",
+            note="" if h.deliverer_live else "delivers only while this window is open (?)"))
+        self._show_detail()
 
     def selected(self) -> C.Channel | None:
         table = self.query_one("#ch-table", DataTable)
@@ -265,8 +309,7 @@ class ChannelsScreen(Screen):
     # -- guided add ------------------------------------------------------------------------------
     @work(exclusive=True)
     async def action_add(self) -> None:
-        kind = await self.app.push_screen_wait(ListPickerModal("What kind of channel?", KIND_CHOICES,
-                                                               subtitle="↑↓ pick · esc cancel"))
+        kind = await self.app.push_screen_wait(ListPickerModal("What kind of channel?", KIND_CHOICES))
         if kind is None:
             return
         name = await self.app.push_screen_wait(PromptModal(
@@ -370,8 +413,11 @@ class ChannelsScreen(Screen):
 
 
 class OutboxScreen(Screen):
+    _ALL_KEYS = ("↑↓ select · enter attempts · r retry now (a failing or dead message)\n"
+                 "d dead letters · f failing · a all · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("enter,i", "details", "attempts", show=True, priority=True),
         Binding("r", "retry", "retry now", show=True),
         Binding("d", "filter('dead')", "dead letters", show=True),
@@ -379,13 +425,11 @@ class OutboxScreen(Screen):
         Binding("a", "filter('')", "all", show=True),
     ]
 
-    CSS = """
-    OutboxScreen { padding: 1 2; }
-    OutboxScreen #ob-banner { height: auto; padding: 0 0 1 0; }
-    OutboxScreen DataTable { height: 1fr; }
-    OutboxScreen #ob-hints { height: auto; padding-top: 1; }
-    """
-    COLS = ("#", "channel", "kind", "status", "tries", "created", "summary / last error")
+    # A2: title row, the table (hidden when there is nothing to list -- the sentence says so),
+    # a detail pane with the summary and the last error in full, and a key bar.
+    CSS = layout_css("OutboxScreen", "ob", table_max="60%")
+    COLS = ("#", "channel", "status", "tries", "created", "summary")
+    _STYLE = {"delivered": T.SAFE, "failed": T.ATTENTION, "dead": T.CRITICAL, "pending": T.TEXT_MUTED}
 
     def __init__(self, data_dir: Path, status: str = "") -> None:
         super().__init__()
@@ -398,15 +442,56 @@ class OutboxScreen(Screen):
         with Vertical():
             yield Static(id="ob-banner")
             yield DataTable(id="ob-table", cursor_type="row")
-            yield Static(Text("enter attempts · r retry now · d dead letters · f failing · a all · esc back",
-                              style=T.TEXT_DIM), id="ob-hints")
+            yield Static(id="ob-detail")
+            yield VerticalScroll(id="ob-log")       # keeps the key bar at the bottom
+            yield Static(key_bar([("d", "dead letters"), ("f", "failing"), ("a", "all"), ("?", "all keys"),
+                                  ("esc", "back")]), id="ob-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
         self.set_interval(3.0, self.refresh_rows)
 
+    def on_resize(self, _event) -> None:
+        self.call_after_refresh(self.refresh_rows)
+
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append("\n\nDelivered and dead messages are kept until you prune them (`kratos outbox prune`).",
+                    style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Outbox — all keys", body))
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        try:
+            detail = self.query_one("#ob-detail", Static)
+            hints = self.query_one("#ob-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        r = self.selected()
+        filters = [("d", "dead letters"), ("f", "failing"), ("a", "all"), ("?", "all keys"), ("esc", "back")]
+        if r is None:
+            what = {"dead": "No dead letters.", "failed": "Nothing is failing right now."}.get(
+                self._status, "Nothing has been sent yet. Messages appear here once a channel receives one (/channels).")
+            detail.update(Text(what, style=T.TEXT_MUTED))
+            hints.update(key_bar(filters))
+            return
+        out = Text()
+        out.append(f"#{r['id']}  ", style=T.DATA)
+        out.append(r["status"], style=f"bold {self._STYLE.get(r['status'], T.TEXT)}")
+        out.append(f"   to {r['channel']} · {r['kind']} · {plural(r['attempts'], 'try', 'tries')}", style=T.TEXT_MUTED)
+        out.append(f"\n{r['summary']}", style=T.TEXT)
+        if r["last_error"] and r["status"] != "delivered":
+            out.append(f"\nlast error: {r['last_error']}", style=T.ATTENTION)
+        if r["status"] == "failed":
+            out.append(f"\nnext try {_when(r['next_attempt_at'], self._tz)}", style=T.TEXT_DIM)
+        detail.update(out)
+        keys = [("enter", "attempts")] + ([("r", "retry now")] if r["status"] in ("dead", "failed") else [])
+        hints.update(key_bar(keys + filters))
 
     def action_filter(self, status: str) -> None:
         self._status = status
@@ -420,25 +505,22 @@ class OutboxScreen(Screen):
             counts = S.counts(conn)
         table.clear(columns=True)
         table.add_columns(*self.COLS)
-        style = {"delivered": T.SAFE, "failed": T.ATTENTION, "dead": T.CRITICAL, "pending": T.TEXT_MUTED}
         cells = []
         for r in self._rows:
-            tail = r["summary"] + (f"  [{r['last_error']}]" if r["last_error"] and r["status"] != "delivered" else "")
-            cells.append([str(r["id"]), r["channel"], r["kind"], Text(r["status"], style=style.get(r["status"], T.TEXT)),
-                          str(r["attempts"]), _when(r["created_at"], self._tz), tail])
+            cells.append([str(r["id"]), r["channel"], Text(r["status"], style=self._STYLE.get(r["status"], T.TEXT)),
+                          str(r["attempts"]), _when(r["created_at"], self._tz), r["summary"]])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(6, 20), (2, 10)], headers=self.COLS)):
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(5, 16), (1, 10)], headers=self.COLS)):
             table.add_row(*row, key=str(self._rows[i]["id"]))
-        if cursor is not None and self._rows:
-            table.move_cursor(row=min(cursor, len(self._rows) - 1))
+        table.display = bool(self._rows)          # no empty grid under the "nothing yet" sentence
+        if self._rows:
+            table.move_cursor(row=min(cursor or 0, len(self._rows) - 1))
         tot = {s: sum(c.get(s, 0) for c in counts.values()) for s in ("pending", "failed", "delivered", "dead")}
-        banner = Text()
-        banner.append("Outbox", style=f"bold {T.ACCENT}")
-        banner.append(f"   {self._status or 'all'} · newest first", style=T.TEXT_DIM)
-        banner.append(f"\n{tot['pending']} waiting · {tot['failed']} retrying · {tot['delivered']} delivered · "
-                      f"{tot['dead']} dead letters. Delivered and dead messages are kept until you prune them "
-                      "(`kratos outbox prune`).", style=T.TEXT_MUTED)
-        self.query_one("#ob-banner", Static).update(banner)
+        summary = (f"{tot['pending']} waiting · {tot['failed']} retrying · {tot['delivered']} delivered · "
+                   f"{plural(tot['dead'], 'dead letter')}")
+        view = {"dead": "dead letters", "failed": "failing"}.get(self._status, "")
+        self.query_one("#ob-banner", Static).update(title_row("Outbox", view, summary))
+        self._show_detail()
 
     def selected(self) -> Any:
         table = self.query_one("#ob-table", DataTable)

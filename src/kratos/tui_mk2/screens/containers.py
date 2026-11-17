@@ -21,29 +21,29 @@ from textual.screen import Screen
 from kratos.cli.containers_cmd import RISK_WORDS
 from kratos.containers import record
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import InfoModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeTable as Table
 from kratos.untrusted_rich import SafeText as Text
+from kratos.utils.timeutil import format_for_display, resolve_display_tz
 
-COLUMNS = ("container", "image", "user", "ports", "risks")
+COLUMNS = ("container", "image", "ports", "risks")   # user, digest and every port: the detail pane
 
 
 class ContainersScreen(Screen):
+    _ALL_KEYS = "↑↓ select · enter details · r read the machine again · esc back"
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("enter", "details", "details", show=True, priority=True),
         Binding("r", "refresh", "read again", show=True),
     ]
 
-    CSS = """
-    ContainersScreen { padding: 1 2; }
-    ContainersScreen #ct-banner { height: auto; padding: 0 0 1 0; }
-    ContainersScreen DataTable { height: auto; max-height: 65%; }
-    ContainersScreen #ct-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    ContainersScreen #ct-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the table, a detail pane with the selected container's full ports and
+    # risks (the columns are cut at 80), a short log and a key bar.
+    CSS = layout_css("ContainersScreen", "ct")
 
     def __init__(self, data_dir: Path, *, target: str | None) -> None:
         super().__init__()
@@ -51,14 +51,15 @@ class ContainersScreen(Screen):
         self._target = target
         self._doc: dict[str, Any] | None = None
         self._rows: list[dict[str, Any]] = []
+        self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="ct-banner")
             yield DataTable(id="ct-table", cursor_type="row")
+            yield Static(id="ct-detail")
             yield VerticalScroll(id="ct-log")
-            yield Static(Text("↑↓ select · enter details · r read the machine again · esc back", style=T.TEXT_DIM),
-                         id="ct-hints")
+            yield Static(key_bar([("r", "read again"), ("?", "all keys"), ("esc", "back")]), id="ct-hints")
 
     def on_mount(self) -> None:
         self._doc = record.load(self._data_dir, self._target) if self._target else None
@@ -69,6 +70,21 @@ class ContainersScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        doc = self._doc or {}
+        if doc:
+            body.append(f"\n\n{record.summary_line(doc)}", style=T.TEXT_MUTED)
+            body.append(f"\nread {self._when(doc.get('checked_at'))} via {doc.get('via')}", style=T.TEXT_DIM)
+            for g in doc.get("coverage_gaps") or []:
+                body.append(f"\nnot checked: {g}", style=T.ATTENTION)
+        body.append("\n\nNothing here changes a container. Environment variables are shown as names only.",
+                    style=T.TEXT_DIM)
+        self.app.push_screen(InfoModal("Containers — all keys", body))
+
+    def _when(self, value: Any) -> str:
+        return format_for_display(value, "%Y-%m-%d %H:%M", tz=self._tz) if value else "-"
 
     def note(self, renderable: Any) -> None:
         area = self.query_one("#ct-log", VerticalScroll)
@@ -87,28 +103,58 @@ class ContainersScreen(Screen):
             risks = [RISK_WORDS.get(x, x) for x in r.get("risks") or []]
             ports = r.get("ports") or []
             name = str(r.get("name") or "") + ("" if r.get("running") else f" ({r.get('state') or 'stopped'})")
-            cells.append([Text(name, style=style), Text(f"{r.get('image') or '?'} {r.get('digest') or ''}".strip(),
-                                                        style=style),
-                          Text(str(r.get("user") or "?"), style=style),
+            cells.append([Text(name, style=style), Text(str(r.get("image") or "?"), style=style),
                           Text("; ".join(ports) or "-", style=T.ATTENTION if any("despite" in p for p in ports)
                                else style),
                           Text(", ".join(risks) or "-", style=T.CRITICAL if risks else style)])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 30), (1, 20), (4, 24)], headers=COLUMNS)):
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(2, 12), (1, 12), (3, 12), (0, 10)], headers=COLUMNS)):
             table.add_row(*row, key=str(self._rows[i].get("id") or i))
-        banner = Text()
-        banner.append("Containers", style=f"bold {T.ACCENT}")
         if not self._target:
-            banner.append("\nNo machine selected: set a target first.", style=T.TEXT_DIM)
+            banner = title_row("Containers", note="no machine selected -- set a target first", note_style=T.TEXT_DIM)
         elif not doc:
-            banner.append(f"   {self._target}", style=T.TEXT_DIM)
-            banner.append("\nNo container read of this machine yet -- press r to read it now.", style=T.TEXT_DIM)
+            banner = title_row("Containers", self._target, "no container read yet -- r reads it now")
         else:
-            banner.append(f"   {self._target} · read {doc.get('checked_at')} via {doc.get('via')}", style=T.TEXT_DIM)
-            banner.append("\n" + record.summary_line(doc), style=T.TEXT_MUTED)
-            for g in (doc.get("coverage_gaps") or [])[:4]:
-                banner.append(f"\nnot checked: {g}", style=T.ATTENTION)
+            running = int((doc.get("counts") or {}).get("running") or 0)
+            gaps = doc.get("coverage_gaps") or []
+            banner = title_row("Containers", self._target,
+                               f"{plural(running, 'running container')} · read {self._when(doc.get('checked_at'))}",
+                               note=f"{plural(len(gaps), 'gap')} (?)" if gaps else "")
         self.query_one("#ct-banner", Static).update(banner)
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected container in full: image, user, every port and every risk (A2)."""
+        try:
+            detail = self.query_one("#ct-detail", Static)
+            hints = self.query_one("#ct-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        r = self.selected()
+        out = Text()
+        if r is None:
+            doc = self._doc or {}
+            out.append(record.summary_line(doc) if doc else "Press r to read this machine's containers.",
+                       style=T.TEXT_MUTED)
+            detail.update(out)
+            hints.update(key_bar([("r", "read again"), ("?", "all keys"), ("esc", "back")]))
+            return
+        out.append(str(r.get("name") or "?"), style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"   {r.get('state') or ('running' if r.get('running') else 'stopped')}",
+                   style=T.TEXT if r.get("running") else T.TEXT_MUTED)
+        out.append(f"\n{r.get('image') or '?'} {r.get('digest') or ''}".rstrip(), style=T.DATA)
+        out.append(f" · user {r.get('user') or '?'}", style=T.TEXT_MUTED)
+        ports = r.get("ports") or []
+        if ports:
+            out.append("\nports: " + "; ".join(ports),
+                       style=T.ATTENTION if any("despite" in x for x in ports) else T.TEXT)
+        risks = [RISK_WORDS.get(x, x) for x in r.get("risks") or []]
+        out.append("\nrisks: " + (", ".join(risks) if risks else "none found"), style=T.CRITICAL if risks else T.SAFE)
+        detail.update(out)
+        hints.update(key_bar([("enter", "details"), ("r", "read again"), ("?", "all keys"), ("esc", "back")]))
 
     def selected(self) -> dict[str, Any] | None:
         table = self.query_one("#ct-table", DataTable)

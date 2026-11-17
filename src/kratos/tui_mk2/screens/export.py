@@ -35,12 +35,20 @@ def _machine_choices(data_dir: Path, active: str | None) -> list[tuple[Any, str]
     out: list[tuple[Any, str]] = []
     if active:
         out.append((("machines", [active]), f"this machine ({active})"))
+    groups = []
     try:
-        for g in G.list_groups(data_dir):
-            out.append((("group", g.name), f"group @{g.name} ({len(g.members)} machine(s))"))
+        groups = G.list_groups(data_dir)
     except Exception:  # noqa: BLE001 -- no groups yet
         pass
-    out.append((("group", "all"), "every machine (@all)"))
+    for g in groups:
+        n = len(g.members)
+        count = f"{n} machine" if n == 1 else f"{n} machines"
+        if g.name == G.BUILTIN_ALL:      # @all once, in plain words
+            out.append((("group", g.name), f"every machine with an asset record (@all, {count})"))
+        else:
+            out.append((("group", g.name), f"group @{g.name} ({count})"))
+    if not any(g.name == G.BUILTIN_ALL for g in groups):
+        out.append((("group", G.BUILTIN_ALL), "every machine with an asset record (@all)"))
     out.append((("ask", None), "other machines (type them)"))
     return out
 
@@ -54,8 +62,7 @@ async def export_flow(app: Any, data_dir: Path, *, active: str | None, run_creat
     from kratos.hunt.front import HuntUsageError, time_bound
     from kratos.target_key import target_key
 
-    pick = await app.push_screen_wait(ListPickerModal("Export which machines?", _machine_choices(data_dir, active),
-                                                      subtitle="↑↓ pick · enter · esc cancel"))
+    pick = await app.push_screen_wait(ListPickerModal("Export which machines?", _machine_choices(data_dir, active)))
     if pick is None:
         return
     kind, value = pick

@@ -464,7 +464,7 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
             monkeypatch.setattr(app, "apply_theme_pack", _apply, raising=False)
 
             async def _pick(_modal):
-                return "kratos-blue"
+                return "kratos-red"
 
             monkeypatch.setattr(app, "push_screen_wait", _pick)
             app.screen.query_one(TabbedContent).active = "tab-general"
@@ -482,9 +482,9 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
         T.ACCENT, T.KRATOS_RED, T.ADMIN = snap
         monkeypatch.delenv("KRATOS_THEME", raising=False)
 
-    assert calls == ["kratos-blue"]          # switcher delegated to the app
-    assert "Slate Blue" in theme_label       # gen-theme label refreshed live
-    assert "Slate Blue" in status
+    assert calls == ["kratos-red"]          # switcher delegated to the app
+    assert "Kratos Red" in theme_label       # gen-theme label refreshed live
+    assert "Kratos Red" in status
 
 
 def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
@@ -511,10 +511,13 @@ def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):
             monkeypatch.setattr(screen, "_set_serve_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_detect_setting_flow", lambda key: fired.append(key))
             monkeypatch.setattr(screen, "_set_agent_link_setting_flow", lambda key: fired.append(key))
-            assert gen.row_count == 80           # + nine code / name / theme / timezone / two finding + two sealing + six collection + five detection-rule + three continuous-detection + six hunting + four group (fleet) + two delivery (outbox) + three incident-export + seven file-reputation + three compliance + nine baseline + two vulnerability-data + one SSVC + four run-record + two privacy + six chat-server settings + agent-link encryption
+            assert len(screen._gen_all) == 80    # every General row, now spread over the categories (see HEAD's count)
             for row, expected in [(1, "theme"), (2, "timezone"), (0, "name"), (3, ""), (4, ""), (5, ""), (6, ""),
-                                  (13, ""), (18, ""), (21, ""), (33, ""), (36, ""), (43, ""), (47, ""), (56, ""), (78, ""), (79, "")]:
-                gen.move_cursor(row=row)
+                                  (13, ""), (18, ""), (21, ""), (33, ""), (36, ""), (43, ""), (47, ""), (56, ""),
+                                  (78, ""), (79, "")]:
+                screen._gen_select(row)          # its category, cursor on it
+                screen.query_one("#gen-table", DataTable).focus()
+                await pilot.pause()
                 screen.action_primary()          # Enter
                 await pilot.pause()
             return fired
@@ -571,7 +574,7 @@ def test_settings_opens_from_home_with_no_session(tmp_path, monkeypatch):
             screen = app.screen
             models = screen.query_one("#ms-table", DataTable).row_count
             assert screen._data_dir() == tmp_path      # data_dir came through directly
-            gen = screen.query_one("#gen-table", DataTable).row_count
+            gen = len(screen._gen_all)
             return models, gen
 
     models, gen = asyncio.run(_run())

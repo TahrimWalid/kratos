@@ -54,6 +54,7 @@ from kratos.subagent import whitelist_templates as TPL
 from kratos.subagent.protocol import MAX_WHITELIST_VERSION
 from kratos.subagent.status import derive_status
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import (
     CommandModal, ConfirmModal, ExecutionConsentModal, ListPickerModal, MultiSelectModal, PromptModal, TypedExecuteModal,
 )
@@ -109,7 +110,10 @@ _OUTCOME_COLOR = {"ok": T.SAFE, "refused": T.ATTENTION, "error": T.ATTENTION, "u
 
 
 class WhitelistScreen(Screen):
+    _ALL_KEYS = '↑↓ select · enter run · a add · m edit · space on/off · x delete · i details\nc what the target allows · s re-sync · t telemetry · r roll back last run\ne allow fixes on this target · d stop fixes · esc back'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         # priority: the focused DataTable otherwise consumes Enter itself and
         # the run flow never starts (a real bug, caught by a real-keypress test).
@@ -127,12 +131,16 @@ class WhitelistScreen(Screen):
         Binding("r", "rollback", "rollback last", show=False),
     ]
 
+    # A2: title row with the execution mode as the one global status (safety
+    # warnings, if any, one line each under it), short table, a detail pane for
+    # the selected action, a short results log, a key bar for that row.
     CSS = """
     WhitelistScreen { padding: 1 2; }
     WhitelistScreen #wl-banner { height: auto; padding: 0 0 1 0; }
-    WhitelistScreen DataTable { height: auto; max-height: 60%; }
-    WhitelistScreen #wl-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    WhitelistScreen #wl-hints { height: auto; padding-top: 1; }
+    WhitelistScreen DataTable { height: auto; max-height: 45%; }
+    WhitelistScreen #wl-detail { height: auto; min-height: 4; max-height: 8; border-top: solid $panel; padding-top: 1; }
+    WhitelistScreen #wl-log { height: 1fr; min-height: 3; border-top: solid $panel; }
+    WhitelistScreen #wl-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(self, data_dir: Path, *, target_id: str | None = None,
@@ -151,17 +159,17 @@ class WhitelistScreen(Screen):
         self._rows: list[dict[str, Any]] = []
         self._last_dispatch: dict[str, Any] | None = None  # for rollback
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        self.app.push_screen(InfoModal("Allowlist — all keys", all_keys_text(self._ALL_KEYS)))
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="wl-banner")
             yield DataTable(id="wl-table", cursor_type="row")
+            yield Static(id="wl-detail")
             yield VerticalScroll(id="wl-log")
-            yield Static(
-                Text("↑↓ select · enter run · a add · m edit · space on/off · x delete · i details\n"
-                     "c what the target allows · s re-sync · t telemetry · r roll back last run\n"
-                     "e allow fixes on this target · d stop fixes · esc back", style=T.TEXT_DIM),
-                id="wl-hints",
-            )
+            yield Static(key_bar([("a", "add"), ("?", "all keys"), ("esc", "back")]), id="wl-hints")
 
     def on_mount(self) -> None:
         table = self.query_one("#wl-table", DataTable)
@@ -202,9 +210,13 @@ class WhitelistScreen(Screen):
         self.app.pop_screen()
 
     # ------------------------------------------------------------------
-    def _log(self, renderable: Any) -> None:
-        self.query_one("#wl-log", VerticalScroll).mount(Static(renderable))
+    def _log(self, renderable: Any) -> Static:
+        """Add a line to the activity log; returns it, so a line that tracks
+        progress ("waiting for a result…") can be updated in place."""
+        line = Static(renderable)
+        self.query_one("#wl-log", VerticalScroll).mount(line)
         self.query_one("#wl-log", VerticalScroll).scroll_end(animate=False)
+        return line
 
     def on_resize(self, event) -> None:
         self.call_after_refresh(self._refresh)
@@ -239,20 +251,17 @@ class WhitelistScreen(Screen):
             keys.append(f"{row['kind']}:{row.get('entry_id') or spec.id}:{i}")
         # Keep tier/state on screen: the command template gives way first (the
         # full command is under i), then the entry name.
-        available = table.size.width or max(self.app.size.width - 6, 40)
+        available = max(self.app.size.width - 6, 40)
         for key, row in zip(keys, fit_columns(cells, available, shrink=[(1, 12), (0, 12)], headers=_WL_COLUMNS)):
             table.add_row(*row, key=key)
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
-        if self._rows and not self.query_one("#wl-log", VerticalScroll).children:
-            # The area under the table is where details and results appear; say so
-            # rather than leave it blank.
-            self._log(Text("i shows what the highlighted entry runs and how risky it is · enter runs it "
-                           "(you confirm first) · a adds your own. Details and results appear here.",
-                           style=T.TEXT_DIM))
-
         enabled = sum(1 for r in self._rows if r["state"] == "on")
         banner = Text()
+        name = (target or {}).get("name") or self._target_id
+        banner.append("Allowlist", style=f"bold {T.ACCENT}")
+        banner.append(f"   {name}", style=f"bold {T.DATA}")
+        banner.append(f" · {status.replace('_', ' ')} · {enabled} on   ", style=T.TEXT_DIM)
         refusal = self._agent_refusal() if opted_in else None
         if refusal:
             # consent given, but the machine refuses: never headline it as "ON"
@@ -260,10 +269,6 @@ class WhitelistScreen(Screen):
         else:
             banner.append("DIRECT EXECUTION ON" if opted_in else "recommend-only",
                           style=f"bold {T.CRITICAL if opted_in else T.TEXT_MUTED}")
-        name = (target or {}).get("name") or self._target_id
-        host = (target or {}).get("hostname")
-        where = f"{name} ({host})" if host and host != name else name
-        banner.append(f"  ·  {where}  ·  status {status}  ·  {enabled} action(s) on", style=T.TEXT_DIM)
         agent = self._wl_store.get_agent_state(self._target_id) or {}
         version = agent.get("agent_version") or (target or {}).get("agent_version")
         if version and _version_tuple(version) < _MIN_EXEC_AGENT_VERSION:
@@ -283,13 +288,66 @@ class WhitelistScreen(Screen):
                 banner.append(f"\n⚠ the agent refused the last allowlist update: {push_refusal['reason']}",
                               style=f"bold {T.ATTENTION}")
         if agent.get("rejected"):
-            banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action(s) -- press c for why.",
+            banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action" + ("" if len(agent["rejected"]) == 1 else "s") + " -- press c for why.",
                           style=T.ATTENTION)
         waiting = sum(1 for r in self._rows if r["state"] == "waiting")
         if waiting:
-            banner.append(f"\n{waiting} exact command(s) waiting for the target's admin to allow them -- "
-                          "select one and press i.", style=T.ATTENTION)
+            banner.append(f"\n{waiting} exact command" + ("" if waiting == 1 else "s") + f" waiting for the target's admin -- select one for what to do.",
+                          style=T.ATTENTION)
         self.query_one("#wl-banner", Static).update(banner)
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected action in words -- what it runs, what it changes, how to
+        undo it, its state and the next step -- and the keys for it (A2)."""
+        try:
+            detail = self.query_one("#wl-detail", Static)
+            hints = self.query_one("#wl-hints", Static)
+        except Exception:  # noqa: BLE001
+            return
+        row = self._selected_row()
+        if row is None:
+            detail.update(Text("a adds an action of your own: from a template, or one exact command.",
+                               style=T.TEXT_MUTED))
+            hints.update(key_bar([("a", "add"), ("c", "what it allows"), ("?", "all keys"), ("esc", "back")]))
+            return
+        spec = row["spec"]
+        out = Text()
+        out.append(row["label"], style=f"bold {T.DATA}")
+        out.append(f"   {row['state']}", style=_STATE_COLOR.get(row["state"], T.TEXT))
+        out.append(f" · {row['tier']} risk", style=_TIER_COLOR.get(row["tier"], T.TEXT))
+        out.append(f" · {row['source']}", style=T.TEXT_DIM)
+        if spec is not None:
+            out.append("\nRuns ", style=T.TEXT_DIM)
+            out.append(C.shlex.join(spec.argv_template), style=T.TEXT_BRIGHT)
+            if spec.effect:
+                out.append(f"\n{spec.effect}", style=T.TEXT)
+            if spec.reversibility:
+                out.append(f"  Undo: {spec.reversibility}", style=T.TEXT_MUTED)
+        if row.get("error"):
+            out.append(f"\nProblem: {row['error']}", style=T.CRITICAL)
+        keys: list[tuple[str, str]] = []
+        state = row["state"]
+        if state == "on":
+            out.append("\nEnter runs it" + (" — you confirm, then type EXECUTE." if self._can_execute()
+                                              else " — recommend-only here: you get the command to run yourself."),
+                       style=T.TEXT_DIM)
+            keys += [("enter", "run"), ("space", "turn off")]
+        elif state == "off":
+            out.append("\nOff: space turns it on.", style=T.TEXT_DIM)
+            keys += [("space", "turn on")]
+        elif state == "waiting":
+            out.append("\nThe target's admin has to allow this exact command — i shows the line to add.",
+                       style=T.ATTENTION)
+            keys += [("i", "line to add")]
+        if row["kind"] == "user":
+            keys += [("m", "edit"), ("x", "delete")]
+        keys += [("i", "details")] if state != "waiting" else []
+        detail.update(out)
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def _agent_refusal(self) -> str | None:
         """Why this machine's own agent will refuse every run, from what it last
@@ -431,14 +489,20 @@ class WhitelistScreen(Screen):
         for name, slot in spec.slots.items():
             if slot.kind == "enum":
                 entries = [(v, v) for v in (slot.values or ())]
+                if len(entries) == 1:
+                    values[name] = entries[0][0]  # nothing to choose
+                    continue
                 picked = await self.app.push_screen_wait(ListPickerModal(f"{spec.id} -- {name}", entries))
                 if picked is None:
                     return None
                 values[name] = picked
                 continue
             # ip / int_range / token -- prompt + validate, reject-and-reprompt.
+            kind_hint = {"ip": "A public IP address, e.g. 45.33.32.156",
+                         "int_range": "A whole number"}.get(slot.kind, f"A {slot.kind} value")
+            hint, last = kind_hint, ""
             while True:
-                raw = await self.app.push_screen_wait(PromptModal(f"{spec.id} -- {name}", hint=f"({slot.kind})"))
+                raw = await self.app.push_screen_wait(PromptModal(f"{spec.id} — {name}", hint=hint, initial=last))
                 if raw is None:
                     return None
                 candidate: Any = raw
@@ -446,12 +510,12 @@ class WhitelistScreen(Screen):
                     try:
                         candidate = int(raw)
                     except ValueError:
-                        self._log(Text(f"'{raw}' is not a whole number -- try again.", style=T.ATTENTION))
+                        hint, last = f"'{raw}' is not a whole number — try again. {kind_hint}.", raw
                         continue
                 try:
                     W._validate_slot_value(spec.id, name, slot, candidate)
                 except W.SlotValueError as e:
-                    self._log(Text(f"{e} -- try again.", style=T.ATTENTION))
+                    hint, last = f"{e} — try again. {kind_hint}.", raw
                     continue
                 values[name] = candidate
                 break
@@ -465,8 +529,10 @@ class WhitelistScreen(Screen):
         except ValueError as e:
             self._log(Text(f"✗ {e}", style=T.CRITICAL))
             return
-        self._log(Text(f"→ dispatch requested: {spec.id} (request {request_id[:8]}…) -- waiting for a result…",
-                        style=T.ACCENT))
+        # One line per run, updated in place as it goes (F11: the "waiting…" line used
+        # to stay in the log after the result arrived, so every run took 2-3 lines).
+        progress = self._log(Text(f"→ {spec.id}: requested (request {request_id[:8]}…) -- waiting for a result…",
+                                  style=T.TEXT_MUTED))
 
         # Waits for the listener to send it (it does so within the store's
         # DISPATCH_REQUEST_TTL_SECONDS, or never). If nobody has by our
@@ -481,19 +547,20 @@ class WhitelistScreen(Screen):
                 break
             if row and row["status"] == "claimed" and sent_at is None:
                 sent_at = elapsed
-                self._log(Text("  sent to the machine -- waiting for its answer…", style=T.TEXT_DIM))
+                progress.update(Text(f"→ {spec.id}: sent to the machine -- waiting for its answer…",
+                                     style=T.TEXT_MUTED))
             if sent_at is None and elapsed >= _POLL_TIMEOUT_SECONDS:
                 outcome = self._wl_store.cancel_dispatch_request(
                     request_id, f"no listener sent it within {_POLL_TIMEOUT_SECONDS:.0f}s")
                 if outcome == "cancelled":
-                    self._log(Text(
-                        f"✗ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
+                    progress.update(Text(
+                        f"⚠ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
                         "so it was cancelled. Is `kratos subagent-serve` running and the machine connected?",
-                        style=f"bold {T.CRITICAL}"))
+                        style=f"bold {T.ATTENTION}"))
                     return
                 continue  # sent (or answered) at the last moment: follow it
             if sent_at is not None and elapsed - sent_at >= _ANSWER_TIMEOUT_SECONDS:
-                self._log(Text(
+                progress.update(Text(
                     "⚠ the request was sent to the machine, but no answer came back -- the outcome is unknown. "
                     "Check the machine (t shows its latest telemetry) before trying again.",
                     style=f"bold {T.CRITICAL}"))
@@ -508,7 +575,7 @@ class WhitelistScreen(Screen):
         detail = result.get("reason") or (
             f"exit_code={result.get('exit_code')}" if status == "ok" else ""
         )
-        self._log(Text(f"{icon} {spec.id}: {status}  {detail}", style=f"bold {color}"))
+        progress.update(Text(f"{icon} {spec.id}: {status}  {detail}", style=f"bold {color}"))
         if status == "ok" and result.get("stdout_tail"):
             self._log(Text("output: " + result["stdout_tail"][-2000:].strip(), style=T.TEXT_DIM))
 
@@ -687,10 +754,13 @@ class WhitelistScreen(Screen):
             body.add_row("blast radius", spec.blast_radius)
         if row.get("error"):
             body.add_row("problem", row["error"])
-        self._log(Text(f"Details: {row['label']}", style=f"bold {T.ACCENT}"))
-        self._log(body)
+        from kratos.tui_mk2.modals import InfoModal
+
+        self._details_body = body
         if row["state"] == "waiting" and spec is not None:
             self._show_allow_snippet(C.shlex.join(spec.argv_template))
+            return
+        self.app.push_screen(InfoModal(f"{row['label']} — details", body))   # A2: a card, not log lines
 
     def _show_allow_snippet(self, line: str) -> None:
         try:
@@ -704,32 +774,56 @@ class WhitelistScreen(Screen):
                   f"{C.LOCAL_ALLOW_FILE} with the permissions the agent requires. Then press s here to re-sync.")))
 
     def action_show_ceiling(self) -> None:
+        """What the target's agent will run, as a card: each command form on one
+        line with a short placeholder, and a long '<one of: …>' list underneath as
+        its own wrapped line (F11: 20+ service names used to print as a paragraph
+        into the log)."""
         if self._target_id is None:
             return
+        from kratos.tui_mk2.modals import InfoModal
+
+        self.app.push_screen(InfoModal(f"What {self._target_label()}'s agent will run", self._ceiling_body()))
+
+    def _ceiling_body(self) -> Any:
+        import re as _re
+
         state = self._wl_store.get_agent_state(self._target_id) or {}
         ceiling = state.get("ceiling") or {}
-        self._log(Text("What this target's agent will run (its own rules -- Kratos can narrow them, never widen them):",
-                       style=f"bold {T.ACCENT}"))
+        body = Table.grid(padding=(0, 1))
+        body.add_column(width=2, no_wrap=True)
+        body.add_column(ratio=1)
+        body.add_row("", Text("Kratos can narrow these, never widen them.", style=T.TEXT_DIM))
+        body.add_row("", "")
         for form in EB.allowed_forms(C.DEFAULT_CEILING):
-            self._log(Text(f"  • {form}", style=T.TEXT))
+            choices = _re.search(r"<one of: ([^>]*)>", form)
+            shown = form
+            if choices:
+                verb = "service" if "systemctl" in form else "value"
+                shown = form.replace(choices.group(0), f"<{verb}>")
+            body.add_row(Text("•", style=T.TEXT_DIM), Text(shown, style=f"bold {T.TEXT_BRIGHT}"))
+            if choices:
+                items = [c.strip() for c in choices.group(1).split(",") if c.strip()]
+                body.add_row("", Text(f"{verb}: " + ", ".join(items), style=T.TEXT_MUTED))
         local = ceiling.get("local_commands") or []
+        body.add_row("", "")
         if local:
-            self._log(Text("Exact commands its admin allowed on the target:", style=f"bold {T.ACCENT}"))
+            body.add_row("", Text("Exact commands its admin allowed on the target:", style=f"bold {T.TEXT_BRIGHT}"))
             for line in local:
-                self._log(Text(f"  • {line}", style=T.TEXT))
+                body.add_row(Text("•", style=T.TEXT_DIM), Text(line, style=T.TEXT))
         elif state:
-            self._log(Text(f"No exact commands allowed on the target ({C.LOCAL_ALLOW_FILE} is empty or absent).",
-                           style=T.TEXT_DIM))
+            body.add_row("", Text(f"No exact commands allowed on the target ({C.LOCAL_ALLOW_FILE} is empty or absent).",
+                                  style=T.TEXT_DIM))
         else:
-            self._log(Text("This target hasn't reported yet -- it will once `kratos subagent-serve` sees it connect.",
-                           style=T.TEXT_DIM))
+            body.add_row("", Text("This target hasn't reported yet -- it will once `kratos subagent-serve` sees it "
+                                  "connect.", style=T.TEXT_DIM))
         for problem in ceiling.get("local_problems") or []:
-            self._log(Text(f"  ⚠ {problem}", style=T.ATTENTION))
+            body.add_row(Text("!", style=T.ATTENTION), Text(problem, style=T.ATTENTION))
         for r in state.get("rejected") or []:
-            self._log(Text(f"  ⚠ refused {r.get('id')}: {r.get('reason')}", style=T.ATTENTION))
+            body.add_row(Text("!", style=T.ATTENTION), Text(f"refused {r.get('id')}: {r.get('reason')}", style=T.ATTENTION))
         if state.get("agent_version"):
-            self._log(Text(f"agent version {state['agent_version']} · last report {state.get('updated_at')}",
-                           style=T.TEXT_FAINT))
+            body.add_row("", Text(f"agent version {state['agent_version']} · last report {state.get('updated_at')}",
+                                  style=T.TEXT_FAINT))
+        return body
 
     @work
     async def action_resync(self) -> None:

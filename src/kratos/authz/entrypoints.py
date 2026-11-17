@@ -185,7 +185,10 @@ TUI: dict[str, Entry] = {
     "/review": CORE("kratos.review.run:_require_person", "kratos.code.reads:read_for_review",
                     "kratos.code.present:resolve_code_reader"),
     "/normal": CORE("kratos.baseline.present:resolve_reader", "kratos.baseline.decide:_check_actor"),
-    "/assets": CORE("kratos.assets.store:_check_actor"), "/machines": CORE("kratos.assets.store:_check_actor"),
+    "/assets": CORE("kratos.assets.store:_check_actor"),
+    # A5: a read-only list; each key opens a screen (findings, allowlist, sub-agents, /assets) with its own check
+    "/machines": READ("lists machines and their state"), "/machine": READ("lists machines and their state"),
+    "/hosts": READ("lists machines and their state"),
     "/findings": CORE(*_DECIDE), "/f": CORE(*_DECIDE),
     "/whitelist": CORE("kratos.storage.whitelist_store:WhitelistStore.create_user_entry",
                        "kratos.storage.whitelist_store:WhitelistStore.set_execution_opt_in"),

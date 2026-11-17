@@ -39,6 +39,7 @@ from kratos.subagent import deploy_diagnosis as DD
 from kratos.subagent import hub_address, installer
 from kratos.subagent import status as ST
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils import ssh_keys
@@ -99,7 +100,7 @@ _ADD_SERVER_SUMMARY = (
 )
 
 _DEFAULT_CORE_PORT = 8765
-_TABLE_COLUMNS = ("status", "name", "host", "agent", "link", "last seen", "detail", "watching")
+_TABLE_COLUMNS = ("status", "name", "host", "agent", "link", "last seen")   # the rest is in the detail pane (A2)
 # How long `L` waits for the new service to register before calling it failed.
 _SERVICE_CONFIRM_SECONDS = 15.0
 # After a successful SSH deploy, how long to wait for the check-in before
@@ -123,7 +124,10 @@ _STATE_STYLE = {
 
 
 class SubAgentScreen(Screen):
+    _ALL_KEYS = 'a add a server · k link to a target · g update agent · u unpair · p re-pair\nw watch continuously · t telemetry · i details · c copy deploy commands\nl always-on listener · n new code · x dismiss code · f forget (unpaired) · esc'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         Binding("a", "add_server", "add a server", show=True),
         Binding("t", "telemetry", "latest telemetry", show=True),
@@ -142,13 +146,16 @@ class SubAgentScreen(Screen):
         Binding("r", "refresh", "refresh", show=False),
     ]
 
+    # A2: a one-row title (with the listener as its one global status), short
+    # table cells, a detail pane for the selected row, a short activity log and
+    # a key bar for that row. Long explanations live behind ?.
     CSS = """
     SubAgentScreen { padding: 1 2; }
-    SubAgentScreen #sa-banner { height: auto; padding: 0 0 0 0; }
-    SubAgentScreen #sa-listener { height: auto; padding: 0 0 1 0; }
-    SubAgentScreen DataTable { height: auto; max-height: 14; }
-    SubAgentScreen #sa-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    SubAgentScreen #sa-hints { height: auto; padding-top: 1; }
+    SubAgentScreen #sa-listener { height: 2; padding: 0 0 1 0; }
+    SubAgentScreen DataTable { height: auto; max-height: 12; }
+    SubAgentScreen #sa-detail { height: auto; min-height: 4; max-height: 7; border-top: solid $panel; padding-top: 1; }
+    SubAgentScreen #sa-log { height: 1fr; min-height: 3; border-top: solid $panel; }
+    SubAgentScreen #sa-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(
@@ -195,23 +202,23 @@ class SubAgentScreen(Screen):
         # so `c` can pop a click-to-copy box for them (same as the authorize cmd).
         self._last_deploy_commands: str | None = None
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        body = all_keys_text(self._ALL_KEYS)
+        body.append("\n\nRight now\n", style=f"bold {T.TEXT_BRIGHT}")
+        body.append_text(self._notices())
+        body.append("\n\nA sub-agent is a small program on a server that dials OUT to Kratos, so Kratos can read a "
+                    "box with no inbound SSH. It sends telemetry and answers investigations; it runs nothing "
+                    "unless you turn on direct execution for it (/whitelist).", style=T.TEXT_DIM)
+        self.app.push_screen(InfoModal("Sub-agents — keys and status", body))
+
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(
-                Text("Sub-agents — boxes Kratos reaches through a small agent (telemetry + investigations)",
-                     style=f"bold {T.ACCENT}"),
-                id="sa-banner",
-            )
-            yield Static(id="sa-listener")
+            yield Static(id="sa-listener")          # the title row: name, counts, the listener
             yield DataTable(id="sa-table", cursor_type="row")
+            yield Static(id="sa-detail")
             yield VerticalScroll(id="sa-log")
-            yield Static(
-                Text("a add a server · k link to a target · g update agent · u unpair · p re-pair\n"
-                     "w watch continuously · t telemetry · i details · c copy deploy commands\n"
-                     "l always-on listener · n new code · x dismiss code · f forget (unpaired) · esc",
-                     style=T.TEXT_DIM),
-                id="sa-hints",
-            )
+            yield Static(key_bar([("a", "add"), ("?", "all keys"), ("esc", "back")]), id="sa-hints")
 
     def on_mount(self) -> None:
         table = self.query_one("#sa-table", DataTable)
@@ -250,7 +257,7 @@ class SubAgentScreen(Screen):
             self._svc_cache = (_time.monotonic(), _cl.service_scope(), _cl.linger_enabled())
         return self._svc_cache[1], self._svc_cache[2]
 
-    def _refresh_listener_line(self) -> None:
+    def _listener_state(self) -> tuple[str, str]:
         from kratos.subagent import core_listener as _cl
         from kratos.utils.build_info import current_disk_build
 
@@ -259,6 +266,13 @@ class SubAgentScreen(Screen):
         scope, linger = self._service_facts() if listeners and listeners[0].get("mode") == "service" else (None, None)
         msg, severity, _offer = _cl.describe_listener(
             listeners, in_process_here=here, disk_build=current_disk_build(), scope=scope, linger=linger)
+        return msg, severity
+
+    def _notices(self) -> Text:
+        """Everything this screen used to stack above its table: the listener,
+        a newer Kratos on disk, agent updates, unencrypted links. Shown in full
+        behind ?; the title row and each row's detail say the short version."""
+        msg, severity = self._listener_state()
         color = {"ok": T.SAFE, "attention": T.ATTENTION, "critical": T.CRITICAL}.get(severity, T.TEXT_DIM)
         glyph = {"ok": "●", "attention": "◐", "critical": "○"}.get(severity, "·")
         line = Text(f"{glyph} {msg}", style=color)
@@ -269,15 +283,50 @@ class SubAgentScreen(Screen):
             line.append(f"\n◐ {hint}", style=T.ATTENTION)
         from kratos.subagent.agent import AGENT_VERSION
 
-        outdated = [t.get("name") or t.get("hostname") or t["target_id"]
-                    for t in self._sa_store.list_targets(include_revoked=False)
-                    if ST.agent_outdated(t.get("agent_version"))]
+        outdated = self._outdated_names()
         if outdated:
             names = ", ".join(outdated[:3]) + (f" and {len(outdated) - 3} more" if len(outdated) > 3 else "")
             line.append(f"\n◐ An agent update ({AGENT_VERSION}) is ready for {names}: select it and press g. "
                         "It keeps its pairing.", style=T.ATTENTION)
         line.append(self._link_banner())
-        self.query_one("#sa-listener", Static).update(line)
+        return line
+
+    def _outdated_names(self) -> list[str]:
+        return [t.get("name") or t.get("hostname") or t["target_id"]
+                for t in self._sa_store.list_targets(include_revoked=False)
+                if ST.agent_outdated(t.get("agent_version"))]
+
+    def _refresh_listener_line(self) -> None:
+        """The title row: the screen, how many servers, and the listener -- the one
+        global status that decides whether anything here can work."""
+        msg, severity = self._listener_state()
+        short = {
+            "Not listening": ("○ not listening (L)", T.CRITICAL),
+            "Always-on listener": ("● listener always on", T.SAFE),
+            "Listening inside this Kratos window": ("◐ listener: this window only (L)", T.ATTENTION),
+            "Listening inside another": ("◐ listener: another window (L)", T.ATTENTION),
+            "Listening in a terminal": ("◐ listener: a terminal (L)", T.ATTENTION),
+        }
+        chip, color = next((v for k, v in short.items() if msg.startswith(k)), (msg.split(":")[0], T.TEXT_DIM))
+        if msg.startswith("Always-on listener") and severity != "ok":
+            chip, color = "◐ listener: see ?", T.ATTENTION
+        targets = [t for t in self._sa_store.list_targets(include_revoked=False)]
+        title = Text("Sub-agents", style=f"bold {T.ACCENT}")
+        title.append(f"   {len(targets)} paired", style=T.TEXT_MUTED)
+        notes = []
+        if self._outdated_names():
+            notes.append("update ready")
+        if any(t.get("link_mode") == "plaintext" for t in targets):
+            notes.append("unencrypted link")
+        from kratos.utils.build_info import restart_hint
+
+        if restart_hint():
+            notes.append("restart Kratos")
+        if notes:
+            title.append(" · " + " · ".join(notes), style=T.ATTENTION)
+        title.append("   ")
+        title.append(chip, style=color)
+        self.query_one("#sa-listener", Static).update(title)
 
     def _link_banner(self) -> Any:
         """While any paired agent still connects without encryption (C.4)."""
@@ -345,13 +394,14 @@ class SubAgentScreen(Screen):
                       + [r for r in targets if r["state"].state == ST.STATE_REVOKED])
         if not self._rows:
             table.add_row(Text("— no paired targets yet — press a to add a server —", style=T.TEXT_DIM),
-                          "", "", "", "", "", "", "")
+                          "", "", "", "", "")
+            self._show_detail()
             return
-        watch = _watch_cells(self._data_dir)
+        self._watch = _watch_cells(self._data_dir)
         cells: list[list] = []
         for row in self._rows:
             if row["kind"] == "pending":
-                cells.append(list(_pending_cells(row["code"], now, names)))
+                cells.append(list(_pending_cells(row["code"], now, names))[:6])
                 continue
             t, st = row["target"], row["state"]
             glyph, color = _STATE_STYLE.get(st.state, ("○", T.TEXT_DIM))
@@ -365,20 +415,105 @@ class SubAgentScreen(Screen):
                  else Text(t.get("agent_version") or "—", style=T.TEXT_DIM if dim else "")),
                 _link_cell(t, dim),
                 Text(ST.human_age(ST._age(st.last_contact, now)) if st.last_contact else "never", style=T.TEXT_DIM),
-                Text(st.reason, style=T.TEXT_DIM),
-                Text("—", style=T.TEXT_DIM) if dim else watch(t),
             ])
-        # Keep every column on screen: shorten the detail first (the full text
-        # is under i), then long names/hosts.
-        available = table.size.width or max(self.app.size.width - 6, 40)
-        for row in fit_columns(cells, available, shrink=[(6, 8), (7, 7), (1, 7), (2, 6), (4, 5), (3, 5), (5, 6)],
+        # Keep every column on screen: long names and hosts give way first; the
+        # reason, the watch state and what to do next are in the detail pane.
+        available = max(self.app.size.width - 6, 40)
+        for row in fit_columns(cells, available, shrink=[(1, 7), (2, 6), (4, 5), (3, 5), (5, 6)],
                                headers=_TABLE_COLUMNS):
             table.add_row(*row)
-        if prev is not None and 0 <= prev < len(self._rows):
+        if getattr(self, "_cursor_placed", False) and prev is not None and 0 <= prev < len(self._rows):
             try:
                 table.move_cursor(row=prev)
             except Exception:  # noqa: BLE001 -- cursor restore is best-effort
                 pass
+        elif not getattr(self, "_cursor_placed", False):
+            # F11: start on the first paired server, not on a pairing-code row --
+            # i, t and u all refused there ("Select a paired target first").
+            first = next((i for i, r in enumerate(self._rows) if r["kind"] == "target"), 0)
+            table.move_cursor(row=first)
+        self._cursor_placed = True
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected row in words: its state and why, how it's linked and
+        watched, and the next thing to do -- plus a key bar for that row (A2)."""
+        try:
+            detail = self.query_one("#sa-detail", Static)
+            hints = self.query_one("#sa-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        row = self._selected_row()
+        out = Text()
+        if row is None:
+            out.append("Press a to add a server. Its installer dials out to this Kratos, so the server needs no "
+                       "inbound SSH.", style=T.TEXT_MUTED)
+            detail.update(out)
+            hints.update(key_bar([("a", "add a server"), ("l", "listener"), ("?", "all keys"), ("esc", "back")]))
+            return
+        now = ST.utc_now()
+        if row["kind"] == "pending":
+            c = row["code"]
+            expires = ST.parse_stored_instant(c.get("expires_at"))
+            left = (expires - now).total_seconds() if expires else -1
+            out.append(c.get("name") or "a new server", style=f"bold {T.DATA}")
+            if left > 0:
+                out.append(f"   waiting to check in · code {c['code']} · {int(left) // 60}:{int(left) % 60:02d} left",
+                           style=T.ATTENTION)
+                out.append("\nRun its installer on the server, or deploy it over SSH from here.", style=T.TEXT_MUTED)
+                keys = [("d", "deploy over SSH"), ("c", "copy commands"), ("x", "dismiss"), ("n", "new code")]
+            else:
+                out.append(f"   code {c['code']} expired {ST.human_age(-left)}", style=T.CRITICAL)
+                if c.get("last_attempt_at"):
+                    out.append(f"\n{c.get('last_attempt_host') or 'a server'} tried it "
+                               f"{ST.human_age(ST._age(c['last_attempt_at'], now))}"
+                               + (f": {c['last_attempt_reason']}" if c.get("last_attempt_reason") else ""),
+                               style=T.TEXT_MUTED)
+                keys = [("n", "fresh code"), ("x", "dismiss")]
+            detail.update(out)
+            hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
+            return
+        t, st = row["target"], row["state"]
+        glyph, color = _STATE_STYLE.get(st.state, ("○", T.TEXT_DIM))
+        out.append(t.get("name") or t.get("hostname") or t["target_id"], style=f"bold {T.DATA}")
+        out.append(f"   {glyph} {st.label}", style=color)
+        out.append(f" — {st.reason}", style=T.TEXT_MUTED)
+        keys: list[tuple[str, str]] = [("i", "details"), ("t", "telemetry")]
+        if st.state == ST.STATE_REVOKED:
+            out.append("\nUnpaired. f forgets it and its stored telemetry.", style=T.TEXT_DIM)
+            hints.update(key_bar([("f", "forget"), ("p", "re-pair"), ("?", "all keys"), ("esc", "back")]))
+            detail.update(out)
+            return
+        from kratos.subagent import routing as _routing
+        from kratos.subagent.agent import AGENT_VERSION
+
+        links = [ln for ln in self._sa_store.list_links() if ln["target_id"] == t["target_id"]]
+        if links:
+            out.append("\nInvestigates " + ", ".join(
+                f"{ln['host']} ({_routing.MODE_LABELS.get(ln['mode'], ln['mode'])})" for ln in links), style=T.TEXT)
+        else:
+            out.append("\nNot linked to a target yet — k reads a target through it.", style=T.TEXT_MUTED)
+            keys.append(("k", "link"))
+        link = t.get("link_mode")
+        if link == "plaintext" or ST.agent_outdated(t.get("agent_version")):
+            why = "its link isn't encrypted" if link == "plaintext" else f"agent {t.get('agent_version')} is old"
+            out.append(f"\n{why.capitalize()} — g updates it to {AGENT_VERSION} and keeps its pairing.",
+                       style=T.ATTENTION)
+            keys.insert(0, ("g", "update"))
+        else:
+            out.append(f"\nAgent {t.get('agent_version') or '?'} · link "
+                       + ("encrypted, key pinned" if link == "tls-pinned" else "not reported yet"), style=T.TEXT_DIM)
+        watch = getattr(self, "_watch", None)
+        if watch is not None:
+            w = watch(t)
+            out.append("\nWatching: ", style=T.TEXT_DIM)
+            out.append_text(w if isinstance(w, Text) else Text(str(w)))
+            keys.append(("w", "watch"))
+        detail.update(out)
+        hints.update(key_bar(keys + [("u", "unpair"), ("?", "all keys"), ("esc", "back")]))
 
     def _announce_watched(self, now) -> None:
         """Say once when a code started here is used (paired) or runs out --
@@ -767,8 +902,9 @@ class SubAgentScreen(Screen):
                       "last_attempt_reason"):
                 if c.get(k):
                     body.add_row(k, str(c[k]))
-            self._log(Text("Pairing code:", style=f"bold {T.ACCENT}"))
-            self._log(body)
+            from kratos.tui_mk2.modals import InfoModal
+
+            self.app.push_screen(InfoModal("Pairing code", body))   # A2: details are a card, not log lines
             return
         t, st = row["target"], row["state"]
         conn = self._sa_store.get_connection(t["target_id"]) or {}
@@ -792,8 +928,7 @@ class SubAgentScreen(Screen):
         body.add_row("investigated as", ", ".join(f"{ln['host']} ({_routing.MODE_LABELS.get(ln['mode'], ln['mode'])})"
                                                 for ln in links) or "— not linked to a target (press k) —")
         self._watch_details(body, t)
-        self._log(Text(f"{t.get('name') or t['target_id']}:", style=f"bold {T.ACCENT}"))
-        self._log(body)
+        parts: list[Any] = [body]
         events = self._sa_store.recent_events(t["target_id"], 24 * 3600)[-10:]
         if events:
             hist = Table(show_header=True, box=None, header_style=T.TEXT_DIM)
@@ -802,7 +937,12 @@ class SubAgentScreen(Screen):
             hist.add_column("detail")
             for e in events:
                 hist.add_row(ST.human_age(ST._age(e["at"], ST.utc_now())), e["event"], e.get("detail") or "")
-            self._log(hist)
+            parts.extend([Text(""), Text("Last 24 hours", style=f"bold {T.TEXT_BRIGHT}"), hist])
+        from rich.console import Group as _Group
+
+        from kratos.tui_mk2.modals import InfoModal
+
+        self.app.push_screen(InfoModal(f"{t.get('name') or t['target_id']} — details", _Group(*parts)))
 
     def _watch_details(self, body: Any, t: dict[str, Any]) -> None:
         """C.2: continuous detection's state, per log source, with any stretch not watched."""
@@ -1329,7 +1469,10 @@ class SubAgentScreen(Screen):
             if scope_now:  # `enable --now` doesn't restart a service that's already running
                 cmds += _cl.core_service_restart_commands(user_mode=user_mode)[1:]
         if not ok:
-            self._log(Text("Nothing changed. To do it yourself later, run:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
+            self._log(Text("Nothing changed. The commands to do it yourself are in the box (c copies them).",
+                           style=T.TEXT_MUTED))
+            self.app.push_screen(CommandModal("\n".join(cmds), title="Always-on listener — run these yourself",
+                                              note="On THIS machine, when you're ready. Nothing has changed yet."))
             return
         # The in-process listener holds the port; hand it over, or the service
         # restart-loops unable to bind until this window closes.

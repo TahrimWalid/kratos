@@ -257,6 +257,17 @@ def list_groups(data_dir: Path | str) -> list[Group]:
     return out
 
 
+def outside_all(data_dir: Path | str, *, configured: str | None = None) -> list[str]:
+    """Machines Kratos knows (the configured target, or data it holds) that are not in @all
+    because they have no asset record yet -- so /groups can say why, instead of looking empty."""
+    from kratos.assets.store import known_machines
+
+    try:
+        return [a.target for a in known_machines(Path(data_dir), configured=configured) if not a.set_up]
+    except Exception:  # noqa: BLE001 -- an explanation only; never break the list
+        return []
+
+
 def get_group(data_dir: Path | str, name: str) -> Group | None:
     n = _normal_name(name)
     return next((g for g in list_groups(data_dir) if g.name == n), None)

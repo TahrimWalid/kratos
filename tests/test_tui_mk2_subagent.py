@@ -39,6 +39,13 @@ class _Host(App):
     def on_mount(self):
         self.push_screen(self._screen)
 
+def _detail(screen, idx: int) -> str:
+    """A2: a row's reason, watch state and next step are in the detail pane under the table."""
+    screen.query_one("#sa-table").move_cursor(row=idx)
+    screen._show_detail()
+    return str(screen.query_one("#sa-detail").render())
+
+
 
 def _log_texts(screen: SubAgentScreen) -> list[str]:
     out = []
@@ -141,14 +148,14 @@ def test_check_in_is_announced_by_the_refresh_not_a_blocking_wait(tmp_path):
             code = sa.create_pairing_code(name="web-02", core_host="10.0.0.1")["code"]
             screen._watched_codes[code] = {"name": "web-02", "host": "10.0.0.1"}
             screen._refresh()
-            captured["pending_row"] = str(screen.query_one("#sa-table").get_row_at(0)[6])
+            captured["pending_row"] = _detail(screen, 0)
             sa.redeem_pairing_code(code, agent_id="a", hostname="web-02", agent_version="0.2.0")
             screen._refresh()
             screen._refresh()  # announced once, not twice
             captured["texts"] = _log_texts(screen)
 
     asyncio.run(run())
-    assert "expires in" in captured["pending_row"]
+    assert "waiting to check in" in captured["pending_row"] and "left" in captured["pending_row"]
     assert sum("web-02 paired" in t for t in captured["texts"]) == 1
 
 
@@ -307,7 +314,7 @@ def test_table_shows_the_assessed_state_not_just_last_seen(tmp_path):
             await pilot.pause()
             row = screen.query_one("#sa-table").get_row_at(0)
             labels.append(str(row[0]))
-            labels.append(str(row[6]))
+            labels.append(_detail(screen, 0))
 
     asyncio.run(run())
     assert "not watched" in labels[0]
@@ -332,11 +339,13 @@ def test_every_column_stays_on_screen_at_80_columns(tmp_path):
             table = screen.query_one("#sa-table")
             out["virtual"] = table.virtual_size.width
             out["width"] = table.size.width
-            out["details"] = [str(table.get_row_at(i)[6]) for i in range(table.row_count)]
+            out["cells"] = [len(table.get_row_at(i)) for i in range(table.row_count)]
+            out["detail"] = _detail(screen, 0)
 
     asyncio.run(run())
     assert out["virtual"] <= out["width"], out
-    assert any(d.endswith("…") for d in out["details"])
+    assert set(out["cells"]) == {6}                     # A2: short columns; the reason is in the detail pane
+    assert "a-rather-long-server-name" in out["detail"] or "edge-02" in out["detail"]
 
 
 def test_add_server_explains_each_step_in_one_line(tmp_path, monkeypatch):

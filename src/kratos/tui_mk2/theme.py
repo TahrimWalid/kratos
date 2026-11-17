@@ -23,14 +23,48 @@ theme.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
+
+def detect_color_depth() -> str:
+    """'truecolor', '256' or '16' -- what the terminal will actually show.
+
+    KRATOS_COLORS (16 / 256 / truecolor) forces it. Otherwise this mirrors
+    Rich's own detection (COLORTERM, then the TERM suffix), but only for a real
+    terminal: headless runs and tests keep the full palette. Over SSH COLORTERM
+    is often dropped, so 16 and 256 colours are common in practice."""
+    forced = os.environ.get("KRATOS_COLORS", "").strip().lower()
+    aliases = {"16": "16", "standard": "16", "ansi": "16", "256": "256", "eight_bit": "256",
+               "truecolor": "truecolor", "24bit": "truecolor"}
+    if forced in aliases:
+        return aliases[forced]
+    textual_forced = os.environ.get("TEXTUAL_COLOR_SYSTEM", "").strip().lower()
+    if textual_forced in aliases:
+        return aliases[textual_forced]
+    try:
+        if not sys.__stdout__.isatty():
+            return "truecolor"
+    except (AttributeError, ValueError):
+        return "truecolor"
+    if os.environ.get("COLORTERM", "").strip().lower() in ("truecolor", "24bit"):
+        return "truecolor"
+    term = os.environ.get("TERM", "").strip().lower()
+    if term.endswith("256color") or term.endswith("-256"):
+        return "256"
+    return "16"
+
+
+COLOR_DEPTH = detect_color_depth()
+ANSI = COLOR_DEPTH == "16"
+
 # --- Grounds / surfaces --------------------------------------------------
-BG = "#0b0b0d"            # app background (canvas card ground)
-PANEL_BG = "#0e0e10"      # nested panels
-INSET_BG = "#101013"      # inset boxes (e.g. recommended-command block)
-TITLEBAR_BG = "#141416"   # macOS-style titlebar
-BORDER = "#232327"        # hairline borders between regions
+BG = "#0b0b0d"            # app background (256-colour: 232)
+PANEL_BG = "#121214"      # modal cards (233 -- distinct from BG after downsampling)
+INSET_BG = "#121214"      # inset boxes
+FIELD_BG = "#1c1c20"      # text fields (234), so an input always has a surface
+TITLEBAR_BG = "#18181b"   # header / footer / key bar (233)
+BORDER = "#2a2a30"        # hairlines + the selected row (235)
 BORDER_SOFT = "#1b1b1f"   # even softer dividers
 
 # --- Text ramp (light -> dark) ------------------------------------------
@@ -38,10 +72,30 @@ TEXT_BRIGHT = "#e6e1d8"   # emphasised primary text
 TEXT = "#cfcac1"          # body text
 TEXT_MUTED = "#a8a29a"    # secondary body
 TEXT_DIM = "#8c8880"      # labels / key hints
-TEXT_FAINT = "#6f6c67"    # captions
-TEXT_FAINTER = "#5e5c58"  # column headers / timestamps
-TEXT_GHOST = "#4d4b48"    # placeholder-adjacent
-TEXT_PLACEHOLDER = "#3f3e3b"  # true placeholder / "type a goal…"
+TEXT_FAINT = "#807c75"    # captions (4.7:1)
+TEXT_FAINTER = "#807c75"  # column headers / timestamps (was 2.9:1)
+TEXT_GHOST = "#5e5c58"    # separators and rules only
+TEXT_PLACEHOLDER = "#6f6c67"  # placeholder
+
+# --- 16-colour terminals --------------------------------------------------
+# With only the 16 ANSI colours, the five dark grounds above all become black
+# and the grey ramp collapses to two greys. So in that mode Kratos uses the
+# ANSI colours on purpose. Each hex below is exactly an entry of the standard
+# 16-colour palette, so downsampling is a no-op and the terminal's own palette
+# decides the final shade: black ground, bright-black for fields, borders and
+# the cursor row, white/grey text, cyan accent, green safe, yellow attention,
+# bright red critical.
+ANSI_BLACK, ANSI_RED, ANSI_GREEN, ANSI_CYAN = "#000000", "#aa0000", "#00aa00", "#00aaaa"
+ANSI_GREY, ANSI_DARKGREY, ANSI_WHITE = "#aaaaaa", "#555555", "#ffffff"
+ANSI_BRIGHT_RED, ANSI_BRIGHT_YELLOW, ANSI_BRIGHT_CYAN = "#ff5555", "#ffff55", "#55ffff"
+ANSI_BRIGHT_GREEN = "#55ff55"
+if ANSI:
+    BG = PANEL_BG = INSET_BG = TITLEBAR_BG = BORDER_SOFT = ANSI_BLACK
+    FIELD_BG = BORDER = ANSI_DARKGREY
+    TEXT_BRIGHT = ANSI_WHITE
+    TEXT = TEXT_MUTED = ANSI_GREY
+    TEXT_DIM = TEXT_FAINT = TEXT_FAINTER = TEXT_GHOST = ANSI_DARKGREY
+    TEXT_PLACEHOLDER = ANSI_GREY   # fields are bright-black, so a dark-grey placeholder would vanish
 
 # --- Theme packs: identity colors (chrome accent + brand + admin voice) --
 # The grounds + text ramp above and the status roles below are the shared
@@ -59,16 +113,30 @@ TEXT_PLACEHOLDER = "#3f3e3b"  # true placeholder / "type a goal…"
 # clearly brighter/more saturated than the muted SAFE green (#7f9e79) so
 # "safe/passed" never blurs with "accent". Red stays the default + brand identity.
 PACKS: dict[str, dict[str, str]] = {
-    "kratos-red": {"label": "Kratos Red (default)", "ACCENT": "#cf7259",
-                   "KRATOS_RED": "#8b1a1a", "ADMIN": "#b3968a"},
-    "kratos-blue": {"label": "Slate Blue", "ACCENT": "#7fa8bf",
-                    "KRATOS_RED": "#8b1a1a", "ADMIN": "#8f9bb0"},
+    "kratos-red": {"label": "Kratos Red", "ACCENT": "#cf7259",
+                   "KRATOS_RED": "#8b1a1a", "ADMIN": "#b3968a", "VOICE": "#d0524a"},
+    "kratos-blue": {"label": "Slate Blue (default)", "ACCENT": "#7fa8bf",
+                    "KRATOS_RED": "#8b1a1a", "ADMIN": "#8f9bb0", "VOICE": "#d0524a"},
     "kratos-green": {"label": "Matrix Green", "ACCENT": "#3fb950",
                      "KRATOS_RED": "#56d364", "ADMIN": "#7f9b78"},
     "kratos-cyan": {"label": "Cyan", "ACCENT": "#4bc4d4",
                     "KRATOS_RED": "#5dd0de", "ADMIN": "#84a7ae"},
 }
-DEFAULT_PACK = "kratos-red"
+# B6, option 1: the default accent is off the red axis, so in a security tool
+# "is anything red?" has one answer -- danger. Red stays the brand: the KRATOS
+# wordmark and the "Kratos:" voice are red in this pack too. Kratos Red is one
+# Ctrl+T away for anyone who prefers it.
+DEFAULT_PACK = "kratos-blue"
+# In 16-colour mode every pack shows the same ANSI identity: the packs differ
+# only in shades the terminal can't show.
+ANSI_IDENTITY = {"ACCENT": ANSI_CYAN, "KRATOS_RED": ANSI_RED, "ADMIN": ANSI_GREY, "VOICE": ANSI_BRIGHT_CYAN}
+
+
+def _identity(name: str) -> dict[str, str]:
+    pack = dict(PACKS[name])
+    if ANSI:
+        pack.update(ANSI_IDENTITY)
+    return pack
 
 
 def _pref_path() -> Path:
@@ -105,11 +173,12 @@ def set_active_pack(name: str) -> bool:
     Textual theme and re-renders -- see KratosTUI.apply_theme_pack. A full
     pixel-perfect repaint (including scrolled-back transcript lines) happens on
     the next launch, which reads the persisted choice at import."""
-    global ACCENT, KRATOS_RED, ADMIN
+    global ACCENT, KRATOS_RED, ADMIN, VOICE
     if name not in PACKS:
         return False
-    pack = PACKS[name]
+    pack = _identity(name)
     ACCENT, KRATOS_RED, ADMIN = pack["ACCENT"], pack["KRATOS_RED"], pack["ADMIN"]
+    VOICE = pack.get("VOICE", pack["KRATOS_RED"])
     os.environ["KRATOS_THEME"] = name
     try:
         path = _pref_path()
@@ -124,12 +193,18 @@ def pack_label(name: str) -> str:
     return PACKS.get(name, {}).get("label", name)
 
 
-_ACTIVE = PACKS[active_pack_name()]
+_ACTIVE = _identity(active_pack_name())
 
 # --- Brand + roles -------------------------------------------------------
 KRATOS_RED = _ACTIVE["KRATOS_RED"]  # the KRATOS wordmark / Kratos's own voice label
 ACCENT = _ACTIVE["ACCENT"]          # chrome: tool names, IPs, links, prompts, active tab, focus
 ADMIN = _ACTIVE["ADMIN"]            # the Admin/you voice label
+VOICE = _ACTIVE.get("VOICE", KRATOS_RED)  # "Kratos:" label -- readable (>=4.5:1); the wordmark may stay oxblood
+
+# Identifiers -- tool names, hosts, addresses, schedule and trigger names. Data, not
+# something to act on, so not the accent (B6): the accent is kept for what you can
+# act on (selection, focus, keys, commands, links) and stays meaningful in every pack.
+DATA = TEXT_BRIGHT
 
 SAFE = "#7f9e79"          # read-only / passed / clean / success (green)
 ATTENTION = "#c9962c"     # attention / in-progress / decision-needed (amber)
@@ -139,13 +214,25 @@ CRITICAL = "#ff3b3b"      # a real HIGH/CRITICAL finding / hard failure -- NOT t
 TL_RED = "#ff5f57"
 TL_YELLOW = "#febc2e"
 TL_GREEN = "#28c840"
+if ANSI:
+    SAFE, ATTENTION, CRITICAL = ANSI_GREEN, ANSI_BRIGHT_YELLOW, ANSI_BRIGHT_RED
+    TL_RED, TL_YELLOW, TL_GREEN = ANSI_BRIGHT_RED, ANSI_BRIGHT_YELLOW, ANSI_BRIGHT_GREEN
+
+
+def color_mode_note() -> str:
+    """One line for /doctor: what the terminal shows and how to get more."""
+    if COLOR_DEPTH == "truecolor":
+        return "full colour (24-bit)"
+    if COLOR_DEPTH == "256":
+        return "256 colours -- set COLORTERM=truecolor for the full palette if your terminal supports it"
+    return "16 colours -- using the 16-colour theme; set COLORTERM=truecolor (or TERM=xterm-256color) for more"
 
 SEVERITY_COLOR = {
     "critical": CRITICAL,
     "high": CRITICAL,
     "medium": ATTENTION,
     "low": ATTENTION,
-    "info": SAFE,
+    "info": TEXT_DIM,     # informational -- not "safe"; green stays for passed/done
 }
 
 # Textual CSS shared by every mk2 screen. Screens add their own scoped rules;
@@ -197,12 +284,14 @@ Screen {{
 }}
 
 Input {{
-    background: {PANEL_BG};
+    background: {FIELD_BG};
     color: {TEXT_BRIGHT};
     border: none;
+    border-bottom: tall {BORDER};
     padding: 0 1;
 }}
-Input:focus {{ border: none; }}
+Input:focus {{ border: none; border-bottom: tall {ACCENT}; }}
+Input > .input--placeholder {{ color: {TEXT_PLACEHOLDER}; }}
 
 DataTable {{
     background: {BG};
@@ -216,12 +305,14 @@ DataTable > .datatable--header {{
 DataTable > .datatable--cursor {{
     background: {BORDER};
     color: {TEXT_BRIGHT};
+    text-style: bold;
 }}
+DataTable {{ scrollbar-size-horizontal: 0; }}
 
 /* Modal dimming + card */
 ModalScreen {{
     align: center middle;
-    background: black 60%;
+    background: black 88%;
 }}
 .modal-card {{
     background: {PANEL_BG};
@@ -232,6 +323,13 @@ ModalScreen {{
     height: auto;
     max-height: 90%;
 }}
+ListView > ListItem.-highlight {{ background: {ACCENT}; color: {BG}; text-style: bold; }}
+.modal-body {{ height: auto; max-height: 50vh; }}
+/* Lists in dialogs are as tall as their options (two options = two rows), never a fixed block. */
+.modal-card ListView {{ height: auto; max-height: 16; }}
+#clarify-list {{ margin-bottom: 1; }}
+.modal-card > Static {{ height: auto; }}
+#prompt-quick {{ margin-top: 1; }}
 .modal-title {{
     text-style: bold;
     color: {ACCENT};

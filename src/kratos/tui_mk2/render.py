@@ -76,7 +76,7 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     wordmark = Align.center(Text("    ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
     subtitle = Align.center(Text("security assistant", style=T.TEXT_FAINT))
 
-    tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)
+    tgt = Text(target or "(none set)", style=f"bold {T.DATA}" if target else T.TEXT_DIM)
     mdl = Text()
     mdl.append(model or "(unset)", style=f"bold {T.TEXT_BRIGHT}" if model else T.TEXT_DIM)
     if model:
@@ -133,11 +133,28 @@ def timestamped(left: Text, time_str: str) -> Table:
     touches raw datetimes, so display-zone resolution lives in exactly one
     place. A Table.grid does the alignment so it stays correct at any width;
     the timestamp is TEXT_FAINTER so it reads as a caption, not a headline."""
-    grid = Table.grid(expand=True)
+    grid = Table.grid(expand=True, padding=(0, 2))   # a gap, so a long line never touches the time
     grid.add_column(ratio=1)
-    grid.add_column(justify="right")
+    grid.add_column(justify="right", min_width=7)
     grid.add_row(left, Text(time_str, style=T.TEXT_FAINTER))
     return grid
+
+
+def data_table(title: Any = None, **kw: Any) -> Table:
+    """The one transcript table style (B9): bold title at the left, a quiet header
+    with one rule under it, no cell borders, no outer edge -- the same rhythm as
+    the screens' DataTables. Callers right-align number columns themselves
+    (justify="right"). A key/value readout passes box=None and show_header=False."""
+    kw.setdefault("box", box.SIMPLE_HEAD)
+    kw.setdefault("show_edge", False)
+    kw.setdefault("pad_edge", False)
+    kw.setdefault("header_style", f"bold {T.TEXT_FAINTER}")
+    kw.setdefault("border_style", T.TEXT_GHOST)
+    kw.setdefault("title_style", f"bold {T.TEXT_BRIGHT}")
+    kw.setdefault("title_justify", "left")
+    if title is not None:
+        kw["title"] = title
+    return Table(**kw)
 
 
 def day_divider(date_str: str) -> Rule:
@@ -164,7 +181,7 @@ def tool_call_line(name: str, status: str) -> Text:
     }.get(status, ("✓", T.SAFE))
     t = Text()
     t.append(f"{icon} ", style=color)
-    t.append(name, style=f"bold {T.ACCENT}")
+    t.append(name, style=f"bold {T.DATA}")
     t.append(f"  {plain_label(name)}", style=T.TEXT_MUTED)
     return t
 
@@ -220,11 +237,18 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
-    summary = FINDING_SUMMARY_TEMPLATES.get(fid, GENERIC_FINDING_SUMMARY)
+    title_text = annotate_lookalikes(finding.get("title", ""))
+    summary = FINDING_SUMMARY_TEMPLATES.get(fid)
 
     body = Text()
-    body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
-    body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style=T.TEXT_DIM)
+    if summary:
+        body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"\n[{fid}] {title_text}", style=T.TEXT_DIM)
+    else:
+        # No plain-language template (e.g. a detection rule): the finding's own title
+        # says more than the generic "a security-relevant pattern was detected" (F11).
+        body.append(title_text or GENERIC_FINDING_SUMMARY, style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"\n[{fid}]", style=T.TEXT_DIM)
     status = lifecycle_status(finding)
     if status:
         body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred", "worse")
@@ -242,7 +266,7 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     evidence = finding.get("evidence") or []
     content: Any = body
     if evidence:
-        body.append("\n\nDetails:", style=T.TEXT_DIM)
+        body.append("\n")
         # bullet | text columns: a long line wraps under its own text, not back to the
         # panel edge where it looked like a new, unlabelled line
         details = Table.grid(padding=0)
@@ -291,6 +315,28 @@ def lifecycle_footer(transcript: list[dict[str, Any]] | None) -> Text | None:
     return Text(f"{line}  (/findings)", style=T.TEXT_MUTED) if line else None
 
 
+def _llm_failure_advice() -> str:
+    """What to try, for the kind of model that failed: `kratos llm-serve` only
+    helps a model on this machine; a hosted API needs its key, its address or
+    its provider's status checked instead (F11)."""
+    try:
+        from urllib.parse import urlparse
+
+        from kratos.llm_config import get_active_llm_base_url
+
+        host = (urlparse(get_active_llm_base_url() or "").hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        host = ""
+    local = host in ("127.0.0.1", "localhost", "::1") or host.startswith(("192.168.", "10.")) or host.endswith(".local")
+    if local:
+        return ("Check the model server on this machine is running (`kratos llm-serve` starts the local one) "
+                "or switch with /model, then try the goal again.")
+    if host:
+        return (f"Check the API key and address for {host} in .env, and that the provider is up, "
+                "or switch with /model, then try the goal again.")
+    return "Check the model's settings with /model, then try the goal again."
+
+
 def llm_failure_banner(detail: str) -> Panel:
     """Design 14a -- a full-width banner for Kratos's OWN model/API failure,
     distinct from a tool or target problem (which render as inline gutter
@@ -304,14 +350,10 @@ def llm_failure_banner(detail: str) -> Panel:
         style=T.TEXT,
     )
     body.append(f"Detail: {detail}\n", style=T.TEXT_DIM)
-    body.append(
-        "Check the backend is running (e.g. `kratos llm-serve` for local Ollama) or switch it "
-        "with /model, then try the goal again.",
-        style=T.TEXT_FAINT,
-    )
+    body.append(_llm_failure_advice(), style=T.TEXT_FAINT)
     return Panel(
         body,
-        title="⚠ Kratos can't think — language model unavailable",
+        title="! Kratos can't think — language model unavailable",
         title_align="left",
         border_style=T.CRITICAL,
     )
@@ -391,8 +433,7 @@ def _records_table(title: str, rows: list[dict[str, Any]]) -> Table:
                     key not in columns and isinstance(value, list) and all(not isinstance(v, (dict, list)) for v in value)):
                 columns.append(key)
     columns = columns[:_RESULT_COLS]
-    table = Table(title=f"{title} ({len(rows)})", title_justify="left", title_style=f"bold {T.TEXT_BRIGHT}",
-                  show_header=True, header_style="bold", box=box.SIMPLE_HEAD, expand=False)
+    table = data_table(f"{title} ({len(rows)})", show_header=True, expand=False)
     for col in columns:
         table.add_column(_label(col), overflow="fold")
     for row in rows[:_RESULT_ROWS]:
@@ -538,6 +579,16 @@ def note_line(text: str) -> Text:
     return _prefixed("!", text, T.ATTENTION)
 
 
+def progress_line(text: str) -> Text:
+    """Something is under way: dim and unmarked, so amber is left for things to act on."""
+    return Text(text, style=T.TEXT_DIM)
+
+
+def hint_line(text: str) -> Text:
+    """A tip about keys or next steps: dim, not a warning."""
+    return Text(text, style=T.TEXT_DIM)
+
+
 def compaction_line(context_tokens: int = 0, context_window: int = 0) -> Text:
     """Feature 14b: a receding, informational line marking that the model's
     working context was compacted mid-investigation. Deliberately NOT the amber
@@ -590,11 +641,18 @@ def evolve_suggestion_text(proposal: dict[str, Any]) -> tuple[str, str]:
     return "Evo-loop suggestion", f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n{footer}"
 
 
+def command_text(command: str) -> Text:
+    """A command shown for a person to run: plain bright text that WRAPS (never clipped
+    -- a clipped `banip 203.0.1` looks like a complete, different address). Copying
+    (Ctrl+Y / Copy) always takes the exact original bytes, never the wrapped view."""
+    return Text(command, style=f"bold {T.TEXT_BRIGHT}", overflow="fold", no_wrap=False)
+
+
 def recommended_fix_panel(title: str, command: str, footnote: str) -> Panel:
     """Turn 19b -- recommend-only remediation: the exact command shown for the
     human to run in their OWN session, explicitly NOT executed by Kratos."""
     body = Group(
-        Syntax(command, "bash", word_wrap=False, background_color="default"),
+        command_text(command),
         Text(footnote, style=T.TEXT_FAINT),
     )
     return Panel(body, title=f"✓ {title}", title_align="left", border_style=T.SAFE)
@@ -629,7 +687,7 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
         parts.append(Text("No command was built.", style=T.ATTENTION))
         return Panel(Group(*parts), title="! suggestion without a command", title_align="left",
                      border_style=T.ATTENTION)
-    parts.append(Syntax(str(cmd.get("command") or ""), "bash", word_wrap=False, background_color="default"))
+    parts.append(command_text(str(cmd.get("command") or "")))
     if source == "template":
         parts.append(Text("Built by Kratos from the evidence.", style=T.SAFE))
         title, border = "✓ recommended fix — built by Kratos", T.SAFE
@@ -639,7 +697,9 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
         title = "! recommended fix — written by the model" if flags else "recommended fix — written by the model"
         border = T.ATTENTION if flags else T.SAFE
     parts.append(Text(f"Run this yourself on {where} — Kratos does not execute it.", style=T.TEXT_FAINT))
-    return Panel(Group(*parts), title=title, title_align="left", border_style=border)
+    # The copy hint rides in the bottom border instead of a line after every turn (C2).
+    return Panel(Group(*parts), title=title, title_align="left", border_style=border,
+                 subtitle=Text("Ctrl+Y copies it exactly", style=T.TEXT_DIM), subtitle_align="right")
 
 
 def plan_preview_panel(preview: Any) -> Panel:
@@ -835,7 +895,7 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
     missing_preset = missing_preset or set()
     if not schedules and not errors:
         return Group(Text("No schedules yet. Create one with /schedule new.", style=T.TEXT_MUTED))
-    table = Table(show_header=True, header_style="bold", expand=False)
+    table = data_table(show_header=True, expand=False)
     for col in ("name", "runs", "cadence", "target", "deliver", "last run"):
         table.add_column(col)
     from kratos.agent.notify import notify_config_status
@@ -857,7 +917,7 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
             unit += "  (not runnable)"
         healthy = s.is_runnable and not dangling
         table.add_row(
-            Text(s.name, style=T.ACCENT),
+            Text(s.name, style=f"bold {T.DATA}"),
             Text(unit, style=T.TEXT if healthy else T.ATTENTION),
             s.cadence,
             s.target or "active",
@@ -921,7 +981,7 @@ def scheduled_run_result_panel(record: dict) -> Panel:
         jt = j.get("severity_tally") or {}
         found = sum(jt.values())
         jok = j.get("status") in ("completed", "final_answer", "max_iters_reached")
-        line = f"\n  · {j.get('label')}: {j.get('status')}" + (f", {found} finding(s)" if found else "")
+        line = f"\n  · {j.get('label')}: {j.get('status')}" + (f", {found} finding" + ("" if found == 1 else "s") if found else "")
         body.append(line, style=T.TEXT_MUTED if jok else T.CRITICAL)
     if record.get("omitted_gated_tools"):
         body.append(f"\nomitted (approval-gated, unattended): {', '.join(record['omitted_gated_tools'])}", style=T.TEXT_FAINT)
@@ -950,7 +1010,7 @@ def trigger_fire_line(record: dict) -> Text:
     worst = str(record.get("worst_severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(worst, T.ATTENTION)
     t = Text()
-    t.append("⚡ ", style=color)
+    t.append("» ", style=color)
     t.append(f"trigger {record.get('trigger')} fired", style=f"bold {color}")
     ids = ", ".join(record.get("matched_ids") or []) or "(finding)"
     t.append(f"  {record.get('action')} · {ids}", style=T.TEXT_MUTED)
@@ -969,12 +1029,12 @@ def trigger_table(triggers: list[Any], errors: list[tuple[str, str]],
     last_fired = last_fired or {}
     if not triggers and not errors:
         return Group(Text("No triggers yet. Create one with /trigger new.", style=T.TEXT_MUTED))
-    table = Table(show_header=True, header_style="bold", expand=False)
+    table = data_table(show_header=True, expand=False)
     for col in ("name", "when", "action", "target", "cooldown", "last fired"):
         table.add_column(col)
     for tg in triggers:
         table.add_row(
-            Text(tg.name, style=T.ACCENT),
+            Text(tg.name, style=f"bold {T.DATA}"),
             Text(tg.condition_text, style=T.TEXT if tg.is_valid else T.ATTENTION),
             tg.action,
             tg.target or "any",
@@ -1013,7 +1073,7 @@ def trigger_detail_panel(trigger: Any, records: list[dict]) -> Panel:
 def _subtest_table(value: str) -> Table:
     import re
 
-    table = Table(show_header=True, header_style="bold")
+    table = data_table(show_header=True)
     table.add_column("Test")
     table.add_column("Result")
     for line in value.splitlines():
@@ -1067,8 +1127,7 @@ def doctor_table(checks: list[dict[str, str]]) -> Group:
     tally = Text(f"   {p} ok · {w} warning{'s' if w != 1 else ''} · {f} problem{'s' if f != 1 else ''}",
                  style=T.TEXT_DIM)
 
-    table = Table(show_header=False, box=None, title="Kratos — self-diagnostic",
-                  title_justify="left", title_style=f"bold {T.ACCENT}")
+    table = data_table("Kratos — self-diagnostic", show_header=False, box=None)
     table.add_column(width=1, no_wrap=True)
     table.add_column(style=T.TEXT_BRIGHT, no_wrap=True)
     # fold, not the default ellipsis: a detail can be a value to copy (a URL, a
@@ -1098,9 +1157,7 @@ def preset_table(presets: list[Any], errors: list[tuple[str, str]] | None = None
     rather than silently dropped."""
     last_run = last_run or {}
     unavailable = unavailable or set()
-    table = Table(show_header=True, box=None, title="Saved presets",
-                  title_justify="left", title_style=f"bold {T.ACCENT}",
-                  header_style=f"bold {T.TEXT_DIM}")
+    table = data_table("Saved presets", show_header=True)
     table.add_column("name", style=T.ACCENT, no_wrap=True)
     table.add_column("kind", no_wrap=True)
     table.add_column("target", style=T.TEXT_MUTED, no_wrap=True)
@@ -1162,8 +1219,7 @@ def error_detail(result: Any) -> str:
 def kv_table(title: str, rows: list[tuple]) -> Table:
     """A simple two-column key/value table (used by /usage and /context). Each
     row is (key, value) or (key, value, value_style)."""
-    table = Table(show_header=False, box=None, title=title, title_justify="left",
-                  title_style=f"bold {T.ACCENT}")
+    table = data_table(title, show_header=False, box=None)
     table.add_column(style=T.TEXT_MUTED, no_wrap=True)
     table.add_column()
     for r in rows:
@@ -1171,3 +1227,98 @@ def kv_table(title: str, rows: list[tuple]) -> Table:
         style = r[2] if len(r) > 2 else T.TEXT
         table.add_row(Text(str(key)), Text(str(value), style=style))
     return table
+
+
+# --- Folded turns (A3) ------------------------------------------------------
+# When an investigation ends, its tool steps fold into one line and its findings
+# become compact rows. Boxes are kept for what needs attention: the answer, a fix,
+# and HIGH/CRITICAL findings. Ctrl+O opens the steps again.
+
+def turn_summary_line(steps: int, failed: int, notes: list[str], *, open_: bool = False, hint: bool = True) -> Text:
+    t = Text()
+    if failed:
+        t.append("! ", style=T.ATTENTION)
+    else:
+        t.append("✓ ", style=T.SAFE)
+    t.append(f"{steps} step{'s' if steps != 1 else ''}", style=T.TEXT_MUTED)
+    if failed:
+        t.append(f" · {failed} failed", style=T.ATTENTION)
+    for n in notes:
+        warn = n.startswith("!")
+        t.append(" · " + n.lstrip("! "), style=T.ATTENTION if warn else T.TEXT_DIM)
+    if hint:
+        t.append("   ctrl+o ", style=f"bold {T.TEXT_DIM}")
+        t.append("hide steps" if open_ else "show steps", style=T.TEXT_DIM)
+    return t
+
+
+def step_notes(chips: list[Text]) -> list[str]:
+    """The window and transport chips of a turn, reduced to what changes how far
+    the answer can be trusted: partial windows, clock trouble, SSH fallbacks. A
+    turn whose windows were all counted in full says so once."""
+    import re as _re
+    out: list[str] = []
+    full = 0
+    for c in chips:
+        p = c.plain.strip()
+        if p.startswith("window"):
+            m = _re.search(r"PARTIAL: (\d+(?:\.\d+)?)%", p)
+            if m:
+                out.append(f"! window {m.group(1)}% covered")
+            elif "PARTIAL" in p:
+                out.append("! window partly covered")
+            elif "counted in full" in p or "complete" in p:
+                full += 1
+            m = _re.search(r"target clock ([+-]\d+s)", p)
+            if m:
+                out.append(f"! target clock {m.group(1)}")
+            elif "clock unknown" in p:
+                out.append("! target clock unknown")
+        elif p.startswith("↳") and "SSH" in p and "failed" in p:
+            out.append("! read through the sub-agent (SSH failed)")
+    if full and not any("covered" in n for n in out):
+        out.insert(0, "all windows counted in full")
+    seen, uniq = set(), []
+    for n in out:
+        if n not in seen:
+            seen.add(n); uniq.append(n)
+    return uniq
+
+
+def finding_row(finding: dict[str, Any]) -> Text:
+    """Two lines: severity, ID and the plain summary; then one dim evidence line."""
+    fid = str(finding.get("id", "UNKNOWN"))
+    severity = str(finding.get("severity") or "info").lower()
+    color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
+    summary = FINDING_SUMMARY_TEMPLATES.get(fid)
+    title = annotate_lookalikes(finding.get("title", ""))
+    t = Text()
+    t.append(f"{severity.upper():<8}", style=f"bold {color}")
+    t.append(f"{fid}  ", style=T.TEXT_DIM)
+    t.append(summary or title, style=T.TEXT_BRIGHT)
+    status = lifecycle_status(finding)
+    if status:
+        t.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred") else T.TEXT_DIM)
+    evidence = finding.get("evidence") or []
+    first = annotate_lookalikes(evidence[0]) if evidence else (title if summary else "")
+    if first:
+        more = f"  (+{len(evidence) - 1} more)" if len(evidence) > 1 else ""
+        t.append("\n        " + first + more, style=T.TEXT_DIM)
+    return t
+
+
+def compact_findings(findings: list[dict[str, Any]], time_str: str | None = None) -> list[Any]:
+    """The renderables for a turn's findings, worst first: HIGH/CRITICAL keep
+    their box, the rest are two-line rows under one heading."""
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    fs = sorted(findings, key=lambda f: order.get(str(f.get("severity") or "info").lower(), 5))
+    out: list[Any] = []
+    head = Text("\nFindings ", style=f"bold {T.TEXT_BRIGHT}")
+    head.append(f"{len(fs)} · /findings to act on them", style=T.TEXT_DIM)
+    out.append(head)
+    for f in fs:
+        if str(f.get("severity") or "").lower() in ("critical", "high"):
+            out.append(finding_panel(f, time_str=time_str))
+        else:
+            out.append(finding_row(f))
+    return out

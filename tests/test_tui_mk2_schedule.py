@@ -48,6 +48,11 @@ def _answers(app, monkeypatch, values):
 
     monkeypatch.setattr(app, "push_screen_wait", _fn)
 
+def _sched(kind="audit", preset="", cadence="daily", notify="", name=""):
+    """One answer to the New schedule form (A4: one form instead of a chain of dialogs)."""
+    return {"kind": kind, "preset": preset, "cadence": cadence, "notify": notify, "name": name}
+
+
 
 def test_schedule_new_audit_writes_definition_and_units(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
@@ -56,8 +61,7 @@ def test_schedule_new_audit_writes_definition_and_units(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind, cadence, min_severity, name (asked last)
-            _answers(app, monkeypatch, ["audit", "weekly", "high", "weekly-audit"])
+            _answers(app, monkeypatch, [_sched("audit", cadence="weekly", notify="high", name="weekly-audit")])
             screen._dispatch_slash("/schedule new")
             for _ in range(200):
                 await pilot.pause()
@@ -85,8 +89,8 @@ def test_schedule_new_preset_on_cloud_warns_and_can_abort(tmp_path, monkeypatch)
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind=preset, preset=deep, cost-confirm=False (abort)
-            _answers(app, monkeypatch, ["preset", "deep", False])
+            # the form (a preset: deep), then the cost confirm = False (abort)
+            _answers(app, monkeypatch, [_sched("preset", preset="deep"), False])
             screen._dispatch_slash("/schedule new")
             for _ in range(120):
                 await pilot.pause()
@@ -191,16 +195,16 @@ def _drive(screen, monkeypatch, values, seen, done):
     asyncio.run(_run())
 
 
-def test_schedule_name_is_asked_last_and_enter_accepts_the_suggestion(tmp_path, monkeypatch):
-    from kratos.tui_mk2.modals import PromptModal
+def test_schedule_name_is_pre_filled_and_a_blank_name_uses_the_suggestion(tmp_path, monkeypatch):
+    from kratos.tui_mk2.modals import FormModal
 
     store, sid, screen = _make(tmp_path, monkeypatch)
     seen: list = []
-    # kind, cadence, min_severity, then a blank name (= just pressing Enter)
-    _drive(screen, monkeypatch, ["audit", "daily", "", ""], seen,
+    _drive(screen, monkeypatch, [_sched(cadence="daily", name="")], seen,
            lambda: S.schedule_exists(tmp_path, "daily-audit"))
-    assert isinstance(seen[-1], PromptModal)                 # the name comes last
-    assert seen[-1]._initial == "daily-audit"                # pre-filled from the answers
+    assert isinstance(seen[0], FormModal)                    # one form, not a chain of dialogs
+    name_field = next(f for f in seen[0]._fields if f["id"] == "name")
+    assert name_field["value"] == "daily-audit"              # pre-filled from the defaults
     assert S.load_schedule(tmp_path, "daily-audit").cadence == "daily"
 
 
@@ -208,9 +212,8 @@ def test_schedule_suggestion_skips_names_already_taken(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
     S.save_schedule(tmp_path, name="weekly-audit", kind="audit", cadence="weekly")
     seen: list = []
-    _drive(screen, monkeypatch, ["audit", "weekly", "", ""], seen,
+    _drive(screen, monkeypatch, [_sched(cadence="weekly", name="")], seen,
            lambda: S.schedule_exists(tmp_path, "weekly-audit-2"))
-    assert seen[-1]._initial == "weekly-audit-2"
     assert S.load_schedule(tmp_path, "weekly-audit").cadence == "weekly"   # untouched
 
 
@@ -220,8 +223,9 @@ def test_typing_an_existing_schedule_name_asks_before_replacing(tmp_path, monkey
     store, sid, screen = _make(tmp_path, monkeypatch)
     S.save_schedule(tmp_path, name="nightly", kind="audit", cadence="daily")
     seen: list = []
-    # name "nightly" -> decline replace -> name prompt again -> "other"
-    _drive(screen, monkeypatch, ["audit", "weekly", "", "nightly", False, "other"], seen,
+    # name "nightly" -> decline replace -> the form again -> "other"
+    _drive(screen, monkeypatch, [_sched(cadence="weekly", name="nightly"), False,
+                                 _sched(cadence="weekly", name="other")], seen,
            lambda: S.schedule_exists(tmp_path, "other"))
     assert any(isinstance(m, ConfirmModal) for m in seen)
     assert S.load_schedule(tmp_path, "nightly").cadence == "daily"   # not replaced

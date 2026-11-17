@@ -439,7 +439,7 @@ class OnboardTargetScreen(Screen[str | None]):
                 Text(status, style=colors.get(status, T.TEXT_DIM)),
                 Text(c.get("detail", ""), style=T.TEXT_DIM),
             )
-        self.app.call_from_thread(self._log, table)
+        table_widget = self.app.call_from_thread(self._log, table)
         if not via_agent:
             self._ssh_ok = True
         if n_fail == 0 or via_agent:
@@ -461,10 +461,14 @@ class OnboardTargetScreen(Screen[str | None]):
             border_style=T.ATTENTION,
         ))
         self.app.call_from_thread(self._log, Text(
-            f"SSH works, but {n_fail} check(s) aren't passing. Run the commands above on the target, then press "
+            f"SSH works, but {n_fail} " + ("check isn't" if n_fail == 1 else "checks aren't") + f" passing. Run the commands above on the target, then press "
             "'p' to re-check — or Enter to continue anyway (investigations may be limited until fixed).",
             style=T.ATTENTION,
         ))
+        if table_widget is not None:
+            # Show what failed first; the long checklist below it can be scrolled to.
+            self.app.call_from_thread(lambda: self.call_after_refresh(
+                lambda: table_widget.scroll_visible(top=True, animate=False)))
 
     def _show_fix(self, diag: DD.Diagnosis) -> None:
         self._log(Text(f"{diag.next_step}\nThen press 'p' to re-check.", style=T.ATTENTION))

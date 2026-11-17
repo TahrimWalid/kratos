@@ -615,10 +615,23 @@ def test_delete_a_user_entry_and_details_and_ceiling_view(tmp_path):
         screen.action_show_ceiling()
         screen.action_delete_entry()
 
-    out = _drive(screen, [True], details_ceiling_delete)
-    joined = "\n".join(out["texts"])
+    ceiling: list = []
+
+    def details_ceiling_delete_and_keep_the_card():
+        from rich.console import Console
+        con = Console(width=100, record=True)
+        details_ceiling_delete()
+        con.print(screen._ceiling_body())
+        ceiling.append(con.export_text())
+        con2 = Console(width=160, record=True)
+        con2.print(screen._details_body)       # A2: i opens a details card instead of writing to the log
+        ceiling.append(con2.export_text())
+
+    out = _drive(screen, [True], details_ceiling_delete_and_keep_the_card)
+    joined = "\n".join(out["texts"]) + "\n" + ceiling[1]
     assert "Stops cups." in joined and "one of: cups" in joined
-    assert "systemctl disable --now <one of:" in joined  # the ceiling view lists allowed forms
+    # the ceiling card lists the allowed forms, a long choice list on its own line
+    assert "systemctl disable --now <service>" in ceiling[0] and "service: fail2ban, ufw" in ceiling[0]
     assert wl.list_user_entries(tid) == []
 
 
@@ -702,7 +715,7 @@ def test_real_keys_reach_the_screen_actions(tmp_path):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")          # run row 0 -> first slot prompt (jail picker)
+            await pilot.press("enter")          # run row 0 -> its jail has one option (skipped) -> the ip prompt
             await pilot.pause()
             seen.append(type(app.screen).__name__)
             await pilot.press("escape")
@@ -719,7 +732,7 @@ def test_real_keys_reach_the_screen_actions(tmp_path):
             await pilot.pause()
 
     asyncio.run(run())
-    assert seen == ["ListPickerModal", "ConfirmModal", "ListPickerModal"]
+    assert seen == ["PromptModal", "ConfirmModal", "ListPickerModal"]
     assert next(r for r in build_rows(wl, tid) if r["label"] == "service.enable_now")["state"] == "off"
 
 
@@ -778,10 +791,12 @@ def test_table_is_as_tall_as_its_rows_and_the_space_below_says_what_it_is_for(tm
             screen._refresh()  # a second refresh must not repeat the hint
             await pilot.pause()
             out["texts"] = _log_texts(screen)
+            out["detail"] = str(screen.query_one("#wl-detail").render())
 
     asyncio.run(run())
     assert out["height"] == out["rows"] + 1  # header + one line per entry
-    assert sum("Details and results appear here" in " ".join(t.split()) for t in out["texts"]) == 1
+    # A2: the space below explains the selected action (its own pane); the log keeps results only
+    assert "Runs " in out["detail"] and out["texts"] == []
 
 
 def test_consent_names_the_target_not_its_internal_id(tmp_path, monkeypatch):

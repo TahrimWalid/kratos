@@ -44,7 +44,7 @@ def test_channels_lists_ntfy_and_added_channels(tmp_path, monkeypatch):
             await pilot.pause()
             rows = _table_cells(screen, "#ch-table")
             assert [r[0] for r in rows] == ["ntfy", "soc"]
-            assert rows[0][4] == "not set up" and rows[1][4] == "on"
+            assert rows[0][2] == "not set up" and rows[1][2] == "on"
     asyncio.run(go())
 
 
@@ -91,7 +91,8 @@ def test_outbox_shows_a_dead_letter_and_retry_now_sends_it(tmp_path, monkeypatch
         async with _Host(screen).run_test(size=(180, 40)) as pilot:
             await pilot.pause()
             rows = _table_cells(screen, "#ob-table")
-            assert len(rows) == 1 and rows[0][3] == "dead" and "missing field" in rows[0][6]
+            assert len(rows) == 1 and rows[0][2] == "dead"
+            assert "missing field" in str(screen.query_one("#ob-detail")._Static__content)   # the error in full
 
             async def yes(modal):
                 return True
@@ -105,3 +106,16 @@ def test_outbox_shows_a_dead_letter_and_retry_now_sends_it(tmp_path, monkeypatch
     W.flush(tmp_path, label="t")
     with S.opened(tmp_path) as conn:
         assert [r["status"] for r in S.listing(conn)] == ["delivered"]
+
+
+def test_an_empty_outbox_shows_the_sentence_only_not_an_empty_table(tmp_path, monkeypatch):
+    monkeypatch.setattr(kc, "NTFY_TOPIC", None)
+
+    async def go():
+        screen = OutboxScreen(tmp_path)
+        async with _Host(screen).run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert screen.query_one("#ob-table").display is False
+            assert "Nothing has been sent yet" in str(screen.query_one("#ob-detail")._Static__content)
+            assert "esc back" in str(screen.query_one("#ob-hints")._Static__content)
+    asyncio.run(go())

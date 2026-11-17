@@ -24,22 +24,31 @@ from textual.screen import Screen
 
 from kratos.lifecycle.decide import Actor
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, title_row
+from kratos.tui_mk2.modals import InfoModal
 from kratos.tui_mk2.safe_widgets import SafeStatic as Static
 from kratos.untrusted_rich import SafeText as Text
 
+SECTIONS = ("Entry points:", "Paths to what matters:", "Fix this first:", "What Kratos couldn't see:")
+PATHS_ABOUT = ("A read-free synthesis over evidence Kratos already stored: no model, no machine read. Each hop "
+               "says whether it was observed or assumed. Nothing here runs a fix or reads a machine. A build with "
+               "no paths is coverage, not a clean bill of health.")
+
 
 class PathsScreen(Screen):
+    _ALL_KEYS = "↑↓ / pgup pgdn scroll · r build or rebuild · esc back"
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("r", "build", "build / rebuild", show=True),
     ]
 
     CSS = """
     PathsScreen { padding: 1 2; }
-    PathsScreen #pa-banner { height: auto; padding: 0 0 1 0; }
+    PathsScreen #pa-banner { height: auto; max-height: 2; padding: 0 0 1 0; }
     PathsScreen #pa-body { height: 1fr; }
     PathsScreen #pa-content { height: auto; }
-    PathsScreen #pa-hints { height: auto; padding-top: 1; }
+    PathsScreen #pa-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(self, data_dir: Path, *, group: str = "all") -> None:
@@ -51,7 +60,7 @@ class PathsScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static(Text(""), id="pa-banner")
         yield VerticalScroll(Static(Text(""), id="pa-content"), id="pa-body")
-        yield Static(Text("r build / rebuild · escape back", style=T.TEXT_DIM), id="pa-hints")
+        yield Static(key_bar([("r", "build / rebuild"), ("?", "all keys"), ("esc", "back")]), id="pa-hints")
 
     def on_mount(self) -> None:
         self._banner()
@@ -62,7 +71,13 @@ class PathsScreen(Screen):
 
     def _banner(self) -> None:
         self.query_one("#pa-banner", Static).update(
-            Text(f"Attack paths for @{self._group}" + ("  (building…)" if self._busy else ""), style=T.TEXT_BRIGHT))
+            title_row("Attack paths", f"@{self._group}", note="building…" if self._busy else "",
+                      note_style=T.TEXT_DIM))
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{PATHS_ABOUT}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("Attack paths — all keys", body))
 
     @work(thread=True, exclusive=True)
     def _load(self) -> None:
@@ -90,8 +105,15 @@ class PathsScreen(Screen):
             content.update(Text("No attack-path build yet. Press r to build it (read-free: no model, no machine "
                                 "read). This is coverage, not a clean bill of health.", style=T.ATTENTION))
             return
-        text = "\n".join(PP.render_build(doc, doc.get("group") or self._group))
-        content.update(Text(text, style=T.TEXT))
+        lines = PP.render_build(doc, doc.get("group") or self._group)
+        if lines and lines[0].startswith("Attack paths for"):
+            lines = lines[2:]                     # the screen's title row already says it
+        out = Text()
+        for i, line in enumerate(lines):
+            if i:
+                out.append("\n")
+            out.append(line, style=f"bold {T.TEXT_BRIGHT}" if line in SECTIONS else T.TEXT)
+        content.update(out)
 
     def action_back(self) -> None:
         self.app.pop_screen()

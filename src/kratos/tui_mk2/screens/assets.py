@@ -22,13 +22,16 @@ from kratos.assets import store as AS
 from kratos.lifecycle.decide import Actor
 from kratos.ssvc import mission as M
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeText as Text
 from kratos.utils.timeutil import epoch_to_utc_iso, format_for_display, resolve_display_tz
 
-COLUMNS = ("machine", "criticality", "well-being", "exposure", "groups", "role", "owner note")
+COLUMNS = ("machine", "criticality", "exposure", "groups")   # well-being, role, note: the detail pane
+ASSETS_ABOUT = ("Criticality decides how CISA's SSVC tree ranks each machine's vulnerabilities (Track · Track* · "
+                "Attend · Act). Exposure is what Kratos measured; set it only for what Kratos can't see.")
 
 CRITICALITY_CHOICES = [
     ("critical", "critical — the organisation stops without it"),
@@ -52,20 +55,17 @@ def measured_exposure(data_dir: Path, target: str) -> str:
 
 
 class AssetsScreen(Screen):
+    _ALL_KEYS = "↑↓ select · enter edit everything · c criticality only · h history · esc back"
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("enter,e", "edit", "edit", show=True, priority=True),
         Binding("c", "criticality", "criticality", show=True),
         Binding("h", "history", "history", show=True),
     ]
 
-    CSS = """
-    AssetsScreen { padding: 1 2; }
-    AssetsScreen #as-banner { height: auto; padding: 0 0 1 0; }
-    AssetsScreen DataTable { height: auto; max-height: 65%; }
-    AssetsScreen #as-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    AssetsScreen #as-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the table, a detail pane for the selected machine, a log, a key bar.
+    CSS = layout_css("AssetsScreen", "as")
 
     def __init__(self, data_dir: Path, *, configured: str | None = None) -> None:
         super().__init__()
@@ -78,9 +78,10 @@ class AssetsScreen(Screen):
         with Vertical():
             yield Static(id="as-banner")
             yield DataTable(id="as-table", cursor_type="row")
+            yield Static(id="as-detail")
             yield VerticalScroll(id="as-log")
-            yield Static(Text("↑↓ select · enter edit everything · c criticality only · h history · esc back",
-                              style=T.TEXT_DIM), id="as-hints")
+            yield Static(key_bar([("enter", "edit"), ("c", "criticality"), ("h", "history"), ("?", "all keys"),
+                                  ("esc", "back")]), id="as-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -90,6 +91,42 @@ class AssetsScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        body.append(f"\n\n{ASSETS_ABOUT}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("How much each machine matters — all keys", body))
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        try:
+            detail = self.query_one("#as-detail", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        a = self.selected()
+        if a is None:
+            detail.update(Text("No machines yet: they appear after a check or an investigation.\n" + ASSETS_ABOUT,
+                               style=T.TEXT_MUTED))
+            return
+        out = Text()
+        out.append(a.target, style=f"bold {T.TEXT_BRIGHT}")
+        if not a.set_up:
+            out.append("   not set up", style=T.ATTENTION)
+            out.append(f"\nKratos holds {', '.join(a.seen_in) or 'data'} for it. enter describes it.", style=T.TEXT_MUTED)
+            detail.update(out)
+            return
+        out.append(f"   criticality {a.criticality or 'not set (assumed medium)'}", style=T.TEXT)
+        out.append(f"\nwell-being impact {a.wellbeing} · exposure {measured_exposure(self._data_dir, a.target)}"
+                   + (f" (you: {a.exposure_override})" if a.exposure_override else ""), style=T.TEXT_MUTED)
+        extra = " · ".join(b for b in ((f"role {a.role}" if a.role else ""),
+                                       (f"groups {', '.join(a.groups)}" if a.groups else "")) if b)
+        if extra:
+            out.append(f"\n{extra}", style=T.TEXT_MUTED)
+        if a.owner_note:
+            out.append(f"\nnote: {a.owner_note}", style=T.TEXT_DIM)
+        detail.update(out)
 
     def note(self, renderable: Any) -> None:
         area = self.query_one("#as-log", VerticalScroll)
@@ -112,23 +149,19 @@ class AssetsScreen(Screen):
                 crit = Text("not set (assumed medium)", style=T.TEXT_MUTED)
             measured = measured_exposure(self._data_dir, a.target)
             exp = measured + (f" · you: {a.exposure_override}" if a.exposure_override else "")
-            cells.append([a.target, crit, a.wellbeing if a.set_up else "-", exp, ", ".join(a.groups) or "-",
-                          a.role or "-", a.owner_note or "-"])
+            cells.append([a.target, crit, exp, ", ".join(a.groups) or "-"])
         available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(6, 12), (5, 8), (4, 10), (0, 16)],
+        for i, row in enumerate(fit_columns(cells, available, shrink=[(3, 10), (2, 12), (0, 16)],
                                             headers=COLUMNS)):
             table.add_row(*row, key=self._rows[i].target)
-        if cursor is not None and self._rows:
-            table.move_cursor(row=min(cursor, len(self._rows) - 1))
-        banner = Text()
-        banner.append("Machines", style=f"bold {T.ACCENT}")
-        banner.append(f"   ({len(self._rows)})", style=T.TEXT_DIM)
-        banner.append("\nCriticality decides how CISA's SSVC tree ranks each machine's vulnerabilities "
-                      "(Track · Track* · Attend · Act). Exposure is what Kratos measured; set it only for what Kratos "
-                      "can't see.", style=T.TEXT_MUTED)
-        if not self._rows:
-            banner.append("\nNo machines yet: they appear after a check or an investigation.", style=T.TEXT_DIM)
-        self.query_one("#as-banner", Static).update(banner)
+        if self._rows:
+            table.move_cursor(row=min(cursor or 0, len(self._rows) - 1))
+        table.display = bool(self._rows)
+        not_set = sum(1 for a in self._rows if not a.set_up)
+        self.query_one("#as-banner", Static).update(title_row(
+            "How much each machine matters", plural(len(self._rows), "machine"),
+            note=f"{not_set} not set up" if not_set else ""))
+        self._show_detail()
 
     def selected(self) -> AS.Asset | None:
         table = self.query_one("#as-table", DataTable)

@@ -123,7 +123,7 @@ def test_subagent_screen_shows_this_windows_staleness(tmp_path, monkeypatch):
         async with Host().run_test() as pilot:
             await pilot.pause()
             buf = io.StringIO()
-            Console(file=buf, width=200).print(screen.query_one("#sa-listener")._Static__content)
+            Console(file=buf, width=200).print(screen._notices())
             out["line"] = buf.getvalue()
 
     asyncio.run(run())

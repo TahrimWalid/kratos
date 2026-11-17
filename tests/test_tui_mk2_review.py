@@ -139,3 +139,21 @@ def test_decline_sends_nothing(tmp_path, monkeypatch):
                 await pilot.pause(0.05)
             assert called["start"] == 0            # nothing sent
     asyncio.run(go())
+
+
+def test_title_key_bar_and_no_empty_table(tmp_path, monkeypatch):
+    """TUI review: /review had no title (its first line was the warning), a hint line that mixed
+    keys with a sentence, and an empty grid under 'no confirmed folders'."""
+    monkeypatch.setattr(Actor, "current", classmethod(lambda cls, iface="tui": OWNER))
+
+    async def go():
+        app = _app(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            scr = app.screen
+            assert str(scr.query_one("#rv-banner")._Static__content).startswith("AI code review")
+            assert scr.query_one("#rv-table").display is False
+            assert "Confirm one first in /code" in str(scr.query_one("#rv-detail")._Static__content)
+            hints = str(scr.query_one("#rv-hints")._Static__content)
+            assert "esc back" in hints and "secrets" not in hints
+    asyncio.run(go())

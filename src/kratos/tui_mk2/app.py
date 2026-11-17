@@ -76,6 +76,14 @@ except Exception:  # pragma: no cover -- non-Linux; auto-detect keeps the defaul
     _ClickOnlyLinuxDriver = None
 
 
+def _short_path(p: Path) -> str:
+    """~/… instead of the full home path, so it doesn't wrap over two lines."""
+    try:
+        return "~/" + str(p.relative_to(Path.home()))
+    except ValueError:
+        return str(p)
+
+
 class TooSmallScreen(Screen):
     """Turn 14c -- a hard blocking screen when the terminal is too small for the
     fixed-column layouts, rather than letting them overlap. Shown/hidden by the
@@ -298,7 +306,8 @@ class KratosTUI(ResilientWorkerHost, App):
         # buttons). The active pack's identity accent drives primary/accent.
         from textual.theme import Theme
 
-        for name, pack in T.PACKS.items():
+        for name in T.PACKS:
+            pack = T._identity(name)
             accent = pack["ACCENT"]
             self.register_theme(
                 Theme(
@@ -327,9 +336,12 @@ class KratosTUI(ResilientWorkerHost, App):
         if not T.set_active_pack(name):
             return False
         self.theme = name  # a distinct value -> Textual reactive fires -> live chrome
-        hook = getattr(self.screen, "refresh_theme", None)
-        if callable(hook):
-            hook()
+        # Every screen on the stack, not just the top one: a switch made in Settings
+        # must repaint the session underneath it too.
+        for screen in list(self.screen_stack):
+            hook = getattr(screen, "refresh_theme", None)
+            if callable(hook):
+                hook()
         return True
 
     def on_unmount(self) -> None:
@@ -382,7 +394,7 @@ class KratosTUI(ResilientWorkerHost, App):
             "(fixes stay off unless you switch them on for a machine yourself).",
             model_line,
             "Anything that would run on this machine asks you first.",
-            f"Your settings and sessions are kept in {Path(self.data_dir).resolve()}.",
+            f"Your settings and sessions are kept in {_short_path(Path(self.data_dir).resolve())}.",
         ):
             text.append("  •  ", style=T.ACCENT)
             text.append(line + "\n", style=T.TEXT)

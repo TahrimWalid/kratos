@@ -53,6 +53,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         Binding("n", "new_session", "new", show=True),
         Binding("a", "archived", "archived", show=True),
         Binding("s", "settings", "settings", show=True),
+        Binding("t", "machines", "machines", show=True),
         Binding("question_mark", "guide", "guide", show=True),
         Binding("g", "guide", "guide", show=False),
         Binding("b", "back", "back", show=False),
@@ -164,7 +165,13 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         table.clear()
         self._display = []
         q = self._filter.strip().lower()
-        filtered = [s for s in self._rows if self._matches(s, q)]
+        if q and not self._archived_mode:
+            # Search every session, not just the page on screen -- a match on page 1
+            # must be found from page 2 (and vice versa).
+            pool = self._store.list_recent_sessions(limit=10_000, offset=0)
+        else:
+            pool = self._rows
+        filtered = [s for s in pool if self._matches(s, q)]
         use_buckets = (not self._archived_mode) and not q
         n = 0
         current_bucket = None
@@ -187,7 +194,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             last_active = timeutil.format_for_display(s["last_active_at"], "%Y-%m-%d %H:%M", tz=self._display_tz)
             self._display.append({"kind": "session", "session": s})
             rows.append([str(n), s["session_id"], name, targets, goal, last_active])
-        available = table.size.width or max(self.app.size.width - 4, 40)
+        available = max(self.app.size.width - 4, 40)
         show_id = available >= _ID_COLUMN_FROM
         if show_id != getattr(self, "_show_id", None):
             table.clear(columns=True)
@@ -237,7 +244,11 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             return
         count_txt = ""
         if self._filter.strip():
-            count_txt = f"showing {shown} of {len(self._rows)}  ·  esc clear  ·  "
+            count_txt = f"{shown} match{'es' if shown != 1 else ''} across all sessions  ·  esc clear  ·  "
+        if self._archived_mode and not self._rows:
+            hints.update(Text("Nothing archived. Sessions you delete with /delete land here. b back to recent · q quit",
+                              style=T.TEXT_DIM))
+            return
         if self._archived_mode:
             hints.update(Text(f"{count_txt}Enter restore & resume · / search · b back to recent · q quit",
                               style=T.TEXT_DIM))
@@ -250,7 +261,7 @@ class LaunchScreen(ResilientWorkerHost, Screen):
             more = "  ·  m back to page 1"
         else:
             more = ""
-        hints.update(Text(f"{count_txt}Enter resume · / search · n new · a archived · s settings · ? guide{more}{page_txt} · q quit",
+        hints.update(Text(f"{count_txt}Enter resume · / search · n new · a archived · s settings · t machines · ? guide{more}{page_txt} · q quit",
                           style=T.TEXT_DIM))
 
     # --- filter (search) -------------------------------------------------
@@ -306,6 +317,11 @@ class LaunchScreen(ResilientWorkerHost, Screen):
         from kratos.tui_mk2.modals import GuideModal
 
         self.app.push_screen(GuideModal())
+
+    def action_machines(self) -> None:
+        from kratos.tui_mk2.screens.machines import MachinesScreen
+
+        self.app.push_screen(MachinesScreen(self._data_dir))
 
     def action_settings(self) -> None:
         # Global settings (models / tools / general) reachable from the home

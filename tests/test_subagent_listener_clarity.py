@@ -67,7 +67,7 @@ class _Host(App):
 
 
 def _line(screen) -> str:
-    return str(screen.query_one("#sa-listener")._Static__content)
+    return str(screen._notices())   # A2: the full notices moved behind ? (the title row is short)
 
 
 def test_listener_line_in_the_real_screen(tmp_path, monkeypatch):
