@@ -2694,6 +2694,8 @@ def build_parser() -> argparse.ArgumentParser:
     export_cmd.add_parser(sub)
     from kratos.cli import backup_cmd
     backup_cmd.add_parser(sub)   # D.8: encrypted backups, drills, restore
+    from kratos.cli import connect_cmd
+    connect_cmd.add_parser(sub)  # E.5b: connect a chat app in one step
     from kratos.cli import review_cmd
     review_cmd.add_parser(sub)   # E.7b: AI review of deployed code (opt-in, per folder)
 

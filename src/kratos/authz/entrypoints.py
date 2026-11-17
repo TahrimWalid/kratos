@@ -64,6 +64,9 @@ CLI: dict[str, Entry] = {
     "cmd_chat": A(P.CHAT),
     "cmd_collect": A(P.INVESTIGATE),
     "cmd_containers": A(P.INVESTIGATE),
+    # E.5b: making and revoking the token, the service, AG-UI on -- each checks itself (tokens.manage, local
+    # only); `connect status` reads.
+    "cmd_connect": CORE("kratos.serve.connect:_authorize"),
     "cmd_context_collect": A(P.INVESTIGATE),
     "cmd_daily_report": READ("a report of stored findings"),
     "cmd_data": CORE("kratos.dataprune:apply_prune"),
@@ -165,7 +168,8 @@ TUI: dict[str, Entry] = {
     "/subagent": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
     "/subagents": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
     "/agents": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
-    "/connect": CORE("kratos.storage.subagent_store:SubAgentStore.create_pairing_code"),
+    "/connect": CORE("kratos.serve.connect:_authorize"),        # E.5b: chat apps (was a /subagent alias)
+    "/openwebui": CORE("kratos.serve.connect:_authorize"), "/chat-app": CORE("kratos.serve.connect:_authorize"),
     "/detect": CORE("kratos.detect.store:set_rule_enabled", "kratos.detect.live:set_watching"),
     "/rules": CORE("kratos.detect.store:set_rule_enabled", "kratos.detect.live:set_watching"),
     "/hunt": A(P.HUNT),

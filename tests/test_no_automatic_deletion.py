@@ -55,6 +55,7 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("logsources/seal.py", "remove_key", "unlink"): PERSON + " (`kratos seal remove-key`)",
     ("timewin/snapshots.py", "apply_retention", "unlink"): PERSON + " (`kratos snapshots prune --apply`)",
     ("dataprune.py", "_delete_files", "unlink"): PERSON + " (`kratos data prune --apply`)",
+    ("serve/connect.py", "undo", "unlink"): PERSON + " (`kratos connect <app> --undo`: that app's own token file)",
     ("dataprune.py", "_delete_files", "rmdir"): PERSON + " (the empty date folder that prune just emptied)",
     ("dataprune.py", "apply_prune", "DELETE FROM"): PERSON + " (`kratos data prune --apply`)",
     ("hunt/terms.py", "delete_older_than", "DELETE FROM"): PERSON + " (the hunt index entries of the log lines "

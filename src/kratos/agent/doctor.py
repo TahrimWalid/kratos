@@ -466,6 +466,19 @@ def _check_agent_doors(out: list[Check], data_dir: Path) -> None:
                     "agents use Kratos\""))
 
 
+def _check_chat_apps(out: list[Check], data_dir: Path) -> None:
+    """E.5b: each app `kratos connect` connected -- its token's expiry (warned 14 days
+    ahead), whether the chat server is up, whether its port moved since."""
+    from kratos.serve import connect as CN
+
+    rows = CN.doctor_rows(data_dir)
+    if not rows:
+        out.append(_row("chat apps", "info", "none connected (kratos connect openwebui | ag-ui | other, or /connect)"))
+        return
+    for level, check, detail in rows:
+        out.append(_row(check, level, detail, "kratos connect status" if level != "info" else ""))
+
+
 def _check_users(out: list[Check], data_dir: Path) -> None:
     """D.7: users by role, tokens per user (never-expiring / expiring soon), shared-gateway
     tokens and whether their JWT secret is set, schedules/triggers whose user can't run,
@@ -973,6 +986,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
         sections.append(("agent doors", lambda o: _check_agent_doors(o, Path(data_dir))))
+        sections.append(("chat apps", lambda o: _check_chat_apps(o, Path(data_dir))))
         sections.append(("users", lambda o: _check_users(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("delivery", lambda o: _check_delivery(o, Path(data_dir))))

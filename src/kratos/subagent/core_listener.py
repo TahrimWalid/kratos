@@ -146,10 +146,20 @@ def core_service_exec_start(data_dir: Path, port: int = DEFAULT_PORT,
     return f"{exe} --data-dir {data_dir} subagent-serve --host {host} --port {port}"
 
 
-def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str | list[str] = DEFAULT_BIND_HOST,
-                      user_mode: bool = False) -> str:
-    """A systemd unit that runs the core telemetry listener always-on."""
-    exec_start = core_service_exec_start(data_dir, port=port, bind_host=bind_host)
+def systemd_quote(value: str) -> str:
+    """A word for a systemd unit line, double-quoted when it has to be (spaces, quotes,
+    `$` and `%` escaped). Control characters are refused: a newline would end the line --
+    and the heredoc the install command writes the unit with."""
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("a control character can't go into a systemd unit")
+    if value and all(c.isalnum() or c in "/._-+:@=" for c in value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$").replace("%", "%%") + '"'
+
+
+def service_unit(*, description: str, exec_start: str, user_mode: bool, restart: str = "always",
+                 extra_service: str = "", environment: dict[str, str] | None = None) -> str:
+    """A systemd unit for a long-running Kratos command (the listener, `kratos serve`)."""
     wanted_by = "default.target" if user_mode else "multi-user.target"
     # A SYSTEM service runs as root unless told otherwise, and would then create
     # root-owned kratos.db-wal/-shm files the user's own TUI/CLI can't write.
@@ -160,42 +170,36 @@ def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str |
         import pwd
 
         run_as = f"User={pwd.getpwuid(os.getuid()).pw_name}\nGroup={grp.getgrgid(os.getgid()).gr_name}\n"
+    env = "".join(f"Environment={systemd_quote(f'{k}={v}')}\n" for k, v in sorted((environment or {}).items()))
+    if any(ord(c) < 32 for c in exec_start + description):
+        raise ValueError("a control character can't go into a systemd unit")
     return (
         "[Unit]\n"
-        "Description=Kratos sub-agent telemetry listener (core)\n"
+        f"Description={description}\n"
         "After=network-online.target\n"
         "Wants=network-online.target\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
         f"{run_as}"
+        f"{env}"
         f"ExecStart={exec_start}\n"
-        "Restart=always\n"
+        f"Restart={restart}\n"
         "RestartSec=5\n"
-        # It exits with 75 to restart itself onto newer Kratos code (see
-        # core_server.CODE_SETTLE_SECONDS): a deliberate restart, not a failure.
-        "SuccessExitStatus=75\n"
-        "RestartForceExitStatus=75\n"
+        f"{extra_service}"
         "\n"
         "[Install]\n"
         f"WantedBy={wanted_by}\n"
     )
 
 
-def core_service_install_commands(
-    data_dir: Path,
-    port: int = DEFAULT_PORT,
-    bind_host: str | list[str] = DEFAULT_BIND_HOST,
-    user_mode: bool = False,
-    service_name: str = CORE_SERVICE_NAME,
-) -> list[str]:
-    """The exact shell commands to install + start the core listener service.
+def service_install_commands(unit: str, service_name: str, *, user_mode: bool) -> list[str]:
+    """The exact shell commands to install + start `unit` as `service_name`.
 
     ``user_mode`` uses ``systemctl --user`` (no root); otherwise a system
     service via ``sudo``. Returned as a list so the caller can run them (when
     sudo is passwordless) or present them for the user to paste (one-time).
     """
-    unit = core_service_unit(data_dir, port=port, bind_host=bind_host, user_mode=user_mode)
     if user_mode:
         unit_path = f"$HOME/.config/systemd/user/{service_name}.service"
         return [
@@ -210,6 +214,29 @@ def core_service_install_commands(
         "sudo systemctl daemon-reload",
         f"sudo systemctl enable --now {service_name}.service",
     ]
+
+
+def core_service_unit(data_dir: Path, port: int = DEFAULT_PORT, bind_host: str | list[str] = DEFAULT_BIND_HOST,
+                      user_mode: bool = False) -> str:
+    """A systemd unit that runs the core telemetry listener always-on."""
+    return service_unit(
+        description="Kratos sub-agent telemetry listener (core)",
+        exec_start=core_service_exec_start(data_dir, port=port, bind_host=bind_host), user_mode=user_mode,
+        # It exits with 75 to restart itself onto newer Kratos code (see
+        # core_server.CODE_SETTLE_SECONDS): a deliberate restart, not a failure.
+        extra_service="SuccessExitStatus=75\nRestartForceExitStatus=75\n")
+
+
+def core_service_install_commands(
+    data_dir: Path,
+    port: int = DEFAULT_PORT,
+    bind_host: str | list[str] = DEFAULT_BIND_HOST,
+    user_mode: bool = False,
+    service_name: str = CORE_SERVICE_NAME,
+) -> list[str]:
+    """The exact shell commands to install + start the core listener service."""
+    unit = core_service_unit(data_dir, port=port, bind_host=bind_host, user_mode=user_mode)
+    return service_install_commands(unit, service_name, user_mode=user_mode)
 
 
 def core_service_restart_commands(*, user_mode: bool, service_name: str = CORE_SERVICE_NAME) -> list[str]:

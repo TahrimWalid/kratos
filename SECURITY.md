@@ -115,6 +115,16 @@ secret may have leaked, make a new `--gateway` token (it comes with a new secret
 Open WebUI, and revoke the old token. Every allowed and refused action is in the append-only
 audit trail (`kratos audit`).
 
+## Chat-app token files (`kratos connect`)
+
+`kratos connect` writes the token it makes for a chat app into Kratos's data folder
+(`connect/openwebui.env`, `connect/ag-ui.headers`, `connect/other.headers`; 0600 in a 0700
+folder), so it never appears on a command line, in shell history or in `ps`. Treat these files like
+the token: anyone who can read one can ask that app's questions about the machines it names. They are
+secrets in backups (left out by `--without-secrets`). `kratos connect <app> --undo` revokes the token
+and removes its file. Open WebUI started by the printed command listens on 127.0.0.1 only; create its
+first account right away, since the first account becomes its admin.
+
 ## Agent doors (A2A and AG-UI)
 
 `kratos serve` can let other AI agents (A2A 1.0) and agent front ends (AG-UI) use Kratos. Both doors

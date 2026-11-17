@@ -125,6 +125,8 @@ _PALETTE_COMMANDS = [
     ("/channels", "where Kratos sends what it finds: webhooks, syslog (TLS), email, ntfy, a SIEM (OCSF / ECS)"),
     ("/outbox", "what Kratos sent and what waits: attempts, failures, dead letters (retry them here)"),
     ("/backup", "encrypted backups: back up now, drill (prove it restores), the backup key, the schedule"),
+    ("/connect", "connect a chat app in one step: Open WebUI, an AG-UI app, any OpenAI-compatible app (renew, "
+                 "disconnect)"),
     ("/users", "people who may use Kratos through a chat client or MCP: roles, machines, tokens, Open WebUI "
                "mappings (owner only)"),
     ("/audit", "who did what, through which door -- every allowed and refused action (owner only)"),
@@ -677,6 +679,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         delivery = self._delivery_hint()               # D.4: "delivery failing: soc-webhook"
         if delivery:
             budget_note += f"  ·  {delivery}"
+        chat_app = self._chat_app_hint()               # E.5b: "openwebui token expires in 9 days"
+        if chat_app:
+            budget_note += f"  ·  {chat_app}"
         notes = ([budget_note + "  ·  updated on disk — restart Kratos", budget_note + "  ·  restart: updated"]
                  if rebuilt else [budget_note])
         candidates = [(parts[i:], note) for note in notes[:1] for i in range(len(parts) + 1)]
@@ -722,6 +727,21 @@ class SessionScreen(ResilientWorkerHost, Screen):
         except Exception:  # noqa: BLE001 -- the footer never fails over this
             hint = None
         self._delivery_hint_cache = (now, hint)
+        return hint
+
+    def _chat_app_hint(self) -> str | None:
+        """E.5b: a connected chat app's token expires within 14 days or has expired."""
+        now = time.monotonic()
+        cached = getattr(self, "_chat_app_hint_cache", None)
+        if cached is not None and now - cached[0] < self._BUDGET_HINT_TTL:
+            return cached[1]
+        try:
+            from kratos.serve.connect import status_bar_text
+
+            hint = status_bar_text(self._data_dir)
+        except Exception:  # noqa: BLE001 -- the footer never fails over this
+            hint = None
+        self._chat_app_hint_cache = (now, hint)
         return hint
 
     def refresh_theme(self) -> None:
@@ -1272,7 +1292,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.machines import MachinesScreen
 
             self.app.push_screen(MachinesScreen(self._data_dir, active=_kconfig.get_active_target()))
-        elif cmd in ("/subagent", "/subagents", "/agents", "/connect"):
+        elif cmd in ("/connect", "/openwebui", "/chat-app"):
+            from kratos.tui_mk2.screens.connect import ConnectScreen
+
+            self.app.push_screen(ConnectScreen(self._data_dir, app="openwebui" if cmd == "/openwebui" else None))
+        elif cmd in ("/subagent", "/subagents", "/agents"):
             from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
             target = _kconfig.get_active_target()
