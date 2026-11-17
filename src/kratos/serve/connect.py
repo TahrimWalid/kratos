@@ -27,6 +27,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import shlex
 import shutil
 import socket
 import time
@@ -338,7 +339,7 @@ def run_command(plan_: Plan, env_path: Path) -> str:
     """The one command that starts a new Open WebUI (Kratos never runs it)."""
     engine = plan_.facts.engine or "docker"
     sudo = "sudo " if plan_.facts.engine_needs_sudo else ""
-    return (f"{sudo}{engine} run -d --name {OPENWEBUI_CONTAINER} --network host --env-file {env_path} "
+    return (f"{sudo}{engine} run -d --name {OPENWEBUI_CONTAINER} --network host --env-file {shlex.quote(str(env_path))} "
             f"-v {OPENWEBUI_VOLUME}:/app/backend/data --restart unless-stopped "
             f"{OPENWEBUI_IMAGE}:{OPENWEBUI_TESTED_TAG}")
 
@@ -346,7 +347,7 @@ def run_command(plan_: Plan, env_path: Path) -> str:
 def pip_route(plan_: Plan, env_path: Path) -> str:
     """No container engine: Open WebUI from pip (it ignores PORT, so the port is a flag)."""
     return (f"python3 -m venv ~/open-webui-venv && ~/open-webui-venv/bin/pip install open-webui\n"
-            f"set -a; . {env_path}; set +a; ~/open-webui-venv/bin/open-webui serve --host 127.0.0.1 "
+            f"set -a; . {shlex.quote(str(env_path))}; set +a; ~/open-webui-venv/bin/open-webui serve --host 127.0.0.1 "
             f"--port {plan_.webui_port}")
 
 
@@ -509,13 +510,13 @@ def _result(data_dir: Path, p: Plan, token: str, token_id: str, secret: Path, re
                        f"volume, {OPENWEBUI_CONTAINER}).")
     elif p.app == "ag-ui":
         r.paste = [("Endpoint", f"{base}/ag-ui/run"), ("Header", f"Authorization: Bearer {token}")]
-        r.check = (f"curl -N -H @{secret} -H 'Content-Type: application/json' {base}/ag-ui/run "
+        r.check = (f"curl -N -H {shlex.quote('@' + str(secret))} -H 'Content-Type: application/json' {base}/ag-ui/run "
                    f"-d '{_payload(p.machines[0])}'")
         r.notes.append("Name the machine in your run's forwardedProps: {\"kratos\": {\"machine\": \"<name>\"}} -- "
                        f"this token may ask about {', '.join(p.machines)}.")
     else:
         r.paste = [("Base URL", f"{base}/v1"), ("API key", token)]
-        r.check = f"curl -s -H @{secret} {base}/v1/models"
+        r.check = f"curl -s -H {shlex.quote('@' + str(secret))} {base}/v1/models"
         r.notes.append(f"Models: {', '.join(p.model_ids)}. Set the app's request timeout to 15 minutes if it has one "
                        "-- an investigation can take a few minutes.")
     if p.tools and p.app == "openwebui" and p.mode == "new":
@@ -609,7 +610,7 @@ def serve_exec_start(data_dir: Path) -> str:
     exe = CL._kratos_executable()
     dd = Path(data_dir).resolve()
     default = Path(paths.default_data_dir()).resolve()
-    return f"{exe} serve" if dd == default else f"{exe} --data-dir {dd} serve"
+    return f"{exe} serve" if dd == default else f"{exe} --data-dir {CL.systemd_quote(str(dd))} serve"
 
 
 def serve_service_commands(data_dir: Path) -> list[str]:
@@ -617,8 +618,11 @@ def serve_service_commands(data_dir: Path) -> list[str]:
     from kratos.subagent import core_listener as CL
 
     env = {"KRATOS_HOME": os.environ["KRATOS_HOME"]} if os.environ.get("KRATOS_HOME", "").strip() else None
-    unit = CL.service_unit(description="Kratos chat server (kratos serve)", exec_start=serve_exec_start(data_dir),
-                           user_mode=True, restart="on-failure", environment=env)
+    try:
+        unit = CL.service_unit(description="Kratos chat server (kratos serve)", exec_start=serve_exec_start(data_dir),
+                               user_mode=True, restart="on-failure", environment=env)
+    except ValueError as e:
+        raise ConnectError(f"can't write the kratos-serve unit: {e} (in the data folder or KRATOS_HOME path)") from None
     return CL.service_install_commands(unit, SERVE_SERVICE, user_mode=True)
 
 

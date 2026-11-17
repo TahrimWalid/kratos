@@ -153,6 +153,24 @@ def test_offers_user_service_when_down(dd):
     assert ok and status_file.exists() and len(ran) == 4 and "kratos-serve" in words
 
 
+def test_paths_are_quoted_and_control_characters_refused(dd, tmp_path, monkeypatch):
+    import shlex
+
+    odd = tmp_path / "my data $(x)"
+    odd.mkdir()
+    kratos_config.set_active_data_dir(odd)
+    r = _connect(odd)
+    words = shlex.split(r.command)
+    assert words[words.index("--env-file") + 1] == str(odd / "connect" / "openwebui.env")
+    unit = CN.serve_service_commands(odd)[1]
+    assert '--data-dir "' in unit and "$$(x)" in unit                   # systemd-quoted, $ escaped
+    monkeypatch.setenv("KRATOS_HOME", "/srv/a b")
+    assert 'Environment="KRATOS_HOME=/srv/a b"' in CN.serve_service_commands(odd)[1]
+    monkeypatch.setenv("KRATOS_HOME", "/srv/x\nUNIT\ntouch /tmp/kratos-test-marker")
+    with pytest.raises(CN.ConnectError, match="control character"):
+        CN.serve_service_commands(odd)
+
+
 def test_service_unit_carries_kratos_home_and_data_dir(dd, monkeypatch):
     monkeypatch.setenv("KRATOS_HOME", "/srv/kratos-home")
     unit = CN.serve_service_commands(dd)[1]

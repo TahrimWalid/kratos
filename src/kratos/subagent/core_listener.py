@@ -146,6 +146,17 @@ def core_service_exec_start(data_dir: Path, port: int = DEFAULT_PORT,
     return f"{exe} --data-dir {data_dir} subagent-serve --host {host} --port {port}"
 
 
+def systemd_quote(value: str) -> str:
+    """A word for a systemd unit line, double-quoted when it has to be (spaces, quotes,
+    `$` and `%` escaped). Control characters are refused: a newline would end the line --
+    and the heredoc the install command writes the unit with."""
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise ValueError("a control character can't go into a systemd unit")
+    if value and all(c.isalnum() or c in "/._-+:@=" for c in value):
+        return value
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "$$").replace("%", "%%") + '"'
+
+
 def service_unit(*, description: str, exec_start: str, user_mode: bool, restart: str = "always",
                  extra_service: str = "", environment: dict[str, str] | None = None) -> str:
     """A systemd unit for a long-running Kratos command (the listener, `kratos serve`)."""
@@ -159,7 +170,9 @@ def service_unit(*, description: str, exec_start: str, user_mode: bool, restart:
         import pwd
 
         run_as = f"User={pwd.getpwuid(os.getuid()).pw_name}\nGroup={grp.getgrgid(os.getgid()).gr_name}\n"
-    env = "".join(f"Environment={k}={v}\n" for k, v in sorted((environment or {}).items()))
+    env = "".join(f"Environment={systemd_quote(f'{k}={v}')}\n" for k, v in sorted((environment or {}).items()))
+    if any(ord(c) < 32 for c in exec_start + description):
+        raise ValueError("a control character can't go into a systemd unit")
     return (
         "[Unit]\n"
         f"Description={description}\n"
