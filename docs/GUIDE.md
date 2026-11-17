@@ -2266,6 +2266,12 @@ stored log events; an email inbox gets alerts and a digest of finding changes. S
 always removed first; masking (per channel) replaces names and addresses with placeholders that
 are never turned back. Nothing is sent to a channel you haven't added.
 
+**Other agents get the answers they ask for.** With the agent doors on (see [Letting other agents
+use Kratos](#letting-other-agents-use-kratos)), an agent or an agent front end holding one of your
+people's tokens receives what that person would see in a chat: Kratos's checked answer and the
+findings, for that person's machines only. It goes to whatever program holds the token — and from
+there possibly to its own model. Both doors are off until you turn them on.
+
 ---
 
 ## Two ways to analyze
@@ -3649,6 +3655,102 @@ credential: **/audit** in the TUI, `kratos audit` (`--refused`, `--user alice`,
 `--since 7d`). It can't be edited; `kratos audit prune --older-than 365d --apply`
 removes old rows, and the prune itself is recorded. It is personal data (in
 `kratos data`).
+
+### Letting other agents use Kratos
+
+Other AI agents can hand Kratos a job — "investigate web-01", "who has sudo across @prod?" —
+and get back the same checked answer a person gets in a chat. Kratos speaks two open
+protocols for this, both inside `kratos serve` (no new port), **both off until you turn
+them on**:
+
+- **A2A** (Agent2Agent, version 1.0) — for another agent that delegates whole tasks. It
+  finds Kratos through its *Agent Card* at `http://127.0.0.1:8770/.well-known/agent-card.json`
+  and sends tasks to `http://127.0.0.1:8770/a2a/v1`.
+- **AG-UI** — for an agent front end (a web app showing an agent's progress). It posts a
+  run to `http://127.0.0.1:8770/ag-ui/run` and shows Kratos's steps and answer as they come.
+
+**Turn them on and give someone a token:**
+
+```bash
+kratos serve set a2a.enabled yes
+kratos serve set agui.enabled yes
+kratos tokens create --name ivy-agent --user ivy --agents
+```
+
+The token must belong to a person (`kratos users add …`, see above) and carry the agent
+doors (`--agents`; existing tokens don't have them — make a new one). A shared Open WebUI's
+*gateway* token never works here: these protocols can't carry Open WebUI's signed identity,
+so a shared token would be everyone at once. The agent then works **as that person**: their
+role, their machines, their hourly limit and their daily budget. Settings → General → Chat
+server has the same switches.
+
+**What another agent can ask for** (the *skills* on the card):
+
+| Skill | Who | What it does |
+| --- | --- | --- |
+| `investigate_machine` | investigators | one investigation of one of the person's machines: the checked answer plus the findings as data |
+| `ask_group` | investigators | one question over a group (`@prod`): one checked answer per machine the person may see |
+| `hunt_indicator` | investigators | has this address, hash, account, … been seen? Searches what Kratos holds, nothing sent to a machine |
+| `finding_states` | viewers too | what is open on a machine, with each finding's state, verdict and SSVC decision |
+| `list_machines` | viewers too | the person's machines and groups |
+
+An agent that sends only a question (no skill) gets an investigation of the person's
+machine — if they have exactly one.
+
+**What another agent can never do:** approve anything, answer a question back, change a
+finding, a setting or a user, or reach the fix channel. Kratos never asks a remote agent
+for an approval or a password, and a run started this way offers no tool that could ask.
+It never fetches a link or opens a file sent in a task, and never calls the agent back:
+there are no push notifications — the agent asks for the result (or keeps a stream open).
+Cancelling a task stops it before its next read of the machine. A task belongs to the
+person who started it; anyone else asking for it is told it doesn't exist.
+
+**The signed card.** The card is signed with Kratos's signing key (the same key as
+incident bundles). An agent that wants to be sure it's talking to *your* Kratos checks the
+signature against the key's fingerprint, which you give it some other way:
+`kratos signing status` or `/doctor` → "agent doors". The public keys are also at
+`/a2a/v1/keys.json`; after `kratos signing rotate` the old key stays there, so cards
+signed before the change still check out. The public card lists the skills but no
+machine, group or person; an agent with a token gets its own longer card
+(`/a2a/v1/extendedAgentCard`) listing that person's machines and groups.
+
+**Behind a reverse proxy**, tell Kratos the address other agents use, so the signed card
+points there: `kratos serve set a2a.public_url https://kratos.example.internal` (and
+`serve.allowed_hosts`, as above).
+
+**Limits.** Each person may have `a2a.max_open_tasks` (4) unfinished tasks at once; more
+are refused with "try again when one finishes", never queued. Tasks take a turn in the
+same queue as chat messages, and count in the same hourly limit. Finished tasks are kept
+(`kratos data` → *Agent tasks*; `kratos data prune --category agent_tasks` removes old
+ones). Every task, cancel and refusal is in `kratos audit`, with the person and the door
+(the credential reads `token:<id>+a2a` or `+agui`).
+
+**Trying it.** With the official A2A Python SDK (`pip install a2a-sdk`):
+
+```python
+import asyncio, httpx
+from a2a.client import ClientConfig, create_client
+from a2a.types import a2a_pb2 as p
+from google.protobuf import json_format
+
+async def main():
+    http = httpx.AsyncClient(headers={"Authorization": "Bearer krt_…"}, timeout=600)
+    client = await create_client("http://127.0.0.1:8770",
+                                 ClientConfig(httpx_client=http, supported_protocol_bindings=["HTTP+JSON"]))
+    msg = p.Message(message_id="1", role=p.Role.ROLE_USER)
+    json_format.ParseDict({"skill": "investigate_machine", "machine": "web-01",
+                           "question": "Has anyone been trying to log in?"}, msg.parts.add().data)
+    async for event in client.send_message(p.SendMessageRequest(message=msg)):
+        print(event)
+
+asyncio.run(main())
+```
+
+An AG-UI front end names the machine in its run's `forwardedProps`:
+`{"kratos": {"machine": "web-01"}}` (or `"@prod"` for a group). The answer appears only
+once Kratos has finished and checked it — the stream never shows a draft. Browser pages
+can't call Kratos directly (it refuses requests from web pages); a front end's own server
+calls it.
 
 ---
 

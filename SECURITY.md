@@ -115,6 +115,27 @@ secret may have leaked, make a new `--gateway` token (it comes with a new secret
 Open WebUI, and revoke the old token. Every allowed and refused action is in the append-only
 audit trail (`kratos audit`).
 
+## Agent doors (A2A and AG-UI)
+
+`kratos serve` can let other AI agents (A2A 1.0) and agent front ends (AG-UI) use Kratos. Both doors
+are **off by default** (`a2a.enabled`, `agui.enabled`) and, when on, share the chat server's
+protections: the Host and Origin checks, the body-size limit (256 KB for these doors), bearer
+tokens with the failed-token throttle, D.7 roles and scopes checked before anything runs and again
+at every read, the hourly limit, the person's daily budget, and the audit trail.
+
+- Only a **person token with the agent doors** (`kratos tokens create --user <name> --agents`)
+  works; a shared Open WebUI gateway token is refused there, since these protocols carry no signed
+  per-user identity.
+- Nothing reachable through these doors can approve, decide, change settings or users, or reach the
+  fix channel. Kratos never asks a remote agent for an approval or a credential, never fetches a
+  URL or file sent in a task, and never calls back: push notifications are not supported.
+- The **Agent Card is signed** with the signing key above. The public card names no machine,
+  group or person. A caller should pin the key's fingerprint, got some other way than from the
+  card (`kratos signing status`); after a rotation the retired key stays published so old cards
+  still verify.
+- Whatever program holds a person's agent token gets that person's answers and findings. Treat
+  the token like the person's password; revoke it with `kratos tokens revoke`.
+
 ## Backups
 
 `kratos backup` puts everything Kratos keeps into one encrypted file (the age v1 format:

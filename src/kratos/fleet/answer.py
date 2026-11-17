@@ -157,7 +157,8 @@ class FleetAnswer:
             out.append(f"[NOTE: {self.model_summary_dropped}]")
         if self.extra_reads:
             out.append("Extra reads: " + "; ".join(
-                f"{r['tool']} on {r['machine']}" + ("" if r.get("ran") else f" (not run: {r.get('why')})")
+                f"{r.get('tool') or '(no read named)'} on {r.get('machine') or '(no machine named)'}"
+                + ("" if r.get("ran") else f" (not run: {r.get('why')})")
                 for r in self.extra_reads))
         for m in self.machines:
             name = f" ({untrusted.for_display(m.label)})" if m.label else ""

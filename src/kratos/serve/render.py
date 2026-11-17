@@ -112,7 +112,8 @@ def fleet_markdown(answer: Any, *, link_hosts: Any = ()) -> str:
         out.append(_kratos_lines(f"[NOTE: {answer.model_summary_dropped}]", quote=True))
     if answer.extra_reads:
         out.append(_kratos_lines("Extra reads: " + "; ".join(
-            f"{r['tool']} on {r['machine']}" + ("" if r.get("ran") else f" (not run: {r.get('why')})")
+            f"{r.get('tool') or '(no read named)'} on {r.get('machine') or '(no machine named)'}"
+            + ("" if r.get("ran") else f" (not run: {r.get('why')})")
             for r in answer.extra_reads)))
     from kratos.fleet.answer import fleet_digest_outcome
 

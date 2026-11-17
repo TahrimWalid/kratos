@@ -323,6 +323,16 @@ def test_investigation_round_trip_same_answer_as_chat(env):
     assert row["state"] == "TASK_STATE_COMPLETED" and row["door"] == "a2a" and row["target"] == M1
 
 
+def test_findings_listed_once_across_correlations(env):
+    _on(env)
+    note = {"id": "BASE-007", "title": "still learning", "severity": "info"}
+    a = _answer("done", [note, {"id": "AUTH-004", "title": "b", "severity": "medium", "finding_key": "d" * 64}])
+    a["transcript"] = a["transcript"] * 3                     # re-correlated twice
+    env["state"]["answer"] = a
+    data = _send(env, "ivy", _msg(_inv())).json()["task"]["artifacts"][0]["parts"][1]["data"]
+    assert sorted(f["rule"] for f in data["findings"]) == ["AUTH-004", "BASE-007"]
+
+
 def test_text_only_message_needs_a_single_machine(env):
     _on(env)
     r = _send(env, "ian", {"message": {"messageId": "m-2", "role": "ROLE_USER", "parts": [{"text": "check it"}]}})
@@ -426,6 +436,8 @@ def test_cancel_stops_reads(env):
     g = env["client"].get(f"/a2a/v1/tasks/{t['id']}", headers=_h(env["tok"]["ivy"])).json()
     assert g["status"]["state"] == "TASK_STATE_CANCELED" and "artifacts" not in g
     assert len(env["state"]["agents"]) == reads_after_cancel == 1
+    row = S.get(env["dir"], t["id"], U.find(env["dir"], "ivy").user_id)
+    assert row["state"] == "TASK_STATE_CANCELED" and row["session_id"]        # still linked to its session
 
 
 def test_cancel_terminal(env):
@@ -751,3 +763,53 @@ def test_agui_disconnect_cancels(env):
 
 def _token_id(env, name):
     return next(t for t in auth._store.list_tokens(env["dir"]) if t["name"] == name)["token_id"]
+
+
+def test_an_extra_read_with_no_tool_named_reads_plainly():
+    """A fleet model may ask for an extra read without naming the tool or machine: the
+    line says so instead of 'Extra reads:  on  (not run: ...)' (seen in the E.5 lab run)."""
+    from kratos.fleet.answer import FleetAnswer
+    from kratos.serve import render as R
+
+    a = FleetAnswer(status="final_answer", summary="2 machines")
+    a.extra_reads.append({"tool": "", "machine": None, "ran": False, "why": "(none) is not a machine in this question"})
+    text = R.fleet_markdown(a)
+    assert "(no read named) on (no machine named)" in text and "  on  " not in text
+    assert "(no read named) on (no machine named)" in a.render()
+
+
+_BAD_CHARS = [chr(c) for c in range(0x20) if chr(c) not in "\n\t"] + ["\x7f"] + \
+    [chr(c) for c in range(0x80, 0xA0)] + [chr(c) for c in range(0x202A, 0x202F)] + \
+    [chr(c) for c in range(0x2066, 0x206A)] + ["​", "‍", "﻿", " ", " "]
+
+
+def test_hostile_corpus_through_both_doors(env):
+    """Every A.4 corpus entry, as a finding title and in the model's analysis: what reaches
+    the other agent (the A2A task JSON, the AG-UI events) carries no escape sequence,
+    hidden or direction-changing character, live link, image or raw HTML."""
+    import pathlib
+
+    from kratos.serve import settings as SS
+
+    pytest.importorskip("markdown_it")
+    from _untrusted_corpus import assert_screen_safe
+    from test_untrusted_markdown import _assert_inert
+
+    corpus = json.loads((pathlib.Path(__file__).parent / "fixtures/untrusted/corpus.json").read_text())
+    _on(env)
+    settings_store.set(SS.REQUESTS_PER_HOUR, 1000, data_dir=env["dir"], actor="test")
+    for i, (name, value) in enumerate(corpus.items()):
+        env["state"]["answer"] = _answer(f"Finding: {value}", [{"id": "PERSIST-001", "title": value,
+                                                                "severity": "high", "finding_key": f"{i:064x}"}])
+        t = _send(env, "ivy", _msg(_inv())).json()["task"]
+        decoded = json.loads(json.dumps(t))
+        text = decoded["artifacts"][0]["parts"][0]["text"]
+        title = decoded["artifacts"][0]["parts"][1]["data"]["findings"][0]["title"]
+        for out in (text, title):
+            bad = [c for c in out if c in _BAD_CHARS or 0xE0000 <= ord(c) <= 0xE007F or 0xD800 <= ord(c) <= 0xDFFF]
+            assert not bad, (name, bad[:3])
+            assert_screen_safe(out, where=name)
+        _assert_inert(text)                     # rendered by a CommonMark parser: no image, live link or raw tag
+    status, events = _agui(env, "ivy")
+    blob = json.dumps(events, ensure_ascii=False)
+    assert not [c for c in blob if c in _BAD_CHARS and c not in "\n"], "AG-UI events"

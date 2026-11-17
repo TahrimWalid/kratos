@@ -141,6 +141,18 @@ def update(data_dir: Path, task_id: str, *, state: str | None = None, run_id: st
     return bool(n)
 
 
+def note_run(data_dir: Path, task_id: str, *, run_id: str | None = None, session_id: str | None = None) -> None:
+    """Which run and session a task maps to -- bookkeeping, written even after the task
+    finished (a cancelled task's run ends after the cancel; its record is still linked)."""
+    conn = connect(data_dir)
+    try:
+        for col, val in (("run_id", run_id), ("session_id", session_id)):
+            if val:
+                conn.execute(f"UPDATE a2a_tasks SET {col} = ? WHERE task_id = ? AND {col} IS NULL", (val, task_id))
+    finally:
+        conn.close()
+
+
 def get(data_dir: Path, task_id: str, user_id: str) -> dict[str, Any] | None:
     """The task if it exists AND belongs to `user_id` -- otherwise None, the same answer
     whether it doesn't exist or is someone else's (no existence leak)."""

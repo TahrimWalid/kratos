@@ -240,6 +240,13 @@ class Rejected(Exception):
     """Refused before it ran: the plain reason goes in the REJECTED status."""
 
 
+def _note_run(data_dir: Path, t: TaskRun) -> None:
+    try:
+        S.note_run(data_dir, t.task_id, run_id=t.run_id, session_id=t.session_id)
+    except Exception:  # noqa: BLE001 -- bookkeeping
+        logger.debug("a2a: could not note the run", exc_info=True)
+
+
 def _store_finish(data_dir: Path, t: TaskRun) -> None:
     try:
         S.update(data_dir, t.task_id, state=t.state, reason=t.reason, result=t.result, run_id=t.run_id,
@@ -272,8 +279,8 @@ def _resolve_machine(client: Any, name: str, data_dir: Path, actor: Any, door: s
     wanted = str(name or "").strip().lower()
     resolved = target_for_model(client, f"{MODEL_PREFIX}/{wanted}", data_dir) if wanted else None
     if resolved is None or resolved.startswith("@"):
-        authz.record_refusal(actor, authz.P.READ, "a machine this person may not use", obj=f"{door} machine",
-                             data_dir=data_dir)
+        authz.record_refusal(actor, authz.P.READ, "a machine this person may not use", machine=wanted[:200] or None,
+                             obj=f"{door} machine", data_dir=data_dir)
         raise Rejected("no machine by that name that you may use -- the list_machines skill lists yours")
     return resolved
 
@@ -534,6 +541,7 @@ def _run_investigation_task(state: Any, t: TaskRun, plan: Plan) -> tuple[dict[st
                                            should_stop=t.stop.is_set, on_progress=t.note_progress,
                                            on_session=on_session))
     t.run_id = outcome.run_id
+    _note_run(data_dir, t)
     final_state = _RUN_TO_STATE.get(outcome.status, COMPLETED)
     if final_state != COMPLETED:
         return None, final_state, outcome.final_answer or outcome.error or outcome.status
@@ -555,6 +563,7 @@ def _run_group_task(state: Any, t: TaskRun, plan: Plan) -> tuple[dict[str, Any] 
     except FR.FleetError as e:
         return None, FAILED, str(e)
     t.run_id = out.run_id
+    _note_run(data_dir, t)
     if out.status == "refused_by_budget":
         return None, REJECTED, out.text
     if out.status == "cancelled":

@@ -442,6 +442,30 @@ def _check_chat_server(out: list[Check], data_dir: Path) -> None:
         out.append(_row("chat server", "info", detail))
 
 
+def _check_agent_doors(out: list[Check], data_dir: Path) -> None:
+    """E.5: whether other agents (A2A) and agent front ends (AG-UI) may use `kratos serve`,
+    which tokens carry the agent doors, and the signing key a caller pins the card by."""
+    from kratos import settings_store
+    from kratos.serve import store as SS
+    from kratos.serve.a2a import settings as AS
+
+    a2a = bool(settings_store.get(AS.A2A_ENABLED, data_dir=data_dir))
+    agui = bool(settings_store.get(AS.AGUI_ENABLED, data_dir=data_dir))
+    if not (a2a or agui):
+        out.append(_row("agent doors", "info", "A2A and AG-UI are off (a2a.enabled, agui.enabled)"))
+        return
+    live = [t for t in SS.list_tokens(data_dir) if not t.get("revoked_at") and "agents" in (t.get("doors") or [])]
+    on = " and ".join(w for w, b in (("A2A", a2a), ("AG-UI", agui)) if b)
+    detail = f"{on} on; {len(live)} token(s) with the agent doors"
+    if a2a:
+        from kratos import signing
+
+        info = signing.info(data_dir)
+        detail += f"; Agent Card signed by {info.fingerprint}" if info else "; Agent Card key made on first fetch"
+    out.append(_row("agent doors", "info", detail + " -- answers go to other agents; see GUIDE \"Letting other "
+                    "agents use Kratos\""))
+
+
 def _check_users(out: list[Check], data_dir: Path) -> None:
     """D.7: users by role, tokens per user (never-expiring / expiring soon), shared-gateway
     tokens and whether their JWT secret is set, schedules/triggers whose user can't run,
@@ -948,6 +972,7 @@ def run_diagnostics(data_dir: Path | None = None, *, offline: bool = False) -> l
     if data_dir is not None:
         sections.append(("model privacy", lambda o: _check_privacy(o, Path(data_dir))))
         sections.append(("chat server", lambda o: _check_chat_server(o, Path(data_dir))))
+        sections.append(("agent doors", lambda o: _check_agent_doors(o, Path(data_dir))))
         sections.append(("users", lambda o: _check_users(o, Path(data_dir))))
         sections.append(("budget", lambda o: _check_budget(o, Path(data_dir))))
         sections.append(("delivery", lambda o: _check_delivery(o, Path(data_dir))))

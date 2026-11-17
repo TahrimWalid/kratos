@@ -62,9 +62,12 @@ def findings_data(findings: Iterable[dict[str, Any]], *, data_dir: Path, machine
         if machine is None or target_key(machine) not in allowed:
             continue
         machine = allowed[target_key(machine)]
-        if key and key in seen:
+        # A run correlates more than once (new data arrives): the same finding -- or a run
+        # note with no key -- appears in each result; it is listed once.
+        ident = key or "\x1f".join((str(f.get("id") or ""), machine, str(f.get("title") or "")))
+        if ident in seen:
             continue
-        seen.add(key)
+        seen.add(ident)
         ssvc = f.get("ssvc") if isinstance(f.get("ssvc"), dict) else None
         vr = verdicts.get(key)
         attack = [a.get("technique_id") for a in (f.get("attack") or []) if isinstance(a, dict)
