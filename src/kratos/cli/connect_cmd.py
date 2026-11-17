@@ -92,7 +92,7 @@ def _show(result: Any, args: argparse.Namespace) -> None:
     from kratos.serve import connect as CN
 
     p = result.plan
-    tty = sys.stdout.isatty()
+    tty = sys.stdout.isatty() and sys.stderr.isatty()   # the key goes to stderr: both must be a terminal
     if result.replaced_token:
         _note(f"Replaced: the old token {result.replaced_token} no longer works.")
     if args.print_command:

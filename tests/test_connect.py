@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import stat
 import sys
 import threading
@@ -18,6 +19,7 @@ import pytest
 
 from kratos import authz, kratos_config, settings_store
 from kratos.authz import audit as AU
+from kratos.serve import auth as A
 from kratos.serve import connect as CN
 from kratos.serve import connect_store as CS
 from kratos.serve import store as SS
@@ -623,3 +625,60 @@ def test_tui_connect_flow(dd, monkeypatch):
     token = (dd / "connect" / "openwebui.env").read_text().split("OPENAI_API_KEY=", 1)[1].split("\n", 1)[0]
     log = " ".join(t.plain for t in screen._lines)
     assert token not in log and live[0]["token_id"] in log
+
+
+# ------------------------------------------------------------------ security-review follow-ups
+def test_a_symlinked_token_file_is_refused_and_a_loose_one_tightened(dd, tmp_path):
+    (dd / "connect").mkdir(mode=0o700)
+    elsewhere = tmp_path / "elsewhere.txt"
+    elsewhere.write_text("")
+    (dd / "connect" / "other.headers").symlink_to(elsewhere)
+    p = CN.plan(dd, "other", machines=[M1], facts=_facts())
+    with pytest.raises(CN.ConnectError, match="is a link"):
+        CN.apply(dd, p, actor=OWNER)
+    assert elsewhere.read_text() == "" and SS.list_tokens(dd) == []
+    (dd / "connect" / "other.headers").unlink()
+    (dd / "connect" / "other.headers").write_text("old")
+    os.chmod(dd / "connect" / "other.headers", 0o644)
+    CN.apply(dd, p, actor=OWNER)
+    assert stat.S_IMODE((dd / "connect" / "other.headers").stat().st_mode) == 0o600
+
+
+def test_pip_route_env_file_is_shell_quoted(dd):
+    import shlex
+    import subprocess
+
+    _connect(dd, facts=_facts(engine=None), tools=True)
+    env = dd / "connect" / "openwebui.env"
+    out = subprocess.run(["sh", "-c", f"set -a; . {shlex.quote(str(env))}; set +a; printf %s \"$TOOL_SERVER_CONNECTIONS\""],
+                         capture_output=True, text=True, check=True).stdout
+    assert json.loads(out)[0]["type"] == "mcp"                       # the JSON survives the shell
+
+
+def test_no_secret_when_only_stderr_is_redirected(dd, monkeypatch, capsys):
+    import argparse
+
+    from kratos.cli import connect_cmd as CC
+
+    monkeypatch.setattr(CN, "gather", lambda data_dir, url=None, **k: _facts())
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
+    args = argparse.Namespace(data_dir=str(dd), app="other", machines=M1, tools=False, url=None, keep_ollama=False,
+                              new=False, renew=False, undo=False, print_command=False, yes=True)
+    assert CC.cmd_connect(args) == 0
+    out = capsys.readouterr()
+    token = (dd / "connect" / "other.headers").read_text().split("Bearer ", 1)[1].strip()
+    assert token not in out.err and token not in out.out
+
+
+def test_agui_stays_off_when_no_token_could_be_made(dd, monkeypatch):
+    from kratos.serve.a2a import settings as AS
+
+    def refuse(*a, **k):
+        raise A.TokenError("refused for the test")
+
+    monkeypatch.setattr(A, "create_token", refuse)
+    p = CN.plan(dd, "ag-ui", machines=[M1], facts=_facts())
+    with pytest.raises(CN.ConnectError, match="no token made"):
+        CN.apply(dd, p, actor=OWNER, enable_agui=True)
+    assert settings_store.get(AS.AGUI_ENABLED, data_dir=dd) is False and CS.live(dd) == []

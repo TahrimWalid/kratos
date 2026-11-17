@@ -328,6 +328,11 @@ def env_file_text(plan_: Plan, token: str) -> str:
             "key": token, "config": {"enable": True},
             "info": {"id": "kratos", "name": "Kratos", "description": "Kratos investigations (MCP)"}}],
             separators=(",", ":")))
+    if plan_.facts.engine is None:
+        # The pip route sources this file with the shell: quote every value (Docker's
+        # --env-file, used otherwise, takes values literally and must not be quoted).
+        lines = [ln if ln.startswith("#") else ln.split("=", 1)[0] + "=" + shlex.quote(ln.split("=", 1)[1])
+                 for ln in lines]
     if plan_.facts.engine is not None:
         # Open WebUI's session-signing key lives beside start.sh by default, outside the data
         # volume: recreating the container (a new image, `--renew`) would log everyone out.
@@ -441,16 +446,21 @@ def apply(data_dir: Path, plan_: Plan, *, actor: Any = None, replace: bool = Fal
         if current and not replace:
             raise ConnectError(f"{APP_WORDS[plan_.app]} is already connected (token {current['token_id']}) -- re-run "
                                "and agree to replace it, or use --renew")
-        if plan_.app == "ag-ui" and plan_.enable_agui:
-            if not enable_agui:
-                raise ConnectError("AG-UI is off and stays off -- nothing was made (agui.enabled)")
-            settings_store.set(AS.AGUI_ENABLED, True, data_dir=data_dir, actor=f"{created_by}:connect")
-        token, row = A.create_token(data_dir, name=_free_name(data_dir, plan_.token_name), targets=plan_.machines,
-                                    mcp="mcp" in plan_.doors, agents="agents" in plan_.doors, created_by="connect",
-                                    user=None)
+        if plan_.app == "ag-ui" and plan_.enable_agui and not enable_agui:
+            raise ConnectError("AG-UI is off and stays off -- nothing was made (agui.enabled)")
         secret = data_dir / plan_.secret_file
+        if secret.is_symlink():
+            raise ConnectError(f"{plan_.secret_file} is a link -- remove it; Kratos writes the token only to a plain "
+                               "file of its own")
+        try:
+            token, row = A.create_token(data_dir, name=_free_name(data_dir, plan_.token_name),
+                                        targets=plan_.machines, mcp="mcp" in plan_.doors,
+                                        agents="agents" in plan_.doors, created_by="connect", user=None)
+        except A.TokenError as e:
+            raise ConnectError(f"no token made: {e}") from None
         try:
             paths.write_private_text(secret, _secret_text(plan_, token))
+            os.chmod(secret, 0o600)                    # an older file of looser mode is tightened too
             CS.record(data_dir, app=plan_.app, token_id=row["token_id"], machines=plan_.machines, doors=plan_.doors,
                       secret_file=plan_.secret_file, serve_port=plan_.facts.serve_port, app_port=plan_.webui_port,
                       created_by=who, replaces=current["id"] if current else None, mode=plan_.mode,
@@ -464,6 +474,9 @@ def apply(data_dir: Path, plan_: Plan, *, actor: Any = None, replace: bool = Fal
                 raise ConnectError(f"another `kratos connect {plan_.app}` finished first -- run it again") from None
             raise ConnectError(f"could not write {plan_.secret_file} ({e.__class__.__name__}): nothing was made") \
                 from None
+        if plan_.app == "ag-ui" and plan_.enable_agui:
+            # Only now that the token and its file exist: a failure above leaves AG-UI off.
+            settings_store.set(AS.AGUI_ENABLED, True, data_dir=data_dir, actor=f"{created_by}:connect")
         replaced = None
         if current:
             from kratos.serve import store as SS
