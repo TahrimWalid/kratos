@@ -74,9 +74,10 @@ class CodeModal(ModalScreen[None]):
         self._code = code
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(Syntax(self._code, "python", word_wrap=True, background_color="default"))
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+                yield Static(Syntax(self._code, "python", word_wrap=True, background_color="default"))
             yield Static(Text("esc close", style=T.TEXT_DIM))
 
     def action_close(self) -> None:
@@ -100,8 +101,9 @@ class ApprovalModal(ModalScreen[bool]):
         self._details = details
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(approval_panel(self._tool_name, self._details))
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(approval_panel(self._tool_name, self._details))
             yield Static(_decision_hint("approve", "deny"))
 
     def action_approve(self) -> None:
@@ -130,8 +132,9 @@ class PlanPreviewModal(ModalScreen[bool]):
         self._preview = preview
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(plan_preview_panel(self._preview))
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(plan_preview_panel(self._preview))
             yield Static(_decision_hint("run it", "cancel"))
 
     def action_run(self) -> None:
@@ -238,7 +241,8 @@ class ConfirmModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ATTENTION}"), classes="modal-title")
-            yield Static(self._body if isinstance(self._body, Text) else Text(self._body, style=T.TEXT))
+            with VerticalScroll(classes="modal-body"):
+                yield Static(self._body if isinstance(self._body, Text) else Text(self._body, style=T.TEXT))
             yield Static(_decision_hint(self._yes_label, self._no_label))
 
     def action_confirm(self) -> None:
@@ -272,14 +276,17 @@ class PromptModal(ModalScreen[str | None]):
         with Vertical(classes="modal-card"):
             yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
             if self._hint:
-                yield Static(Text(self._hint, style=T.TEXT_DIM))
+                retry = "try again" in self._hint or "isn't" in self._hint
+                yield Static(Text(self._hint, style=T.ATTENTION if retry else T.TEXT_DIM))
             # Pre-filled text is there to be edited: Textual selects it on focus by
             # default, so the first keystroke would erase it.
             yield Input(value=self._initial, id="prompt-input", select_on_focus=False, password=self._password)
             if self._quick_label:
-                yield Button(self._quick_label, id="prompt-quick", variant="primary")
+                yield Button(self._quick_label, id="prompt-quick", compact=True)
                 yield Static(Text("Enter uses what you typed · Tab then Enter picks the option · esc cancel",
                                   style=T.TEXT_DIM))
+            else:
+                yield Static(Text("Enter save · esc cancel", style=T.TEXT_DIM), classes="prompt-keys")
 
     def on_mount(self) -> None:
         self.query_one("#prompt-input", Input).focus()
@@ -387,7 +394,7 @@ class TypedExecuteModal(ModalScreen[bool]):
                     "⚠ HIGH sensitivity -- a second confirmation will follow.", style=f"bold {T.CRITICAL}"))
             if self._can_execute:
                 yield Static(Text("Type EXECUTE to dispatch to the sub-agent:", style=T.CRITICAL))
-                yield Input(placeholder="EXECUTE", id="execute-input")
+                yield Input(placeholder="type the word here", id="execute-input")
                 yield Static(Text("anything else, or esc, cancels", style=T.TEXT_DIM))
             else:
                 yield Static(Text(
@@ -417,73 +424,75 @@ class HelpModal(ModalScreen[None]):
     BINDINGS = [Binding("escape,q", "close", "close", show=True)]
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(Text("Kratos — commands", style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(self._table("Session / navigation", [
-                ("/help", "List available commands"),
-                ("/guide", "Getting started — the first steps, in plain language"),
-                ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
-                ("/plan [preset|goal]", "Preview a run's steps before it runs (/plan gate on|off toggles auto-preview)"),
-                ("/preset-new", "Save a reusable investigation — a plain-language goal, or a tool pipeline"),
-                ("/preset-describe", "Describe a pipeline in words → Kratos drafts it for your review"),
-                ("/preset-run / -list", "Run (goal or pipeline) or list your saved presets — or just /<name>"),
-                ("/preset-show", "Show a preset's full definition (steps, target, any missing tools)"),
-                ("/preset-edit / -delete", "Edit (goal or pipeline steps) or delete a preset (pick from a list)"),
-                ("/preset-scaffold", "Write an editable pipeline-preset template file (power users)"),
-                ("/preset-export / -import", "Share a preset's file, or import one from a .toml"),
-                ("/report", "Investigation summary — new, still open, fixed, hidden by your decisions"),
-                ("/findings", "Findings remembered across checks — verify, accept a risk until a date, "
-                 "mark false positive / out of scope (alias /f)"),
-                ("/assets", "Your machines — how much each matters (CISA's SSVC tree ranks its vulnerabilities "
-                 "by it), reachable from the internet, groups, owner note"),
-                ("/containers", "Docker / Podman containers — risky settings, published ports reachable despite "
-                 "the firewall, read-only (never the docker group)"),
-                ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
-                 "checked, run them now"),
-                ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "
-                 "machines? Searches what Kratos holds and says what that covered (--since 30d, --machine, --group, "
-                 "--type)"),
-                ("/groups", "Groups of machines (@web, @db; @all is built in): /groups create web <machine…>, "
-                 "/groups add|remove|delete — then /target @web asks every machine of it at once"),
-                ("/fleet [refresh]", "A group's machines — link, agent version, certificate, last collected, "
-                 "open findings; refresh collects them all now (no model)"),
-                ("/look <machine>", "In a group session: open one machine as a normal investigation, last "
-                 "question carried over"),
-                ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
-                ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
-                ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
-                ("/trace [id|list]", "What a run did — model calls (tokens, cost), tool calls, checks, guards, "
-                 "how the answer was built"),
-                ("/data [prune ...]", "What Kratos keeps on this computer and how big; remove old data yourself "
-                 "(Kratos deletes nothing on its own)"),
-                ("/usage", "Today's spending vs your limits + this session's tokens and estimated cost (limits: Settings → Budget)"),
-                ("/context", "What's currently loaded in the context window"),
-                ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
-                ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
-                ("/clear", "Clear the screen + working context (session history kept)"),
-                ("/reset", "Wipe the screen + archive history, start this session fresh"),
-                ("/delete", "Archive (soft-delete) this session, back to picker"),
-                ("/sessions, /back", "Back to the session picker (Ctrl+B) — keeps this session"),
-                ("/rename <name>", "Name this session — usable anywhere its ID works"),
-                ("/exit, /quit", "Leave the session"),
-            ]))
-            yield Static(self._table("Evo-loop (write → test → approve → keep a tool)", [
-                ("/evolve", "Build the most recent auto-suggested tool"),
-                ('/evolve "<idea>"', "Start evo-loop with your own idea"),
-                ("/tools", "List tools by kind (Default / Kept / Installed)"),
-                ("/use <name> [json]", "Run ONE tool directly — deterministic, no model tool-selection"),
-            ]))
-            yield Static(self._table("Configuration", [
-                ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
-                ("/target verify", "Re-check the active target's setup"),
-                ("/target link", "Read the target through a paired sub-agent (or back to SSH)"),
-                ("/target seal [verify|remove]", "Seal the target's journal: keep its verification key here, check it"),
-                ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
-                ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
-                ("/settings", "Settings — models, tools, name, timezone, spending limits (Budget), this session (also 's' at the picker)"),
-                ("Ctrl+T", "Theme picker — from anywhere"),
-                ("/whitelist", "A paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
-            ]))
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text("Kratos — commands", style=f"bold {T.ACCENT}"), classes="modal-title")
+                yield Static(self._table("Session / navigation", [
+                    ("/help", "List available commands"),
+                    ("/guide", "Getting started — the first steps, in plain language"),
+                    ("/run", "Standard audit — deterministic security sweep of the target (no LLM)"),
+                    ("/plan [preset|goal]", "Preview a run's steps before it runs (/plan gate on|off toggles auto-preview)"),
+                    ("/preset-new", "Save a reusable investigation — a plain-language goal, or a tool pipeline"),
+                    ("/preset-describe", "Describe a pipeline in words → Kratos drafts it for your review"),
+                    ("/preset-run / -list", "Run (goal or pipeline) or list your saved presets — or just /<name>"),
+                    ("/preset-show", "Show a preset's full definition (steps, target, any missing tools)"),
+                    ("/preset-edit / -delete", "Edit (goal or pipeline steps) or delete a preset (pick from a list)"),
+                    ("/preset-scaffold", "Write an editable pipeline-preset template file (power users)"),
+                    ("/preset-export / -import", "Share a preset's file, or import one from a .toml"),
+                    ("/report", "Investigation summary — new, still open, fixed, hidden by your decisions"),
+                    ("/findings", "Findings remembered across checks — verify, accept a risk until a date, "
+                     "mark false positive / out of scope (alias /f)"),
+                    ("/assets", "Your machines — how much each matters (CISA's SSVC tree ranks its vulnerabilities "
+                     "by it), reachable from the internet, groups, owner note"),
+                    ("/containers", "Docker / Podman containers — risky settings, published ports reachable despite "
+                     "the firewall, read-only (never the docker group)"),
+                    ("/detect", "Detection rules (SigmaHQ, by their authors) — on/off per machine, what wasn't "
+                     "checked, run them now"),
+                    ("/hunt <indicator>", "Has this address, hash, account, domain, program or path been seen on your "
+                     "machines? Searches what Kratos holds and says what that covered (--since 30d, --machine, --group, "
+                     "--type)"),
+                    ("/groups", "Groups of machines (@web, @db; @all is built in): /groups create web <machine…>, "
+                     "/groups add|remove|delete — then /target @web asks every machine of it at once"),
+                    ("/fleet [refresh]", "A group's machines — link, agent version, certificate, last collected, "
+                     "open findings; refresh collects them all now (no model)"),
+                    ("/look <machine>", "In a group session: open one machine as a normal investigation, last "
+                     "question carried over"),
+                    ("/schedule", "Run an audit/preset on a cadence + deliver the report (systemd timers)"),
+                    ("/trigger", "If a finding is detected → notify / show its playbook / investigate deeper"),
+                    ("/doctor", "Self-diagnostic — LLM endpoint, .env, target setup, kept tools"),
+                    ("/trace [id|list]", "What a run did — model calls (tokens, cost), tool calls, checks, guards, "
+                     "how the answer was built"),
+                    ("/data [prune ...]", "What Kratos keeps on this computer and how big; remove old data yourself "
+                     "(Kratos deletes nothing on its own)"),
+                    ("/usage", "Today's spending vs your limits + this session's tokens and estimated cost (limits: Settings → Budget)"),
+                    ("/context", "What's currently loaded in the context window"),
+                    ("/investigate-host", "Investigate the Kratos machine itself (not the monitored target)"),
+                    ("/compact", "Summarize the conversation to free context — Kratos keeps the key points"),
+                    ("/clear", "Clear the screen + working context (session history kept)"),
+                    ("/reset", "Wipe the screen + archive history, start this session fresh"),
+                    ("/delete", "Archive (soft-delete) this session, back to picker"),
+                    ("/sessions, /back", "Back to the session picker (Ctrl+B) — keeps this session"),
+                    ("/rename <name>", "Name this session — usable anywhere its ID works"),
+                    ("/exit, /quit", "Leave the session"),
+                ]))
+                yield Static(self._table("Evo-loop (write → test → approve → keep a tool)", [
+                    ("/evolve", "Build the most recent auto-suggested tool"),
+                    ('/evolve "<idea>"', "Start evo-loop with your own idea"),
+                    ("/tools", "List tools by kind (Default / Kept / Installed)"),
+                    ("/use <name> [json]", "Run ONE tool directly — deterministic, no model tool-selection"),
+                ]))
+                yield Static(self._table("Configuration", [
+                    ("/target [<ip> …]", "Set/change active target(s) (no arg → prompt) + setup checklist"),
+                    ("/machines", "Every machine in one place: reach, agent, setup, sealing, fixes, findings"),
+                    ("/target verify", "Re-check the active target's setup"),
+                    ("/target link", "Read the target through a paired sub-agent (or back to SSH)"),
+                    ("/target seal [verify|remove]", "Seal the target's journal: keep its verification key here, check it"),
+                    ("/model", "Manage LLM backends — switch / add / edit / delete (Models settings)"),
+                    ("/timezone [<zone>|auto]", "Show / set the display timezone (storage stays UTC)"),
+                    ("/settings", "Settings — models, tools, name, timezone, spending limits (Budget), this session (also 's' at the picker)"),
+                    ("Ctrl+T", "Theme picker — from anywhere"),
+                    ("/whitelist", "A paired target's action whitelist — opt-in + typed-EXECUTE dispatch"),
+                ]))
             yield Static(Text("esc close", style=T.TEXT_DIM))
 
     def _table(self, heading: str, rows: list[tuple[str, str]]) -> Table:
@@ -507,37 +516,38 @@ class GuideModal(ModalScreen[None]):
     BINDINGS = [Binding("escape,q", "close", "close", show=True)]
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(Text("Kratos — getting started", style=f"bold {T.ACCENT}"),
-                         classes="modal-title")
-            yield Static(Text(
-                "Kratos looks over a machine and tells you, in plain English, what's going on "
-                "with it — failed logins, exposed ports, changed files. It explains what it "
-                "found and what it would do about it. By default it doesn't change the target "
-                "itself; acting on its advice is your call.", style=T.TEXT))
-            yield Static(Text("\nFirst steps", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(self._steps([
-                ("1.  /target <host>", "point Kratos at a machine to watch. It checks the connection "
-                 "and shows what the target still needs (no SSH into it? see /subagent)."),
-                ("2.  ask in plain words", "e.g. “check this host for signs of an SSH "
-                 "brute-force”. Kratos picks its own read-only tools and explains what it finds."),
-                ("3.  /doctor", "confirm your setup (model, target, tools) is healthy."),
-                ("4.  /report", "see this session's findings: what's new, still open and fixed."),
-                ("5.  /findings", "decide about a finding — accept a risk until a date, or mark it "
-                 "not a real problem. Kratos counts what your decisions hide."),
-            ]))
-            yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(self._steps([
-                ("observe-only", "by default Kratos reads and advises; it doesn't change the "
-                 "target itself. Running a fix is an experimental opt-in, off everywhere: it "
-                 "needs a sub-agent, an allowlist, your consent per box, and typing EXECUTE."),
-                ("/evolve", "builds a new tool when Kratos is missing one — you review the code first."),
-                ("/preset", "saves an investigation to re-run or schedule."),
-                ("y / n", "at a permission prompt, y means yes; anything else means no."),
-            ]))
-            yield Static(Text(
-                "\nFull guide:  docs/GUIDE.md        All commands:  ?  or  /help",
-                style=T.TEXT_DIM))
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text("Kratos — getting started", style=f"bold {T.ACCENT}"),
+                             classes="modal-title")
+                yield Static(Text(
+                    "Kratos looks over a machine and tells you, in plain English, what's going on "
+                    "with it — failed logins, exposed ports, changed files. It explains what it "
+                    "found and what it would do about it. By default it doesn't change the target "
+                    "itself; acting on its advice is your call.", style=T.TEXT))
+                yield Static(Text("\nFirst steps", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(self._steps([
+                    ("1.  /target <host>", "point Kratos at a machine to watch. It checks the connection "
+                     "and shows what the target still needs (no SSH into it? see /subagent)."),
+                    ("2.  ask in plain words", "e.g. “check this host for signs of an SSH "
+                     "brute-force”. Kratos picks its own read-only tools and explains what it finds."),
+                    ("3.  /doctor", "confirm your setup (model, target, tools) is healthy."),
+                    ("4.  /report", "see this session's findings: what's new, still open and fixed."),
+                    ("5.  /findings", "decide about a finding — accept a risk until a date, or mark it "
+                     "not a real problem. Kratos counts what your decisions hide."),
+                ]))
+                yield Static(Text("\nGood to know", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(self._steps([
+                    ("observe-only", "by default Kratos reads and advises; it doesn't change the "
+                     "target itself. Running a fix is an experimental opt-in, off everywhere: it "
+                     "needs a sub-agent, an allowlist, your consent per box, and typing EXECUTE."),
+                    ("/evolve", "builds a new tool when Kratos is missing one — you review the code first."),
+                    ("/preset", "saves an investigation to re-run or schedule."),
+                    ("y / n", "at a permission prompt, y means yes; anything else means no."),
+                ]))
+                yield Static(Text(
+                    "\nFull guide:  docs/GUIDE.md        All commands:  ?  or  /help",
+                    style=T.TEXT_DIM))
             yield Static(Text("esc close", style=T.TEXT_DIM))
 
     def _steps(self, rows: list[tuple[str, str]]) -> Table:
@@ -569,9 +579,10 @@ class InfoModal(ModalScreen[None]):
         self._body = body
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(self._body)
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+                yield Static(self._body)
             yield Static(Text("\nesc close", style=T.TEXT_DIM))
 
     def action_close(self) -> None:
@@ -596,45 +607,46 @@ class EvolveIntroModal(ModalScreen[bool]):
         self._first_time = first_time
 
     def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="modal-card"):
-            yield Static(Text("Building a new tool with /evolve", style=f"bold {T.ACCENT}"),
-                         classes="modal-title")
-            yield Static(Text(
-                "When Kratos is missing a tool — say, “list the users who can use sudo” — /evolve "
-                "builds one. You describe the idea; Kratos writes the code, tests it safely and "
-                "shows it to you. Nothing is kept unless you say yes.", style=T.TEXT))
-            yield Static(Text("\nHow it works", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(_step_table([
-                ("1.  describe it", "one clear job, in plain words."),
-                ("2.  agree on the test", "Kratos drafts a short automatic test and shows you, in "
-                 "plain English, what it checks. That test is what “correct” means for the new tool; "
-                 "if a check is wrong, you correct it in plain English."),
-                ("3.  build and test", "Kratos writes the tool and runs your test in a locked-down "
-                 "sandbox (no network, none of your files), trying up to 3 times."),
-                ("4.  review and keep", "if it passes, you see the full code and anything worth a "
-                 "second look. y keeps it; anything else throws it away."),
-            ]))
-            yield Static(Text("\nWhy a test is required", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(Text(
-                "A kept tool runs on this machine, outside the sandbox, every time Kratos uses it. "
-                "The test is the one thing that pins down what it must do — without it, “the model "
-                "says it works” would be the only check. That's why you always see it before "
-                "anything is built.", style=T.TEXT_MUTED))
-            yield Static(Text("\nAsk before running?", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(Text(
-                "After you keep a tool, Kratos asks whether it may run on its own. Recommended: no, "
-                "until you've seen it work — then it asks you every time it runs. Anything but y "
-                "keeps it asking. You can change this later in Settings → Tools.", style=T.TEXT_MUTED))
-            yield Static(Text("\nIf it doesn't work out", style=f"bold {T.TEXT_BRIGHT}"))
-            yield Static(_step_table([
-                ("didn't pass", "nothing passed your test in 3 tries. Usually a check is too "
-                 "strict — relax it and run again."),
-                ("stalled", "the model kept giving back the same code. Describe the idea "
-                 "differently."),
-                ("you said no", "nothing is saved. Run /evolve again any time."),
-            ]))
-            hint = ("\nenter or y start building · esc not now · /evolve help shows this again"
-                    if self._first_time else "\nesc close")
+        with Vertical(classes="modal-card"):
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text("Building a new tool with /evolve", style=f"bold {T.ACCENT}"),
+                             classes="modal-title")
+                yield Static(Text(
+                    "When Kratos is missing a tool — say, “list the users who can use sudo” — /evolve "
+                    "builds one. You describe the idea; Kratos writes the code, tests it safely and "
+                    "shows it to you. Nothing is kept unless you say yes.", style=T.TEXT))
+                yield Static(Text("\nHow it works", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(_step_table([
+                    ("1.  describe it", "one clear job, in plain words."),
+                    ("2.  agree on the test", "Kratos drafts a short automatic test and shows you, in "
+                     "plain English, what it checks. That test is what “correct” means for the new tool; "
+                     "if a check is wrong, you correct it in plain English."),
+                    ("3.  build and test", "Kratos writes the tool and runs your test in a locked-down "
+                     "sandbox (no network, none of your files), trying up to 3 times."),
+                    ("4.  review and keep", "if it passes, you see the full code and anything worth a "
+                     "second look. y keeps it; anything else throws it away."),
+                ]))
+                yield Static(Text("\nWhy a test is required", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(Text(
+                    "A kept tool runs on this machine, outside the sandbox, every time Kratos uses it. "
+                    "The test is the one thing that pins down what it must do — without it, “the model "
+                    "says it works” would be the only check. That's why you always see it before "
+                    "anything is built.", style=T.TEXT_MUTED))
+                yield Static(Text("\nAsk before running?", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(Text(
+                    "After you keep a tool, Kratos asks whether it may run on its own. Recommended: no, "
+                    "until you've seen it work — then it asks you every time it runs. Anything but y "
+                    "keeps it asking. You can change this later in Settings → Tools.", style=T.TEXT_MUTED))
+                yield Static(Text("\nIf it doesn't work out", style=f"bold {T.TEXT_BRIGHT}"))
+                yield Static(_step_table([
+                    ("didn't pass", "nothing passed your test in 3 tries. Usually a check is too "
+                     "strict — relax it and run again."),
+                    ("stalled", "the model kept giving back the same code. Describe the idea "
+                     "differently."),
+                    ("you said no", "nothing is saved. Run /evolve again any time."),
+                ]))
+                hint = ("\nenter or y start building · esc not now · /evolve help shows this again"
+                        if self._first_time else "\nesc close")
             yield Static(Text(hint, style=T.TEXT_DIM))
 
     def action_go(self) -> None:
@@ -1203,6 +1215,200 @@ class MultiSelectModal(ModalScreen[list[Any] | None]):
                 Text("Tick at least one (esc to cancel).", style=f"bold {T.ATTENTION}"))
             return
         self.dismiss([self._entries[i][0] for i in picked])
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+# --- One-form modals (A4) ----------------------------------------------------
+# Every field of an object on one card, each with a sensible default; a plain
+# summary of what Save will do; warnings inline instead of as separate gates.
+
+class ChoiceRow(Static):
+    """One labelled row of options; ← → (or space) changes it. Focusable."""
+
+    can_focus = True
+    BINDINGS = [
+        Binding("left", "move(-1)", "previous", show=False),
+        Binding("right,space", "move(1)", "next", show=False),
+    ]
+
+    def __init__(self, field_id: str, label: str, options: list[tuple[Any, str]], value: Any,
+                 label_width: int, compact: bool = False) -> None:
+        super().__init__(id=f"ff-{field_id}", classes="form-row")
+        self.field_id = field_id
+        self._compact = compact      # long lists: show only the current option, ‹ › to change
+        self._label = label
+        self._options = options
+        self._lw = label_width
+        values = [v for v, _l in options]
+        self._i = values.index(value) if value in values else 0
+
+    @property
+    def value(self) -> Any:
+        return self._options[self._i][0]
+
+    def set_options(self, options: list[tuple[Any, str]]) -> None:
+        cur = self.value
+        self._options = options
+        values = [v for v, _l in options]
+        self._i = values.index(cur) if cur in values else 0
+        self.refresh()
+
+    def action_move(self, step: int) -> None:
+        self._i = (self._i + step) % len(self._options)
+        self.refresh()
+        self.post_message(FormModal.Changed())
+
+    def on_focus(self) -> None:
+        self.refresh()
+
+    def on_blur(self) -> None:
+        self.refresh()
+
+    def render(self) -> Text:
+        t = Text()
+        focused = self.has_focus
+        t.append(f"{self._label:<{self._lw}}", style=f"bold {T.TEXT_BRIGHT}" if focused else T.TEXT_MUTED)
+        if self._compact:
+            lab = self._options[self._i][1]
+            t.append("‹ ", style=T.TEXT_DIM)
+            t.append(f" {lab} ", style=f"bold {T.BG} on {T.ACCENT}" if focused else f"bold {T.TEXT_BRIGHT} on {T.BORDER}")
+            t.append(" ›", style=T.TEXT_DIM)
+            if len(self._options) > 1:
+                t.append(f"   {self._i + 1} of {len(self._options)}", style=T.TEXT_DIM)
+            return t
+        for i, (_v, lab) in enumerate(self._options):
+            if i == self._i:
+                t.append(f" {lab} ", style=f"bold {T.BG} on {T.ACCENT}" if focused else f"bold {T.TEXT_BRIGHT} on {T.BORDER}")
+            else:
+                t.append(f" {lab} ", style=T.TEXT_DIM)
+            t.append(" ")
+        return t
+
+
+class _FormBody(VerticalScroll, can_focus=False, inherit_bindings=False):
+    """The form's scrolling body: not focusable and without scroll keys, so ↑↓
+    move between fields (the focused field is scrolled into view)."""
+
+
+class FormModal(ModalScreen[dict | None]):
+    """A whole object on one card. `fields` is a list of dicts:
+      {"id", "label", "kind": "choice", "options": [(value, label)], "value"}
+      {"id", "label", "kind": "text", "value", "placeholder"}
+    `describe(values) -> (summary, notes)` is re-run on every change; each note
+    starting with "!" is shown in the attention colour. `validate(values) ->
+    error | None` runs on Save. Returns the values, or None on esc."""
+
+    from textual.message import Message as _Message
+
+    class Changed(_Message):
+        pass
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("down", "app.focus_next", "next field", show=False),
+        Binding("up", "app.focus_previous", "previous field", show=False),
+        Binding("enter", "save", "save", show=False),
+        Binding("ctrl+s", "save", "save", show=False),
+    ]
+
+    # CSS (not DEFAULT_CSS) so it outranks the app-wide Input style (a bottom border
+    # that would fill a one-row field).
+    CSS = f"""
+    FormModal .modal-body {{ max-height: 60vh; }}
+    FormModal .form-row {{ height: 1; margin: 0; }}
+    FormModal .form-text {{ height: 1; margin: 0; }}
+    FormModal .form-text Static {{ width: auto; padding: 0; }}
+    FormModal .form-text Input {{ width: 1fr; height: 1; border: none; padding: 0 1; }}
+    FormModal .form-text Input:focus {{ border: none; background: {T.BORDER}; }}
+    FormModal #form-summary {{ height: auto; padding-top: 1; border-top: solid {T.BORDER}; }}
+    FormModal #form-error {{ height: auto; }}
+    FormModal #form-keys {{ height: auto; margin-top: 1; }}
+    """
+
+    def __init__(self, title: str, fields: list[dict], describe: Any, validate: Any = None,
+                 on_change: Any = None) -> None:
+        super().__init__()
+        self._title = title
+        self._fields = fields
+        self._describe = describe
+        self._validate = validate
+        self._on_change = on_change
+        self._lw = max(len(f["label"]) for f in fields) + 2
+
+    def compose(self) -> ComposeResult:
+        with Vertical(classes="modal-card"):
+            yield Static(Text(self._title, style=f"bold {T.ACCENT}"), classes="modal-title")
+            with _FormBody(classes="modal-body"):
+                for f in self._fields:
+                    if f["kind"] == "choice":
+                        yield ChoiceRow(f["id"], f["label"], f["options"], f.get("value"), self._lw,
+                                        compact=f.get("compact", False))
+                    else:
+                        with Horizontal(classes="form-text"):
+                            yield Static(Text(f"{f['label']:<{self._lw}}", style=T.TEXT_MUTED))
+                            yield Input(value=str(f.get("value") or ""), placeholder=f.get("placeholder", ""),
+                                        id=f"ff-{f['id']}", select_on_focus=False)
+                yield Static("", id="form-summary")
+            yield Static("", id="form-error")
+            keys = Text()
+            for i, (k, w) in enumerate([("↑↓", "field"), ("←→", "choose"), ("enter", "save"), ("esc", "cancel")]):
+                if i:
+                    keys.append("   ")
+                keys.append(k, style=f"bold {T.TEXT_BRIGHT}")
+                keys.append(" " + w, style=T.TEXT_DIM)
+            yield Static(keys, id="form-keys")
+
+    def on_mount(self) -> None:
+        first = self.query(".form-row, Input").first()
+        if first is not None:
+            first.focus()
+        self._refresh_summary()
+
+    def values(self) -> dict:
+        out: dict = {}
+        for f in self._fields:
+            w = self.query_one(f"#ff-{f['id']}")
+            out[f["id"]] = w.value if isinstance(w, ChoiceRow) else w.value.strip()
+        return out
+
+    def _refresh_summary(self) -> None:
+        vals = self.values()
+        if self._on_change is not None:
+            self._on_change(self, vals)
+            vals = self.values()
+        summary, notes = self._describe(vals)
+        t = Text(summary, style=T.TEXT_BRIGHT)
+        for n in notes:
+            warn = n.startswith("!")
+            t.append("\n" + ("! " if warn else "") + n.lstrip("! "), style=T.ATTENTION if warn else T.TEXT_DIM)
+        self.query_one("#form-summary", Static).update(t)
+        self.query_one("#form-error", Static).update("")
+
+    def set_text(self, field_id: str, value: str) -> None:
+        self.query_one(f"#ff-{field_id}", Input).value = value
+
+    @on(Changed)
+    def _changed(self, event: "FormModal.Changed") -> None:
+        self._refresh_summary()
+
+    @on(Input.Changed)
+    def _typed(self, event: Input.Changed) -> None:
+        self._refresh_summary()
+
+    @on(Input.Submitted)
+    def _submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        self.action_save()
+
+    def action_save(self) -> None:
+        vals = self.values()
+        err = self._validate(vals) if self._validate else None
+        if err:
+            self.query_one("#form-error", Static).update(Text("✗ " + err, style=T.CRITICAL))
+            return
+        self.dismiss(vals)
 
     def action_cancel(self) -> None:
         self.dismiss(None)

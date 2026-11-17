@@ -135,7 +135,7 @@ def timestamped(left: Text, time_str: str) -> Table:
     the timestamp is TEXT_FAINTER so it reads as a caption, not a headline."""
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1)
-    grid.add_column(justify="right")
+    grid.add_column(justify="right", min_width=7)
     grid.add_row(left, Text(time_str, style=T.TEXT_FAINTER))
     return grid
 
@@ -242,7 +242,7 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     evidence = finding.get("evidence") or []
     content: Any = body
     if evidence:
-        body.append("\n\nDetails:", style=T.TEXT_DIM)
+        body.append("\n")
         # bullet | text columns: a long line wraps under its own text, not back to the
         # panel edge where it looked like a new, unlabelled line
         details = Table.grid(padding=0)
@@ -538,6 +538,16 @@ def note_line(text: str) -> Text:
     return _prefixed("!", text, T.ATTENTION)
 
 
+def progress_line(text: str) -> Text:
+    """Something is under way: dim and unmarked, so amber is left for things to act on."""
+    return Text(text, style=T.TEXT_DIM)
+
+
+def hint_line(text: str) -> Text:
+    """A tip about keys or next steps: dim, not a warning."""
+    return Text(text, style=T.TEXT_DIM)
+
+
 def compaction_line(context_tokens: int = 0, context_window: int = 0) -> Text:
     """Feature 14b: a receding, informational line marking that the model's
     working context was compacted mid-investigation. Deliberately NOT the amber
@@ -590,11 +600,18 @@ def evolve_suggestion_text(proposal: dict[str, Any]) -> tuple[str, str]:
     return "Evo-loop suggestion", f"{proposal.get('name', '')}\n{proposal.get('description', '')}\n\n{footer}"
 
 
+def command_text(command: str) -> Text:
+    """A command shown for a person to run: plain bright text that WRAPS (never clipped
+    -- a clipped `banip 203.0.1` looks like a complete, different address). Copying
+    (Ctrl+Y / Copy) always takes the exact original bytes, never the wrapped view."""
+    return Text(command, style=f"bold {T.TEXT_BRIGHT}", overflow="fold", no_wrap=False)
+
+
 def recommended_fix_panel(title: str, command: str, footnote: str) -> Panel:
     """Turn 19b -- recommend-only remediation: the exact command shown for the
     human to run in their OWN session, explicitly NOT executed by Kratos."""
     body = Group(
-        Syntax(command, "bash", word_wrap=False, background_color="default"),
+        command_text(command),
         Text(footnote, style=T.TEXT_FAINT),
     )
     return Panel(body, title=f"✓ {title}", title_align="left", border_style=T.SAFE)
@@ -629,7 +646,7 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
         parts.append(Text("No command was built.", style=T.ATTENTION))
         return Panel(Group(*parts), title="! suggestion without a command", title_align="left",
                      border_style=T.ATTENTION)
-    parts.append(Syntax(str(cmd.get("command") or ""), "bash", word_wrap=False, background_color="default"))
+    parts.append(command_text(str(cmd.get("command") or "")))
     if source == "template":
         parts.append(Text("Built by Kratos from the evidence.", style=T.SAFE))
         title, border = "✓ recommended fix — built by Kratos", T.SAFE
@@ -950,7 +967,7 @@ def trigger_fire_line(record: dict) -> Text:
     worst = str(record.get("worst_severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(worst, T.ATTENTION)
     t = Text()
-    t.append("⚡ ", style=color)
+    t.append("» ", style=color)
     t.append(f"trigger {record.get('trigger')} fired", style=f"bold {color}")
     ids = ", ".join(record.get("matched_ids") or []) or "(finding)"
     t.append(f"  {record.get('action')} · {ids}", style=T.TEXT_MUTED)
@@ -1171,3 +1188,98 @@ def kv_table(title: str, rows: list[tuple]) -> Table:
         style = r[2] if len(r) > 2 else T.TEXT
         table.add_row(Text(str(key)), Text(str(value), style=style))
     return table
+
+
+# --- Folded turns (A3) ------------------------------------------------------
+# When an investigation ends, its tool steps fold into one line and its findings
+# become compact rows. Boxes are kept for what needs attention: the answer, a fix,
+# and HIGH/CRITICAL findings. Ctrl+O opens the steps again.
+
+def turn_summary_line(steps: int, failed: int, notes: list[str], *, open_: bool = False, hint: bool = True) -> Text:
+    t = Text()
+    if failed:
+        t.append("! ", style=T.ATTENTION)
+    else:
+        t.append("✓ ", style=T.SAFE)
+    t.append(f"{steps} step{'s' if steps != 1 else ''}", style=T.TEXT_MUTED)
+    if failed:
+        t.append(f" · {failed} failed", style=T.ATTENTION)
+    for n in notes:
+        warn = n.startswith("!")
+        t.append(" · " + n.lstrip("! "), style=T.ATTENTION if warn else T.TEXT_DIM)
+    if hint:
+        t.append("   ctrl+o ", style=f"bold {T.TEXT_DIM}")
+        t.append("hide steps" if open_ else "show steps", style=T.TEXT_DIM)
+    return t
+
+
+def step_notes(chips: list[Text]) -> list[str]:
+    """The window and transport chips of a turn, reduced to what changes how far
+    the answer can be trusted: partial windows, clock trouble, SSH fallbacks. A
+    turn whose windows were all counted in full says so once."""
+    import re as _re
+    out: list[str] = []
+    full = 0
+    for c in chips:
+        p = c.plain.strip()
+        if p.startswith("window"):
+            m = _re.search(r"PARTIAL: (\d+(?:\.\d+)?)%", p)
+            if m:
+                out.append(f"! window {m.group(1)}% covered")
+            elif "PARTIAL" in p:
+                out.append("! window partly covered")
+            elif "counted in full" in p or "complete" in p:
+                full += 1
+            m = _re.search(r"target clock ([+-]\d+s)", p)
+            if m:
+                out.append(f"! target clock {m.group(1)}")
+            elif "clock unknown" in p:
+                out.append("! target clock unknown")
+        elif p.startswith("↳") and "SSH" in p and "failed" in p:
+            out.append("! read through the sub-agent (SSH failed)")
+    if full and not any("covered" in n for n in out):
+        out.insert(0, "all windows counted in full")
+    seen, uniq = set(), []
+    for n in out:
+        if n not in seen:
+            seen.add(n); uniq.append(n)
+    return uniq
+
+
+def finding_row(finding: dict[str, Any]) -> Text:
+    """Two lines: severity, ID and the plain summary; then one dim evidence line."""
+    fid = str(finding.get("id", "UNKNOWN"))
+    severity = str(finding.get("severity") or "info").lower()
+    color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
+    summary = FINDING_SUMMARY_TEMPLATES.get(fid)
+    title = annotate_lookalikes(finding.get("title", ""))
+    t = Text()
+    t.append(f"{severity.upper():<8}", style=f"bold {color}")
+    t.append(f"{fid}  ", style=T.TEXT_DIM)
+    t.append(summary or title, style=T.TEXT_BRIGHT)
+    status = lifecycle_status(finding)
+    if status:
+        t.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred") else T.TEXT_DIM)
+    evidence = finding.get("evidence") or []
+    first = annotate_lookalikes(evidence[0]) if evidence else (title if summary else "")
+    if first:
+        more = f"  (+{len(evidence) - 1} more)" if len(evidence) > 1 else ""
+        t.append("\n        " + first + more, style=T.TEXT_DIM)
+    return t
+
+
+def compact_findings(findings: list[dict[str, Any]], time_str: str | None = None) -> list[Any]:
+    """The renderables for a turn's findings, worst first: HIGH/CRITICAL keep
+    their box, the rest are two-line rows under one heading."""
+    order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+    fs = sorted(findings, key=lambda f: order.get(str(f.get("severity") or "info").lower(), 5))
+    out: list[Any] = []
+    head = Text("\nFindings ", style=f"bold {T.TEXT_BRIGHT}")
+    head.append(f"{len(fs)} · /findings to act on them", style=T.TEXT_DIM)
+    out.append(head)
+    for f in fs:
+        if str(f.get("severity") or "").lower() in ("critical", "high"):
+            out.append(finding_panel(f, time_str=time_str))
+        else:
+            out.append(finding_row(f))
+    return out

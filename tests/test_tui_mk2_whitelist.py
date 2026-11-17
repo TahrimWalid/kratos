@@ -702,7 +702,7 @@ def test_real_keys_reach_the_screen_actions(tmp_path):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            await pilot.press("enter")          # run row 0 -> first slot prompt (jail picker)
+            await pilot.press("enter")          # run row 0 -> its jail has one option (skipped) -> the ip prompt
             await pilot.pause()
             seen.append(type(app.screen).__name__)
             await pilot.press("escape")
@@ -719,7 +719,7 @@ def test_real_keys_reach_the_screen_actions(tmp_path):
             await pilot.pause()
 
     asyncio.run(run())
-    assert seen == ["ListPickerModal", "ConfirmModal", "ListPickerModal"]
+    assert seen == ["PromptModal", "ConfirmModal", "ListPickerModal"]
     assert next(r for r in build_rows(wl, tid) if r["label"] == "service.enable_now")["state"] == "off"
 
 

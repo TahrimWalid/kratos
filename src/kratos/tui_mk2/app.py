@@ -76,6 +76,14 @@ except Exception:  # pragma: no cover -- non-Linux; auto-detect keeps the defaul
     _ClickOnlyLinuxDriver = None
 
 
+def _short_path(p: Path) -> str:
+    """~/… instead of the full home path, so it doesn't wrap over two lines."""
+    try:
+        return "~/" + str(p.relative_to(Path.home()))
+    except ValueError:
+        return str(p)
+
+
 class TooSmallScreen(Screen):
     """Turn 14c -- a hard blocking screen when the terminal is too small for the
     fixed-column layouts, rather than letting them overlap. Shown/hidden by the
@@ -298,7 +306,8 @@ class KratosTUI(ResilientWorkerHost, App):
         # buttons). The active pack's identity accent drives primary/accent.
         from textual.theme import Theme
 
-        for name, pack in T.PACKS.items():
+        for name in T.PACKS:
+            pack = T._identity(name)
             accent = pack["ACCENT"]
             self.register_theme(
                 Theme(
@@ -382,7 +391,7 @@ class KratosTUI(ResilientWorkerHost, App):
             "(fixes stay off unless you switch them on for a machine yourself).",
             model_line,
             "Anything that would run on this machine asks you first.",
-            f"Your settings and sessions are kept in {Path(self.data_dir).resolve()}.",
+            f"Your settings and sessions are kept in {_short_path(Path(self.data_dir).resolve())}.",
         ):
             text.append("  •  ", style=T.ACCENT)
             text.append(line + "\n", style=T.TEXT)

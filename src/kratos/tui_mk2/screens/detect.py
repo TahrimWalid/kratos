@@ -24,6 +24,7 @@ from kratos.events import sigma_fields as SF
 from kratos.lifecycle.decide import Actor
 from kratos.target_key import target_key
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
@@ -43,7 +44,10 @@ def _reads(meta: dict[str, Any]) -> str:
 
 
 class DetectScreen(Screen):
+    _ALL_KEYS = '↑↓ select · enter details · x on/off for this machine · e on/off everywhere\ns shipped / not shipped · r run the rules now · esc back'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         Binding("enter", "details", "details", show=True, priority=True),
         Binding("x", "toggle_here", "on/off here", show=True),
@@ -57,7 +61,7 @@ class DetectScreen(Screen):
     DetectScreen #dt-banner { height: auto; padding: 0 0 1 0; }
     DetectScreen DataTable { height: auto; max-height: 65%; }
     DetectScreen #dt-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    DetectScreen #dt-hints { height: auto; padding-top: 1; }
+    DetectScreen #dt-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
     """
 
     def __init__(self, data_dir: Path, *, target: str | None = None) -> None:
@@ -68,14 +72,21 @@ class DetectScreen(Screen):
         self._rows: list[dict[str, Any]] = []
         self._tz = resolve_display_tz(self._data_dir)
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        body = all_keys_text(self._ALL_KEYS)
+        gaps = self._coverage_lines() if self._target else []
+        if gaps:
+            body.append("\n\nNot checked on " + str(self._target) + ":\n", style=f"bold {T.TEXT_BRIGHT}")
+            body.append("\n".join("• " + g for g in gaps), style=T.ATTENTION)
+        self.app.push_screen(InfoModal("Detection rules — keys and coverage", body))
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="dt-banner")
             yield DataTable(id="dt-table", cursor_type="row")
             yield VerticalScroll(id="dt-log")
-            yield Static(Text("↑↓ select · enter details · x on/off for this machine · e on/off everywhere\n"
-                              "s shipped / not shipped · r run the rules now · esc back", style=T.TEXT_DIM),
-                         id="dt-hints")
+            yield Static(key_bar([('enter', 'details'), ('x', 'on/off here'), ('r', 'run now'), ('s', 'not shipped'), ('?', 'all keys'), ('esc', 'back')]), id="dt-hints")
 
     def on_mount(self) -> None:
         self.refresh_rows()
@@ -108,7 +119,6 @@ class DetectScreen(Screen):
         self._rows = self._load()
         table.clear(columns=True)
         headers = SKIPPED_COLUMNS if self._skipped_view else COLUMNS
-        table.add_columns(*headers)
         cells = []
         for r in self._rows:
             if self._skipped_view:
@@ -119,9 +129,18 @@ class DetectScreen(Screen):
                 on = Text("on", style=T.SAFE) if r["on"] else Text("OFF", style=T.ATTENTION)
                 cells.append([m["id"], Text(m["level"], style=T.SEVERITY_COLOR.get(m["level"], T.TEXT)), on,
                               _reads(m), m["title"], m["author"]])
-        available = table.size.width or max(self.app.size.width - 6, 40)
-        shrink = [(0, 30), (3, 14), (4, 24)] if self._skipped_view else [(3, 12), (4, 28), (5, 18)]
-        for row in fit_columns(cells, available, shrink=shrink, headers=headers):
+        # The screen's width, not the table's: right after clear(columns=True) the table
+        # measures as narrow as its old content and every column was cut to ~5 cells.
+        available = max(self.app.size.width - 6, 40)
+        shrink = [(0, 30), (3, 14), (4, 24)] if self._skipped_view else [(5, 8), (3, 10), (4, 24), (0, 14)]
+        fitted = fit_columns(cells, available, shrink=shrink, headers=headers)
+        # Explicit widths: after clear(columns=True) the table sized each column to its
+        # header ("SIGM", "criti", "OF"), not to its cells.
+        from rich.cells import cell_len as _cl
+        for i, h in enumerate(headers):
+            w = max([_cl(h)] + [(c.cell_len if hasattr(c, "cell_len") else _cl(str(c))) for c in (r[i] for r in fitted)])
+            table.add_column(h, width=w)
+        for row in fitted:
             table.add_row(*row)
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
@@ -154,8 +173,10 @@ class DetectScreen(Screen):
                                           tz=self._tz)
                 banner.append(f" — last pass {when}: {run.events:,} log event(s), {run.detections} match(es)"
                               + (f", {run.status}: {run.reason}" if run.status != "ok" else ""), style=T.TEXT_MUTED)
-            for line in self._coverage_lines():
-                banner.append("\n  " + line, style=T.ATTENTION)
+            gaps = self._coverage_lines()
+            if gaps:
+                banner.append(f"\n  {len(gaps)} log source(s) weren't checked — press ? to see which and why",
+                              style=T.ATTENTION)
         for ref in self._loaded.refused:
             banner.append(f"\nRefused rule pack {Path(ref.path).name}: {ref.reason}", style=T.CRITICAL)
         watch = self._watch_line()

@@ -51,10 +51,10 @@ def test_settings_general_lists_the_privacy_rows(tmp_path, monkeypatch):
         async with app.run_test() as pilot:
             await pilot.pause()
             screen = app.screen
-            table = screen.query_one("#gen-table", DataTable)
-            assert table.row_count == len(screen._gen_rows)
-            return [str(table.get_cell_at((r, 0))) + " | " + str(table.get_cell_at((r, 1)))
-                    for r in range(table.row_count)]
+            # Two panes: every setting is in exactly one category.
+            assert len(screen._gen_all) == len(screen._gen_rows)
+            # The explanation moved to the detail pane; it is still part of each row.
+            return [str(label) + " | " + str(value) + "  " + e for _k, label, value, e in screen._gen_all]
 
     rows = asyncio.run(run())
     assert any(r.startswith("What the model sees | auto") and "standard" in r for r in rows)

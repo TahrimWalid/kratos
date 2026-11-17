@@ -42,6 +42,11 @@ def _answers(app, monkeypatch, values):
 
     monkeypatch.setattr(app, "push_screen_wait", _fn)
 
+def _sched(kind="audit", preset="", cadence="daily", notify="", name=""):
+    """One answer to the New schedule form (A4: one form instead of a chain of dialogs)."""
+    return {"kind": kind, "preset": preset, "cadence": cadence, "notify": notify, "name": name}
+
+
 
 def test_new_group_audit_plus_preset(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
@@ -52,10 +57,10 @@ def test_new_group_audit_plus_preset(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind, job1, job2, done, on_failure, cadence, min_sev, name (asked last)
+            # the form (a group, daily, always, name), then job1, job2, done, on_failure
             _answers(app, monkeypatch,
-                     ["group", "audit", "preset:deep", "__done__", "abort",
-                      "daily", "", "nightly-suite"])
+                     [_sched("group", cadence="daily", notify="", name="nightly-suite"),
+                      "audit", "preset:deep", "__done__", "abort"])
             screen._dispatch_slash("/schedule new")
             for _ in range(200):
                 await pilot.pause()
@@ -79,8 +84,8 @@ def test_new_group_with_preset_on_cloud_warns_and_aborts(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # kind, job1(preset), done, cost-confirm=False -> abort
-            _answers(app, monkeypatch, ["group", "preset:deep", "__done__", False])
+            # the form (a group), job1(preset), done, cost-confirm=False -> abort
+            _answers(app, monkeypatch, [_sched("group"), "preset:deep", "__done__", False])
             screen._dispatch_slash("/schedule new")
             for _ in range(120):
                 await pilot.pause()
@@ -97,7 +102,7 @@ def test_new_group_cancel_at_first_job(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            _answers(app, monkeypatch, ["group", None])  # esc at the first job picker
+            _answers(app, monkeypatch, [_sched("group"), None])  # esc at the first job picker
             screen._dispatch_slash("/schedule new")
             for _ in range(80):
                 await pilot.pause()

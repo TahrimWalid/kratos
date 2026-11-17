@@ -45,6 +45,7 @@ from kratos.utils import timeutil
 from kratos.tui_mk2 import finding_view as FV
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
+from kratos.untrusted_rich import SafeTable as Table   # for the stamped-header width check in _write
 from kratos.tui_mk2.workers import ResilientWorkerHost
 from kratos.tui_mk2.modals import (
     CommandPaletteModal,
@@ -177,6 +178,7 @@ _PALETTE_COMMANDS = [
     ("/delete", "archive (soft-delete) this session"),
     ("/sessions", "back to the session picker (keeps this session)"),
     ("/settings", "settings — models, tool approvals, timezone, spending limits"),
+    ("/machines", "every machine in one place — how it's reached, its agent, setup, sealing, fixes, findings"),
     ("/subagent", "add / manage sub-agents — reach a box with no inbound SSH (telemetry + investigations)"),
     ("/whitelist", "a paired target's allowlist — add/edit entries, opt-in, typed-EXECUTE dispatch"),
     ("/run-fix", "run the last recommended command via the target's sub-agent (if it's in the allowlist)"),
@@ -233,7 +235,7 @@ _BARE_COMMAND_WORDS = frozenset({
     "preset-delete", "preset-del", "preset-show", "preset-scaffold",
     "preset-export", "preset-import", "preset-describe",
     "doctor", "health", "usage", "context", "tools", "evolve", "help",
-    "settings", "timezone",
+    "settings", "timezone", "machines",
 })
 
 
@@ -259,6 +261,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         Binding("ctrl+c", "interrupt", "stop", show=False, priority=True),
         Binding("ctrl+p", "palette", "commands", show=True),
         Binding("ctrl+y", "copy_last", "copy answer", show=True),
+        Binding("ctrl+o", "toggle_steps", "steps", show=False),
         # Edit a previous turn: ↑/↓ recall prior turns into the
         # prompt for editing; resending a recalled turn discards it and
         # everything after (see on_input_submitted). Arrow-key history recall
@@ -620,7 +623,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         bar_w = 10
         filled = int(bar_w * pct / 100)
         if pct >= 85:
-            color = T.CRITICAL       # red: near/over the window (compaction imminent)
+            color = T.ATTENTION      # compaction is routine, not danger: amber, never red
         elif pct >= 75:
             color = T.ATTENTION      # amber: getting full
         else:
@@ -631,7 +634,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         approx = "~" if estimated else ""  # ~ = estimated from loaded context, not yet measured
         meter.append(f" {approx}{pct}% ({self._fmt_tok(used)}/{self._fmt_tok(window)})", style=color)
         if pct >= 85:
-            meter.append(" · will compact soon", style=T.CRITICAL)
+            meter.append(" · will compact soon", style=f"bold {T.ATTENTION}")
         from kratos.utils.build_info import newer_build_on_disk
 
         rebuilt = newer_build_on_disk()
@@ -729,6 +732,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
         right edges staggered. Everything else keeps its natural width."""
         # Whatever reaches the transcript passes the scrubber last (kratos.untrusted_rich):
         # nothing Kratos writes holds an escape sequence, so one that got here came from a machine.
+        cap = getattr(self, "_turn_capture", None)
+        if cap is not None:
+            cap.append(renderable)      # kept so a folded turn can show its steps again (A3)
+        if isinstance(renderable, (Panel, Table)) and getattr(renderable, "expand", False):
+            # A stamped header (you> … time): same width as the panels, so the
+            # time sits at one right edge instead of butting against the text.
+            width = self._log.scrollable_content_region.width
+            if width > 0:
+                self._log.write(scrubbed(renderable), width=min(width, _PANEL_MAX_WIDTH))
+                return
         if isinstance(renderable, Panel):
             width = self._log.scrollable_content_region.width
             if width > 0:
@@ -764,7 +777,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         `date_str` is the display-zone full date. Event-loop callers only."""
         if date_str != self._last_day:
             self._last_day = date_str
-            self._log.write(R.day_divider(date_str))
+            self._write(R.day_divider(date_str))
         self._write(renderable)
 
     def _emit_bubble_from_worker(self, renderable: Any, date_str: str) -> None:
@@ -776,6 +789,76 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
     def _emit_stamped_from_worker(self, left: Text, time_str: str, date_str: str) -> None:
         self._emit_bubble_from_worker(R.timestamped(left, time_str), date_str)
+
+    # --- folded turns (A3) ----------------------------------------------------
+    # While an investigation runs, every step is shown as it happens. When it ends,
+    # the steps fold into one summary line and the findings become compact rows;
+    # Ctrl+O shows the last turn's steps again (and hides them).
+    def _begin_fold(self) -> None:
+        self._turn_capture = []
+        self._fold_meta = {"start": len(self._log.lines), "steps": 0, "failed": 0, "chips": [], "findings": []}
+
+    def _cancel_fold(self) -> None:
+        self._turn_capture = None
+        self._fold_meta = None
+
+    def _splice_log(self, start: int, remove: int, renderables: list[Any]) -> int:
+        """Replace `remove` transcript lines at `start` with `renderables`; returns
+        how many lines they took. RichLog is append-only, so the new lines are
+        written at the end and moved into place."""
+        log = self._log
+        tail = log.lines[start + remove:]
+        del log.lines[start:]
+        auto, log.auto_scroll = log.auto_scroll, False
+        try:
+            for r in renderables:
+                self._write(r)
+        finally:
+            log.auto_scroll = auto
+        n = len(log.lines) - start
+        log.lines.extend(tail)
+        log._line_cache.clear()
+        from textual.geometry import Size
+        log.virtual_size = Size(log._widest_line_width, len(log.lines))
+        log.refresh()
+        return n
+
+    def _end_fold(self) -> None:
+        meta, captured = getattr(self, "_fold_meta", None), getattr(self, "_turn_capture", None)
+        self._turn_capture = None
+        self._fold_meta = None
+        if not meta or captured is None or meta["steps"] == 0:
+            return
+        start = meta["start"]
+        if start > len(self._log.lines):
+            return
+        folded = self._folded_renderables(meta, open_=False)
+        n = self._splice_log(start, len(self._log.lines) - start, folded)
+        self._folds = [{"start": start, "lines": n, "meta": meta, "full": captured, "open": False}]
+        self._log.scroll_end(animate=False)
+
+    def _folded_renderables(self, meta: dict, *, open_: bool) -> list[Any]:
+        out: list[Any] = [R.turn_summary_line(meta["steps"], meta["failed"], R.step_notes(meta["chips"]), open_=open_)]
+        if meta["findings"] and not open_:
+            out.extend(R.compact_findings(meta["findings"], time_str=None))
+        return out
+
+    def action_toggle_steps(self) -> None:
+        """Ctrl+O: show or hide the last investigation's steps."""
+        folds = getattr(self, "_folds", None)
+        if not folds:
+            self.notify("No folded steps yet — an investigation's steps fold here when it ends.", timeout=4)
+            return
+        f = folds[-1]
+        if f["start"] + f["lines"] > len(self._log.lines):
+            return
+        if f["open"]:
+            new = self._folded_renderables(f["meta"], open_=False)
+        else:
+            new = self._folded_renderables(f["meta"], open_=True) + list(f["full"])
+        f["lines"] = self._splice_log(f["start"], f["lines"], new)
+        f["open"] = not f["open"]
+        self._log.scroll_to(y=f["start"], animate=False)
 
     def _you_header(self, text: str) -> Text:
         label = f"{self._user_name}> " if self._user_name else "you> "
@@ -793,7 +876,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._user_name = (name or "").strip()
 
     def _kratos_header(self) -> Text:
-        return Text("Kratos:", style=f"bold {T.KRATOS_RED}")
+        return Text("Kratos:", style=f"bold {T.VOICE}")
 
     def _render_idle(self) -> None:
         st = self.session_state
@@ -872,17 +955,45 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
 
         final_present = bool(transcript) and "final_answer" in transcript[-1]
-        for step in (transcript[:-1] if final_present else transcript):
-            self._render_step_replay(step, completed)
+        steps_part = transcript[:-1] if final_present else transcript
+        if final_present and self._replay_fold(steps_part, completed):
+            pass                      # folded: one summary line + compact findings (A3)
+        else:
+            for step in steps_part:
+                self._render_step_replay(step, completed)
         if final_present:
             self._emit_bubble(
-                R.result_panel("Kratos — concluded", transcript[-1]["final_answer"], T.SAFE, time_str=self._fmt_stored_time(completed)),
+                R.result_panel("Kratos — concluded", transcript[-1]["final_answer"], T.ACCENT, time_str=self._fmt_stored_time(completed)),
                 self._fmt_stored_date(completed),
             )
             if (footer := R.lifecycle_footer(transcript)) is not None:
                 self._emit(footer)
         if status == "cancelled":
             self._emit(Text("Investigation cancelled.", style=T.TEXT_FAINT))
+
+    def _replay_fold(self, steps: list[dict], when_value: Any) -> bool:
+        """A finished turn in a resume replay: its steps as one line, findings compact."""
+        meta = {"steps": 0, "failed": 0, "chips": [], "findings": []}
+        for step in steps:
+            tool_name = step.get("tool")
+            if not tool_name or (step.get("collected") and tool_name != "correlate_findings"):
+                continue
+            result, status = R.unwrap_tool_result(step.get("observation"))
+            meta["steps"] += 1
+            meta["failed"] += status == "error"
+            if tool_name == "correlate_findings" and isinstance(result, dict) and result.get("findings"):
+                full, _folded = FV.plan(result["findings"], self._shown_findings, None)
+                meta["findings"].extend(f for f, _w in full)
+            chip = R.window_chip(result.get("window")) if isinstance(result, dict) else None
+            via = R.transport_chip(result)
+            meta["chips"].extend(c for c in (chip, via) if c is not None)
+        if meta["steps"] == 0:
+            return False
+        self._emit(R.turn_summary_line(meta["steps"], meta["failed"], R.step_notes(meta["chips"]), hint=False))
+        if meta["findings"]:
+            for r in R.compact_findings(meta["findings"], time_str=self._fmt_stored_time(when_value)):
+                self._emit(r)
+        return True
 
     def _render_step_replay(self, step: dict, when_value: Any) -> None:
         """Event-loop counterpart of _render_step (which is worker-thread only).
@@ -1121,6 +1232,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             from kratos.tui_mk2.screens.phase2_preview import Phase2PreviewScreen
 
             self.app.push_screen(Phase2PreviewScreen())
+        elif cmd in ("/machines", "/machine", "/hosts"):
+            from kratos.tui_mk2.screens.machines import MachinesScreen
+
+            self.app.push_screen(MachinesScreen(self._data_dir, active=_kconfig.get_active_target()))
         elif cmd in ("/subagent", "/subagents", "/agents", "/connect"):
             from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
@@ -1440,9 +1555,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
         for c in report.checks:
             when = {"ran": "just now", "reused": ago(c.age_seconds), "waited": ago(c.age_seconds)}.get(c.source, "not this time")
             if c.status in ("ok", "partial"):
-                self._emit_from_worker(R.note_line(f"✓ {c.label} ({when}): {c.summary}"))
+                self._emit_from_worker(R.success_line(f"{c.label} ({when}): {c.summary}"))
             else:
-                self._emit_from_worker(R.note_line(f"– {c.label}: {c.summary}"))
+                self._emit_from_worker(R.progress_line(f"– {c.label}: {c.summary}"))
         if report.correlation is not None:
             ids = ", ".join(f"{f.get('id')} ({f.get('severity')})" for f in report.findings) or "no findings"
             self._emit_from_worker(R.note_line(f"{ids}   [{report.elapsed:.1f}s]"))
@@ -1680,13 +1795,18 @@ class SessionScreen(ResilientWorkerHost, Screen):
         from kratos.agent import doctor
 
         self._set_busy(True)
-        self._emit_from_worker(R.note_line("Running diagnostics — checking LLM, target, and tools…"))
+        self._emit_from_worker(R.progress_line("Running diagnostics — checking LLM, target, and tools…"))
         try:
             checks = doctor.run_diagnostics(self._data_dir)
         except Exception as e:  # noqa: BLE001 -- should not happen (each check is guarded), but never crash the screen
             self._emit_from_worker(R.error_line(f"Diagnostic run failed: {e}"))
             self._set_busy(False)
             return
+        checks = list(checks) + [{
+            "check": "Terminal colours",
+            "status": "pass" if T.COLOR_DEPTH == "truecolor" else "info",
+            "detail": T.color_mode_note(),
+        }]
         # The verdict headline now leads the table (render.doctor_table), so no
         # trailing summary line is needed -- the "is my setup OK?" answer is read
         # first, not last.
@@ -1817,9 +1937,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         def panels(title: str, items: list[tuple[dict[str, Any], Any]]) -> None:
             nonlocal plan_commands
-            self._emit(Text(f"\n{title} ({len(items)})", style=f"bold {T.ACCENT}"))
             if not items:
-                self._emit(Text("  none", style=T.TEXT_DIM))
+                return  # empty sections are already counted in the summary line
+            self._emit(Text(f"\n{title} ({len(items)})", style=f"bold {T.ACCENT}"))
             for f, when_value in sorted(items, key=lambda fw: sev(fw[0])):
                 # Each finding keeps the time it was ORIGINALLY found (its turn's
                 # completion time, a stored UTC value), rendered in the display zone.
@@ -1833,9 +1953,9 @@ class SessionScreen(ResilientWorkerHost, Screen):
                         plan_commands += [c.command for step in plan.steps for c in step.commands]
 
         def lines(title: str, rows: list[dict[str, Any]], tail) -> None:
-            self._emit(Text(f"\n{title} ({len(rows)})", style=f"bold {T.ACCENT}"))
             if not rows:
-                self._emit(Text("  none", style=T.TEXT_DIM))
+                return
+            self._emit(Text(f"\n{title} ({len(rows)})", style=f"bold {T.ACCENT}"))
             for r in sorted(rows, key=lambda r: order.get(r["severity"], 5)):
                 self._emit(Text(f"  {r['rule_id']} ({r['severity']}) — {r['title']}  {tail(r)}", style=T.TEXT_MUTED))
 
@@ -2022,7 +2142,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if name is None:
             entries = [(p.name, f"{p.name}   {_preview(p)}") for p in candidates]
             name = await self.app.push_screen_wait(
-                ListPickerModal(f"Preset to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+                ListPickerModal(f"Preset to {action}", entries, ))
         if name is None:
             return
         if action == "run":
@@ -2605,7 +2725,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             "What kind of preset?",
             [("goal", "goal      A plain-language investigation — the AI agent decides the steps"),
              ("pipeline", "pipeline  An ordered list of tool steps — deterministic, no LLM, repeatable")],
-            subtitle="↑↓ pick · esc cancel"))
+            ))
         if kind is None:
             return
         if kind == "goal":
@@ -2714,7 +2834,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 entries.append(("__save__", f"✓ save changes ({len(steps)} step(s))"))
             entries.append(("__cancel__", "✗ cancel (discard changes)"))
             pick = await self.app.push_screen_wait(ListPickerModal(
-                f"Edit pipeline {preset.name!r}", entries, subtitle="↑↓ pick · esc cancel"))
+                f"Edit pipeline {preset.name!r}", entries, ))
             if pick is None or pick == "__cancel__":
                 self._emit(R.note_line("No changes saved — the preset is unchanged."))
                 return
@@ -2754,7 +2874,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
     async def _pick_pipeline_tool(self) -> str | None:
         """Pick a single tool for a new step; returns the tool name or None."""
         pick = await self.app.push_screen_wait(ListPickerModal(
-            "Which tool?", self._pipeline_tool_entries(), subtitle="↑↓ pick · esc cancel"))
+            "Which tool?", self._pipeline_tool_entries(), ))
         return pick.split(":", 1)[1] if pick else None
 
     async def _edit_pipeline_step(self, steps: list[dict[str, Any]], idx: int) -> None:
@@ -2773,7 +2893,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         opts.append(("remove", "remove this step"))
         opts.append(("back", "back"))
         pick = await self.app.push_screen_wait(ListPickerModal(
-            f"Step {idx + 1}: {s['tool']}", opts, subtitle="↑↓ pick · esc back"))
+            f"Step {idx + 1}: {s['tool']}", opts, subtitle="esc goes back"))
         if pick in (None, "back"):
             return
         if pick == "condition":
@@ -2812,13 +2932,16 @@ class SessionScreen(ResilientWorkerHost, Screen):
         while True:
             entries: list[tuple[str, str]] = list(self._pipeline_tool_entries())
             if steps:
-                entries.append(("__remove__", f"− remove a step  ({len(steps)} added)"))
-                entries.append(("__done__", f"✓ done — save these {len(steps)} step(s)"))
+                # Finishing is the likely next move once a step exists: first, so Enter
+                # finishes instead of adding the top tool again.
+                entries = [("__done__", f"✓ done — save these {len(steps)} step(s)"),
+                           ("__remove__", f"− remove a step  ({len(steps)} added)")] + entries
             title = ("Add the first step" if not steps
-                     else f"Add another step, or finish — {len(steps)} so far")
+                     else f"Add another step, or finish — {len(steps)} so far: "
+                     + " → ".join(st.get("tool", "?") for st in steps))
             pick = await self.app.push_screen_wait(ListPickerModal(
                 title, entries,
-                subtitle="↑↓ pick · steps run top-to-bottom · esc cancel"))
+                subtitle="Steps run top to bottom."))
             if pick is None:
                 return steps or None
             if pick == "__done__":
@@ -2828,7 +2951,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     which = await self.app.push_screen_wait(ListPickerModal(
                         "Remove which step?",
                         [(str(i), f"{i + 1}. {s['tool']}") for i, s in enumerate(steps)],
-                        subtitle="↑↓ pick · esc keep all"))
+                        subtitle="esc keeps them all"))
                     if which is not None:
                         steps.pop(int(which))
                 continue
@@ -2871,7 +2994,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             f"If '{name}' fails…",
             [("required", "abort the whole run (fail-fast — recommended)"),
              ("optional", "carry on with the next step (skip just this one)")],
-            subtitle="↑↓ pick · esc cancel this step"))
+            subtitle="esc cancels just this step"))
         if required is None:
             return None
 
@@ -2924,7 +3047,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             f"{consumer_tool}: {arg_name}",
             [("__type__", "type a value"),
              ("__thread__", "use a result from an earlier step")],
-            subtitle="↑↓ pick · esc cancel this step"))
+            subtitle="esc cancels just this step"))
         if choice is None:
             return _CANCELLED
         if choice == "__type__":
@@ -2932,14 +3055,14 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         prod = await self.app.push_screen_wait(ListPickerModal(
             "Use a result from which step?",
-            [(rf, disp) for rf, disp, _ in producers], subtitle="↑↓ pick · esc cancel"))
+            [(rf, disp) for rf, disp, _ in producers], ))
         if prod is None:
             return _CANCELLED
         fields = next(f for rf, _d, f in producers if rf == prod)
         fpick = await self.app.push_screen_wait(ListPickerModal(
             "Which value?",
             [(fname, label + (" (first match)" if nf else "")) for fname, label, nf in fields],
-            subtitle="↑↓ pick · esc cancel"))
+            ))
         if fpick is None:
             return _CANCELLED
         needs_first = next(nf for fn, _l, nf in fields if fn == fpick)
@@ -2968,7 +3091,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
              ("has_finding(min_severity='medium')", "only if a MEDIUM+ finding exists"),
              ("has_new_finding()", "only if something new, reopened or recurred was found"),
              ("__custom__", "custom condition… (advanced)")],
-            subtitle="↑↓ pick · esc cancel this step"))
+            subtitle="esc cancels just this step"))
         if choice is None:
             return _CANCELLED
         if choice == "__custom__":
@@ -3208,7 +3331,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return None
         entries = [(s.name, f"{s.name}   {s.kind} · {s.cadence}") for s in schedules]
         name = await self.app.push_screen_wait(
-            ListPickerModal(f"Schedule to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+            ListPickerModal(f"Schedule to {action}", entries, ))
         if name is None:
             return None
         return _S.load_schedule(self._data_dir, name)
@@ -3251,112 +3374,178 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 continue
             return canonical
 
+    _CADENCE_WORDS = {"hourly": "every hour", "daily": "every day", "weekly": "every week", "monthly": "every month"}
+    _NOTIFY_WORDS = {"": "sends a report every run", "medium": "notifies on MEDIUM and up",
+                     "high": "notifies on HIGH and up", "critical": "notifies only on CRITICAL"}
+
+    def _unattended_limits_note(self) -> str:
+        """One line for the one-form wizards: what unattended runs may spend."""
+        try:
+            from kratos.budget import guard as _bg
+            from kratos.budget import limits as _BL
+
+            _bg.ensure_upgrade_migration(self._data_dir)
+            lim = _BL.read(self._data_dir)
+            money = _BL.format_amount(_BL.SCOPE_DAILY_COST, lim.unattended_daily_cost_usd)
+            return (f"Unattended limits: {money} a day · {lim.run_model_calls} model calls a run"
+                    " · change them in Settings → Budget")
+        except Exception:  # noqa: BLE001
+            return "Unattended runs have spending limits · Settings → Budget"
+
+    def _mark_unattended_limits_seen(self, what: str) -> None:
+        # The form showed the limits inline, so the one-time limits gate is satisfied.
+        try:
+            from kratos.budget.ledger import BudgetLedger
+
+            ledger = BudgetLedger(self._data_dir)
+            if ledger.state_get(self._UNATTENDED_BUDGET_SHOWN) is None:
+                ledger.state_set(self._UNATTENDED_BUDGET_SHOWN, {"choice": "keep", "what": what, "via": "form"})
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _unique_name(base: str, slugify: Any, exists: Any, noun: str) -> str:
+        suggested = slugify(base)[:60].strip("-_") or noun
+        candidate, n = suggested, 2
+        while exists(candidate):
+            candidate, n = f"{suggested}-{n}", n + 1
+        return candidate
+
     async def _schedule_new(self) -> None:
+        """One form (A4): what it runs, how often, when to notify, and its name,
+        with a plain summary and the cost and notification notes inline. A group
+        still builds its jobs step by step afterwards, because each job's answers
+        change the next question."""
         from kratos.agent import schedules as _S
         from kratos.agent import schedule_units as _U
+        from kratos.agent.notify import notify_config_status
         from kratos.agent.scheduled_run import active_backend_is_cloud
+        from kratos.tui_mk2.modals import FormModal
 
-        kind = await self.app.push_screen_wait(ListPickerModal(
-            "What should this schedule run?",
-            [("audit", "audit   Standard audit — deterministic, no LLM, free"),
-             ("preset", "preset  A saved goal preset — runs the AI agent"),
-             ("group", "group   Several jobs in order, on one cadence")],
-            subtitle="↑↓ pick · esc cancel"))
-        if kind is None:
-            return
+        presets, ungraduated = self._schedulable_presets()
+        by_name = {p.name: p for p in presets}
+        cloud = active_backend_is_cloud()
+        notify_off = notify_config_status()[0] in ("off", "bad")
+        exists = lambda n: _S.schedule_exists(self._data_dir, n)  # noqa: E731
 
-        preset_name = None
+        def base_of(v: dict) -> str:
+            return {"audit": "audit", "preset": v.get("preset") or "preset", "group": "group"}[v["kind"]]
+
+        def suggest(v: dict) -> str:
+            return self._unique_name(f"{v['cadence']}-{base_of(v)}", _S.slugify_schedule_name, exists, "schedule")
+
+        auto = {"name": suggest({"cadence": "daily", "kind": "audit"})}
+
+        def on_change(form: Any, v: dict) -> None:
+            form.query_one("#ff-preset").display = v["kind"] == "preset"
+            # Keep the suggested name in step with the answers until the person types their own.
+            if v["name"] in ("", auto["name"]):
+                new = suggest(v)
+                if new != v["name"]:
+                    auto["name"] = new
+                    form.set_text("name", new)
+
+        def describe(v: dict) -> tuple[str, list[str]]:
+            when = self._CADENCE_WORDS[v["cadence"]]
+            notify = self._NOTIFY_WORDS[v["notify"]]
+            notes: list[str] = []
+            if v["kind"] == "audit":
+                what = "Runs the standard audit (no model, free)"
+            elif v["kind"] == "preset":
+                p = by_name.get(v["preset"])
+                if p is None:
+                    return ("There's no preset that can be scheduled yet.",
+                            ["! " + ("Your presets are AI-drafted and not confirmed yet: run one and confirm it first."
+                                     if ungraduated else "Create one with /preset-new, or pick the standard audit.")])
+                else:
+                    tag = "a pipeline, no model" if p.is_runnable_pipeline else "runs the AI model"
+                    what = f"Runs preset '{p.name}' ({tag})"
+                    if p.is_runnable_tier1 and cloud:
+                        notes.append("! It runs the AI model on a paid cloud backend, so every run costs money. "
+                                     "A local model is cheaper for schedules (/model).")
+            else:
+                what = "Runs a group of jobs in order (you add them next)"
+            if notify_off:
+                notes.append("! Notifications are off, so reports only go to disk "
+                             "(set KRATOS_NTFY_TOPIC in .env; /doctor suggests one).")
+            if ungraduated and v["kind"] == "preset":
+                notes.append(f"Not listed: {len(ungraduated)} AI-drafted preset(s) not confirmed yet.")
+            ok, canonical, _e = _S.validate_schedule_name(v["name"] or suggest(v))
+            if ok and v["name"] and exists(canonical):
+                notes.append(f"! A schedule called '{canonical}' exists — Save asks before replacing it.")
+            notes.append(self._unattended_limits_note())
+            return f"{what} {when}, and {notify}.", notes
+
+        def validate(v: dict) -> str | None:
+            if v["kind"] == "preset" and v["preset"] not in by_name:
+                return "There's no preset to run yet — pick the audit or a group."
+            ok, canonical, err = _S.validate_schedule_name(v["name"] or suggest(v))
+            if not ok:
+                return err or "That name isn't valid — try another."
+            return None
+
+        preset_opts = [(p.name, p.name) for p in presets] or [("", "none yet")]
+        vals = {"kind": "audit", "preset": preset_opts[0][0], "cadence": "daily", "notify": "medium",
+                "name": auto["name"]}
+        while True:
+            values = await self.app.push_screen_wait(FormModal("New schedule", [
+                {"id": "kind", "label": "Runs", "kind": "choice", "value": vals["kind"],
+                 "options": [("audit", "standard audit"), ("preset", "a preset"), ("group", "a group")]},
+                {"id": "preset", "label": "Preset", "kind": "choice", "compact": True,
+                 "options": preset_opts, "value": vals["preset"]},
+                {"id": "cadence", "label": "How often", "kind": "choice", "value": vals["cadence"],
+                 "options": [(c, c) for c in ("hourly", "daily", "weekly", "monthly")]},
+                {"id": "notify", "label": "Notify", "kind": "choice", "value": vals["notify"],
+                 "options": [("", "always"), ("medium", "medium+"), ("high", "high+"), ("critical", "critical")]},
+                {"id": "name", "label": "Name", "kind": "text", "value": vals["name"]},
+            ], describe, validate, on_change))
+            if values is None:
+                self._emit(R.note_line("Schedule not created."))
+                return
+            _ok, name_raw, _err = _S.validate_schedule_name(values["name"] or suggest(values))
+            if exists(name_raw) and not await self.app.push_screen_wait(ConfirmModal(
+                    f"Replace schedule '{name_raw}'?",
+                    f"A schedule called '{name_raw}' already exists. Replace it with this one?")):
+                vals = {**values, "name": values["name"] or name_raw}
+                continue
+            break
+        kind = values["kind"]
+        preset_name = values["preset"] if kind == "preset" else None
+        cadence, min_sev = values["cadence"], values["notify"]
         jobs: list[dict] = []
         on_failure = "continue"
-        if kind == "preset":
-            presets, ungraduated = self._schedulable_presets()
-            if not presets:
-                if ungraduated:
-                    self._emit(R.note_line(
-                        "Your runnable presets are all AI-drafted and not confirmed yet. Run one and "
-                        f"confirm it first (e.g. /{ungraduated[0].name}), then it can be scheduled."))
-                else:
-                    self._emit(R.note_line("No runnable presets yet. Create one with /preset-new first."))
-                return
-            if ungraduated:
-                self._emit(R.note_line(
-                    f"Not shown: {len(ungraduated)} AI-drafted preset(s) not confirmed yet — run one "
-                    "(/<name>) and confirm it to make it schedulable."))
-
-            def _row(p: Any) -> str:
-                body = p.goal or (f"{len(p.steps)}-step pipeline" if p.is_pipeline else "")
-                tag = "pipeline · no LLM" if p.is_runnable_pipeline else "goal · AI"
-                return f"{p.name}   [{tag}]  {body[:44]}"
-
-            preset_name = await self.app.push_screen_wait(ListPickerModal(
-                "Which preset should it run?",
-                [(p.name, _row(p)) for p in presets],
-                subtitle="↑↓ pick · esc cancel"))
-            if preset_name is None:
-                return
-            picked = next((p for p in presets if p.name == preset_name), None)
-            # Guardrail 2: warn before scheduling an AGENTIC (goal) run on a paid
-            # backend. A pipeline preset makes no LLM calls, so it costs nothing
-            # unattended — no warning for it.
-            if picked is not None and picked.is_runnable_tier1 and active_backend_is_cloud():
-                ok = await self.app.push_screen_wait(ConfirmModal(
+        picked = by_name.get(preset_name or "")
+        # The one remaining separate confirm: unattended spending on a paid backend.
+        if picked is not None and picked.is_runnable_tier1 and cloud:
+            if not await self.app.push_screen_wait(ConfirmModal(
                     "Cloud backend — unattended cost",
                     "This preset runs the AI model, and the active backend is a paid cloud "
                     "endpoint. A scheduled run will spend money every time it fires, unattended. "
-                    "Prefer a local model for schedules. Continue anyway?"))
-                if not ok:
-                    self._emit(R.note_line("Schedule not created. Switch to a local backend with /model, or pick the standard audit."))
-                    return
-        elif kind == "group":
+                    "Prefer a local model for schedules. Continue anyway?")):
+                self._emit(R.note_line("Schedule not created. Switch to a local backend with /model, or pick the standard audit."))
+                return
+        if kind == "group":
             jobs = await self._schedule_build_group_jobs()
             if jobs is None or not jobs:
-                if jobs is not None:  # None = cancelled; [] = added nothing
+                if jobs is not None:
                     self._emit(R.note_line("A group needs at least one job — nothing created."))
                 return
-            # Cost warning once if any job is an AGENTIC (goal) preset on a paid
-            # backend. Pipeline preset jobs make no LLM calls, so they don't count.
-            if active_backend_is_cloud() and self._group_has_agentic_job(jobs):
-                ok = await self.app.push_screen_wait(ConfirmModal(
-                    "Cloud backend — unattended cost",
-                    "This group includes a preset that runs the AI model, and the active backend "
-                    "is a paid cloud endpoint. Each scheduled run spends money, unattended. "
-                    "Prefer a local model. Continue anyway?"))
-                if not ok:
+            if cloud and self._group_has_agentic_job(jobs):
+                if not await self.app.push_screen_wait(ConfirmModal(
+                        "Cloud backend — unattended cost",
+                        "This group includes a preset that runs the AI model, and the active backend "
+                        "is a paid cloud endpoint. Each scheduled run spends money, unattended. "
+                        "Prefer a local model. Continue anyway?")):
                     self._emit(R.note_line("Group not created. Switch to a local backend with /model."))
                     return
             on_failure = await self.app.push_screen_wait(ListPickerModal(
                 "If a job fails…",
                 [("continue", "continue — run the remaining jobs anyway"),
                  ("abort", "abort — stop; skip the remaining jobs")],
-                subtitle="↑↓ pick · esc cancel"))
+                ))
             if on_failure is None:
                 return
-
-        cadence = await self.app.push_screen_wait(ListPickerModal(
-            "How often?",
-            [(c, c) for c in ("hourly", "daily", "weekly", "monthly")],
-            subtitle="↑↓ pick · esc cancel"))
-        if cadence is None:
-            return
-        min_sev = await self.app.push_screen_wait(ListPickerModal(
-            "Notify when?",
-            [("", "Always — every run sends a report"),
-             ("medium", "Only if a MEDIUM+ finding is raised"),
-             ("high", "Only if a HIGH+ finding is raised"),
-             ("critical", "Only if a CRITICAL finding is raised")],
-            subtitle="↑↓ pick · esc cancel"))
-        if min_sev is None:
-            return
-
-        if not await self._unattended_budget_gate("schedule"):
-            self._emit(R.note_line("Schedule not created."))
-            return
-        base = {"audit": "audit", "preset": preset_name or "preset", "group": "group"}[kind]
-        name_raw = await self._ask_new_name(
-            "Schedule name", f"{cadence}-{base}", _S.slugify_schedule_name,
-            _S.validate_schedule_name, lambda n: _S.schedule_exists(self._data_dir, n), "schedule")
-        if name_raw is None:
-            return
+        self._mark_unattended_limits_seen("schedule")
         try:
             sch = _S.save_schedule(
                 self._data_dir, name=name_raw, kind=kind, preset=preset_name,
@@ -3370,9 +3559,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         cmds = _U.install_commands(sch, service_path, timer_path)
         detail = f"{sch.kind}, {sch.cadence}" + (f", {len(sch.jobs)} jobs" if sch.kind == "group" else "")
         self._emit(R.success_line(f"Saved schedule {sch.name!r} ({detail})."))
-        from kratos.agent.notify import notify_config_status
-
-        if notify_config_status()[0] in ("off", "bad"):
+        if notify_off:
             self._emit(R.note_line("Notifications are off, so this schedule will only save reports on disk. "
                                    "To get alerts, set KRATOS_NTFY_TOPIC in .env (/doctor suggests one)."))
         self._emit_commands(
@@ -3457,7 +3644,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             title = ("Add the first job to the group" if not jobs
                      else f"Add another job (or finish) — {len(jobs)} so far")
             pick = await self.app.push_screen_wait(ListPickerModal(
-                title, entries, subtitle="↑↓ pick · jobs run in the order you add them · esc cancel"))
+                title, entries, subtitle="Jobs run in the order you add them."))
             if pick is None:
                 return jobs if jobs else None
             if pick == "__done__":
@@ -3601,97 +3788,126 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return None
         entries = [(t.name, f"{t.name}   {t.condition_text} → {t.action}") for t in triggers]
         name = await self.app.push_screen_wait(
-            ListPickerModal(f"Trigger to {action}", entries, subtitle="↑↓ pick · esc cancel"))
+            ListPickerModal(f"Trigger to {action}", entries, ))
         if name is None:
             return None
         return _T.load_trigger(self._data_dir, name)
 
     async def _trigger_new(self) -> None:
+        """One form (A4): the condition, what happens, the cooldown and the name,
+        with a plain summary. The default answers always make a valid trigger."""
+        from kratos import settings_store as _ss
+        from kratos.agent import schedules as _S
         from kratos.agent import triggers as _T
         from kratos.agent.scheduled_run import active_backend_is_cloud
+        from kratos.budget import limits as _BL
+        from kratos.tui_mk2.modals import FormModal
 
-        sev = await self.app.push_screen_wait(ListPickerModal(
-            "Fire when the findings reach which severity?",
-            [("", "Any severity — match on a specific finding-ID instead"),
-             ("medium", "MEDIUM or higher"),
-             ("high", "HIGH or higher"),
-             ("critical", "CRITICAL only"),
-             ("ssvc:attend", "Vulnerabilities whose decision is Attend or Act (CISA's SSVC tree)"),
-             ("ssvc:act", "Vulnerabilities whose decision is Act")],
-            subtitle="↑↓ pick · esc cancel"))
-        if sev is None:
-            return
-        min_ssvc = sev.split(":", 1)[1] if sev.startswith("ssvc:") else None
+        cloud = active_backend_is_cloud()
+        has_schedules = bool(_S.list_schedules(self._data_dir)[0])
+        may_investigate = bool(_ss.get(_BL.TRIGGER_INVESTIGATIONS, data_dir=self._data_dir))
+        exists = lambda n: _T.trigger_exists(self._data_dir, n)  # noqa: E731
+        what_word = {"notify": "alert", "playbook": "playbook", "investigate": "investigate"}
+        sev_words = {"high": "HIGH or higher", "critical": "CRITICAL", "medium": "MEDIUM or higher", "": "any severity",
+                     "ssvc:attend": "an SSVC decision of Attend or Act", "ssvc:act": "an SSVC decision of Act"}
+        act_words = {"notify": "send an alert", "playbook": "send an alert with the response plan",
+                     "investigate": "run a deeper read-only investigation, then alert"}
+        cool_words = {str(v): k for k, v in _T.COOLDOWN_CHOICES.items()}
+        def suggest(v: dict) -> str:
+            return self._unique_name(f"{v['fid'] or v['sev'].replace('ssvc:', '') or 'finding'}-{what_word[v['action']]}",
+                                     _T.slugify_trigger_name, exists, "trigger")
+
+        auto = {"name": suggest({"fid": "", "sev": "high", "action": "notify"})}
+
+        def on_change(form: Any, v: dict) -> None:
+            if v["name"] in ("", auto["name"]):
+                new = suggest(v)
+                if new != v["name"]:
+                    auto["name"] = new
+                    form.set_text("name", new)
+
+        def describe(v: dict) -> tuple[str, list[str]]:
+            if v["fid"] and v["sev"]:
+                cond = f"{v['fid']} at {sev_words[v['sev']]}"
+            elif v["fid"]:
+                cond = v["fid"]
+            else:
+                cond = (f"a vulnerability with {sev_words[v['sev']]}" if v["sev"].startswith("ssvc:")
+                        else f"a finding at {sev_words[v['sev']]}" if v["sev"] else "a finding (name its ID)")
+            when = "is new, comes back, or a decision about it expires" if v["only_new"] else "is present"
+            summary = (f"When {cond} {when} after a scheduled run, {act_words[v['action']]}; "
+                       f"then stay quiet for {cool_words[v['cooldown']]}.")
+            notes: list[str] = []
+            if v["action"] == "investigate":
+                if cloud:
+                    notes.append("! 'investigate' runs the AI model on a paid cloud backend — each fire costs money.")
+                if not may_investigate:
+                    notes.append("! Triggers may not start investigations right now, so this would only notify "
+                                 "(Settings → Budget).")
+                if not has_schedules:
+                    notes.append("! No schedules yet: the deeper look runs during scheduled runs (/schedule new).")
+            ok, canonical, _e = _T.validate_trigger_name(v["name"] or suggest(v))
+            if ok and v["name"] and exists(canonical):
+                notes.append(f"! A trigger called '{canonical}' exists — Save asks before replacing it.")
+            notes.append(self._unattended_limits_note())
+            return summary, notes
+
+        def validate(v: dict) -> str | None:
+            if not v["sev"] and not v["fid"]:
+                return "Pick a severity, or type a finding-ID."
+            ok, canonical, err = _T.validate_trigger_name(v["name"] or suggest(v))
+            if not ok:
+                return err or "That name isn't valid — try another."
+            return None
+
+        vals = {"sev": "high", "fid": "", "only_new": False, "action": "notify",
+                "cooldown": str(_T.DEFAULT_COOLDOWN_MINUTES), "name": auto["name"]}
+        while True:
+            values = await self.app.push_screen_wait(FormModal("New trigger", [
+                {"id": "sev", "label": "Severity", "kind": "choice", "value": vals["sev"],
+                 "options": [("high", "high+"), ("critical", "critical"), ("medium", "medium+"),
+                             ("ssvc:attend", "Attend+"), ("ssvc:act", "Act"), ("", "by ID")]},
+                {"id": "fid", "label": "Finding-ID", "kind": "text", "value": vals["fid"],
+                 "placeholder": "optional — e.g. CORR-SSH-001"},
+                {"id": "only_new", "label": "Fire", "kind": "choice", "value": vals["only_new"],
+                 "options": [(False, "every time"), (True, "only when new or back")]},
+                {"id": "action", "label": "Then", "kind": "choice", "value": vals["action"],
+                 "options": [("notify", "notify"), ("playbook", "playbook"), ("investigate", "investigate")]},
+                {"id": "cooldown", "label": "Cooldown", "kind": "choice", "value": vals["cooldown"],
+                 "options": [(str(v), k) for k, v in _T.COOLDOWN_CHOICES.items()]},
+                {"id": "name", "label": "Name", "kind": "text", "value": vals["name"]},
+            ], describe, validate, on_change))
+            if values is None:
+                self._emit(R.note_line("Trigger not created."))
+                return
+            if not values["sev"] and not values["fid"]:      # (the form refuses this; a scripted answer may not)
+                self._emit(R.error_line("A trigger needs a condition — pick a severity and/or a finding-ID."))
+                return
+            _ok, name_raw, _err = _T.validate_trigger_name(values["name"] or suggest(values))
+            if exists(name_raw) and not await self.app.push_screen_wait(ConfirmModal(
+                    f"Replace trigger '{name_raw}'?",
+                    f"A trigger called '{name_raw}' already exists. Replace it with this one?")):
+                vals = {**values, "name": values["name"] or name_raw}
+                continue
+            break
+        sev, fid, action = values["sev"], values["fid"], values["action"]
+        min_ssvc = sev.split(":", 1)[1] if sev.startswith("ssvc:") else None    # D.3: by SSVC decision
         if min_ssvc:
             sev = ""
-        fid = await self.app.push_screen_wait(PromptModal(
-            "Specific finding-ID? (optional)",
-            "e.g. CORR-SSH-001 — or leave blank to match on severity only"))
-        if fid is None:
-            return
-        fid = fid.strip()
-        if not sev and not fid and not min_ssvc:
-            self._emit(R.error_line("A trigger needs a condition — pick a severity and/or a finding-ID."))
-            return
-
-        only_new = await self.app.push_screen_wait(ListPickerModal(
-            "Fire for findings still open from before too?",
-            [(False, "every time a matching finding is present"),
-             (True, "only when it's new, came back, or a decision about it expired")],
-            subtitle="↑↓ pick · esc cancel"))
-        if only_new is None:
-            return
-
-        action = await self.app.push_screen_wait(ListPickerModal(
-            "What should happen when it fires?",
-            [("notify", "notify — send a sharp alert"),
-             ("playbook", "playbook — alert + the response plan (what to do)"),
-             ("investigate", "investigate — a deeper read-only investigation, then alert")],
-            subtitle="↑↓ pick · esc cancel"))
-        if action is None:
-            return
-        # Cost gate: an investigate action runs the AI model unattended on the cadence.
-        if action == "investigate" and active_backend_is_cloud():
-            ok = await self.app.push_screen_wait(ConfirmModal(
-                "Cloud backend — unattended cost",
-                "The 'investigate' action runs the AI model, and the active backend is a paid "
-                "cloud endpoint. Every time this trigger fires on a scheduled run it spends money, "
-                "unattended. Prefer a local model. Continue anyway?"))
-            if not ok:
+        if action == "investigate" and cloud:
+            if not await self.app.push_screen_wait(ConfirmModal(
+                    "Cloud backend — unattended cost",
+                    "The 'investigate' action runs the AI model, and the active backend is a paid "
+                    "cloud endpoint. Every time this trigger fires on a scheduled run it spends money, "
+                    "unattended. Prefer a local model. Continue anyway?")):
                 self._emit(R.note_line("Trigger not created. Switch to a local backend with /model, or pick notify/playbook."))
                 return
-        # Coverage honesty: an investigate action's deep-dive runs on the SCHEDULED
-        # cadence (interactive /run only notifies it's deferred). With no schedule,
-        # that deeper investigation never actually happens — nudge, don't block.
-        if action == "investigate":
-            from kratos.agent import schedules as _S
-            if not _S.list_schedules(self._data_dir)[0]:
-                self._emit(R.note_line(
-                    "Note: an 'investigate' trigger runs its deeper look during SCHEDULED runs. "
-                    "You have no schedules yet — create one with /schedule new so it actually "
-                    "runs; otherwise it will only notify that the deep-dive is deferred."))
-
-        cooldown = await self.app.push_screen_wait(ListPickerModal(
-            "Cooldown — how long to wait before it can fire again?",
-            [(str(v), f"{k}  (won't re-alert for {k})") for k, v in _T.COOLDOWN_CHOICES.items()],
-            subtitle="↑↓ pick · esc cancel"))
-        if cooldown is None:
-            return
-
-        if not await self._unattended_budget_gate("trigger"):
-            self._emit(R.note_line("Trigger not created."))
-            return
-        what = {"notify": "alert", "playbook": "playbook", "investigate": "investigate"}[action]
-        name_raw = await self._ask_new_name(
-            "Trigger name", f"{fid or sev or min_ssvc}-{what}", _T.slugify_trigger_name,
-            _T.validate_trigger_name, lambda n: _T.trigger_exists(self._data_dir, n), "trigger")
-        if name_raw is None:
-            return
+        self._mark_unattended_limits_seen("trigger")
         try:
             tg = _T.save_trigger(self._data_dir, name=name_raw, action=action,
                                  min_severity=(sev or None), finding_id=(fid or None),
-                                 cooldown_minutes=int(cooldown), only_new_or_reopened=bool(only_new),
-                                 min_ssvc=min_ssvc)
+                                 cooldown_minutes=int(values["cooldown"]),
+                                 only_new_or_reopened=bool(values["only_new"]), min_ssvc=min_ssvc)
         except _T.TriggerError as e:
             self._emit(R.error_line(str(e)))
             return
@@ -3812,6 +4028,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._reset_recall()
         self._last_day = None
         self._log.clear()
+        self._folds = []
+        self._cancel_fold()
         self._render_idle()
         self._refresh_footer()
 
@@ -5138,7 +5356,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if problems:
             self._emit_from_worker(R.error_line(f"Can't switch to {target.model}: {'; '.join(problems)}"))
             return
-        self._emit_from_worker(R.note_line(f"Checking {target.model} is reachable…"))
+        self._emit_from_worker(R.progress_line(f"Checking {target.model} is reachable…"))
         reachable, detail = check_endpoint_reachable(target.values["LLM_BASE_URL"], target.values["LLM_API_KEY"])
         if not reachable:
             self._emit_from_worker(R.error_line(f"Can't switch to {target.model} — not reachable ({detail})."))
@@ -5239,7 +5457,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             if target_override:
                 _kconfig.set_active_target(prior_active)
             return
-        self._emit_from_worker(R.note_line(f"Starting investigation (up to {REPL_MAX_ITERS} steps)…"))
+        self.app.call_from_thread(self._begin_fold)
+        self._emit_from_worker(R.progress_line(f"Starting investigation (up to {REPL_MAX_ITERS} steps)…"))
         # A run pinned to Kratos's own machine is stored the way it was asked for,
         # so ↑ recall re-runs it on that machine (not the target) and a resumed
         # session's history says which machine the turn was about.
@@ -5273,11 +5492,13 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 should_stop=lambda: worker.is_cancelled,
             )
         except (_CancelInvestigation, InvestigationStopped):
+            self.app.call_from_thread(self._cancel_fold)   # an interrupted turn keeps its steps in view
             self._store.complete_turn(turn_id, "cancelled", transcript_ref=None)
             self._emit_from_worker(R.note_line("Interrupted — nothing was left running on the target. Press Ctrl+R to re-run this goal, or type a new one."))
             self._remember_turn(goal, "(investigation interrupted before it concluded)")
             return
         except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self._cancel_fold)
             self._store.complete_turn(turn_id, "error", transcript_ref=None)
             self._emit_from_worker(R.error_line(f"Investigation errored: {e}"))
             return
@@ -5291,6 +5512,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             _target_lock.release_target(_lock)
 
         duration = time.monotonic() - started
+        self.app.call_from_thread(self._end_fold)
         if result.get("status") != STOPPED_BY_BUDGET:
             # Circuit breaker (kratos.budget): a person is watching, so repeated
             # failures here only warn -- never pause.
@@ -5306,7 +5528,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._last_answer = result.get("final_answer", "") or ""
         status = str(result["status"])
         if result["status"] == "final_answer":
-            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.SAFE, time_str=t), d)
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.ACCENT, time_str=t), d)
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
         elif result["status"] == STOPPED_BY_BUDGET:
@@ -5334,7 +5556,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         for c in commands:
             self._emit_from_worker(R.recommended_command_panel(c, target_label))
         if self._last_commands:
-            self._emit_from_worker(R.note_line("Ctrl+Y copies the recommended command(s) — Kratos does not run them."))
+            self._emit_from_worker(R.hint_line("Ctrl+Y copies the recommended command(s) exactly — Kratos does not run them."))
         self._last_target_commands = [] if target_override else [
             c for c in commands if str(c.get("run_on") or "target") == "target"]
         self._runnable_fixes = [] if target_override else self._match_runnable_fixes(commands)
@@ -5641,13 +5863,17 @@ class SessionScreen(ResilientWorkerHost, Screen):
         if step.get("status") == "collection":
             # What Kratos checked by itself before the model's first step (kratos.collect): one line.
             if step.get("summary_line"):
-                self._emit_from_worker(R.note_line(step["summary_line"]))
+                self._emit_from_worker(R.progress_line(step["summary_line"]))
             return
         if step.get("collected") and step.get("tool") != "correlate_findings":
             return                                    # covered by the line above
         tool_name = step.get("tool")
+        meta = getattr(self, "_fold_meta", None)
         if tool_name:
             result, effective_status = R.unwrap_tool_result(step.get("observation"))
+            if meta is not None:
+                meta["steps"] += 1
+                meta["failed"] += effective_status == "error"
             if effective_status == "error":
                 err = R.error_detail(result)
                 self._emit_from_worker(R.error_line(f"{tool_name} failed — {err or 'no error detail'}"))
@@ -5662,6 +5888,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit_from_worker(line)
                 full, folded = FV.plan(findings, self._shown_findings, self._turn_started_wall)
+                if meta is not None:
+                    meta["findings"].extend(f for f, _why in full)
                 for f, why in full:
                     t, d = self._stamp_now()
                     if why == "earlier":
@@ -5679,6 +5907,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             via = R.transport_chip(result)
             if via is not None:
                 self._emit_from_worker(via)
+            if meta is not None:
+                meta["chips"].extend(c for c in (chip, via) if c is not None)
         elif step.get("tool_proposal"):
             proposal = step["tool_proposal"]
             self.session_state["pending_evolve_suggestion"] = proposal

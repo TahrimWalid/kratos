@@ -34,6 +34,7 @@ from kratos.lifecycle import settings as LS
 from kratos.triage import run as TR
 from kratos.target_key import target_key
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils.timeutil import format_for_display, resolve_display_tz
@@ -84,25 +85,26 @@ class DecisionModal(ModalScreen[dict[str, Any] | None]):
         accept = self._kind == "risk_accepted"
         with Vertical(classes="modal-card"):
             yield Static(Text(title, style=f"bold {T.ACCENT}"), classes="modal-title")
-            yield Static(Text(f"{self._label}\n(state: {technical})", style=T.TEXT_DIM))
-            if accept:
-                yield Static(Text("Owner — who is responsible for this risk", style=T.TEXT))
-                yield Input(value=self._owner, id="d-owner", select_on_focus=False)
-            yield Static(Text("Reason (required)", style=T.TEXT))
-            yield Input(id="d-reason", placeholder="e.g. our own vulnerability scanner")
-            choices = " / ".join(str(d) for d in EXPIRY_CHOICES if d <= self._cap_days)
-            yield Static(Text(
-                f"Until — days ({choices}) or a date (2026-12-31); at most {self._cap_days} days" if accept
-                else "Until (optional) — days or a date; leave empty for no end date", style=T.TEXT))
-            yield Input(value=str(min(30, self._cap_days)) if accept else "", id="d-until", select_on_focus=False)
-            yield Static(Text("Applies to", style=T.TEXT))
-            with RadioSet(id="d-scope"):
-                yield RadioButton("this finding", value=True, id="scope-key")
-                yield RadioButton("this rule on this machine", id="scope-rule_target")
-                yield RadioButton("this rule everywhere (asks again)", id="scope-rule")
+            yield Static(Text(self._label, style=T.TEXT_FAINT))
+            with VerticalScroll(classes="modal-body"):
+                yield Static(Text.assemble(("Reason ", T.TEXT_DIM), ("required", T.ATTENTION)))
+                yield Input(id="d-reason", placeholder="e.g. our own vulnerability scanner")
+                yield Static(Text("Applies to", style=T.TEXT_DIM))
+                with RadioSet(id="d-scope"):
+                    yield RadioButton("this finding", value=True, id="scope-key")
+                    yield RadioButton("this rule on this machine", id="scope-rule_target")
+                    yield RadioButton("this rule everywhere (asks again)", id="scope-rule")
+                choices = " / ".join(str(d) for d in EXPIRY_CHOICES if d <= self._cap_days)
+                yield Static(Text.assemble(("Until ", T.TEXT_DIM), (
+                    f"days ({choices}) or a date · at most {self._cap_days} days" if accept
+                    else "optional · days or a date", T.TEXT_FAINT)))
+                yield Input(value=str(min(30, self._cap_days)) if accept else "", id="d-until", select_on_focus=False)
+                if accept:
+                    yield Static(Text("Owner", style=T.TEXT_DIM))
+                    yield Input(value=self._owner, id="d-owner", select_on_focus=False)
             yield Static("", id="d-error")
-            yield Button("Save", id="d-save", variant="primary")
-            yield Static(Text("Enter / Save · esc cancel (nothing changes)", style=T.TEXT_DIM))
+            yield Button("Save", id="d-save", compact=True)
+            yield Static(Text("Enter save · esc cancel (nothing changes)", style=T.TEXT_DIM))
 
     def on_mount(self) -> None:
         self.query_one("#d-reason", Input).focus()
@@ -171,7 +173,10 @@ def _is_number(text: str) -> bool:
 
 
 class FindingsScreen(Screen):
+    _ALL_KEYS = '↑↓ select · enter details · h history · c copy ATT&CK\nv verify · a accept risk · f not a real problem · o out of scope · r reopen\nk re-check · t retest · n dismiss note\ns which findings · p severity · m machine · / search · esc back'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         # priority: the focused DataTable would otherwise take Enter itself
         Binding("enter", "details", "details", show=True, priority=True),
@@ -198,7 +203,7 @@ class FindingsScreen(Screen):
     FindingsScreen #fd-banner { height: auto; padding: 0 0 1 0; }
     FindingsScreen DataTable { height: auto; max-height: 70%; }
     FindingsScreen #fd-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    FindingsScreen #fd-hints { height: auto; padding-top: 1; }
+    FindingsScreen #fd-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
     """
 
     def __init__(self, data_dir: Path, *, target: str | None = None) -> None:
@@ -212,20 +217,19 @@ class FindingsScreen(Screen):
         self._rows: list[dict[str, Any]] = []
         self._tz = resolve_display_tz(self._data_dir)
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        self.app.push_screen(InfoModal("Findings — all keys", all_keys_text(self._ALL_KEYS)))
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="fd-banner")
             yield DataTable(id="fd-table", cursor_type="row")
             yield VerticalScroll(id="fd-log")
-            yield Static(Text(
-                "↑↓ select · enter details · h history · c copy ATT&CK · x fix to copy\n"
-                "v verify · a accept risk · f not a real problem · o out of scope · r reopen\n"
-                "k re-check · t retest · n dismiss note\n"
-                "s which findings · p severity · m machine · / search · esc back",
-                style=T.TEXT_DIM), id="fd-hints")
+            yield Static(key_bar([('enter', 'details'), ('v', 'verify'), ('a', 'accept'), ('s', 'view'), ('?', 'all keys'), ('esc', 'back')]), id="fd-hints")
 
     def on_mount(self) -> None:
-        self.query_one("#fd-table", DataTable).add_columns(*COLUMNS)
+        pass  # columns are chosen per refresh (refresh_rows)
         self.refresh_rows()
 
     def on_screen_resume(self) -> None:
@@ -239,7 +243,7 @@ class FindingsScreen(Screen):
 
     # -- data --------------------------------------------------------------
     def _when(self, value: str | None) -> str:
-        return format_for_display(value, "%Y-%m-%d %H:%M", tz=self._tz) if value else "-"
+        return format_for_display(value, "%m-%d %H:%M", tz=self._tz) if value else "-"
 
     def _verdict_cell(self, row: dict[str, Any]) -> Text:
         v = row.get("verdict")
@@ -263,28 +267,56 @@ class FindingsScreen(Screen):
                 [r["rule_id"], r["title"], r["finding_key"], r["target"], *r["entities"]]).lower()]
         from kratos.ssvc.attach import sort_key
 
-        return sorted(rows, key=sort_key)      # D.3: by SSVC decision first, then severity
+        # Worst first: verified before open, then by SSVC decision and severity (D.3's sort_key).
+        state_rank = {"verified": 0, "open": 1}
+        rows = sorted(rows, key=sort_key)
+        rows.sort(key=lambda r: state_rank.get(r["state"], 2))
+        return rows
 
     def refresh_rows(self) -> None:
         table = self.query_one("#fd-table", DataTable)
         cursor = table.cursor_row
         self._rows = self.visible_rows()
-        table.clear()
+        # Only the columns that say something: "until" only when a decision has an end,
+        # "first seen" and "machine" only when there's room / more than one machine.
+        wide = self.app.size.width >= 110
+        any_until = any((r.get("decision") or {}).get("expires_at") for r in self._rows)
+        machines = {r["target"] for r in self._rows}
+        decided = any(_ssvc.cell(r) for r in self._rows)
+        cols = ["state", "severity"] + (["decision"] if decided else []) + (["exposure"] if decided and wide else [])
+        cols += ["rule", "title"]
+        if wide or any(isinstance(r.get("verdict"), dict) for r in self._rows):
+            cols.append("verdict")        # a column of dashes only when there's room for it
+        if len(machines) > 1 or wide:
+            cols.append("machine")
+        if wide:
+            cols.append("first seen")
+        cols.append("last seen")
+        if any_until:
+            cols.append("until")
+        table.clear(columns=True)
         cells = []
         for r in self._rows:
             until = (r.get("decision") or {}).get("expires_at")
-            cells.append([
-                Text(STATE_WORDS.get(r["state"], r["state"]), style=STATE_COLOR.get(r["state"], T.TEXT)),
-                Text(r["severity"], style=T.SEVERITY_COLOR.get(r["severity"], T.TEXT)),
-                Text(_ssvc.cell(r) or "-", style=DECISION_COLOR.get(_ssvc.cell(r), T.TEXT if _ssvc.cell(r) else T.TEXT_DIM)),
-                Text(_ssvc.exposure_cell(r) or "-", style=T.TEXT if _ssvc.exposure_cell(r) else T.TEXT_DIM),
-                r["rule_id"], r["title"] + self._reputation_tag(r), self._verdict_cell(r), r["target"],
-                self._when(r["first_seen"]), self._when(r["last_seen"]),
-                self._when(until) if until else "",
-            ])
-        available = table.size.width or max(self.app.size.width - 6, 40)
-        for i, row in enumerate(fit_columns(cells, available, shrink=[(5, 14), (6, 16), (7, 10), (8, 10), (3, 8)],
-                                             headers=COLUMNS)):
+            full = {
+                "state": Text(STATE_WORDS.get(r["state"], r["state"]), style=STATE_COLOR.get(r["state"], T.TEXT)),
+                "severity": Text(r["severity"], style=T.SEVERITY_COLOR.get(r["severity"], T.TEXT)),
+                "decision": Text(_ssvc.cell(r) or "-", style=DECISION_COLOR.get(_ssvc.cell(r), T.TEXT if _ssvc.cell(r) else T.TEXT_DIM)),
+                "exposure": Text(_ssvc.exposure_cell(r) or "-", style=T.TEXT if _ssvc.exposure_cell(r) else T.TEXT_DIM),
+                "rule": r["rule_id"], "title": r["title"] + self._reputation_tag(r), "verdict": self._verdict_cell(r), "machine": r["target"],
+                "first seen": self._when(r["first_seen"]), "last seen": self._when(r["last_seen"]),
+                "until": self._when(until) if until else "",
+            }
+            cells.append([full[c] for c in cols])
+        available = max(self.app.size.width - 6, 40)
+        title_i = cols.index("title")
+        shrink = [(title_i, 16)] + [(cols.index(c), 8) for c in ("verdict", "machine") if c in cols]
+        fitted = fit_columns(cells, available, shrink=shrink, headers=cols)
+        from rich.cells import cell_len as _cl
+        for ci, h in enumerate(cols):
+            w = max([_cl(h)] + [(c.cell_len if hasattr(c, "cell_len") else _cl(str(c))) for c in (r[ci] for r in fitted)])
+            table.add_column(h, width=w)
+        for i, row in enumerate(fitted):
             table.add_row(*row, key=self._rows[i]["finding_key"])
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
@@ -306,6 +338,8 @@ class FindingsScreen(Screen):
                 banner.append(" — press s to see them", style=T.TEXT_DIM)
         if not self._rows and self._state == "open_verified":
             banner.append("\nNothing open. Findings appear here after an investigation or /run.", style=T.TEXT_DIM)
+        elif not self._rows:
+            banner.append(f"\nNothing in this view. Press s for the next view.", style=T.TEXT_DIM)
         self.query_one("#fd-banner", Static).update(banner)
 
     def selected(self) -> dict[str, Any] | None:
@@ -536,7 +570,9 @@ class FindingsScreen(Screen):
     def _done(self, result: dict[str, Any], words: str) -> None:
         scope = result.get("scope")
         extra = f" ({D.SCOPE_WORDS[scope]})" if scope and scope != "key" else ""
-        self.note(Text(f"✓ {result['finding_key'][:12]}: {words}{extra}.", style=T.SAFE))
+        row = next((r for r in self._rows if r["finding_key"] == result["finding_key"]), None)
+        name = f"{row['rule_id']} on {row['target']}" if row else result["finding_key"][:12]
+        self.note(Text(f"✓ {name}: {words}{extra}.", style=T.SAFE))
         self.refresh_rows()
 
     def _refused(self, e: Exception) -> None:

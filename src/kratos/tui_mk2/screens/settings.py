@@ -19,13 +19,14 @@ from kratos.untrusted_rich import SafeText as Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Select, TabbedContent, TabPane
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 
 from kratos.tui_mk2 import render as R
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import key_bar
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.tui_mk2.workers import ResilientWorkerHost
 
@@ -40,6 +41,16 @@ _PRESETS: dict[str, tuple[str, str]] = {
     "OpenRouter": ("https://openrouter.ai/api/v1", "openai_compatible"),
     "Custom / other": ("", "openai_compatible"),
 }
+
+
+def _fit(text: Text, width: int) -> Text:
+    """A copy of `text` no wider than `width` cells, ending in … when it was cut.
+    (Display only: the setting itself is untouched.)"""
+    if text.cell_len <= width:
+        return text
+    out = text[: max(width - 1, 0)]
+    out.append("…", style=T.TEXT_DIM)
+    return out
 
 
 def _validate_window(raw: str, detected_max: int | None, detected_loaded: int | None) -> tuple[int | None, str | None, str | None]:
@@ -316,7 +327,15 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 
     CSS = f"""
     SettingsScreen {{ padding: 1 2; }}
-    SettingsScreen #set-title {{ height: 1; text-style: bold; color: {T.ACCENT}; padding: 0 0 1 0; }}
+    SettingsScreen #set-title {{ height: 2; text-style: bold; color: {T.ACCENT}; padding: 0 0 1 0; }}
+    SettingsScreen TabbedContent {{ height: 1fr; }}
+    SettingsScreen ContentSwitcher {{ height: 1fr; }}
+    SettingsScreen #tab-general {{ height: 1fr; }}
+    SettingsScreen #gen-panes {{ height: 1fr; }}
+    SettingsScreen #gen-cats {{ width: 22; height: 1fr; border-right: solid {T.BORDER}; margin-right: 1; }}
+    SettingsScreen #gen-right {{ width: 1fr; height: 1fr; }}
+    SettingsScreen #gen-detail {{ height: auto; min-height: 3; padding: 1 0 0 0; border-top: solid {T.BORDER}; }}
+    SettingsScreen #gen-hint {{ height: 2; padding: 1 0 0 0; }}
     SettingsScreen DataTable {{ height: 1fr; }}
     SettingsScreen #ms-hint {{ height: auto; color: {T.TEXT_DIM}; padding: 1 0 0 0; }}
     SettingsScreen #ms-status {{ height: auto; color: {T.TEXT_MUTED}; }}
@@ -394,11 +413,13 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                     id="ap-hint")
                 yield Static("", id="ap-status")
             with TabPane("General", id="tab-general"):
-                yield DataTable(id="gen-table", cursor_type="row", zebra_stripes=False)
-                yield Static(
-                    Text("↑↓ select · enter change · n name · t theme · u timezone auto\n"
-                         "ctrl+→ next tab · esc back", style=T.TEXT_DIM),
-                    id="gen-hint")
+                with Horizontal(id="gen-panes"):
+                    yield DataTable(id="gen-cats", cursor_type="row", zebra_stripes=False, show_header=False)
+                    with Vertical(id="gen-right"):
+                        yield DataTable(id="gen-table", cursor_type="row", zebra_stripes=False)
+                        yield Static("", id="gen-detail")
+                yield Static(key_bar([("↑↓", "select"), ("←→", "category / setting"), ("enter", "change"),
+                                      ("ctrl+→", "next tab"), ("esc", "back")]), id="gen-hint")
                 yield Static("", id="gen-status")
             with TabPane("Budget", id="tab-budget"):
                 yield DataTable(id="bud-table", cursor_type="row", zebra_stripes=False)
@@ -424,8 +445,6 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         ap = self.query_one("#ap-table", DataTable)
         ap.add_columns("Tool", "Kind", "Asks first", "What it does")
         self._reload_approvals()
-        gen = self.query_one("#gen-table", DataTable)
-        gen.add_columns("Setting", "Value")
         self._reload_general()
         bud = self.query_one("#bud-table", DataTable)
         bud.add_columns("Limit", "Value", "Today")
@@ -434,9 +453,14 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             sess = self.query_one("#sess-table", DataTable)
             sess.add_columns("Setting", "Value")
             self._reload_session()
-        table.focus()  # so ↑↓ navigate immediately, no click needed
-        if self._initial_tab == "tab-budget":
-            self.call_after_refresh(bud.focus)
+        # Focus the opening tab's own list so ↑↓ work at once. (Focusing a table in
+        # another tab would make TabbedContent jump to that tab.)
+        first = {"tab-approvals": "#ap-table", "tab-general": "#gen-cats", "tab-budget": "#bud-table",
+                 "tab-session": "#sess-table"}.get(self._initial_tab, "#ms-table")
+        try:
+            self.query_one(first, DataTable).focus()
+        except Exception:  # noqa: BLE001 -- e.g. the session tab when opened from home
+            table.focus()
 
     def refresh_theme(self) -> None:
         """Called by KratosTUI.apply_theme_pack after a live pack switch: re-render
@@ -471,7 +495,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         elif tab == "tab-approvals":
             self.query_one("#ap-table", DataTable).focus()
         elif tab == "tab-general":
-            self.query_one("#gen-table", DataTable).focus()
+            self.query_one("#gen-cats", DataTable).focus()
         elif tab == "tab-budget":
             self.query_one("#bud-table", DataTable).focus()
         elif tab == "tab-session":
@@ -570,7 +594,10 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         elif tab == "tab-approvals":
             self._toggle_approval()
         elif tab == "tab-general":
-            self._general_primary()
+            if self.focused is self.query_one("#gen-cats", DataTable):
+                self.query_one("#gen-table", DataTable).focus()
+            else:
+                self._general_primary()
         elif tab == "tab-budget":
             self._budget_primary()
         elif tab == "tab-session":
@@ -738,61 +765,229 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         Models and Tools tabs -- Enter acts on the highlighted row."""
         gen = self.query_one("#gen-table", DataTable)
         idx = gen.cursor_row
-        gen.clear()
+        gen.clear(columns=True)
+        self._gen_explain = []
+        pending: list = []
+
+        def add(label, value):
+            raw = value.plain if hasattr(value, 'plain') else str(value)
+            head, sep, rest = raw.partition('  (')
+            explain = rest[:-1] if sep and rest.endswith(')') else ''
+            if not sep:
+                head, sep2, rest2 = raw.partition('  — ')
+                explain = rest2 if sep2 else ''
+            self._gen_explain.append(explain)
+            pending.append((label, Text(head, style=T.TEXT_BRIGHT)))
+
         name = self._current_user_name()
-        gen.add_row(Text("Your name", style=T.TEXT_MUTED),
+        add(Text("Your name", style=T.TEXT_MUTED),
                     Text(name or "not set (messages show 'you>')", style=T.TEXT))
-        gen.add_row(Text("Theme", style=T.TEXT_MUTED),
+        add(Text("Theme", style=T.TEXT_MUTED),
                     Text(T.pack_label(T.active_pack_name()), style=T.TEXT))
-        gen.add_row(Text("Display timezone", style=T.TEXT_MUTED),
+        add(Text("Display timezone", style=T.TEXT_MUTED),
                     Text(self._tz_value(), style=T.TEXT))
         max_days, view = self._findings_settings()
-        gen.add_row(Text("Longest risk acceptance", style=T.TEXT_MUTED),
+        add(Text("Longest risk acceptance", style=T.TEXT_MUTED),
                     Text(f"{max_days} days  (a risk you accept comes back after this)", style=T.TEXT))
-        gen.add_row(Text("/findings shows first", style=T.TEXT_MUTED),
+        add(Text("/findings shows first", style=T.TEXT_MUTED),
                     Text("open and verified findings" if view == "open_verified" else "everything", style=T.TEXT))
         interval, budget = self._logs_settings()
-        gen.add_row(Text("Sealed-journal check, at most every", style=T.TEXT_MUTED),
+        add(Text("Sealed-journal check, at most every", style=T.TEXT_MUTED),
                     Text(f"{interval} minutes  (after investigations of a sealed machine)", style=T.TEXT))
-        gen.add_row(Text("Sealed-journal copy per check", style=T.TEXT_MUTED),
+        add(Text("Sealed-journal copy per check", style=T.TEXT_MUTED),
                     Text(f"{budget} MB  (newest files first; the rest next time)", style=T.TEXT))
         for key, label, tail in self._collection_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._detect_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._hunt_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._fleet_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._outbox_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._export_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._hashdb_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._compliance_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._baseline_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        for key, label, tail in self._code_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        for rows in (self._fleet_rows(), self._outbox_rows(), self._export_rows(), self._hashdb_rows(),
+                     self._compliance_rows(), self._baseline_rows(), self._code_rows()):
+            for key, label, tail in rows:
+                add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         age, epss = self._vulndb_settings()
-        gen.add_row(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
+        add(Text("Vulnerability data counts as old after", style=T.TEXT_MUTED),
                     Text(f"{age} days  (then results say: run `kratos vulndb-update`)", style=T.TEXT))
-        gen.add_row(Text("Likely-exploited threshold (EPSS)", style=T.TEXT_MUTED),
+        add(Text("Likely-exploited threshold (EPSS)", style=T.TEXT_MUTED),
                     Text(f"{epss:.0%}  (a serious fixable CVE at least this likely to be exploited is high)", style=T.TEXT))
-        gen.add_row(Text("Ask how much each machine matters", style=T.TEXT_MUTED),
-                    Text(self._ssvc_ask_text(), style=T.TEXT))
+        add(Text("Ask how much each machine matters", style=T.TEXT_MUTED),
+            Text(self._ssvc_ask_text(), style=T.TEXT))
         for key, label, tail in self._trace_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._privacy_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._serve_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
         for key, label, tail in self._agent_link_rows():
-            gen.add_row(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
-        if idx is not None and 0 <= idx < len(self._gen_rows):
-            gen.move_cursor(row=idx)
+            add(Text(label, style=T.TEXT_MUTED), Text(tail, style=T.TEXT))
+        # Two panes: categories on the left, that category's settings on the right
+        # (values only), and the explanation, default and last change underneath.
+        self._gen_all = [(self._gen_rows[i], l, v, self._gen_explain[i]) for i, (l, v) in enumerate(pending)]
+        self._render_gen_categories()
+        self._render_gen_settings(keep_row=idx)
+
+    # Category per key prefix, in the order people look for them.
+    _GEN_CATEGORIES = [
+        ("You and display", ("name", "theme", "timezone")),
+        ("Findings", ("findings.",)),
+        ("Vulnerability data", ("vulndb.", "ssvc.")),
+        ("Detection", ("detect.",)),
+        ("Hunting", ("hunt.",)),
+        ("What's normal", ("baseline.",)),
+        ("Compliance", ("compliance.",)),
+        ("Code and review", ("code.", "review.")),
+        ("File reputation", ("hashdb.",)),
+        ("Collection", ("collect.",)),
+        ("Log sealing", ("logs.",)),
+        ("Groups of machines", ("fleet.",)),
+        ("Delivery", ("outbox.",)),
+        ("Incident bundles", ("export.",)),
+        ("Run records", ("trace.",)),
+        ("Privacy", ("privacy.",)),
+        ("Chat server", ("serve.",)),
+        ("Agents", ("subagent.",)),
+    ]
+    _GEN_LABEL_PREFIXES = ("Detection rules: ", "Hunting: ", "Agent link: ")
+    _GEN_LABEL_RENAMES = {"Continuous detection: ": "Watching: "}
+
+    def _gen_category_of(self, key: str) -> int:
+        for i, (_name, prefixes) in enumerate(self._GEN_CATEGORIES):
+            if key in prefixes or any(p.endswith(".") and key.startswith(p) for p in prefixes):
+                return i
+        return 0
+
+    def _gen_changed(self, key: str) -> bool:
+        """True when a stored setting differs from its default (unknown keys: no)."""
+        from kratos import settings_store
+        dd = self._data_dir()
+        if dd is None:
+            return False
+        try:
+            spec = settings_store._spec(key)
+            return settings_store.get(key, data_dir=dd) != spec.default
+        except Exception:  # noqa: BLE001 -- name / theme / timezone and composite rows aren't specs
+            return False
+
+    def _render_gen_categories(self) -> None:
+        cats = self.query_one("#gen-cats", DataTable)
+        cur = getattr(self, "_gen_cat", 0)
+        cats.clear(columns=True)
+        cats.add_column("Category", width=20)
+        for i, (name, _p) in enumerate(self._GEN_CATEGORIES):
+            n_changed = sum(1 for k, *_ in self._gen_all if self._gen_category_of(k) == i and self._gen_changed(k))
+            t = Text(name, style=T.TEXT)
+            if n_changed:
+                t.append(" •", style=T.ACCENT)
+            cats.add_row(t)
+        cats.move_cursor(row=cur)
+
+    def _render_gen_settings(self, keep_row: int | None = None) -> None:
+        gen = self.query_one("#gen-table", DataTable)
+        cat = getattr(self, "_gen_cat", 0)
+        rows = [(i, k, l, v) for i, (k, l, v, _e) in enumerate(self._gen_all) if self._gen_category_of(k) == cat]
+        self._gen_visible = [i for i, *_ in rows]
+        gen.clear(columns=True)
+        avail = max(self.app.size.width - 6 - 23, 30)
+        labels = []
+        for _i, k, l, _v in rows:
+            l = l.copy()
+            for pre in self._GEN_LABEL_PREFIXES:
+                if l.plain.startswith(pre):
+                    rest = l.plain[len(pre):]
+                    l = Text(rest[:1].upper() + rest[1:], style=T.TEXT_MUTED)
+            for pre, short in self._GEN_LABEL_RENAMES.items():
+                if l.plain.startswith(pre):
+                    l = Text(short + l.plain[len(pre):], style=T.TEXT_MUTED)
+            if self._gen_changed(k):
+                l.append(" •", style=T.ACCENT)
+            labels.append(l)
+        val_w = min(max([5] + [v.cell_len for *_x, v in rows]), max(avail * 2 // 5, 14))
+        lab_w = max(min(max([7] + [l.cell_len for l in labels]), avail - val_w - 3), 10)
+        gen.add_column("Setting", width=lab_w)
+        gen.add_column("Value", width=val_w)
+        for l, (_i, _k, _l, v) in zip(labels, rows):
+            gen.add_row(_fit(l, lab_w), _fit(v, val_w))
+        if keep_row is not None and 0 <= keep_row < len(rows):
+            gen.move_cursor(row=keep_row)
+        self._update_gen_detail()
+
+    @on(DataTable.RowHighlighted, "#gen-cats")
+    def _gen_cat_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        row = event.cursor_row
+        if row is None or row == getattr(self, "_gen_cat", 0) and getattr(self, "_gen_visible", None):
+            return
+        self._gen_cat = row
+        self._render_gen_settings(keep_row=0)
+
+    @on(DataTable.RowSelected, "#gen-cats")
+    def _gen_cat_selected(self, event: DataTable.RowSelected) -> None:
+        self.query_one("#gen-table", DataTable).focus()
+
+    def on_key(self, event) -> None:
+        # ← / → move between the category list and its settings.
+        if self._active_tab() != "tab-general":
+            return
+        cats = self.query_one("#gen-cats", DataTable)
+        gen = self.query_one("#gen-table", DataTable)
+        if event.key == "right" and self.focused is cats:
+            gen.focus(); event.stop(); event.prevent_default()
+        elif event.key == "left" and self.focused is gen:
+            cats.focus(); event.stop(); event.prevent_default()
+
+    def _gen_select(self, full_index: int) -> None:
+        """Show the category holding setting number `full_index` and put the cursor on it."""
+        key = self._gen_all[full_index][0]
+        self._gen_cat = self._gen_category_of(key)
+        self.query_one("#gen-cats", DataTable).move_cursor(row=self._gen_cat)
+        self._render_gen_settings()
+        self.query_one("#gen-table", DataTable).move_cursor(row=self._gen_visible.index(full_index))
+        self._update_gen_detail()
+
+    def _gen_full_index(self, row: int | None) -> int | None:
+        vis = getattr(self, "_gen_visible", [])
+        if row is None or not (0 <= row < len(vis)):
+            return None
+        return vis[row]
+
+    def _update_gen_detail(self) -> None:
+        try:
+            gen = self.query_one("#gen-table", DataTable)
+            i = self._gen_full_index(gen.cursor_row or 0)
+            if i is None:
+                self.query_one("#gen-detail", Static).update("")
+                return
+            key, label, value, explain = self._gen_all[i]
+            t = Text()
+            t.append(label.plain, style=f"bold {T.TEXT_BRIGHT}")
+            doc, default = "", None
+            try:
+                from kratos import settings_store
+                spec = settings_store._spec(key)
+                doc, default = spec.doc, spec.default
+            except Exception:  # noqa: BLE001
+                pass
+            body = explain or doc
+            if body:
+                t.append("\n" + body[:1].upper() + body[1:], style=T.TEXT_MUTED)
+            t.append("\nNow ", style=T.TEXT_DIM)
+            t.append(value.plain, style=T.TEXT_BRIGHT)
+            if default is not None:
+                d = default
+                if isinstance(d, bool):
+                    d = "on" if d else "off"
+                elif isinstance(d, (list, tuple)):
+                    d = ", ".join(map(str, d)) or "none"
+                t.append(f"  ·  default {d}", style=T.TEXT_DIM)
+                if self._gen_changed(key):
+                    t.append("  ·  changed", style=T.ACCENT)
+            self.query_one("#gen-detail", Static).update(t)
+        except Exception:  # noqa: BLE001
+            pass
+
+    @on(DataTable.RowHighlighted, "#gen-table")
+    def _gen_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._update_gen_detail()
 
     # --- Encrypted agent link (kratos.subagent.tls, C.4) ---
     def _plaintext_agents(self, dd: Any) -> list[str]:
@@ -1383,7 +1578,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
 
     def _general_primary(self) -> None:
         """Enter on the General tab acts on the highlighted setting."""
-        idx = self.query_one("#gen-table", DataTable).cursor_row
+        idx = self._gen_full_index(self.query_one("#gen-table", DataTable).cursor_row)
         key = self._gen_rows[idx] if idx is not None and 0 <= idx < len(self._gen_rows) else None
         if key == "name":
             self._set_name_flow()

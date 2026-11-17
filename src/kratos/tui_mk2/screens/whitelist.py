@@ -54,6 +54,7 @@ from kratos.subagent import whitelist_templates as TPL
 from kratos.subagent.protocol import MAX_WHITELIST_VERSION
 from kratos.subagent.status import derive_status
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import (
     CommandModal, ConfirmModal, ExecutionConsentModal, ListPickerModal, MultiSelectModal, PromptModal, TypedExecuteModal,
 )
@@ -109,7 +110,10 @@ _OUTCOME_COLOR = {"ok": T.SAFE, "refused": T.ATTENTION, "error": T.ATTENTION, "u
 
 
 class WhitelistScreen(Screen):
+    _ALL_KEYS = '↑↓ select · enter run · a add · m edit · space on/off · x delete · i details\nc what the target allows · s re-sync · t telemetry · r roll back last run\ne allow fixes on this target · d stop fixes · esc back'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         # priority: the focused DataTable otherwise consumes Enter itself and
         # the run flow never starts (a real bug, caught by a real-keypress test).
@@ -132,7 +136,7 @@ class WhitelistScreen(Screen):
     WhitelistScreen #wl-banner { height: auto; padding: 0 0 1 0; }
     WhitelistScreen DataTable { height: auto; max-height: 60%; }
     WhitelistScreen #wl-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    WhitelistScreen #wl-hints { height: auto; padding-top: 1; }
+    WhitelistScreen #wl-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
     """
 
     def __init__(self, data_dir: Path, *, target_id: str | None = None,
@@ -151,17 +155,16 @@ class WhitelistScreen(Screen):
         self._rows: list[dict[str, Any]] = []
         self._last_dispatch: dict[str, Any] | None = None  # for rollback
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        self.app.push_screen(InfoModal("Allowlist — all keys", all_keys_text(self._ALL_KEYS)))
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="wl-banner")
             yield DataTable(id="wl-table", cursor_type="row")
             yield VerticalScroll(id="wl-log")
-            yield Static(
-                Text("↑↓ select · enter run · a add · m edit · space on/off · x delete · i details\n"
-                     "c what the target allows · s re-sync · t telemetry · r roll back last run\n"
-                     "e allow fixes on this target · d stop fixes · esc back", style=T.TEXT_DIM),
-                id="wl-hints",
-            )
+            yield Static(key_bar([('enter', 'run'), ('space', 'on/off'), ('i', 'details'), ('a', 'add'), ('?', 'all keys'), ('esc', 'back')]), id="wl-hints")
 
     def on_mount(self) -> None:
         table = self.query_one("#wl-table", DataTable)
@@ -239,7 +242,7 @@ class WhitelistScreen(Screen):
             keys.append(f"{row['kind']}:{row.get('entry_id') or spec.id}:{i}")
         # Keep tier/state on screen: the command template gives way first (the
         # full command is under i), then the entry name.
-        available = table.size.width or max(self.app.size.width - 6, 40)
+        available = max(self.app.size.width - 6, 40)
         for key, row in zip(keys, fit_columns(cells, available, shrink=[(1, 12), (0, 12)], headers=_WL_COLUMNS)):
             table.add_row(*row, key=key)
         if cursor is not None and self._rows:
@@ -253,6 +256,8 @@ class WhitelistScreen(Screen):
 
         enabled = sum(1 for r in self._rows if r["state"] == "on")
         banner = Text()
+        banner.append("Allowlist", style=f"bold {T.ACCENT}")
+        banner.append(f" — what Kratos may run on {(target or {}).get('name') or self._target_id}\n", style=T.TEXT)
         refusal = self._agent_refusal() if opted_in else None
         if refusal:
             # consent given, but the machine refuses: never headline it as "ON"
@@ -431,14 +436,20 @@ class WhitelistScreen(Screen):
         for name, slot in spec.slots.items():
             if slot.kind == "enum":
                 entries = [(v, v) for v in (slot.values or ())]
+                if len(entries) == 1:
+                    values[name] = entries[0][0]  # nothing to choose
+                    continue
                 picked = await self.app.push_screen_wait(ListPickerModal(f"{spec.id} -- {name}", entries))
                 if picked is None:
                     return None
                 values[name] = picked
                 continue
             # ip / int_range / token -- prompt + validate, reject-and-reprompt.
+            kind_hint = {"ip": "A public IP address, e.g. 45.33.32.156",
+                         "int_range": "A whole number"}.get(slot.kind, f"A {slot.kind} value")
+            hint, last = kind_hint, ""
             while True:
-                raw = await self.app.push_screen_wait(PromptModal(f"{spec.id} -- {name}", hint=f"({slot.kind})"))
+                raw = await self.app.push_screen_wait(PromptModal(f"{spec.id} — {name}", hint=hint, initial=last))
                 if raw is None:
                     return None
                 candidate: Any = raw
@@ -446,12 +457,12 @@ class WhitelistScreen(Screen):
                     try:
                         candidate = int(raw)
                     except ValueError:
-                        self._log(Text(f"'{raw}' is not a whole number -- try again.", style=T.ATTENTION))
+                        hint, last = f"'{raw}' is not a whole number — try again. {kind_hint}.", raw
                         continue
                 try:
                     W._validate_slot_value(spec.id, name, slot, candidate)
                 except W.SlotValueError as e:
-                    self._log(Text(f"{e} -- try again.", style=T.ATTENTION))
+                    hint, last = f"{e} — try again. {kind_hint}.", raw
                     continue
                 values[name] = candidate
                 break
@@ -487,9 +498,9 @@ class WhitelistScreen(Screen):
                     request_id, f"no listener sent it within {_POLL_TIMEOUT_SECONDS:.0f}s")
                 if outcome == "cancelled":
                     self._log(Text(
-                        f"✗ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
+                        f"⚠ nothing ran: no listener picked the request up within {_POLL_TIMEOUT_SECONDS:.0f}s, "
                         "so it was cancelled. Is `kratos subagent-serve` running and the machine connected?",
-                        style=f"bold {T.CRITICAL}"))
+                        style=f"bold {T.ATTENTION}"))
                     return
                 continue  # sent (or answered) at the last moment: follow it
             if sent_at is not None and elapsed - sent_at >= _ANSWER_TIMEOUT_SECONDS:

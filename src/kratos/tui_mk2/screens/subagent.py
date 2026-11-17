@@ -39,6 +39,7 @@ from kratos.subagent import deploy_diagnosis as DD
 from kratos.subagent import hub_address, installer
 from kratos.subagent import status as ST
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar
 from kratos.tui_mk2.modals import CommandModal, ConfirmModal, ListPickerModal, PromptModal
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.utils import ssh_keys
@@ -123,7 +124,10 @@ _STATE_STYLE = {
 
 
 class SubAgentScreen(Screen):
+    _ALL_KEYS = 'a add a server · k link to a target · g update agent · u unpair · p re-pair\nw watch continuously · t telemetry · i details · c copy deploy commands\nl always-on listener · n new code · x dismiss code · f forget (unpaired) · esc'
+
     BINDINGS = [
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("escape,q", "back", "back", show=True),
         Binding("a", "add_server", "add a server", show=True),
         Binding("t", "telemetry", "latest telemetry", show=True),
@@ -148,7 +152,7 @@ class SubAgentScreen(Screen):
     SubAgentScreen #sa-listener { height: auto; padding: 0 0 1 0; }
     SubAgentScreen DataTable { height: auto; max-height: 14; }
     SubAgentScreen #sa-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    SubAgentScreen #sa-hints { height: auto; padding-top: 1; }
+    SubAgentScreen #sa-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
     """
 
     def __init__(
@@ -195,6 +199,10 @@ class SubAgentScreen(Screen):
         # so `c` can pop a click-to-copy box for them (same as the authorize cmd).
         self._last_deploy_commands: str | None = None
 
+    def action_all_keys(self) -> None:
+        from kratos.tui_mk2.modals import InfoModal
+        self.app.push_screen(InfoModal("Sub-agents — all keys", all_keys_text(self._ALL_KEYS)))
+
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(
@@ -205,13 +213,7 @@ class SubAgentScreen(Screen):
             yield Static(id="sa-listener")
             yield DataTable(id="sa-table", cursor_type="row")
             yield VerticalScroll(id="sa-log")
-            yield Static(
-                Text("a add a server · k link to a target · g update agent · u unpair · p re-pair\n"
-                     "w watch continuously · t telemetry · i details · c copy deploy commands\n"
-                     "l always-on listener · n new code · x dismiss code · f forget (unpaired) · esc",
-                     style=T.TEXT_DIM),
-                id="sa-hints",
-            )
+            yield Static(key_bar([('a', 'add'), ('i', 'details'), ('g', 'update'), ('w', 'watch'), ('?', 'all keys'), ('esc', 'back')]), id="sa-hints")
 
     def on_mount(self) -> None:
         table = self.query_one("#sa-table", DataTable)
@@ -370,7 +372,7 @@ class SubAgentScreen(Screen):
             ])
         # Keep every column on screen: shorten the detail first (the full text
         # is under i), then long names/hosts.
-        available = table.size.width or max(self.app.size.width - 6, 40)
+        available = max(self.app.size.width - 6, 40)
         for row in fit_columns(cells, available, shrink=[(6, 8), (7, 7), (1, 7), (2, 6), (4, 5), (3, 5), (5, 6)],
                                headers=_TABLE_COLUMNS):
             table.add_row(*row)
@@ -1329,7 +1331,10 @@ class SubAgentScreen(Screen):
             if scope_now:  # `enable --now` doesn't restart a service that's already running
                 cmds += _cl.core_service_restart_commands(user_mode=user_mode)[1:]
         if not ok:
-            self._log(Text("Nothing changed. To do it yourself later, run:\n" + "\n".join(cmds), style=T.TEXT_MUTED))
+            self._log(Text("Nothing changed. The commands to do it yourself are in the box (c copies them).",
+                           style=T.TEXT_MUTED))
+            self.app.push_screen(CommandModal("\n".join(cmds), title="Always-on listener — run these yourself",
+                                              note="On THIS machine, when you're ready. Nothing has changed yet."))
             return
         # The in-process listener holds the port; hand it over, or the service
         # restart-loops unable to bind until this window closes.

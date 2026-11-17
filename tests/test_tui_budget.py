@@ -146,9 +146,18 @@ def _session(tmp_path, monkeypatch):
     return SessionScreen(store, tmp_path, sid, ["10.0.0.1"], "")
 
 
-@pytest.mark.parametrize("choice", ["keep", "edit"])
-def test_first_schedule_shows_the_budget_summary_then_continues(tmp_path, monkeypatch, choice):
+def _sched(kind="audit", preset="", cadence="daily", notify="", name=""):
+    return {"kind": kind, "preset": preset, "cadence": cadence, "notify": notify, "name": name}
+
+
+def _trig(sev="high", fid="", only_new=False, action="notify", cooldown="60", name=""):
+    return {"sev": sev, "fid": fid, "only_new": only_new, "action": action, "cooldown": cooldown, "name": name}
+
+
+def test_the_new_schedule_form_shows_the_unattended_limits_and_saving_records_it(tmp_path, monkeypatch):
+    # A4: the limits are a line in the one form, not a separate Keep / Edit / Cancel gate.
     from kratos.agent import schedules as S
+    from kratos.tui_mk2.modals import FormModal
 
     screen = _session(tmp_path, monkeypatch)
     seen: list = []
@@ -157,22 +166,22 @@ def test_first_schedule_shows_the_budget_summary_then_continues(tmp_path, monkey
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            answers = ["audit", "weekly", "high", choice] + ([None] if choice == "edit" else []) + ["weekly-audit"]
-            _answers(app, monkeypatch, answers, seen)
+            _answers(app, monkeypatch, [_sched(cadence="weekly", notify="high", name="weekly-audit")], seen)
             screen._dispatch_slash("/schedule new")
             await _settle(pilot, lambda: S.schedule_exists(tmp_path, "weekly-audit"))
 
     asyncio.run(_run())
     assert S.schedule_exists(tmp_path, "weekly-audit")
-    summary = next(m for m in seen if getattr(m, "_title", "") == "Spending limits for unattended runs")
-    assert "$0.50 per day" in summary._subtitle and "they only notify" in summary._subtitle
-    if choice == "edit":
-        opened = [m for m in seen if isinstance(m, SettingsScreen)]
-        assert len(opened) == 1 and opened[0]._initial_tab == "tab-budget"
-    assert BudgetLedger(tmp_path).state_get(SessionScreen._UNATTENDED_BUDGET_SHOWN)["choice"] == choice
+    form = seen[0]
+    assert isinstance(form, FormModal)
+    summary, notes = form._describe(_sched(cadence="weekly", notify="high", name="weekly-audit"))
+    assert "every week" in summary and "HIGH and up" in summary
+    assert any("$0.50 a day" in n and "Settings → Budget" in n for n in notes)
+    assert not any(getattr(m, "_title", "") == "Spending limits for unattended runs" for m in seen)
+    assert BudgetLedger(tmp_path).state_get(SessionScreen._UNATTENDED_BUDGET_SHOWN)["choice"] == "keep"
 
 
-def test_cancel_at_the_summary_creates_nothing_and_asks_again_next_time(tmp_path, monkeypatch):
+def test_cancelling_the_trigger_form_creates_nothing(tmp_path, monkeypatch):
     from kratos.agent import triggers as T
 
     screen = _session(tmp_path, monkeypatch)
@@ -182,10 +191,9 @@ def test_cancel_at_the_summary_creates_nothing_and_asks_again_next_time(tmp_path
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # severity, finding-id, only-new, action, cooldown, summary -> cancel
-            _answers(app, monkeypatch, ["high", "", False, "notify", "60", "cancel"], seen)
+            _answers(app, monkeypatch, [None], seen)        # esc on the form
             screen._dispatch_slash("/trigger new")
-            await _settle(pilot, lambda: len(seen) >= 6)
+            await _settle(pilot, lambda: len(seen) >= 1)
             for _ in range(10):
                 await pilot.pause()
 
@@ -194,7 +202,7 @@ def test_cancel_at_the_summary_creates_nothing_and_asks_again_next_time(tmp_path
     assert BudgetLedger(tmp_path).state_get(SessionScreen._UNATTENDED_BUDGET_SHOWN) is None
 
 
-def test_the_summary_is_shown_once(tmp_path, monkeypatch):
+def test_no_separate_limits_gate_before_triggers(tmp_path, monkeypatch):
     from kratos.agent import triggers as T
 
     screen = _session(tmp_path, monkeypatch)
@@ -204,8 +212,7 @@ def test_the_summary_is_shown_once(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            _answers(app, monkeypatch, ["high", "", False, "notify", "60", "keep", "first",
-                                        "high", "", False, "notify", "60", "second"], seen)
+            _answers(app, monkeypatch, [_trig(name="first"), _trig(name="second")], seen)
             screen._dispatch_slash("/trigger new")
             await _settle(pilot, lambda: T.trigger_exists(tmp_path, "first"))
             screen._dispatch_slash("/trigger new")
@@ -213,7 +220,7 @@ def test_the_summary_is_shown_once(tmp_path, monkeypatch):
 
     asyncio.run(_run())
     titles = [getattr(m, "_title", "") for m in seen]
-    assert titles.count("Spending limits for unattended runs") == 1
+    assert titles == ["New trigger", "New trigger"]
 
 
 def test_an_investigate_trigger_while_investigations_are_off_says_it_will_only_notify(tmp_path, monkeypatch):
@@ -229,7 +236,7 @@ def test_an_investigate_trigger_while_investigations_are_off_says_it_will_only_n
         async with app.run_test() as pilot:
             await pilot.pause()
             monkeypatch.setattr(screen, "_emit", lambda r: lines.append(str(r)))
-            _answers(app, monkeypatch, ["high", "", False, "investigate", "60", "deep"])
+            _answers(app, monkeypatch, [_trig(action="investigate", name="deep")])
             screen._dispatch_slash("/trigger new")
             await _settle(pilot, lambda: T.trigger_exists(tmp_path, "deep") and lines)
             for _ in range(5):

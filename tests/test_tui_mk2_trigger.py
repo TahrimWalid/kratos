@@ -41,6 +41,11 @@ def _answers(app, monkeypatch, values):
 
     monkeypatch.setattr(app, "push_screen_wait", _fn)
 
+def _trig(sev="high", fid="", only_new=False, action="notify", cooldown="60", name=""):
+    """One answer to the New trigger form (A4: one form instead of a chain of dialogs)."""
+    return {"sev": sev, "fid": fid, "only_new": only_new, "action": action, "cooldown": cooldown, "name": name}
+
+
 
 def test_trigger_new_severity_notify(tmp_path, monkeypatch):
     store, sid, screen = _make(tmp_path, monkeypatch)
@@ -49,8 +54,7 @@ def test_trigger_new_severity_notify(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # severity, finding_id(blank), only-new?, action, cooldown, name
-            _answers(app, monkeypatch, ["high", "", False, "notify", "60", "high-alert"])
+            _answers(app, monkeypatch, [_trig(name="high-alert")])
             screen._dispatch_slash("/trigger new")
             for _ in range(200):
                 await pilot.pause()
@@ -70,7 +74,7 @@ def test_trigger_new_only_new_or_reopened(tmp_path, monkeypatch):
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            _answers(app, monkeypatch, ["high", "", True, "notify", "60", "news-only"])
+            _answers(app, monkeypatch, [_trig(only_new=True, name="news-only")])
             screen._dispatch_slash("/trigger new")
             for _ in range(200):
                 await pilot.pause()
@@ -92,8 +96,8 @@ def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            # severity, finding_id(blank), action=investigate, cost-confirm=False
-            _answers(app, monkeypatch, ["high", "", False, "investigate", False])
+            # the form (investigate), then the cost confirm = False
+            _answers(app, monkeypatch, [_trig(action="investigate"), False])
             screen._dispatch_slash("/trigger new")
             for _ in range(120):
                 await pilot.pause()
@@ -103,7 +107,7 @@ def test_trigger_new_investigate_on_cloud_warns_and_aborts(tmp_path, monkeypatch
 
 
 def test_trigger_name_is_pre_filled_from_the_condition_and_action(tmp_path, monkeypatch):
-    from kratos.tui_mk2.modals import PromptModal
+    from kratos.tui_mk2.modals import FormModal
 
     store, sid, screen = _make(tmp_path, monkeypatch)
     seen: list = []
@@ -112,7 +116,7 @@ def test_trigger_name_is_pre_filled_from_the_condition_and_action(tmp_path, monk
         app = _Host(screen)
         async with app.run_test() as pilot:
             await pilot.pause()
-            it = iter(["", "CORR-SSH-001", False, "playbook", "60", ""])   # blank name = Enter
+            it = iter([_trig(sev="", fid="CORR-SSH-001", action="playbook", name="")])   # blank name = the suggestion
 
             async def _fn(modal):
                 seen.append(modal)
@@ -126,7 +130,7 @@ def test_trigger_name_is_pre_filled_from_the_condition_and_action(tmp_path, monk
                     break
 
     asyncio.run(_run())
-    assert isinstance(seen[-1], PromptModal) and seen[-1]._initial == "corr-ssh-001-playbook"
+    assert isinstance(seen[0], FormModal)
     tg = T.load_trigger(tmp_path, "corr-ssh-001-playbook")
     assert tg is not None and tg.finding_id == "CORR-SSH-001" and tg.action == "playbook"
 
@@ -160,3 +164,52 @@ def test_trigger_list_renders(tmp_path, monkeypatch):
                 await pilot.pause()
 
     asyncio.run(_run())  # must not raise
+
+
+def test_the_real_form_saves_on_its_default_answers(tmp_path, monkeypatch):
+    # The one-form trigger (A4) on screen: Enter on the defaults makes a valid trigger
+    # (the old chain's defaults led to "A trigger needs a condition").
+    store, sid, screen = _make(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/trigger new")
+            for _ in range(40):
+                await pilot.pause()
+                if type(app.screen).__name__ == "FormModal":
+                    break
+            await pilot.press("enter")
+            for _ in range(100):
+                await pilot.pause()
+                if T.trigger_exists(tmp_path, "high-alert"):
+                    break
+
+    asyncio.run(_run())
+    tg = T.load_trigger(tmp_path, "high-alert")
+    assert tg is not None and tg.min_severity == "high" and tg.action == "notify"
+
+
+def test_the_real_form_refuses_no_condition_inline(tmp_path, monkeypatch):
+    store, sid, screen = _make(tmp_path, monkeypatch)
+
+    async def _run():
+        app = _Host(screen)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen._dispatch_slash("/trigger new")
+            for _ in range(40):
+                await pilot.pause()
+                if type(app.screen).__name__ == "FormModal":
+                    break
+            await pilot.press("left")          # high+ -> any (by ID), no ID typed
+            await pilot.press("enter")
+            await pilot.pause()
+            err = str(app.screen.query_one("#form-error").render())
+            still_open = type(app.screen).__name__ == "FormModal"
+            return err, still_open
+
+    err, still_open = asyncio.run(_run())
+    assert "finding-ID" in err and still_open
+    assert T.list_triggers(tmp_path)[0] == []
