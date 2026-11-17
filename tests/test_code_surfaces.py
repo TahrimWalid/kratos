@@ -136,3 +136,22 @@ def test_review_purpose_scoped(tmp_path):
     assert sent == []
     got, _info = RD.read_for_review(tmp_path, M, "/srv/app", ["app.py"], actor=OWNER, fetch=fetch)
     assert got["app.py"]["status"] == "ok" and sent == [("review", [b"app.py"])]
+
+
+def test_code_screen_with_no_folders_shows_the_sentence_only(tmp_path):
+    """TUI review: /code printed 'No code folders found yet' and then an empty grid."""
+    from kratos.tui_mk2.screens.code import CodeScreen
+
+    class _A(App):
+        def on_mount(self):
+            self.push_screen(CodeScreen(tmp_path, machine=M))
+
+    async def go():
+        app = _A()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            scr = app.screen
+            assert scr.query_one("#code-table").display is False
+            assert "No code folders found yet" in str(scr.query_one("#code-detail")._Static__content)
+            assert "esc back" in str(scr.query_one("#code-hints")._Static__content)
+    asyncio.run(go())
