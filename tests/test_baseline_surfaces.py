@@ -232,6 +232,17 @@ def test_tui_baseline_screen_shows_status_and_deviations(tmp_path):
             assert "dev" in kinds and "dim" in kinds and "entry" in kinds
             statuses = {r["name"]: r["status"] for r in scr._rows if r["type"] == "dim"}
             assert statuses["login_source"] == "active" and statuses["program"] == "not_learnable"
+            # TUI review: identifiers in the data colour (the accent is for what you can act on),
+            # local times, and a detail pane + key bar for the selected row
+            from kratos.tui_mk2 import theme as T
+
+            table = scr.query_one("#bl-table")
+            dim_row = next(i for i, r in enumerate(scr._rows) if r["type"] == "dim")
+            cell = table.get_row_at(dim_row)[0]
+            assert T.ACCENT not in str(cell.style) and T.DATA in str(cell.style)
+            assert "+00:00" not in str(scr.query_one("#bl-banner")._Static__content)
+            assert "esc" in str(scr.query_one("#bl-hints")._Static__content)
+            assert str(scr.query_one("#bl-detail")._Static__content).strip()
             await pilot.press("escape")
 
     asyncio.run(go())

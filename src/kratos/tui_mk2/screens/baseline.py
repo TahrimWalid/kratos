@@ -25,18 +25,23 @@ from kratos.baseline import decide as BD
 from kratos.baseline import present as BP
 from kratos.lifecycle.decide import Actor
 from kratos.tui_mk2 import theme as T
+from kratos.tui_mk2.keybar import all_keys_text, key_bar, layout_css, plural, title_row
 from kratos.tui_mk2.modals import ConfirmModal, InfoModal, PromptModal
 from kratos.tui_mk2.safe_widgets import SafeDataTable as DataTable, SafeStatic as Static
 from kratos.tui_mk2.table_fit import fit_columns
 from kratos.untrusted_rich import SafeText as Text
+from kratos.utils.timeutil import format_for_display, resolve_display_tz
 
 STATUS_STYLE = {"active": T.SAFE, "learning": T.ATTENTION, "frozen": T.ATTENTION, "not_learnable": T.TEXT_DIM}
 SEV_STYLE = {"medium": T.ATTENTION, "low": T.TEXT, "info": T.TEXT_DIM}
 
 
 class BaselineScreen(Screen):
+    _ALL_KEYS = ("↑↓ select · enter details · a accept as normal · f forget a usual thing\n"
+                 "z freeze / unfreeze learning · R reset learning · r run now · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
+        Binding("question_mark", "all_keys", "all keys", show=False),
         Binding("enter", "details", "details", show=True, priority=True),
         Binding("a", "accept", "accept as normal", show=True),
         Binding("f", "forget", "forget", show=True),
@@ -45,13 +50,8 @@ class BaselineScreen(Screen):
         Binding("r", "run", "run now", show=True),
     ]
 
-    CSS = """
-    BaselineScreen { padding: 1 2; }
-    BaselineScreen #bl-banner { height: auto; padding: 0 0 1 0; }
-    BaselineScreen DataTable { height: 1fr; }
-    BaselineScreen #bl-log { height: auto; max-height: 8; border-top: solid $panel; }
-    BaselineScreen #bl-hints { height: auto; padding-top: 1; }
-    """
+    # A2: title row, the table, a detail pane for the selected row, a short log, a key bar.
+    CSS = layout_css("BaselineScreen", "bl")
 
     def __init__(self, data_dir: Path, *, machine: str | None = None) -> None:
         super().__init__()
@@ -60,14 +60,15 @@ class BaselineScreen(Screen):
         self._view: dict[str, Any] | None = None
         self._rows: list[dict[str, Any]] = []
         self._error = ""
+        self._tz = resolve_display_tz(self._data_dir)
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static(id="bl-banner")
             yield DataTable(id="bl-table", cursor_type="row")
+            yield Static(id="bl-detail")
             yield VerticalScroll(id="bl-log")
-            yield Static(Text("enter details · a accept as normal · f forget · z freeze · R reset · r run now",
-                              style=T.TEXT_DIM), id="bl-hints")
+            yield Static(key_bar([("r", "run now"), ("?", "all keys"), ("esc", "back")]), id="bl-hints")
 
     def on_mount(self) -> None:
         self.reload()
@@ -77,6 +78,16 @@ class BaselineScreen(Screen):
 
     def action_back(self) -> None:
         self.app.pop_screen()
+
+    def action_all_keys(self) -> None:
+        body = all_keys_text(self._ALL_KEYS)
+        v = self._view or {}
+        if v.get("note"):
+            body.append(f"\n\n{v['note']}", style=T.TEXT_MUTED)
+        self.app.push_screen(InfoModal("What's normal — all keys", body))
+
+    def _when(self, value: Any) -> str:
+        return format_for_display(value, "%Y-%m-%d %H:%M", tz=self._tz) if value else "-"
 
     def note(self, renderable: Any) -> None:
         area = self.query_one("#bl-log", VerticalScroll)
@@ -98,21 +109,18 @@ class BaselineScreen(Screen):
         table = self.query_one("#bl-table", DataTable)
         cursor = table.cursor_row
         table.clear(columns=True)
-        banner = Text()
-        banner.append("What's normal here", style=f"bold {T.ACCENT}")
         self._rows = []
         v = self._view
         if v is None:
-            banner.append(f"\n{self._error or 'nothing to show'}", style=T.CRITICAL)
-            self.query_one("#bl-banner", Static).update(banner)
+            self.query_one("#bl-banner", Static).update(
+                title_row("What's normal here", note=self._error or "nothing to show", note_style=T.CRITICAL))
+            self._show_detail()
             return
-        banner.append(f"   {v['machine']}" + (f" · machine zone {v['zone']}" if v.get("zone") else ""),
-                      style=T.TEXT_DIM)
-        if v.get("frozen"):
-            banner.append("\nFROZEN — deviations are raised, nothing is learned (z to unfreeze)", style=T.ATTENTION)
-        banner.append(f"\n{v.get('note', '')}", style=T.TEXT_MUTED)
-        if v.get("checked_at"):
-            banner.append(f"\nlast run {v['checked_at']}", style=T.TEXT_DIM)
+        summary = " · ".join(b for b in ((f"machine zone {v['zone']}" if v.get("zone") else ""),
+                                         (f"last run {self._when(v['checked_at'])}" if v.get("checked_at") else ""))
+                             if b)
+        banner = title_row("What's normal here", v["machine"], summary,
+                           note="FROZEN (z unfreezes)" if v.get("frozen") else "")
         cells: list[list[Any]] = []
         for dv in v.get("deviations") or []:
             self._rows.append({"type": "dev", **dv})
@@ -124,7 +132,7 @@ class BaselineScreen(Screen):
             extra = (f"{d['learned_days']} days, {d['covered_days']} covered" if d["status"] == "active" else
                      d.get("learning") or d.get("reason") or "")
             self._rows.append({"type": "dim", **d})
-            cells.append([Text(d["rule"], style=T.ACCENT), Text(f"{d['label']} — {word}",
+            cells.append([Text(d["rule"], style=T.DATA), Text(f"{d['label']} — {word}",
                                                                 style=STATUS_STYLE.get(d["status"], T.TEXT)), extra])
             for t in d.get("top") or []:
                 self._rows.append({"type": "entry", "dim": d["name"], **t})
@@ -136,8 +144,57 @@ class BaselineScreen(Screen):
         available = table.size.width or max(self.app.size.width - 6, 40)
         for row in fit_columns(cells, available, shrink=[(1, 24), (2, 14)], headers=columns):
             table.add_row(*row)
-        if cursor is not None and self._rows:
-            table.move_cursor(row=min(cursor, len(self._rows) - 1))
+        if self._rows:
+            table.move_cursor(row=min(cursor or 0, len(self._rows) - 1))
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, _event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected row in words, and the keys that apply to it (A2)."""
+        try:
+            detail = self.query_one("#bl-detail", Static)
+            hints = self.query_one("#bl-hints", Static)
+        except Exception:  # noqa: BLE001 -- not mounted yet
+            return
+        r = self.selected()
+        out = Text()
+        if r is None:
+            out.append((self._view or {}).get("note") or "Nothing learned yet. r runs it over what Kratos has stored.",
+                       style=T.TEXT_MUTED)
+            detail.update(out)
+            hints.update(key_bar([("r", "run now"), ("?", "all keys"), ("esc", "back")]))
+            return
+        if r["type"] == "dev":
+            out.append(f"{r['rule']}  ", style=T.DATA)
+            out.append(f"{r.get('severity')}", style=f"bold {SEV_STYLE.get(str(r.get('severity')), T.TEXT)}")
+            out.append(f"   {r['subject']}: {r['key']}", style=f"bold {T.TEXT_BRIGHT}")
+            out.append(f"\n{r.get('machine_time') or ''}" + (f" · address {r['address']}" if r.get("address") else ""),
+                       style=T.TEXT_DIM)
+            if r.get("usual"):
+                out.append("\nUsual: " + "; ".join(r["usual"]), style=T.TEXT_MUTED)
+            if r.get("held"):
+                out.append("\nNear an open serious finding: not learned as normal yet.", style=T.ATTENTION)
+            keys = [("enter", "details"), ("a", "accept as normal")]
+        elif r["type"] == "dim":
+            out.append(f"{r['rule']}  ", style=T.DATA)
+            out.append(f"{r['label']}", style=f"bold {T.TEXT_BRIGHT}")
+            out.append(f"\n{BP.STATUS_WORDS.get(r['status'], r['status'])}", style=STATUS_STYLE.get(r["status"], T.TEXT))
+            if r.get("learning") or r.get("reason"):
+                out.append(f" — {r.get('learning') or r.get('reason')}", style=T.TEXT_MUTED)
+            out.append(f"\nlearned over {plural(r['learned_days'], 'day')} ({r['covered_days']} covered) · "
+                       f"{plural(r.get('entries', 0), 'usual thing')}", style=T.TEXT_DIM)
+            keys = [("enter", "details"), ("z", "freeze"), ("r", "run now")]
+        else:
+            out.append(f"{r['subject']}: {r['key']}", style=f"bold {T.TEXT_BRIGHT}")
+            out.append(f"\nweight {r['weight']} · seen {plural(r['count'], 'time')} · last {self._when(r['last_seen'])}",
+                       style=T.TEXT_DIM)
+            if r.get("accepted"):
+                out.append("\naccepted as normal by a person", style=T.SAFE)
+            keys = [("enter", "details"), ("a", "accept"), ("f", "forget")]
+        detail.update(out)
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def selected(self) -> dict[str, Any] | None:
         table = self.query_one("#bl-table", DataTable)
@@ -163,7 +220,7 @@ class BaselineScreen(Screen):
             if u:
                 where = ", ".join(u.get("machines") or [])
                 if u.get("outside_your_access"):
-                    where = (where + ", " if where else "") + f"{u['outside_your_access']} machine(s) outside your access"
+                    where = (where + ", " if where else "") + plural(u['outside_your_access'], 'machine') + " outside your access"
                 body.append(f"First time here; usual for this account on: {where}\n", style=T.ATTENTION)
             if r.get("held"):
                 body.append("Happened near an open serious finding: not learned as normal yet.\n", style=T.ATTENTION)
@@ -178,14 +235,15 @@ class BaselineScreen(Screen):
             body.append(f"\nlearned over {r['learned_days']} days ({r['covered_days']} covered); "
                         f"{r.get('entries', 0)} usual things", style=T.TEXT_DIM)
             if r.get("evicted"):
-                body.append(f"\n{r['evicted']} rarely used thing(s) set aside to stay within the limit", style=T.TEXT_DIM)
+                body.append(f"\n{plural(r['evicted'], 'rarely used thing')} set aside to stay within the limit",
+                            style=T.TEXT_DIM)
             if r.get("held_back"):
-                body.append(f"\n{r['held_back']} observation(s) held back near an open serious finding",
+                body.append(f"\n{plural(r['held_back'], 'observation')} held back near an open serious finding",
                             style=T.ATTENTION)
         else:
             body.append(f"{r['subject']}: {r['key']}\n", style=T.TEXT)
-            body.append(f"weight {r['weight']} · seen {r['count']} time(s)\nfirst {r['first_seen']}\nlast "
-                        f"{r['last_seen']}", style=T.TEXT_DIM)
+            body.append(f"weight {r['weight']} · seen {plural(r['count'], 'time')}\nfirst {self._when(r['first_seen'])}"
+                        f"\nlast {self._when(r['last_seen'])}", style=T.TEXT_DIM)
             if r.get("accepted"):
                 body.append("\naccepted as normal by a person", style=T.SAFE)
         self.app.push_screen(InfoModal("What's normal", body))
