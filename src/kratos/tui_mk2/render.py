@@ -76,7 +76,7 @@ def home_banner(target: str, n_builtin: int, n_kept: int, *,
     wordmark = Align.center(Text("    ".join("KRATOS"), style=f"bold {T.KRATOS_RED}"))
     subtitle = Align.center(Text("security assistant", style=T.TEXT_FAINT))
 
-    tgt = Text(target or "(none set)", style=f"bold {T.ACCENT}" if target else T.TEXT_DIM)
+    tgt = Text(target or "(none set)", style=f"bold {T.DATA}" if target else T.TEXT_DIM)
     mdl = Text()
     mdl.append(model or "(unset)", style=f"bold {T.TEXT_BRIGHT}" if model else T.TEXT_DIM)
     if model:
@@ -181,7 +181,7 @@ def tool_call_line(name: str, status: str) -> Text:
     }.get(status, ("✓", T.SAFE))
     t = Text()
     t.append(f"{icon} ", style=color)
-    t.append(name, style=f"bold {T.ACCENT}")
+    t.append(name, style=f"bold {T.DATA}")
     t.append(f"  {plain_label(name)}", style=T.TEXT_MUTED)
     return t
 
@@ -917,7 +917,7 @@ def schedule_table(schedules: list[Any], errors: list[tuple[str, str]],
             unit += "  (not runnable)"
         healthy = s.is_runnable and not dangling
         table.add_row(
-            Text(s.name, style=T.ACCENT),
+            Text(s.name, style=f"bold {T.DATA}"),
             Text(unit, style=T.TEXT if healthy else T.ATTENTION),
             s.cadence,
             s.target or "active",
@@ -1034,7 +1034,7 @@ def trigger_table(triggers: list[Any], errors: list[tuple[str, str]],
         table.add_column(col)
     for tg in triggers:
         table.add_row(
-            Text(tg.name, style=T.ACCENT),
+            Text(tg.name, style=f"bold {T.DATA}"),
             Text(tg.condition_text, style=T.TEXT if tg.is_valid else T.ATTENTION),
             tg.action,
             tg.target or "any",

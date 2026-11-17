@@ -579,7 +579,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         header = Text()
         header.append("KRATOS", style=f"bold {T.KRATOS_RED}")
         header.append("  ·  ", style=T.TEXT_GHOST)
-        header.append(target, style=T.ACCENT)
+        header.append(target, style=f"bold {T.DATA}")
         header.append("  ·  ", style=T.TEXT_GHOST)
         header.append("read-only", style=T.SAFE)
         # right-aligned clock via padding
@@ -1053,7 +1053,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 findings = result["findings"]
                 line = Text()
                 line.append("✓ ", style=T.SAFE)
-                line.append(tool_name, style=f"bold {T.ACCENT}")
+                line.append(tool_name, style=f"bold {T.DATA}")
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit(line)
                 full, folded = FV.plan(findings, self._shown_findings, None)
@@ -2844,7 +2844,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             where = short_where(s["tool"], TOOL_REGISTRY.get(s["tool"]))
             flags = "required" if s.get("required", True) else "optional"
             body.append(f"  {i}. ", style=T.TEXT_DIM)
-            body.append(s["tool"], style=f"bold {T.ACCENT}")
+            body.append(s["tool"], style=f"bold {T.DATA}")
             body.append(f"  [{where + ', ' if where else ''}{flags}]", style=T.TEXT_MUTED)
             if s.get("args"):
                 body.append(f"  {self._format_step_args(s['args'])}", style=T.TEXT_FAINT)
@@ -4669,7 +4669,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         body.append(", ".join(missing), style=f"bold {T.TEXT_BRIGHT}")
         for pname in missing:
             spec = params.get(pname) or {}
-            body.append(f"\n  {pname}", style=f"bold {T.ACCENT}")
+            body.append(f"\n  {pname}", style=f"bold {T.DATA}")
             if spec.get("type"):
                 body.append(f" ({spec['type']})", style=T.TEXT_DIM)
             if spec.get("description"):
@@ -4763,7 +4763,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         for name in names:
             tool = TOOL_REGISTRY[name]
             entry = metadata.get(name)
-            cell = Text(name, style=T.ACCENT)
+            cell = Text(name, style=f"bold {T.DATA}")
             cell.append("\n" + where_it_runs(name, tool), style=T.TEXT_DIM)
             if kept:
                 cell.append("\nasks first" if tool.requires_approval else "\nruns without asking",
@@ -5014,7 +5014,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     findings = sr.result["findings"]
                     line = Text()
                     line.append("✓ ", style=T.SAFE)
-                    line.append(sr.tool, style=f"bold {T.ACCENT}")
+                    line.append(sr.tool, style=f"bold {T.DATA}")
                     line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                     self._emit_from_worker(line)
                     for f in findings:
@@ -5918,7 +5918,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                     self._saw_package_decision = True     # D.3: ask this machine's criticality once, after the turn
                 line = Text()
                 line.append("✓ ", style=T.SAFE)
-                line.append(tool_name, style=f"bold {T.ACCENT}")
+                line.append(tool_name, style=f"bold {T.DATA}")
                 line.append(f"  correlated findings ({len(findings)} found)", style=T.TEXT_MUTED)
                 self._emit_from_worker(line)
                 full, folded = FV.plan(findings, self._shown_findings, self._turn_started_wall)

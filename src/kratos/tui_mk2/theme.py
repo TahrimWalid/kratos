@@ -197,6 +197,11 @@ ACCENT = _ACTIVE["ACCENT"]          # chrome: tool names, IPs, links, prompts, a
 ADMIN = _ACTIVE["ADMIN"]            # the Admin/you voice label
 VOICE = _ACTIVE.get("VOICE", KRATOS_RED)  # "Kratos:" label -- readable (>=4.5:1); the wordmark may stay oxblood
 
+# Identifiers -- tool names, hosts, addresses, schedule and trigger names. Data, not
+# something to act on, so not the accent (B6): the accent is kept for what you can
+# act on (selection, focus, keys, commands, links) and stays meaningful in every pack.
+DATA = TEXT_BRIGHT
+
 SAFE = "#7f9e79"          # read-only / passed / clean / success (green)
 ATTENTION = "#c9962c"     # attention / in-progress / decision-needed (amber)
 CRITICAL = "#ff3b3b"      # a real HIGH/CRITICAL finding / hard failure -- NOT theme-swappable
