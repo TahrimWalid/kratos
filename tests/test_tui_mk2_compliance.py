@@ -105,4 +105,40 @@ async def _group(tmp_path):
         rows = {r["control"]: r for r in screen._rows}
         assert rows["8.3"]["status"] in ("fail", "partial")
         assert all(r["status"] != "pass" for r in screen._rows)            # 10.0.0.7 is unread: no group pass
-        assert "3 machine(s)" in _text(screen.query_one("#co-banner")._Static__content)
+        assert "3 machines" in _text(screen.query_one("#co-banner")._Static__content)
+
+
+def test_worst_first_evidence_leads_with_the_failure_and_times_are_local(tmp_path):
+    asyncio.run(_review_fixes(tmp_path))
+
+
+async def _review_fixes(tmp_path):
+    _seed(tmp_path)
+    screen = ComplianceScreen(tmp_path, machine="10.0.0.5", framework="cis")
+    app = _Host(screen)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        order = {"fail": 0, "partial": 1, "needs_person": 2, "pass": 3, "not_checked": 4, "not_applicable": 5}
+        ranks = [order[r["status"]] for r in screen._rows]
+        assert ranks == sorted(ranks) and screen._rows[0]["status"] == "fail"     # the failure is row 1
+        # the detail pane names the failed check and what was found, not every check's text
+        detail = _text(screen.query_one("#co-detail")._Static__content)
+        assert "mode 666" in detail and "2 other checks passed" in detail
+        banner = _text(screen.query_one("#co-banner")._Static__content)
+        assert "1 fail" in banner and "T0" not in banner and "+00:00" not in banner
+        hints = _text(screen.query_one("#co-hints")._Static__content)
+        assert "esc back" in hints and "r read again" in hints
+        screen.action_details()
+        await pilot.pause()
+        body = _text(app.screen._body)
+        assert body.index("has mode 600 or stricter") < body.index("Checks that passed")
+        assert "+00:00" not in body and "control(s)" not in body
+
+
+def test_unread_machine_points_at_the_r_key_not_the_cli():
+    from kratos.tui_mk2.screens.compliance import _screen_words
+    from kratos.compliance.facts import SOURCE_FIX
+
+    for hint in (next(iter(SOURCE_FIX.values())), "Kratos has no hardening read yet (run `kratos collect web-01`)"):
+        assert "kratos collect" in hint and "kratos collect" not in _screen_words(hint)
+        assert "press r" in _screen_words(hint)
