@@ -656,7 +656,9 @@ def recommended_command_panel(cmd: dict[str, Any], target_label: str) -> Panel:
         title = "! recommended fix — written by the model" if flags else "recommended fix — written by the model"
         border = T.ATTENTION if flags else T.SAFE
     parts.append(Text(f"Run this yourself on {where} — Kratos does not execute it.", style=T.TEXT_FAINT))
-    return Panel(Group(*parts), title=title, title_align="left", border_style=border)
+    # The copy hint rides in the bottom border instead of a line after every turn (C2).
+    return Panel(Group(*parts), title=title, title_align="left", border_style=border,
+                 subtitle=Text("Ctrl+Y copies it exactly", style=T.TEXT_DIM), subtitle_align="right")
 
 
 def plan_preview_panel(preview: Any) -> Panel:

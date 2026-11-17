@@ -639,10 +639,11 @@ class SessionScreen(ResilientWorkerHost, Screen):
 
         rebuilt = newer_build_on_disk()
         # What comes before the meter gives way on a narrow terminal (session id,
-        # then the model, then the target), and the build note shortens, so the
-        # context meter is never cut off.
-        parts = [f"session {st['session_id']}", str(st["backend"]),
-                 f"target {st['targets'][0] if st['targets'] else '(none)'}"]
+        # then the model), and the build note shortens, so the context meter is
+        # never cut off. The target is in the header already (C2).
+        parts = [f"session {st['session_id']}", str(st["backend"])]
+        if len(st["targets"]) > 1:      # the header shows the first; say there are more
+            parts.append(f"+{len(st['targets']) - 1} more target(s)")
         try:
             width = self.query_one("#statusfooter", Static).size.width or self.app.size.width
         except Exception:  # noqa: BLE001
@@ -5528,7 +5529,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._last_answer = result.get("final_answer", "") or ""
         status = str(result["status"])
         if result["status"] == "final_answer":
-            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.ACCENT, time_str=t), d)
+            self._emit_bubble_from_worker(R.result_panel("Kratos — investigation complete", result["final_answer"], T.ACCENT), d)
         elif result["status"] == "max_iters_reached" and result.get("final_answer"):
             self._emit_bubble_from_worker(R.result_panel("Kratos — investigation incomplete (step limit)", result["final_answer"], T.ATTENTION, time_str=t), d)
         elif result["status"] == STOPPED_BY_BUDGET:
@@ -5555,8 +5556,6 @@ class SessionScreen(ResilientWorkerHost, Screen):
             target_label = self.session_state["targets"][0] if self.session_state["targets"] else "the target"
         for c in commands:
             self._emit_from_worker(R.recommended_command_panel(c, target_label))
-        if self._last_commands:
-            self._emit_from_worker(R.hint_line("Ctrl+Y copies the recommended command(s) exactly — Kratos does not run them."))
         self._last_target_commands = [] if target_override else [
             c for c in commands if str(c.get("run_on") or "target") == "target"]
         self._runnable_fixes = [] if target_override else self._match_runnable_fixes(commands)
