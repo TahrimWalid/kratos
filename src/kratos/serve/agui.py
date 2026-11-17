@@ -255,7 +255,7 @@ async def _stream(state: Any, t: Any, q: Any, request: Request, thread_id: str, 
             # (this may run inside a cancellation): the cancel runs on its own.
             def _cancel() -> None:
                 try:
-                    TK.cancel_task(state, t.task_id, t.user_id)
+                    TK.cancel_task(state, t.task_id, t.user_id, t.token_id)
                 except (TK.NotFound, TK.NotCancelable):
                     pass
 

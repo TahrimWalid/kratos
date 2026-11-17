@@ -225,7 +225,7 @@ def _handlers(state: Any) -> dict[str, Any]:
         message = body["message"]
         tid = message.get("taskId")
         if tid:
-            row = await asyncio.to_thread(state.a2a_tasks.view, str(tid), actor.user_id)
+            row = await asyncio.to_thread(state.a2a_tasks.view, str(tid), actor.user_id, client.token_id)
             if row is None:
                 return a2a_error("TASK_NOT_FOUND", "no task with that id")
             return a2a_error("UNSUPPORTED_OPERATION",
@@ -270,7 +270,7 @@ def _handlers(state: Any) -> dict[str, Any]:
                                     audit_allowed=False)
         except authz.Denied as e:
             return a2a_error("PERMISSION_DENIED", str(e))
-        row = await asyncio.to_thread(state.a2a_tasks.view, task_id, actor.user_id)
+        row = await asyncio.to_thread(state.a2a_tasks.view, task_id, actor.user_id, client.token_id)
         if row is None:
             return a2a_error("TASK_NOT_FOUND", "no task with that id")
         return JSONResponse(TK.task_json(row))
@@ -297,11 +297,11 @@ def _handlers(state: Any) -> dict[str, Any]:
         ctx = qp.get("contextId") or None
         if ctx is not None and not K.valid_id(ctx):
             return a2a_error("INVALID_PARAMS", "bad contextId")
-        rows, total = await asyncio.to_thread(S.list_for, state.data_dir, actor.user_id, context_id=ctx,
+        rows, total = await asyncio.to_thread(S.list_for, state.data_dir, actor.user_id, token_id=client.token_id, context_id=ctx,
                                               state=state_f, limit=size, offset=offset)
         live = []
         for r in rows:
-            t = state.a2a_tasks.live(r["task_id"], actor.user_id)
+            t = state.a2a_tasks.live(r["task_id"], actor.user_id, client.token_id)
             live.append(TK.task_json(TK.snapshot(t) if t is not None else r))
         nxt = str(offset + size) if offset + size < total else ""
         return JSONResponse({"tasks": live, "nextPageToken": nxt, "pageSize": size, "totalSize": total})
@@ -319,7 +319,7 @@ def _handlers(state: Any) -> dict[str, Any]:
         except authz.Denied as e:
             return a2a_error("PERMISSION_DENIED", str(e))
         try:
-            snap = await asyncio.to_thread(TK.cancel_task, state, task_id, actor.user_id)
+            snap = await asyncio.to_thread(TK.cancel_task, state, task_id, actor.user_id, client.token_id)
         except TK.NotFound:
             return a2a_error("TASK_NOT_FOUND", "no task with that id")
         except TK.NotCancelable as e:
@@ -339,9 +339,9 @@ def _handlers(state: Any) -> dict[str, Any]:
         problem = version_problem(request)
         if problem is not None:
             return problem
-        t = state.a2a_tasks.live(task_id, actor.user_id)
+        t = state.a2a_tasks.live(task_id, actor.user_id, client.token_id)
         if t is None:
-            row = await asyncio.to_thread(state.a2a_tasks.view, task_id, actor.user_id)
+            row = await asyncio.to_thread(state.a2a_tasks.view, task_id, actor.user_id, client.token_id)
             if row is None:
                 return a2a_error("TASK_NOT_FOUND", "no task with that id")
             return a2a_error("UNSUPPORTED_OPERATION", "the task has finished -- read it with GetTask")

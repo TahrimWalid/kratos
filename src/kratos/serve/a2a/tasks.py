@@ -201,12 +201,14 @@ class Tasks:
                     break
                 del self._live[victim]
 
-    def live(self, task_id: str, user_id: str) -> TaskRun | None:
+    def live(self, task_id: str, user_id: str, token_id: str) -> TaskRun | None:
+        """This person's task, started with this token -- else None (see store.get)."""
         import hmac
 
         with self._lock:
             t = self._live.get(str(task_id or ""))
-        if t is None or not hmac.compare_digest(t.user_id, str(user_id)):
+        if t is None or not (hmac.compare_digest(t.user_id, str(user_id))
+                             and hmac.compare_digest(t.token_id, str(token_id))):
             return None
         return t
 
@@ -216,11 +218,11 @@ class Tasks:
         with self._lock:
             return sum(1 for t in self._live.values() if t.user_id == user_id and not t.ended.is_set())
 
-    def view(self, task_id: str, user_id: str) -> dict[str, Any] | None:
-        t = self.live(task_id, user_id)
+    def view(self, task_id: str, user_id: str, token_id: str) -> dict[str, Any] | None:
+        t = self.live(task_id, user_id, token_id)
         if t is not None:
             return snapshot(t)
-        return S.get(self.data_dir, task_id, user_id)
+        return S.get(self.data_dir, task_id, user_id, token_id)
 
     def shutdown(self, timeout: float = 10.0) -> None:
         with self._lock:
@@ -602,13 +604,13 @@ class NotCancelable(Exception):
     pass
 
 
-def cancel_task(state: Any, task_id: str, user_id: str) -> dict[str, Any]:
+def cancel_task(state: Any, task_id: str, user_id: str, token_id: str) -> dict[str, Any]:
     """Cancel this person's task: the run stops at its next read (the same should_stop path
     chat and the TUI use). Returns the task's view. NotFound / NotCancelable."""
     data_dir = Path(state.data_dir)
-    t = state.a2a_tasks.live(task_id, user_id)
+    t = state.a2a_tasks.live(task_id, user_id, token_id)
     if t is None:
-        row = S.get(data_dir, task_id, user_id)
+        row = S.get(data_dir, task_id, user_id, token_id)
         if row is None:
             raise NotFound(task_id)
         raise NotCancelable(row["state"])

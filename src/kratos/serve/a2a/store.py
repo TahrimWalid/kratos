@@ -153,22 +153,27 @@ def note_run(data_dir: Path, task_id: str, *, run_id: str | None = None, session
         conn.close()
 
 
-def get(data_dir: Path, task_id: str, user_id: str) -> dict[str, Any] | None:
-    """The task if it exists AND belongs to `user_id` -- otherwise None, the same answer
-    whether it doesn't exist or is someone else's (no existence leak)."""
+def get(data_dir: Path, task_id: str, user_id: str, token_id: str) -> dict[str, Any] | None:
+    """The task if it exists AND was started by this person with this token -- otherwise
+    None, the same answer whether it doesn't exist or is someone else's (no existence leak).
+    Bound to the token too, like MCP's investigations: a token narrowed to fewer machines
+    (D.7) never reads what the same person's broader token found."""
     conn = connect(data_dir)
     try:
-        r = conn.execute("SELECT * FROM a2a_tasks WHERE task_id = ? AND user_id = ?",
-                         (str(task_id), str(user_id))).fetchone()
+        r = conn.execute("SELECT * FROM a2a_tasks WHERE task_id = ? AND user_id = ? AND token_id = ?",
+                         (str(task_id), str(user_id), str(token_id))).fetchone()
     finally:
         conn.close()
     return _row(r) if r else None
 
 
-def list_for(data_dir: Path, user_id: str, *, context_id: str | None = None, state: str | None = None,
-             limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-    """(this person's tasks newest first, how many in all)."""
+def list_for(data_dir: Path, user_id: str, *, token_id: str | None = None, context_id: str | None = None,
+             state: str | None = None, limit: int = 50, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
+    """(this person's tasks -- started with `token_id` when given -- newest first, how many in all)."""
     where, args = ["user_id = ?"], [str(user_id)]
+    if token_id is not None:
+        where.append("token_id = ?")
+        args.append(str(token_id))
     if context_id:
         where.append("context_id = ?")
         args.append(context_id)

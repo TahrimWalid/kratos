@@ -319,7 +319,7 @@ def test_investigation_round_trip_same_answer_as_chat(env):
     # GetTask after it finished, from the store
     g = env["client"].get(f"/a2a/v1/tasks/{t['id']}", headers=_h(env["tok"]["ivy"]))
     assert g.status_code == 200 and g.json()["artifacts"][0]["parts"][0]["text"] == text["text"]
-    row = S.get(env["dir"], t["id"], U.find(env["dir"], "ivy").user_id)
+    row = S.get(env["dir"], t["id"], *_ivy(env))
     assert row["state"] == "TASK_STATE_COMPLETED" and row["door"] == "a2a" and row["target"] == M1
 
 
@@ -429,14 +429,14 @@ def test_cancel_stops_reads(env):
     assert r.status_code == 200 and r.json()["status"]["state"] == "TASK_STATE_CANCELED"
     # the run sees should_stop at its next check and ends; nothing later overwrites CANCELED
     state = env["client"].app.app.state.kratos
-    live = state.a2a_tasks.live(t["id"], U.find(env["dir"], "ivy").user_id)
+    live = state.a2a_tasks.live(t["id"], *_ivy(env))
     assert live.ended.wait(5)                              # the run stopped at its next check
     reads_after_cancel = len(env["state"]["agents"])
     env["state"]["gate"].set()
     g = env["client"].get(f"/a2a/v1/tasks/{t['id']}", headers=_h(env["tok"]["ivy"])).json()
     assert g["status"]["state"] == "TASK_STATE_CANCELED" and "artifacts" not in g
     assert len(env["state"]["agents"]) == reads_after_cancel == 1
-    row = S.get(env["dir"], t["id"], U.find(env["dir"], "ivy").user_id)
+    row = S.get(env["dir"], t["id"], *_ivy(env))
     assert row["state"] == "TASK_STATE_CANCELED" and row["session_id"]        # still linked to its session
 
 
@@ -466,7 +466,7 @@ def test_busy_and_open_task_cap(env):
     assert "unfinished tasks" in second["status"]["message"]["parts"][0]["text"]
     env["state"]["gate"].set()
     for _ in range(200):
-        if S.get(env["dir"], first["id"], U.find(env["dir"], "ivy").user_id)["finished"]:
+        if S.get(env["dir"], first["id"], *_ivy(env))["finished"]:
             break
         time.sleep(0.02)
     # the server's open turns are shared with chat: none left -> rejected "busy", not queued
@@ -553,7 +553,7 @@ def test_stream_drop(env):
     body["configuration"] = {"returnImmediately": True}
     t = _send(env, "ivy", body).json()["task"]
     state = env["client"].app.app.state.kratos
-    live = state.a2a_tasks.live(t["id"], U.find(env["dir"], "ivy").user_id)
+    live = state.a2a_tasks.live(t["id"], *_ivy(env))
 
     async def drop():
         q = live.subscribe(asyncio.get_running_loop())
@@ -586,7 +586,8 @@ def test_subscribe(env):
 
 def test_restart_mid_task(env, tmp_path):
     uid = U.find(env["dir"], "ivy").user_id
-    S.insert(env["dir"], task_id="task-left", context_id="ctx-1", door="a2a", user_id=uid, token_id="t", skill="x",
+    S.insert(env["dir"], task_id="task-left", context_id="ctx-1", door="a2a", user_id=uid,
+             token_id=_token_id(env, "ivy-t"), skill="x",
              target=M1, state="TASK_STATE_WORKING")
     app = create_app(env["dir"], port=8766)
     with TestClient(app, base_url="http://127.0.0.1:8766") as c2:
@@ -756,9 +757,32 @@ def test_agui_disconnect_cancels(env):
     assert t.stop.is_set()
     assert t.ended.wait(5)
     env["state"]["gate"].set()
-    row = S.get(env["dir"], t.task_id, ivy.user_id)
+    row = S.get(env["dir"], t.task_id, ivy.user_id, t.token_id)
     assert row["state"] == "TASK_STATE_CANCELED" and row["door"] == "agui"
     assert len(env["state"]["agents"]) == 1
+
+
+def _ivy(env):
+    return U.find(env["dir"], "ivy").user_id, _token_id(env, "ivy-t")
+
+
+def test_a_narrowed_token_never_reads_the_same_persons_other_tasks(env):
+    """D.7: a token can narrow a person's machines. A task belongs to the person AND the
+    token that started it, so a token narrowed to M1 can't read what the same person's
+    broader token found on M2 (MCP binds its investigations the same way)."""
+    _on(env)
+    with authz.acting_as(OWNER):
+        narrow, _ = auth.create_token(env["dir"], name="ivy-m1", user="ivy", targets=[M1], agents=True)
+    t = _send(env, "ivy", _msg(_inv(M2))).json()["task"]
+    assert t["status"]["state"] == "TASK_STATE_COMPLETED"
+    h = _h(narrow)
+    assert env["client"].get(f"/a2a/v1/tasks/{t['id']}", headers=h).json()["error"]["details"][0]["reason"] \
+        == "TASK_NOT_FOUND"
+    assert env["client"].post(f"/a2a/v1/tasks/{t['id']}:subscribe", headers=h).status_code == 404
+    assert env["client"].post(f"/a2a/v1/tasks/{t['id']}:cancel", headers=h).status_code == 404
+    assert env["client"].get("/a2a/v1/tasks", headers=h).json()["tasks"] == []
+    r = env["client"].post("/a2a/v1/message:send", headers=h, json=_msg(_inv(M2)))
+    assert r.json()["task"]["status"]["state"] == "TASK_STATE_REJECTED"          # and it can't start one there
 
 
 def _token_id(env, name):
