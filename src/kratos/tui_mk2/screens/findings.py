@@ -198,12 +198,15 @@ class FindingsScreen(Screen):
         Binding("l", "lookup_online", "look hash up online", show=False),
     ]
 
+    # A2: one title row, the table, a detail pane for the selected finding,
+    # a short log of what you decided, and a key bar for that finding.
     CSS = """
     FindingsScreen { padding: 1 2; }
     FindingsScreen #fd-banner { height: auto; padding: 0 0 1 0; }
-    FindingsScreen DataTable { height: auto; max-height: 70%; }
-    FindingsScreen #fd-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    FindingsScreen #fd-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
+    FindingsScreen DataTable { height: auto; max-height: 50%; }
+    FindingsScreen #fd-detail { height: auto; min-height: 4; max-height: 8; border-top: solid $panel; padding-top: 1; }
+    FindingsScreen #fd-log { height: 1fr; min-height: 2; border-top: solid $panel; }
+    FindingsScreen #fd-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(self, data_dir: Path, *, target: str | None = None) -> None:
@@ -225,8 +228,9 @@ class FindingsScreen(Screen):
         with Vertical():
             yield Static(id="fd-banner")
             yield DataTable(id="fd-table", cursor_type="row")
+            yield Static(id="fd-detail")
             yield VerticalScroll(id="fd-log")
-            yield Static(key_bar([('enter', 'details'), ('v', 'verify'), ('a', 'accept'), ('s', 'view'), ('?', 'all keys'), ('esc', 'back')]), id="fd-hints")
+            yield Static(key_bar([("s", "view"), ("?", "all keys"), ("esc", "back")]), id="fd-hints")
 
     def on_mount(self) -> None:
         pass  # columns are chosen per refresh (refresh_rows)
@@ -327,20 +331,75 @@ class FindingsScreen(Screen):
         machine = self._target or "every machine"
         banner = Text()
         banner.append("Findings", style=f"bold {T.ACCENT}")
-        banner.append(f" — {view} · {dict(SEVERITY_FLOORS)[self._floor]} · {machine}", style=T.TEXT)
-        if self._search:
-            banner.append(f" · matching “{self._search}”", style=T.TEXT)
-        banner.append(f"   ({len(self._rows)} shown)", style=T.TEXT_DIM)
+        banner.append(f"   {machine}", style=f"bold {T.DATA}")
+        floor = dict(SEVERITY_FLOORS)[self._floor]
+        banner.append(f" · {view}" + (f" · {floor}" if self._floor != "info" else "")
+                      + (f" · matching “{self._search}”" if self._search else "")
+                      + f" · {len(self._rows)} shown", style=T.TEXT_DIM)
         hidden = sum(Q.hidden_counts(self._data_dir, self._target).values())
-        if self._state != "decided":
-            banner.append(f"\nHidden by your decisions: {hidden}", style=T.TEXT_MUTED)
-            if hidden:
-                banner.append(" — press s to see them", style=T.TEXT_DIM)
-        if not self._rows and self._state == "open_verified":
-            banner.append("\nNothing open. Findings appear here after an investigation or /run.", style=T.TEXT_DIM)
-        elif not self._rows:
-            banner.append(f"\nNothing in this view. Press s for the next view.", style=T.TEXT_DIM)
+        if self._state != "decided" and hidden:
+            banner.append(f" · {hidden} hidden (s)", style=T.TEXT_MUTED)
         self.query_one("#fd-banner", Static).update(banner)
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected finding in words: what it is, the first evidence, where it
+        stands (verdict, decision), and the keys that apply to it (A2)."""
+        try:
+            detail = self.query_one("#fd-detail", Static)
+            hints = self.query_one("#fd-hints", Static)
+        except Exception:  # noqa: BLE001
+            return
+        row = self.selected()
+        if row is None:
+            msg = ("Nothing open. Findings appear here after an investigation or /run." if self._state == "open_verified"
+                   else "Nothing in this view. s shows the next view.")
+            detail.update(Text(msg, style=T.TEXT_MUTED))
+            hints.update(key_bar([("s", "next view"), ("p", "severity"), ("m", "machine"), ("?", "all keys"),
+                                  ("esc", "back")]))
+            return
+        sev = str(row.get("severity") or "").lower()
+        out = Text()
+        out.append(f"{sev.upper():<9}", style=f"bold {T.SEVERITY_COLOR.get(sev, T.TEXT)}")
+        out.append(f"{row['rule_id']}  ", style=T.TEXT_DIM)
+        out.append(annotate_lookalikes(row["title"]), style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"\n{row['target']}", style=T.DATA)
+        about = annotate_lookalikes(", ".join(row.get("entities") or []))
+        if about:
+            out.append(f" · about {about}", style=T.TEXT_MUTED)
+        out.append(f" · {STATE_WORDS.get(row['state'], row['state'])}", style=STATE_COLOR.get(row["state"], T.TEXT))
+        decision = _ssvc.cell(row)
+        if decision:      # D.3: the SSVC decision and the measured exposure, even when the columns don't fit
+            out.append("\nDecision ", style=T.TEXT_MUTED)
+            out.append(decision, style=f"bold {DECISION_COLOR.get(decision, T.TEXT)}")
+            exposure = _ssvc.exposure_cell(row)
+            if exposure:
+                out.append(f" · exposure {exposure}", style=T.TEXT_MUTED)
+        v = row.get("verdict")
+        if isinstance(v, dict) and v.get("sentence"):
+            out.append(f"\nRe-check: {v['sentence']}", style=T.TEXT_MUTED)
+        d = row.get("decision")
+        if d:
+            out.append(f"\n{STATE_WORDS.get(d['kind'], d['kind']).capitalize()}: {d.get('reason') or ''}"
+                       + (f" (until {self._when(d['expires_at'])})" if d.get("expires_at") else ""), style=T.TEXT_MUTED)
+        for s_ in (row.get("suggestions") or [])[:1]:
+            out.append(f"\nThe model suggests {s_['kind'].replace('_', ' ')} — you decide; n dismisses.",
+                       style=T.ATTENTION)
+        state = row["state"]
+        if state in ("open", "verified"):
+            keys = [("enter", "details"), ("v", "verify") if state == "open" else ("k", "re-check"),
+                    ("a", "accept"), ("f", "not a problem")]
+        elif state in ("risk_accepted", "false_positive", "out_of_scope"):
+            keys = [("enter", "details"), ("r", "reopen")]
+        else:
+            keys = [("enter", "details"), ("h", "history")]
+        detail.update(out)
+        if len(keys) < 4:     # s (next view) when it fits; ? lists it either way
+            keys = keys + [("s", "view")]
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def selected(self) -> dict[str, Any] | None:
         table = self.query_one("#fd-table", DataTable)

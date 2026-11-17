@@ -67,7 +67,7 @@ async def _default_view_hides_decided_and_counts_them(tmp_path):
     async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         assert [r["rule_id"] for r in screen._rows] == ["CORR-SSH-001", "NET-002"]
-        assert "Hidden by your decisions: 1" in _text(screen.query_one("#fd-banner"))
+        assert "1 hidden (s)" in _text(screen.query_one("#fd-banner"))   # A2: one title row
         await pilot.press("s")
         await pilot.pause()
         assert [r["rule_id"] for r in screen._rows] == ["AUTH-003"]
