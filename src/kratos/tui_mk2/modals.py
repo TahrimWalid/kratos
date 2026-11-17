@@ -858,9 +858,11 @@ class ToolPickerModal(ModalScreen[str | None]):
         lst = self.query_one("#tp-list", ListView)
         lst.clear()
         self._shown = self._matches(query)
+        self._cells = []          # kept, like the palette's labels (rebuilt per keystroke)
         for i, (name, desc) in enumerate(self._shown):
             cell = Static(self._row(name, desc, selected=i == 0))
             cell.styles.width = "1fr"   # wrap a long description instead of clipping it
+            self._cells.append(cell)
             lst.append(ListItem(cell))
         if len(lst):
             lst.index = 0
@@ -868,10 +870,8 @@ class ToolPickerModal(ModalScreen[str | None]):
     @on(ListView.Highlighted, "#tp-list")
     def _restyle(self, event: ListView.Highlighted) -> None:
         current = event.list_view.index
-        shown = getattr(self, "_shown", [])
-        for idx, item in enumerate(event.list_view.children):
-            if idx < len(shown):
-                item.query_one(Static).update(self._row(*shown[idx], selected=idx == current))
+        for idx, (cell, row) in enumerate(zip(getattr(self, "_cells", []), getattr(self, "_shown", []))):
+            cell.update(self._row(*row, selected=idx == current))
 
     @on(Input.Changed, "#tp-input")
     def _changed(self, event: Input.Changed) -> None:
@@ -947,18 +947,19 @@ class CommandPaletteModal(ModalScreen[str | None]):
         lst = self.query_one("#palette-list", ListView)
         lst.clear()
         self._shown = self._matches(query)
-        for i, (cmd, desc) in enumerate(self._shown):
-            lst.append(ListItem(Label(self._row(cmd, desc, selected=i == 0))))
+        # Keep the labels themselves: the list is rebuilt on every keystroke, and a Highlighted
+        # event can arrive before a new row's label is mounted (query_one would fail then).
+        self._labels = [Label(self._row(cmd, desc, selected=i == 0)) for i, (cmd, desc) in enumerate(self._shown)]
+        for label in self._labels:
+            lst.append(ListItem(label))
         if len(lst):
             lst.index = 0
 
     @on(ListView.Highlighted, "#palette-list")
     def _restyle(self, event: ListView.Highlighted) -> None:
         current = event.list_view.index
-        shown = getattr(self, "_shown", [])
-        for idx, item in enumerate(event.list_view.children):
-            if idx < len(shown):
-                item.query_one(Label).update(self._row(*shown[idx], selected=idx == current))
+        for idx, (label, row) in enumerate(zip(getattr(self, "_labels", []), getattr(self, "_shown", []))):
+            label.update(self._row(*row, selected=idx == current))
 
     @on(Input.Changed, "#palette-input")
     def _changed(self, event: Input.Changed) -> None:
