@@ -11,7 +11,7 @@ from kratos.detect import live as L
 from kratos.storage.subagent_store import SubAgentStore
 from kratos.tui_mk2.screens.subagent import SubAgentScreen
 
-from tests.test_tui_mk2_subagent import _Host, _log_texts
+from tests.test_tui_mk2_subagent import _Host, _detail, _log_texts
 
 
 def _pair(sa: SubAgentStore, name: str, version: str) -> str:
@@ -45,7 +45,7 @@ def _drive(tmp_path, monkeypatch, answers: list, *, version: str = "0.9.0", pres
             screen._refresh()
             await pilot.pause()
             table = screen.query_one("#sa-table")
-            out["cell"] = str(table.get_row_at(0)[7])
+            out["cell"] = _detail(screen, 0)   # A2: the watch state is in the detail pane
             out["texts"] = _log_texts(screen)
 
     asyncio.run(run())

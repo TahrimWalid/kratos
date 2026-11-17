@@ -83,7 +83,7 @@ def _render(tmp_path) -> tuple[list[str], str]:
             await pilot.pause()
             table = screen.query_one("#sa-table")
             out["links"] = [str(table.get_row_at(i)[4]) for i in range(table.row_count)]
-            out["listener"] = str(screen.query_one("#sa-listener").render())
+            out["listener"] = str(screen._notices())
 
     asyncio.run(run())
     return out["links"], out["listener"]

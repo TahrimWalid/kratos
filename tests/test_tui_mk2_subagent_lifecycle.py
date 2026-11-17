@@ -59,6 +59,13 @@ def _select(screen, pred):
 def _cell(screen, idx, col):
     return str(screen.query_one("#sa-table").get_row_at(idx)[col])
 
+def _detail(screen, idx: int) -> str:
+    """A2: a row's reason, watch state and next step are in the detail pane under the table."""
+    screen.query_one("#sa-table").move_cursor(row=idx)
+    screen._show_detail()
+    return str(screen.query_one("#sa-detail").render())
+
+
 
 def _run(screen, script, *, fake_wait=None):
     out: dict = {}
@@ -154,10 +161,10 @@ def test_pending_code_row_counts_down_and_expired_row_says_who_tried(tmp_path):
 
     async def script(app, pilot):
         for i, r in enumerate(screen._rows):
-            cells[r["code"]["code"]] = (_cell(screen, i, 0), _cell(screen, i, 6))
+            cells[r["code"]["code"]] = (_cell(screen, i, 0), _detail(screen, i))
 
     _run(screen, script)
-    assert "waiting" in cells[fresh][0] and "expires in 1" in cells[fresh][1]
+    assert "waiting" in cells[fresh][0] and "14:" in cells[fresh][1] and "left" in cells[fresh][1]
     assert "expired" in cells[old][0] and "late-box (10.0.0.7) tried it" in cells[old][1]
 
 
@@ -276,14 +283,19 @@ def test_details_show_connection_history(tmp_path):
     sa.record_connection_closed(tid, listener_id="L", reason="connection lost (ConnectionResetError)")
     screen = SubAgentScreen(tmp_path)
 
+    card: list = []
+
     async def script(app, pilot):
         _select(screen, lambda r: r["kind"] == "target")
         await pilot.press("i")
         await pilot.pause()
+        buf = io.StringIO()     # A2: details open as a card (InfoModal), not lines in the activity log
+        Console(file=buf, width=160).print(app.screen._body)
+        card.append(type(app.screen).__name__ + "\n" + buf.getvalue())
 
-    out = _run(screen, script)
-    joined = "\n".join(out["texts"])
-    assert "ConnectionResetError" in joined and "10.0.0.9" in joined
+    _run(screen, script)
+    assert card[0].startswith("InfoModal")
+    assert "ConnectionResetError" in card[0] and "10.0.0.9" in card[0]
 
 
 def test_installed_but_never_checked_in_gets_a_diagnosis(tmp_path, monkeypatch):
