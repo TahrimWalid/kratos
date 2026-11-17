@@ -220,11 +220,18 @@ def finding_panel(finding: dict[str, Any], time_str: str | None = None) -> Panel
     fid = str(finding.get("id", "UNKNOWN"))
     severity = str(finding.get("severity") or "info").lower()
     color = T.SEVERITY_COLOR.get(severity, T.CRITICAL)
-    summary = FINDING_SUMMARY_TEMPLATES.get(fid, GENERIC_FINDING_SUMMARY)
+    title_text = annotate_lookalikes(finding.get("title", ""))
+    summary = FINDING_SUMMARY_TEMPLATES.get(fid)
 
     body = Text()
-    body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
-    body.append(f"\n[{fid}] {annotate_lookalikes(finding.get('title', ''))}", style=T.TEXT_DIM)
+    if summary:
+        body.append(summary, style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"\n[{fid}] {title_text}", style=T.TEXT_DIM)
+    else:
+        # No plain-language template (e.g. a detection rule): the finding's own title
+        # says more than the generic "a security-relevant pattern was detected" (F11).
+        body.append(title_text or GENERIC_FINDING_SUMMARY, style=f"bold {T.TEXT_BRIGHT}")
+        body.append(f"\n[{fid}]", style=T.TEXT_DIM)
     status = lifecycle_status(finding)
     if status:
         body.append(f"  · {status}", style=T.ATTENTION if finding.get("change") in ("reopened", "recurred", "worse")
