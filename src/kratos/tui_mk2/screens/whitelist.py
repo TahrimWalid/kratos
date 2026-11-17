@@ -131,12 +131,16 @@ class WhitelistScreen(Screen):
         Binding("r", "rollback", "rollback last", show=False),
     ]
 
+    # A2: title row with the execution mode as the one global status (safety
+    # warnings, if any, one line each under it), short table, a detail pane for
+    # the selected action, a short results log, a key bar for that row.
     CSS = """
     WhitelistScreen { padding: 1 2; }
     WhitelistScreen #wl-banner { height: auto; padding: 0 0 1 0; }
-    WhitelistScreen DataTable { height: auto; max-height: 60%; }
-    WhitelistScreen #wl-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    WhitelistScreen #wl-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
+    WhitelistScreen DataTable { height: auto; max-height: 45%; }
+    WhitelistScreen #wl-detail { height: auto; min-height: 4; max-height: 8; border-top: solid $panel; padding-top: 1; }
+    WhitelistScreen #wl-log { height: 1fr; min-height: 3; border-top: solid $panel; }
+    WhitelistScreen #wl-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(self, data_dir: Path, *, target_id: str | None = None,
@@ -163,8 +167,9 @@ class WhitelistScreen(Screen):
         with Vertical():
             yield Static(id="wl-banner")
             yield DataTable(id="wl-table", cursor_type="row")
+            yield Static(id="wl-detail")
             yield VerticalScroll(id="wl-log")
-            yield Static(key_bar([('enter', 'run'), ('space', 'on/off'), ('i', 'details'), ('a', 'add'), ('?', 'all keys'), ('esc', 'back')]), id="wl-hints")
+            yield Static(key_bar([("a", "add"), ("?", "all keys"), ("esc", "back")]), id="wl-hints")
 
     def on_mount(self) -> None:
         table = self.query_one("#wl-table", DataTable)
@@ -251,17 +256,12 @@ class WhitelistScreen(Screen):
             table.add_row(*row, key=key)
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
-        if self._rows and not self.query_one("#wl-log", VerticalScroll).children:
-            # The area under the table is where details and results appear; say so
-            # rather than leave it blank.
-            self._log(Text("i shows what the highlighted entry runs and how risky it is · enter runs it "
-                           "(you confirm first) · a adds your own. Details and results appear here.",
-                           style=T.TEXT_DIM))
-
         enabled = sum(1 for r in self._rows if r["state"] == "on")
         banner = Text()
+        name = (target or {}).get("name") or self._target_id
         banner.append("Allowlist", style=f"bold {T.ACCENT}")
-        banner.append(f" — what Kratos may run on {(target or {}).get('name') or self._target_id}\n", style=T.TEXT)
+        banner.append(f"   {name}", style=f"bold {T.DATA}")
+        banner.append(f" · {status.replace('_', ' ')} · {enabled} on   ", style=T.TEXT_DIM)
         refusal = self._agent_refusal() if opted_in else None
         if refusal:
             # consent given, but the machine refuses: never headline it as "ON"
@@ -269,10 +269,6 @@ class WhitelistScreen(Screen):
         else:
             banner.append("DIRECT EXECUTION ON" if opted_in else "recommend-only",
                           style=f"bold {T.CRITICAL if opted_in else T.TEXT_MUTED}")
-        name = (target or {}).get("name") or self._target_id
-        host = (target or {}).get("hostname")
-        where = f"{name} ({host})" if host and host != name else name
-        banner.append(f"  ·  {where}  ·  status {status}  ·  {enabled} action(s) on", style=T.TEXT_DIM)
         agent = self._wl_store.get_agent_state(self._target_id) or {}
         version = agent.get("agent_version") or (target or {}).get("agent_version")
         if version and _version_tuple(version) < _MIN_EXEC_AGENT_VERSION:
@@ -296,9 +292,62 @@ class WhitelistScreen(Screen):
                           style=T.ATTENTION)
         waiting = sum(1 for r in self._rows if r["state"] == "waiting")
         if waiting:
-            banner.append(f"\n{waiting} exact command(s) waiting for the target's admin to allow them -- "
-                          "select one and press i.", style=T.ATTENTION)
+            banner.append(f"\n{waiting} exact command(s) waiting for the target's admin -- select one for what to do.",
+                          style=T.ATTENTION)
         self.query_one("#wl-banner", Static).update(banner)
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        """The selected action in words -- what it runs, what it changes, how to
+        undo it, its state and the next step -- and the keys for it (A2)."""
+        try:
+            detail = self.query_one("#wl-detail", Static)
+            hints = self.query_one("#wl-hints", Static)
+        except Exception:  # noqa: BLE001
+            return
+        row = self._selected_row()
+        if row is None:
+            detail.update(Text("a adds an action of your own: from a template, or one exact command.",
+                               style=T.TEXT_MUTED))
+            hints.update(key_bar([("a", "add"), ("c", "what it allows"), ("?", "all keys"), ("esc", "back")]))
+            return
+        spec = row["spec"]
+        out = Text()
+        out.append(row["label"], style=f"bold {T.DATA}")
+        out.append(f"   {row['state']}", style=_STATE_COLOR.get(row["state"], T.TEXT))
+        out.append(f" · {row['tier']} risk", style=_TIER_COLOR.get(row["tier"], T.TEXT))
+        out.append(f" · {row['source']}", style=T.TEXT_DIM)
+        if spec is not None:
+            out.append("\nRuns ", style=T.TEXT_DIM)
+            out.append(C.shlex.join(spec.argv_template), style=T.TEXT_BRIGHT)
+            if spec.effect:
+                out.append(f"\n{spec.effect}", style=T.TEXT)
+            if spec.reversibility:
+                out.append(f"  Undo: {spec.reversibility}", style=T.TEXT_MUTED)
+        if row.get("error"):
+            out.append(f"\nProblem: {row['error']}", style=T.CRITICAL)
+        keys: list[tuple[str, str]] = []
+        state = row["state"]
+        if state == "on":
+            out.append("\nEnter runs it" + (" — you confirm, then type EXECUTE." if self._can_execute()
+                                              else " — recommend-only here: you get the command to run yourself."),
+                       style=T.TEXT_DIM)
+            keys += [("enter", "run"), ("space", "turn off")]
+        elif state == "off":
+            out.append("\nOff: space turns it on.", style=T.TEXT_DIM)
+            keys += [("space", "turn on")]
+        elif state == "waiting":
+            out.append("\nThe target's admin has to allow this exact command — i shows the line to add.",
+                       style=T.ATTENTION)
+            keys += [("i", "line to add")]
+        if row["kind"] == "user":
+            keys += [("m", "edit"), ("x", "delete")]
+        keys += [("i", "details")] if state != "waiting" else []
+        detail.update(out)
+        hints.update(key_bar(keys + [("?", "all keys"), ("esc", "back")]))
 
     def _agent_refusal(self) -> str | None:
         """Why this machine's own agent will refuse every run, from what it last
@@ -705,10 +754,13 @@ class WhitelistScreen(Screen):
             body.add_row("blast radius", spec.blast_radius)
         if row.get("error"):
             body.add_row("problem", row["error"])
-        self._log(Text(f"Details: {row['label']}", style=f"bold {T.ACCENT}"))
-        self._log(body)
+        from kratos.tui_mk2.modals import InfoModal
+
+        self._details_body = body
         if row["state"] == "waiting" and spec is not None:
             self._show_allow_snippet(C.shlex.join(spec.argv_template))
+            return
+        self.app.push_screen(InfoModal(f"{row['label']} — details", body))   # A2: a card, not log lines
 
     def _show_allow_snippet(self, line: str) -> None:
         try:
