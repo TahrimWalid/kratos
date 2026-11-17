@@ -59,9 +59,11 @@ class DetectScreen(Screen):
     CSS = """
     DetectScreen { padding: 1 2; }
     DetectScreen #dt-banner { height: auto; padding: 0 0 1 0; }
-    DetectScreen DataTable { height: auto; max-height: 65%; }
-    DetectScreen #dt-log { height: 1fr; border-top: solid $panel; padding-top: 1; }
-    DetectScreen #dt-hints { height: 1; background: $panel; padding: 0 1; margin-top: 1; }
+    DetectScreen DataTable { height: auto; max-height: 40%; }
+    DetectScreen #dt-detail { height: auto; min-height: 4; max-height: 7; border-top: solid $panel; padding-top: 1; }
+    DetectScreen #dt-hints { dock: bottom; }
+    DetectScreen #dt-log { height: 1fr; min-height: 2; border-top: solid $panel; }
+    DetectScreen #dt-hints { height: 1; background: $panel; padding: 0 1; }
     """
 
     def __init__(self, data_dir: Path, *, target: str | None = None) -> None:
@@ -75,6 +77,16 @@ class DetectScreen(Screen):
     def action_all_keys(self) -> None:
         from kratos.tui_mk2.modals import InfoModal
         body = all_keys_text(self._ALL_KEYS)
+        if getattr(self, "_loaded", None) is not None:
+            by_level: dict[str, int] = {}
+            for _lp, r in self._loaded.rules():
+                by_level[r.meta["level"]] = by_level.get(r.meta["level"], 0) + 1
+            body.append("\n\nShipped rules: " + " · ".join(
+                f"{n} {lvl}" for lvl, n in sorted(by_level.items(), key=lambda kv: _LEVEL_ORDER.get(kv[0], 9))),
+                style=T.TEXT_MUTED)
+            body.append("\nRules by their authors (SigmaHQ), Detection Rule License 1.1. They run on the logs Kratos "
+                        "collected, on schedule; a machine with a sub-agent can also be watched continuously "
+                        "(/subagent, w).", style=T.TEXT_DIM)
         gaps = self._coverage_lines() if self._target else []
         if gaps:
             body.append("\n\nNot checked on " + str(self._target) + ":\n", style=f"bold {T.TEXT_BRIGHT}")
@@ -85,6 +97,7 @@ class DetectScreen(Screen):
         with Vertical():
             yield Static(id="dt-banner")
             yield DataTable(id="dt-table", cursor_type="row")
+            yield Static(id="dt-detail")
             yield VerticalScroll(id="dt-log")
             yield Static(key_bar([('enter', 'details'), ('x', 'on/off here'), ('r', 'run now'), ('s', 'not shipped'), ('?', 'all keys'), ('esc', 'back')]), id="dt-hints")
 
@@ -147,47 +160,85 @@ class DetectScreen(Screen):
         self._update_banner()
 
     def _update_banner(self) -> None:
+        """A2: the title row (the machine and the packs), one status line (the last
+        pass, and whether rules run live or on schedule), then only warnings."""
         banner = Text()
         banner.append("Detection rules", style=f"bold {T.ACCENT}")
-        packs = ", ".join(f"{lp.pack_id} v{lp.version} ({len(lp.pack.rules)})" for lp in self._loaded.loaded)
-        banner.append(f" — {packs}", style=T.TEXT)
-        by_level: dict[str, int] = {}
-        for _lp, r in self._loaded.rules():
-            by_level[r.meta["level"]] = by_level.get(r.meta["level"], 0) + 1
-        banner.append("\n" + " · ".join(f"{n} {lvl}" for lvl, n in sorted(by_level.items(),
-                                                                            key=lambda kv: _LEVEL_ORDER.get(kv[0], 9))),
-                      style=T.TEXT_MUTED)
-        banner.append("   Rules by their authors (SigmaHQ), Detection Rule License 1.1.", style=T.TEXT_DIM)
-        if self._skipped_view:
-            banner.append(f"\nShowing the {len(self._rows)} candidates NOT shipped, with why. "
-                          "Import any of them yourself: kratos detect import.", style=T.TEXT)
         machine = self._target or "no machine selected"
-        banner.append(f"\nOn/off and last pass for: {machine}", style=T.TEXT)
+        banner.append(f"   {machine}", style=f"bold {T.DATA}" if self._target else T.TEXT_DIM)
+        packs = ", ".join(f"{lp.pack_id} v{lp.version} ({len(lp.pack.rules)})" for lp in self._loaded.loaded)
+        banner.append(f" · {packs}", style=T.TEXT_DIM)
+        if self._skipped_view:
+            banner.append(f" · showing the {len(self._rows)} NOT shipped", style=T.ATTENTION)
+        status = Text()
         if self._target:
-            runs = ST.last_runs_by_target(self._data_dir)
-            run = runs.get(self._target)
+            run = ST.last_runs_by_target(self._data_dir).get(self._target)
             if run is None:
-                banner.append(" — the rules have not run here yet (press r)", style=T.TEXT_DIM)
+                status.append("Not run here yet (r) · ", style=T.TEXT_DIM)
             else:
-                when = format_for_display(epoch_to_utc_iso(run.finished_at or run.started_at), "%Y-%m-%d %H:%M",
+                when = format_for_display(epoch_to_utc_iso(run.finished_at or run.started_at), "%m-%d %H:%M",
                                           tz=self._tz)
-                banner.append(f" — last pass {when}: {run.events:,} log event(s), {run.detections} match(es)"
-                              + (f", {run.status}: {run.reason}" if run.status != "ok" else ""), style=T.TEXT_MUTED)
+                status.append(f"last pass {when}: {run.events:,} events, {run.detections} match(es)"
+                              + (f", {run.status}: {run.reason}" if run.status != "ok" else "") + " · ",
+                              style=T.TEXT_MUTED)
+        watch = self._watch_line()
+        if watch:
+            status.append(f"Live: {watch}", style=T.SAFE if "NOT running" not in watch else T.CRITICAL)
+        else:
+            status.append("on schedule, not continuously", style=T.TEXT_DIM)
+        banner.append("\n")
+        banner.append_text(status)
+        if self._target:
             gaps = self._coverage_lines()
             if gaps:
-                banner.append(f"\n  {len(gaps)} log source(s) weren't checked — press ? to see which and why",
+                banner.append(f"\n! {len(gaps)} log source(s) weren't checked — ? says which and why",
                               style=T.ATTENTION)
         for ref in self._loaded.refused:
             banner.append(f"\nRefused rule pack {Path(ref.path).name}: {ref.reason}", style=T.CRITICAL)
-        watch = self._watch_line()
-        if watch:
-            banner.append(f"\nLive: {watch}. The rules also run on schedule over the logs Kratos collects.",
-                          style=T.SAFE if "NOT running" not in watch else T.CRITICAL)
-        else:
-            banner.append("\nThese rules run on the logs Kratos collected, on schedule — not continuously"
-                          + (" (a machine with a sub-agent can be watched continuously: /subagent, w)."
-                             if self._target else "."), style=T.TEXT_DIM)
         self.query_one("#dt-banner", Static).update(banner)
+        self._show_detail()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._show_detail()
+
+    def _show_detail(self) -> None:
+        try:
+            detail = self.query_one("#dt-detail", Static)
+            hints = self.query_one("#dt-hints", Static)
+        except Exception:  # noqa: BLE001
+            return
+        row = self.selected()
+        if row is None:
+            detail.update(Text("No rules in this view.", style=T.TEXT_MUTED))
+            hints.update(key_bar([("s", "switch view"), ("?", "all keys"), ("esc", "back")]))
+            return
+        out = Text()
+        if self._skipped_view:
+            out.append(str(row.get("title") or row.get("path") or ""), style=f"bold {T.TEXT_BRIGHT}")
+            out.append(f"\nNot shipped: {row.get('reason') or '-'}", style=T.ATTENTION)
+            out.append(f"\n{row.get('author') or ''}", style=T.TEXT_DIM)
+            detail.update(out)
+            hints.update(key_bar([("enter", "details"), ("s", "shipped rules"), ("?", "all keys"), ("esc", "back")]))
+            return
+        m = row["meta"]
+        lvl = str(m.get("level") or "")
+        out.append(f"{lvl.upper():<9}", style=f"bold {T.SEVERITY_COLOR.get(lvl, T.TEXT)}")
+        out.append(m["title"], style=f"bold {T.TEXT_BRIGHT}")
+        out.append(f"\nReads {_reads(m)}", style=T.TEXT_MUTED)
+        if m.get("description"):
+            out.append(f"\n{str(m['description']).strip().splitlines()[0]}", style=T.TEXT)
+        fps = m.get("falsepositives") or []
+        if fps:
+            out.append(f"\nMay also match: {fps[0]}", style=T.TEXT_DIM)
+        if self._target:
+            out.append(f"\n{'On' if row['on'] else 'OFF'} for {self._target}", style=T.SAFE if row["on"] else T.ATTENTION)
+        out.append(f" · by {m['author']}", style=T.TEXT_DIM)
+        detail.update(out)
+        keys = [("enter", "details")]
+        if self._target:
+            keys.append(("x", "turn off here" if row["on"] else "turn on here"))
+        keys += [("e", "everywhere"), ("r", "run now"), ("?", "all keys"), ("esc", "back")]
+        hints.update(key_bar(keys))
 
     def _watch_line(self) -> str | None:
         if not self._target:
