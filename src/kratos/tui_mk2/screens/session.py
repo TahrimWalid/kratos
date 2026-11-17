@@ -435,15 +435,19 @@ class SessionScreen(ResilientWorkerHost, Screen):
         answer = await self.app.push_screen_wait(
             PromptModal(
                 "Timezone couldn't be auto-detected",
-                "Enter a zone (e.g. Asia/Dhaka, Europe/Helsinki, UTC), or leave blank to use UTC",
+                "Enter a city or a zone (e.g. Helsinki, Asia/Dhaka, UTC), or leave blank to use UTC",
             )
         )
-        if answer and timeutil.zone_from_name(answer.strip()):
-            timeutil.set_display_timezone_override(self._data_dir, answer.strip())
+        zone, choices = timeutil.resolve_zone_text(answer) if answer else (None, [])
+        if zone:
+            timeutil.set_display_timezone_override(self._data_dir, zone)
             self._apply_timezone_change()
-            self._emit(R.success_line(f"Display timezone set to {answer.strip()}."))
+            self._emit(R.success_line(f"Display timezone set to {zone}."))
+        elif choices:
+            self._emit(R.note_line(f"{answer.strip()!r} matches several timezones: {', '.join(choices)}. "
+                                   f"Using UTC for now; pick one with /timezone {choices[0]}"))
         else:
-            self._emit(R.note_line("Using UTC for display. Change anytime with /timezone <zone>."))
+            self._emit(R.note_line("Using UTC for display. Change anytime with /timezone <city or zone>."))
 
     def action_copy_last(self) -> None:
         # Copy Kratos's most recent answer/reply to the clipboard
@@ -4057,12 +4061,18 @@ class SessionScreen(ResilientWorkerHost, Screen):
             self._apply_timezone_change()
             self._emit(R.success_line(f"Display timezone: auto ({timeutil.local_tz_name() or 'system local'})."))
             return
-        if timeutil.zone_from_name(arg) is None:
-            self._emit(R.error_line(f"{arg!r} isn't a known timezone (try UTC, Europe/Helsinki, Asia/Dhaka, …)."))
+        zone, choices = timeutil.resolve_zone_text(arg)
+        if zone is None and choices:
+            self._emit(R.note_line(f"{arg!r} matches several timezones: " + ", ".join(choices)
+                                   + f". Pick one: /timezone {choices[0]}"))
             return
-        timeutil.set_display_timezone_override(self._data_dir, arg)
+        if zone is None:
+            self._emit(R.error_line(f"{arg!r} isn't a city or timezone Kratos knows "
+                                    "(try a city such as Helsinki, or UTC, Asia/Dhaka, …)."))
+            return
+        timeutil.set_display_timezone_override(self._data_dir, zone)
         self._apply_timezone_change()
-        self._emit(R.success_line(f"Display timezone set to {arg} — stored times now shown in this zone."))
+        self._emit(R.success_line(f"Display timezone set to {zone} — stored times now shown in this zone."))
 
     def _apply_timezone_change(self) -> None:
         self._display_tz = timeutil.resolve_display_tz(self._data_dir)

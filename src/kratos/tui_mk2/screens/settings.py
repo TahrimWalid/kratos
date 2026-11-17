@@ -2032,12 +2032,21 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.utils import timeutil
 
         answer = await self.app.push_screen_wait(
-            PromptModal("Set display timezone", "e.g. Asia/Dhaka, Europe/Helsinki, UTC (empty = cancel)"))
+            PromptModal("Set display timezone", "a city or a zone: Helsinki, Asia/Dhaka, UTC (empty = cancel)"))
         if not answer or not answer.strip():
             return
-        zone = answer.strip()
-        if timeutil.zone_from_name(zone) is None:
-            self._set_gen_status(f"{zone!r} isn't a known timezone.", T.CRITICAL)
+        zone, choices = timeutil.resolve_zone_text(answer)
+        if zone is None and choices:
+            from kratos.tui_mk2.modals import ListPickerModal
+
+            zone = await self.app.push_screen_wait(ListPickerModal(
+                f"Which timezone did you mean by {answer.strip()!r}?", [(z, z) for z in choices]))
+            if not zone:
+                return
+        if zone is None:
+            msg = f"{answer.strip()!r} isn't a city or timezone Kratos knows -- try a city (Helsinki) or a zone (UTC)."
+            self._set_gen_status(msg, T.CRITICAL)
+            self.app.notify(msg, severity="error", timeout=8)   # the status line alone was easy to miss
             return
         dd = self._data_dir()
         if dd is None:
