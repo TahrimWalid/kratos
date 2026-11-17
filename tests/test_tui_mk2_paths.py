@@ -73,6 +73,12 @@ async def _run(tmp_path):
         assert "Fix this first" in body
         assert "What Kratos couldn't see" in body
         assert "db" in body        # the critical crown jewel is named in a path
+        # TUI review: the title is said once, in the screen's accent title row, and "esc back"
+        assert "Attack paths for" not in body
+        banner = screen.query_one("#pa-banner").render()
+        assert str(banner).startswith("Attack paths") and "@lab" in str(banner)
+        hints = str(screen.query_one("#pa-hints").render())
+        assert "esc back" in hints and "escape" not in hints
 
 
 def test_paths_screen_reads_no_machine(tmp_path, monkeypatch):
