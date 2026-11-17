@@ -92,6 +92,26 @@ CATEGORIES: tuple[Category, ...] = (
         backup=BACKUP_INCLUDE,
     ),
     Category(
+        "chat_app_connections", "Chat-app connections (kratos connect)",
+        "Which chat apps `kratos connect` connected: the app, the id of the token it made (never the token), the "
+        "machines and doors, the chat server's port at the time, when and by whom; replaced and undone connections "
+        "stay as history.",
+        PERSONAL, "one row per connect, renew or undo",
+        tables=(TableRef(DB, ("connect_apps",), ("connect_apps", "created_at")),),
+        note="kept until you undo a connection (`kratos connect <app> --undo`), which closes its row",
+        backup=BACKUP_INCLUDE,
+    ),
+    Category(
+        "chat_app_secrets", "Chat-app token files",
+        "The token `kratos connect` made for each app, in the file the app reads: Open WebUI's env file "
+        "(`connect/openwebui.env`, used by `docker run --env-file`) or the header file for AG-UI and other apps. "
+        "Owner-only (0600 in a 0700 folder); never shown again, never logged.",
+        SECRET, "fixed: one small file per connected app",
+        files=("connect",),
+        note="`kratos connect <app> --undo` revokes the token and removes its file",
+        backup=BACKUP_SECRET,
+    ),
+    Category(
         "agent_tasks", "Agent tasks (A2A and AG-UI)",
         "Each task another agent (A2A) or an agent front end (AG-UI) started through `kratos serve`: when, which "
         "person and token, which skill, the machine or group, how it ended, the reason for a refusal, and the "

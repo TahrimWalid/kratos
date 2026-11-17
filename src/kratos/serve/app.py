@@ -231,8 +231,11 @@ class ServeState:
         """Refresh the status file (`kratos serve status`, /doctor read it)."""
         from kratos.serve import status as _status
 
+        from kratos.utils.build_info import RUNNING_BUILD
+
         _status.write(self.data_dir, running=running, host=self.bind_host, port=self.port,
-                      started_at=self.started_at, active=self.slots.active, waiting=self.slots.waiting)
+                      started_at=self.started_at, active=self.slots.active, waiting=self.slots.waiting,
+                      build=RUNNING_BUILD)
 
     # -- hosts
     def allowed_hosts(self) -> set[str]:

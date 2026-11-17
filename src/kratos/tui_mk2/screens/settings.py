@@ -384,7 +384,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
                           "serve.port", "serve.allow_non_loopback", "serve.allowed_hosts", "serve.max_parallel",
                           "serve.requests_per_hour", "serve.link_hosts",
                           "a2a.enabled", "agui.enabled", "a2a.max_open_tasks", "a2a.public_url",
-                          "subagent.tls.require"]
+                          "connect.apps", "subagent.tls.require"]
         self._session_rows = ["target", "seal", "name", "reset", "delete"]  # This session tab rows
         # The "This session" tab only exists when opened from a live session
         # (/settings) — from the home screen there's nothing session-scoped to act on.
@@ -847,7 +847,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         ("Incident bundles", ("export.",)),
         ("Run records", ("trace.",)),
         ("Privacy", ("privacy.",)),
-        ("Chat server", ("serve.", "a2a.", "agui.")),
+        ("Chat server", ("serve.", "a2a.", "agui.", "connect.")),
         ("Agents", ("subagent.",)),
     ]
     _GEN_LABEL_PREFIXES = ("Detection rules: ", "Hunting: ", "Agent link: ")
@@ -1096,6 +1096,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         "agui.enabled": "Agent front ends (AG-UI) may use Kratos",
         "a2a.max_open_tasks": "Agent tasks open at once, per person",
         "a2a.public_url": "Address other agents reach Kratos at",
+        "connect.apps": "Chat apps (kratos connect)",
     }
 
     def _serve_rows(self) -> list[tuple[str, str, str]]:
@@ -1104,11 +1105,22 @@ class SettingsScreen(ResilientWorkerHost, Screen):
         from kratos.serve.a2a import settings as AS  # noqa: F401 -- registers a2a.*, agui.*
 
         dd = self._data_dir()
-        keys = [k for k in self._gen_rows if k.startswith(("serve.", "a2a.", "agui."))]
+        keys = [k for k in self._gen_rows if k.startswith(("serve.", "a2a.", "agui.", "connect."))]
         if dd is None:
             return [(k, self._SERVE_LABELS[k], "unavailable here") for k in keys]
         out = []
         for k in keys:
+            if k == "connect.apps":           # E.5b: not a setting -- Enter opens /connect
+                from kratos.serve import connect as CN
+
+                try:
+                    live = CN.status(dd)
+                except Exception:  # noqa: BLE001
+                    live = []
+                tail = (", ".join(f"{x.app} {x.state}" for x in live) if live else "none connected")
+                out.append((k, self._SERVE_LABELS[k], tail + "  (Enter: connect Open WebUI, an AG-UI app or another "
+                                                              "chat app in one step)"))
+                continue
             v = settings_store.get(k, data_dir=dd)
             if isinstance(v, bool):
                 tail = ("yes  (with --host; use a TLS reverse proxy)" if v
@@ -1612,6 +1624,12 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             self._set_ssvc_ask_flow(key)
         elif key and key.startswith("privacy."):
             self._set_privacy_setting_flow(key)
+        elif key == "connect.apps":
+            from kratos.tui_mk2.screens.connect import ConnectScreen
+
+            dd = self._data_dir()
+            if dd is not None:
+                self.app.push_screen(ConnectScreen(dd))
         elif key and key.startswith(("serve.", "a2a.", "agui.")):
             self._set_serve_setting_flow(key)
         elif key == "subagent.tls.require":

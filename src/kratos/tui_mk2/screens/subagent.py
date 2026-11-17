@@ -1,6 +1,6 @@
 """
 The "Add / manage sub-agents" screen (capability 1 -- read-only telemetry).
-Reachable via `/subagent` (aliases `/agents`, `/connect`).
+Reachable via `/subagent` (alias `/agents`; `/connect` is the chat-app screen since E.5b).
 
 This is the real onboarding UX for the design canvas's pairing wizard
 (phase2_preview.py::_pairing_wizard) and status chip (_subagent_status),
