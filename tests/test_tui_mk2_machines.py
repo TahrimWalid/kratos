@@ -88,3 +88,30 @@ def test_allowlist_needs_a_paired_agent(tmp_path):
     first, second = asyncio.run(_run())
     assert first == "MachinesScreen"          # SSH-only machine: nothing can run there, so no allowlist
     assert second == "WhitelistScreen"
+
+
+def test_asset_records_join_the_machines_list(tmp_path):
+    """One Machines list: a machine known only from /assets gets a row, its criticality shows
+    under it (and as a column from 110 wide), and m opens /assets."""
+    from kratos import authz
+    from kratos.assets import store as AS
+    from kratos.tui_mk2.screens.assets import AssetsScreen
+
+    AS.update(tmp_path, "pay-01", authz.owner_actor("cli"), criticality="critical")
+
+    async def _run(size):
+        app = _Host(MachinesScreen(tmp_path, active=None))
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            scr = app.screen
+            hosts = [m["host"] for m in scr._rows]
+            detail = str(scr.query_one("#m-detail").render())
+            headers = [str(c.label) for c in scr.query_one("#m-table").columns.values()]
+            await pilot.press("m")
+            await pilot.pause()
+            return hosts, detail, headers, isinstance(app.screen, AssetsScreen)
+
+    hosts, detail, headers, opened = asyncio.run(_run((80, 24)))
+    assert "pay-01" in hosts and "Matters: critical" in detail and "matters" not in headers and opened
+    _h, _d, headers, _o = asyncio.run(_run((130, 40)))
+    assert "matters" in headers

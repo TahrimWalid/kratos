@@ -121,7 +121,7 @@ class AssetsScreen(Screen):
         if cursor is not None and self._rows:
             table.move_cursor(row=min(cursor, len(self._rows) - 1))
         banner = Text()
-        banner.append("Machines", style=f"bold {T.ACCENT}")
+        banner.append("How much each machine matters", style=f"bold {T.ACCENT}")
         banner.append(f"   ({len(self._rows)})", style=T.TEXT_DIM)
         banner.append("\nCriticality decides how CISA's SSVC tree ranks each machine's vulnerabilities "
                       "(Track · Track* · Attend · Act). Exposure is what Kratos measured; set it only for what Kratos "

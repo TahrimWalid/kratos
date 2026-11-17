@@ -24,8 +24,8 @@ from kratos.tui_mk2 import theme as T
 from kratos.tui_mk2.keybar import all_keys_text, key_bar
 
 _LOCAL = {"127.0.0.1", "localhost", "::1"}
-_COLUMNS = ["machine", "reach", "agent", "setup", "sealed", "watch", "fixes", "findings"]
-_NARROW_DROP = ("sealed", "watch")      # under 110 columns these two are in the detail pane only
+_COLUMNS = ["machine", "matters", "reach", "agent", "setup", "sealed", "watch", "fixes", "findings"]
+_NARROW_DROP = ("matters", "sealed", "watch")   # under 110 columns these are in the detail pane only
 
 
 def _cell(text: str, style: str) -> Text:
@@ -34,7 +34,8 @@ def _cell(text: str, style: str) -> Text:
 
 class MachinesScreen(Screen):
     _ALL_KEYS = ("↑↓ select · enter or f its findings · x its allowlist (fixes)\n"
-                 "a sub-agents · d its detection rules · r refresh · esc back")
+                 "m how much it matters (/assets) · a sub-agents · d its detection rules\n"
+                 "r refresh · esc back")
 
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
@@ -43,6 +44,7 @@ class MachinesScreen(Screen):
         Binding("x", "allowlist", "allowlist", show=True),
         Binding("a", "subagents", "sub-agents", show=True),
         Binding("d", "detect", "detection rules", show=False),
+        Binding("m", "matters", "how much it matters", show=False),
         Binding("r", "refresh", "refresh", show=False),
     ]
 
@@ -112,7 +114,22 @@ class MachinesScreen(Screen):
                     add(t.get("name") or t.get("hostname") or t["target_id"])
         except Exception:  # noqa: BLE001
             pass
+        try:      # machines with an asset record (/assets) are machines too
+            from kratos.assets import store as AS
+
+            for a in AS.known_machines(self._data_dir, configured=self._active):
+                add(a.target)
+        except Exception:  # noqa: BLE001
+            pass
         return list(seen)
+
+    def _asset(self, host: str):
+        try:
+            from kratos.assets import store as AS
+
+            return AS.get(self._data_dir, host)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _agent_for(self, host: str, states: dict[str, Any], targets: list[dict[str, Any]]):
         """(target dict, ConnectionState, link) of the sub-agent that reads `host`, if any."""
@@ -230,7 +247,10 @@ class MachinesScreen(Screen):
                              T.CRITICAL if m["open_high"] else T.ATTENTION)
         else:
             findings = _cell("none", T.TEXT_DIM)
-        return [name, reached, agent, setup, sealed, watching, fixes, findings]
+        a = self._asset(m["host"])
+        crit = (a.criticality if a and a.criticality else None)
+        matters = _cell(crit or "not set", (T.CRITICAL if crit == "critical" else T.TEXT) if crit else T.TEXT_DIM)
+        return [name, matters, reached, agent, setup, sealed, watching, fixes, findings]
 
     def action_refresh(self) -> None:
         from kratos.subagent import status as ST
@@ -268,7 +288,8 @@ class MachinesScreen(Screen):
         keep = [i for i, h in enumerate(_COLUMNS) if self.app.size.width >= 110 or h not in _NARROW_DROP]
         headers = [_COLUMNS[i] for i in keep]
         cells = [[c[i] for i in keep] for c in (self._cells(m) for m in machines)]
-        rows = fit_columns(cells, available, shrink=[(0, 10), (2, 8), (len(keep) - 1, 6)], headers=headers)
+        rows = fit_columns(cells, available, shrink=[(0, 10), (headers.index("agent"), 8), (len(keep) - 1, 6)],
+                           headers=headers)
         widths = [max([len(h)] + [r[i].cell_len for r in rows]) for i, h in enumerate(headers)]
         for h, w in zip(headers, widths):
             table.add_column(h, width=w)
@@ -308,6 +329,19 @@ class MachinesScreen(Screen):
             out.append(f"\nSub-agent {st.label}: {st.reason}, last contact {age}"
                        + (f" · version {agent.get('agent_version')}" if agent and agent.get("agent_version") else ""),
                        style=T.TEXT_MUTED)
+        a = self._asset(m["host"])
+        try:
+            from kratos.tui_mk2.screens.assets import measured_exposure
+
+            exposure = measured_exposure(self._data_dir, m["host"])
+        except Exception:  # noqa: BLE001
+            exposure = ""
+        if a is not None and a.criticality:
+            out.append(f"\nMatters: {a.criticality}" + (f" · exposure {exposure}" if exposure else "")
+                       + (f" · {a.owner_note}" if a.owner_note else ""), style=T.TEXT_MUTED)
+        else:
+            out.append("\nHow much it matters isn't set (vulnerabilities rank as medium) · m sets it.",
+                       style=T.TEXT_DIM)
         info = m.get("setup_info") or {}
         setup_line = {"ready": "Setup check passed", "issues": f"Setup check found {info.get('issues', 0)} problem(s)",
                       "new": "Setup not checked yet"}.get(m["setup"], "")
@@ -379,6 +413,11 @@ class MachinesScreen(Screen):
         from kratos.tui_mk2.screens.whitelist import WhitelistScreen
 
         self.app.push_screen(WhitelistScreen(self._data_dir, target_id=m["agent"]["target_id"]))
+
+    def action_matters(self) -> None:
+        from kratos.tui_mk2.screens.assets import AssetsScreen
+
+        self.app.push_screen(AssetsScreen(self._data_dir, configured=self._active))
 
     def action_subagents(self) -> None:
         from kratos.tui_mk2.screens.subagent import SubAgentScreen

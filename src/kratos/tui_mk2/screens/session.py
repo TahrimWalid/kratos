@@ -1333,7 +1333,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
                 self._emit(R.note_line("/baseline is per machine: /baseline <machine>"))
             else:
                 self.app.push_screen(BaselineScreen(self._data_dir, machine=machine))
-        elif cmd in ("/assets", "/machines"):
+        elif cmd == "/assets":      # /machines opens the Machines screen; m there opens this one
             from kratos.tui_mk2.screens.assets import AssetsScreen
 
             self.app.push_screen(AssetsScreen(self._data_dir, configured=_kconfig.get_active_target()))
