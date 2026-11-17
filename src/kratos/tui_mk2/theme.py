@@ -303,7 +303,7 @@ DataTable {{ scrollbar-size-horizontal: 0; }}
 /* Modal dimming + card */
 ModalScreen {{
     align: center middle;
-    background: black 82%;
+    background: black 88%;
 }}
 .modal-card {{
     background: {PANEL_BG};
