@@ -742,7 +742,10 @@ class SessionScreen(ResilientWorkerHost, Screen):
             width = self._log.scrollable_content_region.width
             if width > 0:
                 self._log.write(scrubbed(renderable), width=min(width, _PANEL_MAX_WIDTH))
-                return
+            else:   # not laid out yet (a resume replay): let the deferred render fill the width,
+                    # instead of RichLog's 40-column minimum that left the time mid-line
+                self._log.write(scrubbed(renderable), expand=True)
+            return
         if isinstance(renderable, Panel):
             width = self._log.scrollable_content_region.width
             if width > 0:

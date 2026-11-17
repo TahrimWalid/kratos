@@ -133,7 +133,7 @@ def timestamped(left: Text, time_str: str) -> Table:
     touches raw datetimes, so display-zone resolution lives in exactly one
     place. A Table.grid does the alignment so it stays correct at any width;
     the timestamp is TEXT_FAINTER so it reads as a caption, not a headline."""
-    grid = Table.grid(expand=True)
+    grid = Table.grid(expand=True, padding=(0, 2))   # a gap, so a long line never touches the time
     grid.add_column(ratio=1)
     grid.add_column(justify="right", min_width=7)
     grid.add_row(left, Text(time_str, style=T.TEXT_FAINTER))
