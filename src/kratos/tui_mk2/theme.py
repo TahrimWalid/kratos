@@ -113,16 +113,20 @@ if ANSI:
 # clearly brighter/more saturated than the muted SAFE green (#7f9e79) so
 # "safe/passed" never blurs with "accent". Red stays the default + brand identity.
 PACKS: dict[str, dict[str, str]] = {
-    "kratos-red": {"label": "Kratos Red (default)", "ACCENT": "#cf7259",
+    "kratos-red": {"label": "Kratos Red", "ACCENT": "#cf7259",
                    "KRATOS_RED": "#8b1a1a", "ADMIN": "#b3968a", "VOICE": "#d0524a"},
-    "kratos-blue": {"label": "Slate Blue", "ACCENT": "#7fa8bf",
+    "kratos-blue": {"label": "Slate Blue (default)", "ACCENT": "#7fa8bf",
                     "KRATOS_RED": "#8b1a1a", "ADMIN": "#8f9bb0", "VOICE": "#d0524a"},
     "kratos-green": {"label": "Matrix Green", "ACCENT": "#3fb950",
                      "KRATOS_RED": "#56d364", "ADMIN": "#7f9b78"},
     "kratos-cyan": {"label": "Cyan", "ACCENT": "#4bc4d4",
                     "KRATOS_RED": "#5dd0de", "ADMIN": "#84a7ae"},
 }
-DEFAULT_PACK = "kratos-red"
+# B6, option 1: the default accent is off the red axis, so in a security tool
+# "is anything red?" has one answer -- danger. Red stays the brand: the KRATOS
+# wordmark and the "Kratos:" voice are red in this pack too. Kratos Red is one
+# Ctrl+T away for anyone who prefers it.
+DEFAULT_PACK = "kratos-blue"
 # In 16-colour mode every pack shows the same ANSI identity: the packs differ
 # only in shades the terminal can't show.
 ANSI_IDENTITY = {"ACCENT": ANSI_CYAN, "KRATOS_RED": ANSI_RED, "ADMIN": ANSI_GREY, "VOICE": ANSI_BRIGHT_CYAN}

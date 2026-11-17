@@ -464,7 +464,7 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
             monkeypatch.setattr(app, "apply_theme_pack", _apply, raising=False)
 
             async def _pick(_modal):
-                return "kratos-blue"
+                return "kratos-red"
 
             monkeypatch.setattr(app, "push_screen_wait", _pick)
             app.screen.query_one(TabbedContent).active = "tab-general"
@@ -482,9 +482,9 @@ def test_general_tab_theme_switch_applies_and_updates_label(tmp_path, monkeypatc
         T.ACCENT, T.KRATOS_RED, T.ADMIN = snap
         monkeypatch.delenv("KRATOS_THEME", raising=False)
 
-    assert calls == ["kratos-blue"]          # switcher delegated to the app
-    assert "Slate Blue" in theme_label       # gen-theme label refreshed live
-    assert "Slate Blue" in status
+    assert calls == ["kratos-red"]          # switcher delegated to the app
+    assert "Kratos Red" in theme_label       # gen-theme label refreshed live
+    assert "Kratos Red" in status
 
 
 def test_general_tab_is_navigable_and_enter_dispatches(tmp_path, monkeypatch):

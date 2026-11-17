@@ -56,13 +56,13 @@ def test_active_pack_name_reads_pref_when_no_env(isolated_theme):
     assert T.active_pack_name() == "kratos-blue"
 
 
-def test_active_pack_name_defaults_to_red(isolated_theme):
-    assert T.active_pack_name() == "kratos-red"
+def test_active_pack_name_defaults_to_slate_blue(isolated_theme):
+    assert T.active_pack_name() == "kratos-blue"
 
 
 def test_unknown_pref_value_falls_through_to_default(isolated_theme):
     isolated_theme.write_text("garbage\n")
-    assert T.active_pack_name() == "kratos-red"
+    assert T.active_pack_name() == "kratos-blue"
 
 
 def test_app_apply_theme_pack_live_switch(isolated_theme, tmp_path):
@@ -84,12 +84,15 @@ def test_app_apply_theme_pack_live_switch(isolated_theme, tmp_path):
             before = app.theme
             ok = app.apply_theme_pack("kratos-blue")
             await pilot.pause()
+            red = app.apply_theme_pack("kratos-red") and app.theme == "kratos-red"
+            ok = ok and red and app.apply_theme_pack("kratos-blue")
+            await pilot.pause()
             after = app.theme
             bad = app.apply_theme_pack("does-not-exist")
             return before, ok, after, T.ACCENT, bad
 
     before, ok, after, accent, bad = asyncio.run(_run())
-    assert before == "kratos-red"       # default on boot
+    assert before == "kratos-blue"      # default on boot (B6: off the red axis)
     assert ok is True and after == "kratos-blue"
     assert accent == "#7fa8bf"          # globals re-bound live
     assert bad is False                 # unknown pack rejected
@@ -114,7 +117,7 @@ def test_ctrl_t_theme_picker_applies(isolated_theme, tmp_path):
             app.apply_theme_pack = lambda name: calls.append(name) or True  # type: ignore[assignment]
 
             async def _pick(_modal):
-                return "kratos-blue"
+                return "kratos-red"
 
             app.push_screen_wait = _pick  # type: ignore[assignment]
             app.action_pick_theme()
@@ -122,7 +125,7 @@ def test_ctrl_t_theme_picker_applies(isolated_theme, tmp_path):
             await pilot.pause()
 
     asyncio.run(_run())
-    assert calls == ["kratos-blue"]  # picked pack applied
+    assert calls == ["kratos-red"]  # picked pack applied
 
 
 def test_a_theme_switch_repaints_the_session_transcript(tmp_path, monkeypatch):
