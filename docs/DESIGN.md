@@ -622,7 +622,7 @@ every `unlink`, `rmtree`, `remove`, `rmdir`, `truncate` call and every SQL
 reviewed allowlist keyed by (file, function, kind), each with a reason: a temp file
 the function just created, the person's own command, a merge of current state, a
 rebuild of public data. Three automatic, bounded cleanups predate the rule and are
-listed as owner decisions (sub-agent telemetry: newest 500 rows per machine;
+listed as deliberate exceptions (sub-agent telemetry: newest 500 rows per machine;
 connection events: newest 200; expired unused pairing codes after a week) and
 shown in the inventory. Retention is the person's: `kratos data prune` (traces,
 sessions, host events) and `kratos snapshots prune` both plan first, delete only on
@@ -1507,7 +1507,7 @@ now; the old rows stay as history). A time-zone change starts a new `login_time`
 
 **Findings.** BASE-001..006 and BASE-008 are occurrences (one per rule and subject; entities are the
 new keys, so "normal" is decided per key), BASE-007 the run note. Severity by rule, then the cap
-(`judge.SEVERITY_CAP = "medium"`, the owner's decision). At most `max_per_day` per machine per day
+(`judge.SEVERITY_CAP = "medium"`, by design). At most `max_per_day` per machine per day
 of the event, most severe and rarest first; one key at most once per `cooldown_hours`. The snapshot
 (`baseline_runs/baseline_<machine>.json`, evidence-recorded) keeps the last 24 hours of raised
 deviations; a complete run lets yesterday's go inactive. A baseline is never a covering input of
@@ -1547,7 +1547,7 @@ confirmed code roots — and answers three questions a defender asks, **all by c
 read, no probe runs, no `AGENT_VERSION` bump, and no model call ranks or decides anything**. A
 build reads `kratos.db` and the per-machine snapshot files and writes `path_*` rows; a machine
 whose newest reading is older than `paths.max_input_age_hours` (72 h) is a counted coverage gap,
-never read to fill it (owner gate, 2026-11-16: keep the build fast and read-free).
+never read to fill it (decided 2026-11-16: keep the build fast and read-free).
 
 **Node and edge model** (`graph.py`, `construct.py`). Nodes: `machine` (criticality, exposure
 override, transport, data age, read completeness), `service` (proto/port/address/program/package,
@@ -2039,7 +2039,7 @@ These on-demand snapshots (`PRIV-*`, `VULN-*`) are considered even when the
 core inputs are passed explicitly, since each is already limited to a fresh
 scan of the active target.
 
-**SSH brute force is rated by whether a guess can succeed** (owner decision
+**SSH brute force is rated by whether a guess can succeed** (decided
 2026-11-01), not by how many attempts there were. Every `run_config_audit` call
 (both transports) saves its rows as `context/config_audit_<ts>.json`, and
 `adapters/ssh_guessing.py::assess` reads the newest one for the machine (under

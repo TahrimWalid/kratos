@@ -541,7 +541,7 @@ class OnboardTargetScreen(Screen[str | None]):
     @work(exclusive=True, group="ob-seal")
     async def _offer_seal(self) -> None:
         """Journal sealing, after SSH works: recommended, one key (`s`) to skip
-        (owner decision 6). The key is saved on this computer only."""
+        (by design). The key is saved on this computer only."""
         from kratos.adapters.target_setup import seal_setup_commands
         from kratos.logsources import seal as _seal
         from kratos.tui_mk2.modals import SealKeyModal

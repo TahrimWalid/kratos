@@ -1,5 +1,5 @@
 # Publish kratos-security-assistant to PyPI -- manual only, and NOT run in this phase
-# (docs/phaseB/B.4 §3 decision 2). The owner runs it after Phase B and the security
+# (docs/phaseB/B.4 §3 decision 2). It is run by hand after Phase B and the security
 # review. It builds, attests build provenance (PEP 740), and publishes through PyPI
 # Trusted Publishing (OIDC, no stored token) on a protected `pypi` environment that
 # requires an approval. Pinned by commit SHA; the comment names the release.

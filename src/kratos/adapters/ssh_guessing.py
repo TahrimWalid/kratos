@@ -3,8 +3,8 @@
 A brute force against SSH is constant on any machine reachable from the internet. What
 decides how much it matters is whether a guess can ever succeed: on a key-only server it
 can't, so it is background noise to note, not an alarm; with password (or PAM
-keyboard-interactive) logins on, it can. CORR-SSH-001's severity follows this (owner
-decision 2026-11-01): key-only -> low, password logins possible -> high, settings not
+keyboard-interactive) logins on, it can. CORR-SSH-001's severity follows this (decided
+2026-11-01): key-only -> low, password logins possible -> high, settings not
 readable -> medium.
 
 The facts come from the config audit (`run_config_audit`, both transports), saved per

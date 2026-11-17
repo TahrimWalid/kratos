@@ -1,7 +1,7 @@
 """Which deviations become findings, and how serious they are (E.3 §3.5, §3.6, §3.10).
 
 Severity by rule, then the cap: a deviation from what's normal is never above medium on its
-own (owner decision, 2026-11-12). Then the noise budget: at most `baseline.max_per_day`
+own (decided 2026-11-12). Then the noise budget: at most `baseline.max_per_day`
 findings per machine per rolling day, most severe and rarest first; the same key at most
 once per `baseline.cooldown_hours`. What doesn't fit is counted in BASE-007, never dropped
 silently. Nothing here reads or changes any other rule's finding.

@@ -1,6 +1,6 @@
 """Removing old backups -- only when a person asks (docs/phaseD/D.8 §3.12).
 
-The owner decided (2026-11-10) that Kratos never deletes a backup on its own: there is no
+Decided 2026-11-10: Kratos never deletes a backup on its own: there is no
 `backup.keep` setting. `kratos backup prune --keep N` is the only way, and it is manual,
 CLI-only, shows what it would remove first, and is recorded in `data_prunes` (who, when,
 how many, how big) and `backup_runs`.

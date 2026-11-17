@@ -10,7 +10,7 @@ than `RESERVATION_TTL_SECONDS`; it then counts as a call with no known usage.
 
 Other rows: `refused` (a cap stopped the call; nothing was sent), `override` (a
 person allowed this run to go over a cap) and `note` (a recorded event such as
-an upgrade migration). Rows are never deleted (owner decision 5); a reservation
+an upgrade migration). Rows are never deleted (by design); a reservation
 is updated once to settled/expired, nothing else is ever updated.
 
 `budget_state` holds small shared flags: breaker pauses and failure history,

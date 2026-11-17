@@ -1,6 +1,6 @@
 """D.8 settings (`backup.*`, people-only like every setting).
 
-There is deliberately no `backup.keep`: the owner decided (2026-11-10) that Kratos never
+There is deliberately no `backup.keep`: it was decided (2026-11-10) that Kratos never
 deletes a backup on its own. Old backups go only by `kratos backup prune --keep N`.
 """
 from __future__ import annotations

@@ -170,7 +170,7 @@ def _read_json(path: Path) -> Any:
 
 
 def _extract_sudo_members(sudo_group_line: str | None) -> list[str]:
-    # Example: "sudo:x:27:walid000"
+    # Example: "sudo:x:27:alice"
     if not sudo_group_line:
         return []
     parts = sudo_group_line.split(":")
@@ -1317,7 +1317,7 @@ def generate_findings(
         )
 
     # CORR-SSH-001: SSH reachable + failed-login burst. Severity by whether a guess can
-    # succeed (adapters/ssh_guessing; owner decision 2026-11-01): password logins
+    # succeed (adapters/ssh_guessing; decided 2026-11-01): password logins
     # possible -> high, key-only -> low (constant internet scanning that can't get in),
     # settings unknown -> medium. Reachability from the machine's own evidence too
     # (failures from other addresses, sshd listening on a network address), so a machine

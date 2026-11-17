@@ -1,6 +1,6 @@
 #!/bin/sh
 # A local dry run of .github/workflows/release.yml -- everything up to, but NOT including,
-# the PyPI upload (the repo isn't pushed; the owner runs the real release after the review).
+# the PyPI upload (the repo isn't pushed; the real release is run by hand after the review).
 # Builds the wheel + sdist, checks them, checks the version gate, and shows what the
 # attestation step would sign. Nothing leaves this machine.
 set -e

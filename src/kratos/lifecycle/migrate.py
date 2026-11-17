@@ -2,7 +2,7 @@
 
 `data_dir/reports/findings_*.json` are walked oldest -> newest; each file is
 recorded in `finding_imports` (name + sha256) so it is imported once. Report
-files are only read -- never changed or deleted (owner decision 5).
+files are only read -- never changed or deleted (by design).
 
 Which machine an old report was about, in order:
 1. its own `target` field (reports written by this version have one);

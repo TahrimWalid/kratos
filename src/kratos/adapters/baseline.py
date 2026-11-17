@@ -33,7 +33,7 @@ def _sudo_members(system_context: dict[str, Any] | None) -> list[str]:
     if not system_context:
         return []
     sudo_line = ((system_context.get("users") or {}).get("sudo_group") or "")
-    # expected format: "sudo:x:27:walid000"
+    # expected format: "sudo:x:27:alice"
     parts = sudo_line.split(":")
     if len(parts) >= 4 and parts[3].strip():
         return [u.strip() for u in parts[3].split(",") if u.strip()]

@@ -40,7 +40,7 @@ from kratos.storage.sqlite_files import connect_store, write_transaction
 DIR_NAME = "hashdb"
 SECRETS_DIR = "dataset-secrets"
 COMPONENT = "datasets"
-FREE_MARGIN_BYTES = 2 * 1024 ** 3          # owner decision 2026-11-11: the file plus 2 GB to spare
+FREE_MARGIN_BYTES = 2 * 1024 ** 3          # decided 2026-11-11: the file plus 2 GB to spare
 HTTP_TIMEOUT = 60
 CHUNK = 1 << 20
 

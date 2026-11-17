@@ -81,7 +81,7 @@ def _write_events(tmp_path: Path, event_types: list[str]) -> Path:
             "host": "testhost",
             "program": "sudo",
             "event_type": et,
-            "user": "walid000",
+            "user": "alice",
             "source_ip": None,
             "raw": f"raw line for {et}",
         }

@@ -8,7 +8,7 @@ output: a severity threshold and/or a specific finding-ID. Its action is
 recommend/notify/investigate ONLY -- never target execution (INVARIANT 1; the
 "act temptation is highest here" hard-gate).
 
-Decoupled from schedules (owner decision, 2026-09-10): triggers are their own
+Decoupled from schedules (decided 2026-09-10): triggers are their own
 store, evaluated against ANY run's findings, with an optional target filter -- not
 a sub-field of one schedule. The evaluation itself rides the existing scheduled-run
 cadence (no new daemon); see trigger_eval.py.

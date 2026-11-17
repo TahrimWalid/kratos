@@ -3383,7 +3383,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
     _UNATTENDED_BUDGET_SHOWN = "shown:unattended_budget_summary"
 
     async def _unattended_budget_gate(self, what: str) -> bool:
-        """Before the first schedule or trigger is saved (owner decision 3): show
+        """Before the first schedule or trigger is saved (by design): show
         what unattended runs may spend -- Keep / Edit (Settings → Budget) /
         Cancel. Shown once (budget_state); afterwards the limits live in
         Settings → Budget. Returns False to cancel the creation."""

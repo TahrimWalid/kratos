@@ -1,6 +1,6 @@
 """A6.3 -- systemd user-timer generation for a schedule.
 
-The decided cadence mechanism (owner, 2026-09-10): **systemd user timers**.
+The decided cadence mechanism (decided 2026-09-10): **systemd user timers**.
 Kratos does NOT run ``systemctl`` itself -- it GENERATES the ``.service`` +
 ``.timer`` unit files (into a staging dir under ``data_dir``) and hands the human
 the exact install commands, exactly the way ``adapters/target_setup.py`` generates

@@ -5,8 +5,8 @@ docs/subagent_whitelist_design.md). This is the actual security boundary for
 capability 2 (direct execution) -- "the whitelist -- not command signing --
 is the security boundary" (architecture doc, corrected threat model).
 
-**Status (2026-09-22): the design doc's §9 open decisions were RATIFIED by
-the owner** (adopting the Appendix A recommendations), which unblocks
+**Status (2026-09-22): the design doc's §9 open decisions were RATIFIED**
+(adopting the Appendix A recommendations), which unblocks
 BUILDING capability 2 against a decided spec. The one thing not waived is the
 independent security review -- it is RE-PLACED to gate ENABLING execution
 against a real target (reviewing the actual built code before it's ever

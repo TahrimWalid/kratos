@@ -1,4 +1,4 @@
-"""SSH brute force rated by whether guessing can succeed (owner decision 2026-11-01), SSH
+"""SSH brute force rated by whether guessing can succeed (decided 2026-11-01), SSH
 reachability from the machine's own evidence, and CORR-SSH-002: a successful login from an
 address that had been guessing passwords."""
 from __future__ import annotations
@@ -92,7 +92,7 @@ def _corr(config_audit, nmap=None):
 
 
 def test_a_sub_agent_machine_without_a_scan_still_gets_the_finding():
-    """devserver3's case: 1,115 failures from 68 addresses read as info, because only an nmap
+    """A real case: 1,115 failures from 68 addresses read as info, because only an nmap
     scan (impossible over the sub-agent) could say SSH was exposed."""
     f = _corr(CLOSED, nmap=None)
     assert f is not None and f.severity == "low"

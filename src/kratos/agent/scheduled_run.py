@@ -3,7 +3,7 @@ NO human present, persist a report, then deliver it. This is what a systemd user
 timer invokes (via ``kratos scheduled-run <name>``); it is UI-free and returns a
 structured result.
 
-The two in-slice guardrails (owner-required, 2026-09-10):
+The two in-slice guardrails (required, 2026-09-10):
 
 1. **Headless = no human, resolved in two independent layers (INVARIANT 5).**
    - **Belt (covers every tool):** BEFORE anything runs we install a headless

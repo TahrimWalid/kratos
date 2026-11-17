@@ -117,13 +117,13 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("pkgvuln/update.py", "_build", "DELETE FROM"): PUBLIC,
     ("pkgvuln/update.py", "_build", "VACUUM"): PUBLIC + " (compacts the new file before it replaces the old one)",
     # Found by this scan on main (B.5 Handoff): automatic, bounded housekeeping kept as is
-    # and listed in kratos.datainv so the person sees it -- the owner decides.
+    # and listed in kratos.datainv so the person sees it -- a deliberate exception.
     ("storage/subagent_store.py", "SubAgentStore.record_telemetry", "DELETE FROM"):
-        "OWNER DECISION: live-status buffer, newest 500 telemetry rows per machine (~4 h)",
+        "DELIBERATE EXCEPTION: live-status buffer, newest 500 telemetry rows per machine (~4 h)",
     ("storage/subagent_store.py", "SubAgentStore._add_event", "DELETE FROM"):
-        "OWNER DECISION: connection history, newest 200 events per machine",
+        "DELIBERATE EXCEPTION: connection history, newest 200 events per machine",
     ("storage/subagent_store.py", "SubAgentStore.create_pairing_code", "DELETE FROM"):
-        "OWNER DECISION: unused pairing codes (secrets) a week after they expired",
+        "DELIBERATE EXCEPTION: unused pairing codes (secrets) a week after they expired",
     # D.1 SSH certificate authority: temp files, this run's own ephemeral keys, the person's own unenrol
     ("sshca/ca.py", "_write_private", "unlink"): TEMP + " (a half-written CA key file when the write fails)",
     ("sshca/ca.py", "fingerprint_of_pubkey", "unlink"): TEMP + " (a temporary copy of a PUBLIC key)",
@@ -150,7 +150,7 @@ ALLOWED: dict[tuple[str, str, str], str] = {
     ("backup/create.py", "create", "rmtree"): "this run's own scratch folder in .backup-work (plaintext copies)",
     ("backup/plan.py", "_walk", "remove"): LIST + " (os.walk's dirs list: a link is not followed)",
     ("backup/prune.py", "apply", "unlink"): PERSON + " (`kratos backup prune --keep N --apply`, CLI only, shown "
-                                                     "first, recorded in data_prunes; the owner decided 2026-11-10 "
+                                                     "first, recorded in data_prunes; decided 2026-11-10 "
                                                      "that Kratos never removes a backup on its own)",
     ("backup/restore.py", "_write_member", "unlink"): "a restored file that failed its hash check, in the "
                                                       "restore's own staging folder",

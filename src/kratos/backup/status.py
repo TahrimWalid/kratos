@@ -1,7 +1,7 @@
 """What /doctor, `/backup` and `kratos backup status` say about backups (D.8 §3.8, §5.2).
 
 Read-only: settings, `backup_runs` and the backup folder's file sizes. There is no
-`backup.keep` (owner decision 2026-11-10), so the backup folder only grows: its size, its
+`backup.keep` (decided 2026-11-10), so the backup folder only grows: its size, its
 growth and the disk's free space are shown, with a warning once that disk is 80% full.
 """
 from __future__ import annotations

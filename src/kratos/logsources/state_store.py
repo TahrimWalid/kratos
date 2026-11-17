@@ -9,7 +9,7 @@
 - `seal_verifications`: one row per journal file verification (append-only):
   its name, sha256, whether it was archived and sealed, and the result.
 
-Nothing is deleted automatically (owner decision 5). Targets are stored as
+Nothing is deleted automatically (by design). Targets are stored as
 target_key(); times as epoch seconds (UTC).
 """
 from __future__ import annotations

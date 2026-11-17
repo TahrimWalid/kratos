@@ -159,7 +159,7 @@ def test_wildcard_listener_on_a_private_machine_is_network_and_override_wins_and
 
 
 def test_tailnet_and_cgnat_addresses_are_network():
-    for addr in ("100.91.235.62", "192.168.1.10"):
+    for addr in ("100.64.12.34", "192.168.1.10"):
         ex = X.for_packages(["openssh-server"], _live([{**SSHD, "address": addr}], addresses=(addr,)))
         assert ex.value == "network", addr
 

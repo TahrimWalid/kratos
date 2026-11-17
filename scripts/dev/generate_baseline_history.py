@@ -21,7 +21,7 @@ Planted deviations (in the last two days, `--plant`, comma separated or `all`):
   outbound     a web server connects out to a public address on port 4444
 
 Refuses to write into a data folder that isn't a scratch one (one with a `.scratch-baseline`
-marker, or empty). Never touch the real data folder: the owner keeps its history.
+marker, or empty). Never touch the real data folder: its history is kept.
 Nothing random is used without the seed; the same arguments give the same events.
 """
 from __future__ import annotations

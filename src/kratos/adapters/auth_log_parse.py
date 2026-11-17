@@ -75,13 +75,13 @@ _RE_SSH_DISCONNECT = re.compile(
 
 # --- sudo patterns ---
 # Normal sudo command line:
-# walid000 : TTY=pts/0 ; PWD=/home/... ; USER=root ; COMMAND=/usr/bin/apt update
+# alice : TTY=pts/0 ; PWD=/home/... ; USER=root ; COMMAND=/usr/bin/apt update
 _RE_SUDO_CMD = re.compile(
     r"(?P<invoker>\S+)\s*:\s*TTY=.*;\s*PWD=.*;\s*USER=(?P<target>\S+)\s*;\s*COMMAND=(?P<cmd>.+)$"
 )
 
 # Bonus: incorrect password attempts:
-# walid000 : 3 incorrect password attempts ; TTY=... ; PWD=... ; USER=root ; COMMAND=...
+# alice : 3 incorrect password attempts ; TTY=... ; PWD=... ; USER=root ; COMMAND=...
 _RE_SUDO_BADPW = re.compile(
     r"(?P<invoker>\S+)\s*:\s*(?P<count>\d+)\s+incorrect password attempts\s*;\s*(?P<rest>.+)$"
 )
@@ -97,7 +97,7 @@ _RE_SUDO_SESSION_CLOSE = re.compile(
 )
 
 # sudo pam auth failure line:
-# pam_unix(sudo:auth): authentication failure; ... user=walid000
+# pam_unix(sudo:auth): authentication failure; ... user=alice
 _RE_SUDO_PAM_AUTH_FAIL = re.compile(
     r"pam_unix\(sudo:auth\): authentication failure;.*\buser=(?P<user>\S+)"
 )
