@@ -125,6 +125,10 @@ class TaskRun:
         return True
 
     def finish(self, state: str, *, reason: str | None = None, result: dict[str, Any] | None = None) -> bool:
+        if reason is not None:     # a run's error text can quote what it read: cleaned like every exit
+            from kratos import untrusted
+
+            reason = untrusted.for_display(reason, max_len=500)
         with self.lock:
             if self.finished:
                 return False

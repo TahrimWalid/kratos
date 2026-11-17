@@ -837,3 +837,14 @@ def test_hostile_corpus_through_both_doors(env):
     status, events = _agui(env, "ivy")
     blob = json.dumps(events, ensure_ascii=False)
     assert not [c for c in blob if c in _BAD_CHARS and c not in "\n"], "AG-UI events"
+
+
+def test_a_failed_runs_reason_is_cleaned(env):
+    _on(env)
+    a = _answer("")
+    a["status"], a["final_answer"] = "error", "The investigation could not finish: OSError: \x1b]0;owned\x07\u202ex"
+    env["state"]["answer"] = a
+    t = _send(env, "ivy", _msg(_inv())).json()["task"]
+    assert t["status"]["state"] == "TASK_STATE_FAILED"
+    text = t["status"]["message"]["parts"][0]["text"]
+    assert "\x1b" not in text and "\u202e" not in text and "could not finish" in text
