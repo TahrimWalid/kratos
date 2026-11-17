@@ -309,8 +309,7 @@ class ChannelsScreen(Screen):
     # -- guided add ------------------------------------------------------------------------------
     @work(exclusive=True)
     async def action_add(self) -> None:
-        kind = await self.app.push_screen_wait(ListPickerModal("What kind of channel?", KIND_CHOICES,
-                                                               subtitle="↑↓ pick · esc cancel"))
+        kind = await self.app.push_screen_wait(ListPickerModal("What kind of channel?", KIND_CHOICES))
         if kind is None:
             return
         name = await self.app.push_screen_wait(PromptModal(
