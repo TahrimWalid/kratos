@@ -164,7 +164,7 @@ class AddModelModal(ModalScreen):
             yield Input(placeholder="Model name / string (e.g. qwen2.5:7b)", id="add-model")
             yield Input(placeholder="Context window — Ctrl+D to detect, or type a number", id="add-window")
             yield Static("", id="add-hint")
-            yield Static(Text("Tab move · Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="add-keys")
+            yield Static(Text("Tab move · Enter save · Ctrl+D detect · esc back", style=T.TEXT_DIM), id="add-keys")
 
     def on_mount(self) -> None:
         self.query_one("#add-preset", Select).focus()
@@ -264,7 +264,7 @@ class EditWindowModal(ModalScreen):
             yield Input(value=current, placeholder="tokens — Ctrl+D to detect, or empty for auto", id="edit-window",
                         select_on_focus=False)
             yield Static("", id="edit-hint")
-            yield Static(Text("Enter save · Ctrl+D detect · Esc back", style=T.TEXT_DIM), id="edit-keys")
+            yield Static(Text("Enter save · Ctrl+D detect · esc back", style=T.TEXT_DIM), id="edit-keys")
 
     def on_mount(self) -> None:
         self.query_one("#edit-window", Input).focus()
@@ -1007,7 +1007,7 @@ class SettingsScreen(ResilientWorkerHost, Screen):
             tail = "on  (agents without encryption are refused)"
         else:
             plain = self._plaintext_agents(dd)
-            tail = ("off  (" + (f"{len(plain)} paired agent(s) not encrypted yet -- update them with g in /subagent)"
+            tail = ("off  (" + (f"{len(plain)} paired agent" + ("" if len(plain) == 1 else "s") + f" not encrypted yet -- update them with g in /subagent)"
                                 if plain else "every paired agent is encrypted -- you can turn this on)"))
         return [(_tls.REQUIRE, "Agent link: require encryption", tail)]
 

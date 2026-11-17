@@ -610,7 +610,7 @@ class FindingsScreen(Screen):
                            "not an attacker's action.", style=T.TEXT_DIM))
             return
         self.app.copy_to_clipboard("\n".join(f"{format_label(lab)} {lab.get('url')}" for lab in labels))
-        self.note(Text(f"✓ Copied {len(labels)} ATT&CK link(s) for {row['rule_id']}.", style=T.SAFE))
+        self.note(Text(f"✓ Copied {len(labels)} ATT&CK link" + ("" if len(labels) == 1 else "s") + f" for {row['rule_id']}.", style=T.SAFE))
 
     def action_history(self) -> None:
         row = self._need_row()

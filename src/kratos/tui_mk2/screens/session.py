@@ -5100,7 +5100,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         n = sum(outcome.severity_tally.values())
         self._remember_turn(
             remember_label,
-            f"({remember_kind} {outcome.status}; {outcome.ran}/{len(outcome.steps)} steps, {n} finding(s))",
+            f"({remember_kind} {outcome.status}; {outcome.ran}/{len(outcome.steps)} steps, {n} finding" + ("" if n == 1 else "s") + ")",
         )
         self.app.call_from_thread(self._refresh_footer)
 
@@ -5685,7 +5685,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
         self._refresh_header()
         self._refresh_footer()
         names = ", ".join(resolved.machines[:8]) + (" …" if len(resolved.machines) > 8 else "")
-        self._emit(R.success_line(f"Target set to the group {label}: {len(resolved.machines)} machine(s) ({names})."))
+        self._emit(R.success_line(f"Target set to the group {label}: {len(resolved.machines)} machine" + ("" if len(resolved.machines) == 1 else "s") + f" ({names})."))
         self._emit(R.note_line(
             "Each question is now asked of every machine: Kratos reads them in parallel, the model answers once, and "
             "each machine's answer is checked against that machine's own evidence. /look <machine> opens one; "
@@ -5814,7 +5814,7 @@ class SessionScreen(ResilientWorkerHost, Screen):
             actor = Actor.current("tui")
             if action == "create":
                 g = G.create_group(self._data_dir, name, actor, members=members)
-                self._emit(R.success_line(f"@{g.name} made with {len(g.members)} machine(s)."))
+                self._emit(R.success_line(f"@{g.name} made with {len(g.members)} machine" + ("" if len(g.members) == 1 else "s") + "."))
             elif action == "add":
                 added = G.add_members(self._data_dir, name, members, actor)
                 self._emit(R.success_line(f"Added to @{G.check_name(name)}: {', '.join(added) or 'nothing new'}."))

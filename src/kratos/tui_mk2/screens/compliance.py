@@ -56,7 +56,7 @@ def worst_first(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 class ComplianceScreen(Screen):
     _ALL_KEYS = ("↑↓ select · enter evidence · o owner · n not applicable · l CIS level\n"
-                 "f framework · a show controls Kratos has no check for · r read again · esc back")
+                 "f framework · a show controls Kratos has no check for\nr read again · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
         Binding("question_mark", "all_keys", "all keys", show=False),

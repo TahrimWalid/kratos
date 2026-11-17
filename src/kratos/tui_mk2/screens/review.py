@@ -36,7 +36,7 @@ COLUMNS = ("folder", "last review", "verdicts", "cost")      # the profile and d
 
 
 class ReviewScreen(Screen):
-    _ALL_KEYS = "↑↓ select · p prepare a review (asks before sending) · enter the newest finding · esc back"
+    _ALL_KEYS = "↑↓ select · p prepare a review (asks before sending)\nenter the newest finding · esc back"
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
         Binding("question_mark", "all_keys", "all keys", show=False),

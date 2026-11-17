@@ -207,7 +207,7 @@ class MachinesScreen(Screen):
         m["open"] = len(open_)
         m["open_high"] = sum(1 for f in open_ if str(f.get("severity") or "").lower() in ("high", "critical"))
         if m["open_high"]:
-            m["needs_look"].append(f"{m['open_high']} HIGH or CRITICAL finding(s) open")
+            m["needs_look"].append(f"{m['open_high']} HIGH or CRITICAL finding" + ("" if m["open_high"] == 1 else "s") + " open")
         return m
 
     def _cells(self, m: dict[str, Any]) -> list[Text]:
@@ -342,7 +342,7 @@ class MachinesScreen(Screen):
             out.append("\nHow much it matters isn't set (vulnerabilities rank as medium) · m sets it.",
                        style=T.TEXT_DIM)
         info = m.get("setup_info") or {}
-        setup_line = {"ready": "Setup check passed", "issues": f"Setup check found {info.get('issues', 0)} problem(s)",
+        setup_line = {"ready": "Setup check passed", "issues": f"Setup check found {info.get('issues', 0)} problem" + ("" if info.get("issues", 0) == 1 else "s"),
                       "new": "Setup not checked yet"}.get(m["setup"], "")
         if setup_line:
             when = str(info.get("checked_at") or "")[:16].replace("T", " ")
@@ -369,7 +369,7 @@ class MachinesScreen(Screen):
             out.append("\nFixes: recommend-only — Kratos suggests commands, you run them (x to review).",
                        style=T.TEXT_MUTED)
         if m["open"]:
-            out.append(f"\n{m['open']} open finding(s)" + (f", {m['open_high']} HIGH or worse" if m["open_high"] else "")
+            out.append(f"\n{m['open']} open finding" + ("" if m["open"] == 1 else "s") + (f", {m['open_high']} HIGH or worse" if m["open_high"] else "")
                        + " — enter to open them.", style=T.CRITICAL if m["open_high"] else T.ATTENTION)
         self.query_one("#m-detail", Static).update(out)
 

@@ -461,7 +461,7 @@ class OnboardTargetScreen(Screen[str | None]):
             border_style=T.ATTENTION,
         ))
         self.app.call_from_thread(self._log, Text(
-            f"SSH works, but {n_fail} check(s) aren't passing. Run the commands above on the target, then press "
+            f"SSH works, but {n_fail} " + ("check isn't" if n_fail == 1 else "checks aren't") + f" passing. Run the commands above on the target, then press "
             "'p' to re-check — or Enter to continue anyway (investigations may be limited until fixed).",
             style=T.ATTENTION,
         ))

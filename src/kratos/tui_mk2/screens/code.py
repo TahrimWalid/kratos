@@ -39,7 +39,7 @@ CODE_ABOUT = ("Kratos reads a confirmed folder's files and git state; it never r
 
 class CodeScreen(Screen):
     _ALL_KEYS = ("↑↓ select · enter details and files · c confirm a candidate · i ignore one\n"
-                 "a add a folder by path · s accept a folder's current state · r check now · esc back")
+                 "a add a folder by path · s accept a folder's current state\nr check now · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
         Binding("question_mark", "all_keys", "all keys", show=False),

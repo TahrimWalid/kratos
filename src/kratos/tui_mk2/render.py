@@ -981,7 +981,7 @@ def scheduled_run_result_panel(record: dict) -> Panel:
         jt = j.get("severity_tally") or {}
         found = sum(jt.values())
         jok = j.get("status") in ("completed", "final_answer", "max_iters_reached")
-        line = f"\n  · {j.get('label')}: {j.get('status')}" + (f", {found} finding(s)" if found else "")
+        line = f"\n  · {j.get('label')}: {j.get('status')}" + (f", {found} finding" + ("" if found == 1 else "s") if found else "")
         body.append(line, style=T.TEXT_MUTED if jok else T.CRITICAL)
     if record.get("omitted_gated_tools"):
         body.append(f"\nomitted (approval-gated, unattended): {', '.join(record['omitted_gated_tools'])}", style=T.TEXT_FAINT)

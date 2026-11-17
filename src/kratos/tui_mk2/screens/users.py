@@ -57,7 +57,7 @@ USERS_ABOUT = ("Other people reach Kratos only through `kratos serve` (a chat cl
 
 class UsersScreen(Screen):
     _ALL_KEYS = ("↑↓ select · a add a user · r role · m machines · d disable / enable\n"
-                 "t new token · o rotate a token · x revoke a token · w map an Open WebUI user · esc back")
+                 "t new token · o rotate a token · x revoke a token\nw map an Open WebUI user · esc back")
     BINDINGS = [
         Binding("escape,q", "back", "back", show=True),
         Binding("question_mark", "all_keys", "all keys", show=False),

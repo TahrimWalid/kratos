@@ -191,7 +191,7 @@ class DetectScreen(Screen):
         if self._target:
             gaps = self._coverage_lines()
             if gaps:
-                banner.append(f"\n! {len(gaps)} log source(s) weren't checked — ? says which and why",
+                banner.append(f"\n! {len(gaps)} log source" + ("" if len(gaps) == 1 else "s") + " weren't checked — ? says which and why",
                               style=T.ATTENTION)
         for ref in self._loaded.refused:
             banner.append(f"\nRefused rule pack {Path(ref.path).name}: {ref.reason}", style=T.CRITICAL)
@@ -381,7 +381,7 @@ class DetectScreen(Screen):
             self.app.call_from_thread(self.note, Text(f"The pass failed: {type(e).__name__}: {e}", style=T.CRITICAL))
             return
         rules = sorted({m["rule_id"] for m in report.matches})
-        msg = (f"✓ {report.events:,} new log event(s) checked in {time.time() - started:.1f}s — "
+        msg = (f"✓ {report.events:,} new log event" + ("" if report.events == 1 else "s") + f" checked in {time.time() - started:.1f}s — "
                f"{len(report.matches)} new match(es)" + (f": {', '.join(rules)}" if rules else "")
                + ". New matches are in /findings.")
         self.app.call_from_thread(self.note, Text(msg, style=T.SAFE if not report.matches else T.ATTENTION))

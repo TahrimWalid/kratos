@@ -288,11 +288,11 @@ class WhitelistScreen(Screen):
                 banner.append(f"\n⚠ the agent refused the last allowlist update: {push_refusal['reason']}",
                               style=f"bold {T.ATTENTION}")
         if agent.get("rejected"):
-            banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action(s) -- press c for why.",
+            banner.append(f"\n⚠ the agent refused {len(agent['rejected'])} action" + ("" if len(agent["rejected"]) == 1 else "s") + " -- press c for why.",
                           style=T.ATTENTION)
         waiting = sum(1 for r in self._rows if r["state"] == "waiting")
         if waiting:
-            banner.append(f"\n{waiting} exact command(s) waiting for the target's admin -- select one for what to do.",
+            banner.append(f"\n{waiting} exact command" + ("" if waiting == 1 else "s") + f" waiting for the target's admin -- select one for what to do.",
                           style=T.ATTENTION)
         self.query_one("#wl-banner", Static).update(banner)
         self._show_detail()
