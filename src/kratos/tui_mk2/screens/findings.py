@@ -403,8 +403,11 @@ class FindingsScreen(Screen):
         if credit:   # C.1: a Sigma rule's author goes with every finding it raises (DRL 1.1)
             body.add_row("rule by", f"{credit.get('author')} — {credit.get('license') or 'DRL-1.1'}\n"
                                     f"{credit.get('source_url') or ''}")
-        body.add_row("state", f"{STATE_WORDS.get(row['state'], row['state'])}  ({row['state']})")
-        body.add_row("severity", row["severity"])
+        word = STATE_WORDS.get(row["state"], row["state"])
+        # the technical name only when it says something the plain word doesn't
+        body.add_row("state", word if word.replace(" ", "_") == row["state"] else f"{word}  ({row['state']})")
+        sev = str(row["severity"] or "").lower()
+        body.add_row("severity", Text(sev, style=f"bold {T.SEVERITY_COLOR.get(sev, T.TEXT)}"))
         for i, line in enumerate(_ssvc.detail_lines(row.get("ssvc") or {})):
             name = "decision (SSVC)" if i == 0 else "deadline (BOD 26-04)" if line.startswith("CISA BOD 26-04") else ""
             body.add_row(name, annotate_lookalikes(line.strip()))
@@ -422,9 +425,10 @@ class FindingsScreen(Screen):
                                                 and i == 0 else "")))
         for i, lab in enumerate(row.get("attack") or []):
             body.add_row("ATT&CK" if i == 0 else "", f"{format_label(lab)}\n{lab.get('url')}")
-        body.add_row("seen", f"{row['times_seen']} time(s), first {self._when(row['first_seen'])}, "
-                              f"last {self._when(row['last_seen'])}")
-        body.add_row("last re-checked", self._when(row["last_checked"]))
+        n = int(row["times_seen"] or 0)
+        times = "once" if n == 1 else "twice" if n == 2 else f"{n} times"
+        body.add_row("seen", f"{times}, first {self._when(row['first_seen'])}, last {self._when(row['last_seen'])}")
+        body.add_row("last re-checked", self._when(row["last_checked"]) if row["last_checked"] else "never")
         v = row.get("verdict")
         if isinstance(v, dict):
             body.add_row("verdict", f"{v.get('tag')}\n{v.get('sentence') or ''}")
@@ -449,7 +453,7 @@ class FindingsScreen(Screen):
             body.add_row("what to do" if i == 0 else "", annotate_lookalikes(str(line)))
         for i, fx in enumerate(latest.get("fix") or []):
             body.add_row("fix (x copies)" if i == 0 else "", annotate_lookalikes(str(fx.get("title") or "")))
-        body.add_row("key", row["finding_key"])
+        body.add_row("key", row["finding_key"][:12])    # the short key the log lines use; it resolves as a prefix
         self.app.push_screen(InfoModal(f"{row['rule_id']} — details", body))
 
     def action_show_fix(self) -> None:
