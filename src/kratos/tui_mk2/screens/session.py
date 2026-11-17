@@ -187,6 +187,16 @@ _PALETTE_COMMANDS = [
 
 
 HUNT_CONTEXT_CHARS = 6000
+# What each hunt kind looks for -- the "which kind?" options said "hunt it as account name"
+# under "account name", repeating themselves (F11).
+_HUNT_KIND_HELP = {   # matches kratos.hunt.terms / search: the fields each kind is looked up in
+    "ip": "events from, to or about this address, and log lines that mention it",
+    "sha256": "files with exactly this hash, in events and saved reads",
+    "account": "events by or for this user (sign-ins, sudo), and log lines naming it",
+    "domain": "web addresses and log lines naming this host",
+    "program": "processes, startup items and installed packages with this name",
+    "path": "programs run from, and files at, this path",
+}
 
 
 def _hunt_context(text: str) -> str:
@@ -1607,8 +1617,8 @@ class SessionScreen(ResilientWorkerHost, Screen):
             return
         for amb in prepared.ambiguous:
             answer = await self.app.push_screen_wait(ClarifyModal(
-                amb.question(), [{"label": I.KIND_LABELS[k], "value": k, "explanation": f"hunt it as {I.KIND_LABELS[k]}"}
-                                 for k in amb.options],
+                amb.question(), [{"label": I.KIND_LABELS[k], "value": k,
+                                  "explanation": _HUNT_KIND_HELP.get(k, "")} for k in amb.options],
                 subtitle=amb.reason, title="Hunt: which kind?"))
             kind = I.KIND_ALIASES.get(str(answer or "").strip().lower())
             if kind is None:
