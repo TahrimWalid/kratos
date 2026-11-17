@@ -316,6 +316,9 @@ ModalScreen {{
 }}
 ListView > ListItem.-highlight {{ background: {ACCENT}; color: {BG}; text-style: bold; }}
 .modal-body {{ height: auto; max-height: 50vh; }}
+/* Lists in dialogs are as tall as their options (two options = two rows), never a fixed block. */
+.modal-card ListView {{ height: auto; max-height: 16; }}
+#clarify-list {{ margin-bottom: 1; }}
 .modal-card > Static {{ height: auto; }}
 #prompt-quick {{ margin-top: 1; }}
 .modal-title {{
