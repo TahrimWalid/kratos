@@ -23,3 +23,15 @@ def test_groups_names_a_known_machine_that_is_not_in_all_and_why(tmp_path):
     AS.update(tmp_path, "web-01.example.test", Actor("owner", "cli"), criticality="high")
     assert G.outside_all(tmp_path, configured="web-01.example.test") == []
     assert "web-01.example.test" in G.get_group(tmp_path, "all").members
+
+
+def test_backup_fix_names_the_key_on_the_screen_not_the_cli_command():
+    from kratos.tui_mk2.screens.backup import screen_fix
+
+    assert screen_fix("`kratos backup key new` (the secret half goes off this computer)") == \
+        "press k (the secret half goes off this computer)"
+    assert screen_fix("`kratos backup create`, then `kratos backup drill <file>`") == "press n, then d"
+    assert screen_fix("run `kratos backup create` by hand to see why") == "press n to see why"
+    assert "press d" in screen_fix("no successful drill in 30 days: `kratos backup drill <file>`")
+    # what the screen can't do stays a command
+    assert "kratos backup prune" in screen_fix("move old backups elsewhere, or `kratos backup prune --keep N`")

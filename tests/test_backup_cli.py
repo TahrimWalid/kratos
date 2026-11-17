@@ -383,8 +383,10 @@ def test_the_backup_screen_sets_up_a_key_and_backs_up(tmp_path, monkeypatch):
                 if BR.last(r.data, "create"):
                     break
             assert BR.last(r.data, "create")["interface"] == "tui"
-            text = str(app.screen.query_one("#bk-hints").render())
-            assert "kratos backup restore" in text
+            text = str(app.screen.query_one("#bk-log-text").render())
+            assert "kratos backup restore" in text                 # restore stays on the command line
+            hints = str(app.screen.query_one("#bk-hints").render())
+            assert "esc back" in hints and "kratos" not in hints
 
     asyncio.run(go())
 
